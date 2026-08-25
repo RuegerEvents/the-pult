@@ -21,15 +21,17 @@ State of the system and what to work on next. Reconstructed from the code on 202
 
 Ordered. Each task is meant to end in its own commit with tests passing.
 
-### 1. Cover the engine with tests
+### 1. Cover the engine with tests (done)
 
-Nothing outside `pult-schema` has a single test. The path dispatch and lifecycle routing in `ShowEngine::apply_set` is the most intricate code in the backend and the least protected, and task 2 rewrites it. Write the tests first so the rewrite has something to fail against.
+Nothing outside `pult-schema` had a single test. The path dispatch and lifecycle routing in `ShowEngine::apply_set` is the most intricate code in the backend and the least protected, and task 2 rewrites it. Write the tests first so the rewrite has something to fail against.
 
-Cover set, get, create, delete, command dispatch, the LOCAL vs SYNCED vs PERSISTED routing, and the snapshot round trip.
+Covers set, get, create, delete, command dispatch, LOCAL vs SYNCED vs PERSISTED routing, ordering, broadcasts, the snapshot round trip, and peer operations.
 
-### 2. Drive engine dispatch from the registry
+Writing them found a bug: deleting a sequence or a fixture silently did nothing and reported success, because the generic field-patch arm in `apply_set` came before the `__delete` arm and serde dropped `"__delete"` as an unknown field.
 
-The most important task. `CLAUDE.md` promises that adding an entity collection means editing `ShowState` and nothing else. `engine/mod.rs` breaks that promise in four places:
+### 2. Drive engine dispatch from the registry (done)
+
+Was the most important task. `CLAUDE.md` promises that adding an entity collection means editing `ShowState` and nothing else. `engine/mod.rs` breaks that promise in four places:
 
 - `ShowState::get_by_path` hand-matches every collection key
 - `ShowEngine::apply_set` has per-entity arms for patch, `__create`, and `__delete`
@@ -38,9 +40,16 @@ The most important task. `CLAUDE.md` promises that adding an entity collection m
 
 The drift is already visible. `FixtureType` has a `#[pult(table = "fixture_types")]` and a full schema, but the backend never mentions it. It is not in `ShowState`, never loads, and no path reaches it. It exists only as a TypeScript file.
 
-`load_from_showfile` and `save_to_showfile` already show the shape the rest should follow: iterate `inventory::iter::<EntityMeta>()` and let serde do the work. Getting `FixtureType` for free is the test that this worked.
+`ShowState` now holds entities as JSON keyed by table and routes every read and write through `EntityMeta`. No entity type is named in `engine/mod.rs`, and `FixtureType` works with no code written for it.
 
-### 3. Playback engine
+Two more breaks of the same rule turned up and are fixed. Accessor path keys were camelCase while the wire is snake_case, so every field write through the Rust accessor API silently did nothing. And `ShowDataRoot`'s collection accessors were hand-written, listed three of the five tables, and pointed `fixture_types` at a table that has never existed.
+
+Two things left open, both worth doing, neither blocking:
+
+- Collection order is deterministic in memory but not persisted. After a reload the order comes from sorted UUIDs rather than creation order. Sequences need an order column, or the showfile needs to preserve row order.
+- Commands do not write to SQLite. That is right for `go_next`, which moves SYNCED playback state and should not touch the disk on every Go press, but a command that changes a PERSISTED field would not survive a restart.
+
+### 3. Playback engine (next)
 
 `go_next` moves an index. That is the whole of playback today. These fields are modelled and unused:
 
