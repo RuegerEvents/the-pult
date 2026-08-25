@@ -59,6 +59,9 @@ struct FieldMeta {
     lifecycle: Lifecycle,
     is_primary_key: bool,
     collection_of: Option<syn::Ident>,
+    /// From `#[pult(ordered)]`. Parsed and carried but not yet acted on: collection
+    /// order is not persisted, so nothing consumes it.
+    #[allow(dead_code)]
     is_ordered: bool,
 }
 

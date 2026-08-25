@@ -46,11 +46,6 @@ impl ArtNetOutput {
         Ok(Self { socket, target, sent: Vec::new(), sequence: Vec::new() })
     }
 
-    /// The local address the socket is sending from. Useful in tests.
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.socket.local_addr()?)
-    }
-
     fn next_sequence(&mut self, universe: u16) -> u8 {
         match self.sequence.iter_mut().find(|(u, _)| *u == universe) {
             Some((_, seq)) => {

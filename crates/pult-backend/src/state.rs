@@ -11,6 +11,7 @@ use crate::{
 };
 
 #[derive(Clone)]
+#[allow(dead_code, reason = "shared state held for handlers that do not read it yet")]
 pub struct AppState {
     pub engine: EngineHandle,
     pub pool: Arc<SqlitePool>,

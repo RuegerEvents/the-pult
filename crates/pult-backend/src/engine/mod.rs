@@ -173,6 +173,7 @@ fn descend(value: &serde_json::Value, rest: &[PathSegment]) -> Option<serde_json
 
 // ── EngineCommand ─────────────────────────────────────────────────────────────
 
+#[allow(dead_code, reason = "Subscribe and Stop are protocol surface with no caller yet")]
 pub enum EngineCommand {
     Set {
         path: Path,
@@ -235,6 +236,7 @@ impl EngineHandle {
         rx.await?
     }
 
+    #[allow(dead_code, reason = "used by EngineDataHandle and the tests, not from main")]
     pub async fn subscribe_pattern(&self, pattern: PathPattern) -> BoxStream<'static, serde_json::Value> {
         let (tx, rx) = oneshot::channel();
         let _ = self.0.send(EngineCommand::Subscribe { pattern, reply: tx }).await;
@@ -277,7 +279,6 @@ impl UpdateBroadcast {
     }
 
     pub fn subscribe_filtered(&self, pattern: PathPattern) -> BoxStream<'static, serde_json::Value> {
-        use futures::StreamExt;
         let mut rx = self.0.subscribe();
         Box::pin(async_stream::stream! {
             loop {
@@ -294,7 +295,6 @@ impl UpdateBroadcast {
     }
 
     pub fn subscribe_all(&self) -> BoxStream<'static, (Path, serde_json::Value)> {
-        use futures::StreamExt;
         let mut rx = self.0.subscribe();
         Box::pin(async_stream::stream! {
             loop {
@@ -343,6 +343,9 @@ pub struct ShowEngine {
 }
 
 impl ShowEngine {
+    /// Build an engine that owns its command channel. `main` uses `new_with_rx` so it
+    /// can hand out the handle before the engine exists; the tests use this.
+    #[allow(dead_code, reason = "used by the tests, not from main")]
     pub fn new(
         node_id: NodeId,
         pool: Arc<SqlitePool>,

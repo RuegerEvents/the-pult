@@ -8,3 +8,6 @@
 *.db-shm
 *.db-wal
 .env
+
+# ts-rs intermediate output; the real consumer is frontend/src/lib/generated/
+/crates/pult-schema/bindings/

@@ -25,11 +25,12 @@ pub async fn spawn_outbound(
     our_node_id: NodeId,
     session_id: Uuid,
     show_id: Uuid,
-    leader_node_id: NodeId,
+    // Who we think the leader is. Not sent: the peer tells us in its HelloAck.
+    _leader_node_id: NodeId,
     engine: EngineHandle,
 ) -> Result<(NodeId, PeerSender)> {
     let addr = stream.peer_addr()?;
-    let (tx, mut outgoing) = mpsc::channel::<SyncMessage>(64);
+    let (tx, outgoing) = mpsc::channel::<SyncMessage>(64);
     let (mut read_half, mut write_half) = stream.into_split();
 
     // Send Hello

@@ -5,8 +5,6 @@
 //! DMX-centric workflows. So the shape here is a plugin trait and a manager, and
 //! Art-Net is one implementation of that trait rather than the centre of it.
 
-use std::collections::HashMap;
-
 use pult_schema::types::fixture::{Fixture, FixtureType};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -39,6 +37,7 @@ pub trait OutputPlugin: Send {
 
 // ── OutputManager ─────────────────────────────────────────────────────────────
 
+#[allow(dead_code, reason = "Stop has no caller until the server shuts down gracefully")]
 pub enum OutputCommand {
     /// The engine's view of the patch, pushed whenever fixture output changes.
     Patch { fixtures: Vec<Fixture>, fixture_types: Vec<FixtureType>, changed: Vec<Uuid> },
@@ -86,9 +85,4 @@ impl<P: OutputPlugin> OutputManager<P> {
         }
         info!("[output] {} stopped", self.plugin.name());
     }
-}
-
-/// Index fixture types by id, for callers building a [`Patch`] by hand.
-pub fn index_types(types: Vec<FixtureType>) -> HashMap<Uuid, FixtureType> {
-    types.into_iter().map(|t| (t.id, t)).collect()
 }

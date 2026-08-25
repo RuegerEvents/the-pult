@@ -18,6 +18,7 @@ use crate::{engine::EngineHandle, infra::sync::SyncHandle};
 
 // ── SessionCommand ────────────────────────────────────────────────────────────
 
+#[allow(dead_code, reason = "Stop has no caller until the server shuts down gracefully")]
 pub enum SessionCommand {
     Create {
         show_name: String,

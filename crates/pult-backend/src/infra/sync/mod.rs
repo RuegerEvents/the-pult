@@ -21,6 +21,7 @@ use protocol::SyncMessage;
 
 // ── SyncCommand ───────────────────────────────────────────────────────────────
 
+#[allow(dead_code, reason = "PeerCount and Stop have no caller yet")]
 pub enum SyncCommand {
     /// Fan out an operation to all connected peers.
     BroadcastSynced {

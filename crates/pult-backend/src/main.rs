@@ -22,7 +22,7 @@ use crate::{
     api::ws::{ws_handler, SubscriptionRegistry},
     config::Config,
     engine::{EngineCommand, EngineHandle, ShowEngine},
-    infra::connectors::{artnet::ArtNetOutput, OutputManager},
+    infra::connectors::{artnet::{ArtNetOutput, ARTNET_PORT}, OutputManager},
     infra::session::SessionManager,
     infra::showfile,
     infra::sync::SyncManager,
@@ -38,11 +38,22 @@ struct Args {
     sync_port: u16,
     #[arg(long, default_value = "show.db")]
     showfile: String,
-    /// Send Art-Net to this address, e.g. 10.0.0.5:6454 or 255.255.255.255:6454.
-    /// Off unless given: a console should not put packets on someone's network
-    /// because it happened to start up.
-    #[arg(long, value_name = "ADDR")]
+    /// Send Art-Net to this address, e.g. 10.0.0.5 or 255.255.255.255:6454.
+    /// The port defaults to 6454. Off unless given: a console should not put
+    /// packets on someone's network because it happened to start up.
+    #[arg(long, value_name = "ADDR", value_parser = parse_artnet_target)]
     artnet: Option<std::net::SocketAddr>,
+}
+
+/// Accept either `host:port` or a bare address, defaulting to the Art-Net port.
+fn parse_artnet_target(value: &str) -> Result<std::net::SocketAddr, String> {
+    if let Ok(addr) = value.parse::<std::net::SocketAddr>() {
+        return Ok(addr);
+    }
+    value
+        .parse::<std::net::IpAddr>()
+        .map(|ip| std::net::SocketAddr::new(ip, ARTNET_PORT))
+        .map_err(|e| format!("not an address: {e}"))
 }
 
 #[tokio::main]

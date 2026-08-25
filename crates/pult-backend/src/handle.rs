@@ -11,6 +11,7 @@ use crate::engine::EngineHandle;
 /// This is what backend business logic and WASM plugins use to
 /// access the data model via the path-proxy API.
 #[derive(Clone)]
+#[allow(dead_code, reason = "the Rust accessor API entry point; used by the tests so far")]
 pub struct EngineDataHandle(pub EngineHandle);
 
 impl DataHandle for EngineDataHandle {

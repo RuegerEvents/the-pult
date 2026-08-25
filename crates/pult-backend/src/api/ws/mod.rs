@@ -96,7 +96,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     debug!("WebSocket session {session_id} connected");
 
     // Spawn task to forward outgoing messages to the WebSocket
-    let mut send_task = tokio::spawn(async move {
+    let send_task = tokio::spawn(async move {
         while let Some(msg) = outgoing_rx.recv().await {
             match serde_json::to_string(&msg) {
                 Ok(json) => {
@@ -112,7 +112,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // Forward engine updates to subscribed sessions in a background task
     let registry = state.ws_registry.clone();
     let broadcast = state.broadcast.clone();
-    let mut broadcast_task = tokio::spawn(async move {
+    let broadcast_task = tokio::spawn(async move {
         let mut stream = broadcast.subscribe_all();
         while let Some((path, value)) = stream.next().await {
             registry.broadcast_update(&path, value);

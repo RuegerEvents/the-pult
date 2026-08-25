@@ -113,6 +113,7 @@
 				createSequence();
 			}}
 		>
+			<!-- svelte-ignore a11y_autofocus -->
 			<input
 				class="text-input"
 				placeholder="Sequence name…"
@@ -153,6 +154,7 @@
 							class="inline-edit"
 							onsubmit={(e) => { e.preventDefault(); saveSeqName(seq.id); }}
 						>
+							<!-- svelte-ignore a11y_autofocus -->
 							<input
 								class="text-input inline-name-input"
 								bind:value={editingSeqName}
@@ -237,6 +239,7 @@
 												class="inline-edit"
 												onsubmit={(e) => { e.preventDefault(); saveCueName(cueId); }}
 											>
+												<!-- svelte-ignore a11y_autofocus -->
 												<input
 													class="text-input inline-name-input"
 													bind:value={editingCueName}
@@ -278,6 +281,7 @@
 									addCue(seq.id);
 								}}
 							>
+								<!-- svelte-ignore a11y_autofocus -->
 								<input
 									class="text-input sm"
 									placeholder="Cue name…"
