@@ -1,0 +1,100 @@
+mod engine;
+mod infra;
+mod api;
+mod model;
+mod config;
+mod state;
+mod handle;
+mod error;
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use axum::{routing::get, Router};
+use clap::Parser;
+use pult_schema::events::operation::NodeId;
+use tokio::sync::mpsc;
+use tower_http::cors::CorsLayer;
+use tracing::info;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+use crate::{
+    api::ws::{ws_handler, SubscriptionRegistry},
+    config::Config,
+    engine::{EngineCommand, EngineHandle, ShowEngine},
+    infra::session::SessionManager,
+    infra::showfile,
+    infra::sync::SyncManager,
+    state::AppState,
+};
+
+#[derive(Parser)]
+#[command(about = "pult-backend lighting console server")]
+struct Args {
+    #[arg(long, default_value_t = 7700)]
+    port: u16,
+    #[arg(long, default_value_t = 7701)]
+    sync_port: u16,
+    #[arg(long, default_value = "show.db")]
+    showfile: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env().add_directive("pult_backend=debug".parse()?))
+        .init();
+
+    let args = Args::parse();
+    let config = Config {
+        port: args.port,
+        sync_port: args.sync_port,
+        showfile: args.showfile,
+        ..Config::default()
+    };
+
+    let pool = Arc::new(showfile::open(&config.showfile).await?);
+    let node_id = NodeId::new();
+
+    let (engine_tx, engine_rx) = mpsc::channel::<EngineCommand>(256);
+    let engine_handle = EngineHandle(engine_tx);
+
+    let (sync_mgr, sync_handle) =
+        SyncManager::new(node_id, config.sync_port, engine_handle.clone());
+    tokio::spawn(sync_mgr.run());
+
+    let (engine, _broadcast) = ShowEngine::new_with_rx(
+        node_id,
+        engine_rx,
+        pool.clone(),
+        Some(sync_handle.clone()),
+    );
+    engine_handle.0.send(EngineCommand::LoadFromShowfile).await?;
+    tokio::spawn(engine.run());
+
+    let (session_mgr, session_handle) =
+        SessionManager::new(node_id, config.sync_port, engine_handle.clone(), sync_handle.clone());
+    tokio::spawn(session_mgr.run());
+
+    let state = AppState {
+        engine: engine_handle,
+        pool,
+        sync: sync_handle,
+        session: session_handle,
+        node_id,
+        ws_registry: SubscriptionRegistry::default(),
+        broadcast: _broadcast,
+    };
+
+    let app = Router::new()
+        .route("/ws", get(ws_handler))
+        .layer(CorsLayer::permissive())
+        .with_state(state);
+
+    let addr = format!("0.0.0.0:{}", config.port);
+    info!("pult-backend listening on {addr}");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}

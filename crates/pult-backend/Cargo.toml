@@ -1,0 +1,34 @@
+[package]
+name = "pult-backend"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "pult-backend"
+path = "src/main.rs"
+
+[dependencies]
+pult-schema = { path = "../pult-schema" }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+toml = { workspace = true }
+mdns-sd = { workspace = true }
+async-stream = { workspace = true }
+hostname = "0.4"
+clap = { workspace = true }
+inventory = { workspace = true }
+paste = { workspace = true }

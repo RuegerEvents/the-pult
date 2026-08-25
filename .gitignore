@@ -1,0 +1,10 @@
+/target/
+/frontend/node_modules/
+/frontend/.svelte-kit/
+/frontend/build/
+/frontend/src/lib/generated/*.ts
+!/frontend/src/lib/generated/.gitkeep
+*.db
+*.db-shm
+*.db-wal
+.env

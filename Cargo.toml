@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pult-macros",
+    "crates/pult-schema",
+    "crates/pult-backend",
+    "tools/pult-codegen",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Hannes Rüger <hannes@rueger.events>"]
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = { version = "2", features = ["serde"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "uuid", "chrono", "macros"] }
+
+# Types
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# TypeScript gen
+ts-rs = { version = "10", features = ["uuid-impl", "chrono-impl", "serde-json-impl", "indexmap-impl"] }
+
+# Proc macro infra (only in pult-macros)
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Async streams / channels
+tokio-stream = "0.1"
+futures = "0.3"
+
+# Config
+toml = "0.8"
+
+# mDNS discovery
+mdns-sd = "0.13"
+
+# async stream macros
+async-stream = "0.3"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Distributed static registration
+inventory = "0.3"
+paste = "1"

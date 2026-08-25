@@ -1,0 +1,14 @@
+[package]
+name = "pult-codegen"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "pult-codegen"
+path = "src/main.rs"
+
+[dependencies]
+pult-schema = { path = "../../crates/pult-schema" }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+inventory = { workspace = true }
