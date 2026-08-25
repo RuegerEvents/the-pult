@@ -1,6 +1,8 @@
 # Roadmap
 
-State of the system and what to work on next. Reconstructed from the code on 2026-08-25.
+State of the system and what to work on next. Reconstructed from the code on 2026-08-25, then reconciled against [SPEC.md](SPEC.md).
+
+The spec is the product. This is the build order for getting there, and right now the gap is very wide: what exists is a synchronised show-state engine with cues and playback. The spec's 3D programmer, geometric selections, phasers, event system, and waveform timecode are all still ahead.
 
 ## Where the system stands
 
@@ -13,9 +15,11 @@ State of the system and what to work on next. Reconstructed from the code on 202
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
 | Peer sync | Partial. TCP handshake, a full snapshot when a peer joins, and live `SyncedBroadcast` fan-out. Nothing else. |
 | Frontend | Working for show, session, sequences, and cues. The typed proxy runs end to end. |
-| DMX output | Not started. `infra/connectors/mod.rs` is a two-line stub. |
-| Playback engine | Not started. |
+| Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
+| Output plugins | Not started. `infra/connectors/mod.rs` is a two-line stub, so nothing reaches a light. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
+| 3D programmer | Not started. The largest piece of the spec and none of it exists. |
+| Selection, effects, events, timecode | Not started. No schema for any of them yet. |
 
 ## Task list
 
@@ -61,21 +65,36 @@ Two things left open, both worth doing, neither blocking:
 
 Build a tick loop that interpolates `Cue::captures` into `Fixture::live_values` over the fade time, marks cues active, and fires follow cues on schedule. `live_values` is SYNCED, so peers and frontends both see the output without new plumbing.
 
-### 4. DMX output
+### 3. Playback engine (done)
 
-Art-Net first, sACN after. Read `Fixture::live_values`, map through `FixtureType::parameters` to DMX channels, and send universes at a fixed rate. Until this exists the project cannot control a light.
+`model::playback` fades captures into `Fixture::live_values`, marks the played cue active, and fires `FollowAfter` cues. It is a pure state machine driven by the engine's own tick, so its tests run a four-second fade in microseconds.
 
-### 5. Sync catch-up and conflict handling
+`Timecode` follows still do nothing. The spec wants waveform-based timecode with beat grids rather than plain SMPTE, so this should wait for that design rather than get a stopgap.
 
-Can run in parallel with 3 and 4.
+`Show::is_running` is still unused. Its meaning is a product decision, not a code one.
+
+### 4. Output plugin layer (next)
+
+The spec is explicit that this is a plugin layer, not a DMX-shaped core: output plugins translate high-level data into whatever protocol a fixture speaks, DMX among them, and network-based communication is preferred over DMX-centric workflows.
+
+So the first piece is the trait and the registry, not Art-Net. An output plugin takes fixture state and a `FixtureType`, and emits protocol frames. Art-Net is then the first implementation of it, mapping `live_values` through `FixtureType::parameters` to channels at 40 Hz. sACN after that.
+
+Two things from the spec to design in from the start rather than retrofit:
+
+- Send parameter changes, not continuous full frames. Playback already skips fixtures that did not move, but DMX itself needs a full frame per universe, so the change-only path has to live above the protocol.
+- Fixtures are meant to behave like processing nodes that can preload upcoming playback data. That argues for handing a plugin a description of what is coming, not only the current frame.
+
+### 5. Fixture and patch UI
+
+There is no way to patch a rig from the UI at all. Anything real needs this, and the spec's 3D programmer will need the same underlying data.
+
+### 6. Sync catch-up and conflict handling
+
+Can run in parallel with the output work.
 
 A peer that drops and reconnects gets a fresh full snapshot. There is no replay. The `oplog` table exists and `OperationRequest` and `OperationBatch` are declared but stubbed. `VectorClock` is merged on receive and then never read, so concurrent edits resolve by arrival order.
 
 Also missing: heartbeat timeout handling, and leader re-election. `LeaderChanged` is declared in the protocol and never sent.
-
-### 6. Fixture and patch UI
-
-The frontend has panels for show, session, and sequences. Patching a rig is not possible from the UI at all. Depends on task 2 for `FixtureType` to exist in the backend.
 
 ### 7. Housekeeping
 
@@ -85,4 +104,22 @@ The frontend has panels for show, session, and sequences. Patching a rig is not 
 
 ### 8. WASM plugins
 
-Last. Nothing else depends on it, and the plugin API should be designed against a system that already plays back cues and outputs DMX.
+Nothing else depends on it, and the plugin API should be designed against a system that already plays back cues and drives output.
+
+## Further out
+
+Everything below is in the spec and has no schema, no code, and no design yet. Listed so the near-term work does not paint itself into a corner.
+
+**Fixture positions.** The spec wants axial (position plus direction vector) or positional (XYZ) coordinates on every fixture, with tracking data feeding in later. `Fixture` has no position field at all. This is small to add and everything spatial depends on it, so it is the cheapest thing on this list to get right early.
+
+**Selection as a geometric query.** Selections are meant to be generated from the rig by geometric functions and re-evaluated as the rig changes, not stored as fixture lists. That is a query language, and it needs positions first.
+
+**Effects and phasers.** Derived from the 3D selection with modifiers that can themselves be dynamic. Needs selection.
+
+**3D programmer.** Rig view, fixture puppeteering, quicksheets. The biggest single piece of the product and entirely absent.
+
+**Event system and node graph.** Sensor and network triggers, delays, reactive playback. Cuts across everything.
+
+**Waveform timecode and "timecode without timecode".** Beat grids, markers, live audio analysis for band sync. Should subsume the `Timecode` follow mode rather than sit beside it.
+
+**Open control interfaces.** OSC, MIDI, and control surfaces alongside the existing WebSocket API.
