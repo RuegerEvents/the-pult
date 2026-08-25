@@ -16,7 +16,7 @@ The spec is the product. This is the build order for getting there, and right no
 | Peer sync | Partial. TCP handshake, a full snapshot when a peer joins, and live `SyncedBroadcast` fan-out. Nothing else. |
 | Frontend | Working for show, session, sequences, and cues. The typed proxy runs end to end. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
-| Output plugins | Not started. `infra/connectors/mod.rs` is a two-line stub, so nothing reaches a light. |
+| Output plugins | Working for Art-Net. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Off unless `--artnet` is passed. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
 | 3D programmer | Not started. The largest piece of the spec and none of it exists. |
 | Selection, effects, events, timecode | Not started. No schema for any of them yet. |
@@ -73,20 +73,25 @@ Build a tick loop that interpolates `Cue::captures` into `Fixture::live_values` 
 
 `Show::is_running` is still unused. Its meaning is a product decision, not a code one.
 
-### 4. Output plugin layer (next)
+### 4. Output plugin layer (done for Art-Net)
 
 The spec is explicit that this is a plugin layer, not a DMX-shaped core: output plugins translate high-level data into whatever protocol a fixture speaks, DMX among them, and network-based communication is preferred over DMX-centric workflows.
 
 So the first piece is the trait and the registry, not Art-Net. An output plugin takes fixture state and a `FixtureType`, and emits protocol frames. Art-Net is then the first implementation of it, mapping `live_values` through `FixtureType::parameters` to channels at 40 Hz. sACN after that.
 
-Two things from the spec to design in from the start rather than retrofit:
+`OutputPlugin` and `OutputManager` are in place, `connectors::dmx` renders fixtures and their types into universes, and `connectors::artnet` puts ArtDmx on the wire. Art-Net skips universes whose 512 bytes have not changed and refreshes every 800 ms, so an idle rig stays off the network.
 
-- Send parameter changes, not continuous full frames. Playback already skips fixtures that did not move, but DMX itself needs a full frame per universe, so the change-only path has to live above the protocol.
-- Fixtures are meant to behave like processing nodes that can preload upcoming playback data. That argues for handing a plugin a description of what is coming, not only the current frame.
+Still to do here:
 
-### 5. Fixture and patch UI
+- sACN, which should only need a new file next to `artnet.rs`.
+- More than one plugin at a time. `OutputManager` is generic over a single `P: OutputPlugin`; several plugins means a `Vec<Box<dyn ...>>` and an object-safe trait, which the current `impl Future` return type is not.
+- The spec wants fixtures to preload upcoming playback data, which means handing a plugin a description of what is coming rather than only the current frame. Nothing here does that yet.
 
-There is no way to patch a rig from the UI at all. Anything real needs this, and the spec's 3D programmer will need the same underlying data.
+### 5. Fixture and patch UI (next)
+
+There is no way to patch a rig from the UI at all: fixtures, fixture types, and addresses can only be created over the WebSocket by hand. Everything downstream is now real, so this is what stands between the backend and using it. The spec's 3D programmer will need the same underlying data.
+
+Worth adding `Fixture` position at the same time, since the schema is being touched anyway. See Further out.
 
 ### 6. Sync catch-up and conflict handling
 
@@ -96,11 +101,13 @@ A peer that drops and reconnects gets a fresh full snapshot. There is no replay.
 
 Also missing: heartbeat timeout handling, and leader re-election. `LeaderChanged` is declared in the protocol and never sent.
 
-### 7. Housekeeping
+There is a bug to fix here first. `spawn_outbound` returns the leader's node id as if it were the peer's, because `HelloAck` carries `leader_node_id` and no id of its own. `SyncManager` then keys that peer's connection by the leader's id, so two nodes connecting to the same leader collide in the peer map. Fixing it means adding the responder's `node_id` to `HelloAck`.
 
-- `crates/pult-schema/bindings/` is tracked in git but is ts-rs intermediate output. It should be ignored like `frontend/src/lib/generated/` is, otherwise running codegen keeps producing untracked files.
-- Two unused `futures::StreamExt` imports and one unused `leader_node_id` binding produce warnings on every build.
-- Five `a11y_autofocus` warnings from `svelte-check`, in `SequenceRunner.svelte` and `ShowPanel.svelte`.
+### 7. Housekeeping (done)
+
+`cargo build --workspace` and `npm run check` are both at zero warnings, so a new one is visible rather than buried. `crates/pult-schema/bindings/` is untracked now.
+
+The one exception is ts-rs printing `failed to parse serde attribute` for the generated Patch structs' `skip_serializing_if`. That is inside ts-rs.
 
 ### 8. WASM plugins
 
