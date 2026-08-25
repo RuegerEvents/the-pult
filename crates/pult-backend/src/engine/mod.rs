@@ -60,6 +60,9 @@ impl ShowState {
     }
 
     pub fn get_by_path(&self, path: &Path) -> Option<serde_json::Value> {
+        // Arm order matters: __create and __delete must be matched before the generic
+        // [collection, id, field] patch arm, or "__delete" is taken for a field name,
+        // dropped by serde as unknown, and the delete silently succeeds without deleting.
         match path.as_slice() {
             [PathSegment::Key(k)] if k == "show" => {
                 self.show.as_ref().and_then(|s| serde_json::to_value(s).ok())
@@ -365,6 +368,9 @@ impl ShowEngine {
             }
         }
 
+        // Arm order matters: __create and __delete must be matched before the generic
+        // [collection, id, field] patch arm, or "__delete" is taken for a field name,
+        // dropped by serde as unknown, and the delete silently succeeds without deleting.
         match path.as_slice() {
             [PathSegment::Key(k)] if k == "show" => {
                 let show: Show = serde_json::from_value(value)?;
@@ -372,16 +378,6 @@ impl ShowEngine {
                     db::upsert(&self.pool, &show).await?;
                 }
                 self.state.show = Some(show);
-            }
-            [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(field)] if k == "fixtures" => {
-                if let Some(fixture) = self.state.fixtures.get_mut(id) {
-                    apply_field_patch(fixture, field, value.clone())?;
-                    if lifecycle == Lifecycle::Persisted {
-                        db::upsert(&self.pool, fixture as &Fixture).await?;
-                    }
-                } else {
-                    return Err(BackendError::PathNotFound(path));
-                }
             }
             [PathSegment::Key(k), PathSegment::Key(action)] if k == "fixtures" && action == "__create" => {
                 let fixture: Fixture = serde_json::from_value(value)?;
@@ -395,11 +391,11 @@ impl ShowEngine {
                 db::delete::<Fixture>(&self.pool, *id).await?;
                 self.state.fixtures.remove(id);
             }
-            [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(field)] if k == "sequences" => {
-                if let Some(seq) = self.state.sequences.get_mut(id) {
-                    apply_field_patch(seq, field, value.clone())?;
+            [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(field)] if k == "fixtures" => {
+                if let Some(fixture) = self.state.fixtures.get_mut(id) {
+                    apply_field_patch(fixture, field, value.clone())?;
                     if lifecycle == Lifecycle::Persisted {
-                        db::upsert(&self.pool, seq as &Sequence).await?;
+                        db::upsert(&self.pool, fixture as &Fixture).await?;
                     }
                 } else {
                     return Err(BackendError::PathNotFound(path));
@@ -418,6 +414,16 @@ impl ShowEngine {
                 db::delete::<Sequence>(&self.pool, *id).await?;
                 self.state.sequences.remove(id);
                 self.state.sequence_order.retain(|i| i != id);
+            }
+            [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(field)] if k == "sequences" => {
+                if let Some(seq) = self.state.sequences.get_mut(id) {
+                    apply_field_patch(seq, field, value.clone())?;
+                    if lifecycle == Lifecycle::Persisted {
+                        db::upsert(&self.pool, seq as &Sequence).await?;
+                    }
+                } else {
+                    return Err(BackendError::PathNotFound(path));
+                }
             }
             [PathSegment::Key(k), PathSegment::Key(action)] if k == "cues" && action == "__create" => {
                 let cue: Cue = serde_json::from_value(value)?;
@@ -636,3 +642,6 @@ fn apply_field_patch<T: serde::Serialize + serde::de::DeserializeOwned>(
     *entity = serde_json::from_value(serde_json::Value::Object(map))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -14,6 +14,21 @@ pub async fn open(path: &str) -> Result<SqlitePool> {
     Ok(pool)
 }
 
+/// Open a migrated in-memory showfile. Test-only.
+///
+/// The pool is capped at one connection: every SQLite `:memory:` connection gets
+/// its own private database, so a larger pool would hand out empty ones.
+#[cfg(test)]
+pub async fn open_in_memory() -> Result<SqlitePool> {
+    let opts = SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await?;
+    run_migrations(&pool).await?;
+    Ok(pool)
+}
+
 async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     let sql = include_str!("migrations/001_initial.sql");
 
