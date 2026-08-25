@@ -3,8 +3,6 @@ use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 use std::str::FromStr;
 use tracing::info;
 
-pub mod queries;
-
 pub async fn open(path: &str) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(&format!("sqlite:{path}?mode=rwc"))?
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)

@@ -296,6 +296,42 @@ fn gen_accessor_struct(meta: &StructMeta) -> syn::Result<TokenStream2> {
 
     let create_name = format_ident!("{}Create", entity_name);
 
+    // Reach this entity from the root: `data.sequences()`, `data.show()`. The method
+    // name and the path key are both the table name, so the root has nothing to keep
+    // in step by hand.
+    let root_method = match &meta.table_name {
+        None => quote! {},
+        Some(table) => {
+            let method = format_ident!("{}", table);
+            let doc = format!("Access the `{table}` {}.", if meta.is_singleton { "singleton" } else { "collection" });
+            if meta.is_singleton {
+                quote! {
+                    impl<H: ::pult_schema::handle::DataHandle> ::pult_schema::handle::ShowDataRoot<H> {
+                        #[doc = #doc]
+                        pub fn #method(&self) -> #accessor_name<H> {
+                            <#accessor_name<H> as ::pult_schema::handle::EntityAccessor>::new(
+                                vec![::pult_schema::path::PathSegment::Key(#table.into())],
+                                self.handle.clone(),
+                            )
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    impl<H: ::pult_schema::handle::DataHandle> ::pult_schema::handle::ShowDataRoot<H> {
+                        #[doc = #doc]
+                        pub fn #method(&self) -> ::pult_schema::handle::EntityCollectionAccessor<#accessor_name<H>> {
+                            ::pult_schema::handle::EntityCollectionAccessor::new(
+                                vec![::pult_schema::path::PathSegment::Key(#table.into())],
+                                self.handle.clone(),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    };
+
     Ok(quote! {
         pub struct #accessor_name<H: ::pult_schema::handle::DataHandle> {
             path: ::pult_schema::path::Path,
@@ -318,13 +354,17 @@ fn gen_accessor_struct(meta: &StructMeta) -> syn::Result<TokenStream2> {
             #(#field_methods)*
             #(#collection_methods)*
         }
+
+        #root_method
     })
 }
 
 fn gen_field_accessor_method(field: &FieldMeta) -> syn::Result<TokenStream2> {
     let method_name = &field.ident;
     let ty = &field.ty;
-    let path_key_str = to_camel_case(&field.ident.to_string());
+    // The path key is the serde field name. Anything else and the engine writes a
+    // field the entity does not have, serde drops it, and the set silently no-ops.
+    let path_key_str = field.ident.to_string();
 
     match field.lifecycle {
         Lifecycle::Local => Ok(quote! {
@@ -358,7 +398,7 @@ fn gen_field_accessor_method(field: &FieldMeta) -> syn::Result<TokenStream2> {
 
 fn gen_collection_accessor_method(field: &FieldMeta) -> syn::Result<TokenStream2> {
     let method_name = &field.ident;
-    let path_key_str = to_camel_case(&field.ident.to_string());
+    let path_key_str = field.ident.to_string();
     let target_type = field.collection_of.as_ref().unwrap();
     let accessor_type = format_ident!("{}Accessor", target_type);
 
@@ -567,6 +607,30 @@ fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
     let lc_fn_name = format_ident!("__pult_field_lifecycles_{}", name);
     let save_fn_name = format_ident!("__pult_save_all_{}", name);
     let load_fn_name = format_ident!("__pult_load_all_{}", name);
+    let validate_fn_name = format_ident!("__pult_validate_{}", name);
+    let upsert_one_fn_name = format_ident!("__pult_upsert_one_{}", name);
+    let delete_one_fn_name = format_ident!("__pult_delete_one_{}", name);
+
+    let pk_expr = match meta.fields.iter().find(|f| f.is_primary_key) {
+        Some(f) => { let s = f.ident.to_string(); quote! { Some(#s) } }
+        None => quote! { None },
+    };
+
+    let (upsert_one_expr, delete_one_expr) = if has_table {
+        (quote! { Some(#upsert_one_fn_name) }, quote! { Some(#delete_one_fn_name) })
+    } else {
+        (quote! { None }, quote! { None })
+    };
+    let (upsert_one_body, delete_one_body) = if has_table {
+        (quote! {
+            let entity: #name = ::serde_json::from_value(value)?;
+            ::pult_schema::db::upsert(&pool, &entity).await
+        }, quote! {
+            ::pult_schema::db::delete::<#name>(&pool, id).await
+        })
+    } else {
+        (quote! { Ok(()) }, quote! { let _ = id; Ok(()) })
+    };
 
     let create_fn_body = if has_table {
         quote! { Some(<#name as ::pult_schema::sql::PultSqlRow>::create_table_sql()) }
@@ -625,6 +689,31 @@ fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
         #[allow(non_snake_case)]
         fn #create_fn_name() -> Option<String> { #create_fn_body }
 
+        /// Round-trip through the concrete type so invalid values are rejected
+        /// and serde defaults are filled in.
+        #[allow(non_snake_case)]
+        fn #validate_fn_name(value: ::serde_json::Value) -> ::anyhow::Result<::serde_json::Value> {
+            let entity: #name = ::serde_json::from_value(value)?;
+            Ok(::serde_json::to_value(entity)?)
+        }
+
+        #[allow(non_snake_case)]
+        fn #upsert_one_fn_name(
+            pool: ::sqlx::SqlitePool,
+            value: ::serde_json::Value,
+        ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + Send>> {
+            Box::pin(async move { #upsert_one_body })
+        }
+
+        #[allow(non_snake_case)]
+        fn #delete_one_fn_name(
+            pool: ::sqlx::SqlitePool,
+            id: ::uuid::Uuid,
+        ) -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = ::anyhow::Result<()>> + Send>> {
+            let _ = &pool;
+            Box::pin(async move { #delete_one_body })
+        }
+
         #[allow(non_snake_case)]
         fn #lc_fn_name() -> &'static [(&'static str, ::pult_schema::lifecycle::Lifecycle)] {
             <#name as ::pult_schema::traits::PultEntity>::field_lifecycles()
@@ -653,6 +742,10 @@ fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
             field_lifecycles: #lc_fn_name,
             save_all: #save_all_expr,
             load_all: #load_all_expr,
+            primary_key: #pk_expr,
+            validate: #validate_fn_name,
+            upsert_one: #upsert_one_expr,
+            delete_one: #delete_one_expr,
         });
     })
 }

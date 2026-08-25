@@ -542,3 +542,317 @@ async fn a_peer_operation_is_applied_and_broadcast_locally() {
         "Renamed by peer"
     );
 }
+
+// ── Registry-driven dispatch ──────────────────────────────────────────────────
+//
+// The engine names no entity type. These tests hold it to that.
+
+/// FixtureType has a schema and a table but was never mentioned in the engine, so
+/// before the dispatch became registry-driven it was unreachable. Nothing about this
+/// entity is special: it is here because it is the one the old engine forgot.
+#[tokio::test]
+async fn fixture_types_are_reachable_without_the_engine_naming_them() {
+    use pult_schema::types::fixture::{FixtureType, ParameterDefinition, ParameterKind, ParameterValue};
+
+    let mut h = harness().await;
+    let ft = FixtureType {
+        id: Uuid::new_v4(),
+        name: "Source Four".into(),
+        manufacturer: "ETC".into(),
+        channel_count: 1,
+        parameters: vec![ParameterDefinition {
+            kind: ParameterKind::Intensity,
+            dmx_channel: 1,
+            default_value: ParameterValue::Float(0.0),
+        }],
+    };
+
+    h.engine.set(create_path("fixture_types"), Lifecycle::Persisted, json(&ft)).await.unwrap();
+
+    let got = h.engine.get(entity_path("fixture_types", ft.id)).await.unwrap();
+    assert_eq!(got["manufacturer"], "ETC");
+
+    h.reload().await;
+    let after = h.engine.get(entity_path("fixture_types", ft.id)).await.unwrap();
+    assert_eq!(after["name"], "Source Four", "must round-trip through the showfile too");
+
+    h.engine
+        .set(delete_path("fixture_types", ft.id), Lifecycle::Persisted, serde_json::Value::Null)
+        .await
+        .unwrap();
+    assert!(h.engine.get(key("fixture_types")).await.unwrap().as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn every_registered_collection_is_readable() {
+    use pult_schema::registry::EntityMeta;
+
+    let h = harness().await;
+    for meta in EntityMeta::all_with_tables() {
+        let table = meta.table_name.unwrap();
+        if meta.is_singleton {
+            continue;
+        }
+        let got = h.engine.get(key(table)).await;
+        assert!(
+            got.is_ok_and(|v| v.is_array()),
+            "collection {table} is registered but not readable from the engine",
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_entity_can_be_written_through_its_index() {
+    let h = harness().await;
+    for name in ["Act 1", "Act 2"] {
+        h.engine
+            .set(create_path("sequences"), Lifecycle::Persisted, json(&a_sequence(name, vec![])))
+            .await
+            .unwrap();
+    }
+
+    h.engine
+        .set(
+            vec![
+                PathSegment::Key("sequences".into()),
+                PathSegment::Index(1),
+                PathSegment::Key("name".into()),
+            ],
+            Lifecycle::Persisted,
+            json(&"Renamed"),
+        )
+        .await
+        .unwrap();
+
+    let all = h.engine.get(key("sequences")).await.unwrap();
+    assert_eq!(all[0]["name"], "Act 1");
+    assert_eq!(all[1]["name"], "Renamed");
+}
+
+#[tokio::test]
+async fn a_singleton_field_can_be_patched_on_its_own() {
+    let mut h = harness().await;
+    let show = a_show();
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&show)).await.unwrap();
+
+    // is_running is SYNCED, name is PERSISTED.
+    h.engine
+        .set(vec![PathSegment::Key("show".into()), PathSegment::Key("is_running".into())],
+             Lifecycle::Synced, json(&true))
+        .await
+        .unwrap();
+    h.engine
+        .set(vec![PathSegment::Key("show".into()), PathSegment::Key("name".into())],
+             Lifecycle::Persisted, json(&"Macbeth"))
+        .await
+        .unwrap();
+
+    let got = h.engine.get(key("show")).await.unwrap();
+    assert_eq!(got["is_running"], true);
+    assert_eq!(got["name"], "Macbeth");
+
+    h.reload().await;
+    let after = h.engine.get(key("show")).await.unwrap();
+    assert_eq!(after["name"], "Macbeth");
+    assert_eq!(after["is_running"], false, "SYNCED field must not be persisted");
+}
+
+#[tokio::test]
+async fn a_single_field_can_be_read_without_fetching_the_whole_entity() {
+    let h = harness().await;
+    let seq = a_sequence("Act 1", vec![]);
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    let name = h.engine.get(field_path("sequences", seq.id, "name")).await.unwrap();
+    assert_eq!(name, "Act 1");
+}
+
+#[tokio::test]
+async fn writing_a_field_the_schema_does_not_have_is_rejected() {
+    let h = harness().await;
+    let seq = a_sequence("Act 1", vec![]);
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    let err = h
+        .engine
+        .set(field_path("sequences", seq.id, "colour"), Lifecycle::Persisted, json(&"red"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, BackendError::PathNotFound(_)));
+}
+
+#[tokio::test]
+async fn a_value_that_is_not_a_valid_entity_is_rejected() {
+    let h = harness().await;
+    let err = h
+        .engine
+        .set(create_path("sequences"), Lifecycle::Persisted, serde_json::json!({ "id": "not-a-uuid" }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, BackendError::InvalidValue { .. }));
+    assert!(h.engine.get(key("sequences")).await.unwrap().as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_whole_entity_can_be_replaced_in_place() {
+    let h = harness().await;
+    let seq = a_sequence("Act 1", vec![]);
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    let mut replacement = seq.clone();
+    replacement.name = "Act 1 (revised)".into();
+    h.engine
+        .set(entity_path("sequences", seq.id), Lifecycle::Persisted, json(&replacement))
+        .await
+        .unwrap();
+
+    let all = h.engine.get(key("sequences")).await.unwrap();
+    assert_eq!(all.as_array().unwrap().len(), 1, "replace must not add a second entity");
+    assert_eq!(all[0]["name"], "Act 1 (revised)");
+}
+
+#[tokio::test]
+async fn a_leader_snapshot_leaves_this_node_s_session_alone() {
+    let leader = harness().await;
+    leader
+        .engine
+        .set(
+            key("session"),
+            Lifecycle::Local,
+            serde_json::json!({
+                "is_advertising": true, "is_follower": false,
+                "session_id": Uuid::new_v4(), "discovered": [],
+            }),
+        )
+        .await
+        .unwrap();
+    let snapshot = leader.engine.get_snapshot().await;
+
+    let follower = harness().await;
+    follower
+        .engine
+        .set(
+            key("session"),
+            Lifecycle::Local,
+            serde_json::json!({
+                "is_advertising": false, "is_follower": true,
+                "session_id": null, "discovered": [],
+            }),
+        )
+        .await
+        .unwrap();
+
+    follower.engine.apply_state_snapshot(snapshot).await;
+
+    let session = follower.engine.get(key("session")).await.unwrap();
+    assert_eq!(session["is_follower"], true, "LOCAL session must survive a leader snapshot");
+    assert_eq!(session["is_advertising"], false);
+}
+
+// ── Rust accessor API ─────────────────────────────────────────────────────────
+//
+// The path-proxy API from CLAUDE.md, driven against a real engine. Accessor path
+// keys used to be camelCased while the wire uses serde's snake_case names, so every
+// field set through this API wrote a key the entity did not have, serde dropped it,
+// and the call reported success having changed nothing.
+
+fn data_root(engine: &EngineHandle) -> pult_schema::handle::ShowDataRoot<crate::handle::EngineDataHandle> {
+    pult_schema::handle::ShowDataRoot::new(crate::handle::EngineDataHandle(engine.clone()))
+}
+
+#[tokio::test]
+async fn a_field_set_through_the_rust_accessor_actually_lands() {
+    let h = harness().await;
+    let seq = a_sequence("Act 1", vec![]);
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    let data = data_root(&h.engine);
+    data.sequences().by_id(seq.id).name().set("Act 2".into()).await.unwrap();
+
+    assert_eq!(h.engine.get(entity_path("sequences", seq.id)).await.unwrap()["name"], "Act 2");
+}
+
+#[tokio::test]
+async fn a_multi_word_field_set_through_the_rust_accessor_actually_lands() {
+    let h = harness().await;
+    let seq = a_sequence("Act 1", vec![Uuid::new_v4(), Uuid::new_v4()]);
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    let data = data_root(&h.engine);
+    data.sequences().by_id(seq.id).active_cue_index().set(Some(1)).await.unwrap();
+
+    assert_eq!(
+        h.engine.get(entity_path("sequences", seq.id)).await.unwrap()["active_cue_index"],
+        1,
+        "a snake_case field must be reachable through its accessor",
+    );
+}
+
+#[tokio::test]
+async fn the_rust_accessor_reads_back_what_it_wrote() {
+    let h = harness().await;
+    let seq = a_sequence("Act 1", vec![]);
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    let data = data_root(&h.engine);
+    let accessor = data.sequences().by_id(seq.id);
+    accessor.name().set("Act 3".into()).await.unwrap();
+    assert_eq!(accessor.name().get().await.unwrap(), "Act 3");
+}
+
+#[tokio::test]
+async fn the_root_exposes_every_registered_table_including_fixture_types() {
+    use pult_schema::types::fixture::FixtureType;
+
+    let h = harness().await;
+    let ft = FixtureType {
+        id: Uuid::new_v4(),
+        name: "Source Four".into(),
+        manufacturer: "ETC".into(),
+        channel_count: 1,
+        parameters: vec![],
+    };
+    h.engine.set(create_path("fixture_types"), Lifecycle::Persisted, json(&ft)).await.unwrap();
+
+    let data = data_root(&h.engine);
+    // The root accessor's path key is the table name, so this reaches fixture_types
+    // rather than a "fixtureTypes" table that has never existed.
+    let all = data.fixture_types().all().await.unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].manufacturer, "ETC");
+
+    data.fixture_types().by_id(ft.id).name().set("Source Four 50deg".into()).await.unwrap();
+    assert_eq!(
+        h.engine.get(entity_path("fixture_types", ft.id)).await.unwrap()["name"],
+        "Source Four 50deg",
+    );
+}
+
+#[tokio::test]
+async fn the_root_reaches_the_show_singleton() {
+    let h = harness().await;
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&a_show())).await.unwrap();
+
+    let data = data_root(&h.engine);
+    data.show().name().set("Macbeth".into()).await.unwrap();
+
+    assert_eq!(h.engine.get(key("show")).await.unwrap()["name"], "Macbeth");
+}
+
+#[tokio::test]
+async fn accessor_path_keys_are_the_serde_field_names() {
+    use pult_schema::registry::EntityMeta;
+
+    // field_lifecycles() is what path_lifecycle and the engine both key on. If an
+    // accessor ever emits a different spelling, writes through it go nowhere.
+    for meta in EntityMeta::all_with_tables() {
+        for (field, _) in (meta.field_lifecycles)() {
+            assert_eq!(
+                *field,
+                field.to_lowercase().replace(' ', "_"),
+                "{}::{field} is not a snake_case serde name",
+                meta.entity_name,
+            );
+        }
+    }
+}

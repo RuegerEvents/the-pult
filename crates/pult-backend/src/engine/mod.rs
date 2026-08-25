@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use futures::stream::BoxStream;
@@ -7,13 +7,8 @@ use pult_schema::{
     events::operation::{NodeId, Operation, VectorClock},
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
-    types::{
-        cue::Cue,
-        fixture::Fixture,
-        sequence::Sequence,
-        session::SessionState,
-        show::Show,
-    },
+    registry::EntityMeta,
+    types::session::SessionState,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -21,89 +16,155 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::{
-    error::BackendError,
-    infra::{showfile::queries as db, sync::SyncHandle},
-};
+use crate::{error::BackendError, infra::sync::SyncHandle};
 
 // ── In-memory show state ──────────────────────────────────────────────────────
 
+/// The whole show, held as JSON keyed by entity table.
+///
+/// No entity type is named in this file. Every collection comes from the
+/// `EntityMeta` registry, so adding a `#[derive(PultSchema)]` type with a table
+/// makes it readable, writable, persisted, synced, and visible to the frontend
+/// with no change here.
+///
+/// Shape (identical to what `EntityMeta::load_all` produces and `save_all` reads):
+/// collections are objects keyed by entity id, singletons hold the entity or null.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ShowState {
+    #[serde(flatten)]
+    entities: serde_json::Map<String, serde_json::Value>,
+
+    /// Display order per collection, keyed by table name. `post_load_init` fills in
+    /// any collection that arrives without one.
     #[serde(default)]
-    pub show: Option<Show>,
-    #[serde(default)]
-    pub fixtures: HashMap<Uuid, Fixture>,
-    #[serde(default)]
-    pub sequences: HashMap<Uuid, Sequence>,
-    #[serde(default)]
-    pub cues: HashMap<Uuid, Cue>,
-    /// Derived ordering — not stored in DB, rebuilt by post_load_init().
-    #[serde(default)]
-    pub sequence_order: Vec<Uuid>,
-    /// LOCAL lifecycle: broadcast to frontends, not persisted or synced to peers.
-    /// Written only by SessionManager.
-    #[serde(default)]
+    order: BTreeMap<String, Vec<Uuid>>,
+
+    /// LOCAL lifecycle: broadcast to frontends, never persisted and never sent to
+    /// peers, so it is skipped by serde and preserved across snapshot application.
+    /// SessionManager is the only writer.
+    #[serde(skip)]
     pub session: SessionState,
 }
 
 impl ShowState {
-    /// Top-level collection keys broadcast to frontends.
-    /// Add a new entry here when adding a new entity collection to this struct.
-    const FRONTEND_PATHS: &'static [&'static str] = &["show", "fixtures", "sequences", "cues"];
+    /// Top-level keys broadcast to frontends: every registered table, plus session.
+    pub fn frontend_paths() -> Vec<String> {
+        let mut paths: Vec<String> =
+            EntityMeta::all_with_tables().iter().filter_map(|m| m.table_name.map(String::from)).collect();
+        paths.push("session".into());
+        paths
+    }
 
-    /// Fix up derived fields after bulk-loading state (e.g. from showfile or snapshot).
+    /// Fill in ordering for any collection that arrived without one, after a bulk
+    /// load from the showfile or a peer snapshot.
     pub fn post_load_init(&mut self) {
-        if self.sequence_order.is_empty() {
-            self.sequence_order = self.sequences.keys().copied().collect();
+        for meta in EntityMeta::all_with_tables() {
+            let Some(table) = meta.table_name else { continue };
+            if meta.is_singleton || self.order.contains_key(table) {
+                continue;
+            }
+            let ids = self
+                .entities
+                .get(table)
+                .and_then(|v| v.as_object())
+                .map(|m| m.keys().filter_map(|k| Uuid::parse_str(k).ok()).collect())
+                .unwrap_or_default();
+            self.order.insert(table.to_string(), ids);
         }
+    }
+
+    fn ids(&self, table: &str) -> &[Uuid] {
+        self.order.get(table).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Resolve one path segment to an entity id within `table`.
+    /// `Id` is taken as-is; `Index` is looked up in the collection's order.
+    fn resolve_id(&self, table: &str, seg: &PathSegment) -> Option<Uuid> {
+        match seg {
+            PathSegment::Id(id) => Some(*id),
+            PathSegment::Index(n) => self.ids(table).get(*n).copied(),
+            PathSegment::Key(_) => None,
+        }
+    }
+
+    fn entity(&self, table: &str, id: Uuid) -> Option<&serde_json::Value> {
+        self.entities.get(table)?.as_object()?.get(&id.to_string())
+    }
+
+    fn insert_entity(&mut self, table: &str, id: Uuid, value: serde_json::Value) {
+        let collection = self
+            .entities
+            .entry(table.to_string())
+            .or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if !collection.is_object() {
+            *collection = serde_json::Value::Object(Default::default());
+        }
+        let is_new = collection
+            .as_object_mut()
+            .map(|m| m.insert(id.to_string(), value).is_none())
+            .unwrap_or(false);
+        if is_new {
+            self.order.entry(table.to_string()).or_default().push(id);
+        }
+    }
+
+    fn remove_entity(&mut self, table: &str, id: Uuid) {
+        if let Some(collection) = self.entities.get_mut(table).and_then(|v| v.as_object_mut()) {
+            collection.remove(&id.to_string());
+        }
+        if let Some(order) = self.order.get_mut(table) {
+            order.retain(|i| *i != id);
+        }
+    }
+
+    fn singleton(&self, table: &str) -> Option<&serde_json::Value> {
+        self.entities.get(table).filter(|v| !v.is_null())
+    }
+
+    /// The whole collection as an array, in display order.
+    fn collection_array(&self, table: &str) -> serde_json::Value {
+        let values = self
+            .ids(table)
+            .iter()
+            .filter_map(|id| self.entity(table, *id))
+            .cloned()
+            .collect();
+        serde_json::Value::Array(values)
     }
 
     pub fn get_by_path(&self, path: &Path) -> Option<serde_json::Value> {
-        // Arm order matters: __create and __delete must be matched before the generic
-        // [collection, id, field] patch arm, or "__delete" is taken for a field name,
-        // dropped by serde as unknown, and the delete silently succeeds without deleting.
-        match path.as_slice() {
-            [PathSegment::Key(k)] if k == "show" => {
-                self.show.as_ref().and_then(|s| serde_json::to_value(s).ok())
+        let [PathSegment::Key(head), rest @ ..] = path.as_slice() else { return None };
+
+        // session is LOCAL and not a registered entity, so it is matched first.
+        if head == "session" {
+            return descend(&serde_json::to_value(&self.session).ok()?, rest);
+        }
+
+        let meta = EntityMeta::by_table(head)?;
+        if meta.is_singleton {
+            return descend(self.singleton(head)?, rest);
+        }
+        match rest {
+            [] => Some(self.collection_array(head)),
+            [seg, tail @ ..] => {
+                let id = self.resolve_id(head, seg)?;
+                descend(self.entity(head, id)?, tail)
             }
-            [PathSegment::Key(k)] if k == "fixtures" => {
-                let list: Vec<&Fixture> = self.fixtures.values().collect();
-                serde_json::to_value(list).ok()
-            }
-            [PathSegment::Key(k), PathSegment::Id(id)] if k == "fixtures" => {
-                self.fixtures.get(id).and_then(|f| serde_json::to_value(f).ok())
-            }
-            [PathSegment::Key(k)] if k == "sequences" => {
-                let ordered: Vec<&Sequence> = self
-                    .sequence_order
-                    .iter()
-                    .filter_map(|id| self.sequences.get(id))
-                    .collect();
-                serde_json::to_value(ordered).ok()
-            }
-            [PathSegment::Key(k), PathSegment::Index(n)] if k == "sequences" => {
-                self.sequence_order
-                    .get(*n)
-                    .and_then(|id| self.sequences.get(id))
-                    .and_then(|s| serde_json::to_value(s).ok())
-            }
-            [PathSegment::Key(k), PathSegment::Id(id)] if k == "sequences" => {
-                self.sequences.get(id).and_then(|s| serde_json::to_value(s).ok())
-            }
-            [PathSegment::Key(k)] if k == "cues" => {
-                let list: Vec<&Cue> = self.cues.values().collect();
-                serde_json::to_value(list).ok()
-            }
-            [PathSegment::Key(k), PathSegment::Id(id)] if k == "cues" => {
-                self.cues.get(id).and_then(|c| serde_json::to_value(c).ok())
-            }
-            [PathSegment::Key(k)] if k == "session" => {
-                serde_json::to_value(&self.session).ok()
-            }
-            _ => None,
         }
     }
+}
+
+/// Walk into a JSON value along the remaining path segments.
+fn descend(value: &serde_json::Value, rest: &[PathSegment]) -> Option<serde_json::Value> {
+    let mut current = value;
+    for seg in rest {
+        current = match seg {
+            PathSegment::Key(k) => current.get(k)?,
+            PathSegment::Index(n) => current.get(*n)?,
+            PathSegment::Id(id) => current.get(id.to_string())?,
+        };
+    }
+    Some(current.clone())
 }
 
 // ── EngineCommand ─────────────────────────────────────────────────────────────
@@ -351,6 +412,18 @@ impl ShowEngine {
         }
     }
 
+    /// Route a write to the right entity, generically.
+    ///
+    /// Recognised shapes, for any registered table:
+    ///   `[table]`                      replace a singleton
+    ///   `[table, field]`               patch a singleton field
+    ///   `[table, "__create"]`          add to a collection
+    ///   `[table, ref, "__delete"]`     remove from a collection
+    ///   `[table, ref]`                 replace one entity
+    ///   `[table, ref, command]`        run a registered command
+    ///   `[table, ref, field]`          patch one field
+    ///
+    /// `ref` is either an id or an index into the collection's display order.
     async fn apply_set(
         &mut self,
         path: Path,
@@ -360,192 +433,250 @@ impl ShowEngine {
         self.next_seq += 1;
         self.clock.increment(self.node_id);
 
-        // ── Path-based command dispatch ──
-        // Pattern: [Key(entity_collection), Id(id), Key(command_name)]
-        if let [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(cmd)] = path.as_slice() {
-            if let Some(handler) = self.commands.get(&(k.clone(), cmd.as_str())) {
-                return self.dispatch_command(*handler, k, *id, value).await;
-            }
+        let [PathSegment::Key(head), rest @ ..] = path.as_slice() else {
+            debug!("unhandled set path: {path:?}");
+            return Err(BackendError::PathNotFound(path));
+        };
+
+        // session is LOCAL, written only by SessionManager, and not a registered entity.
+        if head == "session" {
+            return match rest {
+                [] => {
+                    self.state.session = serde_json::from_value(value)?;
+                    Ok(())
+                }
+                _ => Err(BackendError::PathNotFound(path.clone())),
+            };
         }
 
-        // Arm order matters: __create and __delete must be matched before the generic
-        // [collection, id, field] patch arm, or "__delete" is taken for a field name,
-        // dropped by serde as unknown, and the delete silently succeeds without deleting.
-        match path.as_slice() {
-            [PathSegment::Key(k)] if k == "show" => {
-                let show: Show = serde_json::from_value(value)?;
-                if lifecycle == Lifecycle::Persisted {
-                    db::upsert(&self.pool, &show).await?;
+        let Some(meta) = EntityMeta::by_table(head) else {
+            debug!("unhandled set path: {path:?}");
+            return Err(BackendError::PathNotFound(path));
+        };
+        let table = head.clone();
+
+        if meta.is_singleton {
+            return self.set_singleton(meta, &table, rest, value, &path).await;
+        }
+
+        match rest {
+            [PathSegment::Key(action)] if action == "__create" => {
+                self.create_entity(meta, &table, value, &path).await
+            }
+            [seg, PathSegment::Key(action)] if action == "__delete" => {
+                let id = self
+                    .state
+                    .resolve_id(&table, seg)
+                    .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
+                self.delete_entity(meta, &table, id).await
+            }
+            [seg] => {
+                let id = self
+                    .state
+                    .resolve_id(&table, seg)
+                    .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
+                self.replace_entity(meta, &table, id, value, &path).await
+            }
+            [seg, PathSegment::Key(name)] => {
+                let id = self
+                    .state
+                    .resolve_id(&table, seg)
+                    .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
+                if let Some(handler) = self.commands.get(&(table.clone(), name.as_str())).copied() {
+                    return self.dispatch_command(handler, meta, &table, id, value).await;
                 }
-                self.state.show = Some(show);
-            }
-            [PathSegment::Key(k), PathSegment::Key(action)] if k == "fixtures" && action == "__create" => {
-                let fixture: Fixture = serde_json::from_value(value)?;
-                let id = fixture.id;
-                db::upsert(&self.pool, &fixture).await?;
-                self.state.fixtures.insert(id, fixture);
-            }
-            [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(action)]
-                if k == "fixtures" && action == "__delete" =>
-            {
-                db::delete::<Fixture>(&self.pool, *id).await?;
-                self.state.fixtures.remove(id);
-            }
-            [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(field)] if k == "fixtures" => {
-                if let Some(fixture) = self.state.fixtures.get_mut(id) {
-                    apply_field_patch(fixture, field, value.clone())?;
-                    if lifecycle == Lifecycle::Persisted {
-                        db::upsert(&self.pool, fixture as &Fixture).await?;
-                    }
-                } else {
-                    return Err(BackendError::PathNotFound(path));
-                }
-            }
-            [PathSegment::Key(k), PathSegment::Key(action)] if k == "sequences" && action == "__create" => {
-                let seq: Sequence = serde_json::from_value(value)?;
-                let id = seq.id;
-                db::upsert(&self.pool, &seq).await?;
-                self.state.sequences.insert(id, seq);
-                self.state.sequence_order.push(id);
-            }
-            [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(action)]
-                if k == "sequences" && action == "__delete" =>
-            {
-                db::delete::<Sequence>(&self.pool, *id).await?;
-                self.state.sequences.remove(id);
-                self.state.sequence_order.retain(|i| i != id);
-            }
-            [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(field)] if k == "sequences" => {
-                if let Some(seq) = self.state.sequences.get_mut(id) {
-                    apply_field_patch(seq, field, value.clone())?;
-                    if lifecycle == Lifecycle::Persisted {
-                        db::upsert(&self.pool, seq as &Sequence).await?;
-                    }
-                } else {
-                    return Err(BackendError::PathNotFound(path));
-                }
-            }
-            [PathSegment::Key(k), PathSegment::Key(action)] if k == "cues" && action == "__create" => {
-                let cue: Cue = serde_json::from_value(value)?;
-                let id = cue.id;
-                db::upsert(&self.pool, &cue).await?;
-                self.state.cues.insert(id, cue);
-            }
-            [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(action)]
-                if k == "cues" && action == "__delete" =>
-            {
-                db::delete::<Cue>(&self.pool, *id).await?;
-                self.state.cues.remove(id);
-            }
-            [PathSegment::Key(k), PathSegment::Id(id), PathSegment::Key(field)] if k == "cues" => {
-                if let Some(cue) = self.state.cues.get_mut(id) {
-                    apply_field_patch(cue, field, value.clone())?;
-                    if lifecycle == Lifecycle::Persisted {
-                        db::upsert(&self.pool, cue as &Cue).await?;
-                    }
-                } else {
-                    return Err(BackendError::PathNotFound(path));
-                }
-            }
-            // Session state is LOCAL — written only by SessionManager, never persisted or synced.
-            [PathSegment::Key(k)] if k == "session" => {
-                self.state.session = serde_json::from_value(value)?;
+                self.patch_field(meta, &table, id, name, value, lifecycle, &path).await
             }
             _ => {
                 debug!("unhandled set path: {path:?}");
-                return Err(BackendError::PathNotFound(path));
+                Err(BackendError::PathNotFound(path))
             }
+        }
+    }
+
+    async fn set_singleton(
+        &mut self,
+        meta: &'static EntityMeta,
+        table: &str,
+        rest: &[PathSegment],
+        value: serde_json::Value,
+        path: &Path,
+    ) -> Result<(), BackendError> {
+        let next = match rest {
+            [] => value,
+            [PathSegment::Key(field)] => {
+                let mut current = self
+                    .state
+                    .singleton(table)
+                    .cloned()
+                    .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
+                if meta.field_lifecycle(field).is_none() {
+                    return Err(BackendError::PathNotFound(path.clone()));
+                }
+                set_field(&mut current, field, value);
+                current
+            }
+            _ => return Err(BackendError::PathNotFound(path.clone())),
+        };
+
+        let next = validate(meta, next, path)?;
+        self.persist(meta, &next).await?;
+        self.state.entities.insert(table.to_string(), next);
+        Ok(())
+    }
+
+    async fn create_entity(
+        &mut self,
+        meta: &'static EntityMeta,
+        table: &str,
+        value: serde_json::Value,
+        path: &Path,
+    ) -> Result<(), BackendError> {
+        let entity = validate(meta, value, path)?;
+        let id = entity_id(meta, &entity, path)?;
+        self.persist(meta, &entity).await?;
+        self.state.insert_entity(table, id, entity);
+        Ok(())
+    }
+
+    async fn replace_entity(
+        &mut self,
+        meta: &'static EntityMeta,
+        table: &str,
+        id: Uuid,
+        value: serde_json::Value,
+        path: &Path,
+    ) -> Result<(), BackendError> {
+        if self.state.entity(table, id).is_none() {
+            return Err(BackendError::PathNotFound(path.clone()));
+        }
+        let entity = validate(meta, value, path)?;
+        self.persist(meta, &entity).await?;
+        self.state.insert_entity(table, id, entity);
+        Ok(())
+    }
+
+    async fn delete_entity(
+        &mut self,
+        meta: &'static EntityMeta,
+        table: &str,
+        id: Uuid,
+    ) -> Result<(), BackendError> {
+        if let Some(delete_one) = meta.delete_one {
+            delete_one(self.pool.as_ref().clone(), id).await?;
+        }
+        self.state.remove_entity(table, id);
+        Ok(())
+    }
+
+    /// Patch one field of one entity.
+    ///
+    /// Whether the write reaches SQLite is decided by the field's own lifecycle in the
+    /// schema, not by the caller's `lifecycle` argument. The argument is only a fallback
+    /// for names the schema does not know.
+    async fn patch_field(
+        &mut self,
+        meta: &'static EntityMeta,
+        table: &str,
+        id: Uuid,
+        field: &str,
+        value: serde_json::Value,
+        fallback: Lifecycle,
+        path: &Path,
+    ) -> Result<(), BackendError> {
+        let Some(field_lifecycle) = meta.field_lifecycle(field) else {
+            debug!("no field or command named {field} on {table}");
+            return Err(BackendError::PathNotFound(path.clone()));
+        };
+        let mut entity = self
+            .state
+            .entity(table, id)
+            .cloned()
+            .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
+
+        set_field(&mut entity, field, value);
+        let entity = validate(meta, entity, path)?;
+
+        let _ = fallback;
+        if field_lifecycle == Lifecycle::Persisted {
+            self.persist(meta, &entity).await?;
+        }
+        self.state.insert_entity(table, id, entity);
+        Ok(())
+    }
+
+    async fn persist(
+        &self,
+        meta: &'static EntityMeta,
+        entity: &serde_json::Value,
+    ) -> Result<(), BackendError> {
+        if let Some(upsert_one) = meta.upsert_one {
+            upsert_one(self.pool.as_ref().clone(), entity.clone()).await?;
         }
         Ok(())
     }
 
-    /// Dispatch a path-based command: look up entity by id, run handler, update state, broadcast.
+    /// Run a registered command against one entity, then store and broadcast the result.
+    ///
+    /// Commands are not written to SQLite. They move SYNCED playback state, and a
+    /// showfile write on every Go press is not something a console should do.
     async fn dispatch_command(
         &mut self,
         handler: CommandHandler,
-        entity_key: &str,
+        meta: &'static EntityMeta,
+        table: &str,
         id: Uuid,
         args: serde_json::Value,
     ) -> Result<(), BackendError> {
-        let entity_path = vec![
-            PathSegment::Key(entity_key.into()),
-            PathSegment::Id(id),
-        ];
-        let entity_json = self.state.get_by_path(&entity_path)
+        let entity_path = vec![PathSegment::Key(table.into()), PathSegment::Id(id)];
+        let entity = self
+            .state
+            .entity(table, id)
+            .cloned()
             .ok_or_else(|| BackendError::PathNotFound(entity_path.clone()))?;
 
-        let result_json = handler(entity_json, args).map_err(|e| BackendError::InvalidValue {
+        let result = handler(entity, args).map_err(|e| BackendError::InvalidValue {
             path: entity_path.clone(),
             reason: e.to_string(),
         })?;
+        let result = validate(meta, result, &entity_path)?;
 
-        // Apply result back to in-memory state
-        self.apply_entity_result(entity_key, id, result_json.clone())?;
-
-        // Broadcast full entity update
-        let _ = self.broadcast.0.send((entity_path, result_json));
+        self.state.insert_entity(table, id, result.clone());
+        let _ = self.broadcast.0.send((entity_path, result));
         Ok(())
     }
 
-    fn apply_entity_result(
-        &mut self,
-        entity_key: &str,
-        id: Uuid,
-        json: serde_json::Value,
-    ) -> Result<(), BackendError> {
-        match entity_key {
-            "sequences" => {
-                let seq: Sequence = serde_json::from_value(json)?;
-                self.state.sequences.insert(id, seq);
-            }
-            "fixtures" => {
-                let f: Fixture = serde_json::from_value(json)?;
-                self.state.fixtures.insert(id, f);
-            }
-            "cues" => {
-                let c: Cue = serde_json::from_value(json)?;
-                self.state.cues.insert(id, c);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// Legacy method-string dispatch for backward compat with existing WS Call messages.
+    /// Legacy method-string dispatch, kept for the `Call` message in the WS protocol.
+    ///
+    /// `"<table>.<command>"` with the entity id in `args` under `"<entity>Id"`, so
+    /// `"sequences.goNext"` takes `{ "sequenceId": "..." }`. Both halves come from the
+    /// registry, so this works for every entity and command without a list here.
     async fn handle_call_legacy(
         &mut self,
         method: &str,
         args: serde_json::Value,
     ) -> Result<serde_json::Value, BackendError> {
-        match method {
-            "sequences.goNext" => {
-                let seq_id: Uuid = serde_json::from_value(args["sequenceId"].clone())?;
-                let path = vec![
-                    PathSegment::Key("sequences".into()),
-                    PathSegment::Id(seq_id),
-                    PathSegment::Key("goNext".into()),
-                ];
-                self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await?;
-                if let Some(sync) = &self.sync {
-                    sync.broadcast_synced(path, args, self.clock.clone()).await;
-                }
-                Ok(serde_json::Value::Null)
-            }
-            "sequences.goToCue" => {
-                let seq_id: Uuid = serde_json::from_value(args["sequenceId"].clone())?;
-                let path = vec![
-                    PathSegment::Key("sequences".into()),
-                    PathSegment::Id(seq_id),
-                    PathSegment::Key("goToCue".into()),
-                ];
-                self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await?;
-                if let Some(sync) = &self.sync {
-                    sync.broadcast_synced(path, args, self.clock.clone()).await;
-                }
-                Ok(serde_json::Value::Null)
-            }
-            _ => Err(BackendError::PathNotFound(vec![PathSegment::Key(method.into())])),
+        let not_found = || BackendError::PathNotFound(vec![PathSegment::Key(method.into())]);
+
+        let (table, command) = method.split_once('.').ok_or_else(not_found)?;
+        let meta = EntityMeta::by_table(table).ok_or_else(not_found)?;
+        if !self.commands.contains_key(&(table.to_string(), command)) {
+            return Err(not_found());
         }
+
+        let id_arg = id_arg_name(meta.entity_name);
+        let id: Uuid = serde_json::from_value(args[&id_arg].clone())?;
+
+        let path = vec![
+            PathSegment::Key(table.into()),
+            PathSegment::Id(id),
+            PathSegment::Key(command.into()),
+        ];
+        self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await?;
+        if let Some(sync) = &self.sync {
+            sync.broadcast_synced(path, args, self.clock.clone()).await;
+        }
+        Ok(serde_json::Value::Null)
     }
 
     async fn apply_peer_operation(&mut self, op: Operation) {
@@ -564,7 +695,7 @@ impl ShowEngine {
     fn broadcast_after_set(&self, path: &Path, value: serde_json::Value) {
         let collection_key = match path.as_slice() {
             [PathSegment::Key(k), PathSegment::Key(a)] if a == "__create" => Some(k.as_str()),
-            [PathSegment::Key(k), PathSegment::Id(_), PathSegment::Key(a)] if a == "__delete" => Some(k.as_str()),
+            [PathSegment::Key(k), _, PathSegment::Key(a)] if a == "__delete" => Some(k.as_str()),
             _ => None,
         };
         if let Some(key) = collection_key {
@@ -581,7 +712,7 @@ impl ShowEngine {
     /// Driven by the EntityMeta registry — no entity types enumerated here.
     async fn load_from_showfile(&mut self) {
         let mut state_map = serde_json::Map::new();
-        for meta in inventory::iter::<pult_schema::registry::EntityMeta>() {
+        for meta in EntityMeta::all_with_tables() {
             let (Some(table), Some(load)) = (meta.table_name, meta.load_all) else { continue };
             match load(self.pool.as_ref().clone()).await {
                 Ok(val) => { state_map.insert(table.to_string(), val); }
@@ -604,11 +735,13 @@ impl ShowEngine {
     async fn apply_snapshot(&mut self, data: serde_json::Value) {
         if let Ok(mut state) = serde_json::from_value::<ShowState>(data) {
             state.post_load_init();
+            // session is LOCAL: this node's own session survives a leader snapshot.
+            state.session = std::mem::take(&mut self.state.session);
             self.state = state;
         }
         self.save_to_showfile().await;
-        for key in ShowState::FRONTEND_PATHS {
-            let path = vec![PathSegment::Key((*key).into())];
+        for key in ShowState::frontend_paths() {
+            let path = vec![PathSegment::Key(key)];
             if let Some(val) = self.state.get_by_path(&path) {
                 let _ = self.broadcast.0.send((path, val));
             }
@@ -619,7 +752,7 @@ impl ShowEngine {
     /// Driven by the EntityMeta registry — no entity types enumerated here.
     async fn save_to_showfile(&self) {
         let snapshot = serde_json::to_value(&self.state).unwrap_or_default();
-        for meta in inventory::iter::<pult_schema::registry::EntityMeta>() {
+        for meta in EntityMeta::all_with_tables() {
             if let Some(save) = meta.save_all {
                 if let Err(e) = save(self.pool.as_ref().clone(), snapshot.clone()).await {
                     warn!("[engine] save_to_showfile failed for {}: {e}", meta.entity_name);
@@ -629,18 +762,57 @@ impl ShowEngine {
     }
 }
 
-fn apply_field_patch<T: serde::Serialize + serde::de::DeserializeOwned>(
-    entity: &mut T,
-    field: &str,
+// ── JSON helpers ──────────────────────────────────────────────────────────────
+
+/// Set one field on an entity value, turning a non-object into an object first.
+fn set_field(entity: &mut serde_json::Value, field: &str, value: serde_json::Value) {
+    if !entity.is_object() {
+        *entity = serde_json::Value::Object(Default::default());
+    }
+    if let Some(map) = entity.as_object_mut() {
+        map.insert(field.to_owned(), value);
+    }
+}
+
+/// Round-trip a value through its concrete Rust type. This is where a bad write is
+/// caught: the engine holds JSON, but nothing enters the state without deserializing
+/// cleanly into the schema type first.
+fn validate(
+    meta: &'static EntityMeta,
     value: serde_json::Value,
-) -> Result<(), BackendError> {
-    let mut map = serde_json::to_value(&entity)?
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    map.insert(field.to_owned(), value);
-    *entity = serde_json::from_value(serde_json::Value::Object(map))?;
-    Ok(())
+    path: &Path,
+) -> Result<serde_json::Value, BackendError> {
+    (meta.validate)(value).map_err(|e| BackendError::InvalidValue {
+        path: path.clone(),
+        reason: e.to_string(),
+    })
+}
+
+/// The args key holding an entity id in a legacy Call: `Sequence` becomes `sequenceId`.
+fn id_arg_name(entity_name: &str) -> String {
+    let mut chars = entity_name.chars();
+    let first = chars.next().map(|c| c.to_ascii_lowercase()).unwrap_or_default();
+    format!("{first}{}Id", chars.as_str())
+}
+
+/// Read an entity's primary key out of its JSON.
+fn entity_id(
+    meta: &'static EntityMeta,
+    entity: &serde_json::Value,
+    path: &Path,
+) -> Result<Uuid, BackendError> {
+    let field = meta.primary_key.ok_or_else(|| BackendError::InvalidValue {
+        path: path.clone(),
+        reason: format!("{} has no primary key", meta.entity_name),
+    })?;
+    entity
+        .get(field)
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| BackendError::InvalidValue {
+            path: path.clone(),
+            reason: format!("missing or malformed {field}"),
+        })
 }
 
 #[cfg(test)]

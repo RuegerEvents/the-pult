@@ -18,6 +18,17 @@ pub type SaveAllFn = fn(SqlitePool, serde_json::Value) -> Pin<Box<dyn Future<Out
 ///   - singleton entities  → JSON null | entity object
 pub type LoadAllFn = fn(SqlitePool) -> Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>;
 
+/// Round-trip one entity through its concrete Rust type.
+/// Rejects values that are not valid for the type and fills in serde defaults,
+/// so the engine can hold entities as JSON without losing type checking.
+pub type ValidateFn = fn(serde_json::Value) -> anyhow::Result<serde_json::Value>;
+
+/// Write one entity to SQLite.
+pub type UpsertOneFn = fn(SqlitePool, serde_json::Value) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
+
+/// Delete one entity from SQLite by primary key.
+pub type DeleteOneFn = fn(SqlitePool, uuid::Uuid) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
+
 // ── EntityMeta ────────────────────────────────────────────────────────────────
 
 /// Metadata about a PultSchema entity, auto-submitted to inventory by #[derive(PultSchema)].
@@ -35,6 +46,35 @@ pub struct EntityMeta {
     /// Load all entities from SQLite into the JSON shape ShowState::Deserialize expects.
     /// None for entities without a table.
     pub load_all: Option<LoadAllFn>,
+    /// The primary key field name, if the entity has one.
+    pub primary_key: Option<&'static str>,
+    /// Validate and normalise one entity value against its Rust type.
+    pub validate: ValidateFn,
+    /// Write one entity to SQLite. None for entities without a table.
+    pub upsert_one: Option<UpsertOneFn>,
+    /// Delete one entity from SQLite. None for entities without a table.
+    pub delete_one: Option<DeleteOneFn>,
+}
+
+impl EntityMeta {
+    /// The registered entity whose table matches `table`.
+    pub fn by_table(table: &str) -> Option<&'static EntityMeta> {
+        inventory::iter::<EntityMeta>().find(|m| m.table_name == Some(table))
+    }
+
+    /// Every registered entity that has a table, in a stable order.
+    pub fn all_with_tables() -> Vec<&'static EntityMeta> {
+        let mut all: Vec<&'static EntityMeta> =
+            inventory::iter::<EntityMeta>().filter(|m| m.table_name.is_some()).collect();
+        all.sort_by_key(|m| m.entity_name);
+        all
+    }
+
+    /// The lifecycle of one of this entity's fields, or None if the name is not a field
+    /// (a registered command, for instance).
+    pub fn field_lifecycle(&self, field: &str) -> Option<Lifecycle> {
+        (self.field_lifecycles)().iter().find(|(n, _)| *n == field).map(|(_, lc)| *lc)
+    }
 }
 
 inventory::collect!(EntityMeta);
@@ -60,18 +100,11 @@ pub fn path_lifecycle(path: &Path) -> Lifecycle {
             Lifecycle::Persisted
         }
         [PathSegment::Key(table), PathSegment::Id(_), PathSegment::Key(field)] => {
-            for meta in inventory::iter::<EntityMeta>() {
-                if meta.table_name == Some(table.as_str()) {
-                    for (fname, lc) in (meta.field_lifecycles)() {
-                        if *fname == field.as_str() {
-                            return *lc;
-                        }
-                    }
-                    // Name not found among fields → it's a registered command → Synced
-                    return Lifecycle::Synced;
-                }
+            match EntityMeta::by_table(table) {
+                // Name not found among the fields → it is a registered command → Synced
+                Some(meta) => meta.field_lifecycle(field).unwrap_or(Lifecycle::Synced),
+                None => Lifecycle::Persisted,
             }
-            Lifecycle::Persisted
         }
         _ => Lifecycle::Persisted,
     }
