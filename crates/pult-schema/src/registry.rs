@@ -24,6 +24,8 @@ pub type LoadAllFn = fn(SqlitePool) -> Pin<Box<dyn Future<Output = anyhow::Resul
 pub struct EntityMeta {
     pub entity_name: &'static str,
     pub table_name: Option<&'static str>,
+    /// True for singleton entities (e.g. Show); false for collection entities (e.g. Sequence).
+    pub is_singleton: bool,
     /// Returns Some(create_table_sql) for PERSISTED entities, None otherwise.
     pub create_table_sql: fn() -> Option<String>,
     pub field_lifecycles: fn() -> &'static [(&'static str, Lifecycle)],

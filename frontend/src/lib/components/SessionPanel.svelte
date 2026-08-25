@@ -1,24 +1,20 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import type { PultWsClient } from '$lib/ws/client.js';
-	import type { Show } from '$lib/generated/index.js';
+	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
 
-	let { client }: { client: PultWsClient } = $props();
+	const client = getClientContext();
+	const data = getDataContext();
 
 	type DiscoveredSession = { session_id: string; show_id: string; show_name: string; sync_addr: string };
-	type SessionState = { is_advertising: boolean; is_follower: boolean; session_id: string | null; discovered: DiscoveredSession[] };
+	type SessionInfo = { is_advertising: boolean; is_follower: boolean; session_id: string | null; discovered: DiscoveredSession[] };
 
-	let session = $state<SessionState>({ is_advertising: false, is_follower: false, session_id: null, discovered: [] });
+	let session = $state<SessionInfo>({ is_advertising: false, is_follower: false, session_id: null, discovered: [] });
 	let joining = $state<string | null>(null);
 	let busy = $state(false);
 
-	function applyUpdate(val: unknown) {
-		if (val && typeof val === 'object') session = val as SessionState;
-	}
-
 	async function advertise() {
-		const show = (await client.get(['show'])) as Show | null;
+		const show = await data.show.get();
 		if (!show) { addToast('Initialize a show first before advertising.', 'warning'); return; }
 		busy = true;
 		try {
@@ -53,10 +49,11 @@
 	}
 
 	onMount(() => {
-		// Initial read + reactive subscription — no polling needed.
-		client.get(['session']).then(applyUpdate);
-		const unsub = client.subscribe('session', applyUpdate);
-		const unsubConnect = client.addConnectListener(() => client.get(['session']).then(applyUpdate));
+		// session is LOCAL state not in ShowState — subscribe via client directly
+		const unsub = client.subscribe('session', v => { if (v && typeof v === 'object') session = v as SessionInfo; });
+		const doFetch = () => client.get(['session']).then(v => { if (v && typeof v === 'object') session = v as SessionInfo; });
+		doFetch();
+		const unsubConnect = client.addConnectListener(doFetch);
 		return () => { unsub(); unsubConnect(); };
 	});
 </script>

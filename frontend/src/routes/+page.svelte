@@ -1,20 +1,16 @@
 <script lang="ts">
-	import { getContext } from 'svelte';
-	import type { PultWsClient } from '$lib/ws/client.js';
 	import ShowPanel from '$lib/components/ShowPanel.svelte';
 	import SequenceRunner from '$lib/components/SequenceRunner.svelte';
 	import SessionPanel from '$lib/components/SessionPanel.svelte';
-
-	const client = getContext<PultWsClient>('pult:client');
 </script>
 
 <div class="layout">
 	<aside class="sidebar">
-		<ShowPanel {client} />
-		<SessionPanel {client} />
+		<ShowPanel />
+		<SessionPanel />
 	</aside>
 	<main class="main">
-		<SequenceRunner {client} />
+		<SequenceRunner />
 	</main>
 </div>
 

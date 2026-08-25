@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import type { PultWsClient } from '$lib/ws/client.js';
+	import { getDataContext } from '$lib/ws/context.js';
 	import type { Sequence, Cue } from '$lib/generated/index.js';
 
-	let { client }: { client: PultWsClient } = $props();
+	const data = getDataContext();
 
 	let sequences = $state<Sequence[]>([]);
 	let cues = $state<Record<string, Cue>>({});
@@ -17,117 +17,83 @@
 	let editingCueId = $state<string | null>(null);
 	let editingCueName = $state('');
 
-	async function fetchAll() {
-		const [seqResult, cueResult] = await Promise.all([
-			client.get(['sequences']),
-			client.get(['cues'])
-		]);
-		if (Array.isArray(seqResult)) sequences = seqResult as Sequence[];
-		if (Array.isArray(cueResult)) {
-			const map: Record<string, Cue> = {};
-			for (const c of cueResult as Cue[]) map[c.id] = c;
-			cues = map;
-		}
-	}
-
 	async function createSequence() {
 		if (!newSeqName.trim()) return;
-		const id = crypto.randomUUID();
-		await client.set(['sequences', '__create'], {
-			id,
-			name: newSeqName.trim(),
-			cue_ids: [],
-			active_cue_index: null
-		});
+		await data.sequences.create({ id: crypto.randomUUID(), name: newSeqName.trim(), cue_ids: [], active_cue_index: null });
 		newSeqName = '';
 		creatingSeq = false;
-		await fetchAll();
 	}
 
 	async function addCue(seqId: string) {
 		if (!newCueName.trim()) return;
 		const seq = sequences.find((s) => s.id === seqId);
 		if (!seq) return;
-
 		const cueId = crypto.randomUUID();
-		const cueNumber = seq.cue_ids.length + 1;
-
-		// Create the cue
-		await client.set(['cues', '__create'], {
+		await data.cues.create({
 			id: cueId,
 			name: newCueName.trim(),
-			number: cueNumber,
+			number: seq.cue_ids.length + 1,
 			captures: [],
 			follow_mode: 'Manual',
 			fade_in_ms: 500,
 			fade_out_ms: 500,
 			is_active: false
 		});
-
-		// Add it to the sequence's cue_ids
-		await client.set(['sequences', seqId, 'cue_ids'], [...seq.cue_ids, cueId]);
-
+		await data.sequences.byId(seqId).cue_ids.set([...seq.cue_ids, cueId]);
 		newCueName = '';
 		addingCueTo = null;
-		await fetchAll();
 	}
 
 	async function goNext(seqId: string) {
-		await client.call('sequences.goNext', { sequenceId: seqId });
-		// Subscription will trigger fetchAll, but also eagerly update:
-		await fetchAll();
+		await data.sequences.byId(seqId).goNext();
 	}
 
 	async function goToCue(seqId: string, cueId: string) {
-		await client.call('sequences.goToCue', { sequenceId: seqId, cueId });
-		await fetchAll();
+		await data.sequences.byId(seqId).goToCue({ cueId });
 	}
 
 	async function resetSequence(seqId: string) {
-		const seq = sequences.find((s) => s.id === seqId);
-		if (!seq) return;
-		await client.set(['sequences', seqId, 'active_cue_index'], null);
-		await fetchAll();
+		await data.sequences.byId(seqId).active_cue_index.set(null);
 	}
 
 	async function deleteSequence(seqId: string) {
 		const seq = sequences.find((s) => s.id === seqId);
 		if (!seq) return;
 		for (const cueId of seq.cue_ids) {
-			await client.set(['cues', cueId, '__delete'], null);
+			await data.cues.byId(cueId).delete();
 		}
-		await client.set(['sequences', seqId, '__delete'], null);
+		await data.sequences.byId(seqId).delete();
 	}
 
 	async function saveSeqName(seqId: string) {
 		const trimmed = editingSeqName.trim();
-		if (trimmed) await client.set(['sequences', seqId, 'name'], trimmed);
+		if (trimmed) await data.sequences.byId(seqId).name.set(trimmed);
 		editingSeqId = null;
 	}
 
 	async function deleteCue(seqId: string, cueId: string) {
 		const seq = sequences.find((s) => s.id === seqId);
 		if (!seq) return;
-		await client.set(['sequences', seqId, 'cue_ids'], seq.cue_ids.filter((id) => id !== cueId));
-		await client.set(['cues', cueId, '__delete'], null);
+		await data.sequences.byId(seqId).cue_ids.set(seq.cue_ids.filter((id) => id !== cueId));
+		await data.cues.byId(cueId).delete();
 	}
 
 	async function saveCueName(cueId: string) {
 		const trimmed = editingCueName.trim();
-		if (trimmed) await client.set(['cues', cueId, 'name'], trimmed);
+		if (trimmed) await data.cues.byId(cueId).name.set(trimmed);
 		editingCueId = null;
 	}
 
 	onMount(() => {
-		fetchAll();
-		const unsubConnect = client.addConnectListener(() => fetchAll());
-		const unsub = client.subscribe('sequences/**', () => fetchAll());
-		const unsubCues = client.subscribe('cues/**', () => fetchAll());
-		return () => {
-			unsubConnect();
-			unsub();
-			unsubCues();
-		};
+		// subscribeDeep auto-fetches initial value, re-fetches full collection on any change,
+		// and handles reconnects — no manual fetchAll or addConnectListener needed
+		const unsubSeqs = data.sequences.subscribeDeep(seqs => { sequences = seqs; });
+		const unsubCues = data.cues.subscribeDeep(cueList => {
+			const map: Record<string, Cue> = {};
+			for (const c of cueList) map[c.id] = c;
+			cues = map;
+		});
+		return () => { unsubSeqs(); unsubCues(); };
 	});
 </script>
 

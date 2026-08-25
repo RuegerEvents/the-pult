@@ -39,14 +39,6 @@ CREATE TABLE IF NOT EXISTS show (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS show_meta (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
-INSERT OR IGNORE INTO show SELECT id, name, created_at FROM show_meta;
-
 CREATE TABLE IF NOT EXISTS oplog (
     seq         INTEGER NOT NULL,
     node_id     TEXT NOT NULL,

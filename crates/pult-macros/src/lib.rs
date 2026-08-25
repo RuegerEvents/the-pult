@@ -554,6 +554,7 @@ fn gen_pult_sql_row(meta: &StructMeta) -> syn::Result<TokenStream2> {
 fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
     let name = &meta.ident;
     let entity_name_str = meta.ident.to_string();
+    let is_singleton = meta.is_singleton;
     let has_persisted = meta.fields.iter().any(|f| f.lifecycle == Lifecycle::Persisted);
     let has_table = meta.table_name.is_some() && has_persisted;
 
@@ -647,6 +648,7 @@ fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
         ::inventory::submit!(::pult_schema::registry::EntityMeta {
             entity_name: #entity_name_str,
             table_name: #table_name_expr,
+            is_singleton: #is_singleton,
             create_table_sql: #create_fn_name,
             field_lifecycles: #lc_fn_name,
             save_all: #save_all_expr,
@@ -674,6 +676,20 @@ fn pult_commands_impl(impl_block: &mut syn::ItemImpl) -> syn::Result<TokenStream
             let is_command = method.attrs.iter().any(|a| a.path().is_ident("pult_command"));
             if !is_command {
                 continue;
+            }
+
+            // Extract args_ts from #[pult_command(args = "...")] before stripping the attr.
+            let mut args_ts_str = String::new();
+            if let Some(attr) = method.attrs.iter().find(|a| a.path().is_ident("pult_command")) {
+                let _ = attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("args") {
+                        let lit: syn::LitStr = meta.value()?.parse()?;
+                        args_ts_str = lit.value();
+                        Ok(())
+                    } else {
+                        Err(meta.error("unknown pult_command attribute; expected `args = \"...\"`"))
+                    }
+                });
             }
 
             method.attrs.retain(|a| !a.path().is_ident("pult_command"));
@@ -713,6 +729,7 @@ fn pult_commands_impl(impl_block: &mut syn::ItemImpl) -> syn::Result<TokenStream
                     entity_table: #table_fn_name,
                     command_name: #cmd_name_str,
                     is_public: true,
+                    args_ts: #args_ts_str,
                     handler: #handler_fn_name,
                 });
             });

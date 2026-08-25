@@ -26,7 +26,7 @@ impl Sequence {
     }
 
     /// Jump to the cue with the given ID. Args: { "cueId": "<uuid>" }
-    #[pult_command]
+    #[pult_command(args = "{ cueId: string }")]
     pub fn go_to_cue(
         &mut self,
         args: serde_json::Value,

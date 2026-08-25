@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { onMount, setContext } from 'svelte';
+	import { onMount } from 'svelte';
 	import { PultWsClient } from '$lib/ws/client.js';
-	import { createDataProxy } from '$lib/ws/proxy.js';
+	import { createRootProxy } from '$lib/ws/data.js';
+	import { setClientContext, setDataContext } from '$lib/ws/context.js';
 	import ConnectionStatus from '$lib/components/ConnectionStatus.svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
 	import { addToast } from '$lib/toasts.js';
@@ -13,10 +14,10 @@
 		? (new URLSearchParams(window.location.search).get('port') ?? '7700')
 		: '7700';
 	const client = new PultWsClient(`ws://localhost:${wsPort}/ws`);
-	const data = createDataProxy(client);
+	const data = createRootProxy(client);
 
-	setContext('pult:client', client);
-	setContext('pult:data', data);
+	setClientContext(client);
+	setDataContext(data);
 
 	let connected = $state(false);
 

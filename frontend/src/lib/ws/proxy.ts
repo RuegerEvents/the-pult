@@ -1,26 +1,39 @@
 import type { PultWsClient } from './client.js';
 
+// ── Subscribe options ─────────────────────────────────────────────────────────
+
+export type SubscribeOptions = {
+	/** Deliver the current value immediately on subscribe (default: true). */
+	initial?: boolean;
+};
+
 // ── PathProxy types ───────────────────────────────────────────────────────────
 
 type LeafProxy<T> = {
 	set(value: T): Promise<void>;
 	get(): Promise<T>;
-	subscribe(cb: (value: T) => void): () => void;
+	subscribe(cb: (value: T) => void, opts?: SubscribeOptions): () => void;
 };
 
+// Navigation keys come from NonNullable<T> so that nullable object types (e.g. Show | null)
+// still expose their fields for path navigation.
 type ObjectProxy<T> = LeafProxy<T> & {
-	readonly [K in keyof T]: PathProxy<T[K]>;
+	readonly [K in keyof NonNullable<T>]: PathProxy<NonNullable<T>[K]>;
 };
 
 type ArrayProxy<E> = LeafProxy<E[]> & {
 	[n: number]: PathProxy<E>;
 	nth(n: number): PathProxy<E>;
 	byId(id: string): PathProxy<E>;
+	/** Subscribe to any change at or under this collection; re-fetches and delivers the full array. */
+	subscribeDeep(cb: (value: E[]) => void, opts?: SubscribeOptions): () => void;
 };
 
-export type PathProxy<T> = T extends (infer E)[]
+// Non-distributive conditional: [T] prevents union splitting so `number | null` → LeafProxy.
+// NonNullable<T> for the branch checks so nullable object types remain navigable.
+export type PathProxy<T> = [NonNullable<T>] extends [(infer E)[]]
 	? ArrayProxy<E>
-	: T extends object
+	: [NonNullable<T>] extends [object]
 		? ObjectProxy<T>
 		: LeafProxy<T>;
 
@@ -30,18 +43,37 @@ export function createDataProxy<T>(
 	client: PultWsClient,
 	path: (string | number)[] = []
 ): PathProxy<T> {
-	return new Proxy({} as PathProxy<T>, {
+	// Function target so the apply trap fires when the proxy is called directly.
+	// This makes every nested path callable: proxy.goNext() sets the path with empty args,
+	// proxy.goToCue({ cueId }) sets the path with the provided args.
+	const target = () => {};
+	return new Proxy(target as unknown as PathProxy<T>, {
 		get(_target, prop) {
 			if (prop === 'set') {
-				return (value: T) => client.set(path, value);
+				return (value: unknown) => client.set(path, value);
 			}
 			if (prop === 'get') {
-				return () => client.get(path) as Promise<T>;
+				return () => client.get(path);
 			}
 			if (prop === 'subscribe') {
-				return (cb: (value: T) => void) => {
-					const pattern = path.join('/');
-					return client.subscribe(pattern, cb as (value: unknown) => void);
+				return (cb: (value: unknown) => void, opts?: SubscribeOptions) => {
+					const initial = opts?.initial !== false;
+					const doFetch = () => client.get(path).then(v => cb(v)).catch(() => {});
+					if (initial) doFetch();
+					const unsubData = client.subscribe(path.join('/'), cb);
+					const unsubConnect = client.addConnectListener(doFetch);
+					return () => { unsubData(); unsubConnect(); };
+				};
+			}
+			if (prop === 'subscribeDeep') {
+				return (cb: (value: unknown) => void, opts?: SubscribeOptions) => {
+					const initial = opts?.initial !== false;
+					const doFetch = () => client.get(path).then(v => cb(v)).catch(() => {});
+					if (initial) doFetch();
+					const pattern = [...path, '**'].join('/');
+					const unsubData = client.subscribe(pattern, () => doFetch());
+					const unsubConnect = client.addConnectListener(doFetch);
+					return () => { unsubData(); unsubConnect(); };
 				};
 			}
 			if (prop === 'nth') {
@@ -50,14 +82,22 @@ export function createDataProxy<T>(
 			if (prop === 'byId') {
 				return (id: string) => createDataProxy(client, [...path, id]);
 			}
+			if (prop === 'delete') {
+				return () => client.set([...path, '__delete'], null);
+			}
+			if (prop === 'create') {
+				return (data: unknown) => client.set([...path, '__create'], data);
+			}
 			if (typeof prop === 'symbol') return undefined;
-			// Numeric index access: proxy[5]
 			const num = Number(prop);
 			if (!Number.isNaN(num)) {
 				return createDataProxy(client, [...path, num]);
 			}
-			// String key access: proxy.name
 			return createDataProxy(client, [...path, prop as string]);
+		},
+		apply(_target, _thisArg, args) {
+			// Proxy called as a function → treat as a command: set this path with provided args.
+			return client.set(path, args[0] ?? {});
 		},
 	});
 }
@@ -66,16 +106,9 @@ export function createDataProxy<T>(
 
 import { readable, type Readable } from 'svelte/store';
 
-/**
- * Creates a Svelte readable store that fetches the initial value and subscribes
- * to live updates for the given path proxy.
- */
-export function proxyStore<T>(proxy: PathProxy<T>, initial: T): Readable<T> {
-	return readable<T>(initial, (set) => {
-		// Fetch initial snapshot
-		proxy.get().then((v) => set(v as T)).catch(() => {});
-		// Subscribe to updates
-		const unsub = proxy.subscribe((v) => set(v as T));
-		return unsub;
+/** Creates a Svelte readable store backed by a path proxy. Auto-fetches initial value. */
+export function proxyStore<T>(proxy: PathProxy<T>): Readable<T | null> {
+	return readable<T | null>(null, (set) => {
+		return proxy.subscribe((v) => set(v as T));
 	});
 }

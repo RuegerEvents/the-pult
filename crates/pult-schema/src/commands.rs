@@ -8,6 +8,9 @@ pub struct CommandRegistration {
     /// camelCase path key used in Set paths: ["sequences", id, "goNext"].
     pub command_name: &'static str,
     pub is_public: bool,
+    /// TypeScript argument type literal for codegen (empty string = no args → `(): Promise<void>`).
+    /// Example: `"{ cueId: string }"` → `(args: { cueId: string }): Promise<void>`.
+    pub args_ts: &'static str,
     pub handler: fn(serde_json::Value, serde_json::Value) -> anyhow::Result<serde_json::Value>,
 }
 

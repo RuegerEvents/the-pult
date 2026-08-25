@@ -1,56 +1,41 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import type { PultWsClient } from '$lib/ws/client.js';
+	import { getDataContext } from '$lib/ws/context.js';
 	import type { Show } from '$lib/generated/index.js';
 
-	let { client }: { client: PultWsClient } = $props();
+	const data = getDataContext();
 
 	let show = $state<Show | null>(null);
 	let editingName = $state(false);
 	let draftName = $state('');
 	let saving = $state(false);
 
-	async function fetchShow() {
-		const v = await client.get(['show']);
-		if (v && typeof v === 'object' && !Array.isArray(v)) {
-			show = v as Show;
-		}
-	}
-
 	async function initShow() {
-		const id = crypto.randomUUID();
-		const now = new Date().toISOString();
-		await client.set(['show'], {
-			id,
+		await data.show.set({
+			id: crypto.randomUUID(),
 			name: 'My Show',
-			created_at: now,
+			created_at: new Date().toISOString(),
 			is_running: false,
 			active_sequence: null
 		});
-		await fetchShow();
 	}
 
 	async function saveName() {
 		if (!show || !draftName.trim()) return;
 		saving = true;
-		await client.set(['show'], { ...show, name: draftName.trim() });
+		await data.show.set({ ...show, name: draftName.trim() });
 		editingName = false;
 		saving = false;
 	}
 
 	async function toggleRunning() {
 		if (!show) return;
-		await client.set(['show'], { ...show, is_running: !show.is_running });
+		await data.show.set({ ...show, is_running: !show.is_running });
 	}
 
 	onMount(() => {
-		fetchShow();
-		const unsubConnect = client.addConnectListener(() => fetchShow());
-		const unsub = client.subscribe('show', () => fetchShow());
-		return () => {
-			unsubConnect();
-			unsub();
-		};
+		// subscribe auto-fetches the current value and re-fetches on reconnect
+		return data.show.subscribe(v => { show = v as Show | null; });
 	});
 </script>
 
