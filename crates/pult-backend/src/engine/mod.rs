@@ -16,7 +16,11 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::{error::BackendError, infra::sync::SyncHandle};
+use crate::{
+    error::BackendError,
+    infra::sync::SyncHandle,
+    model::playback::{Playback, PlaybackEffect, ShowView, TICK},
+};
 
 // ── In-memory show state ──────────────────────────────────────────────────────
 
@@ -330,6 +334,11 @@ pub struct ShowEngine {
     pool: Arc<SqlitePool>,
     sync: Option<SyncHandle>,
     commands: CommandTable,
+    playback: Playback,
+    /// Bumped by anything that changes the show, so an idle playback can skip the tick
+    /// instead of deserializing the whole state 40 times a second for nothing.
+    state_version: u64,
+    playback_seen: u64,
 }
 
 impl ShowEngine {
@@ -360,16 +369,31 @@ impl ShowEngine {
             pool,
             sync,
             commands: build_command_table(),
+            playback: Playback::default(),
+            state_version: 0,
+            playback_seen: 0,
         };
         (engine, broadcast)
     }
 
     pub async fn run(mut self) {
-        while let Some(cmd) = self.rx.recv().await {
+        let mut ticker = tokio::time::interval(TICK);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            let cmd = tokio::select! {
+                cmd = self.rx.recv() => cmd,
+                _ = ticker.tick() => {
+                    self.playback_tick().await;
+                    continue;
+                }
+            };
+            let Some(cmd) = cmd else { break };
             match cmd {
                 EngineCommand::Stop => break,
                 EngineCommand::LoadFromShowfile => {
                     self.load_from_showfile().await;
+                    self.state_version += 1;
                 }
                 EngineCommand::Get { path, reply } => {
                     let result = self
@@ -381,6 +405,7 @@ impl ShowEngine {
                 EngineCommand::Set { path, value, lifecycle, reply } => {
                     let result = self.apply_set(path.clone(), value.clone(), lifecycle).await;
                     if result.is_ok() {
+                        self.state_version += 1;
                         self.broadcast_after_set(&path, value.clone());
                         if lifecycle != Lifecycle::Local {
                             if let Some(sync) = &self.sync {
@@ -396,10 +421,12 @@ impl ShowEngine {
                 }
                 EngineCommand::Call { method, args, reply } => {
                     let result = self.handle_call_legacy(&method, args).await;
+                    self.state_version += 1;
                     let _ = reply.send(result);
                 }
                 EngineCommand::ApplyPeerOperation(op) => {
                     self.apply_peer_operation(op).await;
+                    self.state_version += 1;
                 }
                 EngineCommand::GetSnapshot { reply } => {
                     let snapshot = self.build_snapshot();
@@ -407,8 +434,81 @@ impl ShowEngine {
                 }
                 EngineCommand::ApplyStateSnapshot(snapshot) => {
                     self.apply_snapshot(snapshot).await;
+                    self.state_version += 1;
                 }
             }
+        }
+    }
+
+    // ── Playback ──────────────────────────────────────────────────────────────
+
+    /// Advance cue playback one tick and apply what it asks for.
+    ///
+    /// Effects land with LOCAL lifecycle. Live values and active-cue flags are derived
+    /// from cue state, which is already replicated, so every node computes the same
+    /// output for itself rather than each fanning its copy out to all the others.
+    async fn playback_tick(&mut self) {
+        if !self.playback.has_work() && self.state_version == self.playback_seen {
+            return;
+        }
+        self.playback_seen = self.state_version;
+
+        let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
+        let cues: Vec<pult_schema::types::cue::Cue> = self.read_collection("cues");
+        let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
+
+        let effects = {
+            let view = ShowView::new(&sequences, &cues, &fixtures);
+            self.playback.tick(tokio::time::Instant::now().into_std(), &view)
+        };
+        if effects.is_empty() {
+            return;
+        }
+
+        // A follower takes its cue positions from the leader, so only the leader
+        // fires follow cues. Both ends still run their own fades.
+        let is_follower = self.state.session.is_follower;
+
+        for effect in effects {
+            match effect {
+                PlaybackEffect::SetLiveValues { fixture_id, values } => {
+                    let path = entity_field_path("fixtures", fixture_id, "live_values");
+                    self.apply_local(path, serde_json::to_value(values).unwrap_or_default()).await;
+                }
+                PlaybackEffect::SetCueActive { cue_id, is_active } => {
+                    let path = entity_field_path("cues", cue_id, "is_active");
+                    self.apply_local(path, serde_json::Value::Bool(is_active)).await;
+                }
+                PlaybackEffect::GoNext { sequence_id } => {
+                    if is_follower {
+                        continue;
+                    }
+                    let path = entity_field_path("sequences", sequence_id, "goNext");
+                    let args = serde_json::json!({});
+                    if self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await.is_ok() {
+                        self.state_version += 1;
+                        if let Some(sync) = &self.sync {
+                            sync.broadcast_synced(path, args, self.clock.clone()).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Read one collection out of the state as typed entities.
+    fn read_collection<T: serde::de::DeserializeOwned>(&self, table: &str) -> Vec<T> {
+        self.state
+            .get_by_path(&vec![PathSegment::Key(table.into())])
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
+    }
+
+    /// Apply a write and tell the frontends, without sending it to peers.
+    async fn apply_local(&mut self, path: Path, value: serde_json::Value) {
+        match self.apply_set(path.clone(), value.clone(), Lifecycle::Local).await {
+            Ok(()) => self.broadcast_after_set(&path, value),
+            Err(e) => debug!("[playback] {path:?}: {e}"),
         }
     }
 
@@ -763,6 +863,15 @@ impl ShowEngine {
 }
 
 // ── JSON helpers ──────────────────────────────────────────────────────────────
+
+/// `[table, id, field]`.
+fn entity_field_path(table: &str, id: Uuid, field: &str) -> Path {
+    vec![
+        PathSegment::Key(table.into()),
+        PathSegment::Id(id),
+        PathSegment::Key(field.into()),
+    ]
+}
 
 /// Set one field on an entity value, turning a non-object into an object first.
 fn set_field(entity: &mut serde_json::Value, field: &str, value: serde_json::Value) {

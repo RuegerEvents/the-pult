@@ -32,3 +32,8 @@ hostname = "0.4"
 clap = { workspace = true }
 inventory = { workspace = true }
 paste = { workspace = true }
+
+[dev-dependencies]
+# start_paused for the playback tests: virtual time, so a four-second fade
+# finishes in microseconds.
+tokio = { workspace = true, features = ["test-util"] }

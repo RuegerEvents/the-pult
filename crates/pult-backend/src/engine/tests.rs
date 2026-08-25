@@ -856,3 +856,196 @@ async fn accessor_path_keys_are_the_serde_field_names() {
         }
     }
 }
+
+// ── Playback through the engine ───────────────────────────────────────────────
+//
+// These run on a paused clock, so tokio advances virtual time to the next timer and
+// a four-second fade finishes in microseconds.
+
+use pult_schema::types::{
+    cue::ParameterCapture,
+    fixture::{ParameterKind, ParameterValue},
+};
+
+fn an_intensity_cue(fixture_id: Uuid, level: f32, fade_in_ms: u32) -> Cue {
+    let mut cue = a_cue("Up", 1.0);
+    cue.fade_in_ms = fade_in_ms;
+    cue.captures = vec![ParameterCapture {
+        fixture_id,
+        parameter_kind: ParameterKind::Intensity,
+        value: ParameterValue::Float(level),
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        delay_in_ms: 0,
+    }];
+    cue
+}
+
+async fn intensity_of(h: &Harness, fixture_id: Uuid) -> f32 {
+    let fixture = h.engine.get(entity_path("fixtures", fixture_id)).await.unwrap();
+    fixture["live_values"]["Intensity"]["value"].as_f64().unwrap_or(f64::NAN) as f32
+}
+
+#[tokio::test]
+async fn taking_a_cue_fades_the_fixture_up() {
+    let h = harness().await;
+    let fixture = a_fixture("Spot L", 1);
+    let cue = an_intensity_cue(fixture.id, 1.0, 4000);
+    let seq = a_sequence("Act 1", vec![cue.id]);
+
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    // Setup is done, so the clock can go virtual: tokio now jumps to the next
+    // timer and a multi-second fade finishes in microseconds.
+    tokio::time::pause();
+
+    h.engine
+        .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    let midway = intensity_of(&h, fixture.id).await;
+    assert!(midway > 0.1 && midway < 0.9, "expected a partial level midway, got {midway}");
+
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    assert_eq!(intensity_of(&h, fixture.id).await, 1.0);
+}
+
+#[tokio::test]
+async fn the_cue_being_played_is_marked_active() {
+    let h = harness().await;
+    let fixture = a_fixture("Spot L", 1);
+    let cue = an_intensity_cue(fixture.id, 1.0, 0);
+    let seq = a_sequence("Act 1", vec![cue.id]);
+
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    // Setup is done, so the clock can go virtual: tokio now jumps to the next
+    // timer and a multi-second fade finishes in microseconds.
+    tokio::time::pause();
+
+    assert_eq!(h.engine.get(entity_path("cues", cue.id)).await.unwrap()["is_active"], false);
+
+    h.engine
+        .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    assert_eq!(h.engine.get(entity_path("cues", cue.id)).await.unwrap()["is_active"], true);
+}
+
+#[tokio::test]
+async fn a_follow_cue_advances_the_sequence_on_its_own() {
+    let h = harness().await;
+    let fixture = a_fixture("Spot L", 1);
+    let mut first = an_intensity_cue(fixture.id, 1.0, 0);
+    first.follow_mode = FollowMode::FollowAfter { delay_ms: 2000 };
+    let second = an_intensity_cue(fixture.id, 0.0, 0);
+    let seq = a_sequence("Act 1", vec![first.id, second.id]);
+
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&first)).await.unwrap();
+    h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&second)).await.unwrap();
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    // Setup is done, so the clock can go virtual: tokio now jumps to the next
+    // timer and a multi-second fade finishes in microseconds.
+    tokio::time::pause();
+
+    h.engine
+        .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(h.engine.get(entity_path("sequences", seq.id)).await.unwrap()["active_cue_index"], 0);
+
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    assert_eq!(
+        h.engine.get(entity_path("sequences", seq.id)).await.unwrap()["active_cue_index"],
+        1,
+        "the follow cue should have taken itself",
+    );
+    assert_eq!(intensity_of(&h, fixture.id).await, 0.0);
+}
+
+#[tokio::test]
+async fn playback_output_is_broadcast_to_frontends() {
+    let h = harness().await;
+    let fixture = a_fixture("Spot L", 1);
+    let cue = an_intensity_cue(fixture.id, 1.0, 0);
+    let seq = a_sequence("Act 1", vec![cue.id]);
+
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    // Setup is done, so the clock can go virtual: tokio now jumps to the next
+    // timer and a multi-second fade finishes in microseconds.
+    tokio::time::pause();
+
+    let mut updates = h
+        .engine
+        .subscribe_pattern(PathPattern::new(&format!("fixtures/{}/live_values", fixture.id)))
+        .await;
+
+    h.engine
+        .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+
+    let value = updates.next().await.expect("expected a live-values broadcast");
+    assert_eq!(value["Intensity"]["value"], 1.0);
+}
+
+#[tokio::test]
+async fn playback_output_is_never_written_to_the_showfile() {
+    let mut h = harness().await;
+    let fixture = a_fixture("Spot L", 1);
+    let cue = an_intensity_cue(fixture.id, 1.0, 0);
+    let seq = a_sequence("Act 1", vec![cue.id]);
+
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+    // Setup is done, so the clock can go virtual: tokio now jumps to the next
+    // timer and a multi-second fade finishes in microseconds.
+    tokio::time::pause();
+
+    h.engine
+        .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(intensity_of(&h, fixture.id).await, 1.0);
+
+    tokio::time::resume();
+    h.reload().await;
+    let after = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
+    assert!(
+        after["live_values"].as_object().is_none_or(|m| m.is_empty()),
+        "live values are output, not show data",
+    );
+}
+
+#[tokio::test]
+async fn an_idle_show_does_no_playback_work() {
+    let h = harness().await;
+    // Setup is done, so the clock can go virtual: tokio now jumps to the next
+    // timer and a multi-second fade finishes in microseconds.
+    tokio::time::pause();
+
+    let mut updates = h.engine.subscribe_pattern(PathPattern::new("**")).await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+    assert!(
+        futures::poll!(updates.next()).is_pending(),
+        "an idle engine must not broadcast anything on its own",
+    );
+}
