@@ -1049,3 +1049,67 @@ async fn an_idle_show_does_no_playback_work() {
         "an idle engine must not broadcast anything on its own",
     );
 }
+
+// ── Output ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn playback_hands_the_patch_to_the_output_plugins() {
+    use crate::infra::connectors::{OutputCommand, OutputHandle};
+
+    let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
+    let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
+    let (tx, mut output_rx) = tokio::sync::mpsc::channel(8);
+    engine.set_output(OutputHandle(tx));
+    tokio::spawn(engine.run());
+
+    let fixture = a_fixture("Spot L", 1);
+    let cue = an_intensity_cue(fixture.id, 1.0, 0);
+    let seq = a_sequence("Act 1", vec![cue.id]);
+    handle.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    handle.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+    handle.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    handle
+        .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+
+    // Patching the fixture pushes too, so wait for the push that carries a level.
+    let found = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(cmd) = output_rx.recv().await {
+            let OutputCommand::Patch { fixtures, changed, .. } = cmd else { continue };
+            if changed.contains(&fixture.id) {
+                return fixtures;
+            }
+        }
+        panic!("output channel closed");
+    })
+    .await
+    .expect("expected playback output to reach the plugins within two seconds");
+
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].live_values.get("Intensity"),
+        Some(&ParameterValue::Float(1.0)),
+        "output must see the level playback just set",
+    );
+}
+
+#[tokio::test]
+async fn an_idle_show_sends_nothing_to_output() {
+    use crate::infra::connectors::OutputHandle;
+
+    let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
+    let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
+    let (tx, mut output_rx) = tokio::sync::mpsc::channel(8);
+    engine.set_output(OutputHandle(tx));
+    tokio::spawn(engine.run());
+
+    let fixture = a_fixture("Spot L", 1);
+    handle.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    // Drain the push caused by patching the fixture.
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(200), output_rx.recv()).await;
+
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), output_rx.recv()).await;
+    assert!(quiet.is_err(), "a show with nothing running must not push output every tick");
+}

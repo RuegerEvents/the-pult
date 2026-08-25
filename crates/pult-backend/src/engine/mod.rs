@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     error::BackendError,
-    infra::sync::SyncHandle,
+    infra::{connectors::OutputHandle, sync::SyncHandle},
     model::playback::{Playback, PlaybackEffect, ShowView, TICK},
 };
 
@@ -335,6 +335,7 @@ pub struct ShowEngine {
     sync: Option<SyncHandle>,
     commands: CommandTable,
     playback: Playback,
+    output: Option<OutputHandle>,
     /// Bumped by anything that changes the show, so an idle playback can skip the tick
     /// instead of deserializing the whole state 40 times a second for nothing.
     state_version: u64,
@@ -370,10 +371,16 @@ impl ShowEngine {
             sync,
             commands: build_command_table(),
             playback: Playback::default(),
+            output: None,
             state_version: 0,
             playback_seen: 0,
         };
         (engine, broadcast)
+    }
+
+    /// Attach an output plugin manager. Call before `run`.
+    pub fn set_output(&mut self, output: OutputHandle) {
+        self.output = Some(output);
     }
 
     pub async fn run(mut self) {
@@ -461,19 +468,18 @@ impl ShowEngine {
             let view = ShowView::new(&sequences, &cues, &fixtures);
             self.playback.tick(tokio::time::Instant::now().into_std(), &view)
         };
-        if effects.is_empty() {
-            return;
-        }
 
         // A follower takes its cue positions from the leader, so only the leader
         // fires follow cues. Both ends still run their own fades.
         let is_follower = self.state.session.is_follower;
+        let mut moved: Vec<Uuid> = Vec::new();
 
         for effect in effects {
             match effect {
                 PlaybackEffect::SetLiveValues { fixture_id, values } => {
                     let path = entity_field_path("fixtures", fixture_id, "live_values");
                     self.apply_local(path, serde_json::to_value(values).unwrap_or_default()).await;
+                    moved.push(fixture_id);
                 }
                 PlaybackEffect::SetCueActive { cue_id, is_active } => {
                     let path = entity_field_path("cues", cue_id, "is_active");
@@ -494,6 +500,23 @@ impl ShowEngine {
                 }
             }
         }
+
+        self.push_output(moved).await;
+    }
+
+    /// Hand the current patch to the output plugins.
+    ///
+    /// Sent on every tick that did any work, including a patch edit that moved no
+    /// light, because a re-addressed fixture changes the wire without changing a
+    /// single level. Plugins decide for themselves what is worth transmitting.
+    async fn push_output(&mut self, moved: Vec<Uuid>) {
+        let Some(output) = &self.output else { return };
+        let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
+        if fixtures.is_empty() {
+            return;
+        }
+        let fixture_types = self.read_collection("fixture_types");
+        output.push(fixtures, fixture_types, moved);
     }
 
     /// Read one collection out of the state as typed entities.

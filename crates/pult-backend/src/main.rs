@@ -15,13 +15,14 @@ use clap::Parser;
 use pult_schema::events::operation::NodeId;
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use crate::{
     api::ws::{ws_handler, SubscriptionRegistry},
     config::Config,
     engine::{EngineCommand, EngineHandle, ShowEngine},
+    infra::connectors::{artnet::ArtNetOutput, OutputManager},
     infra::session::SessionManager,
     infra::showfile,
     infra::sync::SyncManager,
@@ -37,6 +38,11 @@ struct Args {
     sync_port: u16,
     #[arg(long, default_value = "show.db")]
     showfile: String,
+    /// Send Art-Net to this address, e.g. 10.0.0.5:6454 or 255.255.255.255:6454.
+    /// Off unless given: a console should not put packets on someone's network
+    /// because it happened to start up.
+    #[arg(long, value_name = "ADDR")]
+    artnet: Option<std::net::SocketAddr>,
 }
 
 #[tokio::main]
@@ -64,12 +70,24 @@ async fn main() -> Result<()> {
         SyncManager::new(node_id, config.sync_port, engine_handle.clone());
     tokio::spawn(sync_mgr.run());
 
-    let (engine, _broadcast) = ShowEngine::new_with_rx(
+    let (mut engine, _broadcast) = ShowEngine::new_with_rx(
         node_id,
         engine_rx,
         pool.clone(),
         Some(sync_handle.clone()),
     );
+
+    if let Some(target) = args.artnet {
+        match ArtNetOutput::bind(target).await {
+            Ok(plugin) => {
+                let (manager, output) = OutputManager::new(plugin);
+                tokio::spawn(manager.run());
+                engine.set_output(output);
+                info!("Art-Net output to {target}");
+            }
+            Err(e) => warn!("Art-Net output disabled: {e}"),
+        }
+    }
     engine_handle.0.send(EngineCommand::LoadFromShowfile).await?;
     tokio::spawn(engine.run());
 
