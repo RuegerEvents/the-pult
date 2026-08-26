@@ -11,7 +11,7 @@ use tokio::net::UdpSocket;
 use uuid::Uuid;
 
 use super::{
-    dmx::{render, Patch, Universe, UNIVERSE_SIZE},
+    dmx::{render, Patch, SequenceCounter, UniverseCache, UNIVERSE_SIZE, REFRESH_AFTER},
     OutputPlugin, SendFuture,
 };
 
@@ -22,19 +22,11 @@ const HEADER: &[u8; 8] = b"Art-Net\0";
 const OP_DMX: u16 = 0x5000;
 const PROTOCOL_VERSION: u16 = 14;
 
-/// Art-Net expects a node to hear from a controller regularly. Re-sending every
-/// universe about once a second keeps a receiver from deciding the controller is
-/// gone, without putting an idle rig's full output on the wire 40 times a second.
-const REFRESH_AFTER: std::time::Duration = std::time::Duration::from_millis(800);
-
 pub struct ArtNetOutput {
     socket: UdpSocket,
     target: SocketAddr,
-    /// Last universe sent, per universe number, so unchanged data is not resent.
-    sent: Vec<(u16, [u8; UNIVERSE_SIZE], std::time::Instant)>,
-    /// Art-Net sequence counter, per universe. 0 means "not implemented", so it
-    /// wraps 1..=255 rather than through zero.
-    sequence: Vec<(u16, u8)>,
+    sent: UniverseCache,
+    sequence: SequenceCounter,
 }
 
 impl ArtNetOutput {
@@ -43,40 +35,7 @@ impl ArtNetOutput {
         if target.ip().is_multicast() || is_broadcast(&target) {
             socket.set_broadcast(true)?;
         }
-        Ok(Self { socket, target, sent: Vec::new(), sequence: Vec::new() })
-    }
-
-    fn next_sequence(&mut self, universe: u16) -> u8 {
-        match self.sequence.iter_mut().find(|(u, _)| *u == universe) {
-            Some((_, seq)) => {
-                *seq = if *seq >= 255 { 1 } else { *seq + 1 };
-                *seq
-            }
-            None => {
-                self.sequence.push((universe, 1));
-                1
-            }
-        }
-    }
-
-    /// True if this universe has changed, or has gone long enough without a refresh.
-    fn needs_send(&mut self, universe: &Universe, now: std::time::Instant) -> bool {
-        match self.sent.iter_mut().find(|(n, _, _)| *n == universe.number) {
-            Some((_, channels, last)) => {
-                let changed = *channels != universe.channels;
-                if changed || now.duration_since(*last) >= REFRESH_AFTER {
-                    *channels = universe.channels;
-                    *last = now;
-                    true
-                } else {
-                    false
-                }
-            }
-            None => {
-                self.sent.push((universe.number, universe.channels, now));
-                true
-            }
-        }
+        Ok(Self { socket, target, sent: UniverseCache::default(), sequence: SequenceCounter::default() })
     }
 }
 
@@ -89,10 +48,10 @@ impl OutputPlugin for ArtNetOutput {
         Box::pin(async move {
             let now = std::time::Instant::now();
             for universe in render(patch) {
-                if !self.needs_send(&universe, now) {
+                if !self.sent.needs_send(&universe, now, REFRESH_AFTER) {
                     continue;
                 }
-                let sequence = self.next_sequence(universe.number);
+                let sequence = self.sequence.next(universe.number);
                 let packet = art_dmx(universe.number, sequence, &universe.channels);
                 self.socket.send_to(&packet, self.target).await?;
             }

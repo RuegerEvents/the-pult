@@ -110,6 +110,77 @@ fn write_parameter(
     }
 }
 
+// ── Not sending what has not changed ──────────────────────────────────────────
+
+/// A DMX-family protocol expects a receiver to hear from a controller regularly.
+/// Re-sending every universe about once a second keeps one from deciding the
+/// controller is gone, without putting an idle rig's full output on the wire 40
+/// times a second.
+pub const REFRESH_AFTER: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// Remembers what was last sent per universe, so an unchanged one is skipped.
+///
+/// Shared by every protocol that carries whole universes — Art-Net, sACN, and the
+/// unicast the OpenHaunt gateway wants — because the rule is the same for all of
+/// them and getting it subtly different per protocol is how an idle rig starts
+/// flooding one wire and not another.
+#[derive(Default)]
+pub struct UniverseCache {
+    sent: Vec<(u16, [u8; UNIVERSE_SIZE], std::time::Instant)>,
+}
+
+impl UniverseCache {
+    /// True if this universe has changed, or has gone long enough without a refresh.
+    /// Records the universe as sent, so calling it twice for one frame is wrong.
+    pub fn needs_send(
+        &mut self,
+        universe: &Universe,
+        now: std::time::Instant,
+        refresh_after: std::time::Duration,
+    ) -> bool {
+        match self.sent.iter_mut().find(|(n, _, _)| *n == universe.number) {
+            Some((_, channels, last)) => {
+                let changed = *channels != universe.channels;
+                if changed || now.duration_since(*last) >= refresh_after {
+                    *channels = universe.channels;
+                    *last = now;
+                    true
+                } else {
+                    false
+                }
+            }
+            None => {
+                self.sent.push((universe.number, universe.channels, now));
+                true
+            }
+        }
+    }
+}
+
+/// A sequence counter per universe, for the protocols that carry one.
+///
+/// Zero means "sequence not implemented" in both Art-Net and E1.31, so it wraps
+/// through 1..=255 rather than through zero.
+#[derive(Default)]
+pub struct SequenceCounter {
+    counters: Vec<(u16, u8)>,
+}
+
+impl SequenceCounter {
+    pub fn next(&mut self, universe: u16) -> u8 {
+        match self.counters.iter_mut().find(|(u, _)| *u == universe) {
+            Some((_, seq)) => {
+                *seq = if *seq >= 255 { 1 } else { *seq + 1 };
+                *seq
+            }
+            None => {
+                self.counters.push((universe, 1));
+                1
+            }
+        }
+    }
+}
+
 /// A 0.0 to 1.0 parameter as a DMX byte. Out-of-range values clamp rather than wrap,
 /// so a bad value dims a light instead of flashing it to full.
 fn to_byte(value: f32) -> u8 {

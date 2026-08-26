@@ -22,7 +22,12 @@ use crate::{
     api::ws::{ws_handler, SubscriptionRegistry},
     config::Config,
     engine::{EngineCommand, EngineHandle, ShowEngine},
-    infra::connectors::{artnet::{ArtNetOutput, ARTNET_PORT}, OutputManager, OutputPlugin},
+    infra::connectors::{
+        artnet::{ArtNetOutput, ARTNET_PORT},
+        openhaunt::OpenHauntOutput,
+        sacn::{SacnOutput, SACN_PORT},
+        OutputManager, OutputPlugin,
+    },
     infra::devices::{spawn_mdns_browser, DeviceManager},
     infra::session::SessionManager,
     infra::showfile,
@@ -45,6 +50,11 @@ struct Args {
     /// happened to start up.
     #[arg(long, value_name = "ADDR", value_parser = parse_artnet_target)]
     artnet: Vec<std::net::SocketAddr>,
+    /// Send sACN. E1.31 has a multicast group per universe, so no address is needed
+    /// and only receivers that joined a universe see it. Give an address to unicast
+    /// to a receiver that cannot be reached by multicast.
+    #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = "multicast", value_parser = parse_sacn_target)]
+    sacn: Option<Option<std::net::SocketAddr>>,
     /// Port for the MQTT broker this node runs for its OpenHaunt devices. Started
     /// only when this node is the one driving them.
     #[arg(long, default_value_t = 1883)]
@@ -53,12 +63,24 @@ struct Args {
 
 /// Accept either `host:port` or a bare address, defaulting to the Art-Net port.
 fn parse_artnet_target(value: &str) -> Result<std::net::SocketAddr, String> {
+    parse_target(value, ARTNET_PORT)
+}
+
+/// `--sacn` on its own means multicast; `--sacn <addr>` unicasts there.
+fn parse_sacn_target(value: &str) -> Result<Option<std::net::SocketAddr>, String> {
+    if value == "multicast" {
+        return Ok(None);
+    }
+    parse_target(value, SACN_PORT).map(Some)
+}
+
+fn parse_target(value: &str, default_port: u16) -> Result<std::net::SocketAddr, String> {
     if let Ok(addr) = value.parse::<std::net::SocketAddr>() {
         return Ok(addr);
     }
     value
         .parse::<std::net::IpAddr>()
-        .map(|ip| std::net::SocketAddr::new(ip, ARTNET_PORT))
+        .map(|ip| std::net::SocketAddr::new(ip, default_port))
         .map_err(|e| format!("not an address: {e}"))
 }
 
@@ -94,6 +116,13 @@ async fn main() -> Result<()> {
         Some(sync_handle.clone()),
     );
 
+    // Every node browses for OpenHaunt devices; only the one leading the session
+    // adopts or commands any of them.
+    let (device_mgr, device_handle, device_directory) =
+        DeviceManager::new(node_id, engine_handle.clone(), args.openhaunt_broker_port);
+    tokio::spawn(device_mgr.run());
+    spawn_mdns_browser(device_handle.clone());
+
     let mut plugins: Vec<Box<dyn OutputPlugin>> = Vec::new();
     for target in &args.artnet {
         match ArtNetOutput::bind(*target).await {
@@ -104,6 +133,25 @@ async fn main() -> Result<()> {
             Err(e) => warn!("Art-Net output to {target} disabled: {e}"),
         }
     }
+    if let Some(target) = args.sacn {
+        match SacnOutput::bind(target).await {
+            Ok(plugin) => {
+                match target {
+                    Some(addr) => info!("sACN output to {addr}"),
+                    None => info!("sACN output on the per-universe multicast groups"),
+                }
+                plugins.push(Box::new(plugin));
+            }
+            Err(e) => warn!("sACN output disabled: {e}"),
+        }
+    }
+    // Unconditional: it only ever reaches devices that have been adopted, so a
+    // console with no OpenHaunt nodes still sends nothing anywhere.
+    match OpenHauntOutput::new(device_directory, device_handle.clone(), SACN_PORT).await {
+        Ok(plugin) => plugins.push(Box::new(plugin)),
+        Err(e) => warn!("OpenHaunt output disabled: {e}"),
+    }
+
     if !plugins.is_empty() {
         let (manager, output) = OutputManager::new(plugins);
         tokio::spawn(manager.run());
@@ -111,13 +159,6 @@ async fn main() -> Result<()> {
     }
     engine_handle.0.send(EngineCommand::LoadFromShowfile).await?;
     tokio::spawn(engine.run());
-
-    // Every node browses for OpenHaunt devices; only the one leading the session
-    // adopts or commands any of them.
-    let (device_mgr, device_handle, _device_directory) =
-        DeviceManager::new(node_id, engine_handle.clone(), args.openhaunt_broker_port);
-    tokio::spawn(device_mgr.run());
-    spawn_mdns_browser(device_handle.clone());
 
     let (session_mgr, session_handle) =
         SessionManager::new(node_id, config.sync_port, engine_handle.clone(), sync_handle.clone());

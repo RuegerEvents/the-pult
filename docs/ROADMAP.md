@@ -16,7 +16,7 @@ The spec is the product. This is the build order for getting there, and right no
 | Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness, vector-clock conflict resolution, and leader failover. |
 | Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
-| Output plugins | Working for Art-Net, several at once. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Configuration is CLI-only: `--artnet` at startup, nothing in the data model, nothing in the UI. |
+| Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Configuration is CLI-only: flags at startup, nothing in the data model, nothing in the UI. |
 | Devices / events | Not started. No node discovery, no non-DMX fixtures, no triggers. Task 11. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
 | 3D programmer | Not started. The largest piece of the spec and none of it exists. |
@@ -69,9 +69,10 @@ So the first piece is the trait and the registry, not Art-Net. An output plugin 
 
 `OutputPlugin` and `OutputManager` are in place, `connectors::dmx` renders fixtures and their types into universes, and `connectors::artnet` puts ArtDmx on the wire. Art-Net skips universes whose 512 bytes have not changed and refreshes every 800 ms, so an idle rig stays off the network.
 
+sACN followed in task 11, as predicted: `connectors::sacn` is one file beside `artnet.rs`, and the dedup and refresh bookkeeping both protocols need moved into `connectors::dmx` rather than being written twice.
+
 Still to do here:
 
-- sACN, which should only need a new file next to `artnet.rs`.
 - The spec wants fixtures to preload upcoming playback data, which means handing a plugin a description of what is coming rather than only the current frame. Nothing here does that yet.
 
 ### 5. Fixture and patch UI (done)

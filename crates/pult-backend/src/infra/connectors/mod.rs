@@ -15,6 +15,8 @@ use uuid::Uuid;
 
 pub mod artnet;
 pub mod dmx;
+pub mod openhaunt;
+pub mod sacn;
 
 use dmx::Patch;
 
