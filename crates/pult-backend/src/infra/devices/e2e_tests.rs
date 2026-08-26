@@ -44,11 +44,17 @@ async fn adopting_a_node_and_pressing_a_button_moves_a_live_value() {
     let broker = config.borrow_and_update().clone().expect("a config just arrived");
     assert_eq!(broker["mqtt"]["broker"], serde_json::json!(h.state().await.broker_addr));
 
-    sim.inputs.send(Input::Contact { port: 2, state: true }).await.unwrap();
-
-    eventually("the contact to close in the show", || async {
-        live_value(&h, fixture_id, "Contact:2").await
-            == Some(serde_json::json!({ "type": "Bool", "value": true }))
+    // Pressed until it registers. The node connects to the broker on its own
+    // schedule, so a press can land before the console has finished subscribing —
+    // which is fine for a button, and would not be fine for a cue.
+    eventually("the contact to close in the show", || {
+        let (inputs, h) = (sim.inputs.clone(), &h);
+        async move {
+            let _ = inputs.send(Input::Contact { port: 2, state: true }).await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            live_value(h, fixture_id, "Contact:2").await
+                == Some(serde_json::json!({ "type": "Bool", "value": true }))
+        }
     })
     .await;
 }
@@ -59,11 +65,14 @@ async fn a_sensor_node_reports_readings_into_the_show() {
     let sim = a_simulated_node(&h, ModuleKind::Environment, "e2e-env").await;
     let fixture_id = h.devices.adopt("e2e-env".into()).await.unwrap();
 
-    sim.inputs.send(Input::Reading { port: 0, value: 19.5 }).await.unwrap();
-
-    eventually("the temperature to arrive", || async {
-        live_value(&h, fixture_id, "Temperature").await
-            == Some(serde_json::json!({ "type": "Float", "value": 19.5 }))
+    eventually("the temperature to arrive", || {
+        let (inputs, h) = (sim.inputs.clone(), &h);
+        async move {
+            let _ = inputs.send(Input::Reading { port: 0, value: 19.5 }).await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            live_value(h, fixture_id, "Temperature").await
+                == Some(serde_json::json!({ "type": "Float", "value": 19.5 }))
+        }
     })
     .await;
 }
