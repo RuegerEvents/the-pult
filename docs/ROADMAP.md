@@ -136,7 +136,7 @@ Left open: nothing decides what happens to an output whose station leaves the se
 
 What exists today is thinner than it looks:
 
-- `NodeId` is generated fresh on every process start (`main.rs`), so a station has no identity across restarts. `NodeConfig::id` is dead code.
+- ~~`NodeId` is generated fresh on every process start.~~ Done, and not optional once task 9 landed: an output names the station that sends it, so a fresh id per start meant a saved output belonged to nobody and silently stopped sending. `infra::identity` records it beside the showfile — beside rather than inside, because copying a showfile must not clone a station's identity.
 - `SyncManager` knows its `members` and `peers`, but they are reachable only through test-only commands. Nothing publishes them.
 - Heartbeats go out every 5 s with a 16 s timeout, and the ack carries a `seq` that is never matched against a send time. Liveness is known; latency is not.
 - There are no system stats of any kind.

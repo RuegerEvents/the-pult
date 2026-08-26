@@ -1,3 +1,4 @@
+pub mod identity;
 pub mod showfile;
 pub mod sync;
 pub mod session;

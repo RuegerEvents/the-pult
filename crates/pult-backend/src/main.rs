@@ -26,6 +26,7 @@ use crate::{
     infra::connectors::{artnet::ARTNET_PORT, sacn::SACN_PORT, OutputManager},
     infra::devices::{spawn_mdns_browser, DeviceManager},
     infra::session::SessionManager,
+    infra::identity,
     infra::showfile,
     infra::sync::SyncManager,
     state::AppState,
@@ -55,6 +56,10 @@ struct Args {
     /// only when this node is the one driving them.
     #[arg(long, default_value_t = 1883)]
     openhaunt_broker_port: u16,
+    /// Use this station id instead of the one recorded beside the showfile. For
+    /// moving a station's identity to different hardware, and for tests.
+    #[arg(long, value_name = "UUID")]
+    node_id: Option<uuid::Uuid>,
 }
 
 /// Accept either `host:port` or a bare address, defaulting to the Art-Net port.
@@ -160,7 +165,9 @@ async fn main() -> Result<()> {
     };
 
     let pool = Arc::new(showfile::open(&config.showfile).await?);
-    let node_id = NodeId::new();
+    // Recorded beside the showfile, so an output that names this station still
+    // belongs to it tomorrow.
+    let node_id = args.node_id.map(NodeId).unwrap_or_else(|| identity::load_or_create(&config.showfile));
 
     let (engine_tx, engine_rx) = mpsc::channel::<EngineCommand>(256);
     let engine_handle = EngineHandle(engine_tx);
