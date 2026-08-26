@@ -5,6 +5,9 @@
 //! DMX-centric workflows. So the shape here is a plugin trait and a manager, and
 //! Art-Net is one implementation of that trait rather than the centre of it.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use pult_schema::types::fixture::{Fixture, FixtureType};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -17,6 +20,13 @@ use dmx::Patch;
 
 // ── OutputPlugin ──────────────────────────────────────────────────────────────
 
+/// What one call to [`OutputPlugin::send`] returns.
+///
+/// Boxed rather than `impl Future`, because a trait with `async fn` cannot be used
+/// behind `dyn`, and a rig can have several outputs at once: Art-Net to the house
+/// and sACN to a guest console is an ordinary evening.
+pub type SendFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
 /// Something that puts fixture state on a wire.
 ///
 /// `send` is called on the output manager's own schedule, not the engine's, so a
@@ -28,11 +38,7 @@ pub trait OutputPlugin: Send {
     /// Emit the current state of the patch. `changed` is the fixtures that moved
     /// since the last call, which a protocol that sends deltas can use and one that
     /// sends whole frames can ignore.
-    fn send(
-        &mut self,
-        patch: &Patch,
-        changed: &[Uuid],
-    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
+    fn send<'a>(&'a mut self, patch: &'a Patch, changed: &'a [Uuid]) -> SendFuture<'a>;
 }
 
 // ── OutputManager ─────────────────────────────────────────────────────────────
@@ -56,19 +62,21 @@ impl OutputHandle {
 }
 
 /// Owns the output plugins and feeds them.
-pub struct OutputManager<P: OutputPlugin> {
-    plugin: P,
+pub struct OutputManager {
+    plugins: Vec<Box<dyn OutputPlugin>>,
     rx: mpsc::Receiver<OutputCommand>,
 }
 
-impl<P: OutputPlugin> OutputManager<P> {
-    pub fn new(plugin: P) -> (Self, OutputHandle) {
+impl OutputManager {
+    pub fn new(plugins: Vec<Box<dyn OutputPlugin>>) -> (Self, OutputHandle) {
         let (tx, rx) = mpsc::channel(4);
-        (Self { plugin, rx }, OutputHandle(tx))
+        (Self { plugins, rx }, OutputHandle(tx))
     }
 
     pub async fn run(mut self) {
-        info!("[output] {} started", self.plugin.name());
+        let names: Vec<&str> = self.plugins.iter().map(|p| p.name()).collect();
+        info!("[output] started: {}", names.join(", "));
+
         while let Some(cmd) = self.rx.recv().await {
             match cmd {
                 OutputCommand::Stop => break,
@@ -77,12 +85,16 @@ impl<P: OutputPlugin> OutputManager<P> {
                         fixtures,
                         fixture_types: fixture_types.into_iter().map(|t| (t.id, t)).collect(),
                     };
-                    if let Err(e) = self.plugin.send(&patch, &changed).await {
-                        warn!("[output] {}: {e}", self.plugin.name());
+                    // Sequentially, and one plugin's failure does not stop the rest:
+                    // an unplugged Art-Net interface must not silence sACN.
+                    for plugin in &mut self.plugins {
+                        if let Err(e) = plugin.send(&patch, &changed).await {
+                            warn!("[output] {}: {e}", plugin.name());
+                        }
                     }
                 }
             }
         }
-        info!("[output] {} stopped", self.plugin.name());
+        info!("[output] stopped");
     }
 }

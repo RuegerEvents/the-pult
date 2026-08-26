@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::{
     dmx::{render, Patch, Universe, UNIVERSE_SIZE},
-    OutputPlugin,
+    OutputPlugin, SendFuture,
 };
 
 /// The port Art-Net is specified to use.
@@ -85,17 +85,19 @@ impl OutputPlugin for ArtNetOutput {
         "art-net"
     }
 
-    async fn send(&mut self, patch: &Patch, _changed: &[Uuid]) -> Result<()> {
-        let now = std::time::Instant::now();
-        for universe in render(patch) {
-            if !self.needs_send(&universe, now) {
-                continue;
+    fn send<'a>(&'a mut self, patch: &'a Patch, _changed: &'a [Uuid]) -> SendFuture<'a> {
+        Box::pin(async move {
+            let now = std::time::Instant::now();
+            for universe in render(patch) {
+                if !self.needs_send(&universe, now) {
+                    continue;
+                }
+                let sequence = self.next_sequence(universe.number);
+                let packet = art_dmx(universe.number, sequence, &universe.channels);
+                self.socket.send_to(&packet, self.target).await?;
             }
-            let sequence = self.next_sequence(universe.number);
-            let packet = art_dmx(universe.number, sequence, &universe.channels);
-            self.socket.send_to(&packet, self.target).await?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }
 

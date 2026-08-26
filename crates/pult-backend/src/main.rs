@@ -22,7 +22,7 @@ use crate::{
     api::ws::{ws_handler, SubscriptionRegistry},
     config::Config,
     engine::{EngineCommand, EngineHandle, ShowEngine},
-    infra::connectors::{artnet::{ArtNetOutput, ARTNET_PORT}, OutputManager},
+    infra::connectors::{artnet::{ArtNetOutput, ARTNET_PORT}, OutputManager, OutputPlugin},
     infra::session::SessionManager,
     infra::showfile,
     infra::sync::SyncManager,
@@ -39,10 +39,11 @@ struct Args {
     #[arg(long, default_value = "show.db")]
     showfile: String,
     /// Send Art-Net to this address, e.g. 10.0.0.5 or 255.255.255.255:6454.
-    /// The port defaults to 6454. Off unless given: a console should not put
-    /// packets on someone's network because it happened to start up.
+    /// The port defaults to 6454. Repeat the flag to feed several nodes. Off unless
+    /// given: a console should not put packets on someone's network because it
+    /// happened to start up.
     #[arg(long, value_name = "ADDR", value_parser = parse_artnet_target)]
-    artnet: Option<std::net::SocketAddr>,
+    artnet: Vec<std::net::SocketAddr>,
 }
 
 /// Accept either `host:port` or a bare address, defaulting to the Art-Net port.
@@ -89,16 +90,20 @@ async fn main() -> Result<()> {
         Some(sync_handle.clone()),
     );
 
-    if let Some(target) = args.artnet {
-        match ArtNetOutput::bind(target).await {
+    let mut plugins: Vec<Box<dyn OutputPlugin>> = Vec::new();
+    for target in &args.artnet {
+        match ArtNetOutput::bind(*target).await {
             Ok(plugin) => {
-                let (manager, output) = OutputManager::new(plugin);
-                tokio::spawn(manager.run());
-                engine.set_output(output);
                 info!("Art-Net output to {target}");
+                plugins.push(Box::new(plugin));
             }
-            Err(e) => warn!("Art-Net output disabled: {e}"),
+            Err(e) => warn!("Art-Net output to {target} disabled: {e}"),
         }
+    }
+    if !plugins.is_empty() {
+        let (manager, output) = OutputManager::new(plugins);
+        tokio::spawn(manager.run());
+        engine.set_output(output);
     }
     engine_handle.0.send(EngineCommand::LoadFromShowfile).await?;
     tokio::spawn(engine.run());
