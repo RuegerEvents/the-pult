@@ -2,8 +2,21 @@
 	import { focusOnMount } from '$lib/actions.js';
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
-	import type { FixtureType, ParameterDefinition, ParameterKind } from '$lib/generated/index.js';
-	import { parameterKindLabel, PARAMETER_KINDS, defaultValueFor } from '$lib/patch.js';
+	import type {
+		FixtureType,
+		ParameterBinding,
+		ParameterDefinition,
+		ParameterDirection,
+		ParameterKind
+	} from '$lib/generated/index.js';
+	import {
+		bindingChannel,
+		defaultDirectionFor,
+		defaultValueFor,
+		kindFromLabel,
+		kindLabel,
+		PARAMETER_KINDS
+	} from '$lib/patch.js';
 
 	const data = getDataContext();
 
@@ -11,6 +24,14 @@
 	let expanded = $state<string | null>(null);
 	let newName = $state('');
 	let creating = $state(false);
+
+	const dmxBinding = (channel: number): ParameterBinding => ({ Dmx: { channel } });
+	const portBinding = (index: number): ParameterBinding => ({ Port: { index } });
+	const isColour = (kind: ParameterKind) => kind === 'ColorRgb';
+
+	/// Whichever number a binding carries — a DMX channel or a port index.
+	const bindingSlot = (binding: ParameterBinding) =>
+		'Dmx' in binding ? binding.Dmx.channel : binding.Port.index;
 
 	async function createType() {
 		const name = newName.trim();
@@ -20,7 +41,14 @@
 			name,
 			manufacturer: 'Generic',
 			channel_count: 1,
-			parameters: [{ kind: 'Intensity', dmx_channel: 1, default_value: { type: 'Float', value: 0 } }]
+			parameters: [
+				{
+					kind: 'Intensity',
+					direction: 'Output',
+					binding: dmxBinding(1),
+					default_value: { type: 'Float', value: 0 }
+				}
+			]
 		});
 		newName = '';
 		creating = false;
@@ -30,34 +58,64 @@
 	async function setParameters(type: FixtureType, parameters: ParameterDefinition[]) {
 		await data.fixture_types.byId(type.id).parameters.set(parameters);
 		// channel_count follows from the parameters, so the operator never types it.
-		const highest = parameters.reduce(
-			(n, p) => Math.max(n, p.dmx_channel + (isColour(p.kind) ? 2 : 0)),
-			0
-		);
+		// Only DMX bindings occupy channels; a port takes none.
+		const highest = parameters.reduce((n, p) => {
+			const channel = bindingChannel(p.binding);
+			return channel === null ? n : Math.max(n, channel + (isColour(p.kind) ? 2 : 0));
+		}, 0);
 		if (highest !== type.channel_count) {
 			await data.fixture_types.byId(type.id).channel_count.set(highest);
 		}
 	}
 
-	const isColour = (kind: ParameterKind) => kind === 'ColorRgb';
-
 	async function addParameter(type: FixtureType) {
-		const next = type.parameters.length
-			? Math.max(...type.parameters.map((p) => p.dmx_channel + (isColour(p.kind) ? 3 : 1)))
-			: 1;
+		// The next free DMX channel. Ports take none, so they do not move it.
+		const next = type.parameters.reduce((n, p) => {
+			const channel = bindingChannel(p.binding);
+			return channel === null ? n : Math.max(n, channel + (isColour(p.kind) ? 3 : 1));
+		}, 1);
 		await setParameters(type, [
 			...type.parameters,
-			{ kind: 'Intensity', dmx_channel: next, default_value: { type: 'Float', value: 0 } }
+			{
+				kind: 'Intensity',
+				direction: 'Output',
+				binding: dmxBinding(next),
+				default_value: { type: 'Float', value: 0 }
+			}
 		]);
 	}
 
-	async function updateParameter(type: FixtureType, index: number, patch: Partial<ParameterDefinition>) {
+	async function updateParameter(
+		type: FixtureType,
+		index: number,
+		patch: Partial<ParameterDefinition>
+	) {
 		const parameters = type.parameters.map((p, i) => (i === index ? { ...p, ...patch } : p));
-		// A kind change makes the old default the wrong shape.
+		// A kind change makes the old default the wrong shape, and usually means the
+		// parameter flows the other way — a contact is read, a relay is driven.
 		if (patch.kind !== undefined) {
 			parameters[index].default_value = defaultValueFor(patch.kind);
+			parameters[index].direction = defaultDirectionFor(patch.kind);
 		}
 		await setParameters(type, parameters);
+	}
+
+	/// Choosing a kind by name. `Switch` and `Contact` are numbered after the port
+	/// they sit on, so the number is never typed twice.
+	async function setKind(type: FixtureType, index: number, label: string) {
+		const parameter = type.parameters[index];
+		const slot = bindingSlot(parameter.binding);
+		await updateParameter(type, index, { kind: kindFromLabel(label, slot) });
+	}
+
+	/// Moving a parameter between a DMX channel and a module port. The numbered kinds
+	/// follow the port, so re-binding one renames it too.
+	async function setBinding(type: FixtureType, index: number, binding: ParameterBinding) {
+		const parameter = type.parameters[index];
+		await updateParameter(type, index, {
+			binding,
+			kind: kindFromLabel(kindLabel(parameter.kind), bindingSlot(binding))
+		});
 	}
 
 	async function removeParameter(type: FixtureType, index: number) {
@@ -113,16 +171,17 @@
 
 						<table class="params">
 							<thead>
-								<tr><th>Parameter</th><th>Channel</th><th></th></tr>
+								<tr><th>Parameter</th><th>Flow</th><th>On</th><th>Slot</th><th></th></tr>
 							</thead>
 							<tbody>
 								{#each type.parameters as param, i (i)}
+									{@const onDmx = bindingChannel(param.binding) !== null}
 									<tr>
 										<td>
 											<select
 												class="text-input"
-												value={parameterKindLabel(param.kind)}
-												onchange={(e) => updateParameter(type, i, { kind: e.currentTarget.value as ParameterKind })}
+												value={kindLabel(param.kind)}
+												onchange={(e) => setKind(type, i, e.currentTarget.value)}
 											>
 												{#each PARAMETER_KINDS as kind}
 													<option value={kind}>{kind}</option>
@@ -130,15 +189,52 @@
 											</select>
 										</td>
 										<td>
+											<select
+												class="text-input"
+												value={param.direction}
+												onchange={(e) =>
+													updateParameter(type, i, {
+														direction: e.currentTarget.value as ParameterDirection
+													})}
+											>
+												<option value="Output">Driven</option>
+												<option value="Input">Read</option>
+											</select>
+										</td>
+										<td>
+											<select
+												class="text-input"
+												value={onDmx ? 'Dmx' : 'Port'}
+												onchange={(e) =>
+													setBinding(
+														type,
+														i,
+														e.currentTarget.value === 'Dmx'
+															? dmxBinding(bindingSlot(param.binding) || 1)
+															: portBinding(bindingSlot(param.binding))
+													)}
+											>
+												<option value="Dmx">DMX channel</option>
+												<option value="Port">Module port</option>
+											</select>
+										</td>
+										<td>
 											<input
 												class="text-input narrow"
 												type="number"
-												min="1"
-												max="512"
-												value={param.dmx_channel}
-												onchange={(e) => updateParameter(type, i, { dmx_channel: Number(e.currentTarget.value) })}
+												min={onDmx ? 1 : 0}
+												max={onDmx ? 512 : 255}
+												value={bindingSlot(param.binding)}
+												onchange={(e) =>
+													setBinding(
+														type,
+														i,
+														onDmx
+															? dmxBinding(Number(e.currentTarget.value))
+															: portBinding(Number(e.currentTarget.value))
+													)}
 											/>
-											{#if isColour(param.kind)}<span class="hint">+2</span>{/if}
+											{#if onDmx && isColour(param.kind)}<span class="hint">+2</span>{/if}
 										</td>
 										<td><button class="danger" onclick={() => removeParameter(type, i)}>×</button></td>
 									</tr>

@@ -4,7 +4,15 @@
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Fixture, FixtureType } from '$lib/generated/index.js';
 	import FixtureTypeEditor from './FixtureTypeEditor.svelte';
-	import { channelRange, clashingFixtures, formatValue, parameterKey } from '$lib/patch.js';
+	import {
+		addressLabel,
+		channelRange,
+		clashingFixtures,
+		dmxAddress,
+		formatValue,
+		nextFreeAddress,
+		parameterKey
+	} from '$lib/patch.js';
 
 	const data = getDataContext();
 
@@ -19,13 +27,6 @@
 
 	const clashes = $derived(clashingFixtures(fixtures, spanOf));
 
-	/// The address after the last fixture in a universe, so patching is one click.
-	function nextFreeAddress(universe: number): number {
-		const used = fixtures.filter((f) => f.universe === universe);
-		if (used.length === 0) return 1;
-		return Math.max(...used.map((f) => f.dmx_address + Math.max(spanOf(f), 1))) || 1;
-	}
-
 	async function createFixture() {
 		const name = newName.trim();
 		if (!name || !newTypeId) return;
@@ -33,14 +34,21 @@
 			id: crypto.randomUUID(),
 			name,
 			fixture_type_id: newTypeId,
-			universe: 1,
-			dmx_address: nextFreeAddress(1),
+			address: { Dmx: { universe: 1, address: nextFreeAddress(fixtures, 1, spanOf) } },
 			position: null,
 			live_values: {},
 			active_preset: null
 		});
 		newName = '';
 		creating = false;
+	}
+
+	/// Re-address a DMX fixture. Universe and address travel together in the schema,
+	/// so changing one has to carry the other along.
+	async function setDmx(fixture: Fixture, next: { universe?: number; address?: number }) {
+		const current = dmxAddress(fixture.address);
+		if (!current) return;
+		await data.fixtures.byId(fixture.id).address.set({ Dmx: { ...current, ...next } });
 	}
 
 	onMount(() => {
@@ -90,6 +98,7 @@
 				<tbody>
 					{#each fixtures as fixture (fixture.id)}
 						{@const type = typeOf(fixture)}
+						{@const dmx = dmxAddress(fixture.address)}
 						<tr class:clash={clashes.has(fixture.id)}>
 							<td>
 								<input
@@ -109,26 +118,32 @@
 									{/each}
 								</select>
 							</td>
-							<td>
-								<input
-									class="text-input narrow"
-									type="number"
-									min="0"
-									value={fixture.universe}
-									onchange={(e) => data.fixtures.byId(fixture.id).universe.set(Number(e.currentTarget.value))}
-								/>
-							</td>
-							<td>
-								<input
-									class="text-input narrow"
-									type="number"
-									min="1"
-									max="512"
-									value={fixture.dmx_address}
-									onchange={(e) => data.fixtures.byId(fixture.id).dmx_address.set(Number(e.currentTarget.value))}
-								/>
-								<span class="hint">{channelRange(fixture, type?.channel_count ?? 1)}</span>
-							</td>
+							{#if dmx}
+								<td>
+									<input
+										class="text-input narrow"
+										type="number"
+										min="0"
+										value={dmx.universe}
+										onchange={(e) => setDmx(fixture, { universe: Number(e.currentTarget.value) })}
+									/>
+								</td>
+								<td>
+									<input
+										class="text-input narrow"
+										type="number"
+										min="1"
+										max="512"
+										value={dmx.address}
+										onchange={(e) => setDmx(fixture, { address: Number(e.currentTarget.value) })}
+									/>
+									<span class="hint">{channelRange(fixture, type?.channel_count ?? 1)}</span>
+								</td>
+							{:else}
+								<!-- A node fixture is addressed by the device it was adopted from,
+								     so there is nothing here to type into. -->
+								<td colspan="2" class="node-address">{addressLabel(fixture)}</td>
+							{/if}
 							<td>
 								{#if fixture.position}
 									{@const p = 'Point' in fixture.position ? fixture.position.Point : fixture.position.Axial.position}
@@ -145,7 +160,7 @@
 							</td>
 							<td class="live">
 								{#if type}
-									{#each type.parameters as param (param.dmx_channel)}
+									{#each type.parameters as param (parameterKey(param.kind))}
 										<span class="chip">{formatValue(fixture.live_values[parameterKey(param.kind)])}</span>
 									{/each}
 								{/if}
@@ -172,6 +187,7 @@
 	.rig td { padding: 3px 6px 3px 0; vertical-align: middle; }
 	.rig tr.clash td { background: #3a1f1f; }
 	.coords { color: #bbb; font-variant-numeric: tabular-nums; }
+	.node-address { color: #bbb; font-family: monospace; font-size: 12px; }
 	.live { display: flex; gap: 3px; flex-wrap: wrap; padding-top: 6px; }
 	.chip { background: #262626; border: 1px solid #333; border-radius: 3px; padding: 1px 6px; font-size: 11px; color: #bbb; font-variant-numeric: tabular-nums; }
 	.hint { color: #777; font-size: 11px; margin-left: 6px; }

@@ -5,6 +5,10 @@ use tracing::info;
 
 pub mod oplog;
 pub mod order;
+mod upgrades;
+
+#[cfg(test)]
+mod tests;
 
 pub async fn open(path: &str) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(&format!("sqlite:{path}?mode=rwc"))?
@@ -56,6 +60,8 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     }
 
     add_missing_columns(pool).await?;
+    // After the additive pass, so a replacement column exists to be filled in.
+    upgrades::run(pool).await?;
 
     info!("showfile migrations applied");
     Ok(())

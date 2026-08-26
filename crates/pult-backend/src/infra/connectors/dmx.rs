@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use pult_schema::types::fixture::{Fixture, FixtureType, ParameterDefinition, ParameterValue};
+use pult_schema::types::fixture::{Fixture, FixtureType, ParameterDirection, ParameterValue};
 use uuid::Uuid;
 
 use crate::model::playback::parameter_key;
@@ -39,24 +39,31 @@ impl Patch {
 }
 
 /// Render the whole patch into universes, one per universe number in use.
+///
+/// Only fixtures with a DMX address take part. A fixture on an OpenHaunt node has
+/// no slot in a universe, and neither does a parameter bound to a port or one the
+/// device writes rather than reads — none of those have a channel to occupy.
 pub fn render(patch: &Patch) -> Vec<Universe> {
     let mut universes: HashMap<u16, Universe> = HashMap::new();
 
     for fixture in &patch.fixtures {
+        let Some((number, address)) = fixture.address.dmx() else { continue };
         let Some(fixture_type) = patch.fixture_type(fixture) else {
             // Patched to a type that is not in the show. Nothing sensible to send.
             continue;
         };
-        let universe = universes
-            .entry(fixture.universe)
-            .or_insert_with(|| Universe::new(fixture.universe));
+        let universe = universes.entry(number).or_insert_with(|| Universe::new(number));
 
         for parameter in &fixture_type.parameters {
+            if parameter.direction != ParameterDirection::Output {
+                continue;
+            }
+            let Some(channel) = parameter.binding.dmx_channel() else { continue };
             let value = fixture
                 .live_values
                 .get(&parameter_key(&parameter.kind))
                 .unwrap_or(&parameter.default_value);
-            write_parameter(&mut universe.channels, fixture.dmx_address, parameter, value);
+            write_parameter(&mut universe.channels, address, channel, value);
         }
     }
 
@@ -72,17 +79,17 @@ pub fn render(patch: &Patch) -> Vec<Universe> {
 fn write_parameter(
     channels: &mut [u8; UNIVERSE_SIZE],
     dmx_address: u16,
-    parameter: &ParameterDefinition,
+    channel: u8,
     value: &ParameterValue,
 ) {
-    let base = dmx_address as usize + parameter.dmx_channel as usize - 1;
+    let base = dmx_address as usize + channel as usize - 1;
     let Some(start) = base.checked_sub(1) else { return };
 
     match value {
         ParameterValue::Color { r, g, b } => {
-            for (offset, channel) in [r, g, b].into_iter().enumerate() {
+            for (offset, component) in [r, g, b].into_iter().enumerate() {
                 if let Some(slot) = channels.get_mut(start + offset) {
-                    *slot = to_byte(*channel);
+                    *slot = to_byte(*component);
                 }
             }
         }
@@ -93,6 +100,9 @@ fn write_parameter(
                     ParameterValue::Int(i) => (*i).clamp(0, 255) as u8,
                     ParameterValue::Bool(true) => 255,
                     ParameterValue::Bool(false) => 0,
+                    // A display's text has no byte on a DMX line. Leaving the channel
+                    // alone is the only honest thing to write.
+                    ParameterValue::Text(_) => return,
                     ParameterValue::Color { .. } => unreachable!("handled above"),
                 };
             }

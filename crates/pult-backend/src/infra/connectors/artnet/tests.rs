@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use pult_schema::types::fixture::{
-    Fixture, FixtureType, ParameterDefinition, ParameterKind, ParameterValue,
+    Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDefinition,
+    ParameterDirection, ParameterKind, ParameterValue,
 };
 use uuid::Uuid;
 
@@ -58,7 +59,8 @@ fn a_dimmer_patch(level: f32) -> Patch {
         channel_count: 1,
         parameters: vec![ParameterDefinition {
             kind: ParameterKind::Intensity,
-            dmx_channel: 1,
+            direction: ParameterDirection::Output,
+            binding: ParameterBinding::Dmx { channel: 1 },
             default_value: ParameterValue::Float(0.0),
         }],
     };
@@ -66,8 +68,7 @@ fn a_dimmer_patch(level: f32) -> Patch {
         id: Uuid::new_v4(),
         name: "Spot".into(),
         fixture_type_id: fixture_type.id,
-        universe: 3,
-        dmx_address: 1,
+        address: FixtureAddress::Dmx { universe: 3, address: 1 },
         position: None,
         live_values: HashMap::new(),
         active_preset: None,
@@ -153,7 +154,7 @@ async fn each_universe_gets_its_own_packet() {
     let mut patch = a_dimmer_patch(1.0);
     let mut second = patch.fixtures[0].clone();
     second.id = Uuid::new_v4();
-    second.universe = 9;
+    second.address = FixtureAddress::Dmx { universe: 9, address: 1 };
     patch.fixtures.push(second);
 
     output.send(&patch, &[]).await.unwrap();

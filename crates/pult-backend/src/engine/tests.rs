@@ -12,7 +12,7 @@ use pult_schema::{
     events::operation::NodeId,
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
-    types::{cue::{Cue, FollowMode}, fixture::Fixture, sequence::Sequence, show::Show},
+    types::{cue::{Cue, FollowMode}, fixture::{Fixture, FixtureAddress}, sequence::Sequence, show::Show},
 };
 use uuid::Uuid;
 
@@ -110,8 +110,7 @@ fn a_fixture(name: &str, address: u16) -> Fixture {
         id: Uuid::new_v4(),
         name: name.into(),
         fixture_type_id: Uuid::new_v4(),
-        universe: 1,
-        dmx_address: address,
+        address: FixtureAddress::Dmx { universe: 1, address },
         position: None,
         live_values: Default::default(),
         active_preset: None,
@@ -189,7 +188,8 @@ async fn cues_and_fixtures_support_the_same_create_read_delete_cycle() {
 
     assert_eq!(h.engine.get(entity_path("cues", cue.id)).await.unwrap()["name"], "Blackout");
     assert_eq!(
-        h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap()["dmx_address"],
+        h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap()["address"]["Dmx"]
+            ["address"],
         12
     );
 
@@ -553,7 +553,10 @@ async fn a_peer_operation_is_applied_and_broadcast_locally() {
 /// entity is special: it is here because it is the one the old engine forgot.
 #[tokio::test]
 async fn fixture_types_are_reachable_without_the_engine_naming_them() {
-    use pult_schema::types::fixture::{FixtureType, ParameterDefinition, ParameterKind, ParameterValue};
+    use pult_schema::types::fixture::{
+        FixtureType, ParameterBinding, ParameterDefinition, ParameterDirection, ParameterKind,
+        ParameterValue,
+    };
 
     let mut h = harness().await;
     let ft = FixtureType {
@@ -563,7 +566,8 @@ async fn fixture_types_are_reachable_without_the_engine_naming_them() {
         channel_count: 1,
         parameters: vec![ParameterDefinition {
             kind: ParameterKind::Intensity,
-            dmx_channel: 1,
+            direction: ParameterDirection::Output,
+            binding: ParameterBinding::Dmx { channel: 1 },
             default_value: ParameterValue::Float(0.0),
         }],
     };

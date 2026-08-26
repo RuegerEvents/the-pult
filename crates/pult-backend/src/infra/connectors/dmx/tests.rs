@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use pult_schema::types::fixture::{
-    Fixture, FixtureType, ParameterDefinition, ParameterKind, ParameterValue,
+    Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDefinition,
+    ParameterDirection, ParameterKind, ParameterValue,
 };
 use uuid::Uuid;
 
@@ -22,8 +23,7 @@ fn a_fixture(fixture_type: &FixtureType, universe: u16, address: u16) -> Fixture
         id: Uuid::new_v4(),
         name: "Spot".into(),
         fixture_type_id: fixture_type.id,
-        universe,
-        dmx_address: address,
+        address: FixtureAddress::Dmx { universe, address },
         position: None,
         live_values: HashMap::new(),
         active_preset: None,
@@ -40,7 +40,8 @@ fn patch(fixtures: Vec<Fixture>, types: Vec<FixtureType>) -> Patch {
 fn dimmer() -> ParameterDefinition {
     ParameterDefinition {
         kind: ParameterKind::Intensity,
-        dmx_channel: 1,
+        direction: ParameterDirection::Output,
+        binding: ParameterBinding::Dmx { channel: 1 },
         default_value: ParameterValue::Float(0.0),
     }
 }
@@ -66,7 +67,8 @@ fn a_parameter_offset_is_added_to_the_fixture_address() {
         dimmer(),
         ParameterDefinition {
             kind: ParameterKind::Pan,
-            dmx_channel: 3,
+            direction: ParameterDirection::Output,
+            binding: ParameterBinding::Dmx { channel: 3 },
             default_value: ParameterValue::Float(0.0),
         },
     ]);
@@ -83,7 +85,8 @@ fn a_parameter_offset_is_added_to_the_fixture_address() {
 fn a_parameter_with_no_live_value_falls_back_to_its_default() {
     let ft = a_type(vec![ParameterDefinition {
         kind: ParameterKind::Intensity,
-        dmx_channel: 1,
+        direction: ParameterDirection::Output,
+        binding: ParameterBinding::Dmx { channel: 1 },
         default_value: ParameterValue::Float(0.5),
     }]);
     let fixture = a_fixture(&ft, 1, 1);
@@ -97,7 +100,8 @@ fn a_parameter_with_no_live_value_falls_back_to_its_default() {
 fn colour_takes_three_consecutive_channels() {
     let ft = a_type(vec![ParameterDefinition {
         kind: ParameterKind::ColorRgb,
-        dmx_channel: 1,
+        direction: ParameterDirection::Output,
+        binding: ParameterBinding::Dmx { channel: 1 },
         default_value: ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 },
     }]);
     let mut fixture = a_fixture(&ft, 1, 5);
@@ -116,7 +120,8 @@ fn colour_takes_three_consecutive_channels() {
 fn a_boolean_is_full_or_nothing() {
     let ft = a_type(vec![ParameterDefinition {
         kind: ParameterKind::Raw(1),
-        dmx_channel: 1,
+        direction: ParameterDirection::Output,
+        binding: ParameterBinding::Dmx { channel: 1 },
         default_value: ParameterValue::Bool(false),
     }]);
     let mut fixture = a_fixture(&ft, 1, 1);
@@ -153,7 +158,7 @@ fn a_parameter_past_the_end_of_the_universe_is_dropped() {
     let universes = render(&patch(vec![fixture.clone()], vec![ft.clone()]));
     assert_eq!(universes[0].channels[511], 255, "512 is the last valid address");
 
-    fixture.dmx_address = 513;
+    fixture.address = FixtureAddress::Dmx { universe: 1, address: 513 };
     let universes = render(&patch(vec![fixture], vec![ft]));
     assert!(
         universes[0].channels.iter().all(|c| *c == 0),
@@ -203,4 +208,74 @@ fn a_fixture_patched_to_a_missing_type_is_skipped() {
     let universes = render(&patch(vec![orphan], vec![ft]));
 
     assert!(universes.is_empty(), "nothing sensible can be sent for an unknown type");
+}
+
+#[test]
+fn a_fixture_on_a_node_has_no_place_in_a_universe() {
+    let ft = a_type(vec![dimmer()]);
+    let mut fixture = a_fixture(&ft, 1, 1);
+    fixture.address = FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(1) };
+    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+
+    let universes = render(&patch(vec![fixture], vec![ft]));
+
+    assert!(universes.is_empty(), "a node fixture is not addressed by DMX slot");
+}
+
+#[test]
+fn a_parameter_bound_to_a_port_takes_no_channel() {
+    let ft = a_type(vec![ParameterDefinition {
+        kind: ParameterKind::Switch(0),
+        direction: ParameterDirection::Output,
+        binding: ParameterBinding::Port { index: 0 },
+        default_value: ParameterValue::Bool(false),
+    }]);
+    let mut fixture = a_fixture(&ft, 1, 1);
+    fixture.live_values.insert("Switch:0".into(), ParameterValue::Bool(true));
+
+    let universes = render(&patch(vec![fixture], vec![ft]));
+
+    assert!(
+        universes[0].channels.iter().all(|c| *c == 0),
+        "a relay port is not a DMX channel, whatever the fixture is addressed to",
+    );
+}
+
+#[test]
+fn an_input_parameter_is_never_written_to_the_wire() {
+    let ft = a_type(vec![ParameterDefinition {
+        kind: ParameterKind::Contact(0),
+        direction: ParameterDirection::Input,
+        // Deliberately bound to a channel: direction alone has to be enough to
+        // keep a reading the device produced from being sent back out.
+        binding: ParameterBinding::Dmx { channel: 1 },
+        default_value: ParameterValue::Bool(false),
+    }]);
+    let mut fixture = a_fixture(&ft, 1, 1);
+    fixture.live_values.insert("Contact:0".into(), ParameterValue::Bool(true));
+
+    let universes = render(&patch(vec![fixture], vec![ft]));
+
+    assert!(universes[0].channels.iter().all(|c| *c == 0));
+}
+
+#[test]
+fn text_leaves_the_channel_it_sits_on_alone() {
+    let ft = a_type(vec![
+        dimmer(),
+        ParameterDefinition {
+            kind: ParameterKind::Text,
+            direction: ParameterDirection::Output,
+            binding: ParameterBinding::Dmx { channel: 2 },
+            default_value: ParameterValue::Text(String::new()),
+        },
+    ]);
+    let mut fixture = a_fixture(&ft, 1, 1);
+    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+    fixture.live_values.insert("Text".into(), ParameterValue::Text("BOO".into()));
+
+    let universes = render(&patch(vec![fixture], vec![ft]));
+
+    assert_eq!(universes[0].channels[0], 255);
+    assert_eq!(universes[0].channels[1], 0, "there is no byte that means 'BOO'");
 }

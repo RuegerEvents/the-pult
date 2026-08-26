@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import type { Fixture, ParameterValue } from './generated/index.js';
 import {
+	addressLabel,
 	channelRange,
 	clashingFixtures,
+	defaultDirectionFor,
 	defaultValueFor,
 	formatValue,
+	isDmx,
+	kindFromLabel,
+	kindLabel,
+	nextFreeAddress,
 	parameterKey,
-	parameterKindLabel
+	parameterKindLabel,
+	PARAMETER_KINDS
 } from './patch.js';
 
 function aFixture(partial: Partial<Fixture> = {}): Fixture {
@@ -14,14 +21,19 @@ function aFixture(partial: Partial<Fixture> = {}): Fixture {
 		id: crypto.randomUUID(),
 		name: 'Spot',
 		fixture_type_id: 'type',
-		universe: 1,
-		dmx_address: 1,
+		address: { Dmx: { universe: 1, address: 1 } },
 		position: null,
 		live_values: {},
 		active_preset: null,
 		...partial
 	};
 }
+
+const atDmx = (universe: number, address: number, partial: Partial<Fixture> = {}) =>
+	aFixture({ address: { Dmx: { universe, address } }, ...partial });
+
+const onNode = (serial: string, universe: number | null = null) =>
+	aFixture({ address: { OpenHaunt: { serial, universe } } });
 
 describe('parameter keys', () => {
 	it('names the plain kinds after themselves', () => {
@@ -39,6 +51,38 @@ describe('parameter keys', () => {
 	it('matches the keys the backend writes', () => {
 		expect(parameterKey('Intensity')).toBe('Intensity');
 		expect(parameterKey({ Raw: 12 })).toBe('Raw:12');
+		expect(parameterKey({ Switch: 0 })).toBe('Switch:0');
+		expect(parameterKey({ Contact: 3 })).toBe('Contact:3');
+		expect(parameterKey('Temperature')).toBe('Temperature');
+		expect(parameterKey('Humidity')).toBe('Humidity');
+		expect(parameterKey('AirQuality')).toBe('AirQuality');
+		expect(parameterKey('Text')).toBe('Text');
+	});
+
+	it('keeps every port of a numbered kind apart', () => {
+		expect(parameterKey({ Contact: 0 })).not.toBe(parameterKey({ Contact: 1 }));
+		expect(parameterKey({ Switch: 0 })).not.toBe(parameterKey({ Contact: 0 }));
+	});
+});
+
+describe('picking a kind', () => {
+	it('numbers a switch or contact after the port it is bound to', () => {
+		expect(kindFromLabel('Switch', 2)).toEqual({ Switch: 2 });
+		expect(kindFromLabel('Contact', 5)).toEqual({ Contact: 5 });
+		expect(kindFromLabel('Intensity', 5)).toBe('Intensity');
+	});
+
+	it('round-trips every kind in the picker back to its own label', () => {
+		for (const label of PARAMETER_KINDS) {
+			expect(kindLabel(kindFromLabel(label, 1))).toBe(label);
+		}
+	});
+
+	it('reads sensors and drives everything else', () => {
+		expect(defaultDirectionFor({ Contact: 0 })).toBe('Input');
+		expect(defaultDirectionFor('Temperature')).toBe('Input');
+		expect(defaultDirectionFor({ Switch: 0 })).toBe('Output');
+		expect(defaultDirectionFor('Intensity')).toBe('Output');
 	});
 });
 
@@ -47,6 +91,12 @@ describe('defaults for a kind', () => {
 		expect(defaultValueFor('ColorRgb')).toEqual({ type: 'Color', value: { r: 0, g: 0, b: 0 } });
 		expect(defaultValueFor('Intensity')).toEqual({ type: 'Float', value: 0 });
 		expect(defaultValueFor('GoboIndex')).toEqual({ type: 'Int', value: 0 });
+	});
+
+	it('gives a contact a boolean and a display a string', () => {
+		expect(defaultValueFor({ Contact: 0 })).toEqual({ type: 'Bool', value: false });
+		expect(defaultValueFor({ Switch: 1 })).toEqual({ type: 'Bool', value: false });
+		expect(defaultValueFor('Text')).toEqual({ type: 'Text', value: '' });
 	});
 });
 
@@ -70,22 +120,47 @@ describe('formatting a live value', () => {
 		expect(formatValue({ type: 'Int', value: 7 })).toBe('7');
 	});
 
+	it('shows text as itself, and empty text as nothing driven', () => {
+		expect(formatValue({ type: 'Text', value: 'BOO' })).toBe('BOO');
+		expect(formatValue({ type: 'Text', value: '' })).toBe('–');
+	});
+
 	it('shows a dash for a parameter that has never been driven', () => {
 		expect(formatValue(undefined as unknown as ParameterValue)).toBe('–');
 	});
 });
 
+describe('addresses', () => {
+	it('tells a DMX fixture from one on a node', () => {
+		expect(isDmx(atDmx(1, 1))).toBe(true);
+		expect(isDmx(onNode('1a2b3c'))).toBe(false);
+	});
+
+	it('labels a DMX fixture by universe and address', () => {
+		expect(addressLabel(atDmx(2, 17))).toBe('2 / 17');
+	});
+
+	it('labels a node fixture by serial, with its universe only if it gateways one', () => {
+		expect(addressLabel(onNode('1a2b3c'))).toBe('1a2b3c');
+		expect(addressLabel(onNode('1a2b3c', 5))).toBe('1a2b3c · universe 5');
+	});
+});
+
 describe('channel ranges', () => {
 	it('shows a single channel as one number', () => {
-		expect(channelRange(aFixture({ dmx_address: 10 }), 1)).toBe('10');
+		expect(channelRange(atDmx(1, 10), 1)).toBe('10');
 	});
 
 	it('shows a multi-channel fixture as a range ending on its last channel', () => {
-		expect(channelRange(aFixture({ dmx_address: 10 }), 4)).toBe('10–13');
+		expect(channelRange(atDmx(1, 10), 4)).toBe('10–13');
 	});
 
 	it('treats a zero-channel type as occupying one channel', () => {
-		expect(channelRange(aFixture({ dmx_address: 10 }), 0)).toBe('10');
+		expect(channelRange(atDmx(1, 10), 0)).toBe('10');
+	});
+
+	it('shows nothing for a fixture that occupies no channels at all', () => {
+		expect(channelRange(onNode('1a2b3c'), 4)).toBe('');
 	});
 });
 
@@ -93,37 +168,51 @@ describe('address clashes', () => {
 	const span = () => 4;
 
 	it('finds nothing wrong with fixtures that do not overlap', () => {
-		const fixtures = [aFixture({ dmx_address: 1 }), aFixture({ dmx_address: 5 })];
-		expect(clashingFixtures(fixtures, span).size).toBe(0);
+		expect(clashingFixtures([atDmx(1, 1), atDmx(1, 5)], span).size).toBe(0);
 	});
 
 	it('flags both fixtures when they overlap', () => {
-		const a = aFixture({ dmx_address: 1 });
-		const b = aFixture({ dmx_address: 3 });
-		const clashes = clashingFixtures([a, b], span);
-		expect(clashes).toEqual(new Set([a.id, b.id]));
+		const a = atDmx(1, 1);
+		const b = atDmx(1, 3);
+		expect(clashingFixtures([a, b], span)).toEqual(new Set([a.id, b.id]));
 	});
 
 	it('flags an exact double patch', () => {
-		const a = aFixture({ dmx_address: 1 });
-		const b = aFixture({ dmx_address: 1 });
-		expect(clashingFixtures([a, b], span).size).toBe(2);
+		expect(clashingFixtures([atDmx(1, 1), atDmx(1, 1)], span).size).toBe(2);
 	});
 
 	it('ignores overlaps across different universes', () => {
-		const a = aFixture({ dmx_address: 1, universe: 1 });
-		const b = aFixture({ dmx_address: 1, universe: 2 });
-		expect(clashingFixtures([a, b], span).size).toBe(0);
+		expect(clashingFixtures([atDmx(1, 1), atDmx(2, 1)], span).size).toBe(0);
 	});
 
 	it('does not flag a fixture against itself', () => {
-		expect(clashingFixtures([aFixture()], span).size).toBe(0);
+		expect(clashingFixtures([atDmx(1, 1)], span).size).toBe(0);
 	});
 
 	it('flags every fixture in a pile-up, not just the first pair', () => {
-		const a = aFixture({ dmx_address: 1 });
-		const b = aFixture({ dmx_address: 2 });
-		const c = aFixture({ dmx_address: 3 });
-		expect(clashingFixtures([a, b, c], span).size).toBe(3);
+		expect(clashingFixtures([atDmx(1, 1), atDmx(1, 2), atDmx(1, 3)], span).size).toBe(3);
+	});
+
+	it('never flags a fixture that has no channels to clash over', () => {
+		const node = onNode('1a2b3c', 1);
+		const light = atDmx(1, 1);
+		expect(clashingFixtures([node, light, onNode('1a2b3c', 1)], span).size).toBe(0);
+	});
+});
+
+describe('the next free address', () => {
+	const span = () => 4;
+
+	it('starts at one in an empty universe', () => {
+		expect(nextFreeAddress([], 1, span)).toBe(1);
+		expect(nextFreeAddress([atDmx(2, 1)], 1, span)).toBe(1);
+	});
+
+	it('lands after the last fixture in the universe', () => {
+		expect(nextFreeAddress([atDmx(1, 1), atDmx(1, 5)], 1, span)).toBe(9);
+	});
+
+	it('is not moved by fixtures that are not on DMX at all', () => {
+		expect(nextFreeAddress([onNode('1a2b3c', 1), atDmx(1, 1)], 1, span)).toBe(5);
 	});
 });

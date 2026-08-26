@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use pult_schema::types::{
     cue::{Cue, FollowMode, ParameterCapture},
-    fixture::{Fixture, ParameterKind, ParameterValue},
+    fixture::{Fixture, FixtureAddress, ParameterKind, ParameterValue},
     sequence::Sequence,
 };
 
@@ -19,8 +19,7 @@ fn a_fixture() -> Fixture {
         id: Uuid::new_v4(),
         name: "Spot".into(),
         fixture_type_id: Uuid::new_v4(),
-        universe: 1,
-        dmx_address: 1,
+        address: FixtureAddress::Dmx { universe: 1, address: 1 },
         position: None,
         live_values: HashMap::new(),
         active_preset: None,

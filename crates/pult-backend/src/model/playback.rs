@@ -289,6 +289,7 @@ fn zero_like(like: &ParameterValue) -> ParameterValue {
         ParameterValue::Int(_) => ParameterValue::Int(0),
         ParameterValue::Color { .. } => ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 },
         ParameterValue::Bool(_) => ParameterValue::Bool(false),
+        ParameterValue::Text(_) => ParameterValue::Text(String::new()),
     }
 }
 
@@ -301,6 +302,12 @@ pub fn parameter_key(kind: &ParameterKind) -> String {
         ParameterKind::Tilt => "Tilt".into(),
         ParameterKind::GoboIndex => "GoboIndex".into(),
         ParameterKind::Raw(channel) => format!("Raw:{channel}"),
+        ParameterKind::Switch(n) => format!("Switch:{n}"),
+        ParameterKind::Contact(n) => format!("Contact:{n}"),
+        ParameterKind::Temperature => "Temperature".into(),
+        ParameterKind::Humidity => "Humidity".into(),
+        ParameterKind::AirQuality => "AirQuality".into(),
+        ParameterKind::Text => "Text".into(),
     }
 }
 
