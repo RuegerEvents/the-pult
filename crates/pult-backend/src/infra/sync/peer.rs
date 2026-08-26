@@ -227,24 +227,57 @@ async fn run_peer_loop(
     let mut liveness_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut last_heard = tokio::time::Instant::now();
 
-    loop {
+    // Reading happens in its own task rather than in the `select!` below.
+    //
+    // `read_frame` takes a four-byte length and then the body, so it is not
+    // cancel-safe: when a heartbeat or liveness tick wins the race, the half-finished
+    // read is dropped and the bytes it already took off the socket go with it. Every
+    // frame after that is read at the wrong offset, the connection dies, and it never
+    // comes back — which is exactly the failure this once produced, rarely enough to
+    // look like flakiness. `Receiver::recv` is cancel-safe, so the loop selects on
+    // that and the socket is only ever read from one place.
+    let (incoming_tx, mut incoming) = mpsc::channel::<SyncMessage>(64);
+    let reader = tokio::spawn(async move {
+        loop {
+            match read_frame(&mut read_half).await {
+                Ok(msg) => {
+                    if incoming_tx.send(msg).await.is_err() {
+                        break; // the loop below is gone
+                    }
+                }
+                Err(e) => {
+                    debug!("[sync] read from peer ended: {e}");
+                    break;
+                }
+            }
+        }
+    });
+
+    let result = loop {
         tokio::select! {
             // Outgoing message from SyncManager
             msg = outgoing.recv() => {
                 match msg {
-                    Some(msg) => write_frame(&mut write_half, &msg).await?,
-                    None => break, // SyncManager dropped us
+                    Some(msg) => {
+                        if let Err(e) = write_frame(&mut write_half, &msg).await {
+                            break Err(e);
+                        }
+                    }
+                    None => break Ok(()), // SyncManager dropped us
                 }
             }
             // Incoming message from peer
-            frame = read_frame(&mut read_half) => {
-                let msg = frame?;
+            frame = incoming.recv() => {
+                // The reader stopping means the peer is gone or the stream broke.
+                let Some(msg) = frame else { break Ok(()) };
                 last_heard = tokio::time::Instant::now();
                 // A heartbeat has to be answered from the read side, where the write
                 // half is in scope; handle_incoming has no way to reply.
                 if let SyncMessage::Heartbeat { seq } = msg {
                     debug!("[sync] heartbeat seq={seq} from peer {}", peer_node_id.0);
-                    write_frame(&mut write_half, &SyncMessage::HeartbeatAck { seq }).await?;
+                    if let Err(e) = write_frame(&mut write_half, &SyncMessage::HeartbeatAck { seq }).await {
+                        break Err(e);
+                    }
                     continue;
                 }
                 // Leadership messages go to SyncManager, which owns that state.
@@ -266,30 +299,37 @@ async fn run_peer_loop(
                         Some(operations) => SyncMessage::OperationBatch { operations },
                         None => SyncMessage::StateSnapshot { state: engine.get_snapshot().await },
                     };
-                    write_frame(&mut write_half, &reply).await?;
+                    if let Err(e) = write_frame(&mut write_half, &reply).await {
+                        break Err(e);
+                    }
                     continue;
                 }
                 handle_incoming(msg, &engine, peer_node_id).await;
             }
             // Periodic heartbeat
             _ = heartbeat_tick.tick() => {
-                write_frame(&mut write_half, &SyncMessage::Heartbeat { seq: heartbeat_seq }).await?;
+                let beat = SyncMessage::Heartbeat { seq: heartbeat_seq };
+                if let Err(e) = write_frame(&mut write_half, &beat).await {
+                    break Err(e);
+                }
                 heartbeat_seq += 1;
             }
             // Liveness. A TCP connection can stay open long after the node behind it
             // has stopped answering, so silence is what we watch, not the socket.
             _ = liveness_tick.tick() => {
                 if last_heard.elapsed() > PEER_TIMEOUT {
-                    anyhow::bail!(
+                    break Err(anyhow::anyhow!(
                         "peer {} silent for {:?}",
                         peer_node_id.0,
                         last_heard.elapsed(),
-                    );
+                    ));
                 }
             }
         }
-    }
-    Ok(())
+    };
+
+    reader.abort();
+    result
 }
 
 async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: NodeId) {

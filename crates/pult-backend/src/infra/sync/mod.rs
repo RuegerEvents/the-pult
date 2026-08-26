@@ -95,9 +95,9 @@ pub struct SyncManager {
     listener: Option<TcpListener>,
     engine: EngineHandle,
     rx: mpsc::Receiver<SyncCommand>,
-    /// Inbound peer connection notifications (from `spawn_inbound` tasks).
-    inbound_rx: mpsc::Receiver<(NodeId, PeerSender)>,
-    inbound_tx: mpsc::Sender<(NodeId, PeerSender)>,
+    /// Peers that finished their handshake, from either direction.
+    connected_rx: mpsc::Receiver<(NodeId, PeerSender)>,
+    connected_tx: mpsc::Sender<(NodeId, PeerSender)>,
     peers: HashMap<NodeId, PeerSender>,
     /// Everyone in the session, as last published by the leader. Includes this node.
     members: Vec<NodeId>,
@@ -120,7 +120,7 @@ impl SyncManager {
         info!("[sync] listening on {addr}");
 
         let (tx, rx) = mpsc::channel(64);
-        let (inbound_tx, inbound_rx) = mpsc::channel(16);
+        let (connected_tx, connected_rx) = mpsc::channel(16);
         let (leader, _) = watch::channel(node_id);
         let mgr = SyncManager {
             node_id,
@@ -128,8 +128,8 @@ impl SyncManager {
             listener: Some(listener),
             engine,
             rx,
-            inbound_rx,
-            inbound_tx,
+            connected_rx,
+            connected_tx,
             peers: HashMap::new(),
             members: vec![node_id],
             promoted: None,
@@ -145,7 +145,7 @@ impl SyncManager {
 
     pub async fn run(mut self) {
         let Some(listener) = self.listener.take() else { return };
-        let inbound_tx = self.inbound_tx.clone();
+        let connected_tx = self.connected_tx.clone();
         let node_id = self.node_id;
         let engine = self.engine.clone();
         let leader = self.leader.subscribe();
@@ -162,7 +162,7 @@ impl SyncManager {
                             node_id,
                             leader.clone(),
                             engine.clone(),
-                            inbound_tx.clone(),
+                            connected_tx.clone(),
                             on_lost.clone(),
                         );
                     }
@@ -185,12 +185,12 @@ impl SyncManager {
                         Some(cmd) => self.handle_command(cmd).await,
                     }
                 }
-                // A newly accepted inbound peer completed its handshake
-                connected = self.inbound_rx.recv() => {
+                // A peer finished its handshake, dialled or accepted.
+                connected = self.connected_rx.recv() => {
                     if let Some((peer_id, sender)) = connected {
-                        info!("[sync] registered inbound peer {}", peer_id.0);
+                        info!("[sync] registered peer {}", peer_id.0);
                         self.peers.insert(peer_id, sender);
-                        self.publish_members().await;
+                        self.publish_members();
                     }
                 }
             }
@@ -206,25 +206,35 @@ impl SyncManager {
                     value,
                     clock,
                 };
-                self.fan_out(msg).await;
+                self.fan_out(msg);
             }
             SyncCommand::ConnectPeer { addr, session_id, show_id } => {
+                // Spawned, never awaited here. Dialling asks this node's own engine
+                // for its clock and its missed operations, and the engine reaches
+                // back into this command channel to broadcast every SYNCED write. Do
+                // the handshake inline and that becomes a cycle: the engine blocks on
+                // a full channel, the handshake blocks on the engine, and the loop
+                // that would drain the channel is the one waiting for the handshake.
+                //
+                // The result comes back through the same channel an accepted peer
+                // uses, so there is one place where a peer is registered.
                 let node_id = self.node_id;
                 let engine = self.engine.clone();
                 let on_lost = self.self_tx.clone();
-                match tokio::net::TcpStream::connect(addr).await {
-                    Ok(stream) => {
-                        match spawn_outbound(stream, node_id, session_id, show_id, engine, on_lost).await {
-                            Ok((peer_id, sender)) => {
-                                info!("[sync] outbound peer connected: {}", peer_id.0);
-                                self.peers.insert(peer_id, sender);
-                                self.publish_members().await;
-                            }
-                            Err(e) => warn!("[sync] outbound handshake to {addr} failed: {e}"),
+                let connected = self.connected_tx.clone();
+                tokio::spawn(async move {
+                    let stream = match tokio::net::TcpStream::connect(addr).await {
+                        Ok(stream) => stream,
+                        Err(e) => return warn!("[sync] connect to {addr} failed: {e}"),
+                    };
+                    match spawn_outbound(stream, node_id, session_id, show_id, engine, on_lost).await
+                    {
+                        Ok((peer_id, sender)) => {
+                            let _ = connected.send((peer_id, sender)).await;
                         }
+                        Err(e) => warn!("[sync] outbound handshake to {addr} failed: {e}"),
                     }
-                    Err(e) => warn!("[sync] connect to {addr} failed: {e}"),
-                }
+                });
             }
             SyncCommand::SetLeader(node_id) => {
                 let _ = self.leader.send(node_id);
@@ -248,7 +258,7 @@ impl SyncManager {
                 if node_id == *self.leader.borrow() {
                     self.elect_leader(node_id).await;
                 } else if self.node_id == *self.leader.borrow() {
-                    self.publish_members().await;
+                    self.publish_members();
                 }
             }
             SyncCommand::PeerCount { reply } => {
@@ -287,8 +297,8 @@ impl SyncManager {
 
         if winner == self.node_id {
             info!("[sync] leader {} is gone; taking over", lost.0);
-            self.fan_out(SyncMessage::LeaderChanged { new_leader_node_id: winner }).await;
-            self.publish_members().await;
+            self.fan_out(SyncMessage::LeaderChanged { new_leader_node_id: winner });
+            self.publish_members();
             if let Some(tx) = &self.promoted {
                 let _ = tx.send(winner).await;
             }
@@ -299,7 +309,7 @@ impl SyncManager {
 
     /// Tell every peer who is in the session. Only the leader does this: two nodes
     /// publishing different lists is exactly what the list exists to prevent.
-    async fn publish_members(&mut self) {
+    fn publish_members(&mut self) {
         if self.node_id != *self.leader.borrow() {
             return;
         }
@@ -307,14 +317,32 @@ impl SyncManager {
         members.push(self.node_id);
         members.sort();
         self.members = members.clone();
-        self.fan_out(SyncMessage::SessionMembers { members }).await;
+        self.fan_out(SyncMessage::SessionMembers { members });
     }
 
-    async fn fan_out(&mut self, msg: SyncMessage) {
+    /// Hand a message to every peer's outbox.
+    ///
+    /// Never waits for one. A peer's outbox is drained by its own task, which applies
+    /// what it receives through the engine — and the engine broadcasts back into this
+    /// manager's command channel. Waiting here for a full outbox closes that into a
+    /// deadlock: engine waits on the command channel, this loop waits on the outbox,
+    /// the peer task waits on the engine, and nothing drains anything.
+    ///
+    /// A peer whose outbox is full is a peer that is not keeping up, and one that far
+    /// behind is not synchronised whatever we do next. Dropping the *message* would
+    /// leave the two nodes quietly disagreeing, so the connection goes instead: the
+    /// peer reconnects and catches up from the oplog, which is a path that already
+    /// exists and is already tested.
+    fn fan_out(&mut self, msg: SyncMessage) {
         let mut dead = vec![];
         for (peer_id, sender) in &self.peers {
-            if sender.0.send(msg.clone()).await.is_err() {
-                dead.push(*peer_id);
+            match sender.0.try_send(msg.clone()) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("[sync] peer {} is too far behind to keep up; dropping it", peer_id.0);
+                    dead.push(*peer_id);
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => dead.push(*peer_id),
             }
         }
         for id in dead {

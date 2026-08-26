@@ -94,6 +94,13 @@ pub async fn write_frame(w: &mut (impl AsyncWrite + Unpin), msg: &SyncMessage) -
     Ok(())
 }
 
+/// Read one frame.
+///
+/// **Not cancel-safe.** The length and the body are two reads, so dropping this
+/// future between them leaves the body in the socket with nothing to say how long
+/// it is, and every frame after that is read at the wrong offset. Never put a call
+/// to this directly in a `tokio::select!` branch — give it a task of its own and
+/// select on a channel, which is what `run_peer_loop` does.
 pub async fn read_frame(r: &mut (impl AsyncRead + Unpin)) -> Result<SyncMessage> {
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf).await?;
@@ -104,4 +111,114 @@ pub async fn read_frame(r: &mut (impl AsyncRead + Unpin)) -> Result<SyncMessage>
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf).await?;
     Ok(serde_json::from_slice(&buf)?)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pult_schema::events::operation::NodeId;
+    use tokio::io::AsyncWriteExt;
+
+    fn a_heartbeat(seq: u64) -> SyncMessage {
+        SyncMessage::Heartbeat { seq }
+    }
+
+    #[tokio::test]
+    async fn a_frame_round_trips() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        write_frame(&mut client, &a_heartbeat(7)).await.unwrap();
+
+        let got = read_frame(&mut server).await.unwrap();
+
+        assert!(matches!(got, SyncMessage::Heartbeat { seq: 7 }));
+    }
+
+    #[tokio::test]
+    async fn two_frames_come_back_in_order() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        write_frame(&mut client, &a_heartbeat(1)).await.unwrap();
+        write_frame(&mut client, &SyncMessage::HeartbeatAck { seq: 2 }).await.unwrap();
+
+        assert!(matches!(read_frame(&mut server).await.unwrap(), SyncMessage::Heartbeat { seq: 1 }));
+        assert!(matches!(
+            read_frame(&mut server).await.unwrap(),
+            SyncMessage::HeartbeatAck { seq: 2 }
+        ));
+    }
+
+    /// The hazard `run_peer_loop` is built around, demonstrated.
+    ///
+    /// A cancelled `read_frame` has already taken the length prefix off the wire and
+    /// has nowhere to put it back, so the next read treats the body as a length and
+    /// the stream never recovers. In the peer loop this looked like a connection that
+    /// died for no reason, rarely, under load — a whole afternoon of "flaky tests".
+    ///
+    /// If someone moves the read back into the `select!`, this test still passes, but
+    /// it is here so the next person finds out why the task exists.
+    #[tokio::test]
+    async fn a_cancelled_read_desynchronises_the_stream() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+
+        // Only the length prefix, so the read has to wait for a body that is not
+        // there yet — the moment a `select!` would cancel it.
+        let frame = serde_json::to_vec(&a_heartbeat(1)).unwrap();
+        client.write_all(&(frame.len() as u32).to_be_bytes()).await.unwrap();
+        client.flush().await.unwrap();
+
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            read_frame(&mut server),
+        )
+        .await;
+        assert!(cancelled.is_err(), "the read has to be pending for this to prove anything");
+
+        // The rest of the first frame, then a second, whole one.
+        client.write_all(&frame).await.unwrap();
+        write_frame(&mut client, &SyncMessage::HeartbeatAck { seq: 2 }).await.unwrap();
+
+        // The four bytes that said how long the first frame was are gone, so this
+        // reads the body as a length and gets nonsense rather than either message.
+        let next = read_frame(&mut server).await;
+        let recovered = matches!(
+            next,
+            Ok(SyncMessage::Heartbeat { seq: 1 }) | Ok(SyncMessage::HeartbeatAck { seq: 2 })
+        );
+        assert!(!recovered, "a cancelled read cannot be resumed; got {next:?}");
+    }
+
+    #[tokio::test]
+    async fn a_frame_claiming_to_be_enormous_is_refused() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        client.write_all(&u32::MAX.to_be_bytes()).await.unwrap();
+        client.flush().await.unwrap();
+
+        assert!(read_frame(&mut server).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_hello_survives_the_wire_with_its_node_id() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let node_id = NodeId::new();
+        write_frame(
+            &mut client,
+            &SyncMessage::Hello {
+                node_id,
+                protocol_version: PROTOCOL_VERSION,
+                session_id: uuid::Uuid::new_v4(),
+                show_id: uuid::Uuid::new_v4(),
+                clock: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        match read_frame(&mut server).await.unwrap() {
+            SyncMessage::Hello { node_id: got, protocol_version, .. } => {
+                assert_eq!(got, node_id);
+                assert_eq!(protocol_version, PROTOCOL_VERSION);
+            }
+            other => panic!("expected Hello, got {other:?}"),
+        }
+    }
 }
