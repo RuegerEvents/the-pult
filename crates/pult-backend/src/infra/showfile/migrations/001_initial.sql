@@ -90,3 +90,11 @@ CREATE TABLE IF NOT EXISTS oplog (
     timestamp   TEXT NOT NULL,
     PRIMARY KEY (node_id, seq)
 );
+
+CREATE TABLE IF NOT EXISTS assets (
+    sha256     TEXT NOT NULL PRIMARY KEY,
+    mime       TEXT NOT NULL,
+    byte_len   INTEGER NOT NULL,
+    bytes      BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);

@@ -757,6 +757,7 @@ async fn a_station_row_reaches_the_other_console() {
         hostname: "booth".into(),
         is_leader: true,
         sync_addr: one.addr.to_string(),
+        http_addr: String::new(),
         cpu_percent: 3.5,
         mem_used: 100,
         mem_total: 1000,

@@ -31,6 +31,14 @@ pub struct Station {
     /// Where peers reach this station, as `ip:port`.
     #[pult(lifecycle = SYNCED)]
     pub sync_addr: String,
+    /// Where this station serves its HTTP API, as `ip:port`.
+    ///
+    /// Assets are bytes rather than replicated fields, so a station that has never
+    /// seen a stage plan fetches it from one that has — and this is the address it
+    /// fetches from. Defaulted, because an older peer will not send it.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub http_addr: String,
     #[pult(lifecycle = SYNCED)]
     pub cpu_percent: f32,
     #[pult(lifecycle = SYNCED)]
@@ -108,6 +116,7 @@ mod tests {
             hostname: "booth".into(),
             is_leader: true,
             sync_addr: "10.0.0.5:7701".into(),
+            http_addr: "10.0.0.5:7700".into(),
             cpu_percent: 12.5,
             mem_used: 4_000_000_000,
             mem_total: 16_000_000_000,

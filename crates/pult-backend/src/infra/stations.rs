@@ -27,6 +27,8 @@ pub struct StationReporter {
     node_id: NodeId,
     engine: EngineHandle,
     sync_addr: std::net::SocketAddr,
+    /// Where this station serves HTTP, so a peer can fetch an asset from it.
+    http_addr: String,
     /// Refreshed in place: CPU percentage is a difference between two samples, so
     /// the same `System` has to live across ticks or every reading is zero.
     system: System,
@@ -41,12 +43,14 @@ impl StationReporter {
         node_id: NodeId,
         engine: EngineHandle,
         sync_addr: std::net::SocketAddr,
+        http_addr: String,
         links: watch::Receiver<pult_schema::types::station::PeerLinks>,
     ) -> Self {
         StationReporter {
             node_id,
             engine,
             sync_addr,
+            http_addr,
             system: System::new(),
             hostname: System::host_name().unwrap_or_else(|| "console".to_string()),
             started: std::time::Instant::now(),
@@ -119,6 +123,7 @@ impl StationReporter {
             hostname: self.hostname.clone(),
             is_leader: !self.is_follower().await,
             sync_addr: self.sync_addr.to_string(),
+            http_addr: self.http_addr.clone(),
             cpu_percent,
             mem_used,
             mem_total: self.system.total_memory(),

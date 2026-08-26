@@ -25,6 +25,20 @@ export class PultWsClient {
 
 	constructor(private readonly url: string) {}
 
+	/**
+	 * The same backend, over HTTP.
+	 *
+	 * Assets are bytes and travel as ordinary requests rather than over this socket,
+	 * but they come from the same station — so the address is derived from the one
+	 * already given here rather than worked out a second time.
+	 */
+	httpUrl(path: string): string {
+		const base = new URL(this.url);
+		base.protocol = base.protocol === 'wss:' ? 'https:' : 'http:';
+		base.pathname = path;
+		return base.toString();
+	}
+
 	connect(): void {
 		if (this.socket?.readyState === WebSocket.OPEN) return;
 		try {

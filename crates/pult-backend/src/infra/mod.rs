@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod identity;
 pub mod showfile;
 pub mod sync;

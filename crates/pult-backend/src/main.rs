@@ -208,10 +208,14 @@ async fn main() -> Result<()> {
 
     // Every station publishes one row about itself, every couple of seconds, and
     // the latencies it has measured to the peers it is connected to.
+    // A peer reaching this station for an asset needs the same host it syncs to,
+    // on the HTTP port rather than the sync one.
+    let http_addr = format!("{}:{}", sync_addr.ip(), config.port);
     let reporter = StationReporter::new(
         node_id,
         engine_handle.clone(),
         sync_addr,
+        http_addr,
         sync_mgr.peer_links(),
     );
     tokio::spawn(reporter.run());
@@ -251,6 +255,7 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        .merge(crate::api::rest::routes())
         .layer(CorsLayer::permissive())
         .with_state(state);
 
