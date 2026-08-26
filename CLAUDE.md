@@ -48,6 +48,19 @@ cargo run -p pult-backend
 cd frontend && npm run dev
 ```
 
+Or all of it at once — backend, two simulated OpenHaunt nodes, and the frontend —
+with a seeded show and Ctrl-C to stop everything:
+
+```
+scripts/demo.sh              # a fresh show with something to look at
+scripts/demo.sh --keep       # carry on from the last run
+scripts/demo.sh --two        # a second station, joined to the first's session
+scripts/demo.sh --help       # the other options
+```
+
+It works in `.demo/`, which is gitignored, so it never touches a real showfile.
+Logs for each component land there too.
+
 ## Testing
 
 ```

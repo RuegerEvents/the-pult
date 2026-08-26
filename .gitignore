@@ -11,3 +11,6 @@
 
 # ts-rs intermediate output; the real consumer is frontend/src/lib/generated/
 /crates/pult-schema/bindings/
+
+# Demo runs: showfile, logs, and anything else scripts/demo.sh creates.
+/.demo/
