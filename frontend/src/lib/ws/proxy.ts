@@ -66,15 +66,8 @@ export function createDataProxy<T>(
 				};
 			}
 			if (prop === 'subscribeDeep') {
-				return (cb: (value: unknown) => void, opts?: SubscribeOptions) => {
-					const initial = opts?.initial !== false;
-					const doFetch = () => client.get(path).then(v => cb(v)).catch(() => {});
-					if (initial) doFetch();
-					const pattern = [...path, '**'].join('/');
-					const unsubData = client.subscribe(pattern, () => doFetch());
-					const unsubConnect = client.addConnectListener(doFetch);
-					return () => { unsubData(); unsubConnect(); };
-				};
+				return (cb: (value: unknown) => void, opts?: SubscribeOptions) =>
+					subscribeDeep(client, path, cb, opts);
 			}
 			if (prop === 'nth') {
 				return (n: number) => createDataProxy(client, [...path, n]);
@@ -100,6 +93,88 @@ export function createDataProxy<T>(
 			return client.set(path, args[0] ?? {});
 		},
 	});
+}
+
+
+// ── subscribeDeep ─────────────────────────────────────────────────────────────
+
+type Entity = { id?: string } & Record<string, unknown>;
+
+/**
+ * Watch a collection and everything under it.
+ *
+ * Updates are applied to the local copy where the path says exactly what changed,
+ * rather than re-reading the collection. During a fade the backend sends one update
+ * per moving fixture per tick, so re-reading would be dozens of round trips a
+ * second for data the message already carried.
+ *
+ * Anything not recognised falls back to a re-read, so an unusual path is slow
+ * rather than wrong.
+ */
+function subscribeDeep(
+	client: PultWsClient,
+	path: (string | number)[],
+	cb: (value: unknown) => void,
+	opts?: SubscribeOptions
+): () => void {
+	const initial = opts?.initial !== false;
+	let current: Entity[] | null = null;
+
+	const deliver = () => {
+		if (current) cb(current);
+	};
+
+	const refetch = () =>
+		client
+			.get(path)
+			.then((v) => {
+				current = Array.isArray(v) ? (v as Entity[]) : null;
+				deliver();
+			})
+			.catch(() => {});
+
+	if (initial) refetch();
+
+	const unsubData = client.subscribe([...path, '**'].join('/'), (value, updatePath) => {
+		if (!current || !updatePath) {
+			refetch();
+			return;
+		}
+		const rest = updatePath.slice(path.length);
+
+		// The collection itself: a create or a delete.
+		if (rest.length === 0) {
+			current = Array.isArray(value) ? (value as Entity[]) : null;
+			deliver();
+			return;
+		}
+
+		const index = current.findIndex((e) => e?.id === String(rest[0]));
+		if (index < 0) {
+			refetch();
+			return;
+		}
+
+		// One whole entity, or one field of it.
+		if (rest.length === 1) {
+			current = current.map((e, i) => (i === index ? (value as Entity) : e));
+			deliver();
+			return;
+		}
+		if (rest.length === 2) {
+			const field = String(rest[1]);
+			current = current.map((e, i) => (i === index ? { ...e, [field]: value } : e));
+			deliver();
+			return;
+		}
+
+		refetch();
+	});
+	const unsubConnect = client.addConnectListener(refetch);
+	return () => {
+		unsubData();
+		unsubConnect();
+	};
 }
 
 // ── Svelte store helper ───────────────────────────────────────────────────────

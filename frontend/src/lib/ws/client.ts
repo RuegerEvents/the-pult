@@ -1,5 +1,9 @@
 import type { ClientMessage, ServerMessage } from '$lib/generated/index.js';
 import type { JsonValue } from '$lib/generated/serde_json/JsonValue.js';
+import type { PathSegment } from '$lib/generated/index.js';
+
+/** Called with the new value and the exact path it was written to. */
+export type SubscriptionHandler = (value: unknown, path: PathSegment[]) => void;
 
 type PendingRequest = {
 	resolve: (msg: ServerMessage) => void;
@@ -9,7 +13,7 @@ type PendingRequest = {
 export class PultWsClient {
 	private socket: WebSocket | null = null;
 	private pending = new Map<string, PendingRequest>();
-	private subscriptionHandlers = new Map<string, Set<(value: unknown) => void>>();
+	private subscriptionHandlers = new Map<string, Set<SubscriptionHandler>>();
 	private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 	private reconnectDelay = 1000;
 	private messageQueue: ClientMessage[] = [];
@@ -93,7 +97,7 @@ export class PultWsClient {
 		if (msg.type === 'Update') {
 			this.subscriptionHandlers.forEach((handlers, pattern) => {
 				if (pathMatchesPattern(msg.payload.path, pattern)) {
-					handlers.forEach((h) => h(msg.payload.value));
+					handlers.forEach((h) => h(msg.payload.value, msg.payload.path));
 				}
 			});
 			return;
@@ -187,7 +191,13 @@ export class PultWsClient {
 		});
 	}
 
-	subscribe(pattern: string, handler: (value: unknown) => void): () => void {
+	/**
+	 * Listen to every update whose path matches `pattern`.
+	 *
+	 * The handler is given the path as well as the value, so a subscriber watching a
+	 * whole subtree can apply the change where it landed instead of re-reading.
+	 */
+	subscribe(pattern: string, handler: SubscriptionHandler): () => void {
 		if (!this.subscriptionHandlers.has(pattern)) {
 			this.subscriptionHandlers.set(pattern, new Set());
 			this.send({ type: 'Subscribe', payload: { pattern } });
