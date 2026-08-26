@@ -6,8 +6,9 @@
 	import PatchPanel from '$lib/components/PatchPanel.svelte';
 	import TriggersPanel from '$lib/components/TriggersPanel.svelte';
 	import OutputsPanel from '$lib/components/OutputsPanel.svelte';
+	import StationsPanel from '$lib/components/StationsPanel.svelte';
 
-	type View = 'playback' | 'patch' | 'triggers' | 'outputs';
+	type View = 'playback' | 'patch' | 'triggers' | 'outputs' | 'stations';
 	let view = $state<View>('playback');
 </script>
 
@@ -23,6 +24,7 @@
 			<button class:active={view === 'patch'} onclick={() => (view = 'patch')}>Patch</button>
 			<button class:active={view === 'triggers'} onclick={() => (view = 'triggers')}>Triggers</button>
 			<button class:active={view === 'outputs'} onclick={() => (view = 'outputs')}>Outputs</button>
+			<button class:active={view === 'stations'} onclick={() => (view = 'stations')}>Stations</button>
 		</nav>
 		{#if view === 'playback'}
 			<SequenceRunner />
@@ -30,8 +32,10 @@
 			<PatchPanel />
 		{:else if view === 'triggers'}
 			<TriggersPanel />
-		{:else}
+		{:else if view === 'outputs'}
 			<OutputsPanel />
+		{:else}
+			<StationsPanel />
 		{/if}
 	</main>
 </div>

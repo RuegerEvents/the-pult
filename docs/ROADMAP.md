@@ -13,7 +13,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Showfile (SQLite) | Working. Load and save are registry-driven and enumerate no entity types. |
 | WebSocket API | Working. Path-pattern subscribe, set, call, and broadcast fan-out. |
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
-| Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness, vector-clock conflict resolution, and leader failover. |
+| Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness and latency, vector-clock conflict resolution, and leader failover. Stations publish themselves and are visible in the UI. |
 | Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Configured from the `outputs` collection and editable while the show is up, with per-output status in the UI. Flags only seed an empty showfile. |
@@ -132,7 +132,7 @@ The flags stay as a way to seed an empty showfile, and refuse to add anything to
 
 Left open: nothing decides what happens to an output whose station leaves the session. It simply stops, which is right for a duplicate and wrong for the only path to the rig. That belongs with task 10's partitioning question rather than here.
 
-### 10. Station view
+### 10. Station view (done)
 
 What exists today is thinner than it looks:
 
@@ -147,6 +147,16 @@ Add a SYNCED `stations` collection that each node publishes about itself — `St
 A *Stations* tab then shows who leads, what the latency to each peer is, cpu and memory per node, which output plugins run where, and which fixtures each node computes.
 
 That last column is honest but dull for now: every node computes every fixture, so it is all-or-nothing until parameter computation is partitioned. Partitioning it is the follow-up — the interesting version is a node driving only the fixtures on the outputs it owns, with a defined answer for what happens when that node drops out.
+
+All of that is in. `Station` is SYNCED, and each node writes only its own row, so the collection converges with nobody arbitrating it: a station is the only authority on its own memory usage. It is reported as `computes_fixtures` over `total_fixtures` rather than a flag, so the number already says something true and will say something more interesting once the work is split.
+
+Latency is LOCAL, not SYNCED, and that turned out to be the right call for a reason worth recording: measured across a two-node session the same link read 0.22 ms from one end and 0.33 ms from the other. They are two different paths. A single shared number would have been an average of two things nobody asked about.
+
+Pruning is the leader's job alone — two nodes deleting each other's rows on different schedules is a fight rather than a cleanup. A station goes grey in the UI after three missed reports and its row is removed after thirty seconds of silence.
+
+Persisting `NodeId` came first and separately, because task 9 had already made it urgent: an output names the station that sends it, and a fresh id per start meant a saved output belonged to nobody and silently stopped sending.
+
+Left open: nothing partitions fixture computation, so the fixture column is all-or-nothing; and a station's row says what it is doing rather than what it should be doing, so there is still no answer for an output whose station has left.
 
 ### 11. OpenHaunt nodes and the event system (done)
 

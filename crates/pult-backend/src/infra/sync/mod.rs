@@ -18,6 +18,7 @@ pub mod protocol;
 pub mod peer;
 
 use peer::{spawn_inbound, spawn_outbound, PeerSender};
+use pult_schema::types::station::{PeerLink, PeerLinks};
 use protocol::SyncMessage;
 
 // ── SyncCommand ───────────────────────────────────────────────────────────────
@@ -44,6 +45,10 @@ pub enum SyncCommand {
     PeerIds { reply: oneshot::Sender<Vec<NodeId>> },
     /// A peer connection ended. Sent by the peer task as it exits.
     PeerLost(NodeId),
+    /// A heartbeat came back. The only measurement of the link to this peer, and it
+    /// belongs to this node: the same link measured from the other end is a
+    /// different path and a different number.
+    PeerLatency { node_id: NodeId, rtt: std::time::Duration, unanswered: u32 },
     /// The leader told us who is in the session.
     SetMembers(Vec<NodeId>),
     /// Query who this node currently believes leads the session.
@@ -105,6 +110,8 @@ pub struct SyncManager {
     promoted: Option<mpsc::Sender<NodeId>>,
     /// A handle to ourselves, for peer tasks to report their own exit.
     self_tx: mpsc::Sender<SyncCommand>,
+    /// Link latencies, measured here and published by the station reporter.
+    links: watch::Sender<PeerLinks>,
 }
 
 impl SyncManager {
@@ -122,6 +129,7 @@ impl SyncManager {
         let (tx, rx) = mpsc::channel(64);
         let (connected_tx, connected_rx) = mpsc::channel(16);
         let (leader, _) = watch::channel(node_id);
+        let (links, _) = watch::channel(PeerLinks::default());
         let mgr = SyncManager {
             node_id,
             leader,
@@ -134,8 +142,14 @@ impl SyncManager {
             members: vec![node_id],
             promoted: None,
             self_tx: tx.clone(),
+            links,
         };
         Ok((mgr, SyncHandle(tx), addr))
+    }
+
+    /// Watch the measured latency to every connected peer.
+    pub fn peer_links(&self) -> watch::Receiver<PeerLinks> {
+        self.links.subscribe()
     }
 
     /// Be told when this node is promoted to leader.
@@ -251,7 +265,23 @@ impl SyncManager {
             SyncCommand::Leader { reply } => {
                 let _ = reply.send(*self.leader.borrow());
             }
+            SyncCommand::PeerLatency { node_id, rtt, unanswered } => {
+                self.links.send_modify(|links| {
+                    links.insert(
+                        node_id.0.to_string(),
+                        PeerLink {
+                            node_id: Some(node_id),
+                            rtt_ms: Some(rtt.as_secs_f32() * 1000.0),
+                            measured_at: Some(chrono::Utc::now()),
+                            unanswered,
+                        },
+                    );
+                });
+            }
             SyncCommand::PeerLost(node_id) => {
+                self.links.send_modify(|links| {
+                    links.remove(&node_id.0.to_string());
+                });
                 if self.peers.remove(&node_id).is_some() {
                     info!("[sync] lost peer {}", node_id.0);
                 }

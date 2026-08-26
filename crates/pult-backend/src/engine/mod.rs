@@ -8,7 +8,10 @@ use pult_schema::{
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
-    types::{devices::DevicesState, output::OutputStatuses, session::SessionState},
+    types::{
+        devices::DevicesState, output::OutputStatuses, session::SessionState,
+        station::PeerLinks,
+    },
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -60,6 +63,7 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     ("session", || serde_json::to_value(SessionState::default()).unwrap_or_default()),
     ("devices", || serde_json::to_value(DevicesState::default()).unwrap_or_default()),
     ("output_status", || serde_json::to_value(OutputStatuses::default()).unwrap_or_default()),
+    ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
 ];
 
 fn seed_local() -> BTreeMap<String, serde_json::Value> {

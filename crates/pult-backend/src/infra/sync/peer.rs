@@ -19,6 +19,39 @@ use super::{
     SyncCommand,
 };
 
+/// Heartbeats sent and not yet answered, with when they went out.
+///
+/// Bounded on purpose: a link that has stopped answering does not need its whole
+/// history remembered, only that it is not answering. The oldest are dropped, which
+/// also means a heartbeat answered absurdly late is ignored rather than reported as
+/// a minute of latency.
+#[derive(Default)]
+struct Outstanding(Vec<(u64, tokio::time::Instant)>);
+
+const MAX_OUTSTANDING: usize = 8;
+
+impl Outstanding {
+    fn sent(&mut self, seq: u64, at: tokio::time::Instant) {
+        self.0.push((seq, at));
+        if self.0.len() > MAX_OUTSTANDING {
+            self.0.remove(0);
+        }
+    }
+
+    /// Round-trip time for an answered heartbeat, and forget everything older —
+    /// those were not answered and never will be.
+    fn answered(&mut self, seq: u64, at: tokio::time::Instant) -> Option<std::time::Duration> {
+        let index = self.0.iter().position(|(s, _)| *s == seq)?;
+        let (_, sent_at) = self.0[index];
+        self.0.drain(..=index);
+        Some(at.duration_since(sent_at).into())
+    }
+
+    fn unanswered(&self) -> u32 {
+        self.0.len() as u32
+    }
+}
+
 pub struct PeerSender(pub mpsc::Sender<SyncMessage>);
 
 /// Spawns an outbound peer connection task.
@@ -223,6 +256,7 @@ async fn run_peer_loop(
     to_manager: mpsc::Sender<SyncCommand>,
 ) -> Result<()> {
     let mut heartbeat_seq: u64 = 0;
+    let mut outstanding = Outstanding::default();
     let mut heartbeat_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut liveness_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut last_heard = tokio::time::Instant::now();
@@ -280,6 +314,21 @@ async fn run_peer_loop(
                     }
                     continue;
                 }
+                // The ack for one of ours: the only place the round-trip time to
+                // this peer can be known, because it is the only place that knows
+                // when the heartbeat went out.
+                if let SyncMessage::HeartbeatAck { seq } = msg {
+                    if let Some(rtt) = outstanding.answered(seq, tokio::time::Instant::now()) {
+                        let _ = to_manager
+                            .send(SyncCommand::PeerLatency {
+                                node_id: peer_node_id,
+                                rtt,
+                                unanswered: outstanding.unanswered(),
+                            })
+                            .await;
+                    }
+                    continue;
+                }
                 // Leadership messages go to SyncManager, which owns that state.
                 match &msg {
                     SyncMessage::LeaderChanged { new_leader_node_id } => {
@@ -312,6 +361,7 @@ async fn run_peer_loop(
                 if let Err(e) = write_frame(&mut write_half, &beat).await {
                     break Err(e);
                 }
+                outstanding.sent(heartbeat_seq, tokio::time::Instant::now());
                 heartbeat_seq += 1;
             }
             // Liveness. A TCP connection can stay open long after the node behind it
@@ -377,4 +427,66 @@ async fn apply_synced(
         timestamp: Utc::now(),
     };
     let _ = engine.0.send(EngineCommand::ApplyPeerOperation(op)).await;
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(ms: u64) -> tokio::time::Instant {
+        // A fixed origin, so the arithmetic is the thing under test.
+        tokio::time::Instant::now() + std::time::Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn an_answered_heartbeat_gives_its_round_trip_time() {
+        let mut outstanding = Outstanding::default();
+        let start = tokio::time::Instant::now();
+        outstanding.sent(1, start);
+
+        let rtt = outstanding.answered(1, start + std::time::Duration::from_millis(12));
+
+        assert_eq!(rtt, Some(std::time::Duration::from_millis(12)));
+        assert_eq!(outstanding.unanswered(), 0);
+    }
+
+    #[test]
+    fn an_ack_for_something_never_sent_measures_nothing() {
+        let mut outstanding = Outstanding::default();
+        assert_eq!(outstanding.answered(7, at(0)), None);
+    }
+
+    #[test]
+    fn answering_a_later_heartbeat_gives_up_on_the_earlier_ones() {
+        // Heartbeats are answered in order or not at all, so an ack for seq 3 means
+        // 1 and 2 are lost — keeping them would report them as unanswered forever.
+        let mut outstanding = Outstanding::default();
+        let start = tokio::time::Instant::now();
+        outstanding.sent(1, start);
+        outstanding.sent(2, start);
+        outstanding.sent(3, start);
+
+        outstanding.answered(3, start + std::time::Duration::from_millis(5));
+
+        assert_eq!(outstanding.unanswered(), 0);
+    }
+
+    #[test]
+    fn heartbeats_that_go_unanswered_are_counted() {
+        let mut outstanding = Outstanding::default();
+        for seq in 0..3 {
+            outstanding.sent(seq, tokio::time::Instant::now());
+        }
+        assert_eq!(outstanding.unanswered(), 3);
+    }
+
+    #[test]
+    fn a_link_that_never_answers_does_not_grow_without_bound() {
+        let mut outstanding = Outstanding::default();
+        for seq in 0..100 {
+            outstanding.sent(seq, tokio::time::Instant::now());
+        }
+        assert_eq!(outstanding.unanswered(), MAX_OUTSTANDING as u32);
+    }
 }

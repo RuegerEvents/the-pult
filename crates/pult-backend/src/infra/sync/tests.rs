@@ -28,6 +28,8 @@ struct Node {
     engine: EngineHandle,
     sync: SyncHandle,
     addr: SocketAddr,
+    /// What this node has measured about its links, as the reporter would read it.
+    sync_mgr_links: tokio::sync::watch::Receiver<pult_schema::types::station::PeerLinks>,
 }
 
 /// A backend node with its own engine, showfile, and sync port.
@@ -39,12 +41,13 @@ async fn a_node() -> Node {
 
     let (manager, sync, addr) =
         SyncManager::bind(id, 0, engine.clone()).await.expect("bind an ephemeral sync port");
+    let sync_mgr_links = manager.peer_links();
     tokio::spawn(manager.run());
 
     let (show_engine, _broadcast) = ShowEngine::new_with_rx(id, rx, pool, Some(sync.clone()));
     tokio::spawn(show_engine.run());
 
-    Node { id, engine, sync, addr }
+    Node { id, engine, sync, addr, sync_mgr_links }
 }
 
 fn seq_path(id: Uuid, field: &str) -> Path {
@@ -735,4 +738,118 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
         fixture["live_values"]["Contact:3"]["value"] == serde_json::json!(true)
     })
     .await;
+}
+
+// ── Stations ──────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_station_row_reaches_the_other_console() {
+    // Each station publishes one row about itself and nobody arbitrates: the rows
+    // converge because no two nodes ever write the same one.
+    use pult_schema::types::station::Station;
+
+    let one = a_node().await;
+    let two = a_node().await;
+    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    let station = Station {
+        id: one.id.0,
+        hostname: "booth".into(),
+        is_leader: true,
+        sync_addr: one.addr.to_string(),
+        cpu_percent: 3.5,
+        mem_used: 100,
+        mem_total: 1000,
+        uptime_s: 5,
+        output_plugins: vec!["House".into()],
+        computes_fixtures: 0,
+        total_fixtures: 0,
+        last_seen: Utc::now(),
+    };
+    one.engine
+        .set(
+            vec![PathSegment::Key("stations".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Synced,
+            serde_json::to_value(&station).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    eventually("the station to appear on the other console", || async {
+        two.engine
+            .get(vec![PathSegment::Key("stations".into()), PathSegment::Id(one.id.0)])
+            .await
+            .map(|s| s["hostname"] == serde_json::json!("booth"))
+            .unwrap_or(false)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_station_row_is_not_written_to_the_showfile() {
+    // Which machines are on tonight is not part of the show.
+    use pult_schema::registry::EntityMeta;
+
+    let meta = EntityMeta::by_table("stations").expect("stations is a registered entity");
+    assert!(meta.upsert_one.is_none(), "SYNCED-only, so there is nothing to persist");
+    assert!(meta.load_all.is_none());
+}
+
+#[tokio::test]
+async fn a_measured_latency_shows_up_against_the_peer_that_answered() {
+    // Heartbeats are five seconds apart, so rather than wait for one, the ack path
+    // is driven directly — the arithmetic itself is covered in peer::tests.
+    let node = a_node().await;
+    let mut links = node.sync_mgr_links.clone();
+
+    node.sync
+        .0
+        .send(SyncCommand::PeerLatency {
+            node_id: NodeId(Uuid::new_v4()),
+            rtt: Duration::from_micros(2500),
+            unanswered: 0,
+        })
+        .await
+        .unwrap();
+
+    eventually("the latency to be published", || {
+        let links = links.clone();
+        async move { !links.borrow().is_empty() }
+    })
+    .await;
+
+    let measured = links.borrow_and_update().clone();
+    let link = measured.values().next().expect("one link");
+    assert_eq!(link.rtt_ms, Some(2.5), "microseconds become milliseconds");
+    assert_eq!(link.unanswered, 0);
+    assert!(link.measured_at.is_some());
+}
+
+#[tokio::test]
+async fn losing_a_peer_forgets_the_latency_to_it() {
+    // A number that stops updating is worse than no number: it reads as a healthy
+    // link long after the cable is out.
+    let node = a_node().await;
+    let mut links = node.sync_mgr_links.clone();
+    let peer = NodeId(Uuid::new_v4());
+
+    node.sync
+        .0
+        .send(SyncCommand::PeerLatency { node_id: peer, rtt: Duration::from_millis(1), unanswered: 0 })
+        .await
+        .unwrap();
+    eventually("the latency to appear", || {
+        let links = links.clone();
+        async move { !links.borrow().is_empty() }
+    })
+    .await;
+
+    node.sync.0.send(SyncCommand::PeerLost(peer)).await.unwrap();
+
+    eventually("the latency to be forgotten", || {
+        let links = links.clone();
+        async move { links.borrow().is_empty() }
+    })
+    .await;
+    let _ = links.borrow_and_update();
 }

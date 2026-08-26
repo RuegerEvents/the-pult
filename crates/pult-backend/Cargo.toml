@@ -27,6 +27,7 @@ tokio-stream = { workspace = true }
 futures = { workspace = true }
 toml = { workspace = true }
 mdns-sd = { workspace = true }
+sysinfo = { workspace = true }
 reqwest = { workspace = true }
 rumqttd = { workspace = true }
 rumqttc = { workspace = true }

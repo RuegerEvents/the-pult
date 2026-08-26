@@ -58,6 +58,9 @@ futures = "0.3"
 # Config
 toml = "0.8"
 
+# System statistics, for the station view
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+
 # mDNS discovery
 mdns-sd = "0.13"
 

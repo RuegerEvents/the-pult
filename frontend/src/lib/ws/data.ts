@@ -10,6 +10,7 @@ import type { FixtureType } from '../generated/FixtureType.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Show } from '../generated/Show.js';
+import type { Station } from '../generated/Station.js';
 import type { Trigger } from '../generated/Trigger.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
@@ -34,6 +35,10 @@ export type SequenceEntity = PathProxy<Sequence> & {
   delete(): Promise<void>;
   goNext(): Promise<void>;
   goToCue(args: { cueId: string }): Promise<void>;
+};
+
+export type StationEntity = PathProxy<Station> & {
+  delete(): Promise<void>;
 };
 
 export type TriggerEntity = PathProxy<Trigger> & {
@@ -97,6 +102,17 @@ export type SequenceCollection = {
   [n: number]: SequenceEntity;
 };
 
+export type StationCollection = {
+  get(): Promise<Station[]>;
+  set(value: Station[]): Promise<void>;
+  subscribe(cb: (value: Station[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Station[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): StationEntity;
+  nth(n: number): StationEntity;
+  create(entity: Station): Promise<void>;
+  [n: number]: StationEntity;
+};
+
 export type TriggerCollection = {
   get(): Promise<Trigger[]>;
   set(value: Trigger[]): Promise<void>;
@@ -118,6 +134,7 @@ export type DataRoot = {
   outputs: OutputConfigCollection;
   sequences: SequenceCollection;
   show: PathProxy<Show | null>;
+  stations: StationCollection;
   triggers: TriggerCollection;
 };
 

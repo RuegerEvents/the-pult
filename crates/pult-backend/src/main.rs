@@ -28,6 +28,7 @@ use crate::{
     infra::session::SessionManager,
     infra::identity,
     infra::showfile,
+    infra::stations::{prune_stale, StationReporter, REPORT_INTERVAL},
     infra::sync::SyncManager,
     state::AppState,
 };
@@ -204,6 +205,30 @@ async fn main() -> Result<()> {
     // The flags survive as a way to seed an empty showfile. Anything already
     // configured wins: a flag should not quietly add a second output every start.
     seed_outputs_from_flags(&engine_handle, node_id, &args).await;
+
+    // Every station publishes one row about itself, every couple of seconds, and
+    // the latencies it has measured to the peers it is connected to.
+    let reporter = StationReporter::new(
+        node_id,
+        engine_handle.clone(),
+        sync_addr,
+        sync_mgr.peer_links(),
+    );
+    tokio::spawn(reporter.run());
+
+    // Only the leader prunes: two nodes deleting each other's rows on different
+    // schedules is a fight rather than a cleanup.
+    let pruner = engine_handle.clone();
+    let pruner_sync = sync_handle.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(REPORT_INTERVAL * 5);
+        loop {
+            ticker.tick().await;
+            if pruner_sync.leader().await == Some(node_id) {
+                prune_stale(&pruner, chrono::Duration::seconds(30)).await;
+            }
+        }
+    });
 
     let (session_mgr, session_handle) =
         SessionManager::new(node_id, config.sync_port, engine_handle.clone(), sync_handle.clone());
