@@ -16,10 +16,11 @@ The spec is the product. This is the build order for getting there, and right no
 | Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness, vector-clock conflict resolution, and leader failover. |
 | Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
-| Output plugins | Working for Art-Net, several at once. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Off unless `--artnet` is passed. |
+| Output plugins | Working for Art-Net, several at once. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Configuration is CLI-only: `--artnet` at startup, nothing in the data model, nothing in the UI. |
+| Devices / events | Not started. No node discovery, no non-DMX fixtures, no triggers. Task 11. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
 | 3D programmer | Not started. The largest piece of the spec and none of it exists. |
-| Selection, effects, events, timecode | Not started. No schema for any of them yet. |
+| Selection, effects, timecode | Not started. No schema for any of them yet. |
 
 ## Task list
 
@@ -52,18 +53,6 @@ One thing left open, worth doing, not blocking:
 
 - Commands do not write to SQLite. That is right for `go_next`, which moves SYNCED playback state and should not touch the disk on every Go press, but a command that changes a PERSISTED field would not survive a restart.
 
-### 3. Playback engine (next)
-
-`go_next` moves an index. That is the whole of playback today. These fields are modelled and unused:
-
-- `Cue::fade_in_ms`, `Cue::fade_out_ms`
-- `Cue::follow_mode` including `FollowAfter` and `Timecode`
-- `Cue::is_active`
-- `Fixture::live_values`
-- `Show::is_running`
-
-Build a tick loop that interpolates `Cue::captures` into `Fixture::live_values` over the fade time, marks cues active, and fires follow cues on schedule. `live_values` is SYNCED, so peers and frontends both see the output without new plumbing.
-
 ### 3. Playback engine (done)
 
 `model::playback` fades captures into `Fixture::live_values`, marks the played cue active, and fires `FollowAfter` cues. It is a pure state machine driven by the engine's own tick, so its tests run a four-second fade in microseconds.
@@ -83,7 +72,6 @@ So the first piece is the trait and the registry, not Art-Net. An output plugin 
 Still to do here:
 
 - sACN, which should only need a new file next to `artnet.rs`.
-- More than one plugin at a time. `OutputManager` is generic over a single `P: OutputPlugin`; several plugins means a `Vec<Box<dyn ...>>` and an object-safe trait, which the current `impl Future` return type is not.
 - The spec wants fixtures to preload upcoming playback data, which means handing a plugin a description of what is coming rather than only the current frame. Nothing here does that yet.
 
 ### 5. Fixture and patch UI (done)
@@ -119,11 +107,54 @@ The one exception is ts-rs printing `failed to parse serde attribute` for the ge
 
 Nothing else depends on it, and the plugin API should be designed against a system that already plays back cues and drives output.
 
+### 9. Output configuration in the web UI
+
+Outputs are `--artnet` flags read once at startup. Nothing in the data model knows an output exists, so an operator cannot see where the show is going, let alone change it without restarting the backend.
+
+Add a PERSISTED `outputs` collection — `OutputConfig { id, name, kind: Artnet | Sacn | OpenHaunt, target, universes, enabled, node_id: Option<NodeId> }` — and build the `OutputManager`'s plugins from it instead of from the command line. `OutputManager` then has to add and remove plugins when the collection changes, which it cannot do today: it takes its `Vec<Box<dyn OutputPlugin>>` once at construction. The flag stays, as a way to seed one output into an empty showfile.
+
+An *Outputs* tab lists them, adds them, and enables or disables them, with per-plugin LOCAL status beside each: last send, frames per second, error count. That status is the reason to do this at all — right now a mistyped Art-Net address is silent.
+
+`node_id` says which station runs the plugin. It is the first ownership concept in the system, and what task 10 displays.
+
+sACN is not part of this. It lands earlier, in task 11, as a sibling of `artnet.rs`.
+
+### 10. Station view
+
+What exists today is thinner than it looks:
+
+- `NodeId` is generated fresh on every process start (`main.rs`), so a station has no identity across restarts. `NodeConfig::id` is dead code.
+- `SyncManager` knows its `members` and `peers`, but they are reachable only through test-only commands. Nothing publishes them.
+- Heartbeats go out every 5 s with a 16 s timeout, and the ack carries a `seq` that is never matched against a send time. Liveness is known; latency is not.
+- There are no system stats of any kind.
+- Every node computes every fixture. `playback_tick` runs the same fades everywhere, which is what makes output deterministic without extra messages, and also means "which node drives what" has no answer yet.
+
+Add a SYNCED `stations` collection that each node publishes about itself — `Station { node_id, hostname, is_leader, sync_addr, cpu_percent, mem_used, mem_total, uptime_s, output_plugins, computes_fixtures, last_seen }`, refreshed every couple of seconds via `sysinfo`. Round-trip time comes from matching `Heartbeat { seq }` to `HeartbeatAck { seq }` in `infra/sync/peer.rs`, published as a LOCAL `peers` list by the node that measured it, because latency is a property of a link rather than of a station. And persist `NodeId` in the showfile so a station keeps its identity across restarts.
+
+A *Stations* tab then shows who leads, what the latency to each peer is, cpu and memory per node, which output plugins run where, and which fixtures each node computes.
+
+That last column is honest but dull for now: every node computes every fixture, so it is all-or-nothing until parameter computation is partitioned. Partitioning it is the follow-up — the interesting version is a node driving only the fixtures on the outputs it owns, with a defined answer for what happens when that node drops out.
+
+### 11. OpenHaunt nodes and the event system (next)
+
+Covers the spec's *Event-Based Control & Automation*: sensors and switches drive playback, and the console drives things that are not lights.
+
+[OpenHaunt/node](https://github.com/OpenHaunt/node) is a PoE-powered modular I/O node — one carrier, one plug-in module — advertising itself over mDNS as `_openhaunt._tcp.local` with an HTTP/JSON control API and MQTT for events. Its guiding principle is that a node is discovered, not configured. There is no firmware yet, so this is built against the written protocol, and what the-pult assumes gets fed back into those docs.
+
+What this delivers:
+
+- Discovery. Nodes appear in a *Devices* panel with their module type, capabilities, and a mains warning where the descriptor says the module switches mains. Adopting one creates a fixture.
+- Fixtures that are not DMX. `Fixture::universe`/`dmx_address` become `FixtureAddress::{ Dmx, OpenHaunt }`, and `ParameterDefinition` gains a direction and a binding, so a parameter can be an *input* on a *port* rather than an output on a DMX channel. A contact closure and a temperature reading are then ordinary fixture parameters in `live_values`, replicated like everything else.
+- An MQTT broker embedded in the leader (rumqttd). On adoption the-pult POSTs its own broker address to the node, so nothing external has to be installed and the "discovered, not configured" principle holds. Only the leader drives devices, gated the same way `GoNext` already is.
+- Input to trigger to cue. A PERSISTED `triggers` collection with a source, a condition, an action and a delay, evaluated by a pure state machine in the engine's own tick next to playback.
+- Output to relays, LED strips, and OLED displays through an `OpenHauntOutput` plugin, plus sACN unicast for the DMX gateway module — which is task 4's remaining sACN work, done here because the gateway needs it.
+- `tools/openhaunt-sim`, a simulator implementing the node side of the protocol, so the whole path is covered by tests without hardware on the bench.
+
+What it leaves open: the node-graph UI (one row per trigger, not a canvas), per-pixel control of WS2812 strips (whole-strip colour and brightness only), OSC and MIDI as trigger sources, and RDM. A running fade and a `SetParameter` trigger writing the same key is last-writer-wins, which is a design question rather than a bug to fix in passing.
+
 ## Further out
 
-Everything below is in the spec and has no schema, no code, and no design yet. Listed so the near-term work does not paint itself into a corner.
-
-**Fixture positions.** The spec wants axial (position plus direction vector) or positional (XYZ) coordinates on every fixture, with tracking data feeding in later. `Fixture` has no position field at all. This is small to add and everything spatial depends on it, so it is the cheapest thing on this list to get right early.
+Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.
 
 **Selection as a geometric query.** Selections are meant to be generated from the rig by geometric functions and re-evaluated as the rig changes, not stored as fixture lists. That is a query language, and it needs positions first.
 
@@ -131,7 +162,7 @@ Everything below is in the spec and has no schema, no code, and no design yet. L
 
 **3D programmer.** Rig view, fixture puppeteering, quicksheets. The biggest single piece of the product and entirely absent.
 
-**Event system and node graph.** Sensor and network triggers, delays, reactive playback. Cuts across everything.
+**Node graph.** The event system itself is task 11: sensor and network triggers, delays, and reactive playback, driven from OpenHaunt I/O nodes. What stays further out is the graph — wiring triggers, conditions, and actions together visually instead of one row per rule.
 
 **Waveform timecode and "timecode without timecode".** Beat grids, markers, live audio analysis for band sync. Should subsume the `Timecode` follow mode rather than sit beside it.
 
