@@ -17,6 +17,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Configured from the `outputs` collection and editable while the show is up, with per-output status in the UI. Flags only seed an empty showfile. |
+| Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. |
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
 | Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. Tested end to end against `tools/openhaunt-sim`, which is all there is until there is firmware. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
@@ -233,15 +234,65 @@ Left open:
 - An action still loses to a running fade writing the same key. Task 11 documented
   it; drawing it does not settle it.
 
+### 13. The stage view (done)
+
+`Fixture::position` went in with the patch in task 5 and could only ever be set to
+the origin, so the rig had coordinates nobody could enter and nothing drew. Two
+views now read them, and one of them puts them there.
+
+**Assets.** The first bytes in a system that was otherwise all fields. A ground plan
+is a few megabytes, and putting it in the oplog would put a copy in every operation,
+every snapshot and every catch-up — so `assets` is a blob table beside the show,
+addressed by the sha256 of its own contents, with `POST /assets` and
+`GET /assets/{sha}` beside the WebSocket that was until now the entire HTTP surface.
+
+Content addressing carries more weight than it looks. The id *is* the check, so a
+station that has never seen a plan fetches it from one that has and verifies what
+came back; the same drawing uploaded twice is stored once; and the response can be
+cached for ever because its contents cannot change. `Station` gained `http_addr` so
+there is somewhere to fetch from, and a relayed request is answered locally or not at
+all, so a ring of consoles cannot forward one request round between them.
+
+PDFs never reach the backend. Page one is rasterised in the browser, which keeps a
+document engine out of both stage views and off the main bundle.
+
+**The plan.** `StagePlan` is the drawing plus the two numbers that make it a map:
+where its top-left corner sits in the room, and how many metres one pixel covers. The
+second comes from clicking two points and saying how far apart they really are, which
+is the whole of calibration. Fixtures are dragged onto it and their live colour and
+level fill the symbol, so the view is both where the rig is and what it is doing.
+
+**Axes.** This is the first place in the system that had to commit: **Y up, X to the
+right seen from front of house, Z downstage towards the audience.** Z is chosen
+rather than inherited, and two things agree on it — a ground plan is drawn with the
+audience at the bottom of the page, and the 3D camera looks up −Z. A plan therefore
+lies on the floor with no flip anywhere.
+
+**The rig in 3D.** Threlte over three.js, opening at the FOH perspective the spec
+calls primary. Fixture bodies, a beam cone each, and a spot light so the floor shows
+the state as well as the air. Both views read `lib/stage.ts`, so they cannot disagree
+about where anything is.
+
+Left open:
+
+- Pan is taken as 540° about the way a fixture hangs, because `FixtureType` carries
+  no real ranges. Right about which way a head is swinging and wrong in detail for
+  any particular one.
+- Nothing prunes an asset. A replaced plan's bytes stay in the showfile.
+- The plan is one drawing on one plane. Sections, multiple decks and a plan per
+  level are all the same schema and none of the UI.
+- MVR and GDTF. `StagePlan` and the asset store are the two things an import needs,
+  so nothing here is in its way.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.
 
-**Selection as a geometric query.** Selections are meant to be generated from the rig by geometric functions and re-evaluated as the rig changes, not stored as fixture lists. That is a query language, and it needs positions first.
+**Selection as a geometric query.** Selections are meant to be generated from the rig by geometric functions and re-evaluated as the rig changes, not stored as fixture lists. That is a query language. It needed positions first, and task 13 is where a rig finally gets them.
 
 **Effects and phasers.** Derived from the 3D selection with modifiers that can themselves be dynamic. Needs selection.
 
-**3D programmer.** Rig view, fixture puppeteering, quicksheets. The biggest single piece of the product and entirely absent.
+**3D programmer.** The rig *view* is task 13. What is still absent is programming in it: selecting a fixture zooming the view to it, puppeteering pan and tilt by grabbing an axis, and the effector quicksheet. That is the biggest single piece of the product.
 
 **Waveform timecode and "timecode without timecode".** Beat grids, markers, live audio analysis for band sync. Should subsume the `Timecode` follow mode rather than sit beside it.
 

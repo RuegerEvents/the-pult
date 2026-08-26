@@ -13,6 +13,7 @@ import type { FlowNode } from '../generated/FlowNode.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Show } from '../generated/Show.js';
+import type { StagePlan } from '../generated/StagePlan.js';
 import type { Station } from '../generated/Station.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
@@ -50,6 +51,10 @@ export type SequenceEntity = PathProxy<Sequence> & {
   delete(): Promise<void>;
   goNext(): Promise<void>;
   goToCue(args: { cueId: string }): Promise<void>;
+};
+
+export type StagePlanEntity = PathProxy<StagePlan> & {
+  delete(): Promise<void>;
 };
 
 export type StationEntity = PathProxy<Station> & {
@@ -146,6 +151,17 @@ export type SequenceCollection = {
   [n: number]: SequenceEntity;
 };
 
+export type StagePlanCollection = {
+  get(): Promise<StagePlan[]>;
+  set(value: StagePlan[]): Promise<void>;
+  subscribe(cb: (value: StagePlan[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: StagePlan[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): StagePlanEntity;
+  nth(n: number): StagePlanEntity;
+  create(entity: StagePlan): Promise<void>;
+  [n: number]: StagePlanEntity;
+};
+
 export type StationCollection = {
   get(): Promise<Station[]>;
   set(value: Station[]): Promise<void>;
@@ -170,6 +186,7 @@ export type DataRoot = {
   outputs: OutputConfigCollection;
   sequences: SequenceCollection;
   show: PathProxy<Show | null>;
+  stage_plans: StagePlanCollection;
   stations: StationCollection;
 };
 

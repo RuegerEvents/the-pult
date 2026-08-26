@@ -268,8 +268,11 @@ if [ "$SIMS" = 1 ]; then
        presses that contact every 2.5s, so the cue starts stepping.
     3. Devices — Adopt the Mains Relay too, then set Switch:0 from Patch and
        watch .demo/sim-relay.log record the output.
-    4. Outputs — add an Art-Net output and watch its frame rate appear.
-    5. Stations — this console, its cpu and memory, and what it is sending.
+    4. Stage — upload a ground plan (a PDF works; page one is used), click two
+       points whose real distance apart you know to set the scale, then drag the
+       fixtures onto it. Toggle to 3D for the same rig from front of house.
+    5. Outputs — add an Art-Net output and watch its frame rate appear.
+    6. Stations — this console, its cpu and memory, and what it is sending.
 EOF
 fi
 

@@ -5,14 +5,15 @@
 	import DevicesPanel from '$lib/components/DevicesPanel.svelte';
 	import PatchPanel from '$lib/components/PatchPanel.svelte';
 	import FlowEditor from '$lib/components/flow/FlowEditor.svelte';
+	import StagePanel from '$lib/components/stage/StagePanel.svelte';
 	import OutputsPanel from '$lib/components/OutputsPanel.svelte';
 	import StationsPanel from '$lib/components/StationsPanel.svelte';
 
-	type View = 'playback' | 'patch' | 'flows' | 'outputs' | 'stations';
+	type View = 'playback' | 'patch' | 'stage' | 'flows' | 'outputs' | 'stations';
 
 	/// Views that own their own scrolling. The flow canvas sizes itself to what is
 	/// left of the window, so the main area must not grow a scrollbar around it.
-	const fills = (v: View) => v === 'flows';
+	const fills = (v: View) => v === 'flows' || v === 'stage';
 	let view = $state<View>('playback');
 </script>
 
@@ -26,6 +27,7 @@
 		<nav class="tabs">
 			<button class:active={view === 'playback'} onclick={() => (view = 'playback')}>Playback</button>
 			<button class:active={view === 'patch'} onclick={() => (view = 'patch')}>Patch</button>
+			<button class:active={view === 'stage'} onclick={() => (view = 'stage')}>Stage</button>
 			<button class:active={view === 'flows'} onclick={() => (view = 'flows')}>Flows</button>
 			<button class:active={view === 'outputs'} onclick={() => (view = 'outputs')}>Outputs</button>
 			<button class:active={view === 'stations'} onclick={() => (view = 'stations')}>Stations</button>
@@ -35,6 +37,8 @@
 				<SequenceRunner />
 			{:else if view === 'patch'}
 				<PatchPanel />
+			{:else if view === 'stage'}
+				<StagePanel />
 			{:else if view === 'flows'}
 				<FlowEditor />
 			{:else if view === 'outputs'}

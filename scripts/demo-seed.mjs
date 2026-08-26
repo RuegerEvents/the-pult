@@ -47,14 +47,21 @@ try {
 	};
 	await create('fixture_types', dimmer);
 
-	const fixtures = ['Front left', 'Front right', 'Backlight'];
-	for (const [index, name] of fixtures.entries()) {
+	// Hung where the names say, in metres: X to the right as seen from front of
+	// house, Y up, Z downstage towards the audience. Placed rather than null so the
+	// Stage tab opens with a rig in it rather than three chips in a tray.
+	const fixtures = [
+		['Front left', { x: -3, y: 4.5, z: 2 }],
+		['Front right', { x: 3, y: 4.5, z: 2 }],
+		['Backlight', { x: 0, y: 5, z: -3 }]
+	];
+	for (const [index, [name, at]] of fixtures.entries()) {
 		await create('fixtures', {
 			id: id(),
 			name,
 			fixture_type_id: dimmer.id,
 			address: { Dmx: { universe: 1, address: 1 + index } },
-			position: null,
+			position: { Point: at },
 			live_values: {},
 			active_preset: null
 		});

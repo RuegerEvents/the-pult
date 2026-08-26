@@ -72,6 +72,19 @@ CREATE TABLE IF NOT EXISTS show (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS stage_plans (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    width_px INTEGER NOT NULL,
+    height_px INTEGER NOT NULL,
+    origin TEXT NOT NULL,
+    metres_per_pixel REAL NOT NULL,
+    rotation_deg REAL NOT NULL,
+    opacity REAL NOT NULL,
+    visible INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS collection_order (
     table_name TEXT NOT NULL,
     entity_id  TEXT NOT NULL,
