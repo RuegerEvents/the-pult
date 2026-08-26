@@ -20,6 +20,8 @@ use crate::{engine::EngineHandle, infra::sync::SyncHandle};
 
 #[allow(dead_code, reason = "Stop has no caller until the server shuts down gracefully")]
 pub enum SessionCommand {
+    /// This node has become the session leader after the old one disappeared.
+    Promote,
     Create {
         show_name: String,
         show_id: Uuid,
@@ -70,6 +72,8 @@ pub struct SessionManager {
     discovered_leader_ids: HashMap<Uuid, NodeId>,
     discovered_show_ids: HashMap<Uuid, Uuid>,
     mdns: ServiceDaemon,
+    /// A handle to our own command channel, for the promotion bridge.
+    self_tx: mpsc::Sender<SessionCommand>,
 }
 
 impl SessionManager {
@@ -94,6 +98,7 @@ impl SessionManager {
                         discovered_leader_ids: HashMap::new(),
                         discovered_show_ids: HashMap::new(),
                         mdns,
+                        self_tx: tx.clone(),
                     },
                     SessionHandle(tx),
                 );
@@ -114,9 +119,22 @@ impl SessionManager {
                 discovered_leader_ids: HashMap::new(),
                 discovered_show_ids: HashMap::new(),
                 mdns,
+                self_tx: tx.clone(),
             },
             SessionHandle(tx),
         )
+    }
+
+    /// A channel the sync layer can use to say this node is now the leader.
+    pub fn promotion_sender(&self) -> mpsc::Sender<NodeId> {
+        let tx = self.self_tx.clone();
+        let (promo_tx, mut promo_rx) = mpsc::channel::<NodeId>(4);
+        tokio::spawn(async move {
+            while promo_rx.recv().await.is_some() {
+                let _ = tx.send(SessionCommand::Promote).await;
+            }
+        });
+        promo_tx
     }
 
     pub async fn run(mut self) {
@@ -147,32 +165,11 @@ impl SessionManager {
         match cmd {
             SessionCommand::Create { show_name, show_id, reply } => {
                 let session_id = Uuid::new_v4();
-                let instance_name = format!("pult-{}", &self.node_id.0.to_string()[..8]);
-                let hostname = format!("{}.local.", gethostname());
-                let ip = local_ipv4();
-
-                let mut props = HashMap::new();
-                props.insert("session_id".to_string(), session_id.to_string());
-                props.insert("show_id".to_string(), show_id.to_string());
-                props.insert("show_name".to_string(), show_name);
-                props.insert("node_id".to_string(), self.node_id.0.to_string());
-                props.insert("leader_node_id".to_string(), self.node_id.0.to_string());
-
-                match ServiceInfo::new(SERVICE_TYPE, &instance_name, &hostname, IpAddr::V4(ip), self.sync_port, props) {
-                    Ok(info) => {
-                        if let Err(e) = self.mdns.register(info) {
-                            warn!("[session] mDNS register failed: {e}");
-                        } else {
-                            info!("[session] advertising session {session_id}");
-                            self.state.is_advertising = true;
-                            self.state.is_follower = false;
-                            self.state.session_id = Some(session_id);
-                            self.push_state().await;
-                        }
-                    }
-                    Err(e) => warn!("[session] ServiceInfo::new failed: {e}"),
+                self.advertise(session_id, show_id, show_name).await;
+                if self.state.is_advertising {
+                    self.state.is_follower = false;
+                    self.push_state().await;
                 }
-
                 let _ = reply.send(session_id);
             }
 
@@ -211,7 +208,60 @@ impl SessionManager {
                 self.push_state().await;
             }
 
+            SessionCommand::Promote => {
+                if self.state.is_advertising || self.state.session_id.is_none() {
+                    return; // already leading, or not in a session at all
+                }
+                let session_id = self.state.session_id.unwrap_or_else(Uuid::new_v4);
+                let show_id = self.discovered_show_ids.get(&session_id).copied().unwrap_or_default();
+                let show_name = self
+                    .state
+                    .discovered
+                    .iter()
+                    .find(|d| d.session_id == session_id)
+                    .map(|d| d.show_name.clone())
+                    .unwrap_or_else(|| "Untitled Show".to_string());
+
+                info!("[session] promoted to leader of session {session_id}");
+                self.advertise(session_id, show_id, show_name).await;
+                self.state.is_follower = false;
+                self.push_state().await;
+            }
+
             SessionCommand::Stop => {}
+        }
+    }
+
+    /// Register this node as the session's mDNS service, so newcomers find it here.
+    async fn advertise(&mut self, session_id: Uuid, show_id: Uuid, show_name: String) {
+        let instance_name = format!("pult-{}", &self.node_id.0.to_string()[..8]);
+        let hostname = format!("{}.local.", gethostname());
+        let ip = local_ipv4();
+
+        let mut props = HashMap::new();
+        props.insert("session_id".to_string(), session_id.to_string());
+        props.insert("show_id".to_string(), show_id.to_string());
+        props.insert("show_name".to_string(), show_name);
+        props.insert("node_id".to_string(), self.node_id.0.to_string());
+        props.insert("leader_node_id".to_string(), self.node_id.0.to_string());
+
+        match ServiceInfo::new(
+            SERVICE_TYPE,
+            &instance_name,
+            &hostname,
+            IpAddr::V4(ip),
+            self.sync_port,
+            props,
+        ) {
+            Ok(info) => match self.mdns.register(info) {
+                Ok(()) => {
+                    info!("[session] advertising session {session_id}");
+                    self.state.is_advertising = true;
+                    self.state.session_id = Some(session_id);
+                }
+                Err(e) => warn!("[session] mDNS register failed: {e}"),
+            },
+            Err(e) => warn!("[session] ServiceInfo::new failed: {e}"),
         }
     }
 

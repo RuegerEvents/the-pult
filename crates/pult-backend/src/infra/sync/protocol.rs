@@ -13,7 +13,9 @@ use pult_schema::{
 // connecting to the same leader collided in the peer map.
 // 3 put the joiner's clock in Hello and made OperationBatch carry operations, so a
 // peer that reconnects can be told what it missed instead of being sent the show.
-pub const PROTOCOL_VERSION: u32 = 3;
+// 4 put the responder's clock in HelloAck, so catch-up runs both ways and the two
+// sides converge whichever of them was behind.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -35,10 +37,22 @@ pub enum SyncMessage {
         /// which is not necessarily the leader.
         node_id: NodeId,
         leader_node_id: NodeId,
+        /// What the responder knows, so the connecting side can replay anything the
+        /// responder is missing. A reconnecting node is not always the stale one.
+        #[serde(default)]
+        clock: VectorClock,
         rejection_reason: Option<String>,
     },
     LeaderChanged {
         new_leader_node_id: NodeId,
+    },
+    /// Who is in the session. Sent by the leader whenever its peer set changes.
+    ///
+    /// Every node holding the same membership is what lets an election need no
+    /// messages: when the leader goes, each survivor removes it from the same list
+    /// and picks the same replacement.
+    SessionMembers {
+        members: Vec<NodeId>,
     },
     /// Ask for everything the holder of `known` has not seen.
     OperationRequest {

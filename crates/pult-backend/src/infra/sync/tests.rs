@@ -575,3 +575,100 @@ mod catch_up_decision {
         );
     }
 }
+
+// ── Leader failover ───────────────────────────────────────────────────────────
+
+/// Wire up a leader with two followers, all of them agreeing on who leads.
+async fn a_session_of_three() -> (Node, Node, Node) {
+    let leader = a_node().await;
+    let first = a_node().await;
+    let second = a_node().await;
+
+    let session = Uuid::new_v4();
+    let show = Uuid::new_v4();
+    for follower in [&first, &second] {
+        follower.sync.set_leader(leader.id).await;
+        follower.sync.connect_peer(leader.addr, session, show).await;
+    }
+    eventually("both followers to register", || async { peer_count(&leader.sync).await == 2 })
+        .await;
+
+    (leader, first, second)
+}
+
+#[tokio::test]
+async fn losing_the_leader_promotes_a_survivor() {
+    let (leader, first, second) = a_session_of_three().await;
+    let expected = first.id.min(second.id);
+
+    // The leader's machine goes away.
+    leader.sync.disconnect_all().await;
+
+    eventually("both survivors to agree on a new leader", || async {
+        first.sync.leader().await == Some(expected) && second.sync.leader().await == Some(expected)
+    })
+    .await;
+}
+
+/// Agreement is the whole point: two nodes both believing they lead is two consoles
+/// driving one rig.
+#[tokio::test]
+async fn every_survivor_picks_the_same_new_leader() {
+    let (leader, first, second) = a_session_of_three().await;
+    leader.sync.disconnect_all().await;
+
+    eventually("the election to settle", || async {
+        first.sync.leader().await.is_some_and(|l| l != leader.id)
+            && second.sync.leader().await.is_some_and(|l| l != leader.id)
+    })
+    .await;
+
+    assert_eq!(
+        first.sync.leader().await,
+        second.sync.leader().await,
+        "survivors must not disagree about who is leading",
+    );
+}
+
+#[tokio::test]
+async fn the_new_leader_is_one_of_the_survivors() {
+    let (leader, first, second) = a_session_of_three().await;
+    leader.sync.disconnect_all().await;
+
+    eventually("the election to settle", || async {
+        first.sync.leader().await.is_some_and(|l| l != leader.id)
+    })
+    .await;
+
+    let elected = first.sync.leader().await.unwrap();
+    assert!(elected == first.id || elected == second.id);
+    assert_ne!(elected, leader.id, "the node that went away must not stay leader");
+}
+
+#[tokio::test]
+async fn a_follower_leaving_does_not_change_the_leader() {
+    let (leader, first, second) = a_session_of_three().await;
+
+    // A follower's machine goes away rather than the leader's.
+    second.sync.disconnect_all().await;
+    eventually("the leader to notice", || async { peer_count(&leader.sync).await == 1 }).await;
+
+    assert_eq!(leader.sync.leader().await, Some(leader.id));
+    assert_eq!(first.sync.leader().await, Some(leader.id), "nothing about leadership changed");
+}
+
+#[tokio::test]
+async fn the_last_node_standing_leads_itself() {
+    let leader = a_node().await;
+    let follower = a_node().await;
+    follower.sync.set_leader(leader.id).await;
+    follower.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    eventually("the peer to register", || async { peer_count(&leader.sync).await == 1 }).await;
+
+    leader.sync.disconnect_all().await;
+
+    eventually("the follower to take over", || async {
+        follower.sync.leader().await == Some(follower.id)
+    })
+    .await;
+}

@@ -9,12 +9,15 @@ use tokio::{
     net::TcpStream,
     sync::{mpsc, watch},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::engine::{EngineCommand, EngineHandle};
 
-use super::protocol::{read_frame, write_frame, SyncMessage, PROTOCOL_VERSION};
+use super::{
+    protocol::{read_frame, write_frame, SyncMessage, PROTOCOL_VERSION},
+    SyncCommand,
+};
 
 pub struct PeerSender(pub mpsc::Sender<SyncMessage>);
 
@@ -26,6 +29,7 @@ pub async fn spawn_outbound(
     session_id: Uuid,
     show_id: Uuid,
     engine: EngineHandle,
+    on_lost: mpsc::Sender<SyncCommand>,
 ) -> Result<(NodeId, PeerSender)> {
     let addr = stream.peer_addr()?;
     let (tx, outgoing) = mpsc::channel::<SyncMessage>(64);
@@ -46,12 +50,12 @@ pub async fn spawn_outbound(
     .await?;
 
     // Wait for HelloAck
-    let peer_node_id = match read_frame(&mut read_half).await? {
-        SyncMessage::HelloAck { accepted: true, node_id, leader_node_id: remote_leader, .. } => {
+    let (peer_node_id, peer_clock) = match read_frame(&mut read_half).await? {
+        SyncMessage::HelloAck { accepted: true, node_id, leader_node_id: remote_leader, clock, .. } => {
             info!("[sync] connected to peer {}, leader={}", node_id.0, remote_leader.0);
             // The peer we are talking to, not the leader. Keying the connection by the
             // leader made every node connected to one leader collide in the peer map.
-            node_id
+            (node_id, clock)
         }
         SyncMessage::HelloAck { accepted: false, rejection_reason, .. } => {
             anyhow::bail!("peer rejected handshake: {:?}", rejection_reason);
@@ -59,6 +63,16 @@ pub async fn spawn_outbound(
         other => anyhow::bail!("expected HelloAck, got {:?}", other),
     };
 
+    // Catch-up runs both ways. A node that reconnects is not always the stale one:
+    // it may have been writing while it was away.
+    if let Some(operations) = engine.operations_since(peer_clock).await {
+        if !operations.is_empty() {
+            debug!("[sync] replaying {} operations to peer {}", operations.len(), peer_node_id.0);
+            write_frame(&mut write_half, &SyncMessage::OperationBatch { operations }).await?;
+        }
+    }
+
+    let to_manager = on_lost.clone();
     tokio::spawn(async move {
         if let Err(e) = run_peer_loop(
             read_half,
@@ -67,11 +81,15 @@ pub async fn spawn_outbound(
             engine,
             our_node_id,
             peer_node_id,
+            to_manager,
         )
         .await
         {
             debug!("[sync] peer {addr} disconnected: {e}");
         }
+        // Report our own exit, so a lost leader is noticed at once rather than
+        // whenever the next broadcast happens to fail.
+        let _ = on_lost.send(SyncCommand::PeerLost(peer_node_id)).await;
     });
 
     Ok((peer_node_id, PeerSender(tx)))
@@ -84,18 +102,14 @@ pub fn spawn_inbound(
     leader: watch::Receiver<NodeId>,
     engine: EngineHandle,
     on_connected: mpsc::Sender<(NodeId, PeerSender)>,
+    on_lost: mpsc::Sender<SyncCommand>,
 ) {
     tokio::spawn(async move {
-        if let Err(e) = handle_inbound(
-            stream,
-            our_node_id,
-            leader,
-            engine,
-            on_connected,
-        )
-        .await
-        {
-            debug!("[sync] inbound handshake failed: {e}");
+        match handle_inbound(stream, our_node_id, leader, engine, on_connected, on_lost.clone()).await {
+            Ok(peer_node_id) => {
+                let _ = on_lost.send(SyncCommand::PeerLost(peer_node_id)).await;
+            }
+            Err(e) => debug!("[sync] inbound peer ended: {e}"),
         }
     });
 }
@@ -106,7 +120,8 @@ async fn handle_inbound(
     leader: watch::Receiver<NodeId>,
     engine: EngineHandle,
     on_connected: mpsc::Sender<(NodeId, PeerSender)>,
-) -> Result<()> {
+    to_manager: mpsc::Sender<SyncCommand>,
+) -> Result<NodeId> {
     let addr = stream.peer_addr()?;
     // Read the leader at handshake time, not at startup.
     let leader_node_id = *leader.borrow();
@@ -122,6 +137,7 @@ async fn handle_inbound(
                         accepted: false,
                         node_id: our_node_id,
                         leader_node_id,
+                        clock: Default::default(),
                         rejection_reason: Some(format!(
                             "protocol version mismatch: got {protocol_version}, expected {PROTOCOL_VERSION}"
                         )),
@@ -142,6 +158,7 @@ async fn handle_inbound(
             accepted: true,
             node_id: our_node_id,
             leader_node_id,
+            clock: engine.get_clock().await,
             rejection_reason: None,
         },
     )
@@ -172,7 +189,20 @@ async fn handle_inbound(
     let sender = PeerSender(tx);
     let _ = on_connected.send((peer_node_id, sender)).await;
 
-    run_peer_loop(read_half, write_half, outgoing, engine, our_node_id, peer_node_id).await
+    let result = run_peer_loop(
+        read_half,
+        write_half,
+        outgoing,
+        engine,
+        our_node_id,
+        peer_node_id,
+        to_manager,
+    )
+    .await;
+    if let Err(e) = result {
+        debug!("[sync] peer {} disconnected: {e}", peer_node_id.0);
+    }
+    Ok(peer_node_id)
 }
 
 /// How often a heartbeat goes out.
@@ -190,6 +220,7 @@ async fn run_peer_loop(
     engine: EngineHandle,
     _our_node_id: NodeId,
     peer_node_id: NodeId,
+    to_manager: mpsc::Sender<SyncCommand>,
 ) -> Result<()> {
     let mut heartbeat_seq: u64 = 0;
     let mut heartbeat_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
@@ -215,6 +246,20 @@ async fn run_peer_loop(
                     debug!("[sync] heartbeat seq={seq} from peer {}", peer_node_id.0);
                     write_frame(&mut write_half, &SyncMessage::HeartbeatAck { seq }).await?;
                     continue;
+                }
+                // Leadership messages go to SyncManager, which owns that state.
+                match &msg {
+                    SyncMessage::LeaderChanged { new_leader_node_id } => {
+                        info!("[sync] leader is now {}", new_leader_node_id.0);
+                        let _ = to_manager.send(SyncCommand::SetLeader(*new_leader_node_id)).await;
+                        continue;
+                    }
+                    SyncMessage::SessionMembers { members } => {
+                        debug!("[sync] session has {} members", members.len());
+                        let _ = to_manager.send(SyncCommand::SetMembers(members.clone())).await;
+                        continue;
+                    }
+                    _ => {}
                 }
                 if let SyncMessage::OperationRequest { known } = msg {
                     let reply = match engine.operations_since(known).await {
@@ -258,8 +303,8 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
         }
         // Heartbeat is answered in run_peer_loop, which holds the write half.
         SyncMessage::Heartbeat { .. } | SyncMessage::HeartbeatAck { .. } => {}
-        SyncMessage::LeaderChanged { new_leader_node_id } => {
-            info!("[sync] leader changed to {}", new_leader_node_id.0);
+        SyncMessage::LeaderChanged { .. } | SyncMessage::SessionMembers { .. } => {
+            // Handled in run_peer_loop, which can reach SyncManager.
         }
         SyncMessage::OperationBatch { operations } => {
             debug!("[sync] {} operations from peer {}", operations.len(), peer_node_id.0);

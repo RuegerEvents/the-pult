@@ -78,10 +78,9 @@ async fn main() -> Result<()> {
     let (engine_tx, engine_rx) = mpsc::channel::<EngineCommand>(256);
     let engine_handle = EngineHandle(engine_tx);
 
-    let (sync_mgr, sync_handle, sync_addr) =
+    let (mut sync_mgr, sync_handle, sync_addr) =
         SyncManager::bind(node_id, config.sync_port, engine_handle.clone()).await?;
     info!("peer sync on {sync_addr}");
-    tokio::spawn(sync_mgr.run());
 
     let (mut engine, _broadcast) = ShowEngine::new_with_rx(
         node_id,
@@ -110,6 +109,10 @@ async fn main() -> Result<()> {
 
     let (session_mgr, session_handle) =
         SessionManager::new(node_id, config.sync_port, engine_handle.clone(), sync_handle.clone());
+    // If the leader disappears and this node wins the election, the session layer
+    // has to start advertising so newcomers find the show here.
+    sync_mgr.on_promotion(session_mgr.promotion_sender());
+    tokio::spawn(sync_mgr.run());
     tokio::spawn(session_mgr.run());
 
     let state = AppState {
