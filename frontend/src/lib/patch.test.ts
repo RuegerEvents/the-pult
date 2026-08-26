@@ -193,6 +193,59 @@ describe('address clashes', () => {
 		expect(clashingFixtures([atDmx(1, 1), atDmx(1, 2), atDmx(1, 3)], span).size).toBe(3);
 	});
 
+	/// The obvious definition: every fixture against every other. Slow, and
+	/// self-evidently right, which is what makes it worth comparing against.
+	function clashingPairwise(fixtures: Fixture[], span: (f: Fixture) => number): Set<string> {
+		const clashing = new Set<string>();
+		for (const a of fixtures) {
+			for (const b of fixtures) {
+				const da = 'Dmx' in a.address ? a.address.Dmx : null;
+				const db = 'Dmx' in b.address ? b.address.Dmx : null;
+				if (!da || !db || a.id === b.id || da.universe !== db.universe) continue;
+				const aEnd = da.address + Math.max(span(a), 1) - 1;
+				const bEnd = db.address + Math.max(span(b), 1) - 1;
+				if (da.address <= bEnd && db.address <= aEnd) {
+					clashing.add(a.id);
+					clashing.add(b.id);
+				}
+			}
+		}
+		return clashing;
+	}
+
+	it('agrees with comparing every fixture against every other one', () => {
+		// The sweep is subtle — it names only the furthest-reaching overlap it has
+		// seen — so it is checked against the definition on a few hundred rigs
+		// rather than on the handful of cases anyone would think to write out.
+		let seed = 20260826;
+		const random = (n: number) => {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			return seed % n;
+		};
+
+		for (let round = 0; round < 300; round++) {
+			const fixtures = Array.from({ length: 1 + random(12) }, () =>
+				atDmx(1 + random(3), 1 + random(20))
+			);
+			const spans = new Map(fixtures.map((f) => [f.id, 1 + random(6)]));
+			const span = (f: Fixture) => spans.get(f.id) ?? 1;
+
+			expect(clashingFixtures(fixtures, span)).toEqual(clashingPairwise(fixtures, span));
+		}
+	});
+
+	it('flags every fixture in a long chain of overlaps', () => {
+		// Each overlaps only its neighbours, so nothing is caught by a single
+		// far-reaching fixture — the sweep has to carry the right one forward.
+		const fixtures = Array.from({ length: 20 }, (_, i) => atDmx(1, 1 + i * 2));
+		expect(clashingFixtures(fixtures, () => 3).size).toBe(20);
+	});
+
+	it('flags nothing in a rig that is packed but not overlapping', () => {
+		const fixtures = Array.from({ length: 50 }, (_, i) => atDmx(1, 1 + i * 4));
+		expect(clashingFixtures(fixtures, () => 4).size).toBe(0);
+	});
+
 	it('never flags a fixture that has no channels to clash over', () => {
 		const node = onNode('1a2b3c', 1);
 		const light = atDmx(1, 1);

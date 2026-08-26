@@ -83,7 +83,7 @@ Fixture types with their parameters, and a fixture table with name, type, univer
 
 Left open here:
 
-- `subscribeDeep` re-fetches a whole collection on any change beneath it, so the patch table re-fetches every fixture at 40 Hz while a fade runs. Correct, but the frontend will eventually want updates that carry the changed value rather than a signal to re-read.
+- ~~`subscribeDeep` re-fetches a whole collection on any change beneath it.~~ Done in `caed1bc`: an update names the path that changed, so the local copy is patched rather than re-read, and only a cold start or an entity the client has never seen costs a round trip. What was left after that was not the network but the work done per delivery — `clashingFixtures` compared every fixture against every other one, on every tick of every fade. It sweeps per universe now: a 500-fixture rig went from 32 ms to 0.9 ms per second of ticks, and stopped growing quadratically.
 - Position can only be set to the origin from the UI. Editing coordinates, and the axial form, wait for the 3D view.
 
 ### 6. Sync catch-up and conflict handling (done)

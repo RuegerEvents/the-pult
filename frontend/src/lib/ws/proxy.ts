@@ -25,7 +25,9 @@ type ArrayProxy<E> = LeafProxy<E[]> & {
 	[n: number]: PathProxy<E>;
 	nth(n: number): PathProxy<E>;
 	byId(id: string): PathProxy<E>;
-	/** Subscribe to any change at or under this collection; re-fetches and delivers the full array. */
+	/** Subscribe to any change at or under this collection; delivers the full array.
+	 *  Updates are applied to the local copy from the path the change names, so a
+	 *  level moving at 40 Hz costs no round trip. */
 	subscribeDeep(cb: (value: E[]) => void, opts?: SubscribeOptions): () => void;
 };
 

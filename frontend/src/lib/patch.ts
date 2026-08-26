@@ -129,21 +129,42 @@ export function channelRange(fixture: Fixture, channelCount: number): string {
  *
  * Only DMX fixtures can clash. Two relays on two nodes are not fighting over
  * anything, and a node has no address to compare.
+ *
+ * Bucketed by universe and swept in address order rather than compared pairwise.
+ * The patch table recomputes this whenever anything about a fixture changes,
+ * including a level moving at 40 Hz during a fade, and comparing every fixture
+ * against every other one made a large rig cost real milliseconds per frame.
+ *
+ * The sweep works because each bucket is sorted by start address: a fixture
+ * overlaps something earlier exactly when it starts at or before the furthest end
+ * seen so far, and that furthest fixture is necessarily one of the things it
+ * overlaps. A fixture that clashes with nothing earlier becomes the new furthest,
+ * so it is still there to be named by whatever overlaps it later.
  */
 export function clashingFixtures(fixtures: Fixture[], span: (f: Fixture) => number): Set<string> {
 	const clashing = new Set<string>();
-	const addressed = fixtures
-		.map((f) => ({ fixture: f, dmx: dmxAddress(f.address) }))
-		.filter((f): f is { fixture: Fixture; dmx: { universe: number; address: number } } => !!f.dmx);
 
-	for (const a of addressed) {
-		for (const b of addressed) {
-			if (a.fixture.id === b.fixture.id || a.dmx.universe !== b.dmx.universe) continue;
-			const aEnd = a.dmx.address + Math.max(span(a.fixture), 1) - 1;
-			const bEnd = b.dmx.address + Math.max(span(b.fixture), 1) - 1;
-			if (a.dmx.address <= bEnd && b.dmx.address <= aEnd) {
-				clashing.add(a.fixture.id);
-				clashing.add(b.fixture.id);
+	const universes = new Map<number, { id: string; start: number; end: number }[]>();
+	for (const fixture of fixtures) {
+		const dmx = dmxAddress(fixture.address);
+		if (!dmx) continue;
+		const start = dmx.address;
+		const entry = { id: fixture.id, start, end: start + Math.max(span(fixture), 1) - 1 };
+		const bucket = universes.get(dmx.universe);
+		if (bucket) bucket.push(entry);
+		else universes.set(dmx.universe, [entry]);
+	}
+
+	for (const bucket of universes.values()) {
+		bucket.sort((a, b) => a.start - b.start || a.end - b.end);
+		let furthest: { id: string; end: number } | null = null;
+		for (const entry of bucket) {
+			if (furthest && entry.start <= furthest.end) {
+				clashing.add(entry.id);
+				clashing.add(furthest.id);
+			}
+			if (!furthest || entry.end > furthest.end) {
+				furthest = { id: entry.id, end: entry.end };
 			}
 		}
 	}
