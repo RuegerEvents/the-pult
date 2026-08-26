@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS show (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS collection_order (
+    table_name TEXT NOT NULL,
+    entity_id  TEXT NOT NULL,
+    position   INTEGER NOT NULL,
+    PRIMARY KEY (table_name, entity_id)
+);
+
 CREATE TABLE IF NOT EXISTS oplog (
     seq         INTEGER NOT NULL,
     node_id     TEXT NOT NULL,

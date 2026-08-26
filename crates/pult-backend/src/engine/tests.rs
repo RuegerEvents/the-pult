@@ -1113,3 +1113,165 @@ async fn an_idle_show_sends_nothing_to_output() {
     let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), output_rx.recv()).await;
     assert!(quiet.is_err(), "a show with nothing running must not push output every tick");
 }
+
+// ── Collection order ──────────────────────────────────────────────────────────
+
+async fn sequence_names(h: &Harness) -> Vec<String> {
+    h.engine
+        .get(key("sequences"))
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn collection_order_survives_a_reload() {
+    let mut h = harness().await;
+    // Names that do not sort the same way as their ids will, so a reload that fell
+    // back to UUID order would show up here.
+    for name in ["Prologue", "Act 1", "Interval", "Act 2", "Curtain"] {
+        h.engine
+            .set(create_path("sequences"), Lifecycle::Persisted, json(&a_sequence(name, vec![])))
+            .await
+            .unwrap();
+    }
+    let before = sequence_names(&h).await;
+
+    h.reload().await;
+
+    assert_eq!(sequence_names(&h).await, before, "the operator's order is show data");
+    assert_eq!(before[0], "Prologue");
+    assert_eq!(before[4], "Curtain");
+}
+
+#[tokio::test]
+async fn order_closes_up_after_a_delete_and_stays_closed() {
+    let mut h = harness().await;
+    let mut ids = Vec::new();
+    for name in ["One", "Two", "Three"] {
+        let seq = a_sequence(name, vec![]);
+        ids.push(seq.id);
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+    }
+
+    h.engine
+        .set(delete_path("sequences", ids[1]), Lifecycle::Persisted, serde_json::Value::Null)
+        .await
+        .unwrap();
+    assert_eq!(sequence_names(&h).await, vec!["One", "Three"]);
+
+    h.reload().await;
+    assert_eq!(sequence_names(&h).await, vec!["One", "Three"]);
+}
+
+#[tokio::test]
+async fn a_sequence_added_after_a_reload_goes_on_the_end() {
+    let mut h = harness().await;
+    h.engine
+        .set(create_path("sequences"), Lifecycle::Persisted, json(&a_sequence("One", vec![])))
+        .await
+        .unwrap();
+
+    h.reload().await;
+    h.engine
+        .set(create_path("sequences"), Lifecycle::Persisted, json(&a_sequence("Two", vec![])))
+        .await
+        .unwrap();
+
+    assert_eq!(sequence_names(&h).await, vec!["One", "Two"]);
+    h.reload().await;
+    assert_eq!(sequence_names(&h).await, vec!["One", "Two"]);
+}
+
+#[tokio::test]
+async fn every_collection_keeps_its_own_order() {
+    let mut h = harness().await;
+    let cues: Vec<Cue> = ["Blackout", "Warm", "Cold"].iter().map(|n| a_cue(n, 1.0)).collect();
+    for cue in &cues {
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(cue)).await.unwrap();
+    }
+    for name in ["First", "Second"] {
+        h.engine
+            .set(create_path("sequences"), Lifecycle::Persisted, json(&a_sequence(name, vec![])))
+            .await
+            .unwrap();
+    }
+
+    h.reload().await;
+
+    let all_cues = h.engine.get(key("cues")).await.unwrap();
+    let cue_names: Vec<&str> =
+        all_cues.as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(cue_names, vec!["Blackout", "Warm", "Cold"]);
+    assert_eq!(sequence_names(&h).await, vec!["First", "Second"]);
+}
+
+#[tokio::test]
+async fn an_order_row_for_a_deleted_entity_does_not_resurrect_it() {
+    use crate::infra::showfile::order;
+
+    let mut h = harness().await;
+    let seq = a_sequence("Only", vec![]);
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    // Leave a stale row behind, as a crash between the two writes would.
+    let ghost = Uuid::new_v4();
+    order::save(&h.pool, "sequences", &[ghost, seq.id]).await.unwrap();
+
+    h.reload().await;
+
+    assert_eq!(sequence_names(&h).await, vec!["Only"]);
+}
+
+#[tokio::test]
+async fn an_entity_missing_from_the_order_still_appears() {
+    use crate::infra::showfile::order;
+
+    let mut h = harness().await;
+    for name in ["One", "Two"] {
+        h.engine
+            .set(create_path("sequences"), Lifecycle::Persisted, json(&a_sequence(name, vec![])))
+            .await
+            .unwrap();
+    }
+
+    // Forget the order entirely, as an older showfile would have.
+    order::save(&h.pool, "sequences", &[]).await.unwrap();
+    h.reload().await;
+
+    assert_eq!(
+        sequence_names(&h).await.len(),
+        2,
+        "an unordered entity is appended, never dropped",
+    );
+}
+
+#[tokio::test]
+async fn a_leader_snapshot_carries_the_leader_s_order() {
+    let leader = harness().await;
+    for name in ["Prologue", "Act 1", "Curtain"] {
+        leader
+            .engine
+            .set(create_path("sequences"), Lifecycle::Persisted, json(&a_sequence(name, vec![])))
+            .await
+            .unwrap();
+    }
+    let snapshot = leader.engine.get_snapshot().await;
+
+    let mut follower = harness().await;
+    follower.engine.apply_state_snapshot(snapshot).await;
+    let _ = follower.engine.get(key("sequences")).await;
+
+    assert_eq!(sequence_names(&follower).await, vec!["Prologue", "Act 1", "Curtain"]);
+
+    follower.reload().await;
+    assert_eq!(
+        sequence_names(&follower).await,
+        vec!["Prologue", "Act 1", "Curtain"],
+        "a follower must write the order it was given, not just hold it in memory",
+    );
+}

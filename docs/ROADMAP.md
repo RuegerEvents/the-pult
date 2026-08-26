@@ -48,9 +48,8 @@ The drift is already visible. `FixtureType` has a `#[pult(table = "fixture_types
 
 Two more breaks of the same rule turned up and are fixed. Accessor path keys were camelCase while the wire is snake_case, so every field write through the Rust accessor API silently did nothing. And `ShowDataRoot`'s collection accessors were hand-written, listed three of the five tables, and pointed `fixture_types` at a table that has never existed.
 
-Two things left open, both worth doing, neither blocking:
+One thing left open, worth doing, not blocking:
 
-- Collection order is deterministic in memory but not persisted. After a reload the order comes from sorted UUIDs rather than creation order. Sequences need an order column, or the showfile needs to preserve row order.
 - Commands do not write to SQLite. That is right for `go_next`, which moves SYNCED playback state and should not touch the disk on every Go press, but a command that changes a PERSISTED field would not survive a restart.
 
 ### 3. Playback engine (next)

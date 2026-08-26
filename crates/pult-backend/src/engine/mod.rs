@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     error::BackendError,
-    infra::{connectors::OutputHandle, sync::SyncHandle},
+    infra::{connectors::OutputHandle, showfile::order, sync::SyncHandle},
     model::playback::{Playback, PlaybackEffect, ShowView, TICK},
 };
 
@@ -59,22 +59,38 @@ impl ShowState {
         paths
     }
 
-    /// Fill in ordering for any collection that arrived without one, after a bulk
-    /// load from the showfile or a peer snapshot.
+    /// Reconcile ordering against the entities actually present, after a bulk load
+    /// from the showfile or a peer snapshot.
+    ///
+    /// Known ids keep their position. Anything the order does not mention is appended,
+    /// and anything it mentions that is no longer there is dropped, so a stale order
+    /// row cannot resurrect a deleted entity or hide a new one.
     pub fn post_load_init(&mut self) {
         for meta in EntityMeta::all_with_tables() {
             let Some(table) = meta.table_name else { continue };
-            if meta.is_singleton || self.order.contains_key(table) {
+            if meta.is_singleton {
                 continue;
             }
-            let ids = self
+            let present: Vec<Uuid> = self
                 .entities
                 .get(table)
                 .and_then(|v| v.as_object())
                 .map(|m| m.keys().filter_map(|k| Uuid::parse_str(k).ok()).collect())
                 .unwrap_or_default();
-            self.order.insert(table.to_string(), ids);
+
+            let known = self.order.entry(table.to_string()).or_default();
+            known.retain(|id| present.contains(id));
+            for id in present {
+                if !known.contains(&id) {
+                    known.push(id);
+                }
+            }
         }
+    }
+
+    /// Seed ordering from the showfile before entities are reconciled against it.
+    pub fn set_order(&mut self, order: std::collections::HashMap<String, Vec<Uuid>>) {
+        self.order = order.into_iter().collect();
     }
 
     fn ids(&self, table: &str) -> &[Uuid] {
@@ -662,6 +678,7 @@ impl ShowEngine {
         let id = entity_id(meta, &entity, path)?;
         self.persist(meta, &entity).await?;
         self.state.insert_entity(table, id, entity);
+        self.persist_order(meta, table).await;
         Ok(())
     }
 
@@ -692,6 +709,7 @@ impl ShowEngine {
             delete_one(self.pool.as_ref().clone(), id).await?;
         }
         self.state.remove_entity(table, id);
+        self.persist_order(meta, table).await;
         Ok(())
     }
 
@@ -729,6 +747,20 @@ impl ShowEngine {
         }
         self.state.insert_entity(table, id, entity);
         Ok(())
+    }
+
+    /// Write a collection's display order to the showfile.
+    ///
+    /// Order is show data, so it goes to disk alongside the entities. A failure here
+    /// is logged rather than failing the write: losing the order of a list is not a
+    /// reason to reject the fixture that was just patched.
+    async fn persist_order(&self, meta: &'static EntityMeta, table: &str) {
+        if meta.is_singleton || meta.upsert_one.is_none() {
+            return;
+        }
+        if let Err(e) = order::save(&self.pool, table, self.state.ids(table)).await {
+            warn!("[engine] could not save {table} order: {e}");
+        }
     }
 
     async fn persist(
@@ -845,8 +877,16 @@ impl ShowEngine {
                 Err(e) => warn!("[engine] load_from_showfile failed for {table}: {e}"),
             }
         }
+        let saved_order = match order::load_all(&self.pool).await {
+            Ok(order) => order,
+            Err(e) => {
+                warn!("[engine] could not load collection order: {e}");
+                Default::default()
+            }
+        };
         match serde_json::from_value::<ShowState>(serde_json::Value::Object(state_map)) {
             Ok(mut state) => {
+                state.set_order(saved_order);
                 state.post_load_init();
                 self.state = state;
             }
@@ -866,6 +906,11 @@ impl ShowEngine {
             self.state = state;
         }
         self.save_to_showfile().await;
+        for meta in EntityMeta::all_with_tables() {
+            if let Some(table) = meta.table_name {
+                self.persist_order(meta, table).await;
+            }
+        }
         for key in ShowState::frontend_paths() {
             let path = vec![PathSegment::Key(key)];
             if let Some(val) = self.state.get_by_path(&path) {

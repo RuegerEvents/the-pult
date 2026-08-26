@@ -227,6 +227,17 @@ fn generate_sql_migration(workspace: &PathBuf) -> Result<()> {
         }
     }
 
+    // Collection display order. Infrastructure rather than a PultEntity: it is one
+    // row per entity across every table, so it cannot be derived from any one of them.
+    parts.push(concat!(
+        "CREATE TABLE IF NOT EXISTS collection_order (\n",
+        "    table_name TEXT NOT NULL,\n",
+        "    entity_id  TEXT NOT NULL,\n",
+        "    position   INTEGER NOT NULL,\n",
+        "    PRIMARY KEY (table_name, entity_id)\n",
+        ");"
+    ).to_string());
+
     // The oplog table is infrastructure — not a PultEntity, stays hand-written here.
     parts.push(concat!(
         "CREATE TABLE IF NOT EXISTS oplog (\n",
