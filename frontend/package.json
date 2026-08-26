@@ -25,6 +25,7 @@
 		"vitest": "^4.1.11"
 	},
 	"dependencies": {
-		"@sveltejs/adapter-static": "^3.0.10"
+		"@sveltejs/adapter-static": "^3.0.10",
+		"@xyflow/svelte": "^1.6.5"
 	}
 }

@@ -874,35 +874,68 @@ async fn a_live_value_reaches_the_frontends() {
     assert_eq!(update["Contact:0"]["value"], true);
 }
 
-// ── Triggers ──────────────────────────────────────────────────────────────────
+// ── Flows ─────────────────────────────────────────────────────────────────────
 
-mod triggers {
+mod flows {
     use pult_schema::types::{
         fixture::ParameterKind,
-        trigger::{Trigger, TriggerAction, TriggerCondition, TriggerSource},
+        flow::{Flow, FlowEdge, FlowNode, FlowNodeKind, TriggerAction, TriggerCondition, TriggerSource},
     };
 
     use super::*;
 
-    fn a_trigger(fixture_id: Uuid, action: TriggerAction) -> Trigger {
-        Trigger {
+    fn a_node(flow_id: Uuid, kind: FlowNodeKind) -> FlowNode {
+        FlowNode {
             id: Uuid::new_v4(),
-            name: "Doorbell".into(),
-            source: TriggerSource::Parameter {
-                fixture_id,
-                parameter: ParameterKind::Contact(0),
-            },
-            condition: TriggerCondition::RisingEdge,
-            action,
-            delay_ms: 0,
-            enabled: true,
-            pending: false,
+            flow_id,
+            kind,
+            x: 0.0,
+            y: 0.0,
+            active: false,
             last_fired_at: None,
         }
     }
 
-    /// A sensor fixture, a sequence with two cues, and a trigger between them.
-    async fn a_show(h: &Harness) -> (Uuid, Uuid, Trigger) {
+    fn an_edge(flow_id: Uuid, from: Uuid, to: Uuid) -> FlowEdge {
+        FlowEdge {
+            id: Uuid::new_v4(),
+            flow_id,
+            from_node: from,
+            from_port: 0,
+            to_node: to,
+            to_port: 0,
+        }
+    }
+
+    /// A doorbell wired to an action: source → rising edge → whatever it does.
+    async fn a_flow(h: &Harness, fixture_id: Uuid, action: TriggerAction) -> (Flow, FlowNode) {
+        let flow = Flow { id: Uuid::new_v4(), name: "Doorbell".into(), enabled: true };
+        h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
+
+        let source = a_node(
+            flow.id,
+            FlowNodeKind::Source(TriggerSource::Parameter {
+                fixture_id,
+                parameter: ParameterKind::Contact(0),
+            }),
+        );
+        let gate = a_node(flow.id, FlowNodeKind::Condition(TriggerCondition::RisingEdge));
+        let act = a_node(flow.id, FlowNodeKind::Action(action));
+        for node in [&source, &gate, &act] {
+            h.engine.set(create_path("flow_nodes"), Lifecycle::Persisted, json(node)).await.unwrap();
+        }
+        for edge in [an_edge(flow.id, source.id, gate.id), an_edge(flow.id, gate.id, act.id)] {
+            h.engine
+                .set(create_path("flow_edges"), Lifecycle::Persisted, json(&edge))
+                .await
+                .unwrap();
+        }
+
+        (flow, act)
+    }
+
+    /// A sensor fixture, a sequence with two cues, and a flow between them.
+    async fn a_show(h: &Harness) -> (Uuid, Uuid, Flow, FlowNode) {
         let fixture = a_fixture("Doorbell", 1);
         h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
 
@@ -910,10 +943,10 @@ mod triggers {
         let sequence = a_sequence("Act 1", cues);
         h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
 
-        let trigger = a_trigger(fixture.id, TriggerAction::GoNext { sequence_id: sequence.id });
-        h.engine.set(create_path("triggers"), Lifecycle::Persisted, json(&trigger)).await.unwrap();
+        let (flow, act) =
+            a_flow(h, fixture.id, TriggerAction::GoNext { sequence_id: sequence.id }).await;
 
-        (fixture.id, sequence.id, trigger)
+        (fixture.id, sequence.id, flow, act)
     }
 
     async fn close_the_contact(h: &Harness, fixture_id: Uuid) {
@@ -932,7 +965,7 @@ mod triggers {
             .clone()
     }
 
-    /// Wait for the engine's own tick to have run the trigger.
+    /// Wait for the engine's own tick to have run the flow.
     async fn eventually(what: &str, mut check: impl AsyncFnMut() -> bool) {
         for _ in 0..100 {
             if check().await {
@@ -946,7 +979,7 @@ mod triggers {
     #[tokio::test]
     async fn a_contact_closing_advances_the_sequence_it_is_wired_to() {
         let h = harness().await;
-        let (fixture_id, sequence_id, _) = a_show(&h).await;
+        let (fixture_id, sequence_id, _, _) = a_show(&h).await;
 
         close_the_contact(&h, fixture_id).await;
 
@@ -957,26 +990,50 @@ mod triggers {
     }
 
     #[tokio::test]
-    async fn a_trigger_records_when_it_last_fired() {
+    async fn an_action_node_records_when_it_last_fired() {
         let h = harness().await;
-        let (fixture_id, _, trigger) = a_show(&h).await;
+        let (fixture_id, _, _, act) = a_show(&h).await;
 
         close_the_contact(&h, fixture_id).await;
 
-        eventually("the trigger to record its firing", async || {
-            !h.engine.get(entity_path("triggers", trigger.id)).await.unwrap()["last_fired_at"]
+        eventually("the action to record its firing", async || {
+            !h.engine.get(entity_path("flow_nodes", act.id)).await.unwrap()["last_fired_at"]
                 .is_null()
         })
         .await;
     }
 
     #[tokio::test]
-    async fn a_disabled_trigger_leaves_the_show_alone() {
+    async fn a_source_lights_up_when_its_contact_closes() {
+        // The graph is meant to be watchable, not just drawable: `active` is what
+        // says a signal went through, and it replicates to every console watching.
         let h = harness().await;
-        let (fixture_id, sequence_id, trigger) = a_show(&h).await;
+        let fixture = a_fixture("Doorbell", 1);
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+        let sequence = a_sequence("Act 1", vec![Uuid::new_v4()]);
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
+        a_flow(&h, fixture.id, TriggerAction::GoNext { sequence_id: sequence.id }).await;
+
+        close_the_contact(&h, fixture.id).await;
+
+        eventually("a node to light up", async || {
+            h.engine
+                .get(key("flow_nodes"))
+                .await
+                .unwrap()
+                .as_array()
+                .is_some_and(|nodes| nodes.iter().any(|n| n["active"] == serde_json::json!(true)))
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_disabled_flow_leaves_the_show_alone() {
+        let h = harness().await;
+        let (fixture_id, sequence_id, flow, _) = a_show(&h).await;
         h.engine
             .set(
-                field_path("triggers", trigger.id, "enabled"),
+                field_path("flows", flow.id, "enabled"),
                 Lifecycle::Persisted,
                 serde_json::Value::Bool(false),
             )
@@ -990,11 +1047,11 @@ mod triggers {
     }
 
     #[tokio::test]
-    async fn a_follower_never_fires_a_trigger() {
+    async fn a_follower_never_fires_a_flow() {
         // The action is a write to replicated state, and the leader is about to send
         // it. A follower firing too would apply the same change twice.
         let h = harness().await;
-        let (fixture_id, sequence_id, _) = a_show(&h).await;
+        let (fixture_id, sequence_id, _, _) = a_show(&h).await;
         h.engine
             .set(
                 key("session"),
@@ -1014,22 +1071,23 @@ mod triggers {
     }
 
     #[tokio::test]
-    async fn a_trigger_can_drive_a_parameter_instead_of_a_cue() {
+    async fn a_flow_can_drive_a_parameter_instead_of_a_cue() {
         let h = harness().await;
         let sensor = a_fixture("Doorbell", 1);
         let lamp = a_fixture("Porch light", 2);
         for fixture in [&sensor, &lamp] {
             h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(fixture)).await.unwrap();
         }
-        let trigger = a_trigger(
+        a_flow(
+            &h,
             sensor.id,
             TriggerAction::SetParameter {
                 fixture_id: lamp.id,
                 parameter: ParameterKind::Switch(0),
                 value: pult_schema::types::fixture::ParameterValue::Bool(true),
             },
-        );
-        h.engine.set(create_path("triggers"), Lifecycle::Persisted, json(&trigger)).await.unwrap();
+        )
+        .await;
 
         close_the_contact(&h, sensor.id).await;
 
@@ -1042,19 +1100,61 @@ mod triggers {
     }
 
     #[tokio::test]
-    async fn a_trigger_survives_the_showfile() {
+    async fn pressing_a_button_node_fires_what_it_is_wired_to() {
+        // A press is `last_fired_at` changing, which is why any console can press a
+        // button and only the leader acts on it.
+        let h = harness().await;
+        let sequence = a_sequence("Act 1", vec![Uuid::new_v4(), Uuid::new_v4()]);
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
+
+        let flow = Flow { id: Uuid::new_v4(), name: "Panic".into(), enabled: true };
+        h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
+        let button = a_node(flow.id, FlowNodeKind::Button);
+        let act = a_node(
+            flow.id,
+            FlowNodeKind::Action(TriggerAction::GoNext { sequence_id: sequence.id }),
+        );
+        for node in [&button, &act] {
+            h.engine.set(create_path("flow_nodes"), Lifecycle::Persisted, json(node)).await.unwrap();
+        }
+        h.engine
+            .set(create_path("flow_edges"), Lifecycle::Persisted, json(&an_edge(flow.id, button.id, act.id)))
+            .await
+            .unwrap();
+
+        // Let the first tick record the button before pressing it.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        h.engine
+            .set(field_path("flow_nodes", button.id, "press"), Lifecycle::Synced, serde_json::json!({}))
+            .await
+            .unwrap();
+
+        eventually("the cue to advance", async || {
+            active_cue(&h, sequence.id).await == serde_json::json!(0)
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_flow_survives_the_showfile() {
         let mut h = harness().await;
-        let (_, _, trigger) = a_show(&h).await;
+        let (_, _, flow, act) = a_show(&h).await;
 
         h.reload().await;
 
-        let reloaded = h.engine.get(entity_path("triggers", trigger.id)).await.unwrap();
+        let reloaded = h.engine.get(entity_path("flows", flow.id)).await.unwrap();
         assert_eq!(reloaded["name"], "Doorbell");
-        assert_eq!(reloaded["condition"], "RisingEdge");
+        assert_eq!(reloaded["enabled"], true);
+
+        let node = h.engine.get(entity_path("flow_nodes", act.id)).await.unwrap();
+        assert_eq!(node["flow_id"], json(&flow.id));
         assert_eq!(
-            reloaded["pending"], false,
-            "pending is SYNCED, so it comes back as its default rather than from disk",
+            node["active"], false,
+            "active is SYNCED, so it comes back as its default rather than from disk",
         );
+
+        let edges = h.engine.get(key("flow_edges")).await.unwrap();
+        assert_eq!(edges.as_array().map(|e| e.len()), Some(2), "the wiring comes back too");
     }
 }
 
@@ -1657,4 +1757,199 @@ async fn a_fixture_with_no_position_is_still_a_valid_fixture() {
     let after = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
     assert_eq!(after["name"], "Unplaced");
     assert!(after["position"].is_null());
+}
+
+// ── A flow watching what a cue drives ─────────────────────────────────────────
+
+mod watching_playback {
+    use pult_schema::types::{
+        fixture::ParameterKind,
+        flow::{Flow, FlowEdge, FlowNode, FlowNodeKind, TriggerAction, TriggerCondition, TriggerSource},
+    };
+
+    use super::*;
+
+    /// A cue's own output is show state like any other, and a *Watch* node offers
+    /// every driven parameter — so a fade has to reach the flow tick, or the whole
+    /// dropdown would be full of things that can never fire.
+    #[tokio::test]
+    async fn a_cue_raising_a_level_fires_a_flow_watching_it() {
+        let h = harness().await;
+
+        let lamp = a_fixture("Porch light", 1);
+        let switched = a_fixture("Siren", 2);
+        for fixture in [&lamp, &switched] {
+            h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(fixture)).await.unwrap();
+        }
+
+        let cue = Cue {
+            id: Uuid::new_v4(),
+            name: "House".into(),
+            number: 1.0,
+            captures: vec![pult_schema::types::cue::ParameterCapture {
+                fixture_id: lamp.id,
+                parameter_kind: ParameterKind::Intensity,
+                value: pult_schema::types::fixture::ParameterValue::Float(1.0),
+                fade_in_ms: 0,
+                fade_out_ms: 0,
+                delay_in_ms: 0,
+            }],
+            follow_mode: FollowMode::Manual,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+            is_active: false,
+        };
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+        let sequence = a_sequence("Act 1", vec![cue.id]);
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
+
+        let flow = Flow { id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
+        h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
+        let node = |kind| FlowNode {
+            id: Uuid::new_v4(),
+            flow_id: flow.id,
+            kind,
+            x: 0.0,
+            y: 0.0,
+            active: false,
+            last_fired_at: None,
+        };
+        let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
+            fixture_id: lamp.id,
+            parameter: ParameterKind::Intensity,
+        }));
+        let gate = node(FlowNodeKind::Condition(TriggerCondition::Above(0.5)));
+        let act = node(FlowNodeKind::Action(TriggerAction::SetParameter {
+            fixture_id: switched.id,
+            parameter: ParameterKind::Switch(0),
+            value: pult_schema::types::fixture::ParameterValue::Bool(true),
+        }));
+        for n in [&source, &gate, &act] {
+            h.engine.set(create_path("flow_nodes"), Lifecycle::Persisted, json(n)).await.unwrap();
+        }
+        for (from, to) in [(&source, &gate), (&gate, &act)] {
+            h.engine
+                .set(
+                    create_path("flow_edges"),
+                    Lifecycle::Persisted,
+                    json(&FlowEdge {
+                        id: Uuid::new_v4(),
+                        flow_id: flow.id,
+                        from_node: from.id,
+                        from_port: 0,
+                        to_node: to.id,
+                        to_port: 0,
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Let the tick pick up what the new graph watches, then press Go.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        h.engine
+            .set(field_path("sequences", sequence.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+            .await
+            .unwrap();
+
+        for _ in 0..100 {
+            let values =
+                h.engine.get(field_path("fixtures", switched.id, "live_values")).await.unwrap();
+            if values["Switch:0"]["value"] == serde_json::json!(true) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the fade never reached the flow watching it");
+    }
+
+    #[tokio::test]
+    async fn a_fade_on_a_fixture_nothing_watches_leaves_the_flow_alone() {
+        // The other half of the gate: a graph reacts to the parameter it names and
+        // to nothing else, however much else is moving at the same time.
+        let h = harness().await;
+        let watched = a_fixture("Porch light", 1);
+        let other = a_fixture("Backlight", 2);
+        let switched = a_fixture("Siren", 3);
+        for fixture in [&watched, &other, &switched] {
+            h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(fixture)).await.unwrap();
+        }
+
+        // The cue moves `other`; the flow is watching `watched`.
+        let cue = Cue {
+            id: Uuid::new_v4(),
+            name: "House".into(),
+            number: 1.0,
+            captures: vec![pult_schema::types::cue::ParameterCapture {
+                fixture_id: other.id,
+                parameter_kind: ParameterKind::Intensity,
+                value: pult_schema::types::fixture::ParameterValue::Float(1.0),
+                fade_in_ms: 0,
+                fade_out_ms: 0,
+                delay_in_ms: 0,
+            }],
+            follow_mode: FollowMode::Manual,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+            is_active: false,
+        };
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+        let sequence = a_sequence("Act 1", vec![cue.id]);
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
+
+        let flow = Flow { id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
+        h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
+        let node = |kind| FlowNode {
+            id: Uuid::new_v4(),
+            flow_id: flow.id,
+            kind,
+            x: 0.0,
+            y: 0.0,
+            active: false,
+            last_fired_at: None,
+        };
+        let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
+            fixture_id: watched.id,
+            parameter: ParameterKind::Intensity,
+        }));
+        let gate = node(FlowNodeKind::Condition(TriggerCondition::Above(0.5)));
+        let act = node(FlowNodeKind::Action(TriggerAction::SetParameter {
+            fixture_id: switched.id,
+            parameter: ParameterKind::Switch(0),
+            value: pult_schema::types::fixture::ParameterValue::Bool(true),
+        }));
+        for n in [&source, &gate, &act] {
+            h.engine.set(create_path("flow_nodes"), Lifecycle::Persisted, json(n)).await.unwrap();
+        }
+        for (from, to) in [(&source, &gate), (&gate, &act)] {
+            h.engine
+                .set(
+                    create_path("flow_edges"),
+                    Lifecycle::Persisted,
+                    json(&FlowEdge {
+                        id: Uuid::new_v4(),
+                        flow_id: flow.id,
+                        from_node: from.id,
+                        from_port: 0,
+                        to_node: to.id,
+                        to_port: 0,
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        h.engine
+            .set(field_path("sequences", sequence.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let values = h.engine.get(field_path("fixtures", switched.id, "live_values")).await.unwrap();
+        assert_eq!(
+            values["Switch:0"], serde_json::Value::Null,
+            "a fade on a fixture the graph does not name must not fire it",
+        );
+    }
 }

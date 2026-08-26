@@ -23,7 +23,7 @@ use crate::{
     error::BackendError,
     infra::{connectors::OutputHandle, showfile::{oplog, order}, sync::SyncHandle},
     model::playback::{Playback, PlaybackEffect, ShowView, TICK},
-    model::triggers::{InputEvent, TriggerEffect, Triggers},
+    model::flows::{FlowEffect, FlowGraph, Flows, InputEvent},
 };
 
 // ── In-memory show state ──────────────────────────────────────────────────────
@@ -450,7 +450,7 @@ pub struct ShowEngine {
     sync: Option<SyncHandle>,
     commands: CommandTable,
     playback: Playback,
-    triggers: Triggers,
+    flows: Flows,
     /// Parameter changes since the last trigger tick.
     ///
     /// Queued rather than read from the state on the tick, because a button pressed
@@ -467,6 +467,11 @@ pub struct ShowEngine {
     /// The `outputs` collection changed and the output side has not been told yet.
     /// Set on the first tick too, so a saved show comes up sending.
     outputs_dirty: bool,
+    /// Something in a graph changed, so the next tick has to look at it.
+    flows_dirty: bool,
+    /// The fixture parameters some *Watch* node is looking at, so a fade can be
+    /// offered to the flow tick without walking every graph on every frame.
+    watched: std::collections::HashSet<(Uuid, String)>,
 }
 
 impl ShowEngine {
@@ -501,13 +506,15 @@ impl ShowEngine {
             sync,
             commands: build_command_table(),
             playback: Playback::default(),
-            triggers: Triggers::default(),
+            flows: Flows::default(),
             input_events: Vec::new(),
             output: None,
             path_clocks: HashMap::new(),
             state_version: 0,
             playback_seen: 0,
             outputs_dirty: true,
+            flows_dirty: true,
+            watched: Default::default(),
         };
         (engine, broadcast)
     }
@@ -527,7 +534,7 @@ impl ShowEngine {
                 _ = ticker.tick() => {
                     self.push_output_config().await;
                     self.playback_tick().await;
-                    self.triggers_tick().await;
+                    self.flows_tick().await;
                     continue;
                 }
             };
@@ -636,6 +643,7 @@ impl ShowEngine {
         for effect in effects {
             match effect {
                 PlaybackEffect::SetLiveValues { fixture_id, values } => {
+                    self.queue_watched_changes(fixture_id, &values);
                     let path = entity_field_path("fixtures", fixture_id, "live_values");
                     self.apply_local(path, serde_json::to_value(values).unwrap_or_default()).await;
                     moved.push(fixture_id);
@@ -672,39 +680,108 @@ impl ShowEngine {
         }
     }
 
-    // ── Triggers ──────────────────────────────────────────────────────────────
-
-    /// Evaluate the trigger rules against whatever came in since the last tick.
+    /// Tell the flow tick about a fade, but only where something is watching.
     ///
-    /// Only the leader fires. A trigger's action is a write to replicated state, so
-    /// every node running the same rule would apply the same change several times —
-    /// and the input that caused it only ever reached one node anyway.
-    async fn triggers_tick(&mut self) {
+    /// A cue's own output is show state like any other, so a flow ought to be able
+    /// to react to it — the alternative is a *Watch* node that offers every driven
+    /// parameter and silently never fires for any of them.
+    ///
+    /// The gate matters: this runs at 40 Hz for every fixture in a fade, and without
+    /// it a 500-fixture rig would queue thousands of events a second for a graph
+    /// that reads none of them. `watched` is rebuilt only when the graphs change.
+    fn queue_watched_changes(
+        &mut self,
+        fixture_id: Uuid,
+        values: &std::collections::HashMap<String, pult_schema::types::fixture::ParameterValue>,
+    ) {
+        if self.watched.is_empty() {
+            return;
+        }
+        let previous = self
+            .state
+            .entity("fixtures", fixture_id)
+            .and_then(|entity| entity.get("live_values"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
+        for (key, current) in values {
+            if !self.watched.contains(&(fixture_id, key.clone())) {
+                continue;
+            }
+            let before = previous
+                .get(key)
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            if before.as_ref() == Some(current) {
+                continue;
+            }
+            self.input_events.push(InputEvent {
+                fixture_id,
+                key: key.clone(),
+                previous: before,
+                current: current.clone(),
+            });
+        }
+    }
+
+    /// What every *Watch* node in the show is looking at.
+    fn refresh_watched(&mut self) {
+        use pult_schema::types::flow::{FlowNodeKind, TriggerSource};
+
+        let nodes: Vec<pult_schema::types::flow::FlowNode> = self.read_collection("flow_nodes");
+        self.watched = nodes
+            .iter()
+            .filter_map(|node| match &node.kind {
+                FlowNodeKind::Source(TriggerSource::Parameter { fixture_id, parameter }) => {
+                    Some((*fixture_id, crate::model::playback::parameter_key(parameter)))
+                }
+                _ => None,
+            })
+            .collect();
+    }
+
+    // ── Flows ─────────────────────────────────────────────────────────────────
+
+    /// Evaluate the flow graphs against whatever came in since the last tick.
+    ///
+    /// Only the leader fires. An action is a write to replicated state, so every
+    /// node running the same graph would apply the same change several times — and
+    /// the input that caused it only ever reached one node anyway.
+    async fn flows_tick(&mut self) {
+        let dirty = std::mem::take(&mut self.flows_dirty);
+        if dirty {
+            self.refresh_watched();
+        }
         let inputs = std::mem::take(&mut self.input_events);
-        if inputs.is_empty() && !self.triggers.has_work() {
+        if inputs.is_empty() && !dirty && !self.flows.has_work() {
             return;
         }
         if self.state.is_follower() {
             return;
         }
 
-        let triggers: Vec<pult_schema::types::trigger::Trigger> = self.read_collection("triggers");
-        if triggers.is_empty() {
+        let flows: Vec<pult_schema::types::flow::Flow> = self.read_collection("flows");
+        if flows.is_empty() {
             return;
         }
+        let nodes: Vec<pult_schema::types::flow::FlowNode> = self.read_collection("flow_nodes");
+        let edges: Vec<pult_schema::types::flow::FlowEdge> = self.read_collection("flow_edges");
+        let graph = FlowGraph { flows: &flows, nodes: &nodes, edges: &edges };
         let effects =
-            self.triggers.tick(tokio::time::Instant::now().into_std(), &triggers, &inputs);
+            self.flows.tick(tokio::time::Instant::now().into_std(), &graph, &inputs);
 
+        self.apply_flow_effects(effects).await;
+    }
+
+    async fn apply_flow_effects(&mut self, effects: Vec<FlowEffect>) {
         for effect in effects {
             match effect {
-                TriggerEffect::SetPending { trigger_id, pending } => {
-                    let path = entity_field_path("triggers", trigger_id, "pending");
-                    let value = serde_json::Value::Bool(pending);
-                    self.write_synced(path, value).await;
+                FlowEffect::SetActive { node_id, active } => {
+                    let path = entity_field_path("flow_nodes", node_id, "active");
+                    self.write_synced(path, serde_json::Value::Bool(active)).await;
                 }
-                TriggerEffect::Fire { trigger_id, action } => {
-                    self.run_trigger_action(action).await;
-                    let path = entity_field_path("triggers", trigger_id, "last_fired_at");
+                FlowEffect::Fire { node_id, action } => {
+                    self.run_flow_action(action).await;
+                    let path = entity_field_path("flow_nodes", node_id, "last_fired_at");
                     let value = serde_json::to_value(chrono::Utc::now()).unwrap_or_default();
                     self.write_synced(path, value).await;
                 }
@@ -712,8 +789,8 @@ impl ShowEngine {
         }
     }
 
-    async fn run_trigger_action(&mut self, action: pult_schema::types::trigger::TriggerAction) {
-        use pult_schema::types::trigger::TriggerAction;
+    async fn run_flow_action(&mut self, action: pult_schema::types::flow::TriggerAction) {
+        use pult_schema::types::flow::TriggerAction;
         match action {
             TriggerAction::GoNext { sequence_id } => {
                 let path = entity_field_path("sequences", sequence_id, "goNext");
@@ -730,7 +807,7 @@ impl ShowEngine {
                 // writer takes it, which is a design question and not a bug to fix
                 // in passing.
                 if let Err(e) = self.set_live_value(fixture_id, key, value).await {
-                    debug!("[triggers] set parameter on {fixture_id}: {e}");
+                    debug!("[flows] set parameter on {fixture_id}: {e}");
                 }
             }
         }
@@ -906,6 +983,13 @@ impl ShowEngine {
         let table = head.clone();
         if table == "outputs" {
             self.outputs_dirty = true;
+        }
+        // A button press is a write to `flow_nodes`, and the flow tick is otherwise
+        // only woken by an input or a running delay. Named here for the same reason
+        // `outputs` is: the alternative is polling every graph forty times a second
+        // for something that almost never changes.
+        if table == "flow_nodes" {
+            self.flows_dirty = true;
         }
 
         if meta.is_singleton {
@@ -1268,6 +1352,9 @@ impl ShowEngine {
                 state.post_load_init();
                 self.state = state;
                 self.outputs_dirty = true;
+                // Whole graphs arrived at once, so what they watch has to be worked
+                // out again before the next fade is offered to them.
+                self.flows_dirty = true;
             }
             Err(e) => warn!("[engine] load_from_showfile: ShowState deserialization failed: {e}"),
         }
@@ -1285,6 +1372,7 @@ impl ShowEngine {
             state.local = std::mem::take(&mut self.state.local);
             self.state = state;
             self.outputs_dirty = true;
+            self.flows_dirty = true;
             // The snapshot replaces every value, so what we knew about individual
             // paths no longer describes anything.
             self.path_clocks.clear();

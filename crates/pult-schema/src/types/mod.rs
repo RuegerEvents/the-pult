@@ -7,7 +7,7 @@ pub mod station;
 pub mod devices;
 pub mod openhaunt;
 pub mod output;
-pub mod trigger;
+pub mod flow;
 
 pub use fixture::{Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
@@ -19,4 +19,8 @@ pub use output::{
     OutputConfig, OutputConfigCreate, OutputConfigPatch, OutputKind, OutputStatus, OutputStatuses,
 };
 pub use station::{PeerLink, PeerLinks, Station, StationCreate, StationPatch};
-pub use trigger::{Trigger, TriggerAction, TriggerCondition, TriggerCreate, TriggerPatch, TriggerSource};
+pub use flow::{
+    Flow, FlowCreate, FlowEdge, FlowEdgeCreate, FlowEdgePatch, FlowNode, FlowNodeCreate,
+    FlowNodeKind, FlowNodePatch, FlowPatch, PortKind, TriggerAction, TriggerCondition,
+    TriggerSource,
+};

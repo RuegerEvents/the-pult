@@ -7,11 +7,13 @@ import { createDataProxy } from './proxy.js';
 import type { Cue } from '../generated/Cue.js';
 import type { Fixture } from '../generated/Fixture.js';
 import type { FixtureType } from '../generated/FixtureType.js';
+import type { Flow } from '../generated/Flow.js';
+import type { FlowEdge } from '../generated/FlowEdge.js';
+import type { FlowNode } from '../generated/FlowNode.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Show } from '../generated/Show.js';
 import type { Station } from '../generated/Station.js';
-import type { Trigger } from '../generated/Trigger.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
 
@@ -27,6 +29,19 @@ export type FixtureTypeEntity = PathProxy<FixtureType> & {
   delete(): Promise<void>;
 };
 
+export type FlowEntity = PathProxy<Flow> & {
+  delete(): Promise<void>;
+};
+
+export type FlowEdgeEntity = PathProxy<FlowEdge> & {
+  delete(): Promise<void>;
+};
+
+export type FlowNodeEntity = PathProxy<FlowNode> & {
+  delete(): Promise<void>;
+  press(): Promise<void>;
+};
+
 export type OutputConfigEntity = PathProxy<OutputConfig> & {
   delete(): Promise<void>;
 };
@@ -38,10 +53,6 @@ export type SequenceEntity = PathProxy<Sequence> & {
 };
 
 export type StationEntity = PathProxy<Station> & {
-  delete(): Promise<void>;
-};
-
-export type TriggerEntity = PathProxy<Trigger> & {
   delete(): Promise<void>;
 };
 
@@ -80,6 +91,39 @@ export type FixtureTypeCollection = {
   [n: number]: FixtureTypeEntity;
 };
 
+export type FlowCollection = {
+  get(): Promise<Flow[]>;
+  set(value: Flow[]): Promise<void>;
+  subscribe(cb: (value: Flow[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Flow[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): FlowEntity;
+  nth(n: number): FlowEntity;
+  create(entity: Flow): Promise<void>;
+  [n: number]: FlowEntity;
+};
+
+export type FlowEdgeCollection = {
+  get(): Promise<FlowEdge[]>;
+  set(value: FlowEdge[]): Promise<void>;
+  subscribe(cb: (value: FlowEdge[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: FlowEdge[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): FlowEdgeEntity;
+  nth(n: number): FlowEdgeEntity;
+  create(entity: FlowEdge): Promise<void>;
+  [n: number]: FlowEdgeEntity;
+};
+
+export type FlowNodeCollection = {
+  get(): Promise<FlowNode[]>;
+  set(value: FlowNode[]): Promise<void>;
+  subscribe(cb: (value: FlowNode[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: FlowNode[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): FlowNodeEntity;
+  nth(n: number): FlowNodeEntity;
+  create(entity: FlowNode): Promise<void>;
+  [n: number]: FlowNodeEntity;
+};
+
 export type OutputConfigCollection = {
   get(): Promise<OutputConfig[]>;
   set(value: OutputConfig[]): Promise<void>;
@@ -113,17 +157,6 @@ export type StationCollection = {
   [n: number]: StationEntity;
 };
 
-export type TriggerCollection = {
-  get(): Promise<Trigger[]>;
-  set(value: Trigger[]): Promise<void>;
-  subscribe(cb: (value: Trigger[]) => void, opts?: SubscribeOptions): () => void;
-  subscribeDeep(cb: (value: Trigger[]) => void, opts?: SubscribeOptions): () => void;
-  byId(id: string): TriggerEntity;
-  nth(n: number): TriggerEntity;
-  create(entity: Trigger): Promise<void>;
-  [n: number]: TriggerEntity;
-};
-
 // ── DataRoot ─────────────────────────────────────────────────────────────────
 
 /** Typed root for the pult:data context. Every field maps to a live path proxy. */
@@ -131,11 +164,13 @@ export type DataRoot = {
   cues: CueCollection;
   fixtures: FixtureCollection;
   fixture_types: FixtureTypeCollection;
+  flows: FlowCollection;
+  flow_edges: FlowEdgeCollection;
+  flow_nodes: FlowNodeCollection;
   outputs: OutputConfigCollection;
   sequences: SequenceCollection;
   show: PathProxy<Show | null>;
   stations: StationCollection;
-  triggers: TriggerCollection;
 };
 
 /** Create the typed root proxy. The runtime proxy handles all DataRoot operations generically. */

@@ -14,6 +14,7 @@
 use anyhow::Result;
 use sqlx::{Row, SqlitePool};
 use tracing::info;
+use uuid::Uuid;
 
 /// One irreversible change to an existing showfile.
 struct Upgrade {
@@ -53,6 +54,104 @@ pub async fn run(pool: &SqlitePool) -> Result<()> {
             sqlx::query(statement).execute(pool).await?;
         }
     }
+    triggers_become_flows(pool).await?;
+    Ok(())
+}
+
+/// Redraw every one-row-per-rule trigger as the graph it always was.
+///
+/// A trigger is a source, a condition, a delay and an action in a row, which is
+/// exactly a four-node chain — so nothing about the show changes, only how it is
+/// written down. Not an [`Upgrade`] because that decides from a table's *columns*
+/// whether it still applies, and what settles this one is whether the table is there
+/// at all: `CREATE TABLE` never makes `triggers` again, and the `DROP` at the end
+/// means a second open finds nothing to do.
+async fn triggers_become_flows(pool: &SqlitePool) -> Result<()> {
+    if column_names(pool, "triggers").await?.is_empty() {
+        return Ok(());
+    }
+
+    let rows = sqlx::query("SELECT id, name, source, condition, action, delay_ms, enabled FROM triggers")
+        .fetch_all(pool)
+        .await?;
+    info!("[showfile] upgrading — {} trigger(s) become flows", rows.len());
+
+    for (row_index, row) in rows.iter().enumerate() {
+        let flow_id = Uuid::new_v4();
+        let name: String = row.try_get("name").unwrap_or_else(|_| "Trigger".into());
+        let enabled: i64 = row.try_get("enabled").unwrap_or(1);
+        let delay_ms: i64 = row.try_get("delay_ms").unwrap_or(0);
+        let source: String = row.try_get("source")?;
+        let condition: String = row.try_get("condition")?;
+        let action: String = row.try_get("action")?;
+
+        sqlx::query("INSERT INTO flows (id, name, enabled) VALUES (?, ?, ?)")
+            .bind(flow_id.to_string())
+            .bind(&name)
+            .bind(enabled)
+            .execute(pool)
+            .await?;
+
+        // Laid out left to right with a row per rule, so a show with a dozen
+        // triggers opens as a dozen readable chains rather than a pile at the origin.
+        let y = row_index as f64 * 140.0;
+        let mut chain: Vec<Uuid> = Vec::new();
+        let mut place = |kind: String| -> (Uuid, String, f64) {
+            let id = Uuid::new_v4();
+            let x = chain.len() as f64 * 220.0;
+            chain.push(id);
+            (id, kind, x)
+        };
+
+        let steps = if delay_ms > 0 {
+            vec![
+                format!("{{\"Source\":{source}}}"),
+                format!("{{\"Condition\":{condition}}}"),
+                format!("{{\"Delay\":{{\"ms\":{delay_ms}}}}}"),
+                format!("{{\"Action\":{action}}}"),
+            ]
+        } else {
+            vec![
+                format!("{{\"Source\":{source}}}"),
+                format!("{{\"Condition\":{condition}}}"),
+                format!("{{\"Action\":{action}}}"),
+            ]
+        };
+
+        for kind in steps {
+            let (id, kind, x) = place(kind);
+            sqlx::query(
+                "INSERT INTO flow_nodes (id, flow_id, kind, x, y) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(id.to_string())
+            .bind(flow_id.to_string())
+            .bind(kind)
+            .bind(x)
+            .bind(y)
+            .execute(pool)
+            .await?;
+        }
+
+        for pair in chain.windows(2) {
+            sqlx::query(
+                "INSERT INTO flow_edges (id, flow_id, from_node, from_port, to_node, to_port) \
+                 VALUES (?, ?, ?, 0, ?, 0)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(flow_id.to_string())
+            .bind(pair[0].to_string())
+            .bind(pair[1].to_string())
+            .execute(pool)
+            .await?;
+        }
+    }
+
+    sqlx::query("DROP TABLE triggers").execute(pool).await?;
+    // The order table outlives the table it ordered, and a stale row there would
+    // have `post_load_init` reserving a place for an entity nothing can produce.
+    sqlx::query("DELETE FROM collection_order WHERE table_name = 'triggers'")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

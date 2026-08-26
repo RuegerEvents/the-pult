@@ -170,7 +170,7 @@ start_station "$SHOWFILE" "$PORT" "$SYNC_PORT" "$BROKER_PORT" "$DEMO_DIR/backend
 
 if [ "$SIMS" = 1 ]; then
   echo "starting two simulated OpenHaunt nodes"
-  # --auto presses contact 0 every couple of seconds, so a trigger wired to it
+  # --auto presses contact 0 every couple of seconds, so a flow wired to it
   # visibly fires without anyone having to hold a button.
   "$ROOT/target/debug/openhaunt-sim" --module input --serial 1a2b3c --port 8801 --auto 2500 \
     > "$DEMO_DIR/sim-input.log" 2>&1 &
@@ -262,8 +262,10 @@ if [ "$SIMS" = 1 ]; then
 
     1. Devices, in the sidebar — Adopt the Digital Inputs node. That is the
        moment it learns where the broker is; before that it publishes nothing.
-    2. Triggers — add one watching Contact:0, condition Closes, action Go.
-       The simulator presses that contact every 2.5s, so the cue starts stepping.
+    2. Flows — the seeded graphs are there. Press the button in Panic button and
+       watch the Wait node count down before the cue moves. Then add a Watch
+       node on the adopted node's Contact:0 and wire it up: the simulator
+       presses that contact every 2.5s, so the cue starts stepping.
     3. Devices — Adopt the Mains Relay too, then set Switch:0 from Patch and
        watch .demo/sim-relay.log record the output.
     4. Outputs — add an Art-Net output and watch its frame rate appear.

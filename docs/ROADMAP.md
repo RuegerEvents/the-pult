@@ -17,7 +17,8 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Configured from the `outputs` collection and editable while the show is up, with per-output status in the UI. Flags only seed an empty showfile. |
-| Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; triggers turn those into cues. Tested end to end against `tools/openhaunt-sim`, which is all there is until there is firmware. |
+| Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
+| Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. Tested end to end against `tools/openhaunt-sim`, which is all there is until there is firmware. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
 | 3D programmer | Not started. The largest piece of the spec and none of it exists. |
 | Selection, effects, timecode | Not started. No schema for any of them yet. |
@@ -177,7 +178,7 @@ All of that is in. `FixtureAddress` and `ParameterDirection`/`ParameterBinding` 
 
 What it leaves open:
 
-- The node-graph UI. Triggers are one row per rule, which is enough to wire a doorbell to a cue and not enough to express a condition of two things at once.
+- ~~The node-graph UI.~~ Task 12.
 - Per-pixel WS2812. A strip is one colour and one brightness.
 - OSC and MIDI as trigger sources. `TriggerSource` is an enum with one variant so they can be added beside `Parameter` without touching anything else.
 - RDM, which the gateway module's `caps` advertises and nothing here uses.
@@ -185,6 +186,52 @@ What it leaves open:
 - The broker is started once per process and never stopped. A node adopted by a previous leader is re-configured on promotion, but a follower keeps a broker it started while it was leading.
 
 Assumptions made about the protocol, to be fed back into the OpenHaunt docs since there is no firmware to check them against: `/api/v1/config` takes `{ mqtt: { broker }, dmx?: { protocol: "sacn", universe } }` and persists it; the mains flag is descriptor bit 6, reachable through `GET /api/v1/info` as `module.flags` (a `mains=1` TXT key would let the panel warn without the round trip); input events are `{ state, edge, ts }` and sensor readings `{ value, unit, ts }` on the same `input/<n>` topic; output payloads are `{ state }` for a relay, `{ r, g, b }` and `{ brightness }` on ports 0 and 1 for a strip, and `{ text }` for a display; `POST /api/v1/state` takes `{ outputs: { "<n>": payload } }`; `status` is the literal `online`/`offline`, retained, with `offline` as the will; health is `{ uptime_s, temp_c, poe_class, errors }`; the DMX module lists `sacn` in `caps` and listens on unicast 5568 for its configured universe; and TXT `sn` matches the instance short serial, one module per node.
+
+### 12. The node graph (done)
+
+Covers the spec's *Node-Based Workflow*: "visually connect triggers, events, playback
+actions and automation logic".
+
+`triggers` is gone. A rule was a source, a condition, a delay and an action in a row,
+which is a four-node chain — so the graph replaced it rather than sitting beside it,
+and `showfile::upgrades` redraws every existing trigger as a flow on the next open.
+One evaluator, one meaning, and the thing a row could not say — two contacts into an
+`And` — is now drawable.
+
+`flows`, `flow_nodes` and `flow_edges` are three PERSISTED collections rather than two
+`Vec`s on one entity, so dragging a node patches one row instead of rewriting the
+graph and two operators moving two different nodes both keep their work. Adding all
+three needed no edit in `engine/mod.rs`: task 2's registry-driven dispatch held.
+
+The design decision everything else follows from is that a port carries either a
+**level** or a **pulse**. A level stays put; a pulse is an instant. Sources emit
+levels, `And`/`Or`/`Not` combine them, and a `Condition` is the only thing that turns
+one into the other — by noticing a *change*. That asymmetry is what stops a warm room
+firing a cue forty times a second, and having it in the type system means the editor
+refuses the connection rather than the evaluator refusing the graph.
+
+Node `active` is SYNCED, so a graph lights up as signals pass through it on every
+console watching. That is the reason to draw it at all: a diagram that shows its own
+state is an instrument.
+
+Two things turned up while building it:
+
+- A button press is a write to `last_fired_at`, not a message. That fell out of
+  wanting a press to work from a tablet: the leader is the only node that fires
+  anything, and a replicated field change already reaches it by the path everything
+  else takes.
+- A `Watch` node offered every driven parameter and could never fire for any of
+  them, because playback applied fades with LOCAL lifecycle and never queued an
+  input event. A cue's own output is show state like any other, so fades now reach
+  the flow tick — gated by the set of parameters some `Watch` actually names, since
+  this runs at 40 Hz per fixture in a fade.
+
+Left open:
+
+- Nothing decides what a cycle *means*. It terminates rather than hanging, which is
+  right for a drawing mistake and not an answer for a graph that wants feedback.
+- An action still loses to a running fade writing the same key. Task 11 documented
+  it; drawing it does not settle it.
 
 ## Further out
 
@@ -195,8 +242,6 @@ Everything below is in the spec and has no schema and no code yet. Listed so the
 **Effects and phasers.** Derived from the 3D selection with modifiers that can themselves be dynamic. Needs selection.
 
 **3D programmer.** Rig view, fixture puppeteering, quicksheets. The biggest single piece of the product and entirely absent.
-
-**Node graph.** The event system itself is task 11: sensor and network triggers, delays, and reactive playback, driven from OpenHaunt I/O nodes. What stays further out is the graph — wiring triggers, conditions, and actions together visually instead of one row per rule.
 
 **Waveform timecode and "timecode without timecode".** Beat grids, markers, live audio analysis for band sync. Should subsume the `Timecode` follow mode rather than sit beside it.
 

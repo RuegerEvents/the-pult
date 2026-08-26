@@ -27,6 +27,29 @@ CREATE TABLE IF NOT EXISTS fixture_types (
     parameters TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS flows (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS flow_edges (
+    id TEXT NOT NULL PRIMARY KEY,
+    flow_id TEXT NOT NULL,
+    from_node TEXT NOT NULL,
+    from_port INTEGER NOT NULL,
+    to_node TEXT NOT NULL,
+    to_port INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS flow_nodes (
+    id TEXT NOT NULL PRIMARY KEY,
+    flow_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    x REAL NOT NULL,
+    y REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS outputs (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
@@ -47,16 +70,6 @@ CREATE TABLE IF NOT EXISTS show (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
     created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS triggers (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    source TEXT NOT NULL,
-    condition TEXT NOT NULL,
-    action TEXT NOT NULL,
-    delay_ms INTEGER NOT NULL,
-    enabled INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS collection_order (

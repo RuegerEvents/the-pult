@@ -208,13 +208,16 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
 #[tokio::test]
 async fn a_button_on_a_node_advances_a_cue() {
     // The whole path, in one test: a node publishes an edge, the console maps the
-    // port to a parameter, a trigger sees the change, and the sequence moves.
+    // port to a parameter, a flow sees the change, and the sequence moves.
     use pult_schema::{
         lifecycle::Lifecycle,
         types::{
             fixture::ParameterKind,
+            flow::{
+                Flow, FlowEdge, FlowNode, FlowNodeKind, TriggerAction, TriggerCondition,
+                TriggerSource,
+            },
             sequence::Sequence,
-            trigger::{Trigger, TriggerAction, TriggerCondition, TriggerSource},
         },
     };
 
@@ -228,20 +231,38 @@ async fn a_button_on_a_node_advances_a_cue() {
         cue_ids: vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()],
         active_cue_index: None,
     };
-    let trigger = Trigger {
+    let flow = Flow { id: uuid::Uuid::new_v4(), name: "Front door".into(), enabled: true };
+    let node = |kind| FlowNode {
         id: uuid::Uuid::new_v4(),
-        name: "Front door".into(),
-        source: TriggerSource::Parameter { fixture_id, parameter: ParameterKind::Contact(0) },
-        condition: TriggerCondition::RisingEdge,
-        action: TriggerAction::GoNext { sequence_id: sequence.id },
-        delay_ms: 0,
-        enabled: true,
-        pending: false,
+        flow_id: flow.id,
+        kind,
+        x: 0.0,
+        y: 0.0,
+        active: false,
         last_fired_at: None,
+    };
+    let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
+        fixture_id,
+        parameter: ParameterKind::Contact(0),
+    }));
+    let gate = node(FlowNodeKind::Condition(TriggerCondition::RisingEdge));
+    let action = node(FlowNodeKind::Action(TriggerAction::GoNext { sequence_id: sequence.id }));
+    let wire = |from: &FlowNode, to: &FlowNode| FlowEdge {
+        id: uuid::Uuid::new_v4(),
+        flow_id: flow.id,
+        from_node: from.id,
+        from_port: 0,
+        to_node: to.id,
+        to_port: 0,
     };
     for (table, value) in [
         ("sequences", serde_json::to_value(&sequence).unwrap()),
-        ("triggers", serde_json::to_value(&trigger).unwrap()),
+        ("flows", serde_json::to_value(&flow).unwrap()),
+        ("flow_nodes", serde_json::to_value(&source).unwrap()),
+        ("flow_nodes", serde_json::to_value(&gate).unwrap()),
+        ("flow_nodes", serde_json::to_value(&action).unwrap()),
+        ("flow_edges", serde_json::to_value(wire(&source, &gate)).unwrap()),
+        ("flow_edges", serde_json::to_value(wire(&gate, &action)).unwrap()),
     ] {
         h.engine
             .set(
