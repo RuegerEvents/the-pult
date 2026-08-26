@@ -3,6 +3,7 @@ use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 use std::str::FromStr;
 use tracing::info;
 
+pub mod oplog;
 pub mod order;
 
 pub async fn open(path: &str) -> Result<SqlitePool> {

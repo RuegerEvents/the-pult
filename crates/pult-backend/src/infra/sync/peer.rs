@@ -39,6 +39,8 @@ pub async fn spawn_outbound(
             protocol_version: PROTOCOL_VERSION,
             session_id,
             show_id,
+            // What we already know, so the peer can send us only the difference.
+            clock: engine.get_clock().await,
         },
     )
     .await?;
@@ -111,8 +113,8 @@ async fn handle_inbound(
     let (mut read_half, mut write_half) = stream.into_split();
 
     // Wait for Hello
-    let peer_node_id = match read_frame(&mut read_half).await? {
-        SyncMessage::Hello { node_id, protocol_version, .. } => {
+    let (peer_node_id, peer_clock) = match read_frame(&mut read_half).await? {
+        SyncMessage::Hello { node_id, protocol_version, clock, .. } => {
             if protocol_version != PROTOCOL_VERSION {
                 write_frame(
                     &mut write_half,
@@ -128,7 +130,7 @@ async fn handle_inbound(
                 .await?;
                 anyhow::bail!("protocol version mismatch from {addr}");
             }
-            node_id
+            (node_id, clock)
         }
         other => anyhow::bail!("expected Hello from {addr}, got {:?}", other),
     };
@@ -145,14 +147,26 @@ async fn handle_inbound(
     )
     .await?;
 
-    // Immediately send the full current state so the joiner starts up-to-date.
-    write_frame(
-        &mut write_half,
-        &SyncMessage::StateSnapshot { state: engine.get_snapshot().await },
-    )
-    .await?;
-
-    info!("[sync] inbound peer connected: {} from {addr}, snapshot sent", peer_node_id.0);
+    // Bring the joiner up to date, replaying what it missed where that is cheaper
+    // than sending the whole show.
+    match engine.operations_since(peer_clock).await {
+        Some(operations) => {
+            info!(
+                "[sync] inbound peer {} from {addr}, replaying {} operations",
+                peer_node_id.0,
+                operations.len(),
+            );
+            write_frame(&mut write_half, &SyncMessage::OperationBatch { operations }).await?;
+        }
+        None => {
+            info!("[sync] inbound peer {} from {addr}, sending a snapshot", peer_node_id.0);
+            write_frame(
+                &mut write_half,
+                &SyncMessage::StateSnapshot { state: engine.get_snapshot().await },
+            )
+            .await?;
+        }
+    }
 
     let (tx, outgoing) = mpsc::channel::<SyncMessage>(64);
     let sender = PeerSender(tx);
@@ -202,6 +216,14 @@ async fn run_peer_loop(
                     write_frame(&mut write_half, &SyncMessage::HeartbeatAck { seq }).await?;
                     continue;
                 }
+                if let SyncMessage::OperationRequest { known } = msg {
+                    let reply = match engine.operations_since(known).await {
+                        Some(operations) => SyncMessage::OperationBatch { operations },
+                        None => SyncMessage::StateSnapshot { state: engine.get_snapshot().await },
+                    };
+                    write_frame(&mut write_half, &reply).await?;
+                    continue;
+                }
                 handle_incoming(msg, &engine, peer_node_id).await;
             }
             // Periodic heartbeat
@@ -239,9 +261,12 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
         SyncMessage::LeaderChanged { new_leader_node_id } => {
             info!("[sync] leader changed to {}", new_leader_node_id.0);
         }
-        SyncMessage::OperationRequest { .. } | SyncMessage::OperationBatch { .. } => {
-            warn!("[sync] PERSISTED oplog replication not yet implemented");
+        SyncMessage::OperationBatch { operations } => {
+            debug!("[sync] {} operations from peer {}", operations.len(), peer_node_id.0);
+            engine.apply_operation_batch(operations).await;
         }
+        // Answered in run_peer_loop, which holds the write half.
+        SyncMessage::OperationRequest { .. } => {}
         other => {
             debug!("[sync] unexpected message: {:?}", other);
         }

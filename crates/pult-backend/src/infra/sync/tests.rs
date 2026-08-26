@@ -346,3 +346,232 @@ async fn peer_ids(sync: &SyncHandle) -> Vec<NodeId> {
     let _ = sync.0.send(SyncCommand::PeerIds { reply: tx }).await;
     rx.await.unwrap_or_default()
 }
+
+// ── Catch-up ──────────────────────────────────────────────────────────────────
+
+/// A node that has never heard from anyone knows nothing to build a delta against,
+/// so it gets the whole show.
+#[tokio::test]
+async fn a_brand_new_node_is_sent_a_snapshot() {
+    let leader = a_node().await;
+    let seq = a_sequence("Act 1");
+    create(&leader, &seq).await;
+
+    let joiner = a_node().await;
+    joiner.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    eventually("the joiner to have the show", || async {
+        name_of(&joiner, seq.id).await.as_deref() == Some("Act 1")
+    })
+    .await;
+}
+
+/// The point of the oplog: a node that was connected, missed a few writes, and came
+/// back should be told those writes rather than re-sent the whole show.
+#[tokio::test]
+async fn a_returning_node_is_replayed_only_what_it_missed() {
+    let leader = a_node().await;
+    let returning = a_node().await;
+
+    // Both start from the same place.
+    let seq = a_sequence("Act 1");
+    create(&leader, &seq).await;
+    create(&returning, &seq).await;
+
+    // The returning node makes a write of its own, so its clock is not empty and it
+    // can describe what it knows.
+    returning
+        .engine
+        .set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!("Act 1"))
+        .await
+        .unwrap();
+
+    // While it was away, the leader renamed the sequence.
+    leader
+        .engine
+        .set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!("Act 2"))
+        .await
+        .unwrap();
+
+    returning.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    eventually("the missed write to be replayed", || async {
+        name_of(&returning, seq.id).await.as_deref() == Some("Act 2")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn catching_up_replays_several_writes_in_order() {
+    let leader = a_node().await;
+    let returning = a_node().await;
+
+    let seq = a_sequence("Act 1");
+    create(&leader, &seq).await;
+    create(&returning, &seq).await;
+    returning
+        .engine
+        .set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!("Act 1"))
+        .await
+        .unwrap();
+
+    for name in ["Second", "Third", "Fourth", "Final"] {
+        leader
+            .engine
+            .set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!(name))
+            .await
+            .unwrap();
+    }
+
+    returning.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    eventually("the last write to win", || async {
+        name_of(&returning, seq.id).await.as_deref() == Some("Final")
+    })
+    .await;
+
+    // Replayed out of order, an earlier rename would have landed last.
+    assert_eq!(name_of(&returning, seq.id).await.as_deref(), Some("Final"));
+}
+
+#[tokio::test]
+async fn a_node_that_missed_nothing_is_still_connected_and_current() {
+    let leader = a_node().await;
+    let peer = a_node().await;
+
+    let seq = a_sequence("Act 1");
+    create(&leader, &seq).await;
+    create(&peer, &seq).await;
+    peer.engine
+        .set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!("Act 1"))
+        .await
+        .unwrap();
+
+    peer.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    eventually("the peers to register", || async { peer_count(&leader.sync).await == 1 }).await;
+
+    // Live replication still works after a catch-up handshake.
+    leader
+        .engine
+        .set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!("Act 2"))
+        .await
+        .unwrap();
+    eventually("live replication to continue", || async {
+        name_of(&peer, seq.id).await.as_deref() == Some("Act 2")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn local_writes_never_reach_the_operation_log() {
+    let node = a_node().await;
+    node.engine
+        .set(
+            vec![PathSegment::Key("session".into())],
+            Lifecycle::Local,
+            serde_json::json!({
+                "is_advertising": true, "is_follower": false,
+                "session_id": null, "discovered": [],
+            }),
+        )
+        .await
+        .unwrap();
+
+    // A joiner asking for everything must not be handed this node's session state.
+    let ops = node.engine.operations_since(node.engine.get_clock().await).await;
+    assert!(
+        ops.is_none_or(|o| o.iter().all(|op| op.lifecycle != Lifecycle::Local)),
+        "LOCAL state is this node's own and must not be replicated",
+    );
+}
+
+/// The behavioural catch-up tests above would also pass if every peer were sent a
+/// snapshot, so these pin the decision itself.
+mod catch_up_decision {
+    use super::*;
+
+    async fn a_node_with_writes(count: usize) -> (Node, Sequence) {
+        let node = a_node().await;
+        let seq = a_sequence("Act 1");
+        create(&node, &seq).await;
+        for i in 0..count {
+            node.engine
+                .set(
+                    seq_path(seq.id, "name"),
+                    Lifecycle::Persisted,
+                    serde_json::json!(format!("v{i}")),
+                )
+                .await
+                .unwrap();
+        }
+        (node, seq)
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_knows_nothing_gets_a_snapshot() {
+        let (node, _) = a_node_with_writes(4).await;
+
+        assert!(
+            node.engine.operations_since(VectorClock::default()).await.is_none(),
+            "an empty clock means every operation ever, which is worse than a snapshot",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_is_nearly_current_gets_the_operations_it_missed() {
+        let (node, seq) = a_node_with_writes(20).await;
+
+        // Its clock as of now, then two more writes it does not know about.
+        let known = node.engine.get_clock().await;
+        for name in ["missed one", "missed two"] {
+            node.engine
+                .set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!(name))
+                .await
+                .unwrap();
+        }
+
+        let missing = node
+            .engine
+            .operations_since(known)
+            .await
+            .expect("a nearly current peer should get a delta, not a snapshot");
+
+        assert_eq!(missing.len(), 2);
+        assert_eq!(missing[0].value, "missed one");
+        assert_eq!(missing[1].value, "missed two");
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_is_current_is_sent_an_empty_batch() {
+        let (node, _) = a_node_with_writes(5).await;
+        let known = node.engine.get_clock().await;
+
+        let missing = node.engine.operations_since(known).await.expect("a delta, not a snapshot");
+        assert!(missing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_peer_missing_most_of_the_log_gets_a_snapshot() {
+        let node = a_node().await;
+        let seq = a_sequence("Act 1");
+        create(&node, &seq).await;
+
+        // Know about the first write only, then fall a long way behind.
+        let known = node.engine.get_clock().await;
+        for i in 0..20 {
+            node.engine
+                .set(
+                    seq_path(seq.id, "name"),
+                    Lifecycle::Persisted,
+                    serde_json::json!(format!("v{i}")),
+                )
+                .await
+                .unwrap();
+        }
+
+        assert!(
+            node.engine.operations_since(known).await.is_none(),
+            "replaying most of the log is a slow snapshot, so send the real one",
+        );
+    }
+}

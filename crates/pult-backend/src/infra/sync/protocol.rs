@@ -4,14 +4,16 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
 use pult_schema::{
-    events::operation::{NodeId, VectorClock},
+    events::operation::{NodeId, Operation, VectorClock},
     path::Path,
 };
 
 // 2 added node_id to HelloAck. Without it the connecting side had no way to learn
 // who it had just connected to and used the leader's id instead, so two nodes
 // connecting to the same leader collided in the peer map.
-pub const PROTOCOL_VERSION: u32 = 2;
+// 3 put the joiner's clock in Hello and made OperationBatch carry operations, so a
+// peer that reconnects can be told what it missed instead of being sent the show.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -22,6 +24,10 @@ pub enum SyncMessage {
         protocol_version: u32,
         session_id: Uuid,
         show_id: Uuid,
+        /// What the joiner already knows. The responder uses it to decide between
+        /// replaying the operations it missed and sending a whole snapshot.
+        #[serde(default)]
+        clock: VectorClock,
     },
     HelloAck {
         accepted: bool,
@@ -34,13 +40,14 @@ pub enum SyncMessage {
     LeaderChanged {
         new_leader_node_id: NodeId,
     },
-    /// Request PERSISTED op catch-up (Phase 2).
+    /// Ask for everything the holder of `known` has not seen.
     OperationRequest {
-        from_seq: u64,
+        known: VectorClock,
     },
-    /// Push PERSISTED op batch (Phase 2, stub).
+    /// Operations the receiver was missing, oldest first. Replayed in order, they
+    /// land on the same state the sender has.
     OperationBatch {
-        final_seq: u64,
+        operations: Vec<Operation>,
     },
     /// Full ShowState snapshot sent by leader immediately after HelloAck.
     /// The joiner applies it so it starts with current data, not an empty slate.

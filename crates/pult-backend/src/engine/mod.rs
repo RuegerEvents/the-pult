@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     error::BackendError,
-    infra::{connectors::OutputHandle, showfile::order, sync::SyncHandle},
+    infra::{connectors::OutputHandle, showfile::{oplog, order}, sync::SyncHandle},
     model::playback::{Playback, PlaybackEffect, ShowView, TICK},
 };
 
@@ -212,6 +212,17 @@ pub enum EngineCommand {
         reply: oneshot::Sender<Result<serde_json::Value, BackendError>>,
     },
     ApplyPeerOperation(Operation),
+    /// Apply a batch of operations a peer sent to catch this node up. Ordered oldest
+    /// first, so replaying them in sequence lands on the same state the peer has.
+    ApplyOperationBatch(Vec<Operation>),
+    /// This node's vector clock, so a peer can work out what it has not seen.
+    GetClock { reply: oneshot::Sender<VectorClock> },
+    /// Operations the holder of this clock is missing, and whether a snapshot would
+    /// be cheaper than sending them.
+    GetOperationsSince {
+        known: VectorClock,
+        reply: oneshot::Sender<Option<Vec<Operation>>>,
+    },
     LoadFromShowfile,
     /// Full ShowState serialized to JSON — sent by the leader to newly joined peers.
     GetSnapshot {
@@ -257,6 +268,24 @@ impl EngineHandle {
         let (tx, rx) = oneshot::channel();
         let _ = self.0.send(EngineCommand::Subscribe { pattern, reply: tx }).await;
         rx.await.unwrap_or_else(|_| Box::pin(futures::stream::empty()))
+    }
+
+    pub async fn get_clock(&self) -> VectorClock {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.0.send(EngineCommand::GetClock { reply: tx }).await;
+        rx.await.unwrap_or_default()
+    }
+
+    /// Operations the holder of `known` is missing, or None when a full snapshot
+    /// would be the cheaper way to catch them up.
+    pub async fn operations_since(&self, known: VectorClock) -> Option<Vec<Operation>> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.0.send(EngineCommand::GetOperationsSince { known, reply: tx }).await;
+        rx.await.ok().flatten()
+    }
+
+    pub async fn apply_operation_batch(&self, operations: Vec<Operation>) {
+        let _ = self.0.send(EngineCommand::ApplyOperationBatch(operations)).await;
     }
 
     pub async fn get_snapshot(&self) -> serde_json::Value {
@@ -437,6 +466,7 @@ impl ShowEngine {
                     if result.is_ok() {
                         self.state_version += 1;
                         self.record_write(&path, lifecycle);
+                        self.log_local_write(&path, &value, lifecycle).await;
                         self.broadcast_after_set(&path, value.clone());
                         if lifecycle != Lifecycle::Local {
                             if let Some(sync) = &self.sync {
@@ -458,6 +488,20 @@ impl ShowEngine {
                 EngineCommand::ApplyPeerOperation(op) => {
                     self.apply_peer_operation(op).await;
                     self.state_version += 1;
+                }
+                EngineCommand::ApplyOperationBatch(operations) => {
+                    let count = operations.len();
+                    for op in operations {
+                        self.apply_peer_operation(op).await;
+                    }
+                    self.state_version += 1;
+                    debug!("[sync] caught up on {count} operations");
+                }
+                EngineCommand::GetClock { reply } => {
+                    let _ = reply.send(self.clock.clone());
+                }
+                EngineCommand::GetOperationsSince { known, reply } => {
+                    let _ = reply.send(self.operations_since(&known).await);
                 }
                 EngineCommand::GetSnapshot { reply } => {
                     let snapshot = self.build_snapshot();
@@ -542,6 +586,29 @@ impl ShowEngine {
         }
         let fixture_types = self.read_collection("fixture_types");
         output.push(fixtures, fixture_types, moved);
+    }
+
+    /// Log a write this node made itself.
+    async fn log_local_write(
+        &self,
+        path: &Path,
+        value: &serde_json::Value,
+        lifecycle: Lifecycle,
+    ) {
+        if lifecycle == Lifecycle::Local {
+            return;
+        }
+        let op = Operation {
+            id: Uuid::new_v4(),
+            node_id: self.node_id,
+            seq: self.clock.0.get(&self.node_id).copied().unwrap_or(0),
+            clock: self.clock.clone(),
+            lifecycle,
+            path: path.clone(),
+            value: value.clone(),
+            timestamp: chrono::Utc::now(),
+        };
+        self.log_operation(&op).await;
     }
 
     /// Read one collection out of the state as typed entities.
@@ -854,11 +921,30 @@ impl ShowEngine {
             return;
         }
         if self.apply_set(op.path.clone(), op.value.clone(), op.lifecycle).await.is_ok() {
+            self.log_operation(&op).await;
             self.path_clocks.insert(op.path.clone(), (op.clock, op.node_id));
             self.broadcast_after_set(&op.path, op.value);
         } else {
             warn!("failed to apply peer operation: {:?}", op.path);
         }
+    }
+
+    /// Operations the holder of `known` has not seen, or None when replaying them
+    /// would cost more than sending the whole show.
+    ///
+    /// A node that has never heard from anyone has an empty clock and would be sent
+    /// every operation ever recorded, which is strictly worse than a snapshot.
+    async fn operations_since(&self, known: &VectorClock) -> Option<Vec<Operation>> {
+        if known.0.is_empty() {
+            return None;
+        }
+        let missing = oplog::since(&self.pool, known).await.ok()?;
+        let total = oplog::len(&self.pool).await.unwrap_or(0);
+        // Replaying most of the log is not catch-up, it is a slow snapshot.
+        if total > 0 && missing.len() as u64 * 2 > total {
+            return None;
+        }
+        Some(missing)
     }
 
     /// Should an incoming write replace what this node already has at that path?
@@ -887,6 +973,17 @@ impl ShowEngine {
             return;
         }
         self.path_clocks.insert(path.clone(), (self.clock.clone(), self.node_id));
+    }
+
+    /// Note a replicated write in the operation log, so a peer that reconnects can be
+    /// told what it missed. Local writes never leave this node and are not logged.
+    async fn log_operation(&self, op: &Operation) {
+        if op.lifecycle == Lifecycle::Local {
+            return;
+        }
+        if let Err(e) = oplog::append(&self.pool, op).await {
+            warn!("[engine] could not write to the oplog: {e}");
+        }
     }
 
     /// Broadcast the right value for a completed set operation.
