@@ -8,7 +8,10 @@ use pult_schema::{
     path::Path,
 };
 
-pub const PROTOCOL_VERSION: u32 = 1;
+// 2 added node_id to HelloAck. Without it the connecting side had no way to learn
+// who it had just connected to and used the leader's id instead, so two nodes
+// connecting to the same leader collided in the peer map.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -22,6 +25,9 @@ pub enum SyncMessage {
     },
     HelloAck {
         accepted: bool,
+        /// Who is answering. This is the peer the connecting side is talking to,
+        /// which is not necessarily the leader.
+        node_id: NodeId,
         leader_node_id: NodeId,
         rejection_reason: Option<String>,
     },

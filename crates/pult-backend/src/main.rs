@@ -77,8 +77,9 @@ async fn main() -> Result<()> {
     let (engine_tx, engine_rx) = mpsc::channel::<EngineCommand>(256);
     let engine_handle = EngineHandle(engine_tx);
 
-    let (sync_mgr, sync_handle) =
-        SyncManager::new(node_id, config.sync_port, engine_handle.clone());
+    let (sync_mgr, sync_handle, sync_addr) =
+        SyncManager::bind(node_id, config.sync_port, engine_handle.clone()).await?;
+    info!("peer sync on {sync_addr}");
     tokio::spawn(sync_mgr.run());
 
     let (mut engine, _broadcast) = ShowEngine::new_with_rx(

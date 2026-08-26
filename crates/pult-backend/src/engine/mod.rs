@@ -352,6 +352,9 @@ pub struct ShowEngine {
     commands: CommandTable,
     playback: Playback,
     output: Option<OutputHandle>,
+    /// The clock and author of the last accepted write at each replicated path.
+    /// Only replicated paths are tracked, so playback output does not grow this.
+    path_clocks: HashMap<Path, (VectorClock, NodeId)>,
     /// Bumped by anything that changes the show, so an idle playback can skip the tick
     /// instead of deserializing the whole state 40 times a second for nothing.
     state_version: u64,
@@ -391,6 +394,7 @@ impl ShowEngine {
             commands: build_command_table(),
             playback: Playback::default(),
             output: None,
+            path_clocks: HashMap::new(),
             state_version: 0,
             playback_seen: 0,
         };
@@ -432,6 +436,7 @@ impl ShowEngine {
                     let result = self.apply_set(path.clone(), value.clone(), lifecycle).await;
                     if result.is_ok() {
                         self.state_version += 1;
+                        self.record_write(&path, lifecycle);
                         self.broadcast_after_set(&path, value.clone());
                         if lifecycle != Lifecycle::Local {
                             if let Some(sync) = &self.sync {
@@ -512,6 +517,7 @@ impl ShowEngine {
                     let args = serde_json::json!({});
                     if self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await.is_ok() {
                         self.state_version += 1;
+                        self.record_write(&path, Lifecycle::Synced);
                         if let Some(sync) = &self.sync {
                             sync.broadcast_synced(path, args, self.clock.clone()).await;
                         }
@@ -831,6 +837,7 @@ impl ShowEngine {
             PathSegment::Key(command.into()),
         ];
         self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await?;
+        self.record_write(&path, Lifecycle::Synced);
         if let Some(sync) = &self.sync {
             sync.broadcast_synced(path, args, self.clock.clone()).await;
         }
@@ -838,12 +845,48 @@ impl ShowEngine {
     }
 
     async fn apply_peer_operation(&mut self, op: Operation) {
+        // Merge regardless of whether the operation wins: we have still learned what
+        // the sending node knew, and our next write has to be causally after it.
         self.clock.merge(&op.clock);
+
+        if !self.accepts(&op.path, &op.clock, op.node_id) {
+            debug!("[sync] dropping superseded write to {:?} from {}", op.path, op.node_id);
+            return;
+        }
         if self.apply_set(op.path.clone(), op.value.clone(), op.lifecycle).await.is_ok() {
+            self.path_clocks.insert(op.path.clone(), (op.clock, op.node_id));
             self.broadcast_after_set(&op.path, op.value);
         } else {
             warn!("failed to apply peer operation: {:?}", op.path);
         }
+    }
+
+    /// Should an incoming write replace what this node already has at that path?
+    ///
+    /// Vector clocks order writes that are causally related. Writes that are not
+    /// related are genuinely simultaneous, and something has to break the tie the
+    /// same way on every node or the show ends up different on each of them. The
+    /// higher node id wins: arbitrary, but identical everywhere.
+    fn accepts(&self, path: &Path, clock: &VectorClock, node: NodeId) -> bool {
+        let Some((known_clock, known_node)) = self.path_clocks.get(path) else {
+            return true;
+        };
+        if known_clock.happens_before(clock) {
+            true
+        } else if clock.happens_before(known_clock) {
+            false
+        } else {
+            node > *known_node
+        }
+    }
+
+    /// Note that this node wrote a replicated path, so a peer's concurrent write to
+    /// the same path can be ordered against it.
+    fn record_write(&mut self, path: &Path, lifecycle: Lifecycle) {
+        if lifecycle == Lifecycle::Local {
+            return;
+        }
+        self.path_clocks.insert(path.clone(), (self.clock.clone(), self.node_id));
     }
 
     /// Broadcast the right value for a completed set operation.
@@ -904,6 +947,9 @@ impl ShowEngine {
             // session is LOCAL: this node's own session survives a leader snapshot.
             state.session = std::mem::take(&mut self.state.session);
             self.state = state;
+            // The snapshot replaces every value, so what we knew about individual
+            // paths no longer describes anything.
+            self.path_clocks.clear();
         }
         self.save_to_showfile().await;
         for meta in EntityMeta::all_with_tables() {

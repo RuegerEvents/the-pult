@@ -4,9 +4,10 @@ use pult_schema::{
     events::operation::{NodeId, VectorClock},
     path::Path,
 };
+use anyhow::Result;
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
 };
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -21,7 +22,7 @@ use protocol::SyncMessage;
 
 // ── SyncCommand ───────────────────────────────────────────────────────────────
 
-#[allow(dead_code, reason = "PeerCount and Stop have no caller yet")]
+#[allow(dead_code, reason = "PeerCount, PeerIds, and Stop are used by the tests only")]
 pub enum SyncCommand {
     /// Fan out an operation to all connected peers.
     BroadcastSynced {
@@ -39,6 +40,8 @@ pub enum SyncCommand {
     SetLeader(NodeId),
     /// Query how many peers are connected.
     PeerCount { reply: oneshot::Sender<usize> },
+    /// Query which peers are connected.
+    PeerIds { reply: oneshot::Sender<Vec<NodeId>> },
     /// Drop all peer connections (called on session Leave).
     DisconnectAll,
     Stop,
@@ -71,8 +74,11 @@ impl SyncHandle {
 
 pub struct SyncManager {
     node_id: NodeId,
-    leader_node_id: NodeId,
-    sync_port: u16,
+    /// Who the session leader is. A watch rather than a copy: the accept loop runs in
+    /// its own task, and a copy taken at startup meant SetLeader never reached an
+    /// inbound handshake, which then reported the wrong leader for the rest of the show.
+    leader: watch::Sender<NodeId>,
+    listener: Option<TcpListener>,
     engine: EngineHandle,
     rx: mpsc::Receiver<SyncCommand>,
     /// Inbound peer connection notifications (from `spawn_inbound` tasks).
@@ -82,44 +88,39 @@ pub struct SyncManager {
 }
 
 impl SyncManager {
-    pub fn new(
+    /// Bind the sync port. Port 0 picks a free one, which is what the tests use;
+    /// the bound address comes back so the caller can find out which.
+    pub async fn bind(
         node_id: NodeId,
         sync_port: u16,
         engine: EngineHandle,
-    ) -> (Self, SyncHandle) {
+    ) -> Result<(Self, SyncHandle, SocketAddr)> {
+        let listener = TcpListener::bind(format!("0.0.0.0:{sync_port}")).await?;
+        let addr = listener.local_addr()?;
+        info!("[sync] listening on {addr}");
+
         let (tx, rx) = mpsc::channel(64);
         let (inbound_tx, inbound_rx) = mpsc::channel(16);
+        let (leader, _) = watch::channel(node_id);
         let mgr = SyncManager {
             node_id,
-            leader_node_id: node_id,
-            sync_port,
+            leader,
+            listener: Some(listener),
             engine,
             rx,
             inbound_rx,
             inbound_tx,
             peers: HashMap::new(),
         };
-        (mgr, SyncHandle(tx))
+        Ok((mgr, SyncHandle(tx), addr))
     }
 
     pub async fn run(mut self) {
-        // Start TCP listener
-        let bind = format!("0.0.0.0:{}", self.sync_port);
-        let listener = match TcpListener::bind(&bind).await {
-            Ok(l) => {
-                info!("[sync] listening on {bind}");
-                l
-            }
-            Err(e) => {
-                warn!("[sync] failed to bind {bind}: {e}");
-                return;
-            }
-        };
-
+        let Some(listener) = self.listener.take() else { return };
         let inbound_tx = self.inbound_tx.clone();
         let node_id = self.node_id;
         let engine = self.engine.clone();
-        let leader_id = self.leader_node_id;
+        let leader = self.leader.subscribe();
 
         // Accept loop in a separate task
         tokio::spawn(async move {
@@ -127,7 +128,13 @@ impl SyncManager {
                 match listener.accept().await {
                     Ok((stream, addr)) => {
                         info!("[sync] inbound connection from {addr}");
-                        spawn_inbound(stream, node_id, leader_id, engine.clone(), inbound_tx.clone());
+                        spawn_inbound(
+                            stream,
+                            node_id,
+                            leader.clone(),
+                            engine.clone(),
+                            inbound_tx.clone(),
+                        );
                     }
                     Err(e) => {
                         warn!("[sync] accept error: {e}");
@@ -172,11 +179,10 @@ impl SyncManager {
             }
             SyncCommand::ConnectPeer { addr, session_id, show_id } => {
                 let node_id = self.node_id;
-                let leader_id = self.leader_node_id;
                 let engine = self.engine.clone();
                 match tokio::net::TcpStream::connect(addr).await {
                     Ok(stream) => {
-                        match spawn_outbound(stream, node_id, session_id, show_id, leader_id, engine).await {
+                        match spawn_outbound(stream, node_id, session_id, show_id, engine).await {
                             Ok((peer_id, sender)) => {
                                 info!("[sync] outbound peer connected: {}", peer_id.0);
                                 self.peers.insert(peer_id, sender);
@@ -188,10 +194,13 @@ impl SyncManager {
                 }
             }
             SyncCommand::SetLeader(node_id) => {
-                self.leader_node_id = node_id;
+                let _ = self.leader.send(node_id);
             }
             SyncCommand::PeerCount { reply } => {
                 let _ = reply.send(self.peers.len());
+            }
+            SyncCommand::PeerIds { reply } => {
+                let _ = reply.send(self.peers.keys().copied().collect());
             }
             SyncCommand::DisconnectAll => {
                 // Drop all senders — peer tasks will exit when their channel closes.
@@ -215,3 +224,6 @@ impl SyncManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -7,7 +7,7 @@ use pult_schema::{
 use serde_json::Value;
 use tokio::{
     net::TcpStream,
-    sync::mpsc,
+    sync::{mpsc, watch},
 };
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -25,8 +25,6 @@ pub async fn spawn_outbound(
     our_node_id: NodeId,
     session_id: Uuid,
     show_id: Uuid,
-    // Who we think the leader is. Not sent: the peer tells us in its HelloAck.
-    _leader_node_id: NodeId,
     engine: EngineHandle,
 ) -> Result<(NodeId, PeerSender)> {
     let addr = stream.peer_addr()?;
@@ -47,9 +45,11 @@ pub async fn spawn_outbound(
 
     // Wait for HelloAck
     let peer_node_id = match read_frame(&mut read_half).await? {
-        SyncMessage::HelloAck { accepted: true, leader_node_id: remote_leader, .. } => {
-            info!("[sync] connected to peer {addr}, leader={}", remote_leader.0);
-            remote_leader
+        SyncMessage::HelloAck { accepted: true, node_id, leader_node_id: remote_leader, .. } => {
+            info!("[sync] connected to peer {}, leader={}", node_id.0, remote_leader.0);
+            // The peer we are talking to, not the leader. Keying the connection by the
+            // leader made every node connected to one leader collide in the peer map.
+            node_id
         }
         SyncMessage::HelloAck { accepted: false, rejection_reason, .. } => {
             anyhow::bail!("peer rejected handshake: {:?}", rejection_reason);
@@ -79,7 +79,7 @@ pub async fn spawn_outbound(
 pub fn spawn_inbound(
     stream: TcpStream,
     our_node_id: NodeId,
-    leader_node_id: NodeId,
+    leader: watch::Receiver<NodeId>,
     engine: EngineHandle,
     on_connected: mpsc::Sender<(NodeId, PeerSender)>,
 ) {
@@ -87,7 +87,7 @@ pub fn spawn_inbound(
         if let Err(e) = handle_inbound(
             stream,
             our_node_id,
-            leader_node_id,
+            leader,
             engine,
             on_connected,
         )
@@ -101,11 +101,13 @@ pub fn spawn_inbound(
 async fn handle_inbound(
     stream: TcpStream,
     our_node_id: NodeId,
-    leader_node_id: NodeId,
+    leader: watch::Receiver<NodeId>,
     engine: EngineHandle,
     on_connected: mpsc::Sender<(NodeId, PeerSender)>,
 ) -> Result<()> {
     let addr = stream.peer_addr()?;
+    // Read the leader at handshake time, not at startup.
+    let leader_node_id = *leader.borrow();
     let (mut read_half, mut write_half) = stream.into_split();
 
     // Wait for Hello
@@ -116,6 +118,7 @@ async fn handle_inbound(
                     &mut write_half,
                     &SyncMessage::HelloAck {
                         accepted: false,
+                        node_id: our_node_id,
                         leader_node_id,
                         rejection_reason: Some(format!(
                             "protocol version mismatch: got {protocol_version}, expected {PROTOCOL_VERSION}"
@@ -133,7 +136,12 @@ async fn handle_inbound(
     // Send HelloAck
     write_frame(
         &mut write_half,
-        &SyncMessage::HelloAck { accepted: true, leader_node_id, rejection_reason: None },
+        &SyncMessage::HelloAck {
+            accepted: true,
+            node_id: our_node_id,
+            leader_node_id,
+            rejection_reason: None,
+        },
     )
     .await?;
 
@@ -153,6 +161,14 @@ async fn handle_inbound(
     run_peer_loop(read_half, write_half, outgoing, engine, our_node_id, peer_node_id).await
 }
 
+/// How often a heartbeat goes out.
+pub const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a peer can stay silent before the connection is considered dead.
+/// Three missed heartbeats: long enough to ride out a hiccup, short enough that a
+/// pulled cable does not leave a ghost in the peer map for a whole show.
+pub const PEER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(16);
+
 async fn run_peer_loop(
     mut read_half: tokio::net::tcp::OwnedReadHalf,
     mut write_half: tokio::net::tcp::OwnedWriteHalf,
@@ -162,8 +178,9 @@ async fn run_peer_loop(
     peer_node_id: NodeId,
 ) -> Result<()> {
     let mut heartbeat_seq: u64 = 0;
-    let heartbeat_interval = std::time::Duration::from_secs(5);
-    let mut heartbeat_tick = tokio::time::interval(heartbeat_interval);
+    let mut heartbeat_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
+    let mut liveness_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
+    let mut last_heard = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -176,15 +193,32 @@ async fn run_peer_loop(
             }
             // Incoming message from peer
             frame = read_frame(&mut read_half) => {
-                match frame {
-                    Ok(msg) => handle_incoming(msg, &engine, peer_node_id).await,
-                    Err(e) => return Err(e),
+                let msg = frame?;
+                last_heard = tokio::time::Instant::now();
+                // A heartbeat has to be answered from the read side, where the write
+                // half is in scope; handle_incoming has no way to reply.
+                if let SyncMessage::Heartbeat { seq } = msg {
+                    debug!("[sync] heartbeat seq={seq} from peer {}", peer_node_id.0);
+                    write_frame(&mut write_half, &SyncMessage::HeartbeatAck { seq }).await?;
+                    continue;
                 }
+                handle_incoming(msg, &engine, peer_node_id).await;
             }
             // Periodic heartbeat
             _ = heartbeat_tick.tick() => {
                 write_frame(&mut write_half, &SyncMessage::Heartbeat { seq: heartbeat_seq }).await?;
                 heartbeat_seq += 1;
+            }
+            // Liveness. A TCP connection can stay open long after the node behind it
+            // has stopped answering, so silence is what we watch, not the socket.
+            _ = liveness_tick.tick() => {
+                if last_heard.elapsed() > PEER_TIMEOUT {
+                    anyhow::bail!(
+                        "peer {} silent for {:?}",
+                        peer_node_id.0,
+                        last_heard.elapsed(),
+                    );
+                }
             }
         }
     }
@@ -200,12 +234,8 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
         SyncMessage::SyncedBroadcast { path, value, clock, .. } => {
             apply_synced(engine, peer_node_id, path, value, clock).await;
         }
-        SyncMessage::Heartbeat { seq } => {
-            // HeartbeatAck is sent from the write side; we just log receipt here.
-            // A full implementation would track liveness state.
-            debug!("[sync] heartbeat seq={seq} from peer {}", peer_node_id.0);
-        }
-        SyncMessage::HeartbeatAck { .. } => {}
+        // Heartbeat is answered in run_peer_loop, which holds the write half.
+        SyncMessage::Heartbeat { .. } | SyncMessage::HeartbeatAck { .. } => {}
         SyncMessage::LeaderChanged { new_leader_node_id } => {
             info!("[sync] leader changed to {}", new_leader_node_id.0);
         }

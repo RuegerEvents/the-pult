@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use crate::{lifecycle::Lifecycle, path::Path};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// Ord is how concurrent writes are broken apart: every node picks the same winner
+// because every node compares the same two ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub Uuid);
 
 impl NodeId {
