@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { focusOnMount } from '$lib/actions.js';
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { FixtureType, ParameterDefinition, ParameterKind } from '$lib/generated/index.js';
@@ -76,8 +77,7 @@
 
 	{#if creating}
 		<form class="new-row" onsubmit={(e) => { e.preventDefault(); createType(); }}>
-			<!-- svelte-ignore a11y_autofocus -->
-			<input class="text-input" placeholder="Type name, e.g. Source Four" bind:value={newName} autofocus />
+			<input class="text-input" placeholder="Type name, e.g. Source Four" bind:value={newName} use:focusOnMount />
 			<button class="primary" type="submit">Create</button>
 		</form>
 	{/if}

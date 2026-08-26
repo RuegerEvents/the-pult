@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { focusOnMount } from '$lib/actions.js';
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Fixture, FixtureType } from '$lib/generated/index.js';
@@ -65,8 +66,7 @@
 
 		{#if creating}
 			<form class="new-row" onsubmit={(e) => { e.preventDefault(); createFixture(); }}>
-				<!-- svelte-ignore a11y_autofocus -->
-				<input class="text-input" placeholder="Fixture name" bind:value={newName} autofocus />
+				<input class="text-input" placeholder="Fixture name" bind:value={newName} use:focusOnMount />
 				<select class="text-input" bind:value={newTypeId}>
 					{#each types as type (type.id)}
 						<option value={type.id}>{type.name}</option>

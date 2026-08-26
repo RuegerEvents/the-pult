@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { focusOnMount } from '$lib/actions.js';
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Show } from '$lib/generated/index.js';
@@ -68,12 +69,11 @@
 						saveName();
 					}}
 				>
-					<!-- svelte-ignore a11y_autofocus -->
 					<input
 						class="inline-input"
 						bind:value={draftName}
 						disabled={saving}
-						autofocus
+						use:focusOnMount
 						onkeydown={(e) => {
 							if (e.key === 'Escape') editingName = false;
 						}}

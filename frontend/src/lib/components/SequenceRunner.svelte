@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { focusOnMount } from '$lib/actions.js';
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Sequence, Cue } from '$lib/generated/index.js';
@@ -113,12 +114,11 @@
 				createSequence();
 			}}
 		>
-			<!-- svelte-ignore a11y_autofocus -->
 			<input
 				class="text-input"
 				placeholder="Sequence name…"
 				bind:value={newSeqName}
-				autofocus
+				use:focusOnMount
 				onkeydown={(e) => {
 					if (e.key === 'Escape') {
 						creatingSeq = false;
@@ -154,11 +154,10 @@
 							class="inline-edit"
 							onsubmit={(e) => { e.preventDefault(); saveSeqName(seq.id); }}
 						>
-							<!-- svelte-ignore a11y_autofocus -->
 							<input
 								class="text-input inline-name-input"
 								bind:value={editingSeqName}
-								autofocus
+								use:focusOnMount
 								onblur={() => saveSeqName(seq.id)}
 								onkeydown={(e) => { if (e.key === 'Escape') editingSeqId = null; }}
 							/>
@@ -239,11 +238,10 @@
 												class="inline-edit"
 												onsubmit={(e) => { e.preventDefault(); saveCueName(cueId); }}
 											>
-												<!-- svelte-ignore a11y_autofocus -->
 												<input
 													class="text-input inline-name-input"
 													bind:value={editingCueName}
-													autofocus
+													use:focusOnMount
 													onclick={(e) => e.stopPropagation()}
 													onblur={() => saveCueName(cueId)}
 													onkeydown={(e) => { if (e.key === 'Escape') editingCueId = null; e.stopPropagation(); }}
@@ -281,12 +279,11 @@
 									addCue(seq.id);
 								}}
 							>
-								<!-- svelte-ignore a11y_autofocus -->
 								<input
 									class="text-input sm"
 									placeholder="Cue name…"
 									bind:value={newCueName}
-									autofocus
+									use:focusOnMount
 									onkeydown={(e) => {
 										if (e.key === 'Escape') {
 											addingCueTo = null;
