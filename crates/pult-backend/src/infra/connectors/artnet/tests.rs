@@ -68,6 +68,7 @@ fn a_dimmer_patch(level: f32) -> Patch {
         fixture_type_id: fixture_type.id,
         universe: 3,
         dmx_address: 1,
+        position: None,
         live_values: HashMap::new(),
         active_preset: None,
     };

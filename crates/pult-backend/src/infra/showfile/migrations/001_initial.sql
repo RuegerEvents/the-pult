@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS fixtures (
     name TEXT NOT NULL,
     fixture_type_id TEXT NOT NULL,
     universe INTEGER NOT NULL,
-    dmx_address INTEGER NOT NULL
+    dmx_address INTEGER NOT NULL,
+    position TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fixture_types (

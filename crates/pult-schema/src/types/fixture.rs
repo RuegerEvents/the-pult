@@ -6,6 +6,38 @@ use uuid::Uuid;
 
 use crate::PultSchema;
 
+/// A point in the rig, in metres, from whatever origin the show uses.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Vec3 {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+/// Where a fixture is, and for a moving one, where it points.
+///
+/// The spec asks for positions to be either positional (XYZ) or axial (a position
+/// and a direction vector). Nothing forces a position to be accurate: a rig can be
+/// laid out roughly and corrected later, or updated from tracking data.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum FixturePosition {
+    /// Just where it hangs.
+    Point(Vec3),
+    /// Where it hangs and the direction it faces at rest.
+    Axial { position: Vec3, direction: Vec3 },
+}
+
+impl FixturePosition {
+    pub fn position(&self) -> Vec3 {
+        match self {
+            FixturePosition::Point(p) => *p,
+            FixturePosition::Axial { position, .. } => *position,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum ParameterKind {
@@ -67,6 +99,9 @@ pub struct Fixture {
     pub universe: u16,
     #[pult(lifecycle = PERSISTED)]
     pub dmx_address: u16,
+    /// Where this fixture is in the rig. None until it has been placed.
+    #[pult(lifecycle = PERSISTED)]
+    pub position: Option<FixturePosition>,
     #[pult(lifecycle = SYNCED)]
     pub live_values: HashMap<String, ParameterValue>,
     #[pult(lifecycle = SYNCED)]

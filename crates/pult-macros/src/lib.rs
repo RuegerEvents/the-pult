@@ -450,8 +450,13 @@ fn sql_info_for_field(field_name: &str, ty: &Type, fi: &syn::Ident) -> SqlInfo {
     if let Some(inner) = option_inner_type(ty) {
         let inner_info = sql_info_for_field(field_name, inner, fi);
         let col_def = inner_info.col_def.replace(" NOT NULL", "");
+        // A missing, NULL, or unreadable column reads as None rather than panicking.
+        // This is the column a newly added optional field has on every existing row,
+        // and a panic here would take the process down while opening a show.
         let read_expr = quote! {
-            row.get_text(#field_name).map(|s| ::serde_json::from_str(&s).unwrap())
+            row.get_text(#field_name)
+                .filter(|s| !s.is_empty())
+                .and_then(|s| ::serde_json::from_str(&s).ok())
         };
         let bind_expr = quote! {
             match &self.#fi {
@@ -607,6 +612,7 @@ fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
     };
 
     let create_fn_name = format_ident!("__pult_create_table_sql_{}", name);
+    let column_defs_fn_name = format_ident!("__pult_column_defs_{}", name);
     let lc_fn_name = format_ident!("__pult_field_lifecycles_{}", name);
     let save_fn_name = format_ident!("__pult_save_all_{}", name);
     let load_fn_name = format_ident!("__pult_load_all_{}", name);
@@ -637,6 +643,11 @@ fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
 
     let create_fn_body = if has_table {
         quote! { Some(<#name as ::pult_schema::sql::PultSqlRow>::create_table_sql()) }
+    } else {
+        quote! { None }
+    };
+    let column_defs_body = if has_table {
+        quote! { Some(<#name as ::pult_schema::sql::PultSqlRow>::column_defs()) }
     } else {
         quote! { None }
     };
@@ -692,6 +703,9 @@ fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
         #[allow(non_snake_case)]
         fn #create_fn_name() -> Option<String> { #create_fn_body }
 
+        #[allow(non_snake_case)]
+        fn #column_defs_fn_name() -> Option<&'static str> { #column_defs_body }
+
         /// Round-trip through the concrete type so invalid values are rejected
         /// and serde defaults are filled in.
         #[allow(non_snake_case)]
@@ -742,6 +756,7 @@ fn gen_entity_meta_submit(meta: &StructMeta) -> syn::Result<TokenStream2> {
             table_name: #table_name_expr,
             is_singleton: #is_singleton,
             create_table_sql: #create_fn_name,
+            column_defs: #column_defs_fn_name,
             field_lifecycles: #lc_fn_name,
             save_all: #save_all_expr,
             load_all: #load_all_expr,

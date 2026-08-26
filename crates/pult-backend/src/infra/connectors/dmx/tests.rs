@@ -24,6 +24,7 @@ fn a_fixture(fixture_type: &FixtureType, universe: u16, address: u16) -> Fixture
         fixture_type_id: fixture_type.id,
         universe,
         dmx_address: address,
+        position: None,
         live_values: HashMap::new(),
         active_preset: None,
     }

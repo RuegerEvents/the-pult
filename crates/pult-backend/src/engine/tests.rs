@@ -112,6 +112,7 @@ fn a_fixture(name: &str, address: u16) -> Fixture {
         fixture_type_id: Uuid::new_v4(),
         universe: 1,
         dmx_address: address,
+        position: None,
         live_values: Default::default(),
         active_preset: None,
     }
@@ -1274,4 +1275,65 @@ async fn a_leader_snapshot_carries_the_leader_s_order() {
         vec!["Prologue", "Act 1", "Curtain"],
         "a follower must write the order it was given, not just hold it in memory",
     );
+}
+
+// ── Schema evolution ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_showfile_written_before_a_field_existed_still_opens() {
+    use pult_schema::types::fixture::{FixturePosition, Vec3};
+
+    let h = harness().await;
+    let mut fixture = a_fixture("Spot L", 1);
+    fixture.position = Some(FixturePosition::Point(Vec3 { x: 1.0, y: 2.0, z: 3.0 }));
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+
+    // Take the column away, as an older showfile would have it. SQLite can drop a
+    // column, which is exactly the state a show saved before the field existed is in.
+    sqlx::query("ALTER TABLE fixtures DROP COLUMN position")
+        .execute(h.pool.as_ref())
+        .await
+        .unwrap();
+
+    // Reopening runs migrations, which must put the column back.
+    crate::infra::showfile::migrate_for_test(&h.pool).await.unwrap();
+
+    let mut h = h;
+    h.reload().await;
+    let after = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
+    assert_eq!(after["name"], "Spot L");
+    assert!(after["position"].is_null(), "a column added later has no value on old rows");
+}
+
+#[tokio::test]
+async fn a_fixture_position_round_trips_through_the_showfile() {
+    use pult_schema::types::fixture::{FixturePosition, Vec3};
+
+    let mut h = harness().await;
+    let mut fixture = a_fixture("Spot L", 1);
+    fixture.position = Some(FixturePosition::Axial {
+        position: Vec3 { x: 1.5, y: 6.0, z: -2.0 },
+        direction: Vec3 { x: 0.0, y: -1.0, z: 0.0 },
+    });
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+
+    h.reload().await;
+
+    let after = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
+    assert_eq!(after["position"]["Axial"]["position"]["y"], 6.0);
+    assert_eq!(after["position"]["Axial"]["direction"]["y"], -1.0);
+}
+
+#[tokio::test]
+async fn a_fixture_with_no_position_is_still_a_valid_fixture() {
+    let mut h = harness().await;
+    let fixture = a_fixture("Unplaced", 1);
+    assert!(fixture.position.is_none());
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+
+    h.reload().await;
+
+    let after = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
+    assert_eq!(after["name"], "Unplaced");
+    assert!(after["position"].is_null());
 }

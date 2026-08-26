@@ -39,6 +39,9 @@ pub struct EntityMeta {
     pub is_singleton: bool,
     /// Returns Some(create_table_sql) for PERSISTED entities, None otherwise.
     pub create_table_sql: fn() -> Option<String>,
+    /// Comma-separated column definitions, or None for entities without a table.
+    /// Used to bring an existing showfile's tables up to the current schema.
+    pub column_defs: fn() -> Option<&'static str>,
     pub field_lifecycles: fn() -> &'static [(&'static str, Lifecycle)],
     /// Save all entities from a ShowState snapshot to SQLite. None for entities
     /// without a table.

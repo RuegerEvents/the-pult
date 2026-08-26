@@ -21,6 +21,7 @@ fn a_fixture() -> Fixture {
         fixture_type_id: Uuid::new_v4(),
         universe: 1,
         dmx_address: 1,
+        position: None,
         live_values: HashMap::new(),
         active_preset: None,
     }

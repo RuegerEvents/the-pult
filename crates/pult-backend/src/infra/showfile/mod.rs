@@ -29,6 +29,12 @@ pub async fn open_in_memory() -> Result<SqlitePool> {
     Ok(pool)
 }
 
+/// Run migrations against an already-open pool. Test-only.
+#[cfg(test)]
+pub async fn migrate_for_test(pool: &SqlitePool) -> Result<()> {
+    run_migrations(pool).await
+}
+
 async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     let sql = include_str!("migrations/001_initial.sql");
 
@@ -48,6 +54,50 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         }
     }
 
+    add_missing_columns(pool).await?;
+
     info!("showfile migrations applied");
+    Ok(())
+}
+
+/// Bring an existing showfile's tables up to the current schema.
+///
+/// `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so a
+/// field added to an entity would leave every saved show unopenable: the generated
+/// SELECT names a column the file does not have. This walks the registry and adds
+/// what is missing, which means adding a field to the schema stays the only edit.
+///
+/// New columns are always nullable. SQLite cannot add a NOT NULL column without a
+/// default, and there is no honest default for a field that did not exist when the
+/// existing rows were written.
+async fn add_missing_columns(pool: &SqlitePool) -> Result<()> {
+    for meta in pult_schema::registry::EntityMeta::all_with_tables() {
+        let (Some(table), Some(defs)) = (meta.table_name, (meta.column_defs)()) else { continue };
+
+        let existing: Vec<String> = sqlx::query(&format!("PRAGMA table_info({table})"))
+            .fetch_all(pool)
+            .await?
+            .iter()
+            .filter_map(|row| sqlx::Row::try_get::<String, _>(row, "name").ok())
+            .collect();
+        if existing.is_empty() {
+            continue; // brand new table; CREATE TABLE already made it correctly
+        }
+
+        for def in defs.split(',') {
+            let def = def.trim();
+            let Some(column) = def.split_whitespace().next() else { continue };
+            if existing.iter().any(|c| c == column) {
+                continue;
+            }
+            let nullable = def
+                .replace(" NOT NULL", "")
+                .replace(" PRIMARY KEY", "");
+            info!("[showfile] adding {table}.{column}");
+            sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {nullable}"))
+                .execute(pool)
+                .await?;
+        }
+    }
     Ok(())
 }
