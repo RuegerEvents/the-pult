@@ -14,7 +14,7 @@ The spec is the product. This is the build order for getting there, and right no
 | WebSocket API | Working. Path-pattern subscribe, set, call, and broadcast fan-out. |
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
 | Peer sync | Works and converges. Handshake, snapshot on join, live fan-out, heartbeat liveness, and vector-clock conflict resolution. No oplog replay or leader re-election. |
-| Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. No test runner. |
+| Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
 | Output plugins | Working for Art-Net. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Off unless `--artnet` is passed. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
@@ -94,7 +94,6 @@ Fixture types with their parameters, and a fixture table with name, type, univer
 
 Left open here:
 
-- The frontend has no test runner. `src/lib/patch.ts` holds pure functions (address ranges, overlap detection, value formatting) that should be tested and are not. Adding vitest is a small job.
 - `subscribeDeep` re-fetches a whole collection on any change beneath it, so the patch table re-fetches every fixture at 40 Hz while a fade runs. Correct, but the frontend will eventually want updates that carry the changed value rather than a signal to re-read.
 - Position can only be set to the origin from the UI. Editing coordinates, and the axial form, wait for the 3D view.
 

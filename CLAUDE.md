@@ -52,4 +52,9 @@ cd frontend && npm run dev
 
 ```
 cargo test --workspace
+cd frontend && npm test        # vitest, pure helpers only
+cd frontend && npm run check   # svelte-check
 ```
+
+Both the Rust build and `svelte-check` are kept at zero warnings, so a new one is
+visible rather than buried.
