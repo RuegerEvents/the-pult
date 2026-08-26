@@ -13,7 +13,7 @@ The spec is the product. This is the build order for getting there, and right no
 | Showfile (SQLite) | Working. Load and save are registry-driven and enumerate no entity types. |
 | WebSocket API | Working. Path-pattern subscribe, set, call, and broadcast fan-out. |
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
-| Peer sync | Partial. TCP handshake, a full snapshot when a peer joins, and live `SyncedBroadcast` fan-out. Nothing else. |
+| Peer sync | Works and converges. Handshake, snapshot on join, live fan-out, heartbeat liveness, and vector-clock conflict resolution. No oplog replay or leader re-election. |
 | Frontend | Working for show, session, sequences, and cues. The typed proxy runs end to end. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
 | Output plugins | Working for Art-Net. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Off unless `--artnet` is passed. |
@@ -92,15 +92,15 @@ There is no way to patch a rig from the UI at all: fixtures, fixture types, and 
 
 Worth adding `Fixture` position at the same time, since the schema is being touched anyway. See Further out.
 
-### 6. Sync catch-up and conflict handling
+### 6. Sync catch-up and conflict handling (mostly done)
 
-Can run in parallel with the output work.
+Fixed: peer identity in `HelloAck`, heartbeat liveness with a 16-second timeout, vector-clock conflict resolution so concurrent writes converge on every node, and the accept loop reading the leader at handshake time instead of at startup. Nine tests run real nodes over real TCP.
 
-A peer that drops and reconnects gets a fresh full snapshot. There is no replay. The `oplog` table exists and `OperationRequest` and `OperationBatch` are declared but stubbed. `VectorClock` is merged on receive and then never read, so concurrent edits resolve by arrival order.
+Two pieces remain.
 
-Also missing: heartbeat timeout handling, and leader re-election. `LeaderChanged` is declared in the protocol and never sent.
+**Oplog replay.** A peer that drops and reconnects gets a fresh full snapshot. Correct, but it re-sends the whole show for a reconnect that may have missed three writes. The `oplog` table exists and nothing writes to it; `OperationRequest` and `OperationBatch` are declared and stubbed. Doing this properly means catch-up keyed on a vector clock rather than the single `from_seq` the current messages carry, since with more than two nodes one sequence number cannot describe what a peer is missing.
 
-There is a bug to fix here first. `spawn_outbound` returns the leader's node id as if it were the peer's, because `HelloAck` carries `leader_node_id` and no id of its own. `SyncManager` then keys that peer's connection by the leader's id, so two nodes connecting to the same leader collide in the peer map. Fixing it means adding the responder's `node_id` to `HelloAck`.
+**Leader re-election.** `LeaderChanged` is declared in the protocol and never sent. If the leader disappears, followers now notice within 16 seconds and drop the connection, but nothing decides who takes over. That needs a rule, and the obvious one, lowest node id among the survivors, does not account for which node has the most recent state.
 
 ### 7. Housekeeping (done)
 
