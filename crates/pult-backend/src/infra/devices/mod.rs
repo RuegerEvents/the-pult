@@ -234,20 +234,21 @@ impl DeviceManager {
     /// was started — the same reason Art-Net is off unless asked for.
     async fn reconsider_leadership(&mut self) {
         let driving = !self.is_follower().await && self.has_adopted_a_device().await;
-        if driving == self.mqtt.is_some() {
-            return;
-        }
-        if driving {
-            self.start_driving().await;
-        } else {
-            info!("[devices] not driving devices");
-            if let Some(mqtt) = self.mqtt.take() {
-                mqtt.stop();
+        if driving != self.mqtt.is_some() {
+            if driving {
+                self.start_driving().await;
+            } else {
+                info!("[devices] not driving devices");
+                if let Some(mqtt) = self.mqtt.take() {
+                    mqtt.stop();
+                }
+                // The broker thread stays up — it is started once per process — but
+                // this node is no longer the one nodes should publish to.
+                self.state.broker_addr = None;
             }
-            // The broker thread stays up — it is started once per process — but this
-            // node is no longer the one nodes should be publishing to.
-            self.state.broker_addr = None;
         }
+        // Always: joining a session changes what this node says about itself even
+        // when it had nothing to drive either side of the change.
         self.publish().await;
     }
 
@@ -401,6 +402,21 @@ impl DeviceManager {
                     }
                 }
                 self.reconcile_adoptions().await;
+
+                // A node that has rebooted has forgotten where to publish, and it
+                // announcing itself again is the only notice we get. So does a node
+                // this console adopted before its own restart. Re-configuring one
+                // that never left is harmless: the same values.
+                let adopted = self
+                    .state
+                    .discovered
+                    .get(&serial)
+                    .is_some_and(|d| d.adopted_fixture_id.is_some());
+                if adopted {
+                    self.reconsider_leadership().await;
+                    self.push_config(&serial).await;
+                }
+
                 self.publish().await;
             }
 
@@ -429,15 +445,19 @@ impl DeviceManager {
         Some(flags as u32 & openhaunt::MODULE_FLAG_MAINS != 0)
     }
 
-    /// Drop an adoption whose fixture the operator has since deleted, so the panel
-    /// does not offer to Forget something that is not there.
+    /// Work out which devices are adopted, from the fixtures rather than from memory.
+    ///
+    /// The fixture is the only persisted thing an adopted device has, so it is the
+    /// answer in both directions: a fixture the operator deleted un-adopts its
+    /// device, and a console restarted mid-show recognises every device it had
+    /// adopted before, which is what tells it to configure them again.
     async fn reconcile_adoptions(&mut self) {
         let fixtures = self.fixtures().await;
         for device in self.state.discovered.values_mut() {
-            let Some(id) = device.adopted_fixture_id else { continue };
-            if !fixtures.iter().any(|f| f.id == id) {
-                device.adopted_fixture_id = None;
-            }
+            device.adopted_fixture_id = fixtures
+                .iter()
+                .find(|f| f.address.serial() == Some(device.serial.as_str()))
+                .map(|f| f.id);
         }
     }
 

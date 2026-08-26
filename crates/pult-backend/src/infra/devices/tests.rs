@@ -99,6 +99,15 @@ impl Harness {
         let _ = self.devices.identify("wait-for-the-queue-to-drain".into()).await;
     }
 
+    /// A second manager against the same engine, as a restarted console would be.
+    pub(super) async fn with_a_fresh_device_manager(&self) -> Harness {
+        self.devices.0.send(DeviceCommand::Stop).await.unwrap();
+        let (manager, devices, directory) =
+            DeviceManager::new(NodeId(Uuid::new_v4()), self.engine.clone(), free_port());
+        tokio::spawn(manager.run());
+        Harness { engine: self.engine.clone(), devices, directory }
+    }
+
     pub(super) async fn state(&self) -> DevicesState {
         let value = self
             .engine
@@ -724,4 +733,77 @@ async fn a_node_promoted_back_to_leading_drives_again() {
         .unwrap();
 
     eventually("the node to drive again", || async { h.state().await.active }).await;
+}
+
+#[tokio::test]
+async fn a_node_that_comes_back_is_told_where_the_broker_is_again() {
+    // A rebooted node has forgotten its configuration, and announcing itself is the
+    // only notice the console gets that it needs telling.
+    let (addr, log) = a_node(0).await;
+    let h = harness().await;
+    h.resolve("reboot1", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+    h.devices.adopt("reboot1".into()).await.unwrap();
+    assert_eq!(log.lock().unwrap().configs.len(), 1);
+
+    h.event(DeviceEvent::Removed { serial: "reboot1".into() }).await;
+    h.resolve("reboot1", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+
+    assert_eq!(log.lock().unwrap().configs.len(), 2);
+}
+
+#[tokio::test]
+async fn a_node_nobody_adopted_is_not_configured_when_it_appears() {
+    let (addr, log) = a_node(0).await;
+    let h = harness().await;
+    // Something else adopted, so there is a broker to be told about.
+    h.resolve("other", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.devices.adopt("other".into()).await.unwrap();
+
+    h.resolve("unadopted", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+
+    assert!(
+        log.lock().unwrap().configs.is_empty(),
+        "a discovered node is asked for nothing until it is adopted",
+    );
+}
+
+#[tokio::test]
+async fn a_console_restarted_mid_show_recognises_the_devices_it_had_adopted() {
+    // Adoption lives in the fixture, which is persisted; the device list is not.
+    // A fresh manager against the same show has to work it out from the fixtures.
+    let (addr, log) = a_node(0).await;
+    let h = harness().await;
+    h.resolve("survivor", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+    let fixture_id = h.devices.adopt("survivor".into()).await.unwrap();
+
+    let after_restart = h.with_a_fresh_device_manager().await;
+    after_restart.resolve("survivor", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+
+    let state = after_restart.state().await;
+    assert_eq!(
+        state.discovered["survivor"].adopted_fixture_id,
+        Some(fixture_id),
+        "the fixture is still patched, so the device is still adopted",
+    );
+    assert!(
+        log.lock().unwrap().configs.len() >= 2,
+        "and it has to be told where the broker is now, since it cannot know",
+    );
+}
+
+#[tokio::test]
+async fn a_follower_with_nothing_adopted_still_says_it_is_not_driving() {
+    // Nothing to start or stop either side of the change, so the only thing that
+    // moves is what this node says about itself — which still has to be said.
+    let h = harness().await;
+    h.resolve("watched", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    assert!(h.state().await.active);
+
+    h.become_follower().await;
+
+    eventually("the panel to stop offering to adopt", || async { !h.state().await.active }).await;
+    assert!(
+        h.state().await.discovered.contains_key("watched"),
+        "a follower keeps browsing and keeps showing what it finds",
+    );
 }
