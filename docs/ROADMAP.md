@@ -13,10 +13,10 @@ The spec is the product. This is the build order for getting there, and right no
 | Showfile (SQLite) | Working. Load and save are registry-driven and enumerate no entity types. |
 | WebSocket API | Working. Path-pattern subscribe, set, call, and broadcast fan-out. |
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
-| Peer sync | Works and converges. Handshake, snapshot on join, live fan-out, heartbeat liveness, and vector-clock conflict resolution. No oplog replay or leader re-election. |
+| Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness, vector-clock conflict resolution, and leader failover. |
 | Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
-| Output plugins | Working for Art-Net. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Off unless `--artnet` is passed. |
+| Output plugins | Working for Art-Net, several at once. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Off unless `--artnet` is passed. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
 | 3D programmer | Not started. The largest piece of the spec and none of it exists. |
 | Selection, effects, events, timecode | Not started. No schema for any of them yet. |
@@ -97,15 +97,17 @@ Left open here:
 - `subscribeDeep` re-fetches a whole collection on any change beneath it, so the patch table re-fetches every fixture at 40 Hz while a fade runs. Correct, but the frontend will eventually want updates that carry the changed value rather than a signal to re-read.
 - Position can only be set to the origin from the UI. Editing coordinates, and the axial form, wait for the 3D view.
 
-### 6. Sync catch-up and conflict handling (mostly done)
+### 6. Sync catch-up and conflict handling (done)
 
-Fixed: peer identity in `HelloAck`, heartbeat liveness with a 16-second timeout, vector-clock conflict resolution so concurrent writes converge on every node, and the accept loop reading the leader at handshake time instead of at startup. Nine tests run real nodes over real TCP.
+Peer identity in `HelloAck`, heartbeat liveness with a 16-second timeout, vector-clock conflict resolution, catch-up from the oplog in both directions, and leader failover. Twenty-three tests run real nodes over real TCP.
 
-Two pieces remain.
+Leader election needs no messages: the leader publishes the membership, and every survivor removes the lost node from the same list and picks the lowest remaining id. Lowest id rather than freshest state, because catch-up runs both ways on connect, so whoever leads ends up with everything either side had.
 
-**Oplog replay.** A peer that drops and reconnects gets a fresh full snapshot. Correct, but it re-sends the whole show for a reconnect that may have missed three writes. The `oplog` table exists and nothing writes to it; `OperationRequest` and `OperationBatch` are declared and stubbed. Doing this properly means catch-up keyed on a vector clock rather than the single `from_seq` the current messages carry, since with more than two nodes one sequence number cannot describe what a peer is missing.
+What this does not do:
 
-**Leader re-election.** `LeaderChanged` is declared in the protocol and never sent. If the leader disappears, followers now notice within 16 seconds and drop the connection, but nothing decides who takes over. That needs a rule, and the obvious one, lowest node id among the survivors, does not account for which node has the most recent state.
+- The election assumes every survivor received the same membership list. A node that joined and never heard a membership update, or one partitioned from the rest, can pick differently. Real partition tolerance means a consensus protocol, which is a design decision rather than a coding one.
+- Followers do not automatically reconnect to the new leader. They find it again through mDNS once it advertises, which is a delay rather than a break.
+- The oplog is never pruned. It grows for the life of a showfile.
 
 ### 7. Housekeeping (done)
 
