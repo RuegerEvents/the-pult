@@ -24,10 +24,10 @@ use crate::{engine::ShowEngine, infra::showfile};
 
 // ── Harness ───────────────────────────────────────────────────────────────────
 
-struct Harness {
-    engine: EngineHandle,
-    devices: DeviceHandle,
-    directory: watch::Receiver<DeviceDirectory>,
+pub(super) struct Harness {
+    pub engine: EngineHandle,
+    pub devices: DeviceHandle,
+    pub directory: watch::Receiver<DeviceDirectory>,
 }
 
 /// A port nothing is listening on, found by binding and letting go.
@@ -43,7 +43,7 @@ fn free_port() -> u16 {
         .port()
 }
 
-async fn harness() -> Harness {
+pub(super) async fn harness() -> Harness {
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let (engine, engine_handle, _broadcast) =
         ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
@@ -57,6 +57,16 @@ async fn harness() -> Harness {
 }
 
 impl Harness {
+    /// Discovery, as though mDNS had resolved a node at `addr`.
+    pub(super) async fn resolve_at(
+        &self,
+        serial: &str,
+        module_type: u16,
+        addr: std::net::SocketAddr,
+    ) {
+        self.resolve(serial, module_type, Some(addr)).await
+    }
+
     async fn resolve(&self, serial: &str, module_type: u16, addr: Option<std::net::SocketAddr>) {
         let mut txt = BTreeMap::new();
         txt.insert("sn".to_string(), serial.to_string());
@@ -89,7 +99,7 @@ impl Harness {
         let _ = self.devices.identify("wait-for-the-queue-to-drain".into()).await;
     }
 
-    async fn state(&self) -> DevicesState {
+    pub(super) async fn state(&self) -> DevicesState {
         let value = self
             .engine
             .get(vec![PathSegment::Key("devices".into())])
@@ -98,7 +108,7 @@ impl Harness {
         serde_json::from_value(value).expect("devices state round-trips")
     }
 
-    async fn fixtures(&self) -> Vec<Fixture> {
+    pub(super) async fn fixtures(&self) -> Vec<Fixture> {
         let value = self.engine.get(vec![PathSegment::Key("fixtures".into())]).await.unwrap();
         serde_json::from_value(value).unwrap()
     }
@@ -503,7 +513,7 @@ async fn a_node_on_the_broker(h: &Harness, serial: &str) -> AsyncClient {
     client
 }
 
-async fn eventually<F, Fut>(what: &str, mut check: F)
+pub(super) async fn eventually<F, Fut>(what: &str, mut check: F)
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -517,7 +527,11 @@ where
     panic!("timed out waiting for {what}");
 }
 
-async fn live_value(h: &Harness, fixture_id: Uuid, key: &str) -> Option<serde_json::Value> {
+pub(super) async fn live_value(
+    h: &Harness,
+    fixture_id: Uuid,
+    key: &str,
+) -> Option<serde_json::Value> {
     h.fixtures()
         .await
         .into_iter()

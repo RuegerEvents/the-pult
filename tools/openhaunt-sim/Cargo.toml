@@ -1,0 +1,24 @@
+[package]
+name = "openhaunt-sim"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "openhaunt_sim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "openhaunt-sim"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rumqttc = { workspace = true }
+mdns-sd = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

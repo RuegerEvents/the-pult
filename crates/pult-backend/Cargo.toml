@@ -40,3 +40,5 @@ paste = { workspace = true }
 # start_paused for the playback tests: virtual time, so a four-second fade
 # finishes in microseconds.
 tokio = { workspace = true, features = ["test-util"] }
+# The node side of the OpenHaunt protocol, for the end-to-end tests.
+openhaunt-sim = { path = "../../tools/openhaunt-sim" }

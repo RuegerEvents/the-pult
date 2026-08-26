@@ -5,6 +5,7 @@ members = [
     "crates/pult-schema",
     "crates/pult-backend",
     "tools/pult-codegen",
+    "tools/openhaunt-sim",
 ]
 
 [workspace.package]

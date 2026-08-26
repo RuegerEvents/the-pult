@@ -1637,6 +1637,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "openhaunt-sim"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum 0.8.9",
+ "clap",
+ "mdns-sd",
+ "rumqttc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ordered-multimap"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1840,6 +1856,7 @@ dependencies = [
  "hostname",
  "inventory",
  "mdns-sd",
+ "openhaunt-sim",
  "paste",
  "pult-schema",
  "reqwest",

@@ -807,3 +807,6 @@ fn parse_module_type(raw: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod e2e_tests;
