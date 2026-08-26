@@ -14,7 +14,7 @@ The spec is the product. This is the build order for getting there, and right no
 | WebSocket API | Working. Path-pattern subscribe, set, call, and broadcast fan-out. |
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
 | Peer sync | Works and converges. Handshake, snapshot on join, live fan-out, heartbeat liveness, and vector-clock conflict resolution. No oplog replay or leader re-election. |
-| Frontend | Working for show, session, sequences, and cues. The typed proxy runs end to end. |
+| Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. No test runner. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
 | Output plugins | Working for Art-Net. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Off unless `--artnet` is passed. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
@@ -86,11 +86,17 @@ Still to do here:
 - More than one plugin at a time. `OutputManager` is generic over a single `P: OutputPlugin`; several plugins means a `Vec<Box<dyn ...>>` and an object-safe trait, which the current `impl Future` return type is not.
 - The spec wants fixtures to preload upcoming playback data, which means handing a plugin a description of what is coming rather than only the current frame. Nothing here does that yet.
 
-### 5. Fixture and patch UI (next)
+### 5. Fixture and patch UI (done)
 
-There is no way to patch a rig from the UI at all: fixtures, fixture types, and addresses can only be created over the WebSocket by hand. Everything downstream is now real, so this is what stands between the backend and using it. The spec's 3D programmer will need the same underlying data.
+Fixture types with their parameters, and a fixture table with name, type, universe, address, position, and live values. New fixtures land at the next free address, and channel overlaps within a universe are highlighted.
 
-Worth adding `Fixture` position at the same time, since the schema is being touched anyway. See Further out.
+`Fixture::position` went in at the same time, which also turned up two things worth knowing: an added column needed a migration path for existing showfiles, and reading an optional column panicked on NULL. Both fixed.
+
+Left open here:
+
+- The frontend has no test runner. `src/lib/patch.ts` holds pure functions (address ranges, overlap detection, value formatting) that should be tested and are not. Adding vitest is a small job.
+- `subscribeDeep` re-fetches a whole collection on any change beneath it, so the patch table re-fetches every fixture at 40 Hz while a fade runs. Correct, but the frontend will eventually want updates that carry the changed value rather than a signal to re-read.
+- Position can only be set to the origin from the UI. Editing coordinates, and the axial form, wait for the 3D view.
 
 ### 6. Sync catch-up and conflict handling (mostly done)
 
