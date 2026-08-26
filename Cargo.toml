@@ -63,6 +63,12 @@ mdns-sd = "0.13"
 # HTTP client, for talking to OpenHaunt nodes
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
+# MQTT: an embedded broker the leader runs, and a client to talk to it.
+# No TLS on either: nodes are on the show's own network, and pulling in a second
+# rustls alongside reqwest's buys nothing here.
+rumqttd = { version = "0.20", default-features = false }
+rumqttc = { version = "0.25", default-features = false }
+
 # async stream macros
 async-stream = "0.3"
 

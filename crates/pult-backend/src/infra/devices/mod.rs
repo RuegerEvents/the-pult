@@ -13,12 +13,14 @@ use std::collections::BTreeMap;
 
 use chrono::Utc;
 use mdns_sd::{ServiceDaemon, ServiceEvent};
+use futures::StreamExt;
 use pult_schema::{
+    events::operation::NodeId,
     lifecycle::Lifecycle,
-    path::{Path, PathSegment},
+    path::{Path, PathPattern, PathSegment},
     types::{
         devices::{DevicesState, DiscoveredDevice},
-        fixture::{Fixture, FixtureAddress, FixtureType},
+        fixture::{Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDirection},
         openhaunt,
     },
 };
@@ -26,7 +28,14 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::engine::EngineHandle;
+use crate::{
+    engine::EngineHandle,
+    infra::devices::mqtt::{MqttEvent, MqttLink},
+    model::playback::parameter_key,
+};
+
+pub mod broker;
+pub mod mqtt;
 
 pub const SERVICE_TYPE: &str = "_openhaunt._tcp.local.";
 
@@ -116,15 +125,29 @@ pub struct DeviceEntry {
 // ── Manager ───────────────────────────────────────────────────────────────────
 
 pub struct DeviceManager {
+    node_id: NodeId,
     engine: EngineHandle,
     rx: mpsc::Receiver<DeviceCommand>,
     state: DevicesState,
     directory: watch::Sender<DeviceDirectory>,
     http: reqwest::Client,
+    /// Where this node's own broker listens, when it is the one driving.
+    broker_port: u16,
+    /// The connection to the broker. Present only while driving.
+    mqtt: Option<MqttLink>,
+    mqtt_tx: mpsc::Sender<MqttEvent>,
+    /// Devices that have announced themselves on the broker. A node reachable this
+    /// way is driven over MQTT; one that has been adopted but has not connected yet
+    /// still has to be reachable, and for that there is HTTP.
+    on_broker: std::collections::BTreeSet<String>,
 }
 
 impl DeviceManager {
-    pub fn new(engine: EngineHandle) -> (Self, DeviceHandle, watch::Receiver<DeviceDirectory>) {
+    pub fn new(
+        node_id: NodeId,
+        engine: EngineHandle,
+        broker_port: u16,
+    ) -> (Self, DeviceHandle, watch::Receiver<DeviceDirectory>) {
         let (tx, rx) = mpsc::channel(64);
         let (directory, directory_rx) = watch::channel(DeviceDirectory::default());
         let http = reqwest::Client::builder()
@@ -133,34 +156,195 @@ impl DeviceManager {
             .timeout(std::time::Duration::from_secs(3))
             .build()
             .unwrap_or_default();
+        // Replaced in `run` with the receiving half's real partner; a manager that is
+        // never run simply drops what it would have sent.
+        let (mqtt_tx, _) = mpsc::channel(1);
         (
-            DeviceManager { engine, rx, state: DevicesState::default(), directory, http },
+            DeviceManager {
+                node_id,
+                engine,
+                rx,
+                state: DevicesState::default(),
+                directory,
+                http,
+                broker_port,
+                mqtt: None,
+                mqtt_tx,
+                on_broker: Default::default(),
+            },
             DeviceHandle(tx),
             directory_rx,
         )
     }
 
     pub async fn run(mut self) {
+        let (mqtt_tx, mut mqtt_rx) = mpsc::channel(256);
+        self.mqtt_tx = mqtt_tx;
+
+        // Leadership changes arrive as writes to the LOCAL session state, which is
+        // the same thing playback gates follow cues on.
+        let mut sessions = self.engine.subscribe_pattern(PathPattern::new("session")).await;
+
         self.push_state().await;
-        while let Some(cmd) = self.rx.recv().await {
-            match cmd {
-                DeviceCommand::Stop => break,
-                DeviceCommand::Event(event) => self.handle_event(event).await,
-                DeviceCommand::Adopt { serial, reply } => {
-                    let _ = reply.send(self.adopt(&serial).await);
+        // A console restarted mid-show comes up already leading, with devices already
+        // adopted. Nothing will announce that, so it is checked once here.
+        self.reconsider_leadership().await;
+
+        loop {
+            tokio::select! {
+                cmd = self.rx.recv() => {
+                    let Some(cmd) = cmd else { break };
+                    match cmd {
+                        DeviceCommand::Stop => break,
+                        DeviceCommand::Event(event) => self.handle_event(event).await,
+                        DeviceCommand::Adopt { serial, reply } => {
+                            let _ = reply.send(self.adopt(&serial).await);
+                        }
+                        DeviceCommand::Identify { serial, reply } => {
+                            let _ = reply.send(self.identify(&serial).await);
+                        }
+                        DeviceCommand::Forget { serial, reply } => {
+                            let _ = reply.send(self.forget(&serial).await);
+                        }
+                        DeviceCommand::SetOutput { serial, port, value } => {
+                            self.set_output(&serial, port, value).await;
+                        }
+                    }
                 }
-                DeviceCommand::Identify { serial, reply } => {
-                    let _ = reply.send(self.identify(&serial).await);
-                }
-                DeviceCommand::Forget { serial, reply } => {
-                    let _ = reply.send(self.forget(&serial).await);
-                }
-                DeviceCommand::SetOutput { serial, port, value } => {
-                    self.set_output(&serial, port, value).await;
-                }
+                Some(event) = mqtt_rx.recv() => self.handle_mqtt(event).await,
+                Some(_) = sessions.next() => self.reconsider_leadership().await,
             }
         }
+        if let Some(mqtt) = self.mqtt.take() {
+            mqtt.stop();
+        }
         info!("[devices] stopped");
+    }
+
+    // ── Leadership ────────────────────────────────────────────────────────────
+
+    /// Start or stop driving devices, following the session.
+    ///
+    /// Browsing never stops: seeing what is on the network costs nothing and is
+    /// worth showing on every node. What stops is the broker connection and
+    /// everything that commands a device through it.
+    ///
+    /// A leader with nothing adopted starts no broker either. A console that has
+    /// never been near an OpenHaunt node should not be listening on 1883 because it
+    /// was started — the same reason Art-Net is off unless asked for.
+    async fn reconsider_leadership(&mut self) {
+        let driving = !self.is_follower().await && self.has_adopted_a_device().await;
+        if driving == self.mqtt.is_some() {
+            return;
+        }
+        if driving {
+            self.start_driving().await;
+        } else {
+            info!("[devices] not driving devices");
+            if let Some(mqtt) = self.mqtt.take() {
+                mqtt.stop();
+            }
+            // The broker thread stays up — it is started once per process — but this
+            // node is no longer the one nodes should be publishing to.
+            self.state.broker_addr = None;
+        }
+        self.publish().await;
+    }
+
+    /// Is anything in this show patched to a node?
+    ///
+    /// Read from the fixtures rather than the discovered list, because a console
+    /// restarted mid-show has the fixtures long before mDNS finds the devices again.
+    async fn has_adopted_a_device(&self) -> bool {
+        self.fixtures().await.iter().any(|f| f.address.serial().is_some())
+    }
+
+    async fn start_driving(&mut self) {
+        let listen = broker::ensure(self.broker_port);
+        let advertised = broker::advertised_addr(
+            std::net::IpAddr::V4(crate::infra::local_ipv4()),
+            listen.port(),
+        );
+        self.state.broker_addr = Some(advertised.clone());
+
+        // The console reaches its own broker over loopback whatever it advertises.
+        // The client id carries the node id: a broker disconnects the older of two
+        // clients claiming the same one, so two consoles sharing a broker would
+        // otherwise take turns kicking each other off.
+        let local = format!("127.0.0.1:{}", listen.port());
+        let client_id = format!("the-pult-{}", &self.node_id.0.to_string()[..8]);
+        self.mqtt = Some(MqttLink::connect(&local, &client_id, self.mqtt_tx.clone()));
+        info!("[devices] driving devices, broker advertised as {advertised}");
+
+        // A device adopted by a previous leader is pointing at a broker that is no
+        // longer listening, so every online one has to be told where to look now.
+        for serial in self.adopted_and_online() {
+            self.push_config(&serial).await;
+        }
+    }
+
+    fn adopted_and_online(&self) -> Vec<String> {
+        self.state
+            .discovered
+            .values()
+            .filter(|d| d.online && d.adopted_fixture_id.is_some())
+            .map(|d| d.serial.clone())
+            .collect()
+    }
+
+    // ── Input ─────────────────────────────────────────────────────────────────
+
+    async fn handle_mqtt(&mut self, event: MqttEvent) {
+        match event {
+            MqttEvent::Input { serial, port, value, .. } => {
+                let Some(device) = self.state.discovered.get(&serial) else { return };
+                let Some(fixture_id) = device.adopted_fixture_id else { return };
+                let Some(key) = self.parameter_on_port(fixture_id, port).await else {
+                    debug!("[devices] {serial} port {port} is not bound to a parameter");
+                    return;
+                };
+                let value = serde_json::to_value(&value).unwrap_or_default();
+                if let Err(e) = self.engine.set_live_value(fixture_id, key, value).await {
+                    warn!("[devices] {serial} port {port}: {e}");
+                }
+            }
+            MqttEvent::Status { serial, online } => {
+                if online {
+                    self.on_broker.insert(serial.clone());
+                } else {
+                    self.on_broker.remove(&serial);
+                }
+                let Some(device) = self.state.discovered.get_mut(&serial) else { return };
+                if device.online == online {
+                    return;
+                }
+                device.online = online;
+                self.publish().await;
+            }
+            MqttEvent::Health { serial, health } => {
+                let Some(device) = self.state.discovered.get_mut(&serial) else { return };
+                device.health = Some(health);
+                self.publish().await;
+            }
+        }
+    }
+
+    /// The `live_values` key for whatever is bound to a port on a fixture.
+    ///
+    /// A node numbers its own terminals, so the port is the only thing both ends
+    /// agree on; the parameter's kind is this console's business alone.
+    async fn parameter_on_port(&self, fixture_id: Uuid, port: u8) -> Option<String> {
+        let fixture = self.fixtures().await.into_iter().find(|f| f.id == fixture_id)?;
+        let types: Vec<FixtureType> = self.read("fixture_types").await;
+        let fixture_type = types.into_iter().find(|t| t.id == fixture.fixture_type_id)?;
+        fixture_type
+            .parameters
+            .iter()
+            .find(|p| {
+                p.direction == ParameterDirection::Input
+                    && p.binding == ParameterBinding::Port { index: port }
+            })
+            .map(|p| parameter_key(&p.kind))
     }
 
     // ── Discovery ─────────────────────────────────────────────────────────────
@@ -305,6 +489,18 @@ impl DeviceManager {
             device.adopted_fixture_id = Some(fixture.id);
         }
         info!("[devices] adopted {serial} as fixture {}", fixture.id);
+
+        // The first adoption is what brings the broker up. Until now nothing has
+        // asked this node for anything, which is the point of the protocol.
+        //
+        // Starting to drive configures every adopted device, this one included, so
+        // it is only the later adoptions that need telling separately.
+        let was_driving = self.mqtt.is_some();
+        self.reconsider_leadership().await;
+        if was_driving {
+            self.push_config(serial).await;
+        }
+
         self.publish().await;
         Ok(fixture.id)
     }
@@ -329,6 +525,8 @@ impl DeviceManager {
         if !online {
             self.state.discovered.remove(serial);
         }
+        // Unpatching the last node puts the broker connection away again.
+        self.reconsider_leadership().await;
         self.publish().await;
         Ok(())
     }
@@ -337,11 +535,46 @@ impl DeviceManager {
         self.post(serial, "identify", serde_json::json!({})).await
     }
 
+    /// Drive one output port.
+    ///
+    /// MQTT for a node that has announced itself on the broker: it is already
+    /// holding that socket open, and a relay following a button should not wait for
+    /// a TCP handshake. HTTP for one that has been adopted but has not connected
+    /// yet, which is otherwise unreachable until it does.
     async fn set_output(&self, serial: &str, port: u8, value: serde_json::Value) {
-        let body = serde_json::json!({ "outputs": { port.to_string(): value } });
-        if let Err(e) = self.post(serial, "state", body).await {
-            debug!("[devices] {serial} output {port}: {e}");
+        match &self.mqtt {
+            Some(mqtt) if self.on_broker.contains(serial) => {
+                let payload = serde_json::to_vec(&value).unwrap_or_default();
+                mqtt.publish(mqtt::output_topic(serial, port), payload);
+            }
+            _ => {
+                let body = serde_json::json!({ "outputs": { port.to_string(): value } });
+                if let Err(e) = self.post(serial, "state", body).await {
+                    debug!("[devices] {serial} output {port}: {e}");
+                }
+            }
         }
+    }
+
+    /// Tell a node where to publish, and what to do with the universe it gateways.
+    async fn push_config(&self, serial: &str) {
+        let Some(broker) = &self.state.broker_addr else { return };
+        let mut config = serde_json::json!({ "mqtt": { "broker": broker } });
+
+        if let Some(universe) = self.gateway_universe(serial).await {
+            config["dmx"] = serde_json::json!({ "protocol": "sacn", "universe": universe });
+        }
+        if let Err(e) = self.post(serial, "config", config).await {
+            debug!("[devices] could not configure {serial}: {e}");
+        }
+    }
+
+    /// The universe an adopted gateway forwards, if this device is one.
+    async fn gateway_universe(&self, serial: &str) -> Option<u16> {
+        self.fixtures().await.into_iter().find_map(|f| match f.address {
+            FixtureAddress::OpenHaunt { serial: ref s, universe } if s == serial => universe,
+            _ => None,
+        })
     }
 
     /// Create the builtin fixture type if the show does not already have it.
@@ -401,7 +634,22 @@ impl DeviceManager {
     /// Publish everything derived from the device list: the LOCAL state the
     /// frontends read, and the directory the output side sends through.
     async fn publish(&mut self) {
+        // "Would drive", not "is driving": a leader with nothing adopted yet is
+        // still the node an operator's Adopt button has to reach.
         self.state.active = !self.is_follower().await;
+
+        // The universe lives on the fixture, because the fixture is the only
+        // persisted thing an adopted device has.
+        let universes: BTreeMap<String, Option<u16>> = self
+            .fixtures()
+            .await
+            .into_iter()
+            .filter_map(|f| match f.address {
+                FixtureAddress::OpenHaunt { serial, universe } => Some((serial, universe)),
+                FixtureAddress::Dmx { .. } => None,
+            })
+            .collect();
+
         let _ = self.directory.send(DeviceDirectory {
             entries: self
                 .state
@@ -414,7 +662,7 @@ impl DeviceManager {
                             ip: d.ip.clone(),
                             port: d.port,
                             module_type: d.module_type,
-                            universe: None,
+                            universe: universes.get(&d.serial).copied().flatten(),
                             online: d.online,
                         },
                     )

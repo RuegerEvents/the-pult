@@ -246,6 +246,17 @@ pub enum EngineCommand {
         args: serde_json::Value,
         reply: oneshot::Sender<Result<serde_json::Value, BackendError>>,
     },
+    /// Merge one key into a fixture's live values.
+    ///
+    /// A device writing a sensor reading cannot read-modify-write from outside the
+    /// actor: two ports reporting in the same millisecond would each write back a
+    /// map missing the other's key. Merging inside the actor is the whole point.
+    SetLiveValue {
+        fixture_id: Uuid,
+        key: String,
+        value: serde_json::Value,
+        reply: oneshot::Sender<Result<(), BackendError>>,
+    },
     ApplyPeerOperation(Operation),
     /// Apply a batch of operations a peer sent to catch this node up. Ordered oldest
     /// first, so replaying them in sequence lands on the same state the peer has.
@@ -303,6 +314,24 @@ impl EngineHandle {
         let (tx, rx) = oneshot::channel();
         let _ = self.0.send(EngineCommand::Subscribe { pattern, reply: tx }).await;
         rx.await.unwrap_or_else(|_| Box::pin(futures::stream::empty()))
+    }
+
+    /// Merge one key into a fixture's live values, replicating the result.
+    ///
+    /// Unlike a playback effect, which every node derives for itself from cue state,
+    /// an input only exists on the node the device is talking to. It has to be sent.
+    pub async fn set_live_value(
+        &self,
+        fixture_id: Uuid,
+        key: String,
+        value: serde_json::Value,
+    ) -> Result<(), BackendError> {
+        let (tx, rx) = oneshot::channel();
+        self.0
+            .send(EngineCommand::SetLiveValue { fixture_id, key, value, reply: tx })
+            .await
+            .map_err(|_| BackendError::ChannelClosed)?;
+        rx.await?
     }
 
     pub async fn get_clock(&self) -> VectorClock {
@@ -520,6 +549,13 @@ impl ShowEngine {
                     self.state_version += 1;
                     let _ = reply.send(result);
                 }
+                EngineCommand::SetLiveValue { fixture_id, key, value, reply } => {
+                    let result = self.set_live_value(fixture_id, key, value).await;
+                    if result.is_ok() {
+                        self.state_version += 1;
+                    }
+                    let _ = reply.send(result);
+                }
                 EngineCommand::ApplyPeerOperation(op) => {
                     self.apply_peer_operation(op).await;
                     self.state_version += 1;
@@ -621,6 +657,38 @@ impl ShowEngine {
         }
         let fixture_types = self.read_collection("fixture_types");
         output.push(fixtures, fixture_types, moved);
+    }
+
+    /// Merge one key into a fixture's live values and replicate the whole map.
+    ///
+    /// SYNCED rather than LOCAL: nothing else on the network can work this value out
+    /// for itself, because it came off a wire attached to this node.
+    async fn set_live_value(
+        &mut self,
+        fixture_id: Uuid,
+        key: String,
+        value: serde_json::Value,
+    ) -> Result<(), BackendError> {
+        let path = entity_field_path("fixtures", fixture_id, "live_values");
+        let mut values = self
+            .state
+            .entity("fixtures", fixture_id)
+            .and_then(|entity| entity.get("live_values"))
+            .cloned()
+            .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
+        set_field(&mut values, &key, value);
+
+        self.apply_set(path.clone(), values.clone(), Lifecycle::Synced).await?;
+        self.record_write(&path, Lifecycle::Synced);
+        self.log_local_write(&path, &values, Lifecycle::Synced).await;
+        self.broadcast_after_set(&path, values.clone());
+        if let Some(sync) = &self.sync {
+            sync.broadcast_synced(path, values, self.clock.clone()).await;
+        }
+        // The output side has to see it now: an input can arrive between two ticks,
+        // and a relay that follows a button should not wait for the next one.
+        self.push_output(vec![fixture_id]).await;
+        Ok(())
     }
 
     /// Log a write this node made itself.

@@ -799,6 +799,81 @@ async fn every_local_path_answers_before_anything_has_written_to_it() {
     }
 }
 
+// ── Live values from a device ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn setting_one_live_value_leaves_the_others_where_they_were() {
+    // Two ports on one node reporting in the same millisecond would each write back
+    // a map missing the other's key, if the merge happened outside the actor.
+    let h = harness().await;
+    let fixture = a_fixture("Sensor", 1);
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+
+    h.engine
+        .set_live_value(fixture.id, "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": true }))
+        .await
+        .unwrap();
+    h.engine
+        .set_live_value(fixture.id, "Temperature".into(), serde_json::json!({ "type": "Float", "value": 21.5 }))
+        .await
+        .unwrap();
+
+    let values = h.engine.get(field_path("fixtures", fixture.id, "live_values")).await.unwrap();
+    assert_eq!(values["Contact:0"]["value"], true);
+    assert_eq!(values["Temperature"]["value"], 21.5);
+}
+
+#[tokio::test]
+async fn a_later_reading_replaces_the_earlier_one_on_the_same_key() {
+    let h = harness().await;
+    let fixture = a_fixture("Sensor", 1);
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+
+    for value in [true, false] {
+        h.engine
+            .set_live_value(
+                fixture.id,
+                "Contact:0".into(),
+                serde_json::json!({ "type": "Bool", "value": value }),
+            )
+            .await
+            .unwrap();
+    }
+
+    let values = h.engine.get(field_path("fixtures", fixture.id, "live_values")).await.unwrap();
+    assert_eq!(values["Contact:0"]["value"], false);
+}
+
+#[tokio::test]
+async fn a_live_value_for_a_fixture_that_is_not_patched_is_refused() {
+    let h = harness().await;
+    let result = h
+        .engine
+        .set_live_value(Uuid::new_v4(), "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": true }))
+        .await;
+    assert!(result.is_err(), "an input from a device nothing is patched to has nowhere to go");
+}
+
+#[tokio::test]
+async fn a_live_value_reaches_the_frontends() {
+    let h = harness().await;
+    let fixture = a_fixture("Sensor", 1);
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+
+    let mut updates = h.broadcast.subscribe_filtered(PathPattern::new("fixtures/**"));
+
+    h.engine
+        .set_live_value(fixture.id, "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": true }))
+        .await
+        .unwrap();
+
+    let update = tokio::time::timeout(std::time::Duration::from_secs(1), updates.next())
+        .await
+        .expect("a live value has to be broadcast")
+        .expect("the stream stays open");
+    assert_eq!(update["Contact:0"]["value"], true);
+}
+
 // ── Rust accessor API ─────────────────────────────────────────────────────────
 //
 // The path-proxy API from CLAUDE.md, driven against a real engine. Accessor path

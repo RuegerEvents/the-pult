@@ -30,13 +30,27 @@ struct Harness {
     directory: watch::Receiver<DeviceDirectory>,
 }
 
+/// A port nothing is listening on, found by binding and letting go.
+///
+/// rumqttd is told a concrete address and never says which one it got, so `0` is
+/// not usable — and the broker is a process-wide singleton anyway, so the first
+/// test to want one fixes the port for all of them.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("a free port")
+        .local_addr()
+        .expect("a bound address")
+        .port()
+}
+
 async fn harness() -> Harness {
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let (engine, engine_handle, _broadcast) =
         ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
     tokio::spawn(engine.run());
 
-    let (manager, devices, directory) = DeviceManager::new(engine_handle.clone());
+    let (manager, devices, directory) =
+        DeviceManager::new(NodeId(Uuid::new_v4()), engine_handle.clone(), free_port());
     tokio::spawn(manager.run());
 
     Harness { engine: engine_handle, devices, directory }
@@ -115,6 +129,7 @@ impl Harness {
 struct NodeLog {
     identified: usize,
     outputs: Vec<serde_json::Value>,
+    configs: Vec<serde_json::Value>,
 }
 
 /// A stand-in for a node's HTTP API, on an ephemeral port, recording what it was
@@ -125,6 +140,7 @@ async fn a_node(module_flags: u32) -> (std::net::SocketAddr, Arc<Mutex<NodeLog>>
     let info_log = log.clone();
     let identify_log = log.clone();
     let state_log = log.clone();
+    let config_log = log.clone();
     let app = Router::new()
         .route(
             "/api/v1/info",
@@ -149,6 +165,16 @@ async fn a_node(module_flags: u32) -> (std::net::SocketAddr, Arc<Mutex<NodeLog>>
                 let log = state_log.clone();
                 async move {
                     log.lock().unwrap().outputs.push(body);
+                    Json(serde_json::json!({ "ok": true }))
+                }
+            }),
+        )
+        .route(
+            "/api/v1/config",
+            post(move |Json(body): Json<serde_json::Value>| {
+                let log = config_log.clone();
+                async move {
+                    log.lock().unwrap().configs.push(body);
                     Json(serde_json::json!({ "ok": true }))
                 }
             }),
@@ -439,4 +465,249 @@ fn a_removed_service_name_gives_up_its_serial() {
         format!("openhaunt-1a2b3c.{SERVICE_TYPE}"),
     ));
     assert!(matches!(event, Some(DeviceEvent::Removed { serial }) if serial == "1a2b3c"));
+}
+
+// ── The broker and the nodes on it ────────────────────────────────────────────
+//
+// A real rumqttc client standing in for a node, against the broker the manager
+// started. Nothing here is mocked: the topics, the payloads, and the merge into
+// live_values are the ones a real node would drive.
+
+use rumqttc::{AsyncClient, MqttOptions, QoS};
+
+/// Where the manager's broker ended up. It is a process-wide singleton, so this is
+/// whatever the first harness in the run asked for.
+async fn broker_port(h: &Harness) -> u16 {
+    for _ in 0..200 {
+        if let Some(addr) = h.state().await.broker_addr {
+            if let Some((_, port)) = addr.rsplit_once(':') {
+                return port.parse().expect("the broker address ends in a port");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the leader never started a broker");
+}
+
+/// A node's MQTT client: connected, and announced on its status topic.
+async fn a_node_on_the_broker(h: &Harness, serial: &str) -> AsyncClient {
+    let mut options = MqttOptions::new(format!("node-{serial}"), "127.0.0.1", broker_port(h).await);
+    options.set_keep_alive(std::time::Duration::from_secs(5));
+    let (client, mut eventloop) = AsyncClient::new(options, 16);
+    tokio::spawn(async move { while eventloop.poll().await.is_ok() {} });
+
+    client
+        .publish(format!("openhaunt/{serial}/status"), QoS::AtLeastOnce, true, "online")
+        .await
+        .unwrap();
+    client
+}
+
+async fn eventually<F, Fut>(what: &str, mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..200 {
+        if check().await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+async fn live_value(h: &Harness, fixture_id: Uuid, key: &str) -> Option<serde_json::Value> {
+    h.fixtures()
+        .await
+        .into_iter()
+        .find(|f| f.id == fixture_id)?
+        .live_values
+        .get(key)
+        .map(|v| serde_json::to_value(v).unwrap())
+}
+
+#[tokio::test]
+async fn a_console_with_nothing_adopted_runs_no_broker() {
+    let h = harness().await;
+    h.resolve("seen", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+
+    let state = h.state().await;
+    assert!(state.active, "it is still the node that would drive them");
+    assert_eq!(state.broker_addr, None, "but it has nothing to run a broker for");
+}
+
+#[tokio::test]
+async fn adopting_the_first_device_brings_the_broker_up() {
+    let h = harness().await;
+    h.resolve("first", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.devices.adopt("first".into()).await.unwrap();
+
+    assert!(broker_port(&h).await > 0);
+}
+
+#[tokio::test]
+async fn an_input_edge_lands_in_the_fixture_s_live_values() {
+    let h = harness().await;
+    h.resolve("edge1", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    let fixture_id = h.devices.adopt("edge1".into()).await.unwrap();
+
+    let node = a_node_on_the_broker(&h, "edge1").await;
+    node.publish(
+        "openhaunt/edge1/input/3",
+        QoS::AtLeastOnce,
+        false,
+        r#"{"state": true, "edge": "rising", "ts": 900}"#,
+    )
+    .await
+    .unwrap();
+
+    eventually("the contact to close in the show", || async {
+        live_value(&h, fixture_id, "Contact:3").await
+            == Some(serde_json::json!({ "type": "Bool", "value": true }))
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_sensor_reading_lands_on_the_parameter_its_port_is_bound_to() {
+    let h = harness().await;
+    h.resolve("env1", openhaunt::MODULE_TYPE_ENVIRONMENT, None).await;
+    let fixture_id = h.devices.adopt("env1".into()).await.unwrap();
+
+    let node = a_node_on_the_broker(&h, "env1").await;
+    // Port 1 is Humidity on this module, and nothing on the wire says so.
+    node.publish("openhaunt/env1/input/1", QoS::AtLeastOnce, false, r#"{"value": 42.0}"#)
+        .await
+        .unwrap();
+
+    eventually("the humidity reading to arrive", || async {
+        live_value(&h, fixture_id, "Humidity").await
+            == Some(serde_json::json!({ "type": "Float", "value": 42.0 }))
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_input_from_a_device_nobody_adopted_changes_nothing() {
+    let h = harness().await;
+    // One adopted device, so there is a broker; the stray one is beside it.
+    h.resolve("neighbour", openhaunt::MODULE_TYPE_MAINS_RELAY, None).await;
+    h.devices.adopt("neighbour".into()).await.unwrap();
+    h.resolve("stray", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+
+    let node = a_node_on_the_broker(&h, "stray").await;
+    node.publish("openhaunt/stray/input/0", QoS::AtLeastOnce, false, r#"{"state": true}"#)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let fixtures = h.fixtures().await;
+    assert!(
+        fixtures.iter().all(|f| f.live_values.is_empty()),
+        "an unadopted device drives nothing",
+    );
+}
+
+#[tokio::test]
+async fn health_from_a_node_shows_up_against_it() {
+    let h = harness().await;
+    h.resolve("health1", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.devices.adopt("health1".into()).await.unwrap();
+
+    let node = a_node_on_the_broker(&h, "health1").await;
+    node.publish(
+        "openhaunt/health1/health",
+        QoS::AtLeastOnce,
+        false,
+        r#"{"uptime_s": 120, "temp_c": 38.0, "poe_class": 3, "errors": []}"#,
+    )
+    .await
+    .unwrap();
+
+    eventually("health to show up", || async {
+        h.state().await.discovered["health1"].health.as_ref().map(|hh| hh.uptime_s) == Some(120)
+    })
+    .await;
+    let state = h.state().await;
+    assert_eq!(state.discovered["health1"].health.as_ref().unwrap().temperature_c, Some(38.0));
+}
+
+#[tokio::test]
+async fn a_node_that_publishes_offline_is_marked_offline() {
+    let h = harness().await;
+    h.resolve("offline1", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.devices.adopt("offline1".into()).await.unwrap();
+
+    let node = a_node_on_the_broker(&h, "offline1").await;
+    node.publish("openhaunt/offline1/status", QoS::AtLeastOnce, true, "offline").await.unwrap();
+
+    eventually("the node to be marked offline", || async {
+        !h.state().await.discovered["offline1"].online
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn adopting_a_node_tells_it_where_the_broker_is() {
+    let (addr, log) = a_node(0).await;
+    let h = harness().await;
+    h.resolve("4d5e6f", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+
+    h.devices.adopt("4d5e6f".into()).await.unwrap();
+
+    let advertised = h.state().await.broker_addr;
+    assert!(advertised.is_some(), "the first adoption brings the broker up");
+    let configs = log.lock().unwrap().configs.clone();
+    assert_eq!(configs.len(), 1, "adoption is when a node learns where to publish");
+    assert_eq!(configs[0]["mqtt"]["broker"], serde_json::json!(advertised));
+    assert!(configs[0].get("dmx").is_none(), "a relay has no universe to forward");
+}
+
+#[tokio::test]
+async fn adopting_a_gateway_also_tells_it_which_universe_to_listen_for() {
+    let (addr, log) = a_node(0).await;
+    let h = harness().await;
+    h.resolve("gate1", openhaunt::MODULE_TYPE_DMX_OUT, Some(addr)).await;
+
+    h.devices.adopt("gate1".into()).await.unwrap();
+
+    let configs = log.lock().unwrap().configs.clone();
+    assert_eq!(configs[0]["dmx"], serde_json::json!({ "protocol": "sacn", "universe": 1 }));
+}
+
+#[tokio::test]
+async fn a_follower_does_not_drive_devices() {
+    let h = harness().await;
+    h.resolve("follow1", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.devices.adopt("follow1".into()).await.unwrap();
+    let _ = broker_port(&h).await;
+
+    h.become_follower().await;
+
+    eventually("the node to stop driving", || async { !h.state().await.active }).await;
+}
+
+#[tokio::test]
+async fn a_node_promoted_back_to_leading_drives_again() {
+    let h = harness().await;
+    h.resolve("promo1", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.devices.adopt("promo1".into()).await.unwrap();
+    let _ = broker_port(&h).await;
+    h.become_follower().await;
+    eventually("the node to stop driving", || async { !h.state().await.active }).await;
+
+    h.engine
+        .set(
+            vec![PathSegment::Key("session".into())],
+            Lifecycle::Local,
+            serde_json::json!({
+                "is_advertising": true, "is_follower": false,
+                "session_id": Uuid::new_v4(), "discovered": [],
+            }),
+        )
+        .await
+        .unwrap();
+
+    eventually("the node to drive again", || async { h.state().await.active }).await;
 }

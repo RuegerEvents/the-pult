@@ -45,6 +45,10 @@ struct Args {
     /// happened to start up.
     #[arg(long, value_name = "ADDR", value_parser = parse_artnet_target)]
     artnet: Vec<std::net::SocketAddr>,
+    /// Port for the MQTT broker this node runs for its OpenHaunt devices. Started
+    /// only when this node is the one driving them.
+    #[arg(long, default_value_t = 1883)]
+    openhaunt_broker_port: u16,
 }
 
 /// Accept either `host:port` or a bare address, defaulting to the Art-Net port.
@@ -110,7 +114,8 @@ async fn main() -> Result<()> {
 
     // Every node browses for OpenHaunt devices; only the one leading the session
     // adopts or commands any of them.
-    let (device_mgr, device_handle, _device_directory) = DeviceManager::new(engine_handle.clone());
+    let (device_mgr, device_handle, _device_directory) =
+        DeviceManager::new(node_id, engine_handle.clone(), args.openhaunt_broker_port);
     tokio::spawn(device_mgr.run());
     spawn_mdns_browser(device_handle.clone());
 

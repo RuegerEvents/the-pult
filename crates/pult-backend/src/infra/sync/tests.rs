@@ -672,3 +672,67 @@ async fn the_last_node_standing_leads_itself() {
     })
     .await;
 }
+
+// ── Live values from a device ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
+    // Playback output is derived from cue state, so every node works it out for
+    // itself. An input cannot be: it came off a wire attached to one node, and the
+    // only way the rest of the show learns about it is for that node to send it.
+    use pult_schema::types::fixture::{Fixture, FixtureAddress};
+
+    let leader = a_node().await;
+    let follower = a_node().await;
+    follower.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    let fixture = Fixture {
+        id: Uuid::new_v4(),
+        name: "Doorbell".into(),
+        fixture_type_id: Uuid::new_v4(),
+        address: FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: None },
+        position: None,
+        live_values: Default::default(),
+        active_preset: None,
+    };
+    leader
+        .engine
+        .set(
+            vec![PathSegment::Key("fixtures".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Persisted,
+            serde_json::to_value(&fixture).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    eventually("the follower to have the fixture", || async {
+        follower
+            .engine
+            .get(vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture.id)])
+            .await
+            .is_ok()
+    })
+    .await;
+
+    leader
+        .engine
+        .set_live_value(
+            fixture.id,
+            "Contact:3".into(),
+            serde_json::json!({ "type": "Bool", "value": true }),
+        )
+        .await
+        .unwrap();
+
+    eventually("the reading to cross to the follower", || async {
+        let Ok(fixture) = follower
+            .engine
+            .get(vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture.id)])
+            .await
+        else {
+            return false;
+        };
+        fixture["live_values"]["Contact:3"]["value"] == serde_json::json!(true)
+    })
+    .await;
+}

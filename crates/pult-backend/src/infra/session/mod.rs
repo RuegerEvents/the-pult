@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{engine::EngineHandle, infra::sync::SyncHandle};
+use crate::{engine::EngineHandle, infra::local_ipv4, infra::sync::SyncHandle};
 
 // ── SessionCommand ────────────────────────────────────────────────────────────
 
@@ -323,15 +323,6 @@ impl SessionManager {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn local_ipv4() -> Ipv4Addr {
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok();
-    socket
-        .and_then(|s| s.connect("8.8.8.8:80").ok().map(|_| s))
-        .and_then(|s| s.local_addr().ok())
-        .and_then(|a| match a.ip() { IpAddr::V4(v4) => Some(v4), _ => None })
-        .unwrap_or(Ipv4Addr::LOCALHOST)
-}
 
 fn gethostname() -> String {
     hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "pult-node".to_string())
