@@ -7,6 +7,7 @@ import { createDataProxy } from './proxy.js';
 import type { Cue } from '../generated/Cue.js';
 import type { Fixture } from '../generated/Fixture.js';
 import type { FixtureType } from '../generated/FixtureType.js';
+import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Show } from '../generated/Show.js';
 import type { Trigger } from '../generated/Trigger.js';
@@ -22,6 +23,10 @@ export type FixtureEntity = PathProxy<Fixture> & {
 };
 
 export type FixtureTypeEntity = PathProxy<FixtureType> & {
+  delete(): Promise<void>;
+};
+
+export type OutputConfigEntity = PathProxy<OutputConfig> & {
   delete(): Promise<void>;
 };
 
@@ -70,6 +75,17 @@ export type FixtureTypeCollection = {
   [n: number]: FixtureTypeEntity;
 };
 
+export type OutputConfigCollection = {
+  get(): Promise<OutputConfig[]>;
+  set(value: OutputConfig[]): Promise<void>;
+  subscribe(cb: (value: OutputConfig[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: OutputConfig[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): OutputConfigEntity;
+  nth(n: number): OutputConfigEntity;
+  create(entity: OutputConfig): Promise<void>;
+  [n: number]: OutputConfigEntity;
+};
+
 export type SequenceCollection = {
   get(): Promise<Sequence[]>;
   set(value: Sequence[]): Promise<void>;
@@ -99,6 +115,7 @@ export type DataRoot = {
   cues: CueCollection;
   fixtures: FixtureCollection;
   fixture_types: FixtureTypeCollection;
+  outputs: OutputConfigCollection;
   sequences: SequenceCollection;
   show: PathProxy<Show | null>;
   triggers: TriggerCollection;

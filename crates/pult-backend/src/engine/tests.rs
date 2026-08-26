@@ -1406,7 +1406,7 @@ async fn playback_hands_the_patch_to_the_output_plugins() {
 
 #[tokio::test]
 async fn an_idle_show_sends_nothing_to_output() {
-    use crate::infra::connectors::OutputHandle;
+    use crate::infra::connectors::{OutputCommand, OutputHandle};
 
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
@@ -1416,10 +1416,23 @@ async fn an_idle_show_sends_nothing_to_output() {
 
     let fixture = a_fixture("Spot L", 1);
     handle.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
-    // Drain the push caused by patching the fixture.
-    let _ = tokio::time::timeout(std::time::Duration::from_millis(200), output_rx.recv()).await;
 
-    let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), output_rx.recv()).await;
+    // Drain everything the patch itself caused, including the one-off Configure that
+    // tells the output side which outputs the show has.
+    let deadline = std::time::Duration::from_millis(200);
+    while tokio::time::timeout(deadline, output_rx.recv()).await.is_ok() {}
+
+    // A Configure would be fine here; a Patch would not.
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+        loop {
+            match output_rx.recv().await {
+                Some(OutputCommand::Patch { .. }) => return,
+                Some(_) => continue,
+                None => return,
+            }
+        }
+    })
+    .await;
     assert!(quiet.is_err(), "a show with nothing running must not push output every tick");
 }
 

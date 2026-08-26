@@ -8,7 +8,7 @@ use pult_schema::{
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
-    types::{devices::DevicesState, session::SessionState},
+    types::{devices::DevicesState, output::OutputStatuses, session::SessionState},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -59,6 +59,7 @@ pub struct ShowState {
 const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     ("session", || serde_json::to_value(SessionState::default()).unwrap_or_default()),
     ("devices", || serde_json::to_value(DevicesState::default()).unwrap_or_default()),
+    ("output_status", || serde_json::to_value(OutputStatuses::default()).unwrap_or_default()),
 ];
 
 fn seed_local() -> BTreeMap<String, serde_json::Value> {
@@ -459,6 +460,9 @@ pub struct ShowEngine {
     /// instead of deserializing the whole state 40 times a second for nothing.
     state_version: u64,
     playback_seen: u64,
+    /// The `outputs` collection changed and the output side has not been told yet.
+    /// Set on the first tick too, so a saved show comes up sending.
+    outputs_dirty: bool,
 }
 
 impl ShowEngine {
@@ -499,6 +503,7 @@ impl ShowEngine {
             path_clocks: HashMap::new(),
             state_version: 0,
             playback_seen: 0,
+            outputs_dirty: true,
         };
         (engine, broadcast)
     }
@@ -516,6 +521,7 @@ impl ShowEngine {
             let cmd = tokio::select! {
                 cmd = self.rx.recv() => cmd,
                 _ = ticker.tick() => {
+                    self.push_output_config().await;
                     self.playback_tick().await;
                     self.triggers_tick().await;
                     continue;
@@ -740,6 +746,19 @@ impl ShowEngine {
         }
     }
 
+    /// Hand the configured outputs to the output side, when they have changed.
+    ///
+    /// The manager reconciles rather than rebuilds, so sending this on every edit is
+    /// cheap; sending it on every tick would not be, which is what the flag is for.
+    async fn push_output_config(&mut self) {
+        if !self.outputs_dirty {
+            return;
+        }
+        self.outputs_dirty = false;
+        let Some(output) = &self.output else { return };
+        output.configure(self.read_collection("outputs"));
+    }
+
     /// Hand the current patch to the output plugins.
     ///
     /// Sent on every tick that did any work, including a patch edit that moved no
@@ -881,6 +900,9 @@ impl ShowEngine {
             return Err(BackendError::PathNotFound(path));
         };
         let table = head.clone();
+        if table == "outputs" {
+            self.outputs_dirty = true;
+        }
 
         if meta.is_singleton {
             return self.set_singleton(meta, &table, rest, value, &path).await;
@@ -1241,6 +1263,7 @@ impl ShowEngine {
                 state.set_order(saved_order);
                 state.post_load_init();
                 self.state = state;
+                self.outputs_dirty = true;
             }
             Err(e) => warn!("[engine] load_from_showfile: ShowState deserialization failed: {e}"),
         }
@@ -1257,6 +1280,7 @@ impl ShowEngine {
             // its own network segment. A leader's copy of either means nothing here.
             state.local = std::mem::take(&mut self.state.local);
             self.state = state;
+            self.outputs_dirty = true;
             // The snapshot replaces every value, so what we knew about individual
             // paths no longer describes anything.
             self.path_clocks.clear();

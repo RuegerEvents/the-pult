@@ -93,7 +93,7 @@ impl SessionManager {
                 return (
                     SessionManager {
                         node_id, sync_port, engine, sync, rx, mdns_rx,
-                        state: SessionState::default(),
+                        state: SessionState { node_id: Some(node_id), ..Default::default() },
                         discovered_addrs: HashMap::new(),
                         discovered_leader_ids: HashMap::new(),
                         discovered_show_ids: HashMap::new(),
@@ -114,7 +114,7 @@ impl SessionManager {
         (
             SessionManager {
                 node_id, sync_port, engine, sync, rx, mdns_rx,
-                state: SessionState::default(),
+                state: SessionState { node_id: Some(node_id), ..Default::default() },
                 discovered_addrs: HashMap::new(),
                 discovered_leader_ids: HashMap::new(),
                 discovered_show_ids: HashMap::new(),
@@ -138,6 +138,10 @@ impl SessionManager {
     }
 
     pub async fn run(mut self) {
+        // Say who this node is before anything happens to it. Nothing else will:
+        // state is pushed on change, and this node's own id never changes.
+        self.push_state().await;
+
         loop {
             tokio::select! {
                 cmd = self.rx.recv() => {
@@ -204,7 +208,11 @@ impl SessionManager {
                     }
                     self.sync.disconnect_all().await;
                 }
-                self.state = SessionState { discovered: self.state.discovered.clone(), ..Default::default() };
+                self.state = SessionState {
+                    node_id: Some(self.node_id),
+                    discovered: self.state.discovered.clone(),
+                    ..Default::default()
+                };
                 self.push_state().await;
             }
 

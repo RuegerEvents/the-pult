@@ -5,6 +5,7 @@ pub mod show;
 pub mod session;
 pub mod devices;
 pub mod openhaunt;
+pub mod output;
 pub mod trigger;
 
 pub use fixture::{Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
@@ -13,4 +14,7 @@ pub use cue::{Cue, CueCreate, CuePatch, FollowMode, ParameterCapture};
 pub use show::{Show, ShowCreate, ShowPatch};
 pub use session::{DiscoveredSession, SessionState};
 pub use devices::{DeviceHealth, DevicesState, DiscoveredDevice};
+pub use output::{
+    OutputConfig, OutputConfigCreate, OutputConfigPatch, OutputKind, OutputStatus, OutputStatuses,
+};
 pub use trigger::{Trigger, TriggerAction, TriggerCondition, TriggerCreate, TriggerPatch, TriggerSource};

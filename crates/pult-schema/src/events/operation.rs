@@ -8,7 +8,14 @@ use crate::{lifecycle::Lifecycle, path::Path};
 
 // Ord is how concurrent writes are broken apart: every node picks the same winner
 // because every node compares the same two ids.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+//
+// TS because a station id reaches the frontend now that an output can name the one
+// that sends it. Serde flattens the newtype, so it is a plain uuid string on the
+// wire and in TypeScript.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ts_rs::TS,
+)]
+#[ts(export)]
 pub struct NodeId(pub Uuid);
 
 impl NodeId {

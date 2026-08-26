@@ -13,6 +13,7 @@ use anyhow::Result;
 use axum::{routing::get, Router};
 use clap::Parser;
 use pult_schema::events::operation::NodeId;
+use uuid::Uuid;
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
@@ -22,12 +23,7 @@ use crate::{
     api::ws::{ws_handler, SubscriptionRegistry},
     config::Config,
     engine::{EngineCommand, EngineHandle, ShowEngine},
-    infra::connectors::{
-        artnet::{ArtNetOutput, ARTNET_PORT},
-        openhaunt::OpenHauntOutput,
-        sacn::{SacnOutput, SACN_PORT},
-        OutputManager, OutputPlugin,
-    },
+    infra::connectors::{artnet::ARTNET_PORT, sacn::SACN_PORT, OutputManager},
     infra::devices::{spawn_mdns_browser, DeviceManager},
     infra::session::SessionManager,
     infra::showfile,
@@ -84,6 +80,70 @@ fn parse_target(value: &str, default_port: u16) -> Result<std::net::SocketAddr, 
         .map_err(|e| format!("not an address: {e}"))
 }
 
+/// Turn `--artnet` / `--sacn` into `outputs` entries, but only on a show that has
+/// none. Once outputs are show data, a flag is a convenience for the first run and
+/// a bug on every run after it.
+async fn seed_outputs_from_flags(engine: &EngineHandle, node_id: NodeId, args: &Args) {
+    use pult_schema::{
+        lifecycle::Lifecycle,
+        path::PathSegment,
+        types::output::{OutputConfig, OutputKind},
+    };
+
+    if args.artnet.is_empty() && args.sacn.is_none() {
+        return;
+    }
+    let existing = engine
+        .get(vec![PathSegment::Key("outputs".into())])
+        .await
+        .ok()
+        .and_then(|v| v.as_array().map(|a| a.len()))
+        .unwrap_or(0);
+    if existing > 0 {
+        warn!("[output] this show already has outputs; ignoring the command line");
+        return;
+    }
+
+    let mut seeds: Vec<OutputConfig> = Vec::new();
+    for target in &args.artnet {
+        seeds.push(OutputConfig {
+            id: Uuid::new_v4(),
+            name: format!("Art-Net {target}"),
+            kind: OutputKind::Artnet,
+            target: Some(target.to_string()),
+            universes: vec![],
+            enabled: true,
+            node_id: Some(node_id),
+        });
+    }
+    if let Some(target) = args.sacn {
+        seeds.push(OutputConfig {
+            id: Uuid::new_v4(),
+            name: match target {
+                Some(addr) => format!("sACN {addr}"),
+                None => "sACN".to_string(),
+            },
+            kind: OutputKind::Sacn,
+            target: target.map(|addr| addr.to_string()),
+            universes: vec![],
+            enabled: true,
+            node_id: Some(node_id),
+        });
+    }
+
+    for seed in seeds {
+        info!("[output] seeding {} from the command line", seed.name);
+        let path = vec![
+            PathSegment::Key("outputs".into()),
+            PathSegment::Key("__create".into()),
+        ];
+        let value = serde_json::to_value(&seed).unwrap_or_default();
+        if let Err(e) = engine.set(path, Lifecycle::Persisted, value).await {
+            warn!("[output] could not seed {}: {e}", seed.name);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
@@ -95,7 +155,7 @@ async fn main() -> Result<()> {
     let config = Config {
         port: args.port,
         sync_port: args.sync_port,
-        showfile: args.showfile,
+        showfile: args.showfile.clone(),
         ..Config::default()
     };
 
@@ -123,42 +183,20 @@ async fn main() -> Result<()> {
     tokio::spawn(device_mgr.run());
     spawn_mdns_browser(device_handle.clone());
 
-    let mut plugins: Vec<Box<dyn OutputPlugin>> = Vec::new();
-    for target in &args.artnet {
-        match ArtNetOutput::bind(*target).await {
-            Ok(plugin) => {
-                info!("Art-Net output to {target}");
-                plugins.push(Box::new(plugin));
-            }
-            Err(e) => warn!("Art-Net output to {target} disabled: {e}"),
-        }
-    }
-    if let Some(target) = args.sacn {
-        match SacnOutput::bind(target).await {
-            Ok(plugin) => {
-                match target {
-                    Some(addr) => info!("sACN output to {addr}"),
-                    None => info!("sACN output on the per-universe multicast groups"),
-                }
-                plugins.push(Box::new(plugin));
-            }
-            Err(e) => warn!("sACN output disabled: {e}"),
-        }
-    }
-    // Unconditional: it only ever reaches devices that have been adopted, so a
-    // console with no OpenHaunt nodes still sends nothing anywhere.
-    match OpenHauntOutput::new(device_directory, device_handle.clone(), SACN_PORT).await {
-        Ok(plugin) => plugins.push(Box::new(plugin)),
-        Err(e) => warn!("OpenHaunt output disabled: {e}"),
-    }
+    // Which outputs exist is show data now. The manager reconciles against the
+    // `outputs` collection, and the engine hands it that collection whenever it
+    // changes — including once at load, so a saved show comes up sending.
+    let (output_mgr, output) =
+        OutputManager::new(node_id, engine_handle.clone(), Some((device_directory, device_handle.clone())));
+    tokio::spawn(output_mgr.run());
+    engine.set_output(output);
 
-    if !plugins.is_empty() {
-        let (manager, output) = OutputManager::new(plugins);
-        tokio::spawn(manager.run());
-        engine.set_output(output);
-    }
     engine_handle.0.send(EngineCommand::LoadFromShowfile).await?;
     tokio::spawn(engine.run());
+
+    // The flags survive as a way to seed an empty showfile. Anything already
+    // configured wins: a flag should not quietly add a second output every start.
+    seed_outputs_from_flags(&engine_handle, node_id, &args).await;
 
     let (session_mgr, session_handle) =
         SessionManager::new(node_id, config.sync_port, engine_handle.clone(), sync_handle.clone());

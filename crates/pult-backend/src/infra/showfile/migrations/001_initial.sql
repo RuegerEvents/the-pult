@@ -27,6 +27,16 @@ CREATE TABLE IF NOT EXISTS fixture_types (
     parameters TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS outputs (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    target TEXT,
+    universes TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    node_id TEXT
+);
+
 CREATE TABLE IF NOT EXISTS sequences (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,

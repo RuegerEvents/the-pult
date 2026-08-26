@@ -5,8 +5,9 @@
 	import DevicesPanel from '$lib/components/DevicesPanel.svelte';
 	import PatchPanel from '$lib/components/PatchPanel.svelte';
 	import TriggersPanel from '$lib/components/TriggersPanel.svelte';
+	import OutputsPanel from '$lib/components/OutputsPanel.svelte';
 
-	type View = 'playback' | 'patch' | 'triggers';
+	type View = 'playback' | 'patch' | 'triggers' | 'outputs';
 	let view = $state<View>('playback');
 </script>
 
@@ -21,13 +22,16 @@
 			<button class:active={view === 'playback'} onclick={() => (view = 'playback')}>Playback</button>
 			<button class:active={view === 'patch'} onclick={() => (view = 'patch')}>Patch</button>
 			<button class:active={view === 'triggers'} onclick={() => (view = 'triggers')}>Triggers</button>
+			<button class:active={view === 'outputs'} onclick={() => (view = 'outputs')}>Outputs</button>
 		</nav>
 		{#if view === 'playback'}
 			<SequenceRunner />
 		{:else if view === 'patch'}
 			<PatchPanel />
-		{:else}
+		{:else if view === 'triggers'}
 			<TriggersPanel />
+		{:else}
+			<OutputsPanel />
 		{/if}
 	</main>
 </div>

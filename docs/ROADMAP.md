@@ -16,7 +16,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness, vector-clock conflict resolution, and leader failover. |
 | Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
-| Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Configuration is CLI-only: flags at startup, nothing in the data model, nothing in the UI. |
+| Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Configured from the `outputs` collection and editable while the show is up, with per-output status in the UI. Flags only seed an empty showfile. |
 | Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; triggers turn those into cues. Tested end to end against `tools/openhaunt-sim`, which is all there is until there is firmware. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
 | 3D programmer | Not started. The largest piece of the spec and none of it exists. |
@@ -112,7 +112,7 @@ The one exception is ts-rs printing `failed to parse serde attribute` for the ge
 
 Nothing else depends on it, and the plugin API should be designed against a system that already plays back cues and drives output.
 
-### 9. Output configuration in the web UI
+### 9. Output configuration in the web UI (done)
 
 Outputs are `--artnet` flags read once at startup. Nothing in the data model knows an output exists, so an operator cannot see where the show is going, let alone change it without restarting the backend.
 
@@ -123,6 +123,14 @@ An *Outputs* tab lists them, adds them, and enables or disables them, with per-p
 `node_id` says which station runs the plugin. It is the first ownership concept in the system, and what task 10 displays.
 
 sACN is not part of this. It lands earlier, in task 11, as a sibling of `artnet.rs`.
+
+All of that is in. `OutputManager` reconciles against the collection rather than taking its plugins once, so an output can be re-addressed while the show is up — and it keeps the socket when only the name changed, because rebuilding it resets the dedup cache and puts a redundant frame on the wire for a label edit. Status is LOCAL and measured over a one-second window; `interval` fires immediately, which the first version divided by, reporting a thousand frames a second.
+
+`node_id` turned out to matter immediately rather than in task 10. `outputs` is PERSISTED, so it replicates — and without an owner every station would send the same universes, which is two copies on the wire. The UI fills in the local station and *Every station* is a deliberate choice.
+
+The flags stay as a way to seed an empty showfile, and refuse to add anything to a show that already has outputs.
+
+Left open: nothing decides what happens to an output whose station leaves the session. It simply stops, which is right for a duplicate and wrong for the only path to the rig. That belongs with task 10's partitioning question rather than here.
 
 ### 10. Station view
 
