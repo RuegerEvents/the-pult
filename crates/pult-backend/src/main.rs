@@ -23,6 +23,7 @@ use crate::{
     config::Config,
     engine::{EngineCommand, EngineHandle, ShowEngine},
     infra::connectors::{artnet::{ArtNetOutput, ARTNET_PORT}, OutputManager, OutputPlugin},
+    infra::devices::{spawn_mdns_browser, DeviceManager},
     infra::session::SessionManager,
     infra::showfile,
     infra::sync::SyncManager,
@@ -107,6 +108,12 @@ async fn main() -> Result<()> {
     engine_handle.0.send(EngineCommand::LoadFromShowfile).await?;
     tokio::spawn(engine.run());
 
+    // Every node browses for OpenHaunt devices; only the one leading the session
+    // adopts or commands any of them.
+    let (device_mgr, device_handle, _device_directory) = DeviceManager::new(engine_handle.clone());
+    tokio::spawn(device_mgr.run());
+    spawn_mdns_browser(device_handle.clone());
+
     let (session_mgr, session_handle) =
         SessionManager::new(node_id, config.sync_port, engine_handle.clone(), sync_handle.clone());
     // If the leader disappears and this node wins the election, the session layer
@@ -120,6 +127,7 @@ async fn main() -> Result<()> {
         pool,
         sync: sync_handle,
         session: session_handle,
+        devices: device_handle,
         node_id,
         ws_registry: SubscriptionRegistry::default(),
         broadcast: _broadcast,

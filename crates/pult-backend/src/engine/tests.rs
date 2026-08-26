@@ -754,6 +754,51 @@ async fn a_leader_snapshot_leaves_this_node_s_session_alone() {
     assert_eq!(session["is_advertising"], false);
 }
 
+#[tokio::test]
+async fn a_leader_snapshot_leaves_this_node_s_device_list_alone() {
+    // Same rule as the session, and for the same reason: what a leader can see on
+    // its network segment says nothing about what is plugged in here.
+    let leader = harness().await;
+    leader
+        .engine
+        .set(
+            key("devices"),
+            Lifecycle::Local,
+            serde_json::json!({ "discovered": {}, "broker_addr": "10.0.0.1:1883", "active": true }),
+        )
+        .await
+        .unwrap();
+    let snapshot = leader.engine.get_snapshot().await;
+
+    let follower = harness().await;
+    follower
+        .engine
+        .set(
+            key("devices"),
+            Lifecycle::Local,
+            serde_json::json!({ "discovered": {}, "broker_addr": null, "active": false }),
+        )
+        .await
+        .unwrap();
+
+    follower.engine.apply_state_snapshot(snapshot).await;
+
+    let devices = follower.engine.get(key("devices")).await.unwrap();
+    assert_eq!(devices["active"], false, "LOCAL devices must survive a leader snapshot");
+    assert_eq!(devices["broker_addr"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn every_local_path_answers_before_anything_has_written_to_it() {
+    // A frontend subscribes on connect, before any manager has run. An empty
+    // state is an answer; a path error is not.
+    let h = harness().await;
+    for path in ["session", "devices"] {
+        let value = h.engine.get(key(path)).await.unwrap();
+        assert!(value.is_object(), "{path} must exist from the start, got {value}");
+    }
+}
+
 // ── Rust accessor API ─────────────────────────────────────────────────────────
 //
 // The path-proxy API from CLAUDE.md, driven against a real engine. Accessor path

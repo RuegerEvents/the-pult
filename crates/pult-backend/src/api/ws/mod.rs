@@ -183,8 +183,8 @@ async fn handle_client_message(
         }
 
         ClientMessage::Call { method, args, request_id } => {
-            let msg = if method.starts_with("session.") {
-                handle_session_call(&method, args, state).await
+            let msg = if method.starts_with("session.") || method.starts_with("device.") {
+                handle_local_call(&method, args, state).await
                     .map(|v| ServerMessage::CallResult { request_id: request_id.clone(), result: Some(v), error: None })
                     .unwrap_or_else(|e| ServerMessage::CallResult {
                         request_id,
@@ -214,12 +214,33 @@ async fn handle_client_message(
     }
 }
 
-async fn handle_session_call(
+/// Calls against LOCAL state, which the engine's command registry knows nothing
+/// about — they go to the manager that owns the state rather than to an entity.
+async fn handle_local_call(
     method: &str,
     args: serde_json::Value,
     state: &AppState,
 ) -> Result<serde_json::Value, String> {
+    let serial = || {
+        args["serial"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "missing serial".to_string())
+    };
+
     match method {
+        "device.adopt" => {
+            let id = state.devices.adopt(serial()?).await?;
+            serde_json::to_value(id).map_err(|e| e.to_string())
+        }
+        "device.identify" => {
+            state.devices.identify(serial()?).await?;
+            Ok(serde_json::Value::Null)
+        }
+        "device.forget" => {
+            state.devices.forget(serial()?).await?;
+            Ok(serde_json::Value::Null)
+        }
         "session.join" => {
             let session_id: uuid::Uuid = serde_json::from_value(args["sessionId"].clone())
                 .map_err(|e| format!("invalid sessionId: {e}"))?;
@@ -243,7 +264,7 @@ async fn handle_session_call(
                 None => Err("failed to create session".into()),
             }
         }
-        _ => Err(format!("unknown session method: {method}")),
+        _ => Err(format!("unknown method: {method}")),
     }
 }
 

@@ -31,7 +31,7 @@ bincode = { version = "2", features = ["serde"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "uuid", "chrono", "macros"] }
 
 # Types
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # TypeScript gen
@@ -59,6 +59,9 @@ toml = "0.8"
 
 # mDNS discovery
 mdns-sd = "0.13"
+
+# HTTP client, for talking to OpenHaunt nodes
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # async stream macros
 async-stream = "0.3"

@@ -8,7 +8,7 @@ use pult_schema::{
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
-    types::session::SessionState,
+    types::{devices::DevicesState, session::SessionState},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -33,7 +33,7 @@ use crate::{
 ///
 /// Shape (identical to what `EntityMeta::load_all` produces and `save_all` reads):
 /// collections are objects keyed by entity id, singletons hold the entity or null.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ShowState {
     #[serde(flatten)]
     entities: serde_json::Map<String, serde_json::Value>,
@@ -43,20 +43,55 @@ pub struct ShowState {
     #[serde(default)]
     order: BTreeMap<String, Vec<Uuid>>,
 
-    /// LOCAL lifecycle: broadcast to frontends, never persisted and never sent to
-    /// peers, so it is skipped by serde and preserved across snapshot application.
-    /// SessionManager is the only writer.
-    #[serde(skip)]
-    pub session: SessionState,
+    /// LOCAL lifecycle, keyed by top-level path: broadcast to frontends, never
+    /// persisted and never sent to peers, so it is skipped by serde and carried
+    /// across snapshot application by hand. One manager owns each key.
+    #[serde(skip, default = "seed_local")]
+    local: BTreeMap<String, serde_json::Value>,
+}
+
+/// The LOCAL top-level paths and what an empty one looks like.
+///
+/// Seeding matters: a frontend that asks for `devices` before the device manager
+/// has said anything must get an empty state rather than a path error, and a
+/// snapshot from a leader must not leave this node's own view blank.
+const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
+    ("session", || serde_json::to_value(SessionState::default()).unwrap_or_default()),
+    ("devices", || serde_json::to_value(DevicesState::default()).unwrap_or_default()),
+];
+
+fn seed_local() -> BTreeMap<String, serde_json::Value> {
+    LOCAL_STATE.iter().map(|(key, empty)| ((*key).to_string(), empty())).collect()
+}
+
+impl Default for ShowState {
+    fn default() -> Self {
+        Self {
+            entities: Default::default(),
+            order: Default::default(),
+            local: seed_local(),
+        }
+    }
 }
 
 impl ShowState {
-    /// Top-level keys broadcast to frontends: every registered table, plus session.
+    /// Top-level keys broadcast to frontends: every registered table, plus the
+    /// LOCAL paths this node maintains for itself.
     pub fn frontend_paths() -> Vec<String> {
         let mut paths: Vec<String> =
             EntityMeta::all_with_tables().iter().filter_map(|m| m.table_name.map(String::from)).collect();
-        paths.push("session".into());
+        paths.extend(LOCAL_STATE.iter().map(|(key, _)| (*key).to_string()));
         paths
+    }
+
+    /// Is this node following someone else's session? Read straight out of the LOCAL
+    /// session state, which SessionManager keeps current.
+    fn is_follower(&self) -> bool {
+        self.local
+            .get("session")
+            .and_then(|v| v.get("is_follower"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     }
 
     /// Reconcile ordering against the entities actually present, after a bulk load
@@ -155,9 +190,9 @@ impl ShowState {
     pub fn get_by_path(&self, path: &Path) -> Option<serde_json::Value> {
         let [PathSegment::Key(head), rest @ ..] = path.as_slice() else { return None };
 
-        // session is LOCAL and not a registered entity, so it is matched first.
-        if head == "session" {
-            return descend(&serde_json::to_value(&self.session).ok()?, rest);
+        // LOCAL paths are not registered entities, so they are matched first.
+        if let Some(value) = self.local.get(head) {
+            return descend(value, rest);
         }
 
         let meta = EntityMeta::by_table(head)?;
@@ -539,7 +574,7 @@ impl ShowEngine {
 
         // A follower takes its cue positions from the leader, so only the leader
         // fires follow cues. Both ends still run their own fades.
-        let is_follower = self.state.session.is_follower;
+        let is_follower = self.state.is_follower();
         let mut moved: Vec<Uuid> = Vec::new();
 
         for effect in effects {
@@ -653,11 +688,12 @@ impl ShowEngine {
             return Err(BackendError::PathNotFound(path));
         };
 
-        // session is LOCAL, written only by SessionManager, and not a registered entity.
-        if head == "session" {
+        // LOCAL paths are replaced whole by the manager that owns them, and are not
+        // registered entities. Nothing writes a field of one from the outside.
+        if self.state.local.contains_key(head) {
             return match rest {
                 [] => {
-                    self.state.session = serde_json::from_value(value)?;
+                    self.state.local.insert(head.clone(), value);
                     Ok(())
                 }
                 _ => Err(BackendError::PathNotFound(path.clone())),
@@ -1041,8 +1077,9 @@ impl ShowEngine {
     async fn apply_snapshot(&mut self, data: serde_json::Value) {
         if let Ok(mut state) = serde_json::from_value::<ShowState>(data) {
             state.post_load_init();
-            // session is LOCAL: this node's own session survives a leader snapshot.
-            state.session = std::mem::take(&mut self.state.session);
+            // LOCAL state belongs to this node: its session, and what it can see on
+            // its own network segment. A leader's copy of either means nothing here.
+            state.local = std::mem::take(&mut self.state.local);
             self.state = state;
             // The snapshot replaces every value, so what we knew about individual
             // paths no longer describes anything.

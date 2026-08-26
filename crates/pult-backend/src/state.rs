@@ -5,6 +5,7 @@ use sqlx::SqlitePool;
 
 use crate::{
     engine::{EngineHandle, UpdateBroadcast},
+    infra::devices::DeviceHandle,
     infra::session::SessionHandle,
     infra::sync::SyncHandle,
     api::ws::SubscriptionRegistry,
@@ -17,6 +18,7 @@ pub struct AppState {
     pub pool: Arc<SqlitePool>,
     pub sync: SyncHandle,
     pub session: SessionHandle,
+    pub devices: DeviceHandle,
     pub node_id: NodeId,
     pub ws_registry: SubscriptionRegistry,
     pub broadcast: UpdateBroadcast,

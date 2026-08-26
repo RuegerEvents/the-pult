@@ -2,6 +2,7 @@
 	import ShowPanel from '$lib/components/ShowPanel.svelte';
 	import SequenceRunner from '$lib/components/SequenceRunner.svelte';
 	import SessionPanel from '$lib/components/SessionPanel.svelte';
+	import DevicesPanel from '$lib/components/DevicesPanel.svelte';
 	import PatchPanel from '$lib/components/PatchPanel.svelte';
 
 	type View = 'playback' | 'patch';
@@ -12,6 +13,7 @@
 	<aside class="sidebar">
 		<ShowPanel />
 		<SessionPanel />
+		<DevicesPanel />
 	</aside>
 	<main class="main">
 		<nav class="tabs">
