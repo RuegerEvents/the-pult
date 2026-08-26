@@ -20,6 +20,7 @@ use crate::{
     error::BackendError,
     infra::{connectors::OutputHandle, showfile::{oplog, order}, sync::SyncHandle},
     model::playback::{Playback, PlaybackEffect, ShowView, TICK},
+    model::triggers::{InputEvent, TriggerEffect, Triggers},
 };
 
 // ── In-memory show state ──────────────────────────────────────────────────────
@@ -444,6 +445,12 @@ pub struct ShowEngine {
     sync: Option<SyncHandle>,
     commands: CommandTable,
     playback: Playback,
+    triggers: Triggers,
+    /// Parameter changes since the last trigger tick.
+    ///
+    /// Queued rather than read from the state on the tick, because a button pressed
+    /// and released between two ticks would otherwise look like nothing happening.
+    input_events: Vec<InputEvent>,
     output: Option<OutputHandle>,
     /// The clock and author of the last accepted write at each replicated path.
     /// Only replicated paths are tracked, so playback output does not grow this.
@@ -486,6 +493,8 @@ impl ShowEngine {
             sync,
             commands: build_command_table(),
             playback: Playback::default(),
+            triggers: Triggers::default(),
+            input_events: Vec::new(),
             output: None,
             path_clocks: HashMap::new(),
             state_version: 0,
@@ -508,6 +517,7 @@ impl ShowEngine {
                 cmd = self.rx.recv() => cmd,
                 _ = ticker.tick() => {
                     self.playback_tick().await;
+                    self.triggers_tick().await;
                     continue;
                 }
             };
@@ -629,19 +639,105 @@ impl ShowEngine {
                         continue;
                     }
                     let path = entity_field_path("sequences", sequence_id, "goNext");
-                    let args = serde_json::json!({});
-                    if self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await.is_ok() {
-                        self.state_version += 1;
-                        self.record_write(&path, Lifecycle::Synced);
-                        if let Some(sync) = &self.sync {
-                            sync.broadcast_synced(path, args, self.clock.clone()).await;
-                        }
-                    }
+                    self.run_synced_command(path, serde_json::json!({})).await;
                 }
             }
         }
 
         self.push_output(moved).await;
+    }
+
+    /// Run a registered command and replicate the result.
+    ///
+    /// The engine's own way of pressing Go: everything a `Call` from a frontend does,
+    /// minus the reply. Shared by follow cues and by triggers, so the two cannot
+    /// drift into replicating differently.
+    async fn run_synced_command(&mut self, path: Path, args: serde_json::Value) {
+        if self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await.is_ok() {
+            self.state_version += 1;
+            self.record_write(&path, Lifecycle::Synced);
+            if let Some(sync) = &self.sync {
+                sync.broadcast_synced(path, args, self.clock.clone()).await;
+            }
+        }
+    }
+
+    // ── Triggers ──────────────────────────────────────────────────────────────
+
+    /// Evaluate the trigger rules against whatever came in since the last tick.
+    ///
+    /// Only the leader fires. A trigger's action is a write to replicated state, so
+    /// every node running the same rule would apply the same change several times —
+    /// and the input that caused it only ever reached one node anyway.
+    async fn triggers_tick(&mut self) {
+        let inputs = std::mem::take(&mut self.input_events);
+        if inputs.is_empty() && !self.triggers.has_work() {
+            return;
+        }
+        if self.state.is_follower() {
+            return;
+        }
+
+        let triggers: Vec<pult_schema::types::trigger::Trigger> = self.read_collection("triggers");
+        if triggers.is_empty() {
+            return;
+        }
+        let effects =
+            self.triggers.tick(tokio::time::Instant::now().into_std(), &triggers, &inputs);
+
+        for effect in effects {
+            match effect {
+                TriggerEffect::SetPending { trigger_id, pending } => {
+                    let path = entity_field_path("triggers", trigger_id, "pending");
+                    let value = serde_json::Value::Bool(pending);
+                    self.write_synced(path, value).await;
+                }
+                TriggerEffect::Fire { trigger_id, action } => {
+                    self.run_trigger_action(action).await;
+                    let path = entity_field_path("triggers", trigger_id, "last_fired_at");
+                    let value = serde_json::to_value(chrono::Utc::now()).unwrap_or_default();
+                    self.write_synced(path, value).await;
+                }
+            }
+        }
+    }
+
+    async fn run_trigger_action(&mut self, action: pult_schema::types::trigger::TriggerAction) {
+        use pult_schema::types::trigger::TriggerAction;
+        match action {
+            TriggerAction::GoNext { sequence_id } => {
+                let path = entity_field_path("sequences", sequence_id, "goNext");
+                self.run_synced_command(path, serde_json::json!({})).await;
+            }
+            TriggerAction::GoToCue { sequence_id, cue_id } => {
+                let path = entity_field_path("sequences", sequence_id, "goToCue");
+                self.run_synced_command(path, serde_json::json!({ "cueId": cue_id })).await;
+            }
+            TriggerAction::SetParameter { fixture_id, parameter, value } => {
+                let key = crate::model::playback::parameter_key(&parameter);
+                let value = serde_json::to_value(value).unwrap_or_default();
+                // A running fade writing the same key will win the next tick. Last
+                // writer takes it, which is a design question and not a bug to fix
+                // in passing.
+                if let Err(e) = self.set_live_value(fixture_id, key, value).await {
+                    debug!("[triggers] set parameter on {fixture_id}: {e}");
+                }
+            }
+        }
+    }
+
+    /// Write one replicated field and tell everyone who needs to know.
+    async fn write_synced(&mut self, path: Path, value: serde_json::Value) {
+        if self.apply_set(path.clone(), value.clone(), Lifecycle::Synced).await.is_err() {
+            return;
+        }
+        self.state_version += 1;
+        self.record_write(&path, Lifecycle::Synced);
+        self.log_local_write(&path, &value, Lifecycle::Synced).await;
+        self.broadcast_after_set(&path, value.clone());
+        if let Some(sync) = &self.sync {
+            sync.broadcast_synced(path, value, self.clock.clone()).await;
+        }
     }
 
     /// Hand the current patch to the output plugins.
@@ -676,7 +772,19 @@ impl ShowEngine {
             .and_then(|entity| entity.get("live_values"))
             .cloned()
             .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
-        set_field(&mut values, &key, value);
+        let previous = values.get(&key).cloned();
+        set_field(&mut values, &key, value.clone());
+
+        // Queued for the next trigger tick rather than read back from the state
+        // there, so a press and a release between two ticks are both seen.
+        if let Ok(current) = serde_json::from_value(value) {
+            self.input_events.push(InputEvent {
+                fixture_id,
+                key: key.clone(),
+                previous: previous.and_then(|p| serde_json::from_value(p).ok()),
+                current,
+            });
+        }
 
         self.apply_set(path.clone(), values.clone(), Lifecycle::Synced).await?;
         self.record_write(&path, Lifecycle::Synced);

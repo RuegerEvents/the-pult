@@ -2,7 +2,7 @@
 
 State of the system and what to work on next. Reconstructed from the code on 2026-08-25, then reconciled against [SPEC.md](SPEC.md).
 
-The spec is the product. This is the build order for getting there, and right now the gap is very wide: what exists is a synchronised show-state engine with cues and playback. The spec's 3D programmer, geometric selections, phasers, event system, and waveform timecode are all still ahead.
+The spec is the product. This is the build order for getting there, and the gap is still wide: what exists is a synchronised show-state engine with cues, playback, output, and an event system. The spec's 3D programmer, geometric selections, phasers, and waveform timecode are all still ahead.
 
 ## Where the system stands
 
@@ -17,7 +17,7 @@ The spec is the product. This is the build order for getting there, and right no
 | Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. `OutputPlugin` trait, a DMX rendering layer, and UDP send. Configuration is CLI-only: flags at startup, nothing in the data model, nothing in the UI. |
-| Devices / events | Not started. No node discovery, no non-DMX fixtures, no triggers. Task 11. |
+| Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; triggers turn those into cues. Tested end to end against `tools/openhaunt-sim`, which is all there is until there is firmware. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
 | 3D programmer | Not started. The largest piece of the spec and none of it exists. |
 | Selection, effects, timecode | Not started. No schema for any of them yet. |
@@ -136,7 +136,7 @@ A *Stations* tab then shows who leads, what the latency to each peer is, cpu and
 
 That last column is honest but dull for now: every node computes every fixture, so it is all-or-nothing until parameter computation is partitioned. Partitioning it is the follow-up — the interesting version is a node driving only the fixtures on the outputs it owns, with a defined answer for what happens when that node drops out.
 
-### 11. OpenHaunt nodes and the event system (next)
+### 11. OpenHaunt nodes and the event system (done)
 
 Covers the spec's *Event-Based Control & Automation*: sensors and switches drive playback, and the console drives things that are not lights.
 
@@ -151,7 +151,18 @@ What this delivers:
 - Output to relays, LED strips, and OLED displays through an `OpenHauntOutput` plugin, plus sACN unicast for the DMX gateway module — which is task 4's remaining sACN work, done here because the gateway needs it.
 - `tools/openhaunt-sim`, a simulator implementing the node side of the protocol, so the whole path is covered by tests without hardware on the bench.
 
-What it leaves open: the node-graph UI (one row per trigger, not a canvas), per-pixel control of WS2812 strips (whole-strip colour and brightness only), OSC and MIDI as trigger sources, and RDM. A running fade and a `SetParameter` trigger writing the same key is last-writer-wins, which is a design question rather than a bug to fix in passing.
+All of that is in. `FixtureAddress` and `ParameterDirection`/`ParameterBinding` went in first, with the two migration paths they needed — a hand-written `Deserialize` for the JSON column and `showfile::upgrades` for the real ones. `types::openhaunt` is the only place that knows what a module id means. `DeviceManager` browses, adopts, and drives; `SetLiveValue` merges an input inside the engine actor and replicates it; `model::triggers` evaluates the rules in the engine's own tick beside playback.
+
+What it leaves open:
+
+- The node-graph UI. Triggers are one row per rule, which is enough to wire a doorbell to a cue and not enough to express a condition of two things at once.
+- Per-pixel WS2812. A strip is one colour and one brightness.
+- OSC and MIDI as trigger sources. `TriggerSource` is an enum with one variant so they can be added beside `Parameter` without touching anything else.
+- RDM, which the gateway module's `caps` advertises and nothing here uses.
+- A running fade and a `SetParameter` trigger writing the same key: last writer wins, and it is the fade, because it writes on every tick. Documented rather than solved — deciding what *should* happen is a product question.
+- The broker is started once per process and never stopped. A node adopted by a previous leader is re-configured on promotion, but a follower keeps a broker it started while it was leading.
+
+Assumptions made about the protocol, to be fed back into the OpenHaunt docs since there is no firmware to check them against: `/api/v1/config` takes `{ mqtt: { broker }, dmx?: { protocol: "sacn", universe } }` and persists it; the mains flag is descriptor bit 6, reachable through `GET /api/v1/info` as `module.flags` (a `mains=1` TXT key would let the panel warn without the round trip); input events are `{ state, edge, ts }` and sensor readings `{ value, unit, ts }` on the same `input/<n>` topic; output payloads are `{ state }` for a relay, `{ r, g, b }` and `{ brightness }` on ports 0 and 1 for a strip, and `{ text }` for a display; `POST /api/v1/state` takes `{ outputs: { "<n>": payload } }`; `status` is the literal `online`/`offline`, retained, with `offline` as the will; health is `{ uptime_s, temp_c, poe_class, errors }`; the DMX module lists `sacn` in `caps` and listens on unicast 5568 for its configured universe; and TXT `sn` matches the instance short serial, one module per node.
 
 ## Further out
 

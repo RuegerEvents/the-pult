@@ -9,6 +9,7 @@ import type { Fixture } from '../generated/Fixture.js';
 import type { FixtureType } from '../generated/FixtureType.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Show } from '../generated/Show.js';
+import type { Trigger } from '../generated/Trigger.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
 
@@ -28,6 +29,10 @@ export type SequenceEntity = PathProxy<Sequence> & {
   delete(): Promise<void>;
   goNext(): Promise<void>;
   goToCue(args: { cueId: string }): Promise<void>;
+};
+
+export type TriggerEntity = PathProxy<Trigger> & {
+  delete(): Promise<void>;
 };
 
 // ── Collection handles ──────────────────────────────────────────────────────
@@ -76,6 +81,17 @@ export type SequenceCollection = {
   [n: number]: SequenceEntity;
 };
 
+export type TriggerCollection = {
+  get(): Promise<Trigger[]>;
+  set(value: Trigger[]): Promise<void>;
+  subscribe(cb: (value: Trigger[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Trigger[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): TriggerEntity;
+  nth(n: number): TriggerEntity;
+  create(entity: Trigger): Promise<void>;
+  [n: number]: TriggerEntity;
+};
+
 // ── DataRoot ─────────────────────────────────────────────────────────────────
 
 /** Typed root for the pult:data context. Every field maps to a live path proxy. */
@@ -85,6 +101,7 @@ export type DataRoot = {
   fixture_types: FixtureTypeCollection;
   sequences: SequenceCollection;
   show: PathProxy<Show | null>;
+  triggers: TriggerCollection;
 };
 
 /** Create the typed root proxy. The runtime proxy handles all DataRoot operations generically. */

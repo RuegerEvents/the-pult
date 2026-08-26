@@ -39,6 +39,16 @@ CREATE TABLE IF NOT EXISTS show (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS triggers (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    source TEXT NOT NULL,
+    condition TEXT NOT NULL,
+    action TEXT NOT NULL,
+    delay_ms INTEGER NOT NULL,
+    enabled INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS collection_order (
     table_name TEXT NOT NULL,
     entity_id  TEXT NOT NULL,

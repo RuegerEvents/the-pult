@@ -4,8 +4,9 @@
 	import SessionPanel from '$lib/components/SessionPanel.svelte';
 	import DevicesPanel from '$lib/components/DevicesPanel.svelte';
 	import PatchPanel from '$lib/components/PatchPanel.svelte';
+	import TriggersPanel from '$lib/components/TriggersPanel.svelte';
 
-	type View = 'playback' | 'patch';
+	type View = 'playback' | 'patch' | 'triggers';
 	let view = $state<View>('playback');
 </script>
 
@@ -19,11 +20,14 @@
 		<nav class="tabs">
 			<button class:active={view === 'playback'} onclick={() => (view = 'playback')}>Playback</button>
 			<button class:active={view === 'patch'} onclick={() => (view = 'patch')}>Patch</button>
+			<button class:active={view === 'triggers'} onclick={() => (view = 'triggers')}>Triggers</button>
 		</nav>
 		{#if view === 'playback'}
 			<SequenceRunner />
-		{:else}
+		{:else if view === 'patch'}
 			<PatchPanel />
+		{:else}
+			<TriggersPanel />
 		{/if}
 	</main>
 </div>

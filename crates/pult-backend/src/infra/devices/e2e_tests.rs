@@ -204,3 +204,66 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
     assert_eq!(channels[0], 255, "the dimmer at full, as the node would see it");
     assert_eq!(channels.len(), 512);
 }
+
+#[tokio::test]
+async fn a_button_on_a_node_advances_a_cue() {
+    // The whole path, in one test: a node publishes an edge, the console maps the
+    // port to a parameter, a trigger sees the change, and the sequence moves.
+    use pult_schema::{
+        lifecycle::Lifecycle,
+        types::{
+            fixture::ParameterKind,
+            sequence::Sequence,
+            trigger::{Trigger, TriggerAction, TriggerCondition, TriggerSource},
+        },
+    };
+
+    let h = harness().await;
+    let sim = a_simulated_node(&h, ModuleKind::DigitalIn, "e2e-button").await;
+    let fixture_id = h.devices.adopt("e2e-button".into()).await.unwrap();
+
+    let sequence = Sequence {
+        id: uuid::Uuid::new_v4(),
+        name: "Act 1".into(),
+        cue_ids: vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()],
+        active_cue_index: None,
+    };
+    let trigger = Trigger {
+        id: uuid::Uuid::new_v4(),
+        name: "Front door".into(),
+        source: TriggerSource::Parameter { fixture_id, parameter: ParameterKind::Contact(0) },
+        condition: TriggerCondition::RisingEdge,
+        action: TriggerAction::GoNext { sequence_id: sequence.id },
+        delay_ms: 0,
+        enabled: true,
+        pending: false,
+        last_fired_at: None,
+    };
+    for (table, value) in [
+        ("sequences", serde_json::to_value(&sequence).unwrap()),
+        ("triggers", serde_json::to_value(&trigger).unwrap()),
+    ] {
+        h.engine
+            .set(
+                vec![PathSegment::Key(table.into()), PathSegment::Key("__create".into())],
+                Lifecycle::Persisted,
+                value,
+            )
+            .await
+            .unwrap();
+    }
+
+    eventually("the cue to advance", || {
+        let (inputs, h) = (sim.inputs.clone(), &h);
+        async move {
+            let _ = inputs.send(Input::Contact { port: 0, state: true }).await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            h.engine
+                .get(vec![PathSegment::Key("sequences".into()), PathSegment::Id(sequence.id)])
+                .await
+                .map(|s| s["active_cue_index"] == serde_json::json!(0))
+                .unwrap_or(false)
+        }
+    })
+    .await;
+}

@@ -874,6 +874,190 @@ async fn a_live_value_reaches_the_frontends() {
     assert_eq!(update["Contact:0"]["value"], true);
 }
 
+// ── Triggers ──────────────────────────────────────────────────────────────────
+
+mod triggers {
+    use pult_schema::types::{
+        fixture::ParameterKind,
+        trigger::{Trigger, TriggerAction, TriggerCondition, TriggerSource},
+    };
+
+    use super::*;
+
+    fn a_trigger(fixture_id: Uuid, action: TriggerAction) -> Trigger {
+        Trigger {
+            id: Uuid::new_v4(),
+            name: "Doorbell".into(),
+            source: TriggerSource::Parameter {
+                fixture_id,
+                parameter: ParameterKind::Contact(0),
+            },
+            condition: TriggerCondition::RisingEdge,
+            action,
+            delay_ms: 0,
+            enabled: true,
+            pending: false,
+            last_fired_at: None,
+        }
+    }
+
+    /// A sensor fixture, a sequence with two cues, and a trigger between them.
+    async fn a_show(h: &Harness) -> (Uuid, Uuid, Trigger) {
+        let fixture = a_fixture("Doorbell", 1);
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+
+        let cues = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let sequence = a_sequence("Act 1", cues);
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
+
+        let trigger = a_trigger(fixture.id, TriggerAction::GoNext { sequence_id: sequence.id });
+        h.engine.set(create_path("triggers"), Lifecycle::Persisted, json(&trigger)).await.unwrap();
+
+        (fixture.id, sequence.id, trigger)
+    }
+
+    async fn close_the_contact(h: &Harness, fixture_id: Uuid) {
+        h.engine
+            .set_live_value(
+                fixture_id,
+                "Contact:0".into(),
+                serde_json::json!({ "type": "Bool", "value": true }),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn active_cue(h: &Harness, sequence_id: Uuid) -> serde_json::Value {
+        h.engine.get(entity_path("sequences", sequence_id)).await.unwrap()["active_cue_index"]
+            .clone()
+    }
+
+    /// Wait for the engine's own tick to have run the trigger.
+    async fn eventually(what: &str, mut check: impl AsyncFnMut() -> bool) {
+        for _ in 0..100 {
+            if check().await {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    #[tokio::test]
+    async fn a_contact_closing_advances_the_sequence_it_is_wired_to() {
+        let h = harness().await;
+        let (fixture_id, sequence_id, _) = a_show(&h).await;
+
+        close_the_contact(&h, fixture_id).await;
+
+        eventually("the cue to advance", async || {
+            active_cue(&h, sequence_id).await == serde_json::json!(0)
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_trigger_records_when_it_last_fired() {
+        let h = harness().await;
+        let (fixture_id, _, trigger) = a_show(&h).await;
+
+        close_the_contact(&h, fixture_id).await;
+
+        eventually("the trigger to record its firing", async || {
+            !h.engine.get(entity_path("triggers", trigger.id)).await.unwrap()["last_fired_at"]
+                .is_null()
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_disabled_trigger_leaves_the_show_alone() {
+        let h = harness().await;
+        let (fixture_id, sequence_id, trigger) = a_show(&h).await;
+        h.engine
+            .set(
+                field_path("triggers", trigger.id, "enabled"),
+                Lifecycle::Persisted,
+                serde_json::Value::Bool(false),
+            )
+            .await
+            .unwrap();
+
+        close_the_contact(&h, fixture_id).await;
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        assert_eq!(active_cue(&h, sequence_id).await, serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_follower_never_fires_a_trigger() {
+        // The action is a write to replicated state, and the leader is about to send
+        // it. A follower firing too would apply the same change twice.
+        let h = harness().await;
+        let (fixture_id, sequence_id, _) = a_show(&h).await;
+        h.engine
+            .set(
+                key("session"),
+                Lifecycle::Local,
+                serde_json::json!({
+                    "is_advertising": false, "is_follower": true,
+                    "session_id": Uuid::new_v4(), "discovered": [],
+                }),
+            )
+            .await
+            .unwrap();
+
+        close_the_contact(&h, fixture_id).await;
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        assert_eq!(active_cue(&h, sequence_id).await, serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_trigger_can_drive_a_parameter_instead_of_a_cue() {
+        let h = harness().await;
+        let sensor = a_fixture("Doorbell", 1);
+        let lamp = a_fixture("Porch light", 2);
+        for fixture in [&sensor, &lamp] {
+            h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(fixture)).await.unwrap();
+        }
+        let trigger = a_trigger(
+            sensor.id,
+            TriggerAction::SetParameter {
+                fixture_id: lamp.id,
+                parameter: ParameterKind::Switch(0),
+                value: pult_schema::types::fixture::ParameterValue::Bool(true),
+            },
+        );
+        h.engine.set(create_path("triggers"), Lifecycle::Persisted, json(&trigger)).await.unwrap();
+
+        close_the_contact(&h, sensor.id).await;
+
+        eventually("the lamp to come on", async || {
+            h.engine.get(field_path("fixtures", lamp.id, "live_values")).await.unwrap()["Switch:0"]
+                ["value"]
+                == serde_json::json!(true)
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_trigger_survives_the_showfile() {
+        let mut h = harness().await;
+        let (_, _, trigger) = a_show(&h).await;
+
+        h.reload().await;
+
+        let reloaded = h.engine.get(entity_path("triggers", trigger.id)).await.unwrap();
+        assert_eq!(reloaded["name"], "Doorbell");
+        assert_eq!(reloaded["condition"], "RisingEdge");
+        assert_eq!(
+            reloaded["pending"], false,
+            "pending is SYNCED, so it comes back as its default rather than from disk",
+        );
+    }
+}
+
 // ── Rust accessor API ─────────────────────────────────────────────────────────
 //
 // The path-proxy API from CLAUDE.md, driven against a real engine. Accessor path
