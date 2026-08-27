@@ -540,8 +540,15 @@ locally:
 - `beforeBuildCommand` runs from a directory Tauri infers from `frontendDist`
   rather than from the config's own, so `npm --prefix ui` landed one level too
   deep. The panel is built by the workflow instead, which depends on no inference.
+- `uploadWorkflowArtifacts` is on tauri-action's main branch and not on the `v0`
+  the workflow pins, so bundles that built were discarded. Collected from its
+  `artifactPaths` output instead — with the backslashes turned round and the
+  carriage returns stripped, because on Windows jq ends its lines with one and
+  `cp` then goes looking for a file whose name ends in a carriage return.
+- `generate-sbom` finds a version in a virtual workspace manifest, under
+  `[workspace.package]`, but no name. It has to be told one.
 
-The cost of finding them was four tags. The alternative — a Docker container
+The cost of finding them was five tags. The alternative — a Docker container
 reproducing the Linux half — found the worst one in a minute, and is worth
 reaching for before pushing the next one.
 

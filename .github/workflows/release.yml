@@ -227,7 +227,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p bundles
-          jq -r '.[]' <<< '${{ steps.console.outputs.artifactPaths }}' | while read -r path; do
+          # `tr` because jq on Windows ends its lines with a carriage return,
+          # which `read` leaves on the end of the path and `cp` then looks for.
+          jq -r '.[]' <<< '${{ steps.console.outputs.artifactPaths }}' | tr -d '\r' | while read -r path; do
             # Windows reports these as D:\a\..., which the shell's cp does not
             # follow; the same path with forward slashes it does.
             path="${path//\\//}"
@@ -262,7 +264,9 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf bundles && mkdir -p bundles
-          jq -r '.[]' <<< '${{ steps.sim.outputs.artifactPaths }}' | while read -r path; do
+          # `tr` because jq on Windows ends its lines with a carriage return,
+          # which `read` leaves on the end of the path and `cp` then looks for.
+          jq -r '.[]' <<< '${{ steps.sim.outputs.artifactPaths }}' | tr -d '\r' | while read -r path; do
             path="${path//\\//}"
             [ -d "$path" ] && continue
             cp "$path" bundles/
