@@ -221,6 +221,16 @@ jobs:
             libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
+      # Ad-hoc, which satisfies nobody's idea of a trusted developer but does make
+      # the bundle internally consistent. Without it Tauri signs the executable and
+      # leaves the bundle without a CodeResources, and macOS calls an app it cannot
+      # check that way "damaged" — a dead end, where an unsigned-but-whole app can
+      # still be opened from the context menu. Set here rather than inline because
+      # an empty value on the other platforms would be a signing identity of "".
+      - name: Sign the macOS bundles ad-hoc
+        if: startsWith(matrix.runner, 'macos')
+        run: echo 'APPLE_SIGNING_IDENTITY=-' >> "$GITHUB_ENV"
+
       # The console app serves the frontend from inside itself, exactly as the
       # server does — it is the same crate underneath.
       - uses: actions/download-artifact@v4

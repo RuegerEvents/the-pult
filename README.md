@@ -25,6 +25,23 @@ rig.
 Each is one file. The console's frontend is built into the binaries that serve
 it, so there is nothing to deploy beside them.
 
+## Installing a build
+
+Nothing here is signed yet, so both desktop platforms will object the first time.
+
+**macOS.** Right-click the app in Finder and choose *Open*, then *Open* again in
+the dialog. If macOS instead says the app is **damaged and can't be opened**, that
+is what it says about an app it cannot check rather than a broken download:
+
+```
+xattr -dr com.apple.quarantine /Applications/the-pult.app
+```
+
+**Windows.** SmartScreen offers *More info* → *Run anyway*.
+
+The plain server and simulator binaries are not affected — only the desktop apps
+go through Gatekeeper and SmartScreen.
+
 ## Running it
 
 Grab a build from [Releases](../../releases), or:
