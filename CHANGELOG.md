@@ -9,11 +9,14 @@ the tag, so every release needs one.
 
 ## [Unreleased]
 
-## [0.1.0]
+## [0.0.1]
 
-The first release. A distributed lighting console: a show engine that several
-stations share, a tiled web workspace to run it from, and the output and device
-layers that reach a rig.
+The first release, and a deliberately small number: this one is here to prove the
+build and the release path rather than to be depended on.
+
+A distributed lighting console — a show engine that several stations share, a
+tiled web workspace to run it from, and the output and device layers that reach a
+rig.
 
 ### Added
 

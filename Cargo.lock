@@ -3152,7 +3152,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openhaunt-sim"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -3168,7 +3168,7 @@ dependencies = [
 
 [[package]]
 name = "openhaunt-sim-gui"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3570,7 +3570,7 @@ dependencies = [
 
 [[package]]
 name = "pult-backend"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3608,7 +3608,7 @@ dependencies = [
 
 [[package]]
 name = "pult-codegen"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3618,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "pult-gui"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3634,7 +3634,7 @@ dependencies = [
 
 [[package]]
 name = "pult-macros"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "inventory",
  "proc-macro2",
@@ -3644,7 +3644,7 @@ dependencies = [
 
 [[package]]
 name = "pult-schema"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "bincode",
