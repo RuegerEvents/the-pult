@@ -2,6 +2,7 @@
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import { PultWsClient } from '$lib/ws/client.js';
+	import { backendOrigin, fetchConfig, wsUrl, type BackendConfig } from '$lib/ws/endpoint.js';
 	import { createRootProxy } from '$lib/ws/data.js';
 	import { setClientContext, setDataContext } from '$lib/ws/context.js';
 	import ConnectionStatus from '$lib/components/ConnectionStatus.svelte';
@@ -15,10 +16,12 @@
 
 	let { children } = $props();
 
-	const wsPort = browser
-		? (new URLSearchParams(window.location.search).get('port') ?? '7700')
-		: '7700';
-	const client = new PultWsClient(`ws://localhost:${wsPort}/ws`);
+	// The backend serves this page, so where it is is where we came from. `?port=`
+	// still names a second station on the same host, which is what demo.sh --two
+	// prints and what a dev server pointed at one console needs to reach another.
+	const client = new PultWsClient(
+		browser ? wsUrl(window.location) : 'ws://localhost:7700/ws'
+	);
 	const data = createRootProxy(client);
 
 	setClientContext(client);
@@ -32,6 +35,9 @@
 	restoreLayout();
 
 	let connected = $state(false);
+	/// What the station says it is. Nothing waits on it — it is the version in the
+	/// corner, not the socket — so a console still opens if it never arrives.
+	let station = $state<BackendConfig | null>(null);
 	/// Whether this browser has ever had the console, which decides what the cover
 	/// says: a first connection is being made, a later one has been lost.
 	let everConnected = $state(false);
@@ -63,6 +69,7 @@
 	});
 
 	onMount(() => {
+		fetchConfig(backendOrigin(window.location)).then((config) => (station = config));
 		client.onConnect = () => { connected = true; everConnected = true; };
 		client.onDisconnect = () => { connected = false; };
 		client.onError = (msg) => addToast(msg);
@@ -73,7 +80,9 @@
 
 <div class="shell">
 	<header class="topbar">
-		<span class="brand">the-pult</span>
+		<span class="brand" title={station ? `station ${station.nodeId}` : address}>
+			the-pult{#if station}<span class="version">{station.version}</span>{/if}
+		</span>
 		<LayoutBar />
 		<span class="spacer"></span>
 		<ConnectionStatus {connected} />
@@ -128,6 +137,15 @@
 		font-weight: 600;
 		letter-spacing: 0.05em;
 		color: #fff;
+		white-space: nowrap;
+	}
+
+	.version {
+		margin-left: 6px;
+		font-weight: 400;
+		font-size: 0.7rem;
+		letter-spacing: 0;
+		color: #666;
 	}
 
 	main {

@@ -14,3 +14,14 @@
 
 # Demo runs: showfile, logs, and anything else scripts/demo.sh creates.
 /.demo/
+
+# The simulator panel, built into the desktop app rather than committed.
+/tools/openhaunt-sim-gui/ui/node_modules/
+/tools/openhaunt-sim-gui/ui/dist/
+
+# Tauri's generated permission schemas, written beside each desktop shell.
+/crates/pult-gui/gen/
+/tools/openhaunt-sim-gui/gen/
+
+# Vitest's cache, when it is run from the repository root rather than frontend/.
+/node_modules/

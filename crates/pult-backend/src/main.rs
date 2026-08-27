@@ -1,40 +1,18 @@
-mod engine;
-mod infra;
-mod api;
-mod model;
-mod config;
-mod state;
-mod handle;
-mod error;
-
-use std::sync::Arc;
+//! The console as a server: flags in, [`pult_backend::start`] out.
+//!
+//! Everything this used to do inline now lives in the library, so the desktop app
+//! starts a station exactly the way this does.
 
 use anyhow::Result;
-use axum::{routing::get, Router};
 use clap::Parser;
-use pult_schema::events::operation::NodeId;
-use uuid::Uuid;
-use tokio::sync::mpsc;
-use tower_http::cors::CorsLayer;
-use tracing::{info, warn};
+use pult_backend::{
+    infra::connectors::{artnet::ARTNET_PORT, sacn::SACN_PORT},
+    Config,
+};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-use crate::{
-    api::ws::{ws_handler, SubscriptionRegistry},
-    config::Config,
-    engine::{EngineCommand, EngineHandle, ShowEngine},
-    infra::connectors::{artnet::ARTNET_PORT, sacn::SACN_PORT, OutputManager},
-    infra::devices::{spawn_mdns_browser, DeviceManager},
-    infra::session::SessionManager,
-    infra::identity,
-    infra::showfile,
-    infra::stations::{prune_stale, StationReporter, REPORT_INTERVAL},
-    infra::sync::SyncManager,
-    state::AppState,
-};
-
 #[derive(Parser)]
-#[command(about = "pult-backend lighting console server")]
+#[command(about = "pult-backend lighting console server", version)]
 struct Args {
     #[arg(long, default_value_t = 7700)]
     port: u16,
@@ -86,70 +64,6 @@ fn parse_target(value: &str, default_port: u16) -> Result<std::net::SocketAddr, 
         .map_err(|e| format!("not an address: {e}"))
 }
 
-/// Turn `--artnet` / `--sacn` into `outputs` entries, but only on a show that has
-/// none. Once outputs are show data, a flag is a convenience for the first run and
-/// a bug on every run after it.
-async fn seed_outputs_from_flags(engine: &EngineHandle, node_id: NodeId, args: &Args) {
-    use pult_schema::{
-        lifecycle::Lifecycle,
-        path::PathSegment,
-        types::output::{OutputConfig, OutputKind},
-    };
-
-    if args.artnet.is_empty() && args.sacn.is_none() {
-        return;
-    }
-    let existing = engine
-        .get(vec![PathSegment::Key("outputs".into())])
-        .await
-        .ok()
-        .and_then(|v| v.as_array().map(|a| a.len()))
-        .unwrap_or(0);
-    if existing > 0 {
-        warn!("[output] this show already has outputs; ignoring the command line");
-        return;
-    }
-
-    let mut seeds: Vec<OutputConfig> = Vec::new();
-    for target in &args.artnet {
-        seeds.push(OutputConfig {
-            id: Uuid::new_v4(),
-            name: format!("Art-Net {target}"),
-            kind: OutputKind::Artnet,
-            target: Some(target.to_string()),
-            universes: vec![],
-            enabled: true,
-            node_id: Some(node_id),
-        });
-    }
-    if let Some(target) = args.sacn {
-        seeds.push(OutputConfig {
-            id: Uuid::new_v4(),
-            name: match target {
-                Some(addr) => format!("sACN {addr}"),
-                None => "sACN".to_string(),
-            },
-            kind: OutputKind::Sacn,
-            target: target.map(|addr| addr.to_string()),
-            universes: vec![],
-            enabled: true,
-            node_id: Some(node_id),
-        });
-    }
-
-    for seed in seeds {
-        info!("[output] seeding {} from the command line", seed.name);
-        let path = vec![
-            PathSegment::Key("outputs".into()),
-            PathSegment::Key("__create".into()),
-        ];
-        let value = serde_json::to_value(&seed).unwrap_or_default();
-        if let Err(e) = engine.set(path, Lifecycle::Persisted, value).await {
-            warn!("[output] could not seed {}: {e}", seed.name);
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
@@ -158,110 +72,17 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    let config = Config {
+    let running = pult_backend::start(Config {
         port: args.port,
         sync_port: args.sync_port,
-        showfile: args.showfile.clone(),
+        showfile: args.showfile,
+        artnet: args.artnet,
+        sacn: args.sacn,
+        openhaunt_broker_port: args.openhaunt_broker_port,
+        node_id: args.node_id,
         ..Config::default()
-    };
+    })
+    .await?;
 
-    let pool = Arc::new(showfile::open(&config.showfile).await?);
-    // Recorded beside the showfile, so an output that names this station still
-    // belongs to it tomorrow.
-    let node_id = args.node_id.map(NodeId).unwrap_or_else(|| identity::load_or_create(&config.showfile));
-
-    let (engine_tx, engine_rx) = mpsc::channel::<EngineCommand>(256);
-    let engine_handle = EngineHandle(engine_tx);
-
-    let (mut sync_mgr, sync_handle, sync_addr) =
-        SyncManager::bind(node_id, config.sync_port, engine_handle.clone()).await?;
-    info!("peer sync on {sync_addr}");
-
-    let (mut engine, _broadcast) = ShowEngine::new_with_rx(
-        node_id,
-        engine_rx,
-        pool.clone(),
-        Some(sync_handle.clone()),
-    );
-
-    // Every node browses for OpenHaunt devices; only the one leading the session
-    // adopts or commands any of them.
-    let (device_mgr, device_handle, device_directory) =
-        DeviceManager::new(node_id, engine_handle.clone(), args.openhaunt_broker_port);
-    tokio::spawn(device_mgr.run());
-    spawn_mdns_browser(device_handle.clone());
-
-    // Which outputs exist is show data now. The manager reconciles against the
-    // `outputs` collection, and the engine hands it that collection whenever it
-    // changes — including once at load, so a saved show comes up sending.
-    let (output_mgr, output) =
-        OutputManager::new(node_id, engine_handle.clone(), Some((device_directory, device_handle.clone())));
-    tokio::spawn(output_mgr.run());
-    engine.set_output(output);
-
-    engine_handle.0.send(EngineCommand::LoadFromShowfile).await?;
-    tokio::spawn(engine.run());
-
-    // The flags survive as a way to seed an empty showfile. Anything already
-    // configured wins: a flag should not quietly add a second output every start.
-    seed_outputs_from_flags(&engine_handle, node_id, &args).await;
-
-    // Every station publishes one row about itself, every couple of seconds, and
-    // the latencies it has measured to the peers it is connected to.
-    // A peer reaching this station for an asset needs the same host it syncs to,
-    // on the HTTP port rather than the sync one.
-    let http_addr = format!("{}:{}", sync_addr.ip(), config.port);
-    let reporter = StationReporter::new(
-        node_id,
-        engine_handle.clone(),
-        sync_addr,
-        http_addr,
-        sync_mgr.peer_links(),
-    );
-    tokio::spawn(reporter.run());
-
-    // Only the leader prunes: two nodes deleting each other's rows on different
-    // schedules is a fight rather than a cleanup.
-    let pruner = engine_handle.clone();
-    let pruner_sync = sync_handle.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(REPORT_INTERVAL * 5);
-        loop {
-            ticker.tick().await;
-            if pruner_sync.leader().await == Some(node_id) {
-                prune_stale(&pruner, chrono::Duration::seconds(30)).await;
-            }
-        }
-    });
-
-    let (session_mgr, session_handle) =
-        SessionManager::new(node_id, config.sync_port, engine_handle.clone(), sync_handle.clone());
-    // If the leader disappears and this node wins the election, the session layer
-    // has to start advertising so newcomers find the show here.
-    sync_mgr.on_promotion(session_mgr.promotion_sender());
-    tokio::spawn(sync_mgr.run());
-    tokio::spawn(session_mgr.run());
-
-    let state = AppState {
-        engine: engine_handle,
-        pool,
-        sync: sync_handle,
-        session: session_handle,
-        devices: device_handle,
-        node_id,
-        ws_registry: SubscriptionRegistry::default(),
-        broadcast: _broadcast,
-    };
-
-    let app = Router::new()
-        .route("/ws", get(ws_handler))
-        .merge(crate::api::rest::routes())
-        .layer(CorsLayer::permissive())
-        .with_state(state);
-
-    let addr = format!("0.0.0.0:{}", config.port);
-    info!("pult-backend listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
+    running.serve.await?
 }

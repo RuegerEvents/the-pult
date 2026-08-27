@@ -4,6 +4,7 @@ use pult_schema::events::operation::NodeId;
 use sqlx::SqlitePool;
 
 use crate::{
+    config::Config,
     engine::{EngineHandle, UpdateBroadcast},
     infra::devices::DeviceHandle,
     infra::session::SessionHandle,
@@ -22,4 +23,8 @@ pub struct AppState {
     pub node_id: NodeId,
     pub ws_registry: SubscriptionRegistry,
     pub broadcast: UpdateBroadcast,
+    pub config: Config,
+    /// The port that was actually bound, which is not `config.port` when that was
+    /// zero. This is the one a client is talking to.
+    pub http_port: u16,
 }

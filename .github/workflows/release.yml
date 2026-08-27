@@ -1,0 +1,293 @@
+name: Release
+
+# Tags cut a release. workflow_dispatch builds everything without publishing, so
+# the matrix can be exercised before a tag exists to get wrong.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Every build of every product ships the same console, so it is built once and
+  # handed to the jobs that need it.
+  FRONTEND_ARTIFACT: frontend-build
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The workspace is a virtual manifest, so the version lives under
+      # [workspace.package] and the action's own Cargo.toml check cannot see it.
+      - id: version
+        name: Agree on a version
+        run: |
+          set -euo pipefail
+          workspace=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [[ "$tag" != "$workspace" ]]; then
+              echo "::error::tag v$tag does not match the workspace version $workspace"
+              exit 1
+            fi
+            echo "version=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$workspace" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: michaelklishin/rust-build-package-release-action@v1
+        with:
+          command: extract-changelog
+          version: ${{ steps.version.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release_notes.md
+          retention-days: 1
+
+  # ── The console, built once ─────────────────────────────────────────────────
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The generated TypeScript is not in the repository — it comes from the
+      # schema — so this has to happen before anything is compiled.
+      - run: cargo run -p pult-codegen -- generate
+      - run: npm --prefix frontend ci
+      - run: npm --prefix frontend run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FRONTEND_ARTIFACT }}
+          path: frontend/build
+          retention-days: 1
+
+  # ── The server and the simulator, as plain binaries ─────────────────────────
+  #
+  # One job per platform, building both products, rather than a package × platform
+  # matrix: `include` entries whose keys are absent from the base matrix are merged
+  # into every combination, which is not what a reader of that matrix would expect.
+  binaries:
+    needs: [validate, frontend]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+
+      # The simulator does not serve a console, but the workspace reads the same
+      # directory either way and an absent one is a compile error in rust-embed.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FRONTEND_ARTIFACT }}
+          path: frontend/build
+
+      - uses: michaelklishin/rust-build-package-release-action@v1
+        id: server
+        with:
+          command: release
+          target: ${{ matrix.target }}
+          package: pult-backend
+          binary-name: pult-backend
+          archive: "true"
+          locked: "true"
+
+      - uses: michaelklishin/rust-build-package-release-action@v1
+        id: sim
+        with:
+          command: release
+          target: ${{ matrix.target }}
+          package: openhaunt-sim
+          binary-name: openhaunt-sim
+          archive: "true"
+          locked: "true"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: |
+            ${{ steps.server.outputs.artifact_path }}
+            ${{ steps.server.outputs.artifact_path }}.sha256
+            ${{ steps.sim.outputs.artifact_path }}
+            ${{ steps.sim.outputs.artifact_path }}.sha256
+
+  # ── The server, as something apt can install ────────────────────────────────
+  deb:
+    needs: [validate, frontend]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FRONTEND_ARTIFACT }}
+          path: frontend/build
+
+      - uses: michaelklishin/rust-build-package-release-action@v1
+        id: build
+        with:
+          command: release-linux-deb
+          target: ${{ matrix.target }}
+          package: pult-backend
+          binary-name: pult-backend
+          locked: "true"
+          pkg-maintainer: "Hannes Rüger <hannes@rueger.events>"
+          pkg-description: "the-pult lighting console server"
+          pkg-license: "MIT"
+          pkg-homepage: "https://github.com/${{ github.repository }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.target }}
+          path: ${{ steps.build.outputs.artifact_path }}
+
+  # ── The desktop apps ────────────────────────────────────────────────────────
+  desktop:
+    needs: [validate, frontend]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install the Tauri prerequisites
+        if: startsWith(matrix.runner, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      # The console app serves the frontend from inside itself, exactly as the
+      # server does — it is the same crate underneath.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FRONTEND_ARTIFACT }}
+          path: frontend/build
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/pult-gui
+          args: --locked
+          # No tagName: the release is assembled once at the end, out of
+          # everything, rather than by whichever job happens to finish first.
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: pult-gui-[platform]-[arch]-[bundle]
+
+      # The simulator's panel is its own small app, built by the beforeBuildCommand
+      # in its Tauri config — which needs its dependencies to be there first.
+      - run: npm --prefix tools/openhaunt-sim-gui/ui ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: tools/openhaunt-sim-gui
+          args: --locked
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: openhaunt-sim-gui-[platform]-[arch]-[bundle]
+
+  sbom:
+    needs: [validate, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.FRONTEND_ARTIFACT }}
+          path: frontend/build
+
+      - uses: michaelklishin/rust-build-package-release-action@v1
+        with:
+          command: generate-sbom
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: target/sbom/
+          retention-days: 90
+
+  release:
+    needs: [validate, binaries, deb, desktop, sbom]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect the files
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( \
+            -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \
+            -o -name "*.deb" -o -name "*.rpm" -o -name "*.dmg" \
+            -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" \
+            -o -name "*.json" \
+          \) -exec cp {} release/ \;
+          cp artifacts/release-notes/release_notes.md .
+          ls -la release
+
+      - uses: michaelklishin/rust-build-package-release-action@v1
+        id: format
+        with:
+          command: format-release
+          version: ${{ needs.validate.outputs.version }}
+          artifacts-dir: release
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.format.outputs.body }}
+          files: release/*

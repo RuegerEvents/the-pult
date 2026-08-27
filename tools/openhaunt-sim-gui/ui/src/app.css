@@ -1,0 +1,40 @@
+/* The console's palette, so two windows on one screen look like one system. */
+:root {
+	color-scheme: dark;
+	--bg: #141815;
+	--panel: #1b201d;
+	--line: #2c332e;
+	--text: #dfe5e1;
+	--dim: #7d8a83;
+	--live: #4caf50;
+	--warn: #e5a34a;
+	--danger: #e05c5c;
+}
+
+* {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+body {
+	background: var(--bg);
+	color: var(--text);
+	font: 14px 'Inter', 'Segoe UI', system-ui, sans-serif;
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+h2 {
+	font-size: 0.7rem;
+	font-weight: 600;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+	color: var(--dim);
+}
+
+code,
+.mono {
+	font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+	font-size: 0.8rem;
+}

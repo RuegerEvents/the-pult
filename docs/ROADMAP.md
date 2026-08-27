@@ -24,6 +24,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects, phasers and geometric selection are still ahead. |
 | Selection | Working as a list: ordered, reorderable, its own panel, kept apart from the programmer. Still a list of ids rather than the geometric query the spec asks for. |
 | Effects, timecode | Not started. No schema for either yet. |
+| Distribution | Working. The frontend is built into the binaries that serve it, the console and the simulator each have a Tauri desktop app, and tagging builds all four for Linux x86_64 and aarch64, macOS arm64 and Windows. Nothing is signed and nothing auto-updates. |
 
 ## Task list
 
@@ -444,6 +445,97 @@ Left open:
   different zooms is a reasonable thing to want and is not possible.
 - Nothing is responsive. A tree of tiles on a phone is a tree of very small tiles, and
   the spec asks for tablets and phones.
+
+### 16. Something to install (done)
+
+Everything up to here was two processes started by hand. `cargo run -p pult-backend`
+served `/ws` and `/assets` and nothing else, the console was Vite on another port
+reaching across origins to a hardcoded `ws://localhost:7700`, and there was no
+release, no CI, no README and no LICENSE. A console nobody can install is a
+program, not an instrument.
+
+**The frontend is in the binary.** `rust-embed` over `frontend/build`, served as
+the router's fallback so `/ws` and `/assets` are still matched first. One artifact
+is the whole console.
+
+The decision that everything else follows from is what that does to *where the
+backend is*. The page now comes from the station, so the socket is on the origin
+the page came from, and the question the `?port=` query string existed to answer
+stops being a question. `endpoint.ts` is the only place that decides, `?port=`
+survives as a way to name a second station on the same host, and `/api/config`
+answers what a page genuinely cannot work out for itself — which station this is
+and what version it is running. It is deliberately not asked *before* connecting:
+a console must not wait on a request to make its first one.
+
+The build is precompressed, so the `.br` beside every file was squeezed once here
+rather than on every request from every tablet in the room.
+
+**The console is a desktop app.** `crates/pult-gui` is a window around
+`pult_backend::start`, which meant splitting `pult-backend` into a library and a
+thin binary — worth doing on its own, since `main.rs` had been the only definition
+of what starting a station meant.
+
+The window points at `http://localhost:<port>`, the server it has just started,
+rather than at a copy of the frontend bundled beside it. That is the choice worth
+recording. It means the app and the tablet in the rig are the same page from the
+same origin, there is one frontend to build, and the desktop build cannot drift
+from the one everybody else uses — which is the MA web-remote arrangement, and
+the reason the app defaults to port 7700 rather than asking the OS for one. It
+also means Tauri's IPC is not available to that origin without a capability
+naming it, so there is no native file dialog yet.
+
+A second console on one machine is an ordinary thing to want, so a taken port
+falls back to any port and says so in the title bar rather than refusing to start.
+
+**The simulator has a window.** `tools/openhaunt-sim-gui`, and the thing it fixes
+is small and real: `openhaunt-sim` can only be driven by typing at its stdin, and
+`scripts/demo.sh` does not connect one — which is why the input node has to be
+started with `--auto 2500`. Here a contact is a button.
+
+It talks to the node over Tauri's IPC rather than over anything on the wire. The
+sim implements the node side of the OpenHaunt protocol and nothing else, and a
+debug UI is not part of that protocol. The one thing added to the sim itself is a
+`Snapshot` — everything a node knows about itself in one value — because a window
+should not have to subscribe to five channels and stitch them together. The panel
+writes the port layout out again from the same documents rather than importing it
+from `pult-schema`, for the reason the sim exists at all.
+
+**Releases.** `.github/workflows/release.yml`, modelled on the one in
+`Dein-Ticket-Shop/printer-client-rust`. Four products for Linux x86_64 and
+aarch64, macOS arm64 and Windows x86_64, plus `.deb` for the server and whatever
+Tauri bundles per platform. The repository going public is what makes the arm64
+half cheap: `ubuntu-24.04-arm` runners are free there, so a Raspberry Pi build is
+a native build rather than a cross-compilation exercise.
+
+Two things about it worth knowing:
+
+- **The frontend is built in its own job, once.** The generated TypeScript is not
+  in the repository — it comes from the schema — so codegen has to run before npm
+  does. Building it once also means every artifact ships byte-identical assets.
+- **No `package` × `platform` matrix.** GitHub merges an `include` entry whose keys
+  are absent from the base matrix into *every* combination, which is not what
+  reading that matrix suggests. One job per platform builds both products.
+
+And two footguns found while building it, both of which cost a window that was
+simply blank:
+
+- `devUrl` in a Tauri config wins over `frontendDist` in a **debug** build, so
+  `cargo run` loaded a dev server that was not running. Removed; both profiles now
+  use the bundled panel.
+- `rust-embed`'s `$CARGO_MANIFEST_DIR` interpolation needs a feature flag it does
+  not have by default. A plain relative path resolves against the crate root and
+  wants nothing.
+
+Left open:
+
+- **Nothing is signed or notarized.** macOS and Windows both warn on first run.
+  The workflow is laid out so this is adding secrets and a few steps.
+- **No auto-update.** `latest.json` and a Tauri updater keypair are the next step.
+- **32-bit Raspberry Pi is not built.** The arm64 runner is aarch64, which is
+  64-bit Raspberry Pi OS.
+- **The simulator's panel cannot restart the node.** `openhaunt_sim::start` has no
+  shutdown, so a module is chosen with a flag and lives for the process. Adding
+  cancellation is what settles it, and it would serve the tests too.
 
 ## Further out
 

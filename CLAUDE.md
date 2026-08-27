@@ -6,9 +6,11 @@ Distributed lighting console system.
 
 - **`crates/pult-macros`** — `#[derive(PultSchema)]` proc macro. Generates `PultEntity` impl, `{T}Patch`, `{T}Create`, `{T}Accessor` from annotated Rust structs.
 - **`crates/pult-schema`** — Data model + path accessor infrastructure. All entity types live here. Source of truth for the WebSocket protocol and sync protocol.
-- **`crates/pult-backend`** — Main backend binary. Axum WebSocket server, SQLite showfiles, peer sync (mDNS + TCP), WASM plugin runtime (Phase 2), fixture connectors (Phase 2).
+- **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, SQLite showfiles, peer sync (mDNS + TCP), WASM plugin runtime (Phase 2), fixture connectors (Phase 2). `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
+- **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.
-- **`frontend/`** — SvelteKit static-adapter frontend.
+- **`tools/openhaunt-sim-gui`** — A Tauri window onto a simulated node, with buttons for its inputs. Talks to the sim over Tauri IPC, so nothing about the OpenHaunt protocol changes to accommodate a debug UI.
+- **`frontend/`** — SvelteKit static-adapter frontend. Built into the binaries that serve it.
 
 ## Lifecycle System
 
@@ -41,11 +43,51 @@ Run the TypeScript codegen after any change to types or commands in `pult-schema
 cargo run -p pult-codegen -- generate
 ```
 
+## The frontend is served by the backend
+
+The SvelteKit build is embedded with `rust-embed` (`api/spa.rs`) and served as the
+router's fallback, so **one binary is the whole console**. Two things follow:
+
+- **The page and the socket share an origin.** `frontend/src/lib/ws/endpoint.ts` is
+  the only place that decides where the backend is, and the answer is
+  `window.location` — `?port=` survives only as a way to name a second station on
+  the same host. `GET /api/config` answers the rest (station id, version).
+- **Any browser on the network is a console.** A tablet at `http://<station>:7700`
+  gets the same app the desktop window does.
+
+In dev, Vite proxies `/ws`, `/assets` and `/api` through to `PULT_BACKEND`
+(default `http://localhost:7700`), so dev is same-origin too.
+
+A debug build reads `frontend/build` off the disk; a release build embeds it. If
+the directory is missing, `build.rs` leaves a placeholder page behind so a fresh
+clone still compiles.
+
 ## Running
 
 ```
-cargo run -p pult-backend
+cargo run -p pult-codegen -- generate     # after any schema change
+npm --prefix frontend run build           # once; the backend serves this
+cargo run -p pult-backend                 # then http://localhost:7700
+```
+
+As a desktop app — the same station, in a window, still serving the network:
+
+```
+cargo run -p pult-gui
+```
+
+For frontend work, Vite with hot reload beside a running backend:
+
+```
 cd frontend && npm run dev
+```
+
+The simulated OpenHaunt node has a window too. Build its panel once, then:
+
+```
+npm --prefix tools/openhaunt-sim-gui/ui install
+npm --prefix tools/openhaunt-sim-gui/ui run build
+cargo run -p openhaunt-sim-gui -- --module relay --serial 4d5e6f
 ```
 
 The frontend opens onto a **tiled workspace** rather than a sidebar and tabs. Panels
@@ -76,10 +118,15 @@ Logs for each component land there too.
 ## Testing
 
 ```
-cargo test --workspace
+cargo test                     # the workspace's default members
 cd frontend && npm test        # vitest, pure helpers only
 cd frontend && npm run check   # svelte-check
 ```
+
+Not `--workspace`: `pult-gui` and `openhaunt-sim-gui` are workspace members so
+that one lockfile covers everything and CI can build with `--locked`, but they are
+excluded from `default-members` so that a plain `cargo build` does not need
+webkit2gtk on the machine. Build them by name (`-p pult-gui`).
 
 Both the Rust build and `svelte-check` are kept at zero warnings, so a new one is
 visible rather than buried.

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d2620"/>
+      <stop offset="1" stop-color="#0b0f0c"/>
+    </linearGradient>
+    <radialGradient id="led" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#d7ffe4"/>
+      <stop offset="0.35" stop-color="#4caf50"/>
+      <stop offset="1" stop-color="#4caf50" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="220" fill="url(#bg)"/>
+  <!-- the carrier, with a module plugged into it -->
+  <rect x="206" y="286" width="612" height="452" rx="56" fill="none" stroke="#3f4f45" stroke-width="26"/>
+  <rect x="286" y="366" width="452" height="292" rx="32" fill="#243029"/>
+  <!-- the status LED: a node says what it is doing before it says anything else -->
+  <circle cx="512" cy="512" r="132" fill="url(#led)"/>
+  <circle cx="512" cy="512" r="58" fill="#7dffa4"/>
+  <!-- PoE, in at the top and out at the bottom -->
+  <rect x="452" y="150" width="120" height="140" rx="24" fill="#3f4f45"/>
+  <rect x="452" y="734" width="120" height="140" rx="24" fill="#3f4f45"/>
+</svg>

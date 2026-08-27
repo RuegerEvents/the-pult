@@ -121,7 +121,9 @@ fi
 mkdir -p "$DEMO_DIR"
 
 echo "building"
-if ! cargo build --workspace --quiet > "$DEMO_DIR/build.log" 2>&1; then
+# Not --workspace: the desktop shells are workspace members but not default
+# members, and building them needs webkit on the machine.
+if ! cargo build --quiet > "$DEMO_DIR/build.log" 2>&1; then
   echo "the build failed:" >&2
   cat "$DEMO_DIR/build.log" >&2
   exit 1
@@ -208,8 +210,11 @@ fi
 
 # ── Frontend ──────────────────────────────────────────────────────────────────
 
+# The dev server proxies /ws, /assets and /api through to the first station, so
+# the page and the socket share an origin here the same way they do in a release.
 echo "starting the frontend"
-npm --prefix "$ROOT/frontend" run dev > "$DEMO_DIR/frontend.log" 2>&1 &
+PULT_BACKEND="http://localhost:$PORT" \
+  npm --prefix "$ROOT/frontend" run dev > "$DEMO_DIR/frontend.log" 2>&1 &
 PIDS+=($!)
 
 # Vite picks another port when its usual one is taken, so the URL is read back

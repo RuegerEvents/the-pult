@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>the-pult</title>
+		<style>
+			:root { color-scheme: dark; }
+			body {
+				margin: 0;
+				height: 100vh;
+				display: grid;
+				place-items: center;
+				background: #1a1a1a;
+				color: #e0e0e0;
+				font: 14px 'Inter', 'Segoe UI', system-ui, sans-serif;
+				-webkit-user-select: none;
+				user-select: none;
+			}
+			.panel { text-align: center; max-width: 34rem; padding: 0 2rem; }
+			h1 { font-size: 1.1rem; font-weight: 600; margin: 1.25rem 0 0.5rem; }
+			p { margin: 0; color: #888; line-height: 1.5; }
+			pre {
+				margin: 1rem 0 0;
+				padding: 0.75rem 1rem;
+				text-align: left;
+				white-space: pre-wrap;
+				background: #111;
+				border: 1px solid #333;
+				border-radius: 4px;
+				color: #e57373;
+				font-size: 0.8rem;
+			}
+			.spinner {
+				width: 28px; height: 28px; margin: 0 auto;
+				border: 2px solid #333; border-top-color: #4caf50; border-radius: 50%;
+				animation: spin 0.9s linear infinite;
+			}
+			@keyframes spin { to { transform: rotate(360deg); } }
+			.failed .spinner { display: none; }
+		</style>
+	</head>
+	<body>
+		<!--
+			The window while the console is still coming up. It is replaced the moment
+			the server has a port, by navigating to it — the desktop app is a window
+			onto the same page a tablet gets, not a second copy of the frontend.
+		-->
+		<div class="panel" id="panel">
+			<div class="spinner"></div>
+			<h1 id="headline">Starting the console</h1>
+			<p id="detail">Opening the showfile and joining the network.</p>
+		</div>
+		<script>
+			// Called from Rust when the station could not be started. There is nothing
+			// to fall back to at that point: without a server there is no show.
+			window.showError = (message) => {
+				document.getElementById('panel').classList.add('failed');
+				document.getElementById('headline').textContent = 'The console did not start';
+				document.getElementById('detail').textContent =
+					'Nothing can be opened until this is resolved.';
+				const pre = document.createElement('pre');
+				pre.textContent = message;
+				document.getElementById('panel').appendChild(pre);
+			};
+		</script>
+	</body>
+</html>

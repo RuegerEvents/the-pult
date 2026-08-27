@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "openhaunt-sim",
+  "identifier": "events.rueger.openhaunt-sim",
+  "build": {
+    "frontendDist": "ui/dist",
+    "beforeBuildCommand": "npm --prefix ui run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "openhaunt-sim",
+        "width": 980,
+        "height": 760,
+        "minWidth": 620,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "A simulated OpenHaunt I/O node",
+    "longDescription": "The node side of the OpenHaunt protocol, in software, with a panel for driving its inputs and watching what a console does to its outputs.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

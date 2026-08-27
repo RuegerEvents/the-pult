@@ -4,6 +4,18 @@ members = [
     "crates/pult-macros",
     "crates/pult-schema",
     "crates/pult-backend",
+    "crates/pult-gui",
+    "tools/pult-codegen",
+    "tools/openhaunt-sim",
+    "tools/openhaunt-sim-gui",
+]
+# The desktop shells are members so that one lockfile covers everything and CI can
+# build them with `--locked`, but not default members: a plain `cargo build` or
+# `cargo test` should not need webkit2gtk on the machine to compile the console.
+default-members = [
+    "crates/pult-macros",
+    "crates/pult-schema",
+    "crates/pult-backend",
     "tools/pult-codegen",
     "tools/openhaunt-sim",
 ]
@@ -80,6 +92,13 @@ async-stream = "0.3"
 
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
+
+# The frontend, embedded in the binary. One artifact is the whole console.
+rust-embed = { version = "8", features = ["mime-guess"] }
+
+# Desktop shells around the console and the node simulator
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
 
 # Distributed static registration
 inventory = "0.3"

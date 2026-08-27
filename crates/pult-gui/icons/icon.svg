@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#232323"/>
+      <stop offset="1" stop-color="#0e0e0e"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe9b5" stop-opacity="0.95"/>
+      <stop offset="0.55" stop-color="#ffcf6a" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ffbe45" stop-opacity="0.10"/>
+    </linearGradient>
+    <radialGradient id="pool" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff0c8" stop-opacity="0.95"/>
+      <stop offset="0.6" stop-color="#ffcf6a" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ffbe45" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="220" fill="url(#bg)"/>
+  <!-- the beam, which is the whole point of the thing -->
+  <path d="M 452 322 L 572 322 L 812 812 L 212 812 Z" fill="url(#beam)"/>
+  <ellipse cx="512" cy="812" rx="300" ry="72" fill="url(#pool)"/>
+  <!-- the head it comes out of -->
+  <rect x="392" y="196" width="240" height="140" rx="42" fill="#3a3a3a"/>
+  <rect x="440" y="300" width="144" height="44" rx="18" fill="#f7f7f7"/>
+  <rect x="352" y="150" width="60" height="150" rx="26" fill="#2c2c2c"/>
+  <rect x="612" y="150" width="60" height="150" rx="26" fill="#2c2c2c"/>
+</svg>

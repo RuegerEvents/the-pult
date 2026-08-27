@@ -18,7 +18,8 @@ use std::{
 
 use anyhow::Result;
 use axum::{extract::State, routing::{get, post}, Json, Router};
-use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
+use rumqttc::{AsyncClient, ConnectionError, Event, LastWill, MqttOptions, Packet, QoS};
+use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
@@ -80,6 +81,30 @@ impl ModuleKind {
         }
     }
 
+    /// The name the command line and the GUI use, and the inverse of [`parse`].
+    pub fn key(self) -> &'static str {
+        match self {
+            ModuleKind::DmxOut => "dmx",
+            ModuleKind::DigitalIn => "input",
+            ModuleKind::Ws2812 => "led",
+            ModuleKind::MainsRelay => "relay",
+            ModuleKind::Oled => "oled",
+            ModuleKind::DryContact => "contact",
+            ModuleKind::Environment => "env",
+        }
+    }
+
+    /// Every module, in the order a picker should offer them.
+    pub const ALL: [ModuleKind; 7] = [
+        ModuleKind::DigitalIn,
+        ModuleKind::DryContact,
+        ModuleKind::Environment,
+        ModuleKind::MainsRelay,
+        ModuleKind::Ws2812,
+        ModuleKind::Oled,
+        ModuleKind::DmxOut,
+    ];
+
     pub fn parse(name: &str) -> Option<Self> {
         Some(match name {
             "dmx" => ModuleKind::DmxOut,
@@ -125,6 +150,43 @@ impl SimConfig {
     }
 }
 
+/// Everything a node knows about itself, in one value.
+///
+/// The protocol does not have this and does not need it — a console learns each
+/// of these separately, over the wire, which is the point. It exists so that a
+/// window onto a simulated node can show what the node is doing without having to
+/// subscribe to five channels and stitch them together.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snapshot {
+    pub serial: String,
+    pub name: String,
+    /// The module's short name, as `--module` takes it.
+    pub module: String,
+    pub module_name: String,
+    pub type_id: u16,
+    pub caps: String,
+    /// Descriptor bit 6: this module switches mains, and a console should say so.
+    pub switches_mains: bool,
+    pub http_addr: String,
+    pub sacn_addr: Option<String>,
+    pub advertising: bool,
+    /// Whether a console has ever sent `POST /api/v1/config`.
+    pub adopted: bool,
+    /// The broker it was told to publish to, which is what adoption amounts to.
+    pub broker: Option<String>,
+    pub mqtt_connected: bool,
+    /// Output ports as the node holds them, keyed by port number.
+    pub outputs: BTreeMap<String, Value>,
+    /// The last thing published on each input port, keyed the same way.
+    pub inputs: BTreeMap<String, Value>,
+    /// How many times a console has asked this node to blink.
+    pub identified: usize,
+    /// Unix milliseconds, so the uptime shown is always current rather than as
+    /// current as the last time anything happened.
+    pub started_ms: u64,
+}
+
 /// What a test can see and do to a running node.
 pub struct SimHandle {
     pub http_addr: SocketAddr,
@@ -137,6 +199,8 @@ pub struct SimHandle {
     pub sacn_frames: mpsc::Receiver<(u16, Vec<u8>)>,
     /// Drive an input, as a button or a sensor would.
     pub inputs: mpsc::Sender<Input>,
+    /// The whole node in one value, for a window onto it. See [`Snapshot`].
+    pub snapshot: watch::Receiver<Snapshot>,
 }
 
 /// Something happening at the terminals.
@@ -158,6 +222,16 @@ struct Node {
     config_tx: Arc<watch::Sender<Option<Value>>>,
     state_tx: Arc<watch::Sender<BTreeMap<String, Value>>>,
     identified: Arc<Mutex<usize>>,
+    snapshot: Arc<watch::Sender<Snapshot>>,
+}
+
+impl Node {
+    /// Change the node's own account of itself. Kept beside every write to the
+    /// protocol state rather than derived from it, so that nothing a console can
+    /// see depends on whether anybody is watching.
+    fn describe(&self, change: impl FnOnce(&mut Snapshot)) {
+        self.snapshot.send_modify(change);
+    }
 }
 
 pub async fn start(config: SimConfig) -> Result<SimHandle> {
@@ -166,6 +240,18 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
     let (broker_tx, broker_rx) = watch::channel(None::<String>);
     let (inputs, inputs_rx) = mpsc::channel(64);
     let (frames_tx, sacn_frames) = mpsc::channel(64);
+    let (snapshot_tx, snapshot) = watch::channel(Snapshot {
+        serial: config.serial.clone(),
+        name: config.name.clone(),
+        module: config.module.key().to_string(),
+        module_name: config.module.name().to_string(),
+        type_id: config.module.type_id(),
+        caps: config.module.caps().to_string(),
+        switches_mains: config.module.flags() & (1 << 6) != 0,
+        advertising: config.advertise,
+        started_ms: now_ms(),
+        ..Snapshot::default()
+    });
 
     let node = Node {
         module: config.module,
@@ -174,6 +260,7 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         config_tx: Arc::new(config_tx),
         state_tx: Arc::new(state_tx),
         identified: Arc::new(Mutex::new(0)),
+        snapshot: Arc::new(snapshot_tx),
     };
 
     let http_addr = serve_http(node.clone(), config.http_port, broker_tx).await?;
@@ -183,6 +270,11 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         _ => None,
     };
 
+    node.describe(|s| {
+        s.http_addr = http_addr.to_string();
+        s.sacn_addr = sacn_addr.map(|a| a.to_string());
+    });
+
     tokio::spawn(run_mqtt(node, broker_rx, inputs_rx, config.auto));
 
     if config.advertise {
@@ -190,7 +282,7 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
     }
 
     info!("[sim] {} on {http_addr}", config.serial);
-    Ok(SimHandle { http_addr, sacn_addr, received_config, state, sacn_frames, inputs })
+    Ok(SimHandle { http_addr, sacn_addr, received_config, state, sacn_frames, inputs, snapshot })
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
@@ -214,7 +306,9 @@ async fn serve_http(
                         info!("[sim] {} configured: {body}", node.serial);
                         if let Some(addr) = body["mqtt"]["broker"].as_str() {
                             let _ = broker.send(Some(addr.to_string()));
+                            node.describe(|s| s.broker = Some(addr.to_string()));
                         }
+                        node.describe(|s| s.adopted = true);
                         let _ = node.config_tx.send(Some(body));
                         Json(json!({ "ok": true }))
                     }
@@ -263,12 +357,18 @@ async fn write_state(State(node): State<Node>, Json(body): Json<Value>) -> Json<
                 state.insert(port.clone(), value.clone());
             }
         });
+        node.describe(|s| {
+            for (port, value) in outputs {
+                s.outputs.insert(port.clone(), value.clone());
+            }
+        });
     }
     Json(json!({ "ok": true }))
 }
 
 async fn identify(State(node): State<Node>) -> Json<Value> {
     *node.identified.lock().unwrap() += 1;
+    node.describe(|s| s.identified += 1);
     info!("[sim] {} blinking", node.serial);
     Json(json!({ "ok": true }))
 }
@@ -317,15 +417,20 @@ async fn run_mqtt(
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
                     apply_output(&node, &publish.topic, &publish.payload);
                 }
+                // The one packet worth noticing on its own: until it arrives the
+                // node is configured but not yet talking to anything.
+                Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    node.describe(|s| s.mqtt_connected = true);
+                }
                 Ok(_) => {}
                 Err(e) => {
-                    debug!("[sim] {} mqtt: {e}", node.serial);
+                    connection_lost(&node, &e);
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             },
 
             Some(input) = inputs.recv() => {
-                publish_input(&client, &node.serial, input).await;
+                publish_input(&client, &node, input).await;
             }
 
             _ = health.tick() => {
@@ -348,13 +453,19 @@ async fn run_mqtt(
                     },
                     _ => Input::Contact { port: 0, state: auto_state },
                 };
-                publish_input(&client, &node.serial, input).await;
+                publish_input(&client, &node, input).await;
             }
         }
     }
 }
 
-async fn publish_input(client: &AsyncClient, serial: &str, input: Input) {
+fn connection_lost(node: &Node, error: &ConnectionError) {
+    debug!("[sim] {} mqtt: {error}", node.serial);
+    node.describe(|s| s.mqtt_connected = false);
+}
+
+async fn publish_input(client: &AsyncClient, node: &Node, input: Input) {
+    let serial = &node.serial;
     let (port, payload) = match input {
         Input::Contact { port, state } => (
             port,
@@ -370,6 +481,9 @@ async fn publish_input(client: &AsyncClient, serial: &str, input: Input) {
     };
     let topic = format!("openhaunt/{serial}/input/{port}");
     info!("[sim] {serial} input {port} -> {payload}");
+    node.describe(|s| {
+        s.inputs.insert(port.to_string(), payload.clone());
+    });
     let _ = client.publish(topic, QoS::AtLeastOnce, false, payload.to_string()).await;
 }
 
@@ -379,7 +493,10 @@ fn apply_output(node: &Node, topic: &str, payload: &[u8]) {
     let Ok(value) = serde_json::from_slice::<Value>(payload) else { return };
     info!("[sim] {} output {port} <- {value}", node.serial);
     node.state_tx.send_modify(|state| {
-        state.insert(port.to_string(), value);
+        state.insert(port.to_string(), value.clone());
+    });
+    node.describe(|s| {
+        s.outputs.insert(port.to_string(), value);
     });
 }
 

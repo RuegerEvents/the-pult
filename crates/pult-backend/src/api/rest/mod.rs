@@ -3,6 +3,9 @@
 //! Everything a show is made of travels as JSON over `/ws`. Assets do not: they are
 //! bytes, they are large, and they never change once stored — three properties that
 //! make an ordinary HTTP request the right shape and the WebSocket the wrong one.
+//!
+//! `/api/config` is the third thing here, and the smallest: it is how a page that
+//! has just been loaded finds out what it loaded from.
 
 use std::sync::Arc;
 
@@ -20,6 +23,24 @@ use sqlx::SqlitePool;
 use tracing::debug;
 
 use crate::{engine::EngineHandle, infra::assets, state::AppState};
+
+/// What a freshly loaded page needs to know about the station that served it.
+#[derive(Clone)]
+pub struct ConfigState {
+    pub node_id: NodeId,
+    pub http_port: u16,
+    pub sync_port: u16,
+}
+
+impl FromRef<AppState> for ConfigState {
+    fn from_ref(state: &AppState) -> Self {
+        ConfigState {
+            node_id: state.node_id,
+            http_port: state.http_port,
+            sync_port: state.config.sync_port,
+        }
+    }
+}
 
 /// The part of the console an asset request touches: somewhere to keep bytes, and a
 /// way to find out which other stations exist. Narrower than [`AppState`] on purpose
@@ -52,6 +73,32 @@ where
         // Raw bytes rather than multipart: there is one file and its type is in the
         // header, so a form encoding would only be something else to get wrong.
         .layer(axum::extract::DefaultBodyLimit::max(assets::MAX_BYTES))
+}
+
+/// Kept apart from [`routes`] because the body limit those two carry is for the
+/// one route that takes megabytes, and this one takes nothing at all.
+pub fn config_routes<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+    ConfigState: FromRef<S>,
+{
+    Router::new().route("/api/config", get(config))
+}
+
+/// Where the socket is, and what this station is.
+///
+/// `wsPath` is a path and not a URL on purpose. A station listens on every
+/// interface it has, so the only honest answer to "where do I connect" is
+/// "wherever you reached me, plus this" — the client joins it to its own origin
+/// and is right on the loopback, on the LAN, and behind whatever is in front of us.
+async fn config(State(state): State<ConfigState>) -> Json<serde_json::Value> {
+    Json(json!({
+        "wsPath": "/ws",
+        "port": state.http_port,
+        "syncPort": state.sync_port,
+        "nodeId": state.node_id.0,
+        "version": crate::VERSION,
+    }))
 }
 
 async fn upload(
