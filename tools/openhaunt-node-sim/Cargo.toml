@@ -1,14 +1,14 @@
 [package]
-name = "openhaunt-sim"
+name = "openhaunt-node-sim"
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "openhaunt_sim"
+name = "openhaunt_node_sim"
 path = "src/lib.rs"
 
 [[bin]]
-name = "openhaunt-sim"
+name = "openhaunt-node-sim"
 path = "src/main.rs"
 
 [dependencies]

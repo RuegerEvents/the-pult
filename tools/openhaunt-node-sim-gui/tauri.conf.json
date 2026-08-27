@@ -1,14 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "openhaunt-sim",
-  "identifier": "events.rueger.openhaunt-sim",
+  "productName": "openhaunt-node-sim",
+  "identifier": "events.rueger.openhaunt-node-sim",
   "build": {
     "frontendDist": "ui/dist"
   },
   "app": {
     "windows": [
       {
-        "title": "openhaunt-sim",
+        "title": "openhaunt-node-sim",
         "width": 980,
         "height": 760,
         "minWidth": 620,

@@ -1,6 +1,6 @@
 //! Run a simulated OpenHaunt node.
 //!
-//!     openhaunt-sim --module input --serial 1a2b3c
+//!     openhaunt-node-sim --module input --serial 1a2b3c
 //!
 //! Then type at it: `in 3 1` closes contact 3, `in 3 0` opens it, `read 0 21.5`
 //! reports a sensor value.
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
-use openhaunt_sim::{start, Input, ModuleKind, SimConfig, SACN_PORT};
+use openhaunt_node_sim::{start, Input, ModuleKind, SimConfig, SACN_PORT};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser)]
@@ -36,7 +36,7 @@ struct Args {
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(fmt::layer())
-        .with(EnvFilter::from_default_env().add_directive("openhaunt_sim=info".parse()?))
+        .with(EnvFilter::from_default_env().add_directive("openhaunt_node_sim=info".parse()?))
         .init();
 
     let args = Args::parse();

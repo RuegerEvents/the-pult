@@ -24,7 +24,7 @@ cd "$root"
 
 packages=("$@")
 if [ ${#packages[@]} -eq 0 ]; then
-	packages=(pult-backend openhaunt-sim)
+	packages=(pult-backend openhaunt-node-sim)
 fi
 
 # Linux has one of these and macOS the other; Git Bash on Windows has the first.

@@ -174,10 +174,10 @@ if [ "$SIMS" = 1 ]; then
   echo "starting two simulated OpenHaunt nodes"
   # --auto presses contact 0 every couple of seconds, so a flow wired to it
   # visibly fires without anyone having to hold a button.
-  "$ROOT/target/debug/openhaunt-sim" --module input --serial 1a2b3c --port 8801 --auto 2500 \
+  "$ROOT/target/debug/openhaunt-node-sim" --module input --serial 1a2b3c --port 8801 --auto 2500 \
     > "$DEMO_DIR/sim-input.log" 2>&1 &
   PIDS+=($!)
-  "$ROOT/target/debug/openhaunt-sim" --module relay --serial 4d5e6f --port 8802 \
+  "$ROOT/target/debug/openhaunt-node-sim" --module relay --serial 4d5e6f --port 8802 \
     > "$DEMO_DIR/sim-relay.log" 2>&1 &
   PIDS+=($!)
 fi

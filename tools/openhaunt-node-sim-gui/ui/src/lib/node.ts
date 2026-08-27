@@ -2,7 +2,7 @@
  * What a module has, in ports.
  *
  * Written out here from the OpenHaunt module documents rather than imported from
- * the console, for the same reason `openhaunt-sim` shares no code with it: if the
+ * the console, for the same reason `openhaunt-node-sim` shares no code with it: if the
  * two ends are going to be compared, they have to have been written down twice.
  */
 

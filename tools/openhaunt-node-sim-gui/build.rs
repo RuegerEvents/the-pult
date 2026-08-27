@@ -12,11 +12,11 @@ fn main() {
         let _ = fs::create_dir_all(&dist);
         let _ = fs::write(
             dist.join("index.html"),
-            "<!doctype html><meta charset=utf-8><title>openhaunt-sim</title>\n\
+            "<!doctype html><meta charset=utf-8><title>openhaunt-node-sim</title>\n\
              <body style=\"font:14px system-ui;background:#0b0f0c;color:#cfd8d2;padding:2rem\">\n\
              <p>The panel was not built.\n\
-             <p><code>npm --prefix tools/openhaunt-sim-gui/ui install</code>\n\
-             <p><code>npm --prefix tools/openhaunt-sim-gui/ui run build</code>\n",
+             <p><code>npm --prefix tools/openhaunt-node-sim-gui/ui install</code>\n\
+             <p><code>npm --prefix tools/openhaunt-node-sim-gui/ui run build</code>\n",
         );
     }
 

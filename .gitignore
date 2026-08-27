@@ -16,12 +16,12 @@
 /.demo/
 
 # The simulator panel, built into the desktop app rather than committed.
-/tools/openhaunt-sim-gui/ui/node_modules/
-/tools/openhaunt-sim-gui/ui/dist/
+/tools/openhaunt-node-sim-gui/ui/node_modules/
+/tools/openhaunt-node-sim-gui/ui/dist/
 
 # Tauri's generated permission schemas, written beside each desktop shell.
 /crates/pult-gui/gen/
-/tools/openhaunt-sim-gui/gen/
+/tools/openhaunt-node-sim-gui/gen/
 
 # Vitest's cache, when it is run from the repository root rather than frontend/.
 /node_modules/

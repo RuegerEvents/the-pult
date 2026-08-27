@@ -244,15 +244,15 @@ jobs:
       # The simulator's panel is its own small app. Built here rather than by a
       # beforeBuildCommand, because Tauri runs that from a directory it infers
       # from frontendDist rather than from the config's own.
-      - run: npm --prefix tools/openhaunt-sim-gui/ui ci
-      - run: npm --prefix tools/openhaunt-sim-gui/ui run build
+      - run: npm --prefix tools/openhaunt-node-sim-gui/ui ci
+      - run: npm --prefix tools/openhaunt-node-sim-gui/ui run build
 
       - uses: tauri-apps/tauri-action@v0
         id: sim
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: tools/openhaunt-sim-gui
+          projectPath: tools/openhaunt-node-sim-gui
           args: -- --locked
 
       - name: Collect the simulator's bundles
@@ -271,7 +271,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: openhaunt-sim-gui-${{ matrix.target }}
+          name: openhaunt-node-sim-gui-${{ matrix.target }}
           path: bundles
           if-no-files-found: error
 

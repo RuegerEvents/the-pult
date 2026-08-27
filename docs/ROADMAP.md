@@ -19,7 +19,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Configured from the `outputs` collection and editable while the show is up, with per-output status in the UI. Flags only seed an empty showfile. |
 | Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. |
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
-| Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. Tested end to end against `tools/openhaunt-sim`, which is all there is until there is firmware. |
+| Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. Tested end to end against `tools/openhaunt-node-sim`, which is all there is until there is firmware. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
 | 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects, phasers and geometric selection are still ahead. |
 | Selection | Working as a list: ordered, reorderable, its own panel, kept apart from the programmer. Still a list of ids rather than the geometric query the spec asks for. |
@@ -175,7 +175,7 @@ What this delivers:
 - An MQTT broker embedded in the leader (rumqttd). On adoption the-pult POSTs its own broker address to the node, so nothing external has to be installed and the "discovered, not configured" principle holds. Only the leader drives devices, gated the same way `GoNext` already is.
 - Input to trigger to cue. A PERSISTED `triggers` collection with a source, a condition, an action and a delay, evaluated by a pure state machine in the engine's own tick next to playback.
 - Output to relays, LED strips, and OLED displays through an `OpenHauntOutput` plugin, plus sACN unicast for the DMX gateway module — which is task 4's remaining sACN work, done here because the gateway needs it.
-- `tools/openhaunt-sim`, a simulator implementing the node side of the protocol, so the whole path is covered by tests without hardware on the bench.
+- `tools/openhaunt-node-sim`, a simulator implementing the node side of the protocol, so the whole path is covered by tests without hardware on the bench.
 
 All of that is in. `FixtureAddress` and `ParameterDirection`/`ParameterBinding` went in first, with the two migration paths they needed — a hand-written `Deserialize` for the JSON column and `showfile::upgrades` for the real ones. `types::openhaunt` is the only place that knows what a module id means. `DeviceManager` browses, adopts, and drives; `SetLiveValue` merges an input inside the engine actor and replicates it; `model::triggers` evaluates the rules in the engine's own tick beside playback.
 
@@ -487,8 +487,8 @@ naming it, so there is no native file dialog yet.
 A second console on one machine is an ordinary thing to want, so a taken port
 falls back to any port and says so in the title bar rather than refusing to start.
 
-**The simulator has a window.** `tools/openhaunt-sim-gui`, and the thing it fixes
-is small and real: `openhaunt-sim` can only be driven by typing at its stdin, and
+**The simulator has a window.** `tools/openhaunt-node-sim-gui`, and the thing it fixes
+is small and real: `openhaunt-node-sim` can only be driven by typing at its stdin, and
 `scripts/demo.sh` does not connect one — which is why the input node has to be
 started with `--auto 2500`. Here a contact is a button.
 
@@ -574,7 +574,7 @@ Left open:
 - **No auto-update.** `latest.json` and a Tauri updater keypair are the next step.
 - **32-bit Raspberry Pi is not built.** The arm64 runner is aarch64, which is
   64-bit Raspberry Pi OS.
-- **The simulator's panel cannot restart the node.** `openhaunt_sim::start` has no
+- **The simulator's panel cannot restart the node.** `openhaunt_node_sim::start` has no
   shutdown, so a module is chosen with a flag and lives for the process. Adding
   cancellation is what settles it, and it would serve the tests too.
 

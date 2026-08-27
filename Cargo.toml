@@ -6,8 +6,8 @@ members = [
     "crates/pult-backend",
     "crates/pult-gui",
     "tools/pult-codegen",
-    "tools/openhaunt-sim",
-    "tools/openhaunt-sim-gui",
+    "tools/openhaunt-node-sim",
+    "tools/openhaunt-node-sim-gui",
 ]
 # The desktop shells are members so that one lockfile covers everything and CI can
 # build them with `--locked`, but not default members: a plain `cargo build` or
@@ -17,7 +17,7 @@ default-members = [
     "crates/pult-schema",
     "crates/pult-backend",
     "tools/pult-codegen",
-    "tools/openhaunt-sim",
+    "tools/openhaunt-node-sim",
 ]
 
 [workspace.package]

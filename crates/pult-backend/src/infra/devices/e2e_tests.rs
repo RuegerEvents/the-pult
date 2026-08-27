@@ -3,17 +3,17 @@
 //! The tests beside these drive the manager's own inputs. These drive nothing but
 //! the node: it is resolved, adopted, and then told to do something, and every step
 //! in between — the HTTP config push, the MQTT connection the node makes on its own,
-//! the topic it publishes to — is the real one. `openhaunt-sim` shares no code with
+//! the topic it publishes to — is the real one. `openhaunt-node-sim` shares no code with
 //! the console, so agreeing here means the two ends genuinely agree.
 
-use openhaunt_sim::{Input, ModuleKind, SimConfig, SimHandle};
+use openhaunt_node_sim::{Input, ModuleKind, SimConfig, SimHandle};
 use pult_schema::{path::PathSegment, types::openhaunt};
 
 use super::tests::*;
 
 /// Start a node and hand it to the manager as though mDNS had found it.
 async fn a_simulated_node(h: &Harness, module: ModuleKind, serial: &str) -> SimHandle {
-    let sim = openhaunt_sim::start(SimConfig::new(module, serial))
+    let sim = openhaunt_node_sim::start(SimConfig::new(module, serial))
         .await
         .expect("the simulator binds an ephemeral port");
     // Advertising is off, so discovery is injected rather than waited for. The
@@ -140,7 +140,7 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
     };
 
     let h = harness().await;
-    let mut sim = openhaunt_sim::start(SimConfig::new(ModuleKind::DmxOut, "e2e-gate"))
+    let mut sim = openhaunt_node_sim::start(SimConfig::new(ModuleKind::DmxOut, "e2e-gate"))
         .await
         .unwrap();
     let sacn_port = sim.sacn_addr.expect("a gateway listens for sACN").port();

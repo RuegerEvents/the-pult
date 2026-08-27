@@ -34,7 +34,7 @@ rig.
 - **A tiled workspace.** Panels in a tree of splits and tab groups, with layouts
   saved into the show.
 - **Desktop apps.** `pult-gui` runs a console and its server in one window;
-  `openhaunt-sim-gui` is a window onto a simulated node.
+  `openhaunt-node-sim-gui` is a window onto a simulated node.
 - **One artifact per product.** The frontend is built into the server binary, so
   a station serves its own console — and any tablet on the network gets the same
   one.

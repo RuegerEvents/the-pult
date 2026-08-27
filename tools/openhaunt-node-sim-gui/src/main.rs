@@ -1,7 +1,7 @@
 //! A window onto a simulated OpenHaunt node.
 //!
 //! The node runs in this process, so the panel talks to it over Tauri's own IPC
-//! rather than over anything on the wire: `openhaunt-sim` implements the node side
+//! rather than over anything on the wire: `openhaunt-node-sim` implements the node side
 //! of the OpenHaunt protocol and nothing else, and a debug UI is not part of that
 //! protocol. What the panel adds is the thing the command line cannot do under
 //! `scripts/demo.sh` — its stdin is not connected there, which is why the input
@@ -12,13 +12,13 @@
 use std::time::Duration;
 
 use clap::Parser;
-use openhaunt_sim::{start, Input, ModuleKind, SimConfig, Snapshot, SACN_PORT};
+use openhaunt_node_sim::{start, Input, ModuleKind, SimConfig, Snapshot, SACN_PORT};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-/// The same flags the `openhaunt-sim` binary takes, so the two are started the
+/// The same flags the `openhaunt-node-sim` binary takes, so the two are started the
 /// same way and a node can be moved from one to the other mid-debug.
 #[derive(Parser, Clone)]
 #[command(about = "a simulated OpenHaunt I/O node, with a panel", version)]
@@ -80,7 +80,7 @@ async fn reading(port: u8, value: f32, sim: State<'_, Sim>) -> Result<(), String
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(fmt::layer())
-        .with(EnvFilter::from_default_env().add_directive("openhaunt_sim=info".parse()?))
+        .with(EnvFilter::from_default_env().add_directive("openhaunt_node_sim=info".parse()?))
         .init();
 
     let args = Args::parse();

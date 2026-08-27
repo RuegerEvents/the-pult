@@ -1,5 +1,5 @@
 [package]
-name = "openhaunt-sim-gui"
+name = "openhaunt-node-sim-gui"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,14 +7,14 @@ license.workspace = true
 description = "A window onto a simulated OpenHaunt node"
 
 [[bin]]
-name = "openhaunt-sim-gui"
+name = "openhaunt-node-sim-gui"
 path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { workspace = true }
 
 [dependencies]
-openhaunt-sim = { path = "../openhaunt-sim" }
+openhaunt-node-sim = { path = "../openhaunt-node-sim" }
 tauri = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

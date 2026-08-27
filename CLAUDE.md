@@ -9,7 +9,7 @@ Distributed lighting console system.
 - **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, SQLite showfiles, peer sync (mDNS + TCP), WASM plugin runtime (Phase 2), fixture connectors (Phase 2). `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.
-- **`tools/openhaunt-sim-gui`** — A Tauri window onto a simulated node, with buttons for its inputs. Talks to the sim over Tauri IPC, so nothing about the OpenHaunt protocol changes to accommodate a debug UI.
+- **`tools/openhaunt-node-sim-gui`** — A Tauri window onto a simulated node, with buttons for its inputs. Talks to the sim over Tauri IPC, so nothing about the OpenHaunt protocol changes to accommodate a debug UI.
 - **`frontend/`** — SvelteKit static-adapter frontend. Built into the binaries that serve it.
 
 ## Lifecycle System
@@ -87,9 +87,9 @@ there is no `beforeBuildCommand`, because Tauri runs that from a directory it
 infers rather than from the one the config sits in:
 
 ```
-npm --prefix tools/openhaunt-sim-gui/ui install
-npm --prefix tools/openhaunt-sim-gui/ui run build
-cargo run -p openhaunt-sim-gui -- --module relay --serial 4d5e6f
+npm --prefix tools/openhaunt-node-sim-gui/ui install
+npm --prefix tools/openhaunt-node-sim-gui/ui run build
+cargo run -p openhaunt-node-sim-gui -- --module relay --serial 4d5e6f
 ```
 
 The frontend opens onto a **tiled workspace** rather than a sidebar and tabs. Panels
@@ -138,7 +138,7 @@ cd frontend && npm test        # vitest, pure helpers only
 cd frontend && npm run check   # svelte-check
 ```
 
-Not `--workspace`: `pult-gui` and `openhaunt-sim-gui` are workspace members so
+Not `--workspace`: `pult-gui` and `openhaunt-node-sim-gui` are workspace members so
 that one lockfile covers everything and CI can build with `--locked`, but they are
 excluded from `default-members` so that a plain `cargo build` does not need
 webkit2gtk on the machine. Build them by name (`-p pult-gui`).

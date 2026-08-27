@@ -49,4 +49,4 @@ rust-embed = { workspace = true }
 # finishes in microseconds.
 tokio = { workspace = true, features = ["test-util"] }
 # The node side of the OpenHaunt protocol, for the end-to-end tests.
-openhaunt-sim = { path = "../../tools/openhaunt-sim" }
+openhaunt-node-sim = { path = "../../tools/openhaunt-node-sim" }
