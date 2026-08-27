@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::types::openhaunt::NodeDescription;
+
 /// What a node last said about itself on its health topic.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -48,6 +50,13 @@ pub struct DiscoveredDevice {
     pub module_serial: String,
     pub module_rev: String,
     pub caps: Vec<String>,
+    /// What the node says its ports are, from `GET /api/v1/info`.
+    ///
+    /// None until the node has answered — and on firmware that predates
+    /// self-description, for good. Adoption needs it: the console has no table to
+    /// fall back on, which is the point.
+    #[serde(default)]
+    pub description: Option<NodeDescription>,
     /// The module switches mains voltage. The panel says so before anything is
     /// adopted, because the consequence of a mistake here is not a dark light.
     pub is_mains: bool,

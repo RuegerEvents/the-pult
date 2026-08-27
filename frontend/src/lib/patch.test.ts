@@ -57,6 +57,14 @@ describe('parameter keys', () => {
 		expect(parameterKey('Humidity')).toBe('Humidity');
 		expect(parameterKey('AirQuality')).toBe('AirQuality');
 		expect(parameterKey('Text')).toBe('Text');
+		expect(parameterKey({ Named: 'Fog output' })).toBe('Named:Fog output');
+	});
+
+	// A node describes a port this console has no word for, and the name it gave is
+	// the whole identity — in the key and on the operator's screen alike.
+	it('shows a named kind under the name the device gave it', () => {
+		expect(kindLabel({ Named: 'Fog output' })).toBe('Fog output');
+		expect(parameterKey({ Named: 'Fog output' })).not.toBe(parameterKey({ Named: 'Tank level' }));
 	});
 
 	it('keeps every port of a numbered kind apart', () => {

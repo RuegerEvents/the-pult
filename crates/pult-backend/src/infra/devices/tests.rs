@@ -14,13 +14,98 @@ use pult_schema::{
     path::PathSegment,
     types::{
         devices::DevicesState,
-        fixture::{Fixture, FixtureAddress, FixtureType},
+        fixture::{
+            Fixture, FixtureAddress, FixtureType, ParameterDirection, ParameterKind,
+        },
         openhaunt,
     },
 };
 
 use super::*;
 use crate::{engine::ShowEngine, infra::showfile};
+
+// ── The catalogue, as a device would know it ──────────────────────────────────
+//
+// A test-side table on purpose. In a unit test this *is* the firmware, and the
+// firmware is the only thing entitled to know what a module's ports are — the
+// console keeps no such table, which is what these tests are here to hold it to.
+
+const DMX_OUT: u16 = 0x0001;
+const DIGITAL_IN: u16 = 0x0002;
+const MAINS_RELAY: u16 = 0x0004;
+const OLED: u16 = 0x0005;
+const DRY_CONTACT: u16 = 0x0006;
+const ENVIRONMENT: u16 = 0x0007;
+
+/// What a module's firmware puts on the wire: the name in its TXT record, its
+/// descriptor flags, and the ports it describes in `GET /api/v1/info`.
+struct Firmware {
+    name: &'static str,
+    flags: u32,
+    description: serde_json::Value,
+}
+
+fn firmware(module_type: u16) -> Firmware {
+    let (name, flags, description) = match module_type {
+        DMX_OUT => (
+            "DMX Gateway",
+            0,
+            serde_json::json!({ "ports": [], "dmx": { "protocols": ["sacn"], "universes": 1 } }),
+        ),
+        DIGITAL_IN => (
+            "Digital Inputs",
+            0,
+            serde_json::json!({ "ports": (0..8).map(|n| serde_json::json!({
+                "port": n, "name": format!("Input {}", n + 1),
+                "access": "readonly", "dataType": "boolean", "class": "contact",
+            })).collect::<Vec<_>>() }),
+        ),
+        MAINS_RELAY => (
+            "Mains Relay",
+            openhaunt::MODULE_FLAG_MAINS,
+            serde_json::json!({ "ports": [
+                { "port": 0, "name": "Relay", "access": "readwrite",
+                  "dataType": "boolean", "default": 0, "class": "switch" },
+            ]}),
+        ),
+        OLED => (
+            "Display",
+            0,
+            serde_json::json!({ "ports": [
+                { "port": 0, "name": "Line", "access": "readwrite",
+                  "dataType": "string", "class": "text" },
+            ]}),
+        ),
+        DRY_CONTACT => (
+            "Dry Contacts",
+            0,
+            serde_json::json!({ "ports": (0..4).map(|n| serde_json::json!({
+                "port": n, "name": format!("Contact {}", n + 1),
+                "access": "readwrite", "dataType": "boolean", "class": "switch",
+            })).collect::<Vec<_>>() }),
+        ),
+        ENVIRONMENT => (
+            "Environment Sensor",
+            0,
+            serde_json::json!({ "ports": [
+                { "port": 0, "name": "Temperature", "access": "readonly", "dataType": "number",
+                  "unit": "degree-celsius", "minimum": -40, "maximum": 85, "class": "temperature" },
+                { "port": 1, "name": "Humidity", "access": "readonly", "dataType": "number",
+                  "unit": "percent", "minimum": 0, "maximum": 100, "class": "humidity" },
+                { "port": 2, "name": "Air quality", "access": "readonly", "dataType": "number",
+                  "unit": "parts-per-million", "minimum": 0, "maximum": 5000,
+                  "class": "air-quality" },
+            ]}),
+        ),
+        other => panic!("no firmware written for module {other:#06x}"),
+    };
+    Firmware { name, flags, description }
+}
+
+/// The fixture type a described module becomes, for a test that wants to compare.
+fn described(module_type: u16) -> openhaunt::NodeDescription {
+    serde_json::from_value(firmware(module_type).description).expect("a description parses")
+}
 
 // ── Harness ───────────────────────────────────────────────────────────────────
 
@@ -68,6 +153,30 @@ impl Harness {
     }
 
     async fn resolve(&self, serial: &str, module_type: u16, addr: Option<std::net::SocketAddr>) {
+        // Without an address of its own, the node still has to be somewhere: only
+        // the device knows what it is, so a test node that answers nothing could
+        // never be adopted. One is started here describing the module in question.
+        let addr = match addr {
+            Some(addr) => addr,
+            None => {
+                let module = firmware(module_type);
+                a_node(module.flags, module.description).await.0
+            }
+        };
+        let mut txt = BTreeMap::new();
+        txt.insert("modname".to_string(), firmware(module_type).name.to_string());
+        self.resolve_with(serial, module_type, addr, txt).await
+    }
+
+    /// Discovery with extra TXT keys, for the few facts a node states before
+    /// anything has been asked of it.
+    async fn resolve_with(
+        &self,
+        serial: &str,
+        module_type: u16,
+        addr: std::net::SocketAddr,
+        extra: BTreeMap<String, String>,
+    ) {
         let mut txt = BTreeMap::new();
         txt.insert("sn".to_string(), serial.to_string());
         txt.insert("mod".to_string(), format!("{module_type:#06x}"));
@@ -75,17 +184,12 @@ impl Harness {
         txt.insert("fw".to_string(), "0.1.0".to_string());
         txt.insert("v".to_string(), "1".to_string());
         txt.insert("caps".to_string(), "dmx,rdm".to_string());
+        txt.extend(extra);
 
-        // No stub node: point at a closed local port, so the manager's `/info` call
-        // is refused at once rather than sitting out its timeout.
-        let (ip, port) = match addr {
-            Some(addr) => (addr.ip().to_string(), addr.port()),
-            None => ("127.0.0.1".to_string(), 1),
-        };
         self.event(DeviceEvent::Resolved {
             serial: serial.to_string(),
-            ip,
-            port,
+            ip: addr.ip().to_string(),
+            port: addr.port(),
             host: format!("openhaunt-{serial}.local."),
             txt,
         })
@@ -153,7 +257,14 @@ struct NodeLog {
 
 /// A stand-in for a node's HTTP API, on an ephemeral port, recording what it was
 /// asked to do.
-async fn a_node(module_flags: u32) -> (std::net::SocketAddr, Arc<Mutex<NodeLog>>) {
+///
+/// `description` is what it serves alongside its descriptor from `/api/v1/info` —
+/// the ports and, on a gateway, the universe. `json!({})` is firmware that
+/// describes nothing, which the console is entitled to refuse.
+async fn a_node(
+    module_flags: u32,
+    description: serde_json::Value,
+) -> (std::net::SocketAddr, Arc<Mutex<NodeLog>>) {
     let log = Arc::new(Mutex::new(NodeLog::default()));
 
     let info_log = log.clone();
@@ -165,7 +276,13 @@ async fn a_node(module_flags: u32) -> (std::net::SocketAddr, Arc<Mutex<NodeLog>>
             "/api/v1/info",
             get(move || {
                 let _ = &info_log;
-                async move { Json(serde_json::json!({ "module": { "flags": module_flags } })) }
+                let mut info = serde_json::json!({ "module": { "flags": module_flags } });
+                if let Some(described) = description.as_object() {
+                    for (key, value) in described {
+                        info[key] = value.clone();
+                    }
+                }
+                async move { Json(info) }
             }),
         )
         .route(
@@ -212,12 +329,12 @@ async fn a_node(module_flags: u32) -> (std::net::SocketAddr, Arc<Mutex<NodeLog>>
 #[tokio::test]
 async fn a_resolved_node_shows_up_with_what_its_txt_record_said() {
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
 
     let state = h.state().await;
     let device = state.discovered.get("1a2b3c").expect("the device is listed");
     assert_eq!(device.name, "Node 1a2b3c");
-    assert_eq!(device.module_type, openhaunt::MODULE_TYPE_DIGITAL_IN);
+    assert_eq!(device.module_type, DIGITAL_IN);
     assert_eq!(device.module_name, "Digital Inputs", "the module name fills in from the id");
     assert_eq!(device.caps, vec!["dmx", "rdm"]);
     assert!(device.online);
@@ -227,29 +344,33 @@ async fn a_resolved_node_shows_up_with_what_its_txt_record_said() {
 #[tokio::test]
 async fn resolving_the_same_node_twice_updates_it_rather_than_duplicating_it() {
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_MAINS_RELAY, None).await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_MAINS_RELAY, None).await;
+    h.resolve("1a2b3c", MAINS_RELAY, None).await;
+    h.resolve("1a2b3c", MAINS_RELAY, None).await;
 
     assert_eq!(h.state().await.discovered.len(), 1);
 }
 
 #[tokio::test]
-async fn a_relay_module_is_flagged_as_mains_before_anyone_is_asked() {
+async fn a_node_that_says_it_switches_mains_is_warned_about() {
+    // A dry-contact module wired to mains. Nothing about the module id says so;
+    // only the descriptor the node serves does, and that is what is believed.
+    let (addr, _log) =
+        a_node(openhaunt::MODULE_FLAG_MAINS, firmware(DRY_CONTACT).description).await;
     let h = harness().await;
-    h.resolve("4d5e6f", openhaunt::MODULE_TYPE_MAINS_RELAY, None).await;
+    h.resolve("4d5e6f", DRY_CONTACT, Some(addr)).await;
 
-    assert!(
-        h.state().await.discovered["4d5e6f"].is_mains,
-        "the warning has to be up before an HTTP round trip, not after",
-    );
+    assert!(h.state().await.discovered["4d5e6f"].is_mains);
 }
 
 #[tokio::test]
-async fn a_node_that_says_it_switches_mains_is_believed_over_its_module_id() {
-    let (addr, _log) = a_node(openhaunt::MODULE_FLAG_MAINS).await;
+async fn a_txt_record_that_claims_mains_warns_before_an_http_round_trip() {
+    // The warning is worth showing a moment early rather than a round trip late,
+    // and a node that never answers `/info` is exactly when it matters. Port 1 is
+    // nothing's, so the call is refused at once rather than sitting out a timeout.
     let h = harness().await;
-    // A dry-contact module, which this console would not otherwise warn about.
-    h.resolve("4d5e6f", openhaunt::MODULE_TYPE_DRY_CONTACT, Some(addr)).await;
+    let mut txt = BTreeMap::new();
+    txt.insert("mains".to_string(), "1".to_string());
+    h.resolve_with("4d5e6f", DRY_CONTACT, ([127, 0, 0, 1], 1).into(), txt).await;
 
     assert!(h.state().await.discovered["4d5e6f"].is_mains);
 }
@@ -257,7 +378,7 @@ async fn a_node_that_says_it_switches_mains_is_believed_over_its_module_id() {
 #[tokio::test]
 async fn an_unadopted_node_that_goes_quiet_is_forgotten() {
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
     h.event(DeviceEvent::Removed { serial: "1a2b3c".into() }).await;
 
     assert!(h.state().await.discovered.is_empty());
@@ -266,7 +387,7 @@ async fn an_unadopted_node_that_goes_quiet_is_forgotten() {
 #[tokio::test]
 async fn an_adopted_node_that_goes_quiet_stays_listed_as_offline() {
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
     h.devices.adopt("1a2b3c".into()).await.unwrap();
 
     h.event(DeviceEvent::Removed { serial: "1a2b3c".into() }).await;
@@ -281,11 +402,11 @@ async fn an_adopted_node_that_goes_quiet_stays_listed_as_offline() {
 #[tokio::test]
 async fn a_node_that_comes_back_keeps_the_fixture_it_was_adopted_as() {
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
     let fixture_id = h.devices.adopt("1a2b3c".into()).await.unwrap();
 
     h.event(DeviceEvent::Removed { serial: "1a2b3c".into() }).await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
 
     let state = h.state().await;
     assert!(state.discovered["1a2b3c"].online);
@@ -297,7 +418,7 @@ async fn a_node_that_comes_back_keeps_the_fixture_it_was_adopted_as() {
 #[tokio::test]
 async fn adopting_a_node_patches_it_as_a_fixture_of_its_module_s_type() {
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
 
     let fixture_id = h.devices.adopt("1a2b3c".into()).await.unwrap();
 
@@ -312,15 +433,20 @@ async fn adopting_a_node_patches_it_as_a_fixture_of_its_module_s_type() {
 
     let types = h.fixture_types().await;
     assert_eq!(types.len(), 1);
-    assert_eq!(types[0].id, openhaunt::builtin_fixture_type_id(openhaunt::MODULE_TYPE_DIGITAL_IN));
+    assert_eq!(
+        types[0].id,
+        openhaunt::fixture_type_id(DIGITAL_IN, &described(DIGITAL_IN)),
+        "the type follows from what the node said about itself",
+    );
+    assert_eq!(types[0].name, "Digital Inputs");
     assert_eq!(types[0].parameters.len(), 8);
 }
 
 #[tokio::test]
 async fn adopting_two_of_the_same_module_makes_one_fixture_type() {
     let h = harness().await;
-    h.resolve("aaa", openhaunt::MODULE_TYPE_MAINS_RELAY, None).await;
-    h.resolve("bbb", openhaunt::MODULE_TYPE_MAINS_RELAY, None).await;
+    h.resolve("aaa", MAINS_RELAY, None).await;
+    h.resolve("bbb", MAINS_RELAY, None).await;
 
     h.devices.adopt("aaa".into()).await.unwrap();
     h.devices.adopt("bbb".into()).await.unwrap();
@@ -332,7 +458,7 @@ async fn adopting_two_of_the_same_module_makes_one_fixture_type() {
 #[tokio::test]
 async fn adopting_twice_is_not_an_error_and_patches_once() {
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
 
     let first = h.devices.adopt("1a2b3c".into()).await.unwrap();
     let second = h.devices.adopt("1a2b3c".into()).await.unwrap();
@@ -344,8 +470,8 @@ async fn adopting_twice_is_not_an_error_and_patches_once() {
 #[tokio::test]
 async fn a_gateway_is_adopted_onto_a_universe_nothing_else_is_using() {
     let h = harness().await;
-    h.resolve("gate1", openhaunt::MODULE_TYPE_DMX_OUT, None).await;
-    h.resolve("gate2", openhaunt::MODULE_TYPE_DMX_OUT, None).await;
+    h.resolve("gate1", DMX_OUT, None).await;
+    h.resolve("gate2", DMX_OUT, None).await;
 
     h.devices.adopt("gate1".into()).await.unwrap();
     h.devices.adopt("gate2".into()).await.unwrap();
@@ -363,13 +489,65 @@ async fn a_gateway_is_adopted_onto_a_universe_nothing_else_is_using() {
 }
 
 #[tokio::test]
-async fn a_module_this_console_does_not_know_is_refused_rather_than_guessed_at() {
+async fn a_node_that_does_not_describe_its_ports_cannot_be_adopted() {
+    // Firmware older than self-description, or a node that answered nothing. The
+    // console has no table to fall back on and does not pretend otherwise.
+    let (addr, _log) = a_node(0, serde_json::json!({})).await;
     let h = harness().await;
-    h.resolve("weird", 0x00ff, None).await;
+    h.resolve("silent", MAINS_RELAY, Some(addr)).await;
 
-    let error = h.devices.adopt("weird".into()).await.unwrap_err();
-    assert!(error.contains("0x00ff"), "the message has to name the module: {error}");
+    let error = h.devices.adopt("silent".into()).await.unwrap_err();
+    assert!(error.contains("does not describe its ports"), "{error}");
     assert!(h.fixtures().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_module_this_console_has_never_heard_of_is_adopted_from_its_own_words() {
+    // Nothing here knows what a fogger is. The node does, and that is enough.
+    let (addr, _log) = a_node(
+        0,
+        serde_json::json!({ "ports": [
+            { "port": 0, "name": "Fog output", "access": "readwrite",
+              "dataType": "number", "unit": "percent", "class": "fog-density" },
+            { "port": 1, "name": "Tank level", "access": "readonly",
+              "dataType": "number", "unit": "percent" },
+        ]}),
+    )
+    .await;
+    let h = harness().await;
+    let mut txt = BTreeMap::new();
+    txt.insert("modname".to_string(), "Fogger".to_string());
+    h.resolve_with("fog1", 0x00ff, addr, txt).await;
+
+    h.devices.adopt("fog1".into()).await.unwrap();
+
+    let types = h.fixture_types().await;
+    assert_eq!(types.len(), 1);
+    assert_eq!(types[0].name, "Fogger");
+    assert_eq!(types[0].parameters[0].kind, ParameterKind::Named("Fog output".into()));
+    assert_eq!(types[0].parameters[0].direction, ParameterDirection::Output);
+    assert_eq!(types[0].parameters[1].kind, ParameterKind::Named("Tank level".into()));
+    assert_eq!(types[0].parameters[1].direction, ParameterDirection::Input);
+}
+
+#[tokio::test]
+async fn a_universe_is_allocated_to_the_node_that_says_it_forwards_one() {
+    let h = harness().await;
+    h.resolve("gate", DMX_OUT, None).await;
+    h.resolve("relay", MAINS_RELAY, None).await;
+
+    h.devices.adopt("gate".into()).await.unwrap();
+    h.devices.adopt("relay".into()).await.unwrap();
+
+    let fixtures = h.fixtures().await;
+    let universe = |serial: &str| {
+        fixtures.iter().find_map(|f| match &f.address {
+            FixtureAddress::OpenHaunt { serial: s, universe } if s == serial => Some(*universe),
+            _ => None,
+        })
+    };
+    assert_eq!(universe("gate"), Some(Some(1)), "it described a universe to forward");
+    assert_eq!(universe("relay"), Some(None), "it described only a relay");
 }
 
 #[tokio::test]
@@ -381,7 +559,7 @@ async fn adopting_a_device_nobody_has_seen_fails() {
 #[tokio::test]
 async fn a_follower_refuses_to_adopt() {
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
     h.become_follower().await;
 
     let error = h.devices.adopt("1a2b3c".into()).await.unwrap_err();
@@ -394,7 +572,7 @@ async fn a_follower_refuses_to_adopt() {
 #[tokio::test]
 async fn forgetting_a_device_unpatches_its_fixture_but_leaves_the_device_listed() {
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
     h.devices.adopt("1a2b3c".into()).await.unwrap();
 
     h.devices.forget("1a2b3c".into()).await.unwrap();
@@ -408,7 +586,7 @@ async fn forgetting_a_device_unpatches_its_fixture_but_leaves_the_device_listed(
 #[tokio::test]
 async fn deleting_the_fixture_by_hand_un_adopts_the_device() {
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
     let fixture_id = h.devices.adopt("1a2b3c".into()).await.unwrap();
 
     h.engine
@@ -420,7 +598,7 @@ async fn deleting_the_fixture_by_hand_un_adopts_the_device() {
         .await
         .unwrap();
     // The manager notices on the next thing it hears about that device.
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
 
     assert_eq!(h.state().await.discovered["1a2b3c"].adopted_fixture_id, None);
 }
@@ -429,9 +607,9 @@ async fn deleting_the_fixture_by_hand_un_adopts_the_device() {
 
 #[tokio::test]
 async fn identify_reaches_the_node() {
-    let (addr, log) = a_node(0).await;
+    let (addr, log) = a_node(0, firmware(OLED).description).await;
     let h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_OLED, Some(addr)).await;
+    h.resolve("1a2b3c", OLED, Some(addr)).await;
 
     h.devices.identify("1a2b3c".into()).await.unwrap();
 
@@ -440,9 +618,9 @@ async fn identify_reaches_the_node() {
 
 #[tokio::test]
 async fn setting_an_output_posts_the_port_the_node_numbers_it_by() {
-    let (addr, log) = a_node(0).await;
+    let (addr, log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
     let h = harness().await;
-    h.resolve("4d5e6f", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+    h.resolve("4d5e6f", MAINS_RELAY, Some(addr)).await;
 
     h.devices.set_output("4d5e6f".into(), 0, serde_json::json!({ "state": true }));
     // Ordered behind the SetOutput on the same channel.
@@ -458,12 +636,12 @@ async fn setting_an_output_posts_the_port_the_node_numbers_it_by() {
 #[tokio::test]
 async fn the_directory_carries_where_each_device_is() {
     let mut h = harness().await;
-    h.resolve("1a2b3c", openhaunt::MODULE_TYPE_MAINS_RELAY, None).await;
+    h.resolve("1a2b3c", MAINS_RELAY, None).await;
 
     let directory = h.directory.borrow_and_update().clone();
     let entry = directory.entries.get("1a2b3c").expect("the device is in the directory");
     assert_eq!(entry.ip, "127.0.0.1");
-    assert_eq!(entry.module_type, openhaunt::MODULE_TYPE_MAINS_RELAY);
+    assert_eq!(entry.module_type, MAINS_RELAY);
     assert!(entry.online);
 }
 
@@ -553,7 +731,7 @@ pub(super) async fn live_value(
 #[tokio::test]
 async fn a_console_with_nothing_adopted_runs_no_broker() {
     let h = harness().await;
-    h.resolve("seen", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("seen", DIGITAL_IN, None).await;
 
     let state = h.state().await;
     assert!(state.active, "it is still the node that would drive them");
@@ -563,7 +741,7 @@ async fn a_console_with_nothing_adopted_runs_no_broker() {
 #[tokio::test]
 async fn adopting_the_first_device_brings_the_broker_up() {
     let h = harness().await;
-    h.resolve("first", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("first", DIGITAL_IN, None).await;
     h.devices.adopt("first".into()).await.unwrap();
 
     assert!(broker_port(&h).await > 0);
@@ -572,7 +750,7 @@ async fn adopting_the_first_device_brings_the_broker_up() {
 #[tokio::test]
 async fn an_input_edge_lands_in_the_fixture_s_live_values() {
     let h = harness().await;
-    h.resolve("edge1", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("edge1", DIGITAL_IN, None).await;
     let fixture_id = h.devices.adopt("edge1".into()).await.unwrap();
 
     let node = a_node_on_the_broker(&h, "edge1").await;
@@ -595,7 +773,7 @@ async fn an_input_edge_lands_in_the_fixture_s_live_values() {
 #[tokio::test]
 async fn a_sensor_reading_lands_on_the_parameter_its_port_is_bound_to() {
     let h = harness().await;
-    h.resolve("env1", openhaunt::MODULE_TYPE_ENVIRONMENT, None).await;
+    h.resolve("env1", ENVIRONMENT, None).await;
     let fixture_id = h.devices.adopt("env1".into()).await.unwrap();
 
     let node = a_node_on_the_broker(&h, "env1").await;
@@ -615,9 +793,9 @@ async fn a_sensor_reading_lands_on_the_parameter_its_port_is_bound_to() {
 async fn an_input_from_a_device_nobody_adopted_changes_nothing() {
     let h = harness().await;
     // One adopted device, so there is a broker; the stray one is beside it.
-    h.resolve("neighbour", openhaunt::MODULE_TYPE_MAINS_RELAY, None).await;
+    h.resolve("neighbour", MAINS_RELAY, None).await;
     h.devices.adopt("neighbour".into()).await.unwrap();
-    h.resolve("stray", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("stray", DIGITAL_IN, None).await;
 
     let node = a_node_on_the_broker(&h, "stray").await;
     node.publish("openhaunt/stray/input/0", QoS::AtLeastOnce, false, r#"{"state": true}"#)
@@ -635,7 +813,7 @@ async fn an_input_from_a_device_nobody_adopted_changes_nothing() {
 #[tokio::test]
 async fn health_from_a_node_shows_up_against_it() {
     let h = harness().await;
-    h.resolve("health1", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("health1", DIGITAL_IN, None).await;
     h.devices.adopt("health1".into()).await.unwrap();
 
     let node = a_node_on_the_broker(&h, "health1").await;
@@ -659,7 +837,7 @@ async fn health_from_a_node_shows_up_against_it() {
 #[tokio::test]
 async fn a_node_that_publishes_offline_is_marked_offline() {
     let h = harness().await;
-    h.resolve("offline1", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("offline1", DIGITAL_IN, None).await;
     h.devices.adopt("offline1".into()).await.unwrap();
 
     let node = a_node_on_the_broker(&h, "offline1").await;
@@ -673,9 +851,9 @@ async fn a_node_that_publishes_offline_is_marked_offline() {
 
 #[tokio::test]
 async fn adopting_a_node_tells_it_where_the_broker_is() {
-    let (addr, log) = a_node(0).await;
+    let (addr, log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
     let h = harness().await;
-    h.resolve("4d5e6f", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+    h.resolve("4d5e6f", MAINS_RELAY, Some(addr)).await;
 
     h.devices.adopt("4d5e6f".into()).await.unwrap();
 
@@ -689,9 +867,9 @@ async fn adopting_a_node_tells_it_where_the_broker_is() {
 
 #[tokio::test]
 async fn adopting_a_gateway_also_tells_it_which_universe_to_listen_for() {
-    let (addr, log) = a_node(0).await;
+    let (addr, log) = a_node(firmware(DMX_OUT).flags, firmware(DMX_OUT).description).await;
     let h = harness().await;
-    h.resolve("gate1", openhaunt::MODULE_TYPE_DMX_OUT, Some(addr)).await;
+    h.resolve("gate1", DMX_OUT, Some(addr)).await;
 
     h.devices.adopt("gate1".into()).await.unwrap();
 
@@ -702,7 +880,7 @@ async fn adopting_a_gateway_also_tells_it_which_universe_to_listen_for() {
 #[tokio::test]
 async fn a_follower_does_not_drive_devices() {
     let h = harness().await;
-    h.resolve("follow1", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("follow1", DIGITAL_IN, None).await;
     h.devices.adopt("follow1".into()).await.unwrap();
     let _ = broker_port(&h).await;
 
@@ -714,7 +892,7 @@ async fn a_follower_does_not_drive_devices() {
 #[tokio::test]
 async fn a_node_promoted_back_to_leading_drives_again() {
     let h = harness().await;
-    h.resolve("promo1", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("promo1", DIGITAL_IN, None).await;
     h.devices.adopt("promo1".into()).await.unwrap();
     let _ = broker_port(&h).await;
     h.become_follower().await;
@@ -739,27 +917,28 @@ async fn a_node_promoted_back_to_leading_drives_again() {
 async fn a_node_that_comes_back_is_told_where_the_broker_is_again() {
     // A rebooted node has forgotten its configuration, and announcing itself is the
     // only notice the console gets that it needs telling.
-    let (addr, log) = a_node(0).await;
+    let (addr, log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
     let h = harness().await;
-    h.resolve("reboot1", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+    h.resolve("reboot1", MAINS_RELAY, Some(addr)).await;
     h.devices.adopt("reboot1".into()).await.unwrap();
     assert_eq!(log.lock().unwrap().configs.len(), 1);
 
     h.event(DeviceEvent::Removed { serial: "reboot1".into() }).await;
-    h.resolve("reboot1", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+    h.resolve("reboot1", MAINS_RELAY, Some(addr)).await;
 
     assert_eq!(log.lock().unwrap().configs.len(), 2);
 }
 
 #[tokio::test]
 async fn a_node_nobody_adopted_is_not_configured_when_it_appears() {
-    let (addr, log) = a_node(0).await;
+    let (addr, log) =
+        a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
     let h = harness().await;
     // Something else adopted, so there is a broker to be told about.
-    h.resolve("other", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("other", DIGITAL_IN, None).await;
     h.devices.adopt("other".into()).await.unwrap();
 
-    h.resolve("unadopted", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+    h.resolve("unadopted", MAINS_RELAY, Some(addr)).await;
 
     assert!(
         log.lock().unwrap().configs.is_empty(),
@@ -771,13 +950,13 @@ async fn a_node_nobody_adopted_is_not_configured_when_it_appears() {
 async fn a_console_restarted_mid_show_recognises_the_devices_it_had_adopted() {
     // Adoption lives in the fixture, which is persisted; the device list is not.
     // A fresh manager against the same show has to work it out from the fixtures.
-    let (addr, log) = a_node(0).await;
+    let (addr, log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
     let h = harness().await;
-    h.resolve("survivor", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+    h.resolve("survivor", MAINS_RELAY, Some(addr)).await;
     let fixture_id = h.devices.adopt("survivor".into()).await.unwrap();
 
     let after_restart = h.with_a_fresh_device_manager().await;
-    after_restart.resolve("survivor", openhaunt::MODULE_TYPE_MAINS_RELAY, Some(addr)).await;
+    after_restart.resolve("survivor", MAINS_RELAY, Some(addr)).await;
 
     let state = after_restart.state().await;
     assert_eq!(
@@ -796,7 +975,7 @@ async fn a_follower_with_nothing_adopted_still_says_it_is_not_driving() {
     // Nothing to start or stop either side of the change, so the only thing that
     // moves is what this node says about itself — which still has to be said.
     let h = harness().await;
-    h.resolve("watched", openhaunt::MODULE_TYPE_DIGITAL_IN, None).await;
+    h.resolve("watched", DIGITAL_IN, None).await;
     assert!(h.state().await.active);
 
     h.become_follower().await;

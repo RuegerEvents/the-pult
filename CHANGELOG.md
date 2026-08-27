@@ -12,6 +12,14 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Changed
 
+- **OpenHaunt nodes describe their own ports.** `GET /api/v1/info` now carries a
+  `ports` list in E1.73 UDR's vocabulary, and the console builds a fixture type
+  from it at adoption. The module table is gone: a node newer than the console, or
+  anybody else's module, adopts on its own say-so, and a node that describes
+  nothing is refused rather than guessed at. A port whose `class` this console has
+  no word for becomes a named parameter.
+- **Output payloads follow the port's data type**, not the module. A number port
+  takes `{ "value": … }`; `{ "brightness": … }` is retired.
 - **`openhaunt-sim` is now `openhaunt-node-sim`**, and `openhaunt-sim-gui` is
   `openhaunt-node-sim-gui`.
 

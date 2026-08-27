@@ -13,6 +13,8 @@ import type {
  * `Switch` and `Contact` carry a port number in the schema. The operator never
  * types that number twice: it follows the port the parameter is bound to. `Raw`
  * is left out — a raw channel is addressed by its binding, not chosen by name.
+ * So is `Named`: that one comes from a device describing a port this console has
+ * no word for, and is never something to pick off a list.
  */
 export const PARAMETER_KINDS = [
 	'Intensity',
@@ -28,9 +30,14 @@ export const PARAMETER_KINDS = [
 	'Text'
 ] as const;
 
-/** The selector label for a kind: the numbered kinds drop their number. */
+/**
+ * The selector label for a kind: the numbered kinds drop their number, and a
+ * named one shows the name the device gave it.
+ */
 export function kindLabel(kind: ParameterKind): string {
-	return typeof kind === 'string' ? kind : Object.keys(kind)[0];
+	if (typeof kind === 'string') return kind;
+	if ('Named' in kind) return kind.Named;
+	return Object.keys(kind)[0];
 }
 
 /** Turn a selector label back into a kind, numbering it after the port it sits on. */
@@ -53,6 +60,7 @@ export function parameterKindLabel(kind: ParameterKind): string {
 	if (typeof kind === 'string') return kind;
 	if ('Raw' in kind) return `Raw:${kind.Raw}`;
 	if ('Switch' in kind) return `Switch:${kind.Switch}`;
+	if ('Named' in kind) return `Named:${kind.Named}`;
 	return `Contact:${kind.Contact}`;
 }
 
@@ -61,7 +69,13 @@ export function parameterKey(kind: ParameterKind): string {
 	return parameterKindLabel(kind);
 }
 
-/** A sensible zero for a kind, used when a parameter's kind changes. */
+/**
+ * A sensible zero for a kind, used when a parameter's kind changes.
+ *
+ * A `Named` kind says nothing about its shape — the data type that decided it
+ * lives on the device's description, and the default that came with it is already
+ * on the parameter. A level is the least surprising thing to fall back to.
+ */
 export function defaultValueFor(kind: ParameterKind): ParameterValue {
 	if (kind === 'ColorRgb') return { type: 'Color', value: { r: 0, g: 0, b: 0 } };
 	if (kind === 'GoboIndex') return { type: 'Int', value: 0 };

@@ -1,12 +1,20 @@
-//! The seven OpenHaunt module types, and the fixture each one becomes.
+//! What a node says it is, and the fixture type that follows from it.
 //!
-//! This is the only place in the system that knows what a module id means. Adoption
-//! asks for a fixture type by module id and gets one; nothing else has an opinion.
+//! Only the device knows what it is. A node's `GET /api/v1/info` carries a list of
+//! ports — each one an access, a data type, a unit and a range, in the vocabulary
+//! E1.73 UDR uses — and this module turns that description into a fixture type.
+//! There is no table from module id to fixture here, and there must not be one: a
+//! node newer than this console, or a module nobody here has heard of, describes
+//! itself and works.
 //!
-//! The ids are derived rather than random, so adopting the same kind of module on
-//! two consoles — or on the same console after the showfile was rebuilt — lands on
-//! one fixture type instead of a pile of identical ones.
+//! The ids are derived from the description rather than random, so adopting the
+//! same kind of module on two consoles — or on the same console after the showfile
+//! was rebuilt — lands on one fixture type instead of a pile of identical ones.
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::types::fixture::{
@@ -14,119 +22,191 @@ use crate::types::fixture::{
     ParameterValue,
 };
 
-pub const MODULE_TYPE_DMX_OUT: u16 = 0x0001;
-pub const MODULE_TYPE_DIGITAL_IN: u16 = 0x0002;
-pub const MODULE_TYPE_WS2812: u16 = 0x0003;
-pub const MODULE_TYPE_MAINS_RELAY: u16 = 0x0004;
-pub const MODULE_TYPE_OLED: u16 = 0x0005;
-pub const MODULE_TYPE_DRY_CONTACT: u16 = 0x0006;
-pub const MODULE_TYPE_ENVIRONMENT: u16 = 0x0007;
-
-pub const MODULE_TYPES: &[u16] = &[
-    MODULE_TYPE_DMX_OUT,
-    MODULE_TYPE_DIGITAL_IN,
-    MODULE_TYPE_WS2812,
-    MODULE_TYPE_MAINS_RELAY,
-    MODULE_TYPE_OLED,
-    MODULE_TYPE_DRY_CONTACT,
-    MODULE_TYPE_ENVIRONMENT,
-];
-
 /// Descriptor flag bit 6 means the module switches mains voltage.
 pub const MODULE_FLAG_MAINS: u32 = 1 << 6;
 
-/// A module type known to switch mains, before any HTTP call has confirmed it.
-///
-/// The panel warns from the mDNS record alone, because the warning is worth showing
-/// a moment early rather than a round trip late.
-pub fn is_mains_module(module_type: u16) -> bool {
-    module_type == MODULE_TYPE_MAINS_RELAY
-}
-
-/// Namespace for OpenHaunt builtin fixture type ids. Arbitrary, and fixed forever:
+/// Namespace for OpenHaunt fixture type ids. Arbitrary, and fixed forever:
 /// changing it orphans every fixture patched against the old ids.
 const NAMESPACE: Uuid = Uuid::from_u128(0x0e6f_9f31_5f24_4f3a_9f1d_6f6f7e2c8a01);
 
-/// The stable id of the builtin fixture type for a module.
-pub fn builtin_fixture_type_id(module_type: u16) -> Uuid {
-    Uuid::new_v5(&NAMESPACE, &module_type.to_be_bytes())
+// ── What a node says about itself ─────────────────────────────────────────────
+
+/// Which way a port flows, in UDR's words.
+///
+/// `readonly` is the node's to write and the console's to read — an input. The
+/// console drives a `readwrite` one, which is an output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum PortAccess {
+    ReadOnly,
+    ReadWrite,
 }
 
-pub fn module_name(module_type: u16) -> Option<&'static str> {
-    Some(match module_type {
-        MODULE_TYPE_DMX_OUT => "DMX Gateway",
-        MODULE_TYPE_DIGITAL_IN => "Digital Inputs",
-        MODULE_TYPE_WS2812 => "LED Strip",
-        MODULE_TYPE_MAINS_RELAY => "Mains Relay",
-        MODULE_TYPE_OLED => "Display",
-        MODULE_TYPE_DRY_CONTACT => "Dry Contacts",
-        MODULE_TYPE_ENVIRONMENT => "Environment Sensor",
-        _ => return None,
-    })
+/// UDR's data types, plus `color` — the one extension, and documented as such in
+/// `OpenHaunt/node`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum PortDataType {
+    Boolean,
+    Number,
+    String,
+    Color,
 }
 
-/// The fixture type an adopted module becomes, or None for a module id we have
-/// never heard of — a node newer than this console, which is not an error.
-pub fn builtin_fixture_type(module_type: u16) -> Option<FixtureType> {
-    let name = module_name(module_type)?;
-    let parameters = match module_type {
-        // A gateway forwards a whole universe. It has no parameters of its own:
-        // the lights behind it are patched as their own DMX fixtures.
-        MODULE_TYPE_DMX_OUT => Vec::new(),
-        MODULE_TYPE_DIGITAL_IN => (0..8).map(contact).collect(),
-        MODULE_TYPE_WS2812 => vec![
-            driven(ParameterKind::ColorRgb, 0, ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 }),
-            driven(ParameterKind::Intensity, 1, ParameterValue::Float(0.0)),
-        ],
-        MODULE_TYPE_MAINS_RELAY => vec![switch(0)],
-        MODULE_TYPE_OLED => vec![driven(ParameterKind::Text, 0, ParameterValue::Text(String::new()))],
-        MODULE_TYPE_DRY_CONTACT => (0..4).map(switch).collect(),
-        MODULE_TYPE_ENVIRONMENT => vec![
-            read(ParameterKind::Temperature, 0),
-            read(ParameterKind::Humidity, 1),
-            read(ParameterKind::AirQuality, 2),
-        ],
-        _ => return None,
-    };
+/// One terminal, as the node describes it.
+///
+/// Everything but `port`, `name`, `access` and `dataType` is optional: a node says
+/// as much as it usefully can and the console does without the rest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PortDescription {
+    /// The `<n>` in the node's topics and in its `/state`.
+    pub port: u8,
+    /// Friendly, and shown to the operator as the parameter's name.
+    pub name: String,
+    pub access: PortAccess,
+    pub data_type: PortDataType,
+    /// A UDR unit name — `degree-celsius`, `percent`, `unitless` — on numbers.
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub minimum: Option<f64>,
+    #[serde(default)]
+    pub maximum: Option<f64>,
+    /// Where the port sits before anything drives it. `0` or `1` on a boolean.
+    #[serde(default)]
+    pub default: Option<f64>,
+    /// A hint at what the port means, from a small vocabulary the console
+    /// recognises. Absent, or a word this console does not know, is not an error:
+    /// the port becomes a named parameter instead.
+    #[serde(default)]
+    pub class: Option<String>,
+}
 
-    Some(FixtureType {
-        id: builtin_fixture_type_id(module_type),
-        name: name.to_string(),
+/// A node that forwards a universe says so, and that is what makes it a gateway.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DmxDescription {
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    #[serde(default)]
+    pub universes: u16,
+}
+
+/// The self-description a node serves from `GET /api/v1/info`.
+///
+/// Both keys default, so firmware that predates self-description parses as a node
+/// with nothing to say — which is exactly what it is, and what stops it being
+/// adopted.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeDescription {
+    #[serde(default)]
+    pub ports: Vec<PortDescription>,
+    #[serde(default)]
+    pub dmx: Option<DmxDescription>,
+}
+
+impl NodeDescription {
+    /// Whether the node said anything at all. A node that describes neither ports
+    /// nor a universe has told the console nothing it could patch.
+    pub fn is_empty(&self) -> bool {
+        self.ports.is_empty() && self.dmx.is_none()
+    }
+
+    pub fn inputs(&self) -> usize {
+        self.ports.iter().filter(|p| p.access == PortAccess::ReadOnly).count()
+    }
+
+    pub fn outputs(&self) -> usize {
+        self.ports.iter().filter(|p| p.access == PortAccess::ReadWrite).count()
+    }
+}
+
+// ── The fixture type that follows ─────────────────────────────────────────────
+
+/// The stable id of the fixture type a description becomes.
+///
+/// Derived from the module type and the description itself, so two identical
+/// modules share one type and firmware that changes its ports gets a fresh one
+/// rather than silently mismatching the parameters already patched against it.
+/// `new_v5` hashes the name it is given, so the description goes in whole.
+pub fn fixture_type_id(module_type: u16, description: &NodeDescription) -> Uuid {
+    let mut name = module_type.to_be_bytes().to_vec();
+    name.extend_from_slice(&serde_json::to_vec(description).unwrap_or_default());
+    Uuid::new_v5(&NAMESPACE, &name)
+}
+
+/// The fixture type for a node that has described itself.
+///
+/// Each port becomes one parameter, bound to the port the node numbered it. The
+/// `class` hint decides which parameter kind it is where the console has semantics
+/// for one — a temperature reading has to be a temperature for the stage view to
+/// draw it — and everything else becomes a parameter named after what the node
+/// called it.
+pub fn fixture_type_from(
+    module_type: u16,
+    module_name: &str,
+    description: &NodeDescription,
+) -> FixtureType {
+    // A name that appears twice would give two parameters one `live_values` key.
+    // Only named parameters are at risk: the classed kinds either carry their port
+    // or are singular on a module.
+    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+    for port in &description.ports {
+        *seen.entry(port.name.as_str()).or_default() += 1;
+    }
+
+    let parameters = description
+        .ports
+        .iter()
+        .map(|port| ParameterDefinition {
+            kind: kind_for(port, seen.get(port.name.as_str()).copied().unwrap_or(1) > 1),
+            direction: match port.access {
+                PortAccess::ReadOnly => ParameterDirection::Input,
+                PortAccess::ReadWrite => ParameterDirection::Output,
+            },
+            binding: ParameterBinding::Port { index: port.port },
+            default_value: default_value(port),
+        })
+        .collect();
+
+    FixtureType {
+        id: fixture_type_id(module_type, description),
+        name: module_name.to_string(),
         manufacturer: "OpenHaunt".to_string(),
-        // Only the gateway occupies DMX channels, and it occupies all of them.
-        channel_count: if module_type == MODULE_TYPE_DMX_OUT { 512 } else { 0 },
+        // A gateway occupies a whole universe; a node with ports occupies none.
+        channel_count: if description.dmx.is_some() { 512 } else { 0 },
         parameters,
-    })
-}
-
-fn driven(kind: ParameterKind, port: u8, default_value: ParameterValue) -> ParameterDefinition {
-    ParameterDefinition {
-        kind,
-        direction: ParameterDirection::Output,
-        binding: ParameterBinding::Port { index: port },
-        default_value,
     }
 }
 
-fn read(kind: ParameterKind, port: u8) -> ParameterDefinition {
-    ParameterDefinition {
-        kind,
-        direction: ParameterDirection::Input,
-        binding: ParameterBinding::Port { index: port },
-        default_value: ParameterValue::Float(0.0),
+/// The parameter kind a port's `class` asks for, or a named one.
+fn kind_for(port: &PortDescription, name_is_shared: bool) -> ParameterKind {
+    match port.class.as_deref() {
+        Some("contact") => ParameterKind::Contact(port.port),
+        Some("switch") => ParameterKind::Switch(port.port),
+        Some("temperature") => ParameterKind::Temperature,
+        Some("humidity") => ParameterKind::Humidity,
+        Some("air-quality") => ParameterKind::AirQuality,
+        Some("intensity") => ParameterKind::Intensity,
+        Some("color") => ParameterKind::ColorRgb,
+        Some("text") => ParameterKind::Text,
+        _ if name_is_shared => ParameterKind::Named(format!("{} {}", port.name, port.port)),
+        _ => ParameterKind::Named(port.name.clone()),
     }
 }
 
-fn switch(port: u8) -> ParameterDefinition {
-    driven(ParameterKind::Switch(port), port, ParameterValue::Bool(false))
-}
-
-fn contact(port: u8) -> ParameterDefinition {
-    ParameterDefinition {
-        kind: ParameterKind::Contact(port),
-        direction: ParameterDirection::Input,
-        binding: ParameterBinding::Port { index: port },
-        default_value: ParameterValue::Bool(false),
+/// Where a port sits before anything has driven it, from its type and `default`.
+fn default_value(port: &PortDescription) -> ParameterValue {
+    match port.data_type {
+        PortDataType::Boolean => ParameterValue::Bool(port.default.unwrap_or(0.0) != 0.0),
+        PortDataType::Number => ParameterValue::Float(port.default.unwrap_or(0.0) as f32),
+        PortDataType::String => ParameterValue::Text(String::new()),
+        PortDataType::Color => ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 },
     }
 }
 
@@ -134,72 +214,217 @@ fn contact(port: u8) -> ParameterDefinition {
 mod tests {
     use super::*;
 
+    /// The descriptions the catalogue modules serve, as `OpenHaunt/node`'s docs
+    /// write them. Here as a *device's* words, to have something to parse — the
+    /// console has no such table and adoption never consults one.
+    fn described(module_type: u16) -> NodeDescription {
+        let json = match module_type {
+            // 0x0001 DMX gateway: no ports of its own, a universe to forward.
+            0x0001 => serde_json::json!({
+                "ports": [],
+                "dmx": { "protocols": ["sacn"], "universes": 1 },
+            }),
+            // 0x0002 eight opto-isolated inputs.
+            0x0002 => serde_json::json!({
+                "ports": (0..8).map(|n| serde_json::json!({
+                    "port": n,
+                    "name": format!("Input {}", n + 1),
+                    "access": "readonly",
+                    "dataType": "boolean",
+                    "class": "contact",
+                })).collect::<Vec<_>>(),
+            }),
+            // 0x0003 WS2812 strip.
+            0x0003 => serde_json::json!({ "ports": [
+                { "port": 0, "name": "Strip colour", "access": "readwrite",
+                  "dataType": "color", "class": "color" },
+                { "port": 1, "name": "Brightness", "access": "readwrite",
+                  "dataType": "number", "unit": "percent",
+                  "minimum": 0, "maximum": 1, "default": 0, "class": "intensity" },
+            ]}),
+            // 0x0004 mains relay.
+            0x0004 => serde_json::json!({ "ports": [
+                { "port": 0, "name": "Relay", "access": "readwrite",
+                  "dataType": "boolean", "default": 0, "class": "switch" },
+            ]}),
+            // 0x0005 OLED.
+            0x0005 => serde_json::json!({ "ports": [
+                { "port": 0, "name": "Line", "access": "readwrite",
+                  "dataType": "string", "class": "text" },
+            ]}),
+            // 0x0006 four dry contacts the console closes.
+            0x0006 => serde_json::json!({ "ports": (0..4).map(|n| serde_json::json!({
+                "port": n,
+                "name": format!("Contact {}", n + 1),
+                "access": "readwrite",
+                "dataType": "boolean",
+                "class": "switch",
+            })).collect::<Vec<_>>() }),
+            // 0x0007 environment sensor.
+            0x0007 => serde_json::json!({ "ports": [
+                { "port": 0, "name": "Temperature", "access": "readonly",
+                  "dataType": "number", "unit": "degree-celsius",
+                  "minimum": -40, "maximum": 85, "class": "temperature" },
+                { "port": 1, "name": "Humidity", "access": "readonly",
+                  "dataType": "number", "unit": "percent",
+                  "minimum": 0, "maximum": 100, "class": "humidity" },
+                { "port": 2, "name": "Air quality", "access": "readonly",
+                  "dataType": "number", "unit": "parts-per-million",
+                  "minimum": 0, "maximum": 5000, "class": "air-quality" },
+            ]}),
+            other => panic!("no catalogue description for {other:#06x}"),
+        };
+        serde_json::from_value(json).expect("a description the docs write parses")
+    }
+
     #[test]
-    fn every_module_type_resolves_to_a_fixture_type() {
-        for module_type in MODULE_TYPES {
-            assert!(
-                builtin_fixture_type(*module_type).is_some(),
-                "module {module_type:#06x} has no fixture type",
-            );
+    fn every_catalogue_module_describes_itself_into_a_fixture_type() {
+        for module_type in [0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007] {
+            let description = described(module_type);
+            let ft = fixture_type_from(module_type, "Module", &description);
+            assert_eq!(ft.parameters.len(), description.ports.len());
+            for (parameter, port) in ft.parameters.iter().zip(&description.ports) {
+                assert_eq!(parameter.binding, ParameterBinding::Port { index: port.port });
+            }
         }
     }
 
     #[test]
-    fn a_module_this_console_has_never_heard_of_is_not_an_error() {
-        assert!(builtin_fixture_type(0x00ff).is_none());
-        assert!(module_name(0x00ff).is_none());
+    fn what_a_node_reports_is_read_and_what_it_drives_is_written() {
+        let inputs = fixture_type_from(0x0002, "Digital Inputs", &described(0x0002));
+        assert_eq!(inputs.parameters.len(), 8);
+        assert!(inputs.parameters.iter().all(|p| p.direction == ParameterDirection::Input));
+        assert_eq!(inputs.parameters[3].kind, ParameterKind::Contact(3));
+
+        let sensor = fixture_type_from(0x0007, "Environment Sensor", &described(0x0007));
+        assert!(sensor.parameters.iter().all(|p| p.direction == ParameterDirection::Input));
+        assert_eq!(sensor.parameters[0].kind, ParameterKind::Temperature);
+
+        let relay = fixture_type_from(0x0004, "Mains Relay", &described(0x0004));
+        assert!(relay.parameters.iter().all(|p| p.direction == ParameterDirection::Output));
+        assert_eq!(relay.parameters[0].kind, ParameterKind::Switch(0));
+    }
+
+    #[test]
+    fn only_a_node_that_forwards_a_universe_occupies_channels() {
+        assert_eq!(fixture_type_from(0x0001, "DMX Gateway", &described(0x0001)).channel_count, 512);
+        assert_eq!(fixture_type_from(0x0004, "Mains Relay", &described(0x0004)).channel_count, 0);
+    }
+
+    #[test]
+    fn a_port_this_console_has_no_word_for_becomes_a_named_parameter() {
+        let description: NodeDescription = serde_json::from_value(serde_json::json!({
+            "ports": [
+                { "port": 0, "name": "Fog output", "access": "readwrite",
+                  "dataType": "number", "unit": "percent", "class": "fog-density" },
+                { "port": 1, "name": "Tank level", "access": "readonly",
+                  "dataType": "number", "unit": "percent" },
+            ],
+        }))
+        .unwrap();
+
+        let ft = fixture_type_from(0x00ff, "Fogger", &description);
+        assert_eq!(ft.parameters[0].kind, ParameterKind::Named("Fog output".into()));
+        assert_eq!(ft.parameters[0].direction, ParameterDirection::Output);
+        assert_eq!(ft.parameters[1].kind, ParameterKind::Named("Tank level".into()));
+        assert_eq!(ft.parameters[1].direction, ParameterDirection::Input);
+    }
+
+    #[test]
+    fn two_ports_with_one_name_do_not_end_up_sharing_a_key() {
+        let description: NodeDescription = serde_json::from_value(serde_json::json!({
+            "ports": [
+                { "port": 0, "name": "Valve", "access": "readwrite", "dataType": "boolean" },
+                { "port": 1, "name": "Valve", "access": "readwrite", "dataType": "boolean" },
+            ],
+        }))
+        .unwrap();
+
+        let ft = fixture_type_from(0x00ff, "Manifold", &description);
+        assert_eq!(ft.parameters[0].kind, ParameterKind::Named("Valve 0".into()));
+        assert_eq!(ft.parameters[1].kind, ParameterKind::Named("Valve 1".into()));
+    }
+
+    #[test]
+    fn a_default_follows_the_ports_data_type() {
+        let description: NodeDescription = serde_json::from_value(serde_json::json!({
+            "ports": [
+                { "port": 0, "name": "Latch", "access": "readwrite",
+                  "dataType": "boolean", "default": 1 },
+                { "port": 1, "name": "Level", "access": "readwrite",
+                  "dataType": "number", "default": 0.25 },
+                { "port": 2, "name": "Caption", "access": "readwrite", "dataType": "string" },
+                { "port": 3, "name": "Tint", "access": "readwrite", "dataType": "color" },
+            ],
+        }))
+        .unwrap();
+
+        let ft = fixture_type_from(0x00ff, "Oddity", &description);
+        assert_eq!(ft.parameters[0].default_value, ParameterValue::Bool(true));
+        assert_eq!(ft.parameters[1].default_value, ParameterValue::Float(0.25));
+        assert_eq!(ft.parameters[2].default_value, ParameterValue::Text(String::new()));
+        assert_eq!(
+            ft.parameters[3].default_value,
+            ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 },
+        );
     }
 
     #[test]
     fn the_ids_are_stable_and_distinct() {
         // Adopting the same module on two consoles has to land on one fixture type,
         // or the same rig ends up with a different id on every node.
+        let relay = described(0x0004);
         assert_eq!(
-            builtin_fixture_type(MODULE_TYPE_MAINS_RELAY).unwrap().id,
-            builtin_fixture_type_id(MODULE_TYPE_MAINS_RELAY),
+            fixture_type_from(0x0004, "Mains Relay", &relay).id,
+            fixture_type_id(0x0004, &relay),
         );
-        assert_eq!(
-            builtin_fixture_type_id(MODULE_TYPE_MAINS_RELAY).to_string(),
-            builtin_fixture_type_id(MODULE_TYPE_MAINS_RELAY).to_string(),
-        );
+        assert_eq!(fixture_type_id(0x0004, &relay), fixture_type_id(0x0004, &described(0x0004)));
 
         let ids: std::collections::BTreeSet<Uuid> =
-            MODULE_TYPES.iter().map(|t| builtin_fixture_type_id(*t)).collect();
-        assert_eq!(ids.len(), MODULE_TYPES.len(), "two modules must not share an id");
+            [0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007]
+                .into_iter()
+                .map(|t| fixture_type_id(t, &described(t)))
+                .collect();
+        assert_eq!(ids.len(), 7, "two modules must not share an id");
     }
 
     #[test]
-    fn what_a_node_reports_is_read_and_what_it_drives_is_written() {
-        let inputs = builtin_fixture_type(MODULE_TYPE_DIGITAL_IN).unwrap();
-        assert_eq!(inputs.parameters.len(), 8);
-        assert!(inputs.parameters.iter().all(|p| p.direction == ParameterDirection::Input));
+    fn firmware_that_changes_its_ports_gets_a_new_type_rather_than_a_mismatched_one() {
+        let before = described(0x0004);
+        let mut after = before.clone();
+        after.ports.push(PortDescription {
+            port: 1,
+            name: "Second relay".into(),
+            access: PortAccess::ReadWrite,
+            data_type: PortDataType::Boolean,
+            unit: None,
+            minimum: None,
+            maximum: None,
+            default: None,
+            class: Some("switch".into()),
+        });
 
-        let sensor = builtin_fixture_type(MODULE_TYPE_ENVIRONMENT).unwrap();
-        assert!(sensor.parameters.iter().all(|p| p.direction == ParameterDirection::Input));
-
-        let relay = builtin_fixture_type(MODULE_TYPE_MAINS_RELAY).unwrap();
-        assert!(relay.parameters.iter().all(|p| p.direction == ParameterDirection::Output));
+        assert_ne!(fixture_type_id(0x0004, &before), fixture_type_id(0x0004, &after));
     }
 
     #[test]
-    fn every_parameter_on_a_module_sits_on_a_port_numbered_after_itself() {
-        for module_type in MODULE_TYPES {
-            let ft = builtin_fixture_type(*module_type).unwrap();
-            for (index, parameter) in ft.parameters.iter().enumerate() {
-                assert_eq!(
-                    parameter.binding,
-                    ParameterBinding::Port { index: index as u8 },
-                    "{} parameter {index} is not on its own port",
-                    ft.name,
-                );
-            }
-        }
+    fn firmware_that_says_nothing_describes_nothing() {
+        let silent: NodeDescription = serde_json::from_value(serde_json::json!({
+            "v": "1", "fw": "0.1.0", "module": { "type": "0x0004", "flags": 64 },
+        }))
+        .unwrap();
+
+        assert!(silent.is_empty(), "an old node has no ports and no universe to offer");
     }
 
     #[test]
-    fn only_the_relay_carries_a_mains_warning() {
-        assert!(is_mains_module(MODULE_TYPE_MAINS_RELAY));
-        assert!(!is_mains_module(MODULE_TYPE_DRY_CONTACT));
-        assert!(!is_mains_module(MODULE_TYPE_DMX_OUT));
+    fn a_description_counts_its_own_ports_for_the_panel() {
+        let inputs = described(0x0002);
+        assert_eq!(inputs.inputs(), 8);
+        assert_eq!(inputs.outputs(), 0);
+
+        let strip = described(0x0003);
+        assert_eq!(strip.inputs(), 0);
+        assert_eq!(strip.outputs(), 2);
     }
 }

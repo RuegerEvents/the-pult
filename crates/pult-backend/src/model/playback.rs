@@ -355,6 +355,7 @@ pub fn parameter_key(kind: &ParameterKind) -> String {
         ParameterKind::Humidity => "Humidity".into(),
         ParameterKind::AirQuality => "AirQuality".into(),
         ParameterKind::Text => "Text".into(),
+        ParameterKind::Named(name) => format!("Named:{name}"),
     }
 }
 

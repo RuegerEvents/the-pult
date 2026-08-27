@@ -178,15 +178,25 @@
 									{@const onDmx = bindingChannel(param.binding) !== null}
 									<tr>
 										<td>
-											<select
-												class="text-input"
-												value={kindLabel(param.kind)}
-												onchange={(e) => setKind(type, i, e.currentTarget.value)}
-											>
-												{#each PARAMETER_KINDS as kind}
-													<option value={kind}>{kind}</option>
-												{/each}
-											</select>
+											{#if typeof param.kind === 'object' && 'Named' in param.kind}
+												<!-- A port the device named itself. There is nothing to choose
+												     between: the name is what the node called it, and picking
+												     something else off a list would only be this console
+												     disagreeing with the device about what it is. -->
+												<span class="named" title="Named by the device">
+													{param.kind.Named}
+												</span>
+											{:else}
+												<select
+													class="text-input"
+													value={kindLabel(param.kind)}
+													onchange={(e) => setKind(type, i, e.currentTarget.value)}
+												>
+													{#each PARAMETER_KINDS as kind}
+														<option value={kind}>{kind}</option>
+													{/each}
+												</select>
+											{/if}
 										</td>
 										<td>
 											<select
@@ -267,6 +277,7 @@
 	.params th { text-align: left; color: #777; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; }
 	.params td { padding: 2px 6px 2px 0; }
 	.hint { color: #777; font-size: 11px; margin-left: 4px; }
+	.named { display: inline-block; padding: 4px 6px; border: 1px dashed #3a3a3a; border-radius: 3px; color: #bbb; }
 	.new-row { display: flex; gap: 6px; margin-bottom: 8px; }
 	.empty { color: #777; font-size: 13px; padding: 8px 0; }
 	.text-input { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 4px 6px; font: inherit; }

@@ -11,6 +11,25 @@
 
 	const listed = $derived(Object.values(devices.discovered) as DiscoveredDevice[]);
 
+	/// What a node said its terminals are — "8 inputs · 1 output" — or nothing,
+	/// for a node that has not described itself.
+	///
+	/// A console carries no table of module types, so this is the only account of
+	/// what a device can do, and it is also what decides whether Adopt is offered.
+	function ports(device: DiscoveredDevice): string | null {
+		const description = device.description;
+		if (!description) return null;
+		const inputs = description.ports.filter((p) => p.access === 'readonly').length;
+		const outputs = description.ports.length - inputs;
+		const parts: string[] = [];
+		if (inputs > 0) parts.push(`${inputs} input${inputs === 1 ? '' : 's'}`);
+		if (outputs > 0) parts.push(`${outputs} output${outputs === 1 ? '' : 's'}`);
+		if (description.dmx) parts.push('forwards a universe');
+		return parts.length > 0 ? parts.join(' · ') : null;
+	}
+
+	const UNDESCRIBED = 'This node does not describe its ports, so there is nothing to patch.';
+
 	/// Every device call is keyed by serial and answers with an error string, so one
 	/// wrapper covers Adopt, Identify, and Forget.
 	async function act(method: string, device: DiscoveredDevice) {
@@ -64,6 +83,11 @@
 							{device.module_name || 'Unknown module'}
 							{#if device.caps.length}· {device.caps.join(', ')}{/if}
 						</span>
+						{#if ports(device)}
+							<span class="device-meta dim">{ports(device)}</span>
+						{:else}
+							<span class="device-meta undescribed">does not describe its ports</span>
+						{/if}
 						{#if device.is_mains}
 							<span class="mains">⚡ Switches mains voltage</span>
 						{/if}
@@ -80,7 +104,8 @@
 						{:else}
 							<button
 								class="chip-btn adopt"
-								disabled={busy === device.serial || !devices.active}
+								disabled={busy === device.serial || !devices.active || !ports(device)}
+								title={ports(device) ? undefined : UNDESCRIBED}
 								onclick={() => act('adopt', device)}
 							>
 								Adopt
@@ -195,6 +220,11 @@
 	.mains {
 		font-size: 0.68rem;
 		color: #e0a355;
+	}
+
+	.undescribed {
+		color: #6b5a3a;
+		font-style: italic;
 	}
 
 	.device-actions {

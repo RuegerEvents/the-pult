@@ -371,17 +371,21 @@ impl DeviceManager {
                     module_name: txt
                         .get("modname")
                         .cloned()
-                        .or_else(|| openhaunt::module_name(module_type).map(String::from))
-                        .unwrap_or_default(),
+                        .unwrap_or_else(|| format!("Module {module_type:#06x}")),
                     module_serial: get("modsn"),
                     module_rev: get("modrev"),
                     caps: txt
                         .get("caps")
                         .map(|c| c.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
                         .unwrap_or_default(),
+                    // What the last `/info` said, until the one below answers.
+                    description: self
+                        .state
+                        .discovered
+                        .get(&serial)
+                        .and_then(|d| d.description.clone()),
                     // The TXT record is enough to warn; `/api/v1/info` confirms below.
-                    is_mains: openhaunt::is_mains_module(module_type)
-                        || txt.get("mains").map(|v| v == "1").unwrap_or(false),
+                    is_mains: txt.get("mains").map(|v| v == "1").unwrap_or(false),
                     online: true,
                     // A device that goes away and comes back keeps its adoption.
                     adopted_fixture_id: self
@@ -396,9 +400,10 @@ impl DeviceManager {
                 info!("[devices] {} ({}) at {ip}:{port}", device.name, device.module_name);
                 self.state.discovered.insert(serial.clone(), device);
 
-                if let Some(mains) = self.ask_whether_it_switches_mains(&serial).await {
+                if let Some((mains, description)) = self.ask_the_node_what_it_is(&serial).await {
                     if let Some(device) = self.state.discovered.get_mut(&serial) {
                         device.is_mains = mains;
+                        device.description = Some(description);
                     }
                 }
                 self.reconcile_adoptions().await;
@@ -434,15 +439,21 @@ impl DeviceManager {
         }
     }
 
-    /// Ask the node itself whether its module switches mains.
+    /// Ask the node what it is: whether it switches mains, and what its ports are.
     ///
-    /// The descriptor flag is the authority; the TXT guess above is only there so
-    /// the panel can warn without waiting for a round trip. None means the node did
-    /// not answer, in which case the guess stands.
-    async fn ask_whether_it_switches_mains(&self, serial: &str) -> Option<bool> {
+    /// One round trip for both, because they arrive in the same body. The mains
+    /// flag in the descriptor is the authority; the TXT guess above is only there
+    /// so the panel can warn without waiting. None means the node did not answer,
+    /// in which case the guess stands and it stays undescribed.
+    async fn ask_the_node_what_it_is(&self, serial: &str) -> Option<(bool, openhaunt::NodeDescription)> {
         let info: serde_json::Value = self.get_json(serial, "info").await?;
-        let flags = info["module"]["flags"].as_u64()?;
-        Some(flags as u32 & openhaunt::MODULE_FLAG_MAINS != 0)
+        let mains = info["module"]["flags"]
+            .as_u64()
+            .is_some_and(|flags| flags as u32 & openhaunt::MODULE_FLAG_MAINS != 0);
+        // The whole body, not just the two keys: `ports` and `dmx` both default,
+        // so firmware that predates self-description parses as having neither.
+        let description = serde_json::from_value(info).unwrap_or_default();
+        Some((mains, description))
     }
 
     /// Work out which devices are adopted, from the fixtures rather than from memory.
@@ -478,16 +489,22 @@ impl DeviceManager {
             return Ok(id); // already adopted; adopting twice is not an error
         }
 
-        let fixture_type = openhaunt::builtin_fixture_type(device.module_type).ok_or_else(|| {
-            format!("module type {:#06x} is not one this console knows", device.module_type)
-        })?;
+        // Only the device knows what it is. Without its description there is
+        // nothing to patch, and no table here to guess from.
+        let description = device
+            .description
+            .as_ref()
+            .filter(|d| !d.is_empty())
+            .ok_or_else(|| format!("{serial} does not describe its ports; cannot adopt"))?;
+
+        let fixture_type =
+            openhaunt::fixture_type_from(device.module_type, &device.module_name, description);
         self.ensure_fixture_type(&fixture_type).await?;
 
-        // Only a gateway module carries a universe: it is the thing forwarding one.
-        let universe = if device.module_type == openhaunt::MODULE_TYPE_DMX_OUT {
-            Some(self.next_free_universe().await)
-        } else {
-            None
+        // A node carries a universe exactly when it says it forwards one.
+        let universe = match description.dmx {
+            Some(_) => Some(self.next_free_universe().await),
+            None => None,
         };
 
         let fixture = Fixture {
@@ -597,10 +614,11 @@ impl DeviceManager {
         })
     }
 
-    /// Create the builtin fixture type if the show does not already have it.
+    /// Create the fixture type if the show does not already have it.
     ///
-    /// The id is derived from the module type, so adopting a second relay finds the
-    /// first one's type rather than making another.
+    /// The id is derived from what the node said about itself, so adopting a second
+    /// relay of the same firmware finds the first one's type rather than making
+    /// another.
     async fn ensure_fixture_type(&self, fixture_type: &FixtureType) -> Result<(), String> {
         let existing: Vec<FixtureType> = self.read("fixture_types").await;
         if existing.iter().any(|t| t.id == fixture_type.id) {

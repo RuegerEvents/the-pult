@@ -94,6 +94,12 @@ pub enum ParameterKind {
     AirQuality,
     /// A line of text, for a display module.
     Text,
+    /// Something a device declared that this console has no name for.
+    ///
+    /// A node describes its own ports, and it is allowed to describe one the
+    /// console has never heard of. The name it gave is the whole identity: it is
+    /// what the operator sees and what the `live_values` key is built from.
+    Named(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

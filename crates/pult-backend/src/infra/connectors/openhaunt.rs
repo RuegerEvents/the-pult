@@ -181,13 +181,15 @@ impl OutputPlugin for OpenHauntOutput {
     }
 }
 
-/// What a port expects, per module. The shapes are the ones the OpenHaunt docs
-/// describe: a relay takes a state, a strip takes a colour or a brightness, a
-/// display takes text.
+/// What a port expects, per data type rather than per module.
+///
+/// The node described each port as a boolean, a number, a string or a colour, and
+/// the shape follows from that alone — which is why there is nothing here that has
+/// to know a relay from a strip.
 fn port_payload(value: &ParameterValue) -> serde_json::Value {
     match value {
         ParameterValue::Bool(state) => serde_json::json!({ "state": state }),
-        ParameterValue::Float(level) => serde_json::json!({ "brightness": level }),
+        ParameterValue::Float(level) => serde_json::json!({ "value": level }),
         ParameterValue::Int(n) => serde_json::json!({ "value": n }),
         ParameterValue::Text(text) => serde_json::json!({ "text": text }),
         ParameterValue::Color { r, g, b } => serde_json::json!({

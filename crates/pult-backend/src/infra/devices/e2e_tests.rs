@@ -114,7 +114,34 @@ async fn a_node_answers_for_its_own_module_type() {
 
     let state = h.state().await;
     assert!(state.discovered["e2e-mains"].is_mains);
-    assert_eq!(state.discovered["e2e-mains"].module_type, openhaunt::MODULE_TYPE_MAINS_RELAY);
+    assert_eq!(state.discovered["e2e-mains"].module_type, 0x0004);
+}
+
+#[tokio::test]
+async fn a_node_describes_its_own_ports_and_the_console_reads_them() {
+    let h = harness().await;
+    let _sim = a_simulated_node(&h, ModuleKind::Environment, "e2e-desc").await;
+
+    let state = h.state().await;
+    let description =
+        state.discovered["e2e-desc"].description.as_ref().expect("the node described itself");
+    assert_eq!(description.inputs(), 3, "three readings, and nothing to drive");
+    assert_eq!(description.outputs(), 0);
+    assert!(description.dmx.is_none(), "a sensor forwards no universe");
+
+    let fixture_id = h.devices.adopt("e2e-desc".into()).await.unwrap();
+    let fixture = h.fixtures().await.into_iter().find(|f| f.id == fixture_id).unwrap();
+    let types: Vec<pult_schema::types::fixture::FixtureType> = serde_json::from_value(
+        h.engine.get(vec![PathSegment::Key("fixture_types".into())]).await.unwrap(),
+    )
+    .unwrap();
+    let fixture_type = types.iter().find(|t| t.id == fixture.fixture_type_id).unwrap();
+    assert_eq!(
+        fixture_type.id,
+        openhaunt::fixture_type_id(0x0007, description),
+        "the id follows from what the node said, and nothing else",
+    );
+    assert_eq!(fixture_type.parameters.len(), 3);
 }
 
 #[tokio::test]
