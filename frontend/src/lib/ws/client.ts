@@ -23,7 +23,7 @@ export class PultWsClient {
 	onDisconnect: (() => void) | undefined = undefined;
 	onError: ((message: string) => void) | undefined = undefined;
 
-	constructor(private readonly url: string) {}
+	constructor(readonly url: string) {}
 
 	/**
 	 * The same backend, over HTTP.
@@ -94,6 +94,24 @@ export class PultWsClient {
 	addConnectListener(cb: () => void): () => void {
 		this.connectListeners.add(cb);
 		return () => this.connectListeners.delete(cb);
+	}
+
+	/**
+	 * Try again now, rather than waiting out the backoff.
+	 *
+	 * The delay doubles to sixteen seconds, which is right for a console left running
+	 * overnight and much too long for somebody who has just started the backend and is
+	 * watching the screen. Ignored while a socket is already opening, because a second
+	 * one would leave the first to fail and schedule a reconnect of its own.
+	 */
+	retryNow(): void {
+		if (this.socket?.readyState === WebSocket.CONNECTING) return;
+		if (this.reconnectTimeout) {
+			clearTimeout(this.reconnectTimeout);
+			this.reconnectTimeout = null;
+		}
+		this.reconnectDelay = 1000;
+		this.connect();
 	}
 
 	private scheduleReconnect(): void {

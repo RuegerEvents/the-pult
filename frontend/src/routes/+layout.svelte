@@ -5,6 +5,7 @@
 	import { createRootProxy } from '$lib/ws/data.js';
 	import { setClientContext, setDataContext } from '$lib/ws/context.js';
 	import ConnectionStatus from '$lib/components/ConnectionStatus.svelte';
+	import ConnectingOverlay from '$lib/components/ConnectingOverlay.svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
 	import { addToast } from '$lib/toasts.js';
 	import { initShowStores } from '$lib/stores/show.js';
@@ -31,9 +32,38 @@
 	restoreLayout();
 
 	let connected = $state(false);
+	/// Whether this browser has ever had the console, which decides what the cover
+	/// says: a first connection is being made, a later one has been lost.
+	let everConnected = $state(false);
+	/// Whether to cover the workspace. Starts covered, because until the socket opens
+	/// there is nothing behind it to look at — and it is not simply "disconnected"
+	/// afterwards, since a reconnect takes a moment and flashing a full-screen panel
+	/// over a blip is its own kind of confusion.
+	let covering = $state(true);
+
+	const address = $derived.by(() => {
+		try {
+			return new URL(client.url).host;
+		} catch {
+			return client.url;
+		}
+	});
+
+	$effect(() => {
+		if (connected) {
+			covering = false;
+			return;
+		}
+		if (!everConnected) {
+			covering = true;
+			return;
+		}
+		const settle = setTimeout(() => (covering = true), 600);
+		return () => clearTimeout(settle);
+	});
 
 	onMount(() => {
-		client.onConnect = () => { connected = true; };
+		client.onConnect = () => { connected = true; everConnected = true; };
 		client.onDisconnect = () => { connected = false; };
 		client.onError = (msg) => addToast(msg);
 		client.connect();
@@ -52,6 +82,10 @@
 		{@render children()}
 	</main>
 </div>
+
+{#if covering}
+	<ConnectingOverlay {everConnected} {address} onretry={() => client.retryNow()} />
+{/if}
 
 <Toasts />
 
