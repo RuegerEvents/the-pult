@@ -10,6 +10,8 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ## Unreleased
 
+## 0.1.0
+
 ### Changed
 
 - **OpenHaunt nodes describe their own ports.** `GET /api/v1/info` now carries a
