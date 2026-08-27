@@ -82,7 +82,9 @@ For frontend work, Vite with hot reload beside a running backend:
 cd frontend && npm run dev
 ```
 
-The simulated OpenHaunt node has a window too. Build its panel once, then:
+The simulated OpenHaunt node has a window too. Its panel is built separately —
+there is no `beforeBuildCommand`, because Tauri runs that from a directory it
+infers rather than from the one the config sits in:
 
 ```
 npm --prefix tools/openhaunt-sim-gui/ui install

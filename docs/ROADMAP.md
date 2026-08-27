@@ -516,8 +516,8 @@ Two things about it worth knowing:
   are absent from the base matrix into *every* combination, which is not what
   reading that matrix suggests. One job per platform builds both products.
 
-And two footguns found while building it, both of which cost a window that was
-simply blank:
+Two footguns found while building it, both of which cost a window that was simply
+blank:
 
 - `devUrl` in a Tauri config wins over `frontendDist` in a **debug** build, so
   `cargo run` loaded a dev server that was not running. Removed; both profiles now
@@ -525,6 +525,25 @@ simply blank:
 - `rust-embed`'s `$CARGO_MANIFEST_DIR` interpolation needs a feature flag it does
   not have by default. A plain relative path resolves against the crate root and
   wants nothing.
+
+And four more that only a real tag could find, since every one of them passed
+locally:
+
+- The changelog headings were the bracketed Keep a Changelog form. The action
+  matches `## 0.0.1` or `## v0.0.1` and nothing else.
+- `npm ci` failed on Linux and nowhere else. npm's tree differs by platform, and
+  generating the lockfile on macOS left `@napi-rs/wasm-runtime`'s own dependencies
+  unresolved — they existed only pinned under `@rolldown/binding-wasm32-wasi`.
+  The lockfile is generated in the image CI uses now, and `npm ci` is checked on
+  Linux x64, Linux arm64 and macOS.
+- `tauri build` takes cargo's arguments after a `--`.
+- `beforeBuildCommand` runs from a directory Tauri infers from `frontendDist`
+  rather than from the config's own, so `npm --prefix ui` landed one level too
+  deep. The panel is built by the workflow instead, which depends on no inference.
+
+The cost of finding them was four tags. The alternative — a Docker container
+reproducing the Linux half — found the worst one in a minute, and is worth
+reaching for before pushing the next one.
 
 Left open:
 

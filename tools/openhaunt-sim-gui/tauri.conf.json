@@ -3,8 +3,7 @@
   "productName": "openhaunt-sim",
   "identifier": "events.rueger.openhaunt-sim",
   "build": {
-    "frontendDist": "ui/dist",
-    "beforeBuildCommand": "npm --prefix ui run build"
+    "frontendDist": "ui/dist"
   },
   "app": {
     "windows": [

@@ -210,29 +210,69 @@ jobs:
           name: ${{ env.FRONTEND_ARTIFACT }}
           path: frontend/build
 
+      # No tagName: the release is assembled once at the end, out of everything,
+      # rather than by whichever job happens to finish first. The bundles are
+      # collected from the action's own output rather than by its
+      # uploadWorkflowArtifacts input, which v0 does not have.
       - uses: tauri-apps/tauri-action@v0
+        id: console
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/pult-gui
           args: -- --locked
-          # No tagName: the release is assembled once at the end, out of
-          # everything, rather than by whichever job happens to finish first.
-          uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: pult-gui-[platform]-[arch]-[bundle]
 
-      # The simulator's panel is its own small app, built by the beforeBuildCommand
-      # in its Tauri config — which needs its dependencies to be there first.
+      - name: Collect the console's bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundles
+          jq -r '.[]' <<< '${{ steps.console.outputs.artifactPaths }}' | while read -r path; do
+            # Windows reports these as D:\a\..., which the shell's cp does not
+            # follow; the same path with forward slashes it does.
+            path="${path//\\//}"
+            # macOS ships the .app as a directory and a .tar.gz beside it; only
+            # the archive survives a trip through an artifact upload intact.
+            [ -d "$path" ] && continue
+            cp "$path" bundles/
+          done
+          ls -la bundles
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pult-gui-${{ matrix.target }}
+          path: bundles
+
+      # The simulator's panel is its own small app. Built here rather than by a
+      # beforeBuildCommand, because Tauri runs that from a directory it infers
+      # from frontendDist rather than from the config's own.
       - run: npm --prefix tools/openhaunt-sim-gui/ui ci
+      - run: npm --prefix tools/openhaunt-sim-gui/ui run build
 
       - uses: tauri-apps/tauri-action@v0
+        id: sim
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: tools/openhaunt-sim-gui
           args: -- --locked
-          uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: openhaunt-sim-gui-[platform]-[arch]-[bundle]
+
+      - name: Collect the simulator's bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf bundles && mkdir -p bundles
+          jq -r '.[]' <<< '${{ steps.sim.outputs.artifactPaths }}' | while read -r path; do
+            path="${path//\\//}"
+            [ -d "$path" ] && continue
+            cp "$path" bundles/
+          done
+          ls -la bundles
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openhaunt-sim-gui-${{ matrix.target }}
+          path: bundles
 
   sbom:
     needs: [validate, frontend]
@@ -246,9 +286,12 @@ jobs:
           name: ${{ env.FRONTEND_ARTIFACT }}
           path: frontend/build
 
+      # The workspace root is a virtual manifest, so there is no package name to
+      # find there — the version it does find comes from [workspace.package].
       - uses: michaelklishin/rust-build-package-release-action@v1
         with:
           command: generate-sbom
+          binary-name: pult-backend
 
       - uses: actions/upload-artifact@v4
         with:
