@@ -215,7 +215,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/pult-gui
-          args: --locked
+          args: -- --locked
           # No tagName: the release is assembled once at the end, out of
           # everything, rather than by whichever job happens to finish first.
           uploadWorkflowArtifacts: true
@@ -230,7 +230,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: tools/openhaunt-sim-gui
-          args: --locked
+          args: -- --locked
           uploadWorkflowArtifacts: true
           workflowArtifactNamePattern: openhaunt-sim-gui-[platform]-[arch]-[bundle]
 

@@ -1,15 +1,16 @@
 # Changelog
 
-Notable changes, newest first. The format is [Keep a Changelog][kac] and the
-versions are [semantic][semver]. The release workflow reads the section matching
-the tag, so every release needs one.
+Notable changes, newest first, in the spirit of [Keep a Changelog][kac], with
+[semantic][semver] versions. The release workflow extracts the section whose
+heading starts with the version being tagged — plainly, `## 0.0.1`, not the
+bracketed form — so every release needs one and it has to be spelled that way.
 
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## Unreleased
 
-## [0.0.1]
+## 0.0.1
 
 The first release, and a deliberately small number: this one is here to prove the
 build and the release path rather than to be depended on.
