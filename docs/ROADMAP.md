@@ -551,9 +551,17 @@ locally:
   archives behind: the second clears the first out of `target/<triple>/release/`.
   Every `pult-backend` archive went missing from a release that otherwise looked
   finished, and `upload-artifact` said so in one line — *"there will be 2 files
-  uploaded"* — and carried on. Each archive is taken out of the way as it is
-  built now, and every upload is `if-no-files-found: error`, because a release
-  that is quietly missing its main product is worse than one that fails.
+  uploaded"* — and carried on. Every upload is `if-no-files-found: error` now,
+  because a release that is quietly missing its main product is worse than one
+  that fails.
+
+That last one had the same cause as the stray `pult-backend.d` in the archives,
+and as the second copy of the binary in there that made every download twice the
+size it needed to be: **the archive was cargo's output directory**, wiped and
+re-tarred wholesale. `scripts/package-binaries.sh` stages what belongs in a
+release by naming it — the binary, the licence, the readme — and it is a script
+rather than workflow steps so that what goes into an archive can be checked on a
+laptop before it is checked on a tag.
 
 The cost of finding them was six tags. The alternative — a Docker container
 reproducing the Linux half — found the worst one in a minute, and is worth

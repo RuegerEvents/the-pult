@@ -117,6 +117,19 @@ scripts/demo.sh --help       # the other options
 It works in `.demo/`, which is gitignored, so it never touches a real showfile.
 Logs for each component land there too.
 
+## Releases
+
+Tagging `v*` builds all four products for Linux x86_64 and aarch64, macOS arm64
+and Windows. Two things are worth knowing before changing that workflow:
+
+- `scripts/package-binaries.sh` decides what is in a release archive, and can be
+  run directly (`VERSION=0.0.1 TARGET=aarch64-apple-darwin scripts/package-binaries.sh`).
+  It stages files by name on purpose: archiving cargo's output directory instead
+  sweeps in the dep-info file beside the binary.
+- The version comes from `[workspace.package]`, the tag has to match it, and
+  `CHANGELOG.md` needs a `## <version>` heading — plain, not bracketed, which is
+  the only form the release action matches.
+
 ## Testing
 
 ```

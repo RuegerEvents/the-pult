@@ -82,10 +82,6 @@ jobs:
           retention-days: 1
 
   # ── The server and the simulator, as plain binaries ─────────────────────────
-  #
-  # One job per platform, building both products, rather than a package × platform
-  # matrix: `include` entries whose keys are absent from the base matrix are merged
-  # into every combination, which is not what a reader of that matrix would expect.
   binaries:
     needs: [validate, frontend]
     timeout-minutes: 45
@@ -101,6 +97,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal
+      - run: rustup target add ${{ matrix.target }}
 
       # The simulator does not serve a console, but the workspace reads the same
       # directory either way and an absent one is a compile error in rust-embed.
@@ -109,50 +106,20 @@ jobs:
           name: ${{ env.FRONTEND_ARTIFACT }}
           path: frontend/build
 
-      - uses: michaelklishin/rust-build-package-release-action@v1
-        id: server
-        with:
-          command: release
-          target: ${{ matrix.target }}
-          package: pult-backend
-          binary-name: pult-backend
-          archive: "true"
-          locked: "true"
-
-      # Taken out of the way before the next build runs, because the second one
-      # clears this one's archive out of target/<triple>/release/ on its way past.
-      - name: Keep the server's archive
+      # A script rather than steps, so the thing that decides what goes into a
+      # release archive can be run on a laptop before it is run on a tag.
+      - name: Build and archive
         shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p archives
-          path='${{ steps.server.outputs.artifact_path }}'
-          cp "${path//\\//}" "${path//\\//}.sha256" archives/
-
-      - uses: michaelklishin/rust-build-package-release-action@v1
-        id: sim
-        with:
-          command: release
-          target: ${{ matrix.target }}
-          package: openhaunt-sim
-          binary-name: openhaunt-sim
-          archive: "true"
-          locked: "true"
-
-      - name: Keep the simulator's archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          path='${{ steps.sim.outputs.artifact_path }}'
-          cp "${path//\\//}" "${path//\\//}.sha256" archives/
-          ls -la archives
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: scripts/package-binaries.sh
 
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.target }}
           path: archives
-          # Loudly, rather than shipping half a release: this job produces four
-          # files and the default is to warn about the ones it cannot find.
+          # Loudly, rather than shipping half a release.
           if-no-files-found: error
 
   # ── The server, as something apt can install ────────────────────────────────
