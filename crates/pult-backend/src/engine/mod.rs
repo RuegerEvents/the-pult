@@ -629,9 +629,11 @@ impl ShowEngine {
         let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
         let cues: Vec<pult_schema::types::cue::Cue> = self.read_collection("cues");
         let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
+        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
+            self.read_collection("programmer_values");
 
         let effects = {
-            let view = ShowView::new(&sequences, &cues, &fixtures);
+            let view = ShowView::new(&sequences, &cues, &fixtures, &programmer);
             self.playback.tick(tokio::time::Instant::now().into_std(), &view)
         };
 
@@ -1313,12 +1315,27 @@ impl ShowEngine {
     /// subscribed to e.g. "cues" see the change without re-fetching.
     /// All other paths broadcast the path/value pair as-is.
     fn broadcast_after_set(&self, path: &Path, value: serde_json::Value) {
-        let collection_key = match path.as_slice() {
+        // A create, a delete, or a field of a singleton: send the whole thing.
+        //
+        // A subscriber watching `show` is watching the show, and a pattern is matched
+        // against the path a write names — so a field write to `show/name` reaches
+        // nobody who asked for `show`. Collections already answer this by sending the
+        // collection back; a singleton is the same problem with one row.
+        //
+        // Entities are deliberately not treated this way. A field write there is
+        // `fixtures/<id>/live_values` at forty a second during a fade, and sending the
+        // whole rig each time is the thing `subscribeDeep` exists to avoid.
+        let whole = match path.as_slice() {
             [PathSegment::Key(k), PathSegment::Key(a)] if a == "__create" => Some(k.as_str()),
             [PathSegment::Key(k), _, PathSegment::Key(a)] if a == "__delete" => Some(k.as_str()),
+            [PathSegment::Key(k), PathSegment::Key(_)]
+                if EntityMeta::by_table(k).is_some_and(|m| m.is_singleton) =>
+            {
+                Some(k.as_str())
+            }
             _ => None,
         };
-        if let Some(key) = collection_key {
+        if let Some(key) = whole {
             let col_path = vec![PathSegment::Key(key.into())];
             if let Some(col_val) = self.state.get_by_path(&col_path) {
                 let _ = self.broadcast.0.send((col_path, col_val));

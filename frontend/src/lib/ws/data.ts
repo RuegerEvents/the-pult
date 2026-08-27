@@ -10,7 +10,9 @@ import type { FixtureType } from '../generated/FixtureType.js';
 import type { Flow } from '../generated/Flow.js';
 import type { FlowEdge } from '../generated/FlowEdge.js';
 import type { FlowNode } from '../generated/FlowNode.js';
+import type { Layout } from '../generated/Layout.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
+import type { ProgrammerValue } from '../generated/ProgrammerValue.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Show } from '../generated/Show.js';
 import type { StagePlan } from '../generated/StagePlan.js';
@@ -43,7 +45,15 @@ export type FlowNodeEntity = PathProxy<FlowNode> & {
   press(): Promise<void>;
 };
 
+export type LayoutEntity = PathProxy<Layout> & {
+  delete(): Promise<void>;
+};
+
 export type OutputConfigEntity = PathProxy<OutputConfig> & {
+  delete(): Promise<void>;
+};
+
+export type ProgrammerValueEntity = PathProxy<ProgrammerValue> & {
   delete(): Promise<void>;
 };
 
@@ -129,6 +139,17 @@ export type FlowNodeCollection = {
   [n: number]: FlowNodeEntity;
 };
 
+export type LayoutCollection = {
+  get(): Promise<Layout[]>;
+  set(value: Layout[]): Promise<void>;
+  subscribe(cb: (value: Layout[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Layout[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): LayoutEntity;
+  nth(n: number): LayoutEntity;
+  create(entity: Layout): Promise<void>;
+  [n: number]: LayoutEntity;
+};
+
 export type OutputConfigCollection = {
   get(): Promise<OutputConfig[]>;
   set(value: OutputConfig[]): Promise<void>;
@@ -138,6 +159,17 @@ export type OutputConfigCollection = {
   nth(n: number): OutputConfigEntity;
   create(entity: OutputConfig): Promise<void>;
   [n: number]: OutputConfigEntity;
+};
+
+export type ProgrammerValueCollection = {
+  get(): Promise<ProgrammerValue[]>;
+  set(value: ProgrammerValue[]): Promise<void>;
+  subscribe(cb: (value: ProgrammerValue[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: ProgrammerValue[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): ProgrammerValueEntity;
+  nth(n: number): ProgrammerValueEntity;
+  create(entity: ProgrammerValue): Promise<void>;
+  [n: number]: ProgrammerValueEntity;
 };
 
 export type SequenceCollection = {
@@ -183,7 +215,9 @@ export type DataRoot = {
   flows: FlowCollection;
   flow_edges: FlowEdgeCollection;
   flow_nodes: FlowNodeCollection;
+  layouts: LayoutCollection;
   outputs: OutputConfigCollection;
+  programmer_values: ProgrammerValueCollection;
   sequences: SequenceCollection;
   show: PathProxy<Show | null>;
   stage_plans: StagePlanCollection;

@@ -22,4 +22,13 @@ pub struct Show {
     /// ID of the currently active sequence, if any.
     #[pult(lifecycle = SYNCED)]
     pub active_sequence: Option<Uuid>,
+    /// The cue currently being edited, if any.
+    ///
+    /// Editing is load-tweak-Update rather than live: the cue is read into the
+    /// programmer, changed there, and written back on Update. This says which cue is
+    /// waiting for that write, and it is SYNCED so a second console shows the same
+    /// banner rather than quietly storing over the first one's work.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub editing_cue: Option<Uuid>,
 }

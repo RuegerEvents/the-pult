@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, fs, path::PathBuf, process::Command};
+use std::{collections::HashMap, env, fs, path::{Path, PathBuf}, process::Command};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -58,6 +58,8 @@ fn generate_ts_bindings(workspace: &PathBuf) -> Result<()> {
         anyhow::bail!("`cargo test -p pult-schema` failed — check output above");
     }
 
+    numbers_not_bigints(&out_dir)?;
+
     // ShowState mirrors the backend's root state. Built from the registry so a new
     // entity shows up here without an edit.
     let mut show_state = String::from(
@@ -115,6 +117,59 @@ fn generate_ts_bindings(workspace: &PathBuf) -> Result<()> {
 
     eprintln!("✓ Generated {} TypeScript type files → {}", modules.len(), out_dir.display());
     Ok(())
+}
+
+/// Say `number` where ts-rs said `bigint`.
+///
+/// ts-rs maps every 64-bit integer to `bigint`, which would be right if the wire
+/// were something that could carry one. It is JSON: `serde_json` writes a `u64` as a
+/// plain number and `JSON.parse` reads it back as a `number`, so the declared type
+/// was a lie about every value that actually arrives — and `count === 0n` is `false`
+/// for the `0` that turns up, which is how a working sACN output came to be reported
+/// as unhealthy for ever.
+///
+/// The cost of being honest is that a value beyond 2^53 is not represented exactly.
+/// Nothing here counts that high: the largest is a machine's memory in bytes, which
+/// runs out of interesting somewhere around a petabyte.
+///
+/// Done here rather than with `#[ts(type = "number")]` on each field, because that
+/// is a thing to remember every time somebody writes `u64` — and forgetting it looks
+/// like this bug rather than like a compile error.
+fn numbers_not_bigints(dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        // ts-rs nests what it exports for other crates, `serde_json` among them.
+        if path.is_dir() {
+            numbers_not_bigints(&path)?;
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("ts") {
+            continue;
+        }
+        let source = fs::read_to_string(&path)?;
+        let rewritten = replace_word(&source, "bigint", "number");
+        if rewritten != source {
+            fs::write(&path, rewritten)?;
+        }
+    }
+    Ok(())
+}
+
+/// Replace whole identifiers only, so `bigint` inside a longer word is left alone.
+fn replace_word(source: &str, word: &str, with: &str) -> String {
+    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(at) = rest.find(word) {
+        let before_ok = rest[..at].chars().next_back().is_none_or(|c| !ident(c));
+        let after = &rest[at + word.len()..];
+        let after_ok = after.chars().next().is_none_or(|c| !ident(c));
+        out.push_str(&rest[..at]);
+        out.push_str(if before_ok && after_ok { with } else { word });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 fn generate_frontend_proxy(workspace: &PathBuf) -> Result<()> {

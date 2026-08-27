@@ -9,6 +9,8 @@ pub mod openhaunt;
 pub mod output;
 pub mod flow;
 pub mod stage;
+pub mod programmer;
+pub mod layout;
 
 pub use fixture::{Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
@@ -21,6 +23,8 @@ pub use output::{
 };
 pub use station::{PeerLink, PeerLinks, Station, StationCreate, StationPatch};
 pub use stage::{StagePlan, StagePlanCreate, StagePlanPatch};
+pub use programmer::{ProgrammerValue, ProgrammerValueCreate, ProgrammerValuePatch};
+pub use layout::{Layout, LayoutCreate, LayoutNode, LayoutPatch, SplitDirection};
 pub use flow::{
     Flow, FlowCreate, FlowEdge, FlowEdgeCreate, FlowEdgePatch, FlowNode, FlowNodeCreate,
     FlowNodeKind, FlowNodePatch, FlowPatch, PortKind, TriggerAction, TriggerCondition,

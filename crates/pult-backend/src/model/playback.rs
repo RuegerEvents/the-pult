@@ -16,9 +16,13 @@ use std::time::{Duration, Instant};
 use pult_schema::types::{
     cue::{Cue, FollowMode},
     fixture::{Fixture, ParameterKind, ParameterValue},
+    programmer::ProgrammerValue,
     sequence::Sequence,
 };
 use uuid::Uuid;
+
+mod programmer;
+use programmer::Overlay;
 
 /// How often the engine ticks playback. 25 ms is 40 Hz, comfortably finer than
 /// DMX's 44 Hz refresh and far finer than an operator can see.
@@ -41,11 +45,24 @@ pub struct ShowView<'a> {
     pub sequences: &'a [Sequence],
     pub cues: HashMap<Uuid, &'a Cue>,
     pub fixtures: &'a [Fixture],
+    /// What the programmer is holding. Replicated show state like everything else
+    /// here, so every node computes the same overridden output for itself.
+    pub programmer: &'a [ProgrammerValue],
 }
 
 impl<'a> ShowView<'a> {
-    pub fn new(sequences: &'a [Sequence], cues: &'a [Cue], fixtures: &'a [Fixture]) -> Self {
-        Self { sequences, cues: cues.iter().map(|c| (c.id, c)).collect(), fixtures }
+    pub fn new(
+        sequences: &'a [Sequence],
+        cues: &'a [Cue],
+        fixtures: &'a [Fixture],
+        programmer: &'a [ProgrammerValue],
+    ) -> Self {
+        Self {
+            sequences,
+            cues: cues.iter().map(|c| (c.id, c)).collect(),
+            fixtures,
+            programmer,
+        }
     }
 
     /// The cue a sequence is currently on, if any.
@@ -55,7 +72,7 @@ impl<'a> ShowView<'a> {
         self.cues.get(cue_id).copied()
     }
 
-    fn live_value(&self, fixture_id: Uuid, key: &str) -> Option<ParameterValue> {
+    pub(super) fn live_value(&self, fixture_id: Uuid, key: &str) -> Option<ParameterValue> {
         self.fixtures
             .iter()
             .find(|f| f.id == fixture_id)?
@@ -107,6 +124,13 @@ impl Fade {
 
 // ── Playback ──────────────────────────────────────────────────────────────────
 
+/// Values a tick wants written, gathered before anything is emitted.
+///
+/// Fades and the programmer both write here, and only then is each fixture's map
+/// compared against what was last handed to the engine. Emitting from each in turn
+/// would have the second overwrite the first's map with a stale copy of the fixture.
+type Changes = HashMap<Uuid, HashMap<String, ParameterValue>>;
+
 #[derive(Default)]
 pub struct Playback {
     /// The cue each sequence is currently playing, so a change can be spotted.
@@ -115,21 +139,27 @@ pub struct Playback {
     fades: Vec<Fade>,
     /// Sequences with a follow cue due, and when.
     follows: HashMap<Uuid, Instant>,
-    /// Last values handed to the engine, so unchanged fixtures are not rewritten.
-    emitted: HashMap<Uuid, HashMap<String, ParameterValue>>,
+    /// What the programmer is holding over playback.
+    overlay: Overlay,
 }
 
 impl Playback {
     /// True while a fade is running or a follow cue is pending. The engine skips the
     /// tick entirely when this is false and nothing in the show has changed.
     pub fn has_work(&self) -> bool {
-        !self.fades.is_empty() || !self.follows.is_empty()
+        !self.fades.is_empty() || !self.follows.is_empty() || self.overlay.has_work()
     }
 
     pub fn tick(&mut self, now: Instant, view: &ShowView<'_>) -> Vec<PlaybackEffect> {
         let mut effects = Vec::new();
         self.track_cue_changes(now, view, &mut effects);
-        self.advance_fades(now, view, &mut effects);
+
+        let mut changes = Changes::new();
+        self.advance_fades(now, &mut changes);
+        // Last, so the programmer covers whatever the fades just worked out.
+        self.overlay.assert(view, &mut changes);
+        self.emit(view, changes, &mut effects);
+
         self.fire_due_follows(now, &mut effects);
         effects
     }
@@ -225,44 +255,61 @@ impl Playback {
         // Timecode follows need a timecode source, which does not exist yet.
     }
 
-    /// Move every running fade forward and emit the fixtures whose values changed.
-    fn advance_fades(
-        &mut self,
-        now: Instant,
-        view: &ShowView<'_>,
-        effects: &mut Vec<PlaybackEffect>,
-    ) {
+    /// Move every running fade forward.
+    ///
+    /// A fade under a key the programmer holds keeps running: it does not reach the
+    /// output, but it does say where that key would land if the value were released,
+    /// so it is recorded rather than dropped.
+    fn advance_fades(&mut self, now: Instant, changes: &mut Changes) {
         if self.fades.is_empty() {
             return;
         }
 
-        let mut touched: HashMap<Uuid, HashMap<String, ParameterValue>> = HashMap::new();
-        for fade in &self.fades {
-            if now < fade.start {
-                continue; // still inside its delay
-            }
-            touched.entry(fade.fixture_id).or_default().insert(fade.key.clone(), fade.value_at(now));
-        }
+        let advanced: Vec<(Uuid, String, ParameterValue)> = self
+            .fades
+            .iter()
+            .filter(|fade| now >= fade.start) // anything else is still inside its delay
+            .map(|fade| (fade.fixture_id, fade.key.clone(), fade.value_at(now)))
+            .collect();
 
-        for (fixture_id, changes) in touched {
-            // Merge onto what the fixture already has, so a fade for one parameter
-            // does not drop the others.
-            let mut values = view
-                .fixtures
-                .iter()
-                .find(|f| f.id == fixture_id)
-                .map(|f| f.live_values.clone())
-                .unwrap_or_default();
-            values.extend(changes);
-
-            if self.emitted.get(&fixture_id) == Some(&values) {
-                continue;
+        for (fixture_id, key, value) in advanced {
+            match self.overlay.covering(fixture_id, &key) {
+                Some(held) => {
+                    let held = held.clone();
+                    self.overlay.note_beneath(fixture_id, &key, value);
+                    changes.entry(fixture_id).or_default().insert(key, held);
+                }
+                None => {
+                    changes.entry(fixture_id).or_default().insert(key, value);
+                }
             }
-            self.emitted.insert(fixture_id, values.clone());
-            effects.push(PlaybackEffect::SetLiveValues { fixture_id, values });
         }
 
         self.fades.retain(|f| !f.is_done(now));
+    }
+
+    /// Hand the tick's changes to the engine, one effect per fixture that moved.
+    ///
+    /// What was written last tick is not remembered, because the show itself is the
+    /// better record of it: a flow action or a device input can write a live value
+    /// between two ticks, and a cache of playback's own writes would report that
+    /// fixture as already correct and never put it back.
+    fn emit(&self, view: &ShowView<'_>, changes: Changes, effects: &mut Vec<PlaybackEffect>) {
+        for (fixture_id, changed) in changes {
+            // A fixture that has left the rig has nowhere for a value to land.
+            let Some(fixture) = view.fixtures.iter().find(|f| f.id == fixture_id) else {
+                continue;
+            };
+            // Merge onto what the fixture already has, so a fade for one parameter
+            // does not drop the others.
+            let mut values = fixture.live_values.clone();
+            values.extend(changed);
+
+            if values == fixture.live_values {
+                continue;
+            }
+            effects.push(PlaybackEffect::SetLiveValues { fixture_id, values });
+        }
     }
 
     fn fire_due_follows(&mut self, now: Instant, effects: &mut Vec<PlaybackEffect>) {
@@ -283,7 +330,7 @@ impl Playback {
 
 /// The dark, home, or off value of the same kind as `like`. Where a fade starts when
 /// the fixture has no recorded value for that parameter yet.
-fn zero_like(like: &ParameterValue) -> ParameterValue {
+pub(crate) fn zero_like(like: &ParameterValue) -> ParameterValue {
     match like {
         ParameterValue::Float(_) => ParameterValue::Float(0.0),
         ParameterValue::Int(_) => ParameterValue::Int(0),

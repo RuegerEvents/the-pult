@@ -17,7 +17,8 @@
 			name: 'My Show',
 			created_at: new Date().toISOString(),
 			is_running: false,
-			active_sequence: null
+			active_sequence: null,
+			editing_cue: null
 		});
 	}
 

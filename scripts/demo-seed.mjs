@@ -47,6 +47,42 @@ try {
 	};
 	await create('fixture_types', dimmer);
 
+	// And a moving head, so there is something to puppeteer. A colour takes the
+	// three channels from the one it is bound to, so pan starts at 5.
+	const spot = {
+		id: id(),
+		name: 'Spot',
+		manufacturer: 'Generic',
+		channel_count: 6,
+		parameters: [
+			{
+				kind: 'Intensity',
+				direction: 'Output',
+				binding: { Dmx: { channel: 1 } },
+				default_value: { type: 'Float', value: 0 }
+			},
+			{
+				kind: 'ColorRgb',
+				direction: 'Output',
+				binding: { Dmx: { channel: 2 } },
+				default_value: { type: 'Color', value: { r: 1, g: 1, b: 1 } }
+			},
+			{
+				kind: 'Pan',
+				direction: 'Output',
+				binding: { Dmx: { channel: 5 } },
+				default_value: { type: 'Float', value: 0.5 }
+			},
+			{
+				kind: 'Tilt',
+				direction: 'Output',
+				binding: { Dmx: { channel: 6 } },
+				default_value: { type: 'Float', value: 0.5 }
+			}
+		]
+	};
+	await create('fixture_types', spot);
+
 	// Hung where the names say, in metres: X to the right as seen from front of
 	// house, Y up, Z downstage towards the audience. Placed rather than null so the
 	// Stage tab opens with a rig in it rather than three chips in a tray.
@@ -66,6 +102,25 @@ try {
 			active_preset: null
 		});
 	}
+
+	// Hung axially rather than as points: a moving head needs a rest direction for
+	// pan and tilt to be angles away from, and these two face downstage and down.
+	const heads = [
+		['Head left', { x: -2.5, y: 5, z: -1 }],
+		['Head right', { x: 2.5, y: 5, z: -1 }]
+	];
+	for (const [index, [name, at]] of heads.entries()) {
+		await create('fixtures', {
+			id: id(),
+			name,
+			fixture_type_id: spot.id,
+			address: { Dmx: { universe: 1, address: 11 + index * spot.channel_count } },
+			position: { Axial: { position: at, direction: { x: 0, y: -0.8, z: 0.6 } } },
+			live_values: {},
+			active_preset: null
+		});
+	}
+
 	const patched = await get(['fixtures']);
 
 	// Two cues that actually move something, so Go does something visible and a
@@ -182,7 +237,7 @@ try {
 	);
 
 	console.log(
-		`  seeded: ${fixtures.length} fixtures, ${cues.length} cues, 1 sequence, 2 flows`
+		`  seeded: ${patched.length} fixtures, ${cues.length} cues, 1 sequence, 2 flows`
 	);
 	process.exit(0);
 } catch (error) {

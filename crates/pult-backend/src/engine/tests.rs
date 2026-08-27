@@ -66,6 +66,10 @@ fn field_path(collection: &str, id: Uuid, field: &str) -> Path {
     ]
 }
 
+fn field_path_on_singleton(table: &str, field: &str) -> Path {
+    vec![PathSegment::Key(table.into()), PathSegment::Key(field.into())]
+}
+
 fn create_path(collection: &str) -> Path {
     vec![PathSegment::Key(collection.into()), PathSegment::Key("__create".into())]
 }
@@ -85,6 +89,7 @@ fn a_show() -> Show {
         created_at: Utc::now(),
         is_running: false,
         active_sequence: None,
+        editing_cue: None,
     }
 }
 
@@ -438,6 +443,47 @@ async fn delete_broadcasts_the_whole_collection() {
 
     let value = updates.next().await.expect("expected a broadcast");
     assert!(value.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_singleton_field_set_broadcasts_the_whole_singleton() {
+    // A panel watching `show` asked for the show. A pattern is matched against the
+    // path a write names, so broadcasting `show/editing_cue` would reach nobody who
+    // did — which is how the edit banner came to never appear.
+    let h = harness().await;
+    let show = a_show();
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&show)).await.unwrap();
+
+    let mut updates = h.broadcast.subscribe_filtered(PathPattern::new("show"));
+
+    let cue_id = Uuid::new_v4();
+    h.engine
+        .set(field_path_on_singleton("show", "editing_cue"), Lifecycle::Synced, json(&cue_id))
+        .await
+        .unwrap();
+
+    let value = updates.next().await.expect("an update");
+    assert_eq!(value["editing_cue"], json(&cue_id));
+    assert_eq!(value["name"], "Hamlet", "and the rest of the show comes with it");
+}
+
+#[tokio::test]
+async fn an_entity_field_set_still_broadcasts_only_that_field() {
+    // The other half of the rule: this one runs at forty a second per fixture in a
+    // fade, and sending the whole rig each time is what `subscribeDeep` exists to
+    // avoid.
+    let h = harness().await;
+    let fixture = a_fixture("Spot L", 1);
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+
+    let mut updates = h.broadcast.subscribe_filtered(PathPattern::new("fixtures/*/name"));
+    h.engine
+        .set(field_path("fixtures", fixture.id, "name"), Lifecycle::Persisted, json(&"Spot R"))
+        .await
+        .unwrap();
+
+    let value = updates.next().await.expect("an update");
+    assert_eq!(value, "Spot R", "the field itself, not the fixture it is on");
 }
 
 #[tokio::test]
@@ -1440,6 +1486,85 @@ async fn playback_output_is_never_written_to_the_showfile() {
         after["live_values"].as_object().is_none_or(|m| m.is_empty()),
         "live values are output, not show data",
     );
+}
+
+#[tokio::test]
+async fn a_programmer_entry_takes_a_fixture_over_and_giving_it_back_returns_the_cue() {
+    // The whole path, over the wire: a `programmer_values` row is created the way a
+    // frontend creates one, and the fixture's output follows it — then stops.
+    let h = harness().await;
+    let fixture = a_fixture("Spot L", 1);
+    let cue = an_intensity_cue(fixture.id, 1.0, 0);
+    let seq = a_sequence("Act 1", vec![cue.id]);
+
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    tokio::time::pause();
+
+    h.engine
+        .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(intensity_of(&h, fixture.id).await, 1.0);
+
+    let entry = serde_json::json!({
+        "id": Uuid::new_v4(),
+        "fixture_id": fixture.id,
+        "parameter_kind": "Intensity",
+        "value": { "type": "Float", "value": 0.2 },
+        "locked": false,
+    });
+    h.engine.set(create_path("programmer_values"), Lifecycle::Synced, entry.clone()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        intensity_of(&h, fixture.id).await,
+        0.2,
+        "the programmer holds the parameter, so the cue does not reach the output",
+    );
+
+    let entry_id: Uuid = serde_json::from_value(entry["id"].clone()).unwrap();
+    h.engine
+        .set(delete_path("programmer_values", entry_id), Lifecycle::Synced, serde_json::Value::Null)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        intensity_of(&h, fixture.id).await,
+        1.0,
+        "letting go puts the parameter back where the cue had it",
+    );
+}
+
+#[tokio::test]
+async fn programmer_values_never_reach_the_showfile() {
+    // SYNCED, like a station: what is in the operator's hands is not part of the
+    // show, and a showfile that reopened asserting it over playback would be a fault.
+    let mut h = harness().await;
+    let fixture = a_fixture("Spot L", 1);
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    h.engine
+        .set(
+            create_path("programmer_values"),
+            Lifecycle::Synced,
+            serde_json::json!({
+                "id": Uuid::new_v4(),
+                "fixture_id": fixture.id,
+                "parameter_kind": "Intensity",
+                "value": { "type": "Float", "value": 0.6 },
+                "locked": true,
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(h.engine.get(key("programmer_values")).await.unwrap().as_array().unwrap().len(), 1);
+
+    h.reload().await;
+
+    assert!(h.engine.get(key("programmer_values")).await.unwrap().as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

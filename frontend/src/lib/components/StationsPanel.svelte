@@ -39,12 +39,12 @@
 	}
 
 	const memPercent = (station: Station) =>
-		station.mem_total === 0n ? 0 : (Number(station.mem_used) / Number(station.mem_total)) * 100;
+		station.mem_total === 0 ? 0 : (station.mem_used / station.mem_total) * 100;
 
-	const megabytes = (bytes: bigint) => `${Math.round(Number(bytes) / 1_000_000)} MB`;
+	const megabytes = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
 
 	function uptime(station: Station): string {
-		const s = Number(station.uptime_s);
+		const s = station.uptime_s;
 		if (s < 60) return `${s}s`;
 		if (s < 3600) return `${Math.floor(s / 60)}m`;
 		return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;

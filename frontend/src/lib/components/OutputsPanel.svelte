@@ -44,14 +44,14 @@
 				? 'another station'
 				: 'not started';
 		}
-		if (status.last_error && status.error_count > 0n) return `${status.error_count} errors`;
+		if (status.last_error && status.error_count > 0) return `${status.error_count} errors`;
 		if (!status.last_send) return 'no frames yet';
 		return `${status.frames_per_second.toFixed(0)}/s`;
 	}
 
 	function healthy(output: OutputConfig): boolean {
 		const status = statusOf(output);
-		return !!status && !!status.last_send && status.error_count === 0n;
+		return !!status && !!status.last_send && status.error_count === 0;
 	}
 
 	async function createOutput() {
