@@ -10,6 +10,21 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ## Unreleased
 
+### Changed
+
+- **`openhaunt-sim` is now `openhaunt-node-sim`**, and `openhaunt-sim-gui` is
+  `openhaunt-node-sim-gui`.
+
+### Added
+
+- **A simulated node is a config file.** `openhaunt-node-sim` takes `--config`, and
+  its window edits the running node: identity, module descriptor, and every port —
+  access, data type, unit, range and class. Applying stops the node and starts a
+  new one in its place without the window closing, so a module nobody has built is
+  something to try rather than something to write. Presets for the catalogue,
+  worked examples in `tools/openhaunt-node-sim/configs/`, and `--write-config` to
+  get a file to start editing.
+
 ## 0.0.1
 
 The first release, and a deliberately small number: this one is here to prove the

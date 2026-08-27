@@ -1,0 +1,50 @@
+{
+  "name": "Crypt fogger",
+  "serial": "9f1c22",
+  "module": {
+    "type": "0x0100",
+    "name": "Fogger",
+    "rev": "a",
+    "flags": 0,
+    "caps": ""
+  },
+  "ports": [
+    {
+      "port": 0,
+      "name": "Fog output",
+      "access": "readwrite",
+      "dataType": "number",
+      "unit": "percent",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0,
+      "class": "intensity"
+    },
+    {
+      "port": 1,
+      "name": "Heater",
+      "access": "readwrite",
+      "dataType": "boolean",
+      "default": 0,
+      "class": "switch"
+    },
+    {
+      "port": 2,
+      "name": "Tank level",
+      "access": "readonly",
+      "dataType": "number",
+      "unit": "percent",
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "port": 3,
+      "name": "Ready to fog",
+      "access": "readonly",
+      "dataType": "boolean",
+      "class": "contact"
+    }
+  ],
+  "httpPort": 8811,
+  "advertise": true
+}

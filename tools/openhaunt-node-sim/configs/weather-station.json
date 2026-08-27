@@ -1,0 +1,54 @@
+{
+  "name": "Roof weather",
+  "serial": "77ea11",
+  "module": {
+    "type": "0x0101",
+    "name": "Weather Head",
+    "rev": "b",
+    "flags": 0,
+    "caps": ""
+  },
+  "ports": [
+    {
+      "port": 0,
+      "name": "Temperature",
+      "access": "readonly",
+      "dataType": "number",
+      "unit": "degree-celsius",
+      "minimum": -40,
+      "maximum": 85,
+      "class": "temperature"
+    },
+    {
+      "port": 1,
+      "name": "Humidity",
+      "access": "readonly",
+      "dataType": "number",
+      "unit": "percent",
+      "minimum": 0,
+      "maximum": 100,
+      "class": "humidity"
+    },
+    {
+      "port": 2,
+      "name": "Wind speed",
+      "access": "readonly",
+      "dataType": "number",
+      "unit": "metre-per-second",
+      "minimum": 0,
+      "maximum": 60
+    },
+    {
+      "port": 3,
+      "name": "Rainfall",
+      "access": "readonly",
+      "dataType": "number",
+      "unit": "millimetre",
+      "minimum": 0,
+      "maximum": 100
+    }
+  ],
+  "httpPort": 8812,
+  "advertise": true,
+  "autoMs": 2000
+}

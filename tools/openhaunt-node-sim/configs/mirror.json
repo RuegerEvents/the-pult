@@ -1,0 +1,59 @@
+{
+  "name": "Haunted mirror",
+  "serial": "3c0ffe",
+  "module": {
+    "type": "0x0102",
+    "name": "Mirror Head",
+    "rev": "a",
+    "flags": 64,
+    "caps": "sacn"
+  },
+  "ports": [
+    {
+      "port": 0,
+      "name": "Glass tint",
+      "access": "readwrite",
+      "dataType": "color",
+      "class": "color"
+    },
+    {
+      "port": 1,
+      "name": "Backlight",
+      "access": "readwrite",
+      "dataType": "number",
+      "unit": "percent",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0,
+      "class": "intensity"
+    },
+    {
+      "port": 2,
+      "name": "Engraved line",
+      "access": "readwrite",
+      "dataType": "string",
+      "class": "text"
+    },
+    {
+      "port": 3,
+      "name": "Shatter solenoid",
+      "access": "readwrite",
+      "dataType": "boolean",
+      "default": 0,
+      "class": "switch"
+    },
+    {
+      "port": 4,
+      "name": "Someone is looking",
+      "access": "readonly",
+      "dataType": "boolean",
+      "class": "contact"
+    }
+  ],
+  "dmx": {
+    "protocols": ["sacn"],
+    "universes": 1
+  },
+  "httpPort": 8814,
+  "advertise": true
+}

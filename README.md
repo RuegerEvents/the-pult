@@ -20,7 +20,7 @@ rig.
 | **`pult-backend`** | A station, as a server. Serves the console on `:7700`. |
 | **`pult-gui`** | The same station, as a desktop app. |
 | **`openhaunt-node-sim`** | The node side of the [OpenHaunt](https://github.com/OpenHaunt/node) I/O protocol, in software — there is no firmware yet. |
-| **`openhaunt-node-sim-gui`** | A window onto one of those, with buttons for its inputs. |
+| **`openhaunt-node-sim-gui`** | A window onto one of those: buttons for its inputs, and an editor for what it says it is. |
 
 Each is one file. The console's frontend is built into the binaries that serve
 it, so there is nothing to deploy beside them.

@@ -99,6 +99,7 @@ rust-embed = { version = "8", features = ["mime-guess"] }
 # Desktop shells around the console and the node simulator
 tauri = { version = "2", features = [] }
 tauri-build = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 
 # Distributed static registration
 inventory = "0.3"

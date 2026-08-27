@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { invoke } from '@tauri-apps/api/core';
 	import { listen } from '@tauri-apps/api/event';
+	import Config from './lib/Config.svelte';
 	import Header from './lib/Header.svelte';
 	import Inputs from './lib/Inputs.svelte';
 	import Outputs from './lib/Outputs.svelte';
@@ -29,6 +30,7 @@
 
 {#if node}
 	<Header {node} />
+	<Config {node} />
 	<Inputs
 		{node}
 		oncontact={(port, state) => invoke('contact', { port, state })}

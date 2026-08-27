@@ -1,0 +1,14 @@
+{
+  "name": "Relay on last year's firmware",
+  "serial": "0b501e",
+  "module": {
+    "type": "0x0004",
+    "name": "Mains Relay",
+    "rev": "a",
+    "flags": 64,
+    "caps": ""
+  },
+  "ports": [],
+  "httpPort": 8813,
+  "advertise": true
+}

@@ -1,5 +1,11 @@
 <script lang="ts">
-	import { contacts, readValue, sensors, type Snapshot } from './node.js';
+	import {
+		inputPorts,
+		readNumber,
+		unitLabel,
+		type PortDescription,
+		type Snapshot
+	} from './node.js';
 
 	let {
 		node,
@@ -17,8 +23,10 @@
 	let closed = $state<Record<number, boolean>>({});
 	let readings = $state<Record<number, number>>({});
 
-	const ports = $derived(contacts(node.module));
-	const measurements = $derived(sensors(node.module));
+	// Whatever the node said it reads, split by the only thing that changes how a
+	// terminal is driven from here: a boolean is a button, a number is a slider.
+	const ports = $derived(inputPorts(node).filter((p) => p.dataType === 'boolean'));
+	const measurements = $derived(inputPorts(node).filter((p) => p.dataType !== 'boolean'));
 
 	function toggle(port: number) {
 		closed[port] = !closed[port];
@@ -32,8 +40,14 @@
 
 	/** What the node last actually published, as opposed to what was asked for. */
 	function published(port: number): number | null {
-		return readValue(node.inputs[String(port)]);
+		return readNumber(node.inputs[String(port)]);
 	}
+
+	/// A slider needs ends. A port that declared none gets 0–1, which is what an
+	/// undeclared number most often is.
+	const low = (p: PortDescription) => p.minimum ?? 0;
+	const high = (p: PortDescription) => p.maximum ?? 1;
+	const step = (p: PortDescription) => (high(p) - low(p)) / 100;
 </script>
 
 {#if ports.length > 0 || measurements.length > 0}
@@ -42,10 +56,11 @@
 
 		{#if ports.length > 0}
 			<div class="contacts">
-				{#each ports as port (port)}
-					<button class:closed={closed[port]} onclick={() => toggle(port)}>
-						<span class="port mono">{port}</span>
-						<span class="state">{closed[port] ? 'closed' : 'open'}</span>
+				{#each ports as port (port.port)}
+					<button class:closed={closed[port.port]} onclick={() => toggle(port.port)}>
+						<span class="port mono">{port.port}</span>
+						<span class="name">{port.name}</span>
+						<span class="state">{closed[port.port] ? 'closed' : 'open'}</span>
 					</button>
 				{/each}
 			</div>
@@ -53,17 +68,19 @@
 
 		{#each measurements as sensor (sensor.port)}
 			<label class="sensor">
-				<span class="name">{sensor.label}</span>
+				<span class="name">{sensor.name}</span>
 				<input
 					type="range"
-					min={sensor.min}
-					max={sensor.max}
-					step="0.5"
-					value={readings[sensor.port] ?? sensor.min}
+					min={low(sensor)}
+					max={high(sensor)}
+					step={step(sensor)}
+					value={readings[sensor.port] ?? low(sensor)}
 					oninput={(e) => send(sensor.port, Number(e.currentTarget.value))}
 				/>
 				<span class="mono value">
-					{(readings[sensor.port] ?? published(sensor.port) ?? sensor.min).toFixed(1)}{sensor.unit}
+					{(readings[sensor.port] ?? published(sensor.port) ?? low(sensor)).toFixed(1)}{unitLabel(
+						sensor.unit
+					)}
 				</span>
 			</label>
 		{/each}
@@ -81,7 +98,7 @@
 
 	.contacts {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
 		gap: 8px;
 	}
 
@@ -118,6 +135,12 @@
 		font-weight: 600;
 	}
 
+	button .name {
+		font-size: 0.78rem;
+		color: var(--text);
+		text-align: left;
+	}
+
 	.state {
 		font-size: 0.7rem;
 		letter-spacing: 0.05em;
@@ -126,7 +149,7 @@
 
 	.sensor {
 		display: grid;
-		grid-template-columns: 8rem 1fr 4.5rem;
+		grid-template-columns: 8rem 1fr 7rem;
 		align-items: center;
 		gap: 12px;
 	}
@@ -143,5 +166,10 @@
 	.value {
 		text-align: right;
 		color: var(--dim);
+		/* A unit this panel has no short form for is the node's own word and can be
+		   long. Better clipped on one line than four lines tall. */
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 </style>

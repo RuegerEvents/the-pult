@@ -9,7 +9,8 @@ Distributed lighting console system.
 - **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, SQLite showfiles, peer sync (mDNS + TCP), WASM plugin runtime (Phase 2), fixture connectors (Phase 2). `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.
-- **`tools/openhaunt-node-sim-gui`** — A Tauri window onto a simulated node, with buttons for its inputs. Talks to the sim over Tauri IPC, so nothing about the OpenHaunt protocol changes to accommodate a debug UI.
+- **`tools/openhaunt-node-sim`** — The node side of the OpenHaunt protocol, in software. A node *is* a `NodeConfig` — identity, module descriptor, and the ports it describes — so a JSON config file is the whole of what makes one node different from another. `configs/` holds worked examples of modules that are not in the catalogue at all.
+- **`tools/openhaunt-node-sim-gui`** — A Tauri window onto a simulated node: buttons for its inputs, and an editor for its config. Talks to the sim over Tauri IPC, so nothing about the OpenHaunt protocol changes to accommodate a debug UI. Applying a config stops the node and starts a new one in its place, without the window closing.
 - **`frontend/`** — SvelteKit static-adapter frontend. Built into the binaries that serve it.
 
 ## Lifecycle System
@@ -90,6 +91,16 @@ infers rather than from the one the config sits in:
 npm --prefix tools/openhaunt-node-sim-gui/ui install
 npm --prefix tools/openhaunt-node-sim-gui/ui run build
 cargo run -p openhaunt-node-sim-gui -- --module relay --serial 4d5e6f
+```
+
+A node the catalogue has never heard of is a config file rather than a code
+change — the console builds its fixture type from what the node says, so there is
+nothing to teach it:
+
+```
+cargo run -p openhaunt-node-sim -- --config tools/openhaunt-node-sim/configs/fog-machine.json
+cargo run -p openhaunt-node-sim-gui -- --config tools/openhaunt-node-sim/configs/mirror.json
+cargo run -p openhaunt-node-sim -- --module env --write-config mine.json   # somewhere to start
 ```
 
 The frontend opens onto a **tiled workspace** rather than a sidebar and tabs. Panels

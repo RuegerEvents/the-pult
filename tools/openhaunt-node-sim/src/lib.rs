@@ -4,10 +4,15 @@
 //! against: the HTTP control API, the mDNS advertisement, the MQTT topics, and
 //! sACN reception, as `OpenHaunt/node`'s docs describe them.
 //!
-//! It deliberately shares no code with the console. The module type ids and topic
-//! shapes are written out again here from the same documents, so a test that drives
-//! this and reads the console proves the two ends agree — which is the only thing
-//! worth proving before there is hardware to disagree with.
+//! It deliberately shares no code with the console. The module type ids, the port
+//! descriptions and the topic shapes are written out again here from the same
+//! documents, so a test that drives this and reads the console proves the two ends
+//! agree — which is the only thing worth proving before there is hardware to
+//! disagree with.
+//!
+//! Knowing what its own ports are is not a duplicate of anything: only the device
+//! knows what it is, and the console reads that off `GET /api/v1/info` rather than
+//! keeping a table of its own.
 
 use std::{
     collections::BTreeMap,
@@ -19,7 +24,7 @@ use std::{
 use anyhow::Result;
 use axum::{extract::State, routing::{get, post}, Json, Router};
 use rumqttc::{AsyncClient, ConnectionError, Event, LastWill, MqttOptions, Packet, QoS};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
@@ -28,7 +33,251 @@ pub const SERVICE_TYPE: &str = "_openhaunt._tcp.local.";
 /// The E1.31 port. Configurable here only so parallel tests can each have one.
 pub const SACN_PORT: u16 = 5568;
 
-// ── Modules ───────────────────────────────────────────────────────────────────
+// ── What a node says about itself ─────────────────────────────────────────────
+
+/// One terminal, in the words `GET /api/v1/info` uses: E1.73 UDR's `access`,
+/// `dataType`, `unit` and range, plus a `class` hint and `color` as a data type.
+///
+/// Owned strings rather than `&'static str`, because a node's ports are not
+/// limited to the ones written down here: a config file can declare a terminal
+/// this file has never heard of, which is the whole point of a node describing
+/// itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortDescription {
+    pub port: u8,
+    pub name: String,
+    /// `readonly` — the node writes it — or `readwrite`, which the console drives.
+    pub access: String,
+    /// `boolean`, `number`, `string` or `color`.
+    pub data_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+}
+
+impl PortDescription {
+    pub fn new(
+        port: u8,
+        name: impl Into<String>,
+        access: impl Into<String>,
+        data_type: impl Into<String>,
+    ) -> Self {
+        PortDescription {
+            port,
+            name: name.into(),
+            access: access.into(),
+            data_type: data_type.into(),
+            unit: None,
+            minimum: None,
+            maximum: None,
+            default: None,
+            class: None,
+        }
+    }
+
+    pub fn class(mut self, class: impl Into<String>) -> Self {
+        self.class = Some(class.into());
+        self
+    }
+
+    pub fn unit(mut self, unit: impl Into<String>) -> Self {
+        self.unit = Some(unit.into());
+        self
+    }
+
+    pub fn range(mut self, minimum: f64, maximum: f64) -> Self {
+        self.minimum = Some(minimum);
+        self.maximum = Some(maximum);
+        self
+    }
+
+    pub fn default_at(mut self, default: f64) -> Self {
+        self.default = Some(default);
+        self
+    }
+
+    /// A port the console reads, as opposed to one it drives.
+    pub fn is_input(&self) -> bool {
+        self.access == "readonly"
+    }
+}
+
+/// The universe a gateway forwards. Present only on a node that gateways one, and
+/// that is what tells a console to allocate it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DmxDescription {
+    pub protocols: Vec<String>,
+    pub universes: u16,
+}
+
+/// The module descriptor, as `GET /api/v1/info` and the TXT record report it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleDescriptor {
+    /// The type id, written `0x0003`. Nothing here looks it up: it is an
+    /// inventory key and a mains warning, not the basis for control.
+    #[serde(rename = "type", with = "hex_u16")]
+    pub type_id: u16,
+    pub name: String,
+    /// Hardware revision, as the EEPROM records it.
+    #[serde(default = "default_rev")]
+    pub rev: String,
+    /// The capability bitfield, verbatim. Bit 6 says the module switches mains.
+    #[serde(default)]
+    pub flags: u32,
+    /// The `caps` shortlist, comma-separated, for a controller filtering a list.
+    #[serde(default)]
+    pub caps: String,
+}
+
+fn default_rev() -> String {
+    "a".to_string()
+}
+
+impl ModuleDescriptor {
+    pub fn switches_mains(&self) -> bool {
+        self.flags & MAINS_FLAG != 0
+    }
+}
+
+/// Descriptor bit 6: this module switches mains voltage.
+pub const MAINS_FLAG: u32 = 1 << 6;
+
+/// Everything a simulated node is, in one value that round-trips through JSON.
+///
+/// This is the config file. A node is its identity, its module descriptor, and
+/// the terminals it describes — and since only the device knows what it is, a
+/// file that says so is the whole of what makes one node different from another.
+/// Nothing here is looked up in a table: a config can declare a module type this
+/// crate has never heard of, with ports to match, and it runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeConfig {
+    /// The user-assigned friendly name, as the `name` TXT key carries it.
+    pub name: String,
+    /// The node serial. Identifies it everywhere: mDNS instance, MQTT topics.
+    pub serial: String,
+    pub module: ModuleDescriptor,
+    #[serde(default)]
+    pub ports: Vec<PortDescription>,
+    /// Present only on a node that forwards a universe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dmx: Option<DmxDescription>,
+    /// HTTP control port. 0 asks the OS for a free one.
+    #[serde(default)]
+    pub http_port: u16,
+    /// Register with mDNS.
+    #[serde(default = "yes")]
+    pub advertise: bool,
+    /// Report a reading or toggle an input every this many milliseconds,
+    /// unprompted. None leaves the node quiet until something drives it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_ms: Option<u64>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl NodeConfig {
+    /// Read a config file. Any parse trouble names the file, because the usual
+    /// mistake is having edited the wrong one.
+    pub fn read(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+    }
+
+    /// Write a config file, pretty and with a trailing newline, because these are
+    /// meant to be read and edited by hand as much as by this window.
+    pub fn write(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let path = path.as_ref();
+        let mut text = serde_json::to_string_pretty(self)?;
+        text.push('\n');
+        std::fs::write(path, text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        Ok(())
+    }
+
+    /// The ports the console reads, in the order the node numbered them.
+    pub fn inputs(&self) -> impl Iterator<Item = &PortDescription> {
+        self.ports.iter().filter(|p| p.is_input())
+    }
+
+    /// Whatever is wrong with this config, in words. Empty means it is runnable.
+    ///
+    /// Kept out of `Deserialize` on purpose: a file with a duplicate port number
+    /// should load into the editor so it can be fixed, not be refused at the door.
+    pub fn problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if self.serial.trim().is_empty() {
+            problems.push("a node needs a serial: it is what its topics are keyed by".into());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for port in &self.ports {
+            if !seen.insert(port.port) {
+                problems.push(format!("two ports are numbered {}", port.port));
+            }
+            if !matches!(port.access.as_str(), "readonly" | "readwrite") {
+                problems.push(format!(
+                    "port {} has access {:?}; UDR has readonly and readwrite",
+                    port.port, port.access,
+                ));
+            }
+            if !matches!(port.data_type.as_str(), "boolean" | "number" | "string" | "color") {
+                problems.push(format!(
+                    "port {} has dataType {:?}; the protocol has boolean, number, string and color",
+                    port.port, port.data_type,
+                ));
+            }
+        }
+        problems
+    }
+}
+
+/// `0x0003` on the wire, a `u16` in here. The protocol writes module type ids in
+/// hex and a config file should look like the protocol.
+mod hex_u16 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &u16, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format!("{value:#06x}"))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u16, D::Error> {
+        // A number is accepted too: a file written by hand is allowed to say 4.
+        match serde_json::Value::deserialize(d)? {
+            serde_json::Value::Number(n) => n
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .ok_or_else(|| serde::de::Error::custom("module type out of range")),
+            serde_json::Value::String(raw) => {
+                let raw = raw.trim();
+                match raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+                    Some(hex) => u16::from_str_radix(hex, 16),
+                    None => raw.parse(),
+                }
+                .map_err(|_| serde::de::Error::custom(format!("not a module type: {raw}")))
+            }
+            _ => Err(serde::de::Error::custom("module type is a hex string")),
+        }
+    }
+}
+
+// ── Presets ───────────────────────────────────────────────────────────────────
+//
+// The seven modules in `OpenHaunt/node`'s catalogue, as somewhere to start from.
+// They are a convenience of this simulator and nothing more: the node runs on a
+// [`NodeConfig`], and a preset is only one way of arriving at one. Nothing in the
+// running node asks which module kind it came from.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleKind {
@@ -76,8 +325,91 @@ impl ModuleKind {
     /// Descriptor flags. Bit 6 says the module switches mains.
     pub fn flags(self) -> u32 {
         match self {
-            ModuleKind::MainsRelay => 1 << 6,
+            ModuleKind::MainsRelay => MAINS_FLAG,
             _ => 0,
+        }
+    }
+
+    /// This preset as a config: a whole node, ready to run or to edit.
+    pub fn config(self, serial: impl Into<String>) -> NodeConfig {
+        let serial = serial.into();
+        NodeConfig {
+            name: format!("{} {serial}", self.name()),
+            module: ModuleDescriptor {
+                type_id: self.type_id(),
+                name: self.name().to_string(),
+                rev: "a".to_string(),
+                flags: self.flags(),
+                caps: self.caps().to_string(),
+            },
+            ports: self.ports(),
+            dmx: self.dmx(),
+            serial,
+            http_port: 0,
+            advertise: false,
+            auto_ms: None,
+        }
+    }
+
+    /// What this module's terminals are, as the node itself reports them.
+    ///
+    /// Written from the module documents, because this is the firmware's side of
+    /// the contract: the driver for a module type knows its ports and says so.
+    pub fn ports(self) -> Vec<PortDescription> {
+        use PortDescription as P;
+        match self {
+            // A gateway has no ports of its own. The lights behind it are patched
+            // as their own DMX fixtures, in the universe it forwards.
+            ModuleKind::DmxOut => Vec::new(),
+            ModuleKind::DigitalIn => (0..8)
+                .map(|n| {
+                    P::new(n, INPUT_NAMES[n as usize], "readonly", "boolean").class("contact")
+                })
+                .collect(),
+            ModuleKind::Ws2812 => vec![
+                P::new(0, "Strip colour", "readwrite", "color").class("color"),
+                P::new(1, "Brightness", "readwrite", "number")
+                    .unit("percent")
+                    .range(0.0, 1.0)
+                    .default_at(0.0)
+                    .class("intensity"),
+            ],
+            ModuleKind::MainsRelay => {
+                vec![P::new(0, "Relay", "readwrite", "boolean").default_at(0.0).class("switch")]
+            }
+            ModuleKind::Oled => vec![P::new(0, "Line", "readwrite", "string").class("text")],
+            ModuleKind::DryContact => (0..4)
+                .map(|n| {
+                    P::new(n, CONTACT_NAMES[n as usize], "readwrite", "boolean")
+                        .default_at(0.0)
+                        .class("switch")
+                })
+                .collect(),
+            ModuleKind::Environment => vec![
+                P::new(0, "Temperature", "readonly", "number")
+                    .unit("degree-celsius")
+                    .range(-40.0, 85.0)
+                    .class("temperature"),
+                P::new(1, "Humidity", "readonly", "number")
+                    .unit("percent")
+                    .range(0.0, 100.0)
+                    .class("humidity"),
+                P::new(2, "Air quality", "readonly", "number")
+                    .unit("parts-per-million")
+                    .range(0.0, 5000.0)
+                    .class("air-quality"),
+            ],
+        }
+    }
+
+    /// The universe this module forwards, if it forwards one.
+    pub fn dmx(self) -> Option<DmxDescription> {
+        match self {
+            ModuleKind::DmxOut => Some(DmxDescription {
+                protocols: vec!["sacn".to_string(), "artnet".to_string()],
+                universes: 1,
+            }),
+            _ => None,
         }
     }
 
@@ -119,34 +451,38 @@ impl ModuleKind {
     }
 }
 
+/// Port names, spelled out rather than formatted, so a description is made of
+/// `&'static str` and costs nothing to hand out.
+const INPUT_NAMES: [&str; 8] = [
+    "Input 1", "Input 2", "Input 3", "Input 4", "Input 5", "Input 6", "Input 7", "Input 8",
+];
+
+const CONTACT_NAMES: [&str; 4] = ["Contact 1", "Contact 2", "Contact 3", "Contact 4"];
+
 // ── Configuration ─────────────────────────────────────────────────────────────
 
+/// How to run a node here, as opposed to what the node *is*.
+///
+/// [`NodeConfig`] is the part that goes in a file and describes a device;
+/// `sacn_port` is a fact about this machine, so it stays out of it.
 pub struct SimConfig {
-    pub module: ModuleKind,
-    pub serial: String,
-    pub name: String,
-    /// 0 asks the OS for a free port, which is what tests want.
-    pub http_port: u16,
-    /// 0 likewise. The bin uses [`SACN_PORT`].
+    pub node: NodeConfig,
+    /// 0 asks the OS for a free port, which is what tests want. The bin uses
+    /// [`SACN_PORT`].
     pub sacn_port: u16,
-    /// Register with mDNS. Off in tests, so nothing touches multicast.
-    pub advertise: bool,
-    /// Report a reading or toggle an input on this interval, unprompted.
-    pub auto: Option<Duration>,
 }
 
 impl SimConfig {
+    /// A node from one of the catalogue presets, quiet and on an ephemeral port —
+    /// which is what a test wants, and what everything else overrides.
     pub fn new(module: ModuleKind, serial: impl Into<String>) -> Self {
-        let serial = serial.into();
-        SimConfig {
-            name: format!("{} {serial}", module.name()),
-            module,
-            serial,
-            http_port: 0,
-            sacn_port: 0,
-            advertise: false,
-            auto: None,
-        }
+        SimConfig { node: module.config(serial), sacn_port: 0 }
+    }
+}
+
+impl From<NodeConfig> for SimConfig {
+    fn from(node: NodeConfig) -> Self {
+        SimConfig { node, sacn_port: SACN_PORT }
     }
 }
 
@@ -156,21 +492,15 @@ impl SimConfig {
 /// of these separately, over the wire, which is the point. It exists so that a
 /// window onto a simulated node can show what the node is doing without having to
 /// subscribe to five channels and stitch them together.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
-    pub serial: String,
-    pub name: String,
-    /// The module's short name, as `--module` takes it.
-    pub module: String,
-    pub module_name: String,
-    pub type_id: u16,
-    pub caps: String,
-    /// Descriptor bit 6: this module switches mains, and a console should say so.
-    pub switches_mains: bool,
+    /// What this node is: identity, module descriptor, ports, and the rest of
+    /// what a config file holds. One value rather than a scattering of copies, so
+    /// a window that wants to edit the node is editing the same thing that runs.
+    pub config: NodeConfig,
     pub http_addr: String,
     pub sacn_addr: Option<String>,
-    pub advertising: bool,
     /// Whether a console has ever sent `POST /api/v1/config`.
     pub adopted: bool,
     /// The broker it was told to publish to, which is what adoption amounts to.
@@ -201,6 +531,53 @@ pub struct SimHandle {
     pub inputs: mpsc::Sender<Input>,
     /// The whole node in one value, for a window onto it. See [`Snapshot`].
     pub snapshot: watch::Receiver<Snapshot>,
+    /// Put the node away: its HTTP socket, its mDNS registration, its MQTT
+    /// connection, its sACN socket. What a window needs in order to start a
+    /// differently-configured node in its place without closing.
+    pub stop: Stopper,
+}
+
+/// Everything a running node is holding, and one way to let go of it.
+///
+/// A node is sockets and a name on the network, so stopping it is not a matter of
+/// dropping a value: the mDNS registration has to be withdrawn or the record
+/// lingers in every browser's cache, and the ports have to actually be free
+/// before anything tries to bind them again. [`Stopper::stop`] waits for that.
+#[derive(Clone, Default)]
+pub struct Stopper {
+    tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    mdns: Arc<Mutex<Option<(mdns_sd::ServiceDaemon, String)>>>,
+}
+
+impl Stopper {
+    fn holds(&self, task: tokio::task::JoinHandle<()>) {
+        self.tasks.lock().unwrap().push(task);
+    }
+
+    fn advertises(&self, daemon: mdns_sd::ServiceDaemon, fullname: String) {
+        *self.mdns.lock().unwrap() = Some((daemon, fullname));
+    }
+
+    /// Stop the node and wait for it to have stopped.
+    ///
+    /// Aborting rather than asking politely: this is a simulator, there is no
+    /// in-flight work worth finishing, and a caller about to rebind port 5568
+    /// cares only that the old socket is gone.
+    pub async fn stop(&self) {
+        if let Some((daemon, fullname)) = self.mdns.lock().unwrap().take() {
+            // Withdrawing the record is worth doing even though the daemon is
+            // about to go: a console that browsed us should hear we left.
+            if let Ok(receiver) = daemon.unregister(&fullname) {
+                let _ = receiver.recv_timeout(Duration::from_millis(500));
+            }
+            let _ = daemon.shutdown();
+        }
+        let tasks: Vec<_> = std::mem::take(&mut *self.tasks.lock().unwrap());
+        for task in tasks {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 /// Something happening at the terminals.
@@ -216,9 +593,9 @@ pub enum Input {
 
 #[derive(Clone)]
 struct Node {
-    module: ModuleKind,
-    serial: String,
-    name: String,
+    /// What this node is. Read for every answer it gives, because a node that
+    /// describes itself has nowhere else to get the answer from.
+    config: Arc<NodeConfig>,
     config_tx: Arc<watch::Sender<Option<Value>>>,
     state_tx: Arc<watch::Sender<BTreeMap<String, Value>>>,
     identified: Arc<Mutex<usize>>,
@@ -235,39 +612,43 @@ impl Node {
 }
 
 pub async fn start(config: SimConfig) -> Result<SimHandle> {
+    let SimConfig { node: node_config, sacn_port } = config;
+    let node_config = Arc::new(node_config);
+
     let (config_tx, received_config) = watch::channel(None);
     let (state_tx, state) = watch::channel(BTreeMap::new());
     let (broker_tx, broker_rx) = watch::channel(None::<String>);
     let (inputs, inputs_rx) = mpsc::channel(64);
     let (frames_tx, sacn_frames) = mpsc::channel(64);
     let (snapshot_tx, snapshot) = watch::channel(Snapshot {
-        serial: config.serial.clone(),
-        name: config.name.clone(),
-        module: config.module.key().to_string(),
-        module_name: config.module.name().to_string(),
-        type_id: config.module.type_id(),
-        caps: config.module.caps().to_string(),
-        switches_mains: config.module.flags() & (1 << 6) != 0,
-        advertising: config.advertise,
+        config: (*node_config).clone(),
+        http_addr: String::new(),
+        sacn_addr: None,
+        adopted: false,
+        broker: None,
+        mqtt_connected: false,
+        outputs: BTreeMap::new(),
+        inputs: BTreeMap::new(),
+        identified: 0,
         started_ms: now_ms(),
-        ..Snapshot::default()
     });
 
     let node = Node {
-        module: config.module,
-        serial: config.serial.clone(),
-        name: config.name.clone(),
+        config: node_config.clone(),
         config_tx: Arc::new(config_tx),
         state_tx: Arc::new(state_tx),
         identified: Arc::new(Mutex::new(0)),
         snapshot: Arc::new(snapshot_tx),
     };
+    let stop = Stopper::default();
 
-    let http_addr = serve_http(node.clone(), config.http_port, broker_tx).await?;
+    let http_addr = serve_http(node.clone(), &stop, broker_tx).await?;
 
-    let sacn_addr = match config.module {
-        ModuleKind::DmxOut => Some(listen_for_sacn(config.sacn_port, frames_tx).await?),
-        _ => None,
+    // A node listens for sACN exactly when it says it forwards a universe. There
+    // is no module id involved: the description is the whole of the answer.
+    let sacn_addr = match node_config.dmx {
+        Some(_) => Some(listen_for_sacn(sacn_port, &stop, frames_tx).await?),
+        None => None,
     };
 
     node.describe(|s| {
@@ -275,23 +656,34 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         s.sacn_addr = sacn_addr.map(|a| a.to_string());
     });
 
-    tokio::spawn(run_mqtt(node, broker_rx, inputs_rx, config.auto));
+    let auto = node_config.auto_ms.map(Duration::from_millis);
+    stop.holds(tokio::spawn(run_mqtt(node, broker_rx, inputs_rx, auto)));
 
-    if config.advertise {
-        advertise(&config, http_addr)?;
+    if node_config.advertise {
+        advertise(&node_config, http_addr, &stop)?;
     }
 
-    info!("[sim] {} on {http_addr}", config.serial);
-    Ok(SimHandle { http_addr, sacn_addr, received_config, state, sacn_frames, inputs, snapshot })
+    info!("[sim] {} on {http_addr}", node_config.serial);
+    Ok(SimHandle {
+        http_addr,
+        sacn_addr,
+        received_config,
+        state,
+        sacn_frames,
+        inputs,
+        snapshot,
+        stop,
+    })
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
 
 async fn serve_http(
     node: Node,
-    port: u16,
+    stop: &Stopper,
     broker: watch::Sender<Option<String>>,
 ) -> Result<SocketAddr> {
+    let port = node.config.http_port;
     let broker = Arc::new(broker);
     let app = Router::new()
         .route("/api/v1/info", get(info))
@@ -303,10 +695,20 @@ async fn serve_http(
                 move |State(node): State<Node>, Json(body): Json<Value>| {
                     let broker = broker.clone();
                     async move {
-                        info!("[sim] {} configured: {body}", node.serial);
+                        info!("[sim] {} configured: {body}", node.config.serial);
                         if let Some(addr) = body["mqtt"]["broker"].as_str() {
                             let _ = broker.send(Some(addr.to_string()));
                             node.describe(|s| s.broker = Some(addr.to_string()));
+                        }
+                        // A node accepts `dmx` only where its own description said
+                        // it forwards a universe. Anything else is a console that
+                        // guessed, and a node that says so is easier to debug than
+                        // one that quietly forwards nothing.
+                        if !body["dmx"].is_null() && node.config.dmx.is_none() {
+                            warn!(
+                                "[sim] {} was sent dmx config but describes no universe: {}",
+                                node.config.serial, body["dmx"],
+                            );
                         }
                         node.describe(|s| s.adopted = true);
                         let _ = node.config_tx.send(Some(body));
@@ -321,29 +723,39 @@ async fn serve_http(
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     let addr = listener.local_addr()?;
-    tokio::spawn(async move {
+    stop.holds(tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             warn!("[sim] http stopped: {e}");
         }
-    });
+    }));
     Ok(addr)
 }
 
 async fn info(State(node): State<Node>) -> Json<Value> {
-    Json(json!({
+    let module = &node.config.module;
+    let mut info = json!({
         "v": "1",
         "fw": "0.0.0-sim",
-        "sn": node.serial,
-        "name": node.name,
+        "sn": node.config.serial,
+        "name": node.config.name,
         "module": {
-            "type": format!("{:#06x}", node.module.type_id()),
-            "name": node.module.name(),
-            "sn": format!("mod-{}", node.serial),
-            "rev": "a",
-            "flags": node.module.flags(),
-            "caps": node.module.caps(),
+            "type": format!("{:#06x}", module.type_id),
+            "name": module.name,
+            "sn": format!("mod-{}", node.config.serial),
+            "rev": module.rev,
+            "flags": module.flags,
+            "caps": module.caps,
         },
-    }))
+        // Only the device knows what it is. A controller reads this and builds its
+        // fixture type from it; it carries no catalogue of module types.
+        "ports": node.config.ports,
+    });
+    // `dmx` is present only on a node that forwards a universe: its absence is
+    // what tells a console there is none to allocate.
+    if let Some(dmx) = &node.config.dmx {
+        info["dmx"] = json!(dmx);
+    }
+    Json(info)
 }
 
 async fn read_state(State(node): State<Node>) -> Json<Value> {
@@ -369,7 +781,7 @@ async fn write_state(State(node): State<Node>, Json(body): Json<Value>) -> Json<
 async fn identify(State(node): State<Node>) -> Json<Value> {
     *node.identified.lock().unwrap() += 1;
     node.describe(|s| s.identified += 1);
-    info!("[sim] {} blinking", node.serial);
+    info!("[sim] {} blinking", node.config.serial);
     Json(json!({ "ok": true }))
 }
 
@@ -393,9 +805,10 @@ async fn run_mqtt(
         }
     };
 
-    let status = format!("openhaunt/{}/status", node.serial);
+    let serial = node.config.serial.clone();
+    let status = format!("openhaunt/{serial}/status");
     let (host, port) = split_addr(&addr);
-    let mut options = MqttOptions::new(format!("openhaunt-{}", node.serial), host, port);
+    let mut options = MqttOptions::new(format!("openhaunt-{serial}"), host, port);
     options.set_keep_alive(Duration::from_secs(10));
     options.set_last_will(LastWill::new(&status, "offline", QoS::AtLeastOnce, true));
 
@@ -403,7 +816,7 @@ async fn run_mqtt(
     let _ = client.publish(&status, QoS::AtLeastOnce, true, "offline").await;
     let _ = client.publish(&status, QoS::AtLeastOnce, true, "online").await;
     let _ = client
-        .subscribe(format!("openhaunt/{}/output/+/set", node.serial), QoS::AtLeastOnce)
+        .subscribe(format!("openhaunt/{serial}/output/+/set"), QoS::AtLeastOnce)
         .await;
 
     let mut health = tokio::time::interval(Duration::from_secs(10));
@@ -440,32 +853,45 @@ async fn run_mqtt(
                     "poe_class": 3,
                     "errors": [],
                 });
-                let topic = format!("openhaunt/{}/health", node.serial);
+                let topic = format!("openhaunt/{serial}/health");
                 let _ = client.publish(topic, QoS::AtLeastOnce, false, payload.to_string()).await;
             }
 
             _ = async { ticker.as_mut().unwrap().tick().await }, if ticker.is_some() => {
                 auto_state = !auto_state;
-                let input = match node.module {
-                    ModuleKind::Environment => Input::Reading {
-                        port: 0,
-                        value: if auto_state { 21.5 } else { 22.0 },
-                    },
-                    _ => Input::Contact { port: 0, state: auto_state },
-                };
-                publish_input(&client, &node, input).await;
+                // Whatever this node said it reads, driven the way its data type
+                // asks — a boolean toggles, a number walks its declared range.
+                if let Some(input) = unprompted(&node, auto_state) {
+                    publish_input(&client, &node, input).await;
+                }
             }
         }
     }
 }
 
+/// The reading or edge a node with `--auto` reports on its own, on the first port
+/// it described as `readonly`. None where the module reads nothing.
+fn unprompted(node: &Node, state: bool) -> Option<Input> {
+    let port = node.config.inputs().next()?;
+    Some(match port.data_type.as_str() {
+        "boolean" => Input::Contact { port: port.port, state },
+        _ => {
+            let low = port.minimum.unwrap_or(0.0);
+            let high = port.maximum.unwrap_or(1.0);
+            // A third of the way up and back down: plainly moving, plainly in range.
+            let value = low + (high - low) * if state { 0.33 } else { 0.4 };
+            Input::Reading { port: port.port, value: value as f32 }
+        }
+    })
+}
+
 fn connection_lost(node: &Node, error: &ConnectionError) {
-    debug!("[sim] {} mqtt: {error}", node.serial);
+    debug!("[sim] {} mqtt: {error}", node.config.serial);
     node.describe(|s| s.mqtt_connected = false);
 }
 
 async fn publish_input(client: &AsyncClient, node: &Node, input: Input) {
-    let serial = &node.serial;
+    let serial = &node.config.serial;
     let (port, payload) = match input {
         Input::Contact { port, state } => (
             port,
@@ -476,7 +902,17 @@ async fn publish_input(client: &AsyncClient, node: &Node, input: Input) {
             }),
         ),
         Input::Reading { port, value } => {
-            (port, json!({ "value": value, "unit": "C", "ts": now_ms() }))
+            // The unit is the one this node published in its own description, not
+            // a literal: whatever `/api/v1/info` said about the port is what a
+            // reading off it carries.
+            let unit = node
+                .config
+                .ports
+                .iter()
+                .find(|p| p.port == port)
+                .and_then(|p| p.unit.as_deref())
+                .unwrap_or("unitless");
+            (port, json!({ "value": value, "unit": unit, "ts": now_ms() }))
         }
     };
     let topic = format!("openhaunt/{serial}/input/{port}");
@@ -491,7 +927,7 @@ async fn publish_input(client: &AsyncClient, node: &Node, input: Input) {
 fn apply_output(node: &Node, topic: &str, payload: &[u8]) {
     let Some(port) = topic.split('/').nth(3) else { return };
     let Ok(value) = serde_json::from_slice::<Value>(payload) else { return };
-    info!("[sim] {} output {port} <- {value}", node.serial);
+    info!("[sim] {} output {port} <- {value}", node.config.serial);
     node.state_tx.send_modify(|state| {
         state.insert(port.to_string(), value.clone());
     });
@@ -506,10 +942,14 @@ fn apply_output(node: &Node, topic: &str, payload: &[u8]) {
 ///
 /// Enough of the packet is checked to tell a real frame from a stray datagram, and
 /// no more: this is a node under test, not a conformance suite.
-async fn listen_for_sacn(port: u16, frames: mpsc::Sender<(u16, Vec<u8>)>) -> Result<SocketAddr> {
+async fn listen_for_sacn(
+    port: u16,
+    stop: &Stopper,
+    frames: mpsc::Sender<(u16, Vec<u8>)>,
+) -> Result<SocketAddr> {
     let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port)).await?;
     let addr = socket.local_addr()?;
-    tokio::spawn(async move {
+    stop.holds(tokio::spawn(async move {
         let mut buffer = vec![0u8; 1500];
         loop {
             let Ok(n) = socket.recv(&mut buffer).await else { break };
@@ -519,7 +959,7 @@ async fn listen_for_sacn(port: u16, frames: mpsc::Sender<(u16, Vec<u8>)>) -> Res
                 }
             }
         }
-    });
+    }));
     Ok(addr)
 }
 
@@ -538,18 +978,23 @@ pub fn parse_e131(packet: &[u8]) -> Option<(u16, Vec<u8>)> {
 
 // ── mDNS ──────────────────────────────────────────────────────────────────────
 
-fn advertise(config: &SimConfig, http_addr: SocketAddr) -> Result<()> {
+fn advertise(config: &NodeConfig, http_addr: SocketAddr, stop: &Stopper) -> Result<()> {
     let daemon = mdns_sd::ServiceDaemon::new()?;
     let mut txt = std::collections::HashMap::new();
     txt.insert("v".to_string(), "1".to_string());
     txt.insert("fw".to_string(), "0.0.0-sim".to_string());
     txt.insert("sn".to_string(), config.serial.clone());
-    txt.insert("mod".to_string(), format!("{:#06x}", config.module.type_id()));
-    txt.insert("modname".to_string(), config.module.name().to_string());
+    txt.insert("mod".to_string(), format!("{:#06x}", config.module.type_id));
+    txt.insert("modname".to_string(), config.module.name.clone());
     txt.insert("modsn".to_string(), format!("mod-{}", config.serial));
-    txt.insert("modrev".to_string(), "a".to_string());
-    txt.insert("caps".to_string(), config.module.caps().to_string());
+    txt.insert("modrev".to_string(), config.module.rev.clone());
+    txt.insert("caps".to_string(), config.module.caps.clone());
     txt.insert("name".to_string(), config.name.clone());
+    // The one fact worth stating before anybody asks: a mains warning is more use
+    // early than correct-and-late.
+    if config.module.switches_mains() {
+        txt.insert("mains".to_string(), "1".to_string());
+    }
 
     let info = mdns_sd::ServiceInfo::new(
         SERVICE_TYPE,
@@ -559,10 +1004,11 @@ fn advertise(config: &SimConfig, http_addr: SocketAddr) -> Result<()> {
         http_addr.port(),
         txt,
     )?;
+    let fullname = info.get_fullname().to_string();
     daemon.register(info)?;
-    // The daemon stops browsing and advertising when dropped, and a simulated node
-    // lives for the life of the process.
-    std::mem::forget(daemon);
+    // Held rather than forgotten: a node that is being reconfigured has to be able
+    // to withdraw its record, or the old shape lingers in every browser's cache.
+    stop.advertises(daemon, fullname);
     info!("[sim] advertising openhaunt-{}", config.serial);
     Ok(())
 }
@@ -618,6 +1064,121 @@ mod tests {
     fn only_the_relay_sets_the_mains_flag() {
         assert_eq!(ModuleKind::MainsRelay.flags(), 1 << 6);
         assert_eq!(ModuleKind::DryContact.flags(), 0);
+    }
+
+    #[test]
+    fn every_preset_numbers_its_ports_from_zero_and_is_runnable() {
+        for module in ModuleKind::ALL {
+            let config = module.config("1a2b3c");
+            for (index, port) in config.ports.iter().enumerate() {
+                assert_eq!(port.port, index as u8, "{} port {index}", module.key());
+            }
+            assert!(config.problems().is_empty(), "{}: {:?}", module.key(), config.problems());
+        }
+    }
+
+    #[test]
+    fn a_config_round_trips_through_the_file_it_is_written_to() {
+        let before = ModuleKind::Environment.config("9a9a9a");
+        let json = serde_json::to_string_pretty(&before).unwrap();
+        let after: NodeConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(before, after);
+        // The module type is hex on the wire and hex in the file, because a file
+        // that does not look like the protocol is a file people mistranslate.
+        assert!(json.contains("\"type\": \"0x0007\""), "{json}");
+    }
+
+    #[test]
+    fn a_config_written_by_hand_may_leave_out_everything_optional() {
+        let sparse: NodeConfig = serde_json::from_value(json!({
+            "name": "Fog machine",
+            "serial": "9f1c22",
+            "module": { "type": "0x0100", "name": "Fogger" },
+            "ports": [
+                { "port": 0, "name": "Fog output", "access": "readwrite", "dataType": "number" },
+            ],
+        }))
+        .unwrap();
+
+        assert_eq!(sparse.module.type_id, 0x0100);
+        assert_eq!(sparse.module.rev, "a");
+        assert!(sparse.advertise, "a node written down to be run should be findable");
+        assert_eq!(sparse.dmx, None);
+        assert!(sparse.problems().is_empty());
+    }
+
+    #[test]
+    fn a_config_says_what_is_wrong_with_it_rather_than_refusing_to_load() {
+        let muddled: NodeConfig = serde_json::from_value(json!({
+            "name": "Muddle", "serial": "",
+            "module": { "type": 4, "name": "Whatever" },
+            "ports": [
+                { "port": 0, "name": "One", "access": "readwrite", "dataType": "boolean" },
+                { "port": 0, "name": "Two", "access": "sideways", "dataType": "vibes" },
+            ],
+        }))
+        .unwrap();
+
+        // It parsed, because an editor has to be able to show a bad config in
+        // order for anyone to fix it.
+        assert_eq!(muddled.module.type_id, 4, "a plain number is a module type too");
+        let problems = muddled.problems();
+        assert!(problems.iter().any(|p| p.contains("serial")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("numbered 0")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("sideways")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("vibes")), "{problems:?}");
+    }
+
+    #[test]
+    fn only_the_gateway_says_it_forwards_a_universe() {
+        assert!(ModuleKind::DmxOut.dmx().is_some());
+        assert!(ModuleKind::DmxOut.ports().is_empty());
+        for module in ModuleKind::ALL.into_iter().filter(|m| *m != ModuleKind::DmxOut) {
+            assert!(module.dmx().is_none(), "{} is not a gateway", module.key());
+            assert!(!module.ports().is_empty(), "{} has terminals", module.key());
+        }
+    }
+
+    #[test]
+    fn a_reading_carries_the_unit_the_description_gave_it() {
+        let temperature = ModuleKind::Environment.ports().remove(0);
+        assert_eq!(temperature.unit.as_deref(), Some("degree-celsius"));
+        assert_eq!(temperature.class.as_deref(), Some("temperature"));
+    }
+
+    #[test]
+    fn a_node_that_has_been_stopped_gives_its_port_back() {
+        // What a window reconfiguring a node depends on: the old socket has to be
+        // gone by the time `stop` returns, or the next node cannot bind it.
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut config = ModuleKind::MainsRelay.config("4d5e6f");
+            config.http_port = 0;
+            let first = start(SimConfig { node: config.clone(), sacn_port: 0 }).await.unwrap();
+            let port = first.http_addr.port();
+            config.http_port = port;
+
+            first.stop.stop().await;
+
+            let again = start(SimConfig { node: config, sacn_port: 0 }).await;
+            assert!(again.is_ok(), "the port a stopped node held has to be free");
+        });
+    }
+
+    #[test]
+    fn a_config_with_no_ports_and_no_universe_is_a_node_that_describes_nothing() {
+        // Which a console is entitled to refuse to adopt — and being able to make
+        // one here is how that gets tested against a real node rather than a stub.
+        let silent: NodeConfig = serde_json::from_value(json!({
+            "name": "Old firmware", "serial": "0b501e",
+            "module": { "type": "0x0004", "name": "Mains Relay" },
+        }))
+        .unwrap();
+
+        assert!(silent.ports.is_empty());
+        assert_eq!(silent.dmx, None);
+        assert!(silent.problems().is_empty(), "saying nothing is not a malformed config");
     }
 
     #[test]

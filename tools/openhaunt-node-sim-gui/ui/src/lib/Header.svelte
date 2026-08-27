@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Dot from './Dot.svelte';
-	import { uptime, type Snapshot } from './node.js';
+	import { MAINS_FLAG, uptime, type Snapshot } from './node.js';
 
 	let { node }: { node: Snapshot } = $props();
 
@@ -15,18 +15,25 @@
 
 <header>
 	<div class="identity">
-		<h1>{node.moduleName}</h1>
-		<span class="mono serial">{node.serial}</span>
-		{#if node.switchesMains}
+		<h1>{node.config.module.name}</h1>
+		<span class="mono serial">{node.config.serial}</span>
+		<span class="ports">
+			{node.config.ports.length}
+			{node.config.ports.length === 1 ? 'port' : 'ports'}{node.config.dmx
+				? ' · 1 universe'
+				: ''}
+		</span>
+		{#if (node.config.module.flags & MAINS_FLAG) !== 0}
 			<span class="mains" title="Descriptor bit 6: this module switches mains">mains</span>
 		{/if}
 	</div>
 
 	<dl>
+		<div><dt>Name</dt><dd>{node.config.name}</dd></div>
 		<div><dt>Control</dt><dd class="mono">{node.httpAddr || '—'}</dd></div>
-		<div><dt>Module</dt><dd class="mono">0x{node.typeId.toString(16).padStart(4, '0')}</dd></div>
-		{#if node.caps}
-			<div><dt>Caps</dt><dd class="mono">{node.caps}</dd></div>
+		<div><dt>Module</dt><dd class="mono">{node.config.module.type}</dd></div>
+		{#if node.config.module.caps}
+			<div><dt>Caps</dt><dd class="mono">{node.config.module.caps}</dd></div>
 		{/if}
 		{#if node.sacnAddr}
 			<div><dt>sACN</dt><dd class="mono">{node.sacnAddr}</dd></div>
@@ -35,7 +42,7 @@
 	</dl>
 
 	<div class="lamps">
-		<Dot on={node.advertising} label="mDNS" />
+		<Dot on={node.config.advertise} label="mDNS" />
 		<!-- Adoption is the whole handshake in one flag: a node is discovered, not
 		     configured, so being told where the broker is is the only setup it gets. -->
 		<Dot on={node.adopted} label={node.broker ? `adopted · ${node.broker}` : 'not adopted'} />
@@ -68,8 +75,13 @@
 		font-weight: 600;
 	}
 
-	.serial {
+	.serial,
+	.ports {
 		color: var(--dim);
+	}
+
+	.ports {
+		font-size: 0.75rem;
 	}
 
 	.mains {

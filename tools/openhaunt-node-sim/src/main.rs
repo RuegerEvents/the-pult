@@ -1,28 +1,35 @@
 //! Run a simulated OpenHaunt node.
 //!
 //!     openhaunt-node-sim --module input --serial 1a2b3c
+//!     openhaunt-node-sim --config configs/fogger.json
 //!
 //! Then type at it: `in 3 1` closes contact 3, `in 3 0` opens it, `read 0 21.5`
 //! reports a sensor value.
-
-use std::time::Duration;
+//!
+//! `--module` picks one of the catalogue presets; `--config` runs whatever a file
+//! says, which is how a node this crate has never heard of gets simulated. The
+//! other flags override either.
 
 use anyhow::Result;
 use clap::Parser;
-use openhaunt_node_sim::{start, Input, ModuleKind, SimConfig, SACN_PORT};
+use openhaunt_node_sim::{start, Input, ModuleKind, NodeConfig, SimConfig, SACN_PORT};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser)]
 #[command(about = "a simulated OpenHaunt I/O node")]
 struct Args {
+    /// A node config file: identity, module descriptor and ports. Overrides
+    /// `--module`, and the flags below override it in turn.
+    #[arg(long, value_name = "PATH")]
+    config: Option<std::path::PathBuf>,
     /// dmx, input, led, relay, oled, contact, or env.
     #[arg(long, default_value = "input")]
     module: String,
-    #[arg(long, default_value = "1a2b3c")]
-    serial: String,
+    #[arg(long)]
+    serial: Option<String>,
     /// HTTP control port. 0 asks the OS for a free one.
-    #[arg(long, default_value_t = 80)]
-    port: u16,
+    #[arg(long)]
+    port: Option<u16>,
     /// Do not advertise over mDNS. The node is then only reachable if something
     /// already knows its address.
     #[arg(long)]
@@ -30,6 +37,10 @@ struct Args {
     /// Toggle an input, or report a reading, every this many milliseconds.
     #[arg(long, value_name = "MS")]
     auto: Option<u64>,
+    /// Write the config this run would use to a file and exit. A preset is the
+    /// easiest thing to start editing from.
+    #[arg(long, value_name = "PATH")]
+    write_config: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -40,19 +51,22 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    let module = ModuleKind::parse(&args.module)
-        .ok_or_else(|| anyhow::anyhow!("unknown module: {}", args.module))?;
+    let config = resolve(&args)?;
 
-    let handle = start(SimConfig {
-        http_port: args.port,
-        sacn_port: SACN_PORT,
-        advertise: !args.quiet,
-        auto: args.auto.map(Duration::from_millis),
-        ..SimConfig::new(module, args.serial)
-    })
-    .await?;
+    for problem in config.problems() {
+        eprintln!("warning: {problem}");
+    }
 
-    println!("{} on {}", module.name(), handle.http_addr);
+    if let Some(path) = &args.write_config {
+        config.write(path)?;
+        println!("wrote {}", path.display());
+        return Ok(());
+    }
+
+    let name = config.module.name.clone();
+    let handle = start(SimConfig { node: config, sacn_port: SACN_PORT }).await?;
+
+    println!("{name} on {}", handle.http_addr);
     println!("type `in <port> <0|1>`, `read <port> <value>`, or ctrl-c");
 
     let inputs = handle.inputs.clone();
@@ -80,6 +94,46 @@ async fn main() -> Result<()> {
     // A node with no sACN socket has nothing else to wait for.
     std::future::pending::<()>().await;
     Ok(())
+}
+
+/// The config this run should use: a file or a preset, with the flags on top.
+///
+/// Flags win over a file so that one config can be started twice on one machine —
+/// two serials, two ports, one description.
+fn resolve(args: &Args) -> Result<NodeConfig> {
+    let mut config = match &args.config {
+        Some(path) => NodeConfig::read(path)?,
+        None => {
+            let module = ModuleKind::parse(&args.module)
+                .ok_or_else(|| anyhow::anyhow!("unknown module: {}", args.module))?;
+            let mut config = module.config("1a2b3c");
+            // A preset is meant to be run, and running means being findable on
+            // port 80 like a real node. Its defaults are the ones tests want.
+            config.http_port = 80;
+            config.advertise = true;
+            config
+        }
+    };
+
+    if let Some(serial) = &args.serial {
+        // The name usually carries the serial, and a renamed node keeping the old
+        // one in its friendly name is the sort of thing that wastes an afternoon.
+        if config.name.ends_with(&config.serial) {
+            let stem = config.name.trim_end_matches(&config.serial).trim_end();
+            config.name = format!("{stem} {serial}");
+        }
+        config.serial = serial.clone();
+    }
+    if let Some(port) = args.port {
+        config.http_port = port;
+    }
+    if args.quiet {
+        config.advertise = false;
+    }
+    if let Some(auto) = args.auto {
+        config.auto_ms = Some(auto);
+    }
+    Ok(config)
 }
 
 fn parse_command(line: &str) -> Option<Input> {

@@ -1,67 +1,70 @@
 <script lang="ts">
 	import {
-		readBrightness,
+		outputPorts,
 		readColor,
+		readNumber,
 		readState,
 		readText,
-		switches,
+		unitLabel,
 		type Snapshot
 	} from './node.js';
 
 	let { node }: { node: Snapshot } = $props();
 
-	const relays = $derived(switches(node.module));
-	const colour = $derived(readColor(node.outputs['0']));
-	const brightness = $derived(readBrightness(node.outputs['1']) ?? readBrightness(node.outputs['0']));
-	const text = $derived(readText(node.outputs['0']));
+	// The node said what each terminal is; the panel draws it accordingly. Nothing
+	// here knows a relay from a strip — the data type does the deciding.
+	const ports = $derived(outputPorts(node));
 
-	/** Anything the console sent that this panel has no picture for. */
+	/// A number as the port's own unit asks for it: `percent` is the one a
+	/// console sends as 0–1 and an operator reads as 0–100.
+	function format(level: number, unit: string | undefined): string {
+		if (unit === 'percent') return `${Math.round(level * 100)}%`;
+		return `${level}${unitLabel(unit)}`;
+	}
+
+	/** Anything the console sent to a port this node never described. */
 	const unrecognised = $derived(
 		Object.entries(node.outputs).filter(
-			([port, value]) =>
-				!(node.module === 'relay' || node.module === 'contact'
-					? relays.includes(Number(port))
-					: node.module === 'led'
-						? port === '0' || port === '1'
-						: node.module === 'oled'
-							? port === '0'
-							: false) || value === null
+			([port]) => !ports.some((p) => String(p.port) === port)
 		)
 	);
 </script>
 
+
 <section>
 	<h2>Outputs</h2>
 
-	{#if relays.length > 0}
-		<!-- Read-only on purpose: these are what the console drives. A panel that
-		     could flip them would be inventing state the console does not know about. -->
-		<div class="relays">
-			{#each relays as port (port)}
-				{@const on = readState(node.outputs[String(port)])}
-				<div class="relay" class:on>
-					<span class="port mono">{port}</span>
-					<span class="lamp"></span>
-					<span class="state">{on ? 'closed' : 'open'}</span>
-				</div>
-			{/each}
-		</div>
-	{/if}
+	<!-- Read-only on purpose: these are what the console drives. A panel that could
+	     flip them would be inventing state the console does not know about. -->
+	{#each ports as port (port.port)}
+		{#if port.dataType === 'boolean'}
+			{@const on = readState(node.outputs[String(port.port)])}
+			<div class="relay" class:on>
+				<span class="port mono">{port.port}</span>
+				<span class="lamp"></span>
+				<span class="name">{port.name}</span>
+				<span class="state">{on ? 'closed' : 'open'}</span>
+			</div>
+		{:else if port.dataType === 'color'}
+			{@const colour = readColor(node.outputs[String(port.port)])}
+			<div class="strip" style:background={colour ?? '#000'}>
+				<span class="mono">{colour ?? 'unlit'}</span>
+			</div>
+		{:else if port.dataType === 'number'}
+			{@const level = readNumber(node.outputs[String(port.port)])}
+			<div class="reading">
+				<span class="port mono">{port.port}</span>
+				<span class="name">{port.name}</span>
+				<span class="mono value">
+					{level === null ? '—' : format(level, port.unit)}
+				</span>
+			</div>
+		{:else}
+			<div class="oled mono">{readText(node.outputs[String(port.port)]) ?? ''}</div>
+		{/if}
+	{/each}
 
-	{#if node.module === 'led'}
-		<div class="strip" style:background={colour ?? '#000'}>
-			<span class="mono">{colour ?? 'unlit'}</span>
-			{#if brightness !== null}
-				<span class="mono dim">{Math.round(brightness * 100)}%</span>
-			{/if}
-		</div>
-	{/if}
-
-	{#if node.module === 'oled'}
-		<div class="oled mono">{text ?? ''}</div>
-	{/if}
-
-	{#if node.module === 'dmx'}
+	{#if node.config.dmx}
 		<p class="note">
 			A gateway has no ports of its own — what it is sent arrives as sACN, below.
 		</p>
@@ -69,7 +72,7 @@
 
 	{#if unrecognised.length > 0}
 		<pre class="mono raw">{JSON.stringify(Object.fromEntries(unrecognised), null, 2)}</pre>
-	{:else if relays.length === 0 && node.module !== 'led' && node.module !== 'oled' && node.module !== 'dmx'}
+	{:else if ports.length === 0 && !node.config.dmx}
 		<p class="note">This module drives nothing.</p>
 	{/if}
 </section>
@@ -83,13 +86,8 @@
 		gap: 12px;
 	}
 
-	.relays {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-		gap: 8px;
-	}
-
-	.relay {
+	.relay,
+	.reading {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -103,6 +101,10 @@
 	.relay.on {
 		border-color: var(--warn);
 		color: var(--text);
+	}
+
+	.name {
+		font-size: 0.8rem;
 	}
 
 	.lamp {
@@ -121,7 +123,8 @@
 		font-weight: 600;
 	}
 
-	.state {
+	.state,
+	.value {
 		margin-left: auto;
 		font-size: 0.7rem;
 		letter-spacing: 0.05em;
@@ -141,10 +144,6 @@
 		color: #000;
 		text-shadow: 0 0 6px rgb(255 255 255 / 0.6);
 		transition: background 0.15s;
-	}
-
-	.strip .dim {
-		opacity: 0.7;
 	}
 
 	.oled {
