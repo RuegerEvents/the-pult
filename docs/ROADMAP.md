@@ -14,15 +14,16 @@ The spec is the product. This is the build order for getting there, and the gap 
 | WebSocket API | Working. Path-pattern subscribe, set, call, and broadcast fan-out. |
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
 | Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness and latency, vector-clock conflict resolution, and leader failover. Stations publish themselves and are visible in the UI. |
-| Frontend | Working for show, session, sequences, cues, and patch. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
+| Frontend | Working for show, session, sequences, cues, patch, and the programmer. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Configured from the `outputs` collection and editable while the show is up, with per-output status in the UI. Flags only seed an empty showfile. |
 | Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. |
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
 | Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. Tested end to end against `tools/openhaunt-sim`, which is all there is until there is firmware. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
-| 3D programmer | Not started. The largest piece of the spec and none of it exists. |
-| Selection, effects, timecode | Not started. No schema for any of them yet. |
+| 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects, phasers and geometric selection are still ahead. |
+| Selection | Working as a list: ordered, reorderable, its own panel, kept apart from the programmer. Still a list of ids rather than the geometric query the spec asks for. |
+| Effects, timecode | Not started. No schema for either yet. |
 
 ## Task list
 
@@ -284,15 +285,175 @@ Left open:
 - MVR and GDTF. `StagePlan` and the asset store are the two things an import needs,
   so nothing here is in its way.
 
+### 14. The programmer and cue editing (done)
+
+The console could play a cue but nobody could *make* one. `Cue.captures` was written
+as `[]` at creation and never touched again, no control anywhere set a fixture value,
+and the spec's §Programming — the programmer buffer, parking, the store menu,
+puppeteering pan and tilt in 3D — was the part the roadmap called the biggest single
+piece.
+
+**The priority rule.** The decision everything else follows from: **for every
+parameter the programmer holds, the programmer wins over playback**, until that value
+is cleared or stored. This is the first explicit priority rule in the system, and it
+is the standard one — MA and ETC both work this way.
+
+What it does *not* do is stop the cue. Fades keep running underneath, and what they
+would be showing is kept current as they do, so a value released or stored lands
+where playback has got to rather than snapping back to where the cue was when the
+operator grabbed it. That is the difference between an override and a freeze, and it
+is what lets a look be built during a fade.
+
+Anything else that writes a live value — a flow action, an input off a device — is
+not fought with. It writes; the overlay notices on the next tick, treats what it
+wrote as the new value underneath, and covers it again. The open question task 11
+recorded ("an action loses to a running fade") is still open and still a product
+question; what is settled is that neither of them beats the operator's hands.
+
+**Where it lives.** `programmer_values` is a SYNCED collection — replicated to peers
+and frontends, never persisted. A showfile that reopened asserting somebody's
+half-finished look over playback would be a fault, not a feature. Entry ids are
+*derived* from the fixture and the parameter key rather than minted, so two consoles
+grabbing the same fader write the same row and converge instead of leaving two rows
+that take turns reaching the output.
+
+**Storing and editing.** A store menu shows what is about to be written — fixture,
+parameter, value, one checkbox each, as the spec asks — with merge or replace, a new
+cue or an existing one, and a *keep the programmer* option. Editing a cue is load,
+tweak, Update: the cue is read into the buffer and taken, changed there, and written
+back on Update. Not live editing — a cue that rewrote itself as a fader moved would
+have no way back from a mistake, and would be doing it on every console at once.
+`Show::editing_cue` is SYNCED so the second console shows the same banner rather than
+quietly storing over the first one's work.
+
+**Puppeteering.** The spec asks for pan and tilt by grabbing the axis, "just like it
+would behave in real life". In 3D a selected head wears a pan ring, a tilt arc lying
+in the plane it is currently panned to, and a disc where its beam lands on the floor;
+dragging any of them projects the pointer ray onto the plane that axis turns in and
+reads the angle off it. The plan view gets the same beam-spot handle, plus a level
+ring, in world units. Both write through the programmer, never into `live_values`.
+
+A ring is *turned*, not aimed: the axis moves by however far the pointer has gone
+round since it took hold, from wherever the axis already was. Reading the absolute
+angle instead — which is what the first version did — snapped the head to the pointer
+the moment the ring was touched, which is not what taking hold of a yoke does. The
+turn is added up one move at a time, each wrapped to the short way round, so a drag
+that passes behind the fixture keeps counting instead of flipping.
+
+The beam-spot handle is capped at a distance worth drawing. A beam near the
+horizontal lands arbitrarily far away and one above it never lands at all, so the
+honest answer is a point tens of metres off the plan — and a drag that flattened the
+beam sent the handle off the screen mid-gesture, which read as the handle simply
+coming away in your hand.
+`interactivity()` had never been installed, so click-to-select in 3D had been dead
+since the view was built; `OrbitControls` became `CameraControls` so that picking a
+fixture can animate the camera to it.
+
+Two things about the 3D view worth writing down because both cost an afternoon:
+
+- The orbit controls and a gizmo hear the same `pointerdown` on the same element, and
+  by the time any handler could call the camera off it has already begun to move. The
+  press is now taken in the *capture* phase, before the event reaches the canvas at
+  all, and raycasts the gizmos itself.
+- An `<HTML>` overlay with `pointerEvents="auto"` takes pointer events over its whole
+  layout box — which, when the panel is moved by a CSS transform, is not where the
+  panel is drawn. An invisible rectangle below the quicksheet was eating every click
+  on the beam spot. The wrapper is `none` now and the panel itself is `auto`.
+
+And one about the plan view, worth writing down because the symptom pointed
+nowhere near the cause. Clicking a fixture filled most of the room with a
+white-and-blue rounded band. Nothing in the DOM was that size — every shape measured
+a few pixels — and `elementsFromPoint` found nothing there at all, which is the clue:
+it was not an element. It was Chrome's own focus ring on the fixture group, which is
+focusable, drawn in the element's own coordinates. On a plan those are metres, so the
+ring was several metres thick and shaped like the bounding box of the fixture's beam.
+`svg :focus { outline: none }`, and keyboard focus is shown by the ring the symbol
+already has.
+
+Two things were changed while chasing it that are worth keeping on their own terms: a
+full-turn level ring is drawn as two half-arcs, because an arc that ends where it
+began does not say which circle it meant; and every stroke in that view is measured in
+screen pixels through `vector-effect: non-scaling-stroke`, which is what a hairline
+wanted rather than a dozen widths each computed as some fraction of the view.
+
+**`u64` is not a `bigint` on this wire.** ts-rs maps every 64-bit integer to `bigint`,
+which would be right if the wire could carry one; it is JSON, so a `u64` arrives as a
+`number`. The declared type was a lie about every value that turns up, and
+`error_count === 0n` is `false` for the `0` that does — so a working sACN output
+reported itself unhealthy for ever. pult-codegen now rewrites `bigint` to `number` on
+the way out, which is one place rather than an attribute to remember on every `u64`
+somebody writes.
+
+And one about the engine. A subscriber watching `show` never heard a field write to
+it: patterns are matched against the path a write names, and `show/editing_cue` does
+not match `show`. Collections already answered this by broadcasting the collection
+after a create or a delete; singletons now do the same. Entities deliberately do not —
+that path is `fixtures/<id>/live_values` at forty a second during a fade, and sending
+the whole rig each time is what `subscribeDeep` exists to avoid.
+
+Left open:
+
+- **Every drag is an oplog row.** Writes are coalesced to one per animation frame per
+  parameter and skipped when the value has not changed, which makes a fader drag tens
+  of rows rather than hundreds. It is a reduction, not a fix: the oplog is still never
+  pruned, and that is where this belongs.
+- **Pan and tilt travel are constants** — 540° and 270° about the way a fixture hangs
+  — because `FixtureType` carries no real ranges. Right about which way a head is
+  moving, wrong in detail for any particular one. Centring the travel on the hung
+  direction also lets a head hung straight down fold 135° past vertical and point up
+  and backwards, which no real one does; per-type ranges are what settles it.
+- Parking survives Clear and Store, as the spec asks. Nothing yet parks a value
+  *across* a showfile reload, because nothing SYNCED does.
+- The programmer holds a parameter or it does not. There is no partial override, no
+  release time, and no touch-sensitive designer fader — that last is its own item in
+  the spec and needs hardware to mean anything.
+
+### 15. The workspace (done)
+
+The main page was a fixed sidebar and six tabs, so the 3D rig, the values and the cue
+list could never be seen at once — which is exactly what programming needs.
+
+Panels now live in a tree of splits and tab groups: drag a tab to any edge of any tile
+to divide it, or to the middle to stack it, and drag the gutters to resize. Six
+presets ship built in and are always available; an arrangement worth keeping is saved
+into the show as a PERSISTED `layouts` row, so the console next to it opens the same
+way.
+
+Two decisions worth recording:
+
+- **Layouts are the show's; which one you are looking at is yours.** Two operators at
+  two screens plainly want different tiles up, so the active layout and any unsaved
+  rearranging live in `localStorage` rather than in the showfile. Rearranging never
+  saves on its own — otherwise a busk on a spare screen would rewrite the layout
+  everyone else is using.
+- **The schema does not know what a panel is.** `LayoutNode` holds panel ids as plain
+  strings, and one file in the frontend turns an id into a component. A layout saved
+  by a newer build opens on an older one with the unknown panel simply missing.
+
+The tree keeps two invariants after every operation: no split contains a split running
+the same way, and no split has fewer than two children. The first matters because a
+gutter drags the two tiles either side of it, and nesting would make some gutters move
+tiles that are not next to them.
+
+Panels that were the sidebar — show, session, devices — are ordinary panels now, and
+the stage tab's two halves became two panels so both can be open together.
+
+Left open:
+
+- A panel can only be open in one tile at a time. Two views of the same plan at
+  different zooms is a reasonable thing to want and is not possible.
+- Nothing is responsive. A tree of tiles on a phone is a tree of very small tiles, and
+  the spec asks for tablets and phones.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.
 
-**Selection as a geometric query.** Selections are meant to be generated from the rig by geometric functions and re-evaluated as the rig changes, not stored as fixture lists. That is a query language. It needed positions first, and task 13 is where a rig finally gets them.
+**Selection as a geometric query.** Selections are meant to be generated from the rig by geometric functions and re-evaluated as the rig changes, not stored as fixture lists. That is a query language. It needed positions first, and task 13 is where a rig finally gets them; task 14 built the panel that will show the result, as the list of ids that comes first.
 
 **Effects and phasers.** Derived from the 3D selection with modifiers that can themselves be dynamic. Needs selection.
 
-**3D programmer.** The rig *view* is task 13. What is still absent is programming in it: selecting a fixture zooming the view to it, puppeteering pan and tilt by grabbing an axis, and the effector quicksheet. That is the biggest single piece of the product.
+**3D programmer.** The rig *view* is task 13 and programming in it is task 14 — the camera frames a picked fixture, pan and tilt are grabbed by ring and arc, and the quicksheet opens at the light. What that leaves is the rest of the spec's §Programming: effects and phasers over a selection, and the parts of a fixture that are not intensity, colour and position.
 
 **Waveform timecode and "timecode without timecode".** Beat grids, markers, live audio analysis for band sync. Should subsume the `Timecode` follow mode rather than sit beside it.
 

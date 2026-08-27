@@ -250,29 +250,39 @@ if [ "$TWO" = 1 ]; then
     :$PORT_2 (ws), :$SYNC_PORT_2 (sync), :$BROKER_PORT_2 (mqtt)
     showfile .demo/demo-2.db
 
-  Open both tabs side by side: an edit on one appears on the other, and each
-  shows up in the other's Stations tab.
+  Open both tabs side by side: an edit on one appears on the other, each shows up
+  in the other's Stations panel, and a value moved in the programmer on one is
+  held on both.
 EOF
 fi
 
 if [ "$SIMS" = 1 ]; then
   cat <<'EOF'
 
-  Two simulated nodes are on the network. Try, in order:
+  Panels are tiled: drag a tab to a tile's edge to split it, to its middle to
+  stack it, and pick a layout from the menu beside the name in the top bar.
 
-    1. Devices, in the sidebar — Adopt the Digital Inputs node. That is the
-       moment it learns where the broker is; before that it publishes nothing.
-    2. Flows — the seeded graphs are there. Press the button in Panic button and
+  Try, in order:
+
+    1. Programming, the layout it opens on — click a moving head in the rig. The
+       camera frames it, a pan ring and a tilt arc appear on the yoke and a disc
+       where its beam lands. Drag the disc; pull Intensity up in the Programmer
+       panel. Store, and the look is a cue. Clear, and playback has it back.
+    2. Playback — Edit on that cue puts it back in the programmer with the cue
+       taken. Change something, Update, and the cue changes.
+    3. Devices — Adopt the Digital Inputs node. That is the moment it learns
+       where the broker is; before that it publishes nothing.
+    4. Flows — the seeded graphs are there. Press the button in Panic button and
        watch the Wait node count down before the cue moves. Then add a Watch
        node on the adopted node's Contact:0 and wire it up: the simulator
        presses that contact every 2.5s, so the cue starts stepping.
-    3. Devices — Adopt the Mains Relay too, then set Switch:0 from Patch and
+    5. Devices — Adopt the Mains Relay too, then set Switch:0 from Patch and
        watch .demo/sim-relay.log record the output.
-    4. Stage — upload a ground plan (a PDF works; page one is used), click two
+    6. Plan — upload a ground plan (a PDF works; page one is used), click two
        points whose real distance apart you know to set the scale, then drag the
-       fixtures onto it. Toggle to 3D for the same rig from front of house.
-    5. Outputs — add an Art-Net output and watch its frame rate appear.
-    6. Stations — this console, its cpu and memory, and what it is sending.
+       fixtures onto it in Move mode.
+    7. Outputs — add an Art-Net output and watch its frame rate appear.
+    8. Stations — this console, its cpu and memory, and what it is sending.
 EOF
 fi
 

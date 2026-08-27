@@ -48,6 +48,18 @@ cargo run -p pult-backend
 cd frontend && npm run dev
 ```
 
+The frontend opens onto a **tiled workspace** rather than a sidebar and tabs. Panels
+live in a tree of splits and tab groups: drag a tab to a tile's edge to divide it or
+to its middle to stack it, drag the gutters to resize, and pick a layout from the menu
+in the top bar. Presets are built in; *Save as…* writes an arrangement into the show
+as a `layouts` row. Which layout this browser is looking at is kept in `localStorage`,
+not in the show.
+
+The **`values` panel** is the programmer: it sets fixture parameters into a shared
+SYNCED `programmer_values` buffer that takes priority over playback until the values
+are cleared or stored into a cue. Programming also happens in the `plan` and `rig`
+panels, where a selected head can be aimed by dragging where its beam lands.
+
 Or all of it at once — backend, two simulated OpenHaunt nodes, and the frontend —
 with a seeded show and Ctrl-C to stop everything:
 

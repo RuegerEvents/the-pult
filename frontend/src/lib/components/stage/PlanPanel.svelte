@@ -1,38 +1,45 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	/**
+	 * The ground plan: where the rig is, and — in program mode — what it is doing.
+	 *
+	 * Was half of a Stage tab that switched between the plan and the 3D rig. They are
+	 * two panels now, because the workspace can show both at once and programming
+	 * wants exactly that: aim a head on the plan, watch the beam move in the room.
+	 */
+
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
-	import type { Fixture, FixtureType, StagePlan } from '$lib/generated/index.js';
 	import { calibrationScale, fixturePoint, originForPixel } from '$lib/stage.js';
+	import { collection } from '$lib/stores/show.js';
 	import { pruneSelection, selection } from '$lib/stores/selection.js';
-	import { Canvas } from '@threlte/core';
 	import StagePlanView from './StagePlanView.svelte';
-	import Rig3D from './Rig3D.svelte';
 	import { guessScale, uploadPlan } from './upload.js';
 
 	const data = getDataContext();
 	const client = getClientContext();
 
-	let plans = $state<StagePlan[]>([]);
-	let fixtures = $state<Fixture[]>([]);
-	let types = $state<FixtureType[]>([]);
+	const plans = collection('stage_plans');
+	const fixtures = collection('fixtures');
+	const types = collection('fixture_types');
 
-	let mode = $state<'move' | 'scale' | 'origin'>('move');
-	/// Plan or rig. The plan is where a show is laid out; the rig is where it is
-	/// looked at, and the spec calls that view the primary one.
-	let dimension = $state<'plan' | 'rig'>('plan');
+	let mode = $state<'move' | 'program' | 'scale' | 'origin'>('program');
 	let uploading = $state(false);
 	/// Held between the two clicks of a measurement, then asked about in metres.
 	let measured = $state<{ pixels: number } | null>(null);
 	let realLength = $state('');
 	let view = $state<StagePlanView | null>(null);
 
-	const plan = $derived(plans[0] ?? null);
+	const plan = $derived($plans[0] ?? null);
 	const planUrl = $derived(plan ? client.httpUrl(`/assets/${plan.asset}`) : null);
-	const placedCount = $derived(fixtures.filter((f) => fixturePoint(f) !== null).length);
+	const placedCount = $derived($fixtures.filter((f) => fixturePoint(f) !== null).length);
+
+	// A deleted fixture must not stay selected, and this is the panel that knows the
+	// rig has changed.
+	$effect(() => pruneSelection($fixtures.map((f) => f.id)));
 
 	async function choose(event: Event) {
-		const file = (event.currentTarget as HTMLInputElement).files?.[0];
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
 		if (!file) return;
 		uploading = true;
 		try {
@@ -69,7 +76,7 @@
 			addToast(e instanceof Error ? e.message : 'that plan would not upload');
 		} finally {
 			uploading = false;
-			(event.currentTarget as HTMLInputElement).value = '';
+			input.value = '';
 		}
 	}
 
@@ -101,7 +108,7 @@
 	}
 
 	const place = (fixtureId: string, x: number, z: number) => {
-		const existing = fixtures.find((f) => f.id === fixtureId);
+		const existing = $fixtures.find((f) => f.id === fixtureId);
 		// Keep the height it was hung at; the plan only ever says where on the floor.
 		const y = existing ? (fixturePoint(existing)?.y ?? 0) : 0;
 		data.fixtures.byId(fixtureId).position.set({ Point: { x, y, z } });
@@ -110,25 +117,13 @@
 	async function unplaceSelected() {
 		await Promise.all($selection.map((id) => data.fixtures.byId(id).position.set(null)));
 	}
-
-	onMount(() => {
-		const stops = [
-			data.stage_plans.subscribeDeep((v) => { plans = v; }),
-			data.fixtures.subscribeDeep((v) => {
-				fixtures = v;
-				pruneSelection(v.map((f) => f.id));
-			}),
-			data.fixture_types.subscribeDeep((v) => { types = v; })
-		];
-		return () => stops.forEach((stop) => stop());
-	});
 </script>
 
 <div class="stage">
 	<nav class="bar">
 		<div class="switch">
-			<button class:on={dimension === 'plan'} onclick={() => (dimension = 'plan')}>Plan</button>
-			<button class:on={dimension === 'rig'} onclick={() => (dimension = 'rig')}>3D</button>
+			<button class:on={mode === 'program'} onclick={() => (mode = 'program')}>Program</button>
+			<button class:on={mode === 'move'} onclick={() => (mode = 'move')}>Move</button>
 		</div>
 
 		<label class="ghost file">
@@ -136,7 +131,7 @@
 			<input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" onchange={choose} />
 		</label>
 
-		{#if plan && dimension === 'plan'}
+		{#if plan}
 			<button
 				class="ghost"
 				class:on={mode === 'scale'}
@@ -171,31 +166,17 @@
 				Show
 			</label>
 			<button class="ghost" onclick={() => data.stage_plans.byId(plan.id).delete()}>Remove plan</button>
-		{:else if plan}
-			<label class="toggle">
-				<input
-					type="checkbox"
-					checked={plan.visible}
-					onchange={(e) => data.stage_plans.byId(plan.id).visible.set(e.currentTarget.checked)}
-				/>
-				Floor
-			</label>
 		{/if}
 
 		<span class="spacer"></span>
-		{#if $selection.length > 0}
+		{#if $selection.length > 0 && mode === 'move'}
 			<button class="ghost" onclick={unplaceSelected}>Unplace</button>
 		{/if}
-		{#if dimension === 'plan'}
-			<button class="ghost" onclick={() => view?.fit()}>Fit</button>
-		{/if}
-		<span class="count">{placedCount} of {fixtures.length} placed</span>
+		<button class="ghost" onclick={() => view?.fit()}>Fit</button>
+		<span class="count">{placedCount} of {$fixtures.length} placed</span>
 	</nav>
 
-	{#if dimension === 'rig'}
-		<!-- Nothing: the rig view has no modes, and a hint bar would only take height
-		     away from the thing worth looking at. -->
-	{:else if mode === 'scale'}
+	{#if mode === 'scale'}
 		<p class="hint">
 			{#if measured}
 				Those two points are
@@ -218,21 +199,15 @@
 		<p class="hint">Click the point on the plan that is the show's origin.</p>
 	{/if}
 
-	{#if fixtures.length === 0}
+	{#if $fixtures.length === 0}
 		<p class="empty">Patch a fixture and it will turn up here to be placed.</p>
-	{:else if dimension === 'rig'}
-		<div class="rig">
-			<Canvas>
-				<Rig3D {fixtures} {types} plan={plan?.visible ? plan : null} planUrl={plan?.visible ? planUrl : null} />
-			</Canvas>
-		</div>
 	{:else}
 		<StagePlanView
 			bind:this={view}
 			{plan}
 			{planUrl}
-			{fixtures}
-			{types}
+			fixtures={$fixtures}
+			types={$types}
 			{mode}
 			onplace={place}
 			onmeasure={measure}
@@ -243,15 +218,13 @@
 
 <style>
 	.stage { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-	.bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid #2a2a2a; flex: none; }
+	.bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--line); flex: none; }
 	.spacer { flex: 1; }
 	.count { color: #777; font-size: 12px; }
 
-	.rig { flex: 1; min-height: 0; background: #101010; }
-
-	.switch { display: flex; border: 1px solid #3a3a3a; border-radius: 3px; overflow: hidden; }
+	.switch { display: flex; border: 1px solid var(--line-strong); border-radius: 3px; overflow: hidden; }
 	.switch button { background: none; border: none; color: #888; padding: 4px 11px; font: inherit; font-size: 12px; cursor: pointer; }
-	.switch button.on { background: #1e3a5f44; color: #4a9eff; }
+	.switch button.on { background: #1e3a5f44; color: var(--accent); }
 
 	.file { position: relative; overflow: hidden; }
 	.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
@@ -259,13 +232,13 @@
 	.opacity, .toggle { display: flex; align-items: center; gap: 5px; color: #888; font-size: 12px; }
 	.opacity input { width: 80px; }
 
-	.hint { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: #fbbf24; font-size: 12px; padding: 8px 16px; border-bottom: 1px solid #2a2a2a; flex: none; }
+	.hint { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: #fbbf24; font-size: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex: none; }
 	.empty { color: #777; font-size: 13px; margin: auto; }
 
-	.text-input { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 3px 6px; font: inherit; font-size: 12px; }
+	.text-input { background: #171717; border: 1px solid var(--line-strong); border-radius: 3px; color: var(--text); padding: 3px 6px; font: inherit; font-size: 12px; }
 	.text-input.narrow { width: 78px; }
-	.primary { background: #2f6fd0; border: none; border-radius: 3px; color: #fff; padding: 4px 11px; font: inherit; font-size: 12px; cursor: pointer; }
-	.ghost { background: none; border: 1px solid #3a3a3a; border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
-	.ghost:hover { border-color: #555; color: #fff; }
-	.ghost.on { border-color: #4a9eff; color: #4a9eff; }
+	.primary { background: var(--accent-solid); border: none; border-radius: 3px; color: #fff; padding: 4px 11px; font: inherit; font-size: 12px; cursor: pointer; }
+	.ghost { background: none; border: 1px solid var(--line-strong); border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+	.ghost:hover { border-color: var(--line-input); color: #fff; }
+	.ghost.on { border-color: var(--accent); color: var(--accent); }
 </style>

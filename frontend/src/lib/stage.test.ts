@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { Fixture, FixtureType, StagePlan } from './generated/index.js';
+import type { Fixture, FixtureType, ParameterValue, StagePlan } from './generated/index.js';
 import {
 	calibrationScale,
 	fixtureBounds,
@@ -8,8 +8,12 @@ import {
 	fixturePoint,
 	fixtureTint,
 	originForPixel,
+	aimAt,
+	beamDirection,
+	beamSpot,
 	panAngle,
 	pixelToPlan,
+	tiltAngle,
 	planExtent,
 	planToPixel
 } from './stage.js';
@@ -225,6 +229,145 @@ describe('pointing', () => {
 		expect(panAngle(swung, mover)).toBeCloseTo(270, 6);
 		const other = fixture({ live_values: { Pan: { type: 'Float', value: 0 } } });
 		expect(panAngle(other, mover)).toBeCloseTo(-270, 6);
+	});
+
+	const head: FixtureType = {
+		...mover,
+		parameters: [
+			...mover.parameters,
+			{ kind: 'Tilt', direction: 'Output', binding: { Dmx: { channel: 2 } }, default_value: { type: 'Float', value: 0.5 } }
+		]
+	};
+
+	/** Hung facing straight down, which is how a head on a bar hangs. */
+	const hung = (over: Record<string, ParameterValue> = {}) =>
+		fixture({
+			position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } },
+			live_values: { Pan: { type: 'Float', value: 0.5 }, Tilt: { type: 'Float', value: 0.5 }, ...over }
+		});
+
+	it('nods either side of the elevation it was hung at', () => {
+		expect(tiltAngle(hung(), head)).toBeCloseTo(-90, 6);
+		expect(tiltAngle(hung({ Tilt: { type: 'Float', value: 1 } }), head)).toBeCloseTo(45, 6);
+	});
+
+	it('has no tilt for a head that cannot nod', () => {
+		expect(tiltAngle(hung(), mover)).toBeNull();
+	});
+
+	it('points a centred head the way it hangs', () => {
+		const beam = beamDirection(hung(), head);
+		expect(beam.x).toBeCloseTo(0, 6);
+		expect(beam.y).toBeCloseTo(-1, 6);
+		expect(beam.z).toBeCloseTo(0, 6);
+	});
+
+	it('tilts up through the horizontal', () => {
+		// Two thirds of the travel up from straight down is exactly level.
+		const level = hung({ Tilt: { type: 'Float', value: 0.5 + 90 / 270 } });
+		const beam = beamDirection(level, head);
+		expect(beam.y).toBeCloseTo(0, 6);
+		expect(beam.z).toBeCloseTo(1, 6);
+	});
+
+	it('pans a tilted beam round the vertical', () => {
+		// Level, then a quarter turn: 90° of 540 is a sixth of the travel.
+		const swung = hung({
+			Pan: { type: 'Float', value: 0.5 + 90 / 540 },
+			Tilt: { type: 'Float', value: 0.5 + 90 / 270 }
+		});
+		const beam = beamDirection(swung, head);
+		expect(beam.x).toBeCloseTo(1, 6);
+		expect(beam.z).toBeCloseTo(0, 6);
+	});
+
+	it('leaves a pan-only head where tilt would have put it', () => {
+		// The behaviour before tilt existed: swinging keeps the hung elevation.
+		const rigged = fixture({
+			position: { Axial: { position: { x: 0, y: 5, z: 0 }, direction: { x: 0, y: -3, z: 4 } } },
+			live_values: { Pan: { type: 'Float', value: 0.5 } }
+		});
+		const beam = beamDirection(rigged, mover);
+		expect(beam.y).toBeCloseTo(-0.6, 6);
+		expect(beam.z).toBeCloseTo(0.8, 6);
+	});
+});
+
+describe('aiming a head', () => {
+	const head: FixtureType = {
+		id: 't',
+		name: 'Head',
+		manufacturer: 'Generic',
+		channel_count: 4,
+		parameters: [
+			{ kind: 'Pan', direction: 'Output', binding: { Dmx: { channel: 1 } }, default_value: { type: 'Float', value: 0.5 } },
+			{ kind: 'Tilt', direction: 'Output', binding: { Dmx: { channel: 2 } }, default_value: { type: 'Float', value: 0.5 } }
+		]
+	};
+	const hung = (over: Record<string, ParameterValue> = {}) =>
+		fixture({
+			position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } },
+			live_values: { Pan: { type: 'Float', value: 0.5 }, Tilt: { type: 'Float', value: 0.5 }, ...over }
+		});
+
+	it('lands the beam where it was asked to', () => {
+		const target = { x: 3, y: 0, z: 2 };
+		const { pan, tilt } = aimAt(hung(), head, target);
+		const aimed = hung({
+			Pan: { type: 'Float', value: pan! },
+			Tilt: { type: 'Float', value: tilt! }
+		});
+		const spot = beamSpot(aimed, head)!;
+		expect(spot.x).toBeCloseTo(target.x, 4);
+		expect(spot.z).toBeCloseTo(target.z, 4);
+	});
+
+	it('leaves a head aimed at its own feet where it hangs', () => {
+		const { pan, tilt } = aimAt(hung(), head, { x: 0, y: 0, z: 0 });
+		expect(tilt).toBeCloseTo(0.5, 6);
+		expect(pan).toBeCloseTo(0.5, 6);
+	});
+
+	it('says nothing about an axis the head does not have', () => {
+		const panOnly: FixtureType = { ...head, parameters: [head.parameters[0]] };
+		expect(aimAt(hung(), panOnly, { x: 1, y: 0, z: 1 }).tilt).toBeNull();
+	});
+
+	it('takes the short way round rather than the long one', () => {
+		// Directly behind: a bearing of 180° must not come back as −180 / 540 off scale.
+		const { pan } = aimAt(hung(), head, { x: 0, y: 0, z: -4 });
+		expect(pan).toBeGreaterThanOrEqual(0);
+		expect(pan).toBeLessThanOrEqual(1);
+	});
+
+	it('gives the closest it can manage rather than something unusable', () => {
+		// 270° of travel cannot be asked for more than 135° either way.
+		const { tilt } = aimAt(hung(), head, { x: 0, y: 100, z: 0 });
+		expect(tilt).toBe(1);
+	});
+
+	it('keeps the beam spot within reach of the plan', () => {
+		// Tilted a long way past the horizontal, so the beam never meets the floor and
+		// the honest landing point is tens of metres away — off any plan anyone is
+		// looking at, and out from under the pointer trying to drag it.
+		const flat = hung({ Tilt: { type: 'Float', value: 1 } });
+		const far = beamSpot(flat, head)!;
+		expect(Math.hypot(far.x, far.z)).toBeGreaterThan(6);
+
+		const near = beamSpot(flat, head, { maxThrow: 6 })!;
+		expect(Math.hypot(near.x - 0, near.y - 6, near.z - 0)).toBeCloseTo(6, 6);
+	});
+
+	it('leaves a beam that lands well inside the cap alone', () => {
+		const down = beamSpot(hung(), head, { maxThrow: 40 })!;
+		expect(down.x).toBeCloseTo(0, 6);
+		expect(down.z).toBeCloseTo(0, 6);
+		expect(down.y).toBeCloseTo(0, 6);
+	});
+
+	it('has nothing to aim for a fixture that has never been placed', () => {
+		expect(aimAt(fixture(), head, { x: 0, y: 0, z: 0 })).toEqual({ pan: null, tilt: null });
+		expect(beamSpot(fixture(), head)).toBeNull();
 	});
 });
 

@@ -3,6 +3,8 @@
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Sequence, Cue } from '$lib/generated/index.js';
+	import { createCue } from '$lib/cues.js';
+	import { beginEdit, editingCue } from '$lib/stores/programmer.js';
 
 	const data = getDataContext();
 
@@ -29,18 +31,7 @@
 		if (!newCueName.trim()) return;
 		const seq = sequences.find((s) => s.id === seqId);
 		if (!seq) return;
-		const cueId = crypto.randomUUID();
-		await data.cues.create({
-			id: cueId,
-			name: newCueName.trim(),
-			number: seq.cue_ids.length + 1,
-			captures: [],
-			follow_mode: 'Manual',
-			fade_in_ms: 500,
-			fade_out_ms: 500,
-			is_active: false
-		});
-		await data.sequences.byId(seqId).cue_ids.set([...seq.cue_ids, cueId]);
+		await createCue(data, seq, { name: newCueName.trim() });
 		newCueName = '';
 		addingCueTo = null;
 	}
@@ -226,7 +217,7 @@
 							{@const cue = cues[cueId]}
 							{@const isActive = seq.active_cue_index === i}
 							{#if cue}
-								<div class="cue-row" class:active={isActive}>
+								<div class="cue-row" class:active={isActive} class:editing={$editingCue === cueId}>
 									<button
 										class="cue-go-area"
 										onclick={() => goToCue(seq.id, cueId)}
@@ -257,10 +248,19 @@
 												onkeydown={(e) => { if (e.key === 'Enter') { editingCueId = cueId; editingCueName = cue.name; } }}
 											>{cue.name}</span>
 										{/if}
+										<span class="captures dim mono" title="Parameters this cue stores">
+											{cue.captures.length}
+										</span>
 										{#if isActive}
 											<span class="active-dot">●</span>
 										{/if}
 									</button>
+									<button
+										class="icon-btn edit-btn"
+										class:on={$editingCue === cueId}
+										title="Load this cue into the programmer to change it"
+										onclick={() => beginEdit(cue, seq)}
+									>Edit</button>
 									<button
 										class="icon-btn delete-btn"
 										title="Delete cue"
@@ -618,6 +618,12 @@
 		background: #f59e0b18;
 		color: #f0d090;
 	}
+	/* Outlined rather than filled: a cue can be the one playing and the one being
+	   edited at the same time, and both have to stay readable. */
+	.cue-row.editing {
+		outline: 1px solid #4a9eff88;
+		outline-offset: -1px;
+	}
 	.cue-row:hover .icon-btn {
 		opacity: 1;
 	}
@@ -665,6 +671,24 @@
 		font-size: 0.6rem;
 		color: #f59e0b;
 		flex-shrink: 0;
+	}
+
+	.captures {
+		font-size: 0.68rem;
+		flex-shrink: 0;
+	}
+
+	.edit-btn {
+		font-size: 0.68rem;
+		padding: 2px 6px;
+	}
+	.edit-btn:hover,
+	.edit-btn.on {
+		border-color: #4a9eff;
+		color: #4a9eff;
+	}
+	.cue-row .edit-btn.on {
+		opacity: 1;
 	}
 
 	.add-cue-btn {

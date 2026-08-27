@@ -161,20 +161,103 @@ export function fixtureTint(fixture: Fixture): string {
 }
 
 /**
+ * How far a head swings and nods, end to end, in degrees.
+ *
+ * A stand-in for ranges `FixtureType` does not carry yet: right about which way a
+ * head is moving, wrong in detail for any particular one, and replaced by real
+ * per-type ranges the moment there are any. Named rather than written twice, so the
+ * two views and the inverse below cannot drift apart about it.
+ */
+export const PAN_TRAVEL = 540;
+export const TILT_TRAVEL = 270;
+
+/** The direction a fixture points with pan and tilt both centred. */
+function restDirection(fixture: Fixture): Vec3 {
+	return normalise(fixtureFacing(fixture) ?? { x: 0, y: -1, z: 0 });
+}
+
+/** Compass bearing of a direction on the floor: degrees from downstage towards +X. */
+const bearingOf = (v: Vec3) => (Math.atan2(v.x, v.z) * 180) / Math.PI;
+
+/** How far above the horizontal a direction points, in degrees. Down is negative. */
+const elevationOf = (v: Vec3) => (Math.atan2(v.y, Math.hypot(v.x, v.z)) * 180) / Math.PI;
+
+/** A direction back from a bearing and an elevation, both in degrees. */
+function fromAngles(bearing: number, elevation: number): Vec3 {
+	const b = (bearing * Math.PI) / 180;
+	const e = (elevation * Math.PI) / 180;
+	const flat = Math.cos(e);
+	return { x: flat * Math.sin(b), y: Math.sin(e), z: flat * Math.cos(b) };
+}
+
+const hasParameter = (type: FixtureType | undefined, kind: ParameterKind) =>
+	type?.parameters.some((p) => p.kind === kind) ?? false;
+
+/**
  * Where a moving head is pointing, as an angle on the plan in degrees.
  *
- * Pan is reported 0–1 across the fixture's whole travel, which for want of a
- * per-type range is taken as 540° centred on the way the fixture faces — wrong in
- * detail for any specific head, right about which way it is swinging, and replaced
- * the moment `FixtureType` carries real ranges.
+ * Pan is reported 0–1 across the fixture's whole travel, centred on the way the
+ * fixture hangs, so 0.5 is always the rest bearing however the head was rigged.
  */
 export function panAngle(fixture: Fixture, type: FixtureType | undefined): number | null {
-	if (!type?.parameters.some((p) => p.kind === 'Pan')) return null;
+	if (!hasParameter(type, 'Pan')) return null;
 	const pan = asNumber(read(fixture, 'Pan'));
 	if (pan === null) return null;
-	const facing = fixtureFacing(fixture);
-	const rest = facing ? (Math.atan2(facing.x, facing.z) * 180) / Math.PI : 0;
-	return rest + (pan - 0.5) * 540;
+	return bearingOf(restDirection(fixture)) + (pan - 0.5) * PAN_TRAVEL;
+}
+
+/**
+ * How far above the horizontal it is pointing, in degrees. Down is negative.
+ *
+ * The same shape as {@link panAngle}: 0.5 is the elevation it was hung at, and the
+ * travel opens either side of that.
+ */
+export function tiltAngle(fixture: Fixture, type: FixtureType | undefined): number | null {
+	if (!hasParameter(type, 'Tilt')) return null;
+	const tilt = asNumber(read(fixture, 'Tilt'));
+	if (tilt === null) return null;
+	return elevationOf(restDirection(fixture)) + (tilt - 0.5) * TILT_TRAVEL;
+}
+
+/**
+ * The pan and tilt that would put a head's beam on a point in the room.
+ *
+ * The inverse of {@link beamDirection}, and the thing that makes a beam draggable:
+ * both stage views let an operator take hold of where the light lands rather than of
+ * the two numbers that put it there, which is the spec's puppeteering asked for from
+ * the other end.
+ *
+ * Returned clamped to 0–1, so aiming behind a head that cannot turn that far gives
+ * the closest it can manage rather than a value nothing can accept.
+ */
+export function aimAt(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	target: Vec3
+): { pan: number | null; tilt: number | null } {
+	const at = fixturePoint(fixture);
+	if (!at) return { pan: null, tilt: null };
+	const towards = normalise({ x: target.x - at.x, y: target.y - at.y, z: target.z - at.z });
+	const rest = restDirection(fixture);
+
+	const pan = hasParameter(type, 'Pan')
+		? clamp(0.5 + wrapDegrees(bearingOf(towards) - bearingOf(rest)) / PAN_TRAVEL)
+		: null;
+	const tilt = hasParameter(type, 'Tilt')
+		? clamp(0.5 + (elevationOf(towards) - elevationOf(rest)) / TILT_TRAVEL)
+		: null;
+	return { pan, tilt };
+}
+
+/**
+ * An angle brought into −180…180, so the short way round is the way taken.
+ *
+ * Shared with the gizmos, which add up a drag one move at a time: without this a
+ * pointer crossing the back of a fixture would read as most of a turn the other way.
+ */
+export function wrapDegrees(degrees: number): number {
+	const wrapped = ((degrees + 180) % 360 + 360) % 360;
+	return wrapped - 180;
 }
 
 const clamp = (v: number) => Math.min(1, Math.max(0, v));
@@ -210,17 +293,44 @@ export function fohCamera(fixtures: Fixture[]): { position: [number, number, num
  * A fixture hung axially says so itself. Anything else is assumed to be pointing
  * at the floor, which is what a par on a bar is doing and is at least not a
  * statement about a direction nobody has given.
+ *
+ * A head that can move turns from there: pan swings the bearing about the vertical,
+ * tilt nods about the horizontal axis that swing left behind. Either one on its own
+ * leaves the other where the fixture was hung, so a rig with only pan patched still
+ * points the way it did before tilt existed.
  */
 export function beamDirection(fixture: Fixture, type: FixtureType | undefined): Vec3 {
-	const facing = fixtureFacing(fixture) ?? { x: 0, y: -1, z: 0 };
-	const angle = panAngle(fixture, type);
-	if (angle === null) return normalise(facing);
+	const rest = restDirection(fixture);
+	const bearing = panAngle(fixture, type);
+	const elevation = tiltAngle(fixture, type);
+	if (bearing === null && elevation === null) return rest;
+	return fromAngles(bearing ?? bearingOf(rest), elevation ?? elevationOf(rest));
+}
 
-	// Pan swings about the vertical, so the beam keeps its tilt and turns.
-	const down = Math.min(0, facing.y);
-	const spread = Math.hypot(facing.x, facing.z) || 0.35;
-	const radians = (angle * Math.PI) / 180;
-	return normalise({ x: Math.sin(radians) * spread, y: down, z: Math.cos(radians) * spread });
+/**
+ * Where a fixture's beam meets the floor, which is the handle an operator grabs.
+ *
+ * `maxThrow` is what keeps that handle in reach. A beam near the horizontal lands
+ * arbitrarily far away and one above it never lands at all, so the honest answer is
+ * a point tens of metres off the plan — which is a handle nobody can take hold of,
+ * and which slides out from under the pointer the moment a drag flattens the beam.
+ * Capped, it stops at the furthest distance worth drawing and still says which way
+ * the light is going.
+ */
+export function beamSpot(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	{ floorY = 0, maxThrow = Infinity }: { floorY?: number; maxThrow?: number } = {}
+): Vec3 | null {
+	const at = fixturePoint(fixture);
+	if (!at) return null;
+	const direction = beamDirection(fixture, type);
+	const length = Math.min(throwDistance(at, direction, floorY), maxThrow);
+	return {
+		x: at.x + direction.x * length,
+		y: at.y + direction.y * length,
+		z: at.z + direction.z * length
+	};
 }
 
 function normalise(v: Vec3): Vec3 {

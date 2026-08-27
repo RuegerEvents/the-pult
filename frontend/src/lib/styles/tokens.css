@@ -1,0 +1,39 @@
+/*
+ * The console's palette, in one place.
+ *
+ * Every panel written before this one hard-codes the same dozen hex values, and they
+ * had already begun to drift — three greys for the same border, two blues for the
+ * same accent. New components use these; the older ones are left alone rather than
+ * churned, so a diff that says "the store menu" is about the store menu.
+ */
+
+:root {
+	/* Surfaces, from the back of the window forwards. */
+	--bg: #1a1a1a;
+	--bg-sunken: #141414;
+	--bg-chrome: #111;
+	--bg-panel: #222;
+	--bg-raised: #252525;
+	--bg-hover: #2a2a2a;
+
+	--line: #2a2a2a;
+	--line-strong: #3a3a3a;
+	--line-input: #555;
+
+	--text: #e0e0e0;
+	--text-bright: #fff;
+	--text-dim: #888;
+	--text-faint: #555;
+
+	--accent: #4a9eff;
+	--accent-solid: #2f6fd0;
+	/* Amber is the console's "this is live": an active cue, and a value the
+	   programmer is holding over one. */
+	--live: #f59e0b;
+	--good: #22c55e;
+	--bad: #ef4444;
+
+	--radius: 4px;
+	--font-sm: 12px;
+	--font-xs: 11px;
+}

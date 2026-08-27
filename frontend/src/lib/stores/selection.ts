@@ -29,6 +29,31 @@ export function toggle(id: string) {
 
 export const clearSelection = () => selection.set([]);
 
+/** Drop one fixture, for the × beside it in the selection panel. */
+export function remove(id: string) {
+	selection.update((ids) => (ids.includes(id) ? ids.filter((i) => i !== id) : ids));
+}
+
+/**
+ * Move one fixture to another place in the order.
+ *
+ * The spec asks for the selection to be reorderable by drag and drop, and the order
+ * is not decoration: it is what an effect spreads along, so "the third fixture" has
+ * to be something the operator decides rather than something the patch decided.
+ *
+ * Out-of-range indices leave the selection alone rather than throwing — a drop that
+ * lands outside the list is a cancelled drag, not an error.
+ */
+export function reorder(from: number, to: number) {
+	selection.update((ids) => {
+		if (from === to || from < 0 || to < 0 || from >= ids.length || to >= ids.length) return ids;
+		const next = [...ids];
+		const [moved] = next.splice(from, 1);
+		next.splice(to, 0, moved);
+		return next;
+	});
+}
+
 export const isSelected = (id: string) => get(selection).includes(id);
 
 /** Drop anything that is no longer in the rig, after a fixture is deleted. */
