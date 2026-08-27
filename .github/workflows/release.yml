@@ -119,6 +119,16 @@ jobs:
           archive: "true"
           locked: "true"
 
+      # Taken out of the way before the next build runs, because the second one
+      # clears this one's archive out of target/<triple>/release/ on its way past.
+      - name: Keep the server's archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p archives
+          path='${{ steps.server.outputs.artifact_path }}'
+          cp "${path//\\//}" "${path//\\//}.sha256" archives/
+
       - uses: michaelklishin/rust-build-package-release-action@v1
         id: sim
         with:
@@ -129,14 +139,21 @@ jobs:
           archive: "true"
           locked: "true"
 
+      - name: Keep the simulator's archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          path='${{ steps.sim.outputs.artifact_path }}'
+          cp "${path//\\//}" "${path//\\//}.sha256" archives/
+          ls -la archives
+
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.target }}
-          path: |
-            ${{ steps.server.outputs.artifact_path }}
-            ${{ steps.server.outputs.artifact_path }}.sha256
-            ${{ steps.sim.outputs.artifact_path }}
-            ${{ steps.sim.outputs.artifact_path }}.sha256
+          path: archives
+          # Loudly, rather than shipping half a release: this job produces four
+          # files and the default is to warn about the ones it cannot find.
+          if-no-files-found: error
 
   # ── The server, as something apt can install ────────────────────────────────
   deb:
@@ -174,6 +191,7 @@ jobs:
         with:
           name: deb-${{ matrix.target }}
           path: ${{ steps.build.outputs.artifact_path }}
+          if-no-files-found: error
 
   # ── The desktop apps ────────────────────────────────────────────────────────
   desktop:
@@ -244,6 +262,7 @@ jobs:
         with:
           name: pult-gui-${{ matrix.target }}
           path: bundles
+          if-no-files-found: error
 
       # The simulator's panel is its own small app. Built here rather than by a
       # beforeBuildCommand, because Tauri runs that from a directory it infers
@@ -277,6 +296,7 @@ jobs:
         with:
           name: openhaunt-sim-gui-${{ matrix.target }}
           path: bundles
+          if-no-files-found: error
 
   sbom:
     needs: [validate, frontend]
@@ -322,7 +342,7 @@ jobs:
             -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \
             -o -name "*.deb" -o -name "*.rpm" -o -name "*.dmg" \
             -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" \
-            -o -name "*.json" \
+            -o -name "*.spdx.json" -o -name "*.cdx.json" \
           \) -exec cp {} release/ \;
           cp artifacts/release-notes/release_notes.md .
           ls -la release

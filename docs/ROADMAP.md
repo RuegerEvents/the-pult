@@ -547,8 +547,15 @@ locally:
   `cp` then goes looking for a file whose name ends in a carriage return.
 - `generate-sbom` finds a version in a virtual workspace manifest, under
   `[workspace.package]`, but no name. It has to be told one.
+- Building two packages in one job with the same action twice does not leave two
+  archives behind: the second clears the first out of `target/<triple>/release/`.
+  Every `pult-backend` archive went missing from a release that otherwise looked
+  finished, and `upload-artifact` said so in one line — *"there will be 2 files
+  uploaded"* — and carried on. Each archive is taken out of the way as it is
+  built now, and every upload is `if-no-files-found: error`, because a release
+  that is quietly missing its main product is worse than one that fails.
 
-The cost of finding them was five tags. The alternative — a Docker container
+The cost of finding them was six tags. The alternative — a Docker container
 reproducing the Linux half — found the worst one in a minute, and is worth
 reaching for before pushing the next one.
 
