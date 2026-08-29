@@ -20,7 +20,7 @@ use pult_schema::{
     path::PathSegment,
     types::{
         fixture::{Fixture, FixtureType},
-        output::{OutputConfig, OutputKind, OutputStatus, OutputStatuses},
+        output::{OutputConfig, OutputCoverage, OutputKind, OutputStatus, OutputStatuses},
     },
 };
 use tokio::sync::{mpsc, watch};
@@ -125,12 +125,31 @@ pub struct OutputManager {
     running: HashMap<Uuid, Running>,
     rx: mpsc::Receiver<OutputCommand>,
     devices: Devices,
+    /// Every configured output, this station's or not: coverage is a property
+    /// of the show, not of what happens to run here.
+    configured: Vec<OutputConfig>,
+    /// The patch as it bears on coverage — id, name and address of each fixture —
+    /// so the answer is recomputed when a fixture moves, not forty times a second.
+    addressed: Vec<(Uuid, String, pult_schema::types::fixture::FixtureAddress)>,
+    coverage: Option<OutputCoverage>,
 }
 
 impl OutputManager {
     pub fn new(node_id: NodeId, engine: EngineHandle, devices: Devices) -> (Self, OutputHandle) {
         let (tx, rx) = mpsc::channel(4);
-        (Self { node_id, engine, running: HashMap::new(), rx, devices }, OutputHandle(tx))
+        (
+            Self {
+                node_id,
+                engine,
+                running: HashMap::new(),
+                rx,
+                devices,
+                configured: Vec::new(),
+                addressed: Vec::new(),
+                coverage: None,
+            },
+            OutputHandle(tx),
+        )
     }
 
     /// Seed a plugin without going through a configuration. Test-only: it is how a
@@ -180,6 +199,12 @@ impl OutputManager {
         fixture_types: Vec<FixtureType>,
         changed: Vec<Uuid>,
     ) {
+        let addressed: Vec<_> =
+            fixtures.iter().map(|f| (f.id, f.name.clone(), f.address.clone())).collect();
+        if addressed != self.addressed {
+            self.addressed = addressed;
+            self.publish_coverage(&fixtures).await;
+        }
         let patch = Patch {
             fixtures,
             fixture_types: fixture_types.into_iter().map(|t| (t.id, t)).collect(),
@@ -207,6 +232,11 @@ impl OutputManager {
     /// does not drop and re-open every socket in the rig — which for Art-Net would
     /// reset the dedup cache and put a redundant frame on the wire for a label edit.
     async fn reconcile(&mut self, outputs: Vec<OutputConfig>) {
+        if outputs != self.configured {
+            self.configured = outputs.clone();
+            let fixtures = self.fixtures_as_addressed();
+            self.publish_coverage(&fixtures).await;
+        }
         let wanted: HashMap<Uuid, OutputConfig> = outputs
             .into_iter()
             .filter(|o| o.runs_on(self.node_id))
@@ -254,6 +284,47 @@ impl OutputManager {
             output.sends_since_report = 0;
             output.reported_at = std::time::Instant::now();
         }
+    }
+
+    /// The last patch, as far as coverage cares: enough of a fixture to place it.
+    fn fixtures_as_addressed(&self) -> Vec<Fixture> {
+        self.addressed
+            .iter()
+            .map(|(id, name, address)| Fixture {
+                id: *id,
+                name: name.clone(),
+                fixture_type_id: Uuid::nil(),
+                address: address.clone(),
+                position: None,
+                live_values: Default::default(),
+                active_preset: None,
+            })
+            .collect()
+    }
+
+    /// Say which fixtures no output reaches, when that changes.
+    async fn publish_coverage(&mut self, fixtures: &[Fixture]) {
+        let coverage = OutputCoverage::of(&self.configured, fixtures);
+        if self.coverage.as_ref() == Some(&coverage) {
+            return;
+        }
+        for gap in &coverage.gaps {
+            match gap.universe {
+                Some(universe) => warn!(
+                    "[output] nothing carries universe {universe}: {} unreached",
+                    gap.fixture_names.join(", ")
+                ),
+                None => warn!(
+                    "[output] no OpenHaunt output: {} not driven",
+                    gap.fixture_names.join(", ")
+                ),
+            }
+        }
+        if let Ok(json) = serde_json::to_value(&coverage) {
+            let path = vec![PathSegment::Key("output_coverage".into())];
+            let _ = self.engine.set(path, Lifecycle::Local, json).await;
+        }
+        self.coverage = Some(coverage);
     }
 
     /// Publish what every output has been doing, as LOCAL state.

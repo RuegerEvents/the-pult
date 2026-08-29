@@ -19,7 +19,8 @@ pub use show::{Show, ShowCreate, ShowPatch};
 pub use session::{DiscoveredSession, SessionState};
 pub use devices::{DeviceHealth, DevicesState, DiscoveredDevice};
 pub use output::{
-    OutputConfig, OutputConfigCreate, OutputConfigPatch, OutputKind, OutputStatus, OutputStatuses,
+    OutputConfig, OutputConfigCreate, OutputConfigPatch, OutputCoverage, OutputGap, OutputKind,
+    OutputStatus, OutputStatuses,
 };
 pub use station::{PeerLink, PeerLinks, Station, StationCreate, StationPatch};
 pub use stage::{StagePlan, StagePlanCreate, StagePlanPatch};

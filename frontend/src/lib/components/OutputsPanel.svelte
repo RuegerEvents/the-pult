@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { focusOnMount } from '$lib/actions.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
+	import OutputGaps from './OutputGaps.svelte';
 	import type { OutputConfig, OutputKind, OutputStatus } from '$lib/generated/index.js';
 
 	const client = getClientContext();
@@ -116,6 +117,8 @@
 			</form>
 			<p class="hint">{KINDS.find((k) => k.value === newKind)?.hint}</p>
 		{/if}
+
+		<OutputGaps />
 
 		{#if outputs.length === 0}
 			<p class="empty">

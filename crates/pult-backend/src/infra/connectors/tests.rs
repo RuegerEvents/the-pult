@@ -125,6 +125,14 @@ async fn recv(socket: &tokio::net::UdpSocket) -> Vec<u8> {
     buffer
 }
 
+async fn coverage(engine: &EngineHandle) -> OutputCoverage {
+    let value = engine
+        .get(vec![PathSegment::Key("output_coverage".into())])
+        .await
+        .expect("output_coverage is a LOCAL path and always answers");
+    serde_json::from_value(value).unwrap()
+}
+
 async fn statuses(engine: &EngineHandle) -> OutputStatuses {
     let value = engine
         .get(vec![PathSegment::Key("output_status".into())])
@@ -392,4 +400,33 @@ fn a_bare_address_takes_the_protocol_s_own_port() {
         Some("10.0.0.5:1234".parse().unwrap()),
     );
     assert_eq!(parse_target("not an address", 6454), None);
+}
+
+// ── Coverage ──────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_fixture_no_output_carries_is_reported_until_one_does() {
+    let engine = an_engine().await;
+    let (manager, handle) = OutputManager::new(NodeId::new(), engine.clone(), None);
+    tokio::spawn(manager.run());
+
+    // A dimmer on universe 3 and nothing configured: a gap, naming both.
+    push_a_patch(&handle, a_dimmer_patch(0.5)).await;
+    let gaps = coverage(&engine).await.gaps;
+    assert_eq!(gaps.len(), 1);
+    assert_eq!(gaps[0].universe, Some(3));
+    assert_eq!(gaps[0].fixture_names, vec!["Spot"]);
+
+    // An sACN output for every universe closes it — even one owned by another
+    // station, because coverage is about the show, not this socket.
+    let mut elsewhere = an_output(OutputKind::Sacn, None);
+    elsewhere.node_id = Some(NodeId::new());
+    handle.configure(vec![elsewhere]);
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    assert!(coverage(&engine).await.gaps.is_empty());
+
+    // Deleting it reopens the gap, with nothing else having moved.
+    handle.configure(vec![]);
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    assert_eq!(coverage(&engine).await.gaps.len(), 1);
 }

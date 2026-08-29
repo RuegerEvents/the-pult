@@ -10,6 +10,15 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ## Unreleased
 
+### Added
+
+- **The console says when a fixture has no way out.** A new LOCAL
+  `output_coverage` path lists the fixtures no enabled output reaches — a DMX
+  fixture on a universe nothing carries, or an adopted node with no OpenHaunt
+  output — and the Outputs and Devices panels show each gap with a button that
+  adds exactly the output it names. Deleting the OpenHaunt output no longer
+  leaves adopted nodes silently undriven.
+
 ### Fixed
 
 - **Adopted OpenHaunt nodes are actually driven.** The plugin that sends a

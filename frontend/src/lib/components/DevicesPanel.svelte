@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { getClientContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
+	import OutputGaps from './OutputGaps.svelte';
 	import type { DevicesState, DiscoveredDevice } from '$lib/generated/index.js';
 
 	const client = getClientContext();
@@ -67,6 +68,10 @@
 			<span class="badge badge--green">● Driving</span>
 		{/if}
 	</div>
+
+	{#if devices.active}
+		<OutputGaps only="OpenHaunt" />
+	{/if}
 
 	{#if listed.length === 0}
 		<p class="empty-hint">No OpenHaunt nodes on the network.</p>

@@ -9,7 +9,7 @@ use pult_schema::{
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
     types::{
-        devices::DevicesState, output::OutputStatuses, session::SessionState,
+        devices::DevicesState, output::{OutputCoverage, OutputStatuses}, session::SessionState,
         station::PeerLinks,
     },
 };
@@ -63,6 +63,7 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     ("session", || serde_json::to_value(SessionState::default()).unwrap_or_default()),
     ("devices", || serde_json::to_value(DevicesState::default()).unwrap_or_default()),
     ("output_status", || serde_json::to_value(OutputStatuses::default()).unwrap_or_default()),
+    ("output_coverage", || serde_json::to_value(OutputCoverage::default()).unwrap_or_default()),
     ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
 ];
 
