@@ -26,6 +26,10 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Fixed
 
+- **Unpatching the last fixture reaches the output plugins.** The engine sent
+  them nothing for an empty show, so whatever they remembered about the last
+  fixture — including that nothing reached it — outlived it. One empty patch now
+  follows the last fixture out.
 - **Adopted OpenHaunt nodes are actually driven.** The plugin that sends a
   node's ports only runs where an `outputs` row of kind OpenHaunt says so, and
   nothing created one: values moved in the console and never left it. Starting

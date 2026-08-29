@@ -1630,6 +1630,42 @@ async fn playback_hands_the_patch_to_the_output_plugins() {
 }
 
 #[tokio::test]
+async fn unpatching_the_last_fixture_tells_the_output_plugins_so() {
+    use crate::infra::connectors::{OutputCommand, OutputHandle};
+
+    let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
+    let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
+    let (tx, mut output_rx) = tokio::sync::mpsc::channel(16);
+    engine.set_output(OutputHandle(tx));
+    tokio::spawn(engine.run());
+
+    let fixture = a_fixture("Spot L", 1);
+    handle.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    handle
+        .set(delete_path("fixtures", fixture.id), Lifecycle::Persisted, serde_json::Value::Null)
+        .await
+        .unwrap();
+
+    // Patching pushed a patch with the fixture in it; unpatching has to push one
+    // without it, or a plugin that remembered the fixture keeps remembering it.
+    let saw_empty = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut saw_it = false;
+        while let Some(cmd) = output_rx.recv().await {
+            let OutputCommand::Patch { fixtures, .. } = cmd else { continue };
+            if fixtures.iter().any(|f| f.id == fixture.id) {
+                saw_it = true;
+            } else if saw_it {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .expect("the empty patch should follow within two seconds");
+    assert!(saw_empty, "an empty patch follows the last fixture out");
+}
+
+#[tokio::test]
 async fn an_idle_show_sends_nothing_to_output() {
     use crate::infra::connectors::{OutputCommand, OutputHandle};
 

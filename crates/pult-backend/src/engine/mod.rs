@@ -468,6 +468,10 @@ pub struct ShowEngine {
     /// The `outputs` collection changed and the output side has not been told yet.
     /// Set on the first tick too, so a saved show comes up sending.
     outputs_dirty: bool,
+    /// Whether the plugins have been handed a patch with something in it. An
+    /// empty show pushes nothing — except once, when the last fixture goes, so
+    /// what the plugins know does not outlive it.
+    pushed_fixtures: bool,
     /// Something in a graph changed, so the next tick has to look at it.
     flows_dirty: bool,
     /// The fixture parameters some *Watch* node is looking at, so a fade can be
@@ -514,6 +518,7 @@ impl ShowEngine {
             state_version: 0,
             playback_seen: 0,
             outputs_dirty: true,
+            pushed_fixtures: false,
             flows_dirty: true,
             watched: Default::default(),
         };
@@ -851,9 +856,13 @@ impl ShowEngine {
     async fn push_output(&mut self, moved: Vec<Uuid>) {
         let Some(output) = &self.output else { return };
         let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
-        if fixtures.is_empty() {
+        if fixtures.is_empty() && !self.pushed_fixtures {
             return;
         }
+        // The one empty patch that follows the last fixture being unpatched is
+        // worth sending: a plugin keeping state per fixture — what it last sent, or
+        // which fixtures nothing reaches — has to hear that there are none left.
+        self.pushed_fixtures = !fixtures.is_empty();
         let fixture_types = self.read_collection("fixture_types");
         output.push(fixtures, fixture_types, moved);
     }
