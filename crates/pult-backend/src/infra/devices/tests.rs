@@ -226,6 +226,10 @@ impl Harness {
         serde_json::from_value(value).unwrap()
     }
 
+    async fn outputs(&self) -> Vec<OutputConfig> {
+        let value = self.engine.get(vec![PathSegment::Key("outputs".into())]).await.unwrap();
+        serde_json::from_value(value).unwrap()
+    }
     async fn fixture_types(&self) -> Vec<FixtureType> {
         let value = self.engine.get(vec![PathSegment::Key("fixture_types".into())]).await.unwrap();
         serde_json::from_value(value).unwrap()
@@ -440,6 +444,53 @@ async fn adopting_a_node_patches_it_as_a_fixture_of_its_module_s_type() {
     );
     assert_eq!(types[0].name, "Digital Inputs");
     assert_eq!(types[0].parameters.len(), 8);
+}
+
+#[tokio::test]
+async fn adopting_gives_the_show_an_openhaunt_output_once() {
+    // The plugin that drives a node's ports only runs where an `outputs` row says
+    // so. Adoption is the operator asking for the node to be driven, so the row
+    // appears then — and one row covers every node this station drives.
+    let h = harness().await;
+    assert!(h.outputs().await.is_empty(), "nothing is configured before anything is adopted");
+
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
+    h.devices.adopt("1a2b3c".into()).await.unwrap();
+
+    let outputs = h.outputs().await;
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].kind, OutputKind::OpenHaunt);
+    assert!(outputs[0].enabled);
+    assert!(outputs[0].node_id.is_some(), "the output belongs to the station that drives");
+
+    h.resolve("4d5e6f", MAINS_RELAY, None).await;
+    h.devices.adopt("4d5e6f".into()).await.unwrap();
+    assert_eq!(h.outputs().await.len(), 1, "a second node does not need a second output");
+}
+
+#[tokio::test]
+async fn an_openhaunt_output_the_operator_switched_off_is_left_off() {
+    let h = harness().await;
+    let off = OutputConfig {
+        id: Uuid::new_v4(),
+        name: "nodes, but not tonight".into(),
+        kind: OutputKind::OpenHaunt,
+        target: None,
+        universes: Vec::new(),
+        enabled: false,
+        node_id: None,
+    };
+    h.engine
+        .set(create_path("outputs"), Lifecycle::Persisted, serde_json::to_value(&off).unwrap())
+        .await
+        .unwrap();
+
+    h.resolve("1a2b3c", DIGITAL_IN, None).await;
+    h.devices.adopt("1a2b3c".into()).await.unwrap();
+
+    let outputs = h.outputs().await;
+    assert_eq!(outputs.len(), 1, "an output that covers this station is not duplicated");
+    assert!(!outputs[0].enabled, "and switching it off was a decision");
 }
 
 #[tokio::test]

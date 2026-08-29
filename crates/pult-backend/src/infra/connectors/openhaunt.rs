@@ -49,6 +49,10 @@ pub struct OpenHauntOutput {
     /// The last value sent for each port, keyed by (serial, port), so a relay is
     /// commanded when it changes rather than forty times a second.
     last_sent: BTreeMap<(String, u8), serde_json::Value>,
+    /// Which nodes were online at the last send. A node that comes back has
+    /// rebooted and sits at its defaults, so what it was last sent no longer
+    /// describes it and is forgotten, which makes every port get sent again.
+    was_online: BTreeMap<String, bool>,
 }
 
 impl OpenHauntOutput {
@@ -66,6 +70,7 @@ impl OpenHauntOutput {
             sent: UniverseCache::default(),
             sequence: SequenceCounter::default(),
             last_sent: BTreeMap::new(),
+            was_online: BTreeMap::new(),
         })
     }
 
@@ -120,6 +125,7 @@ impl OpenHauntOutput {
 
     /// Send the ports that changed on every fixture that lives on a node.
     fn drive_the_ports(&mut self, patch: &Patch) {
+        self.forget_what_rebooted_nodes_were_sent();
         for fixture in &patch.fixtures {
             let Some(serial) = fixture.address.serial() else { continue };
             if !self.is_online(serial) {
@@ -148,6 +154,24 @@ impl OpenHauntOutput {
             }
         }
         self.forget_what_is_no_longer_patched(&patch.fixtures);
+    }
+
+    /// A node that went offline and came back is at its defaults, whatever it was
+    /// sent before: drop the memory of it so the next pass sends everything.
+    fn forget_what_rebooted_nodes_were_sent(&mut self) {
+        let now: Vec<(String, bool)> = self
+            .directory
+            .borrow()
+            .entries
+            .iter()
+            .map(|(serial, entry)| (serial.clone(), entry.online))
+            .collect();
+        for (serial, online) in now {
+            let before = self.was_online.insert(serial.clone(), online).unwrap_or(false);
+            if online && !before {
+                self.last_sent.retain(|(s, _), _| *s != serial);
+            }
+        }
     }
 
     fn is_online(&self, serial: &str) -> bool {

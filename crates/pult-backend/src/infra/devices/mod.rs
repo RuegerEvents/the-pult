@@ -22,6 +22,7 @@ use pult_schema::{
         devices::{DevicesState, DiscoveredDevice},
         fixture::{Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDirection},
         openhaunt,
+        output::{OutputConfig, OutputKind},
     },
 };
 use tokio::sync::{mpsc, oneshot, watch};
@@ -277,10 +278,53 @@ impl DeviceManager {
         self.mqtt = Some(MqttLink::connect(&local, &client_id, self.mqtt_tx.clone()));
         info!("[devices] driving devices, broker advertised as {advertised}");
 
+        self.ensure_openhaunt_output().await;
+
         // A device adopted by a previous leader is pointing at a broker that is no
         // longer listening, so every online one has to be told where to look now.
         for serial in self.adopted_and_online() {
             self.push_config(&serial).await;
+        }
+    }
+
+    /// Make sure the show has an output that reaches the nodes.
+    ///
+    /// Outputs are show data, and the plugin that drives adopted nodes' ports only
+    /// runs where an `outputs` row of kind OpenHaunt says so. Adopting a node is
+    /// the operator saying they want it driven, so that row is created here rather
+    /// than left for them to discover in the Outputs panel after nothing moved.
+    /// Idempotent: an existing OpenHaunt output that runs on this station — its
+    /// own or an every-station one — is left alone, enabled or not, because
+    /// switching an output off is a decision this must not undo.
+    async fn ensure_openhaunt_output(&self) {
+        let outputs: Vec<OutputConfig> = self.read("outputs").await;
+        let covered = outputs.iter().any(|o| {
+            o.kind == OutputKind::OpenHaunt
+                && o.node_id.map(|owner| owner == self.node_id).unwrap_or(true)
+        });
+        if covered {
+            return;
+        }
+        let output = OutputConfig {
+            id: Uuid::new_v4(),
+            name: "OpenHaunt nodes".to_string(),
+            kind: OutputKind::OpenHaunt,
+            target: None,
+            universes: Vec::new(),
+            enabled: true,
+            node_id: Some(self.node_id),
+        };
+        match serde_json::to_value(&output) {
+            Ok(value) => {
+                if let Err(e) =
+                    self.engine.set(create_path("outputs"), Lifecycle::Persisted, value).await
+                {
+                    warn!("[devices] could not create the OpenHaunt output: {e}");
+                } else {
+                    info!("[devices] added an OpenHaunt output for this station");
+                }
+            }
+            Err(e) => warn!("[devices] could not create the OpenHaunt output: {e}"),
         }
     }
 

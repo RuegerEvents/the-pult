@@ -10,6 +10,17 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ## Unreleased
 
+### Fixed
+
+- **Adopted OpenHaunt nodes are actually driven.** The plugin that sends a
+  node's ports only runs where an `outputs` row of kind OpenHaunt says so, and
+  nothing created one: values moved in the console and never left it. Starting
+  to drive nodes now adds that output for the station, once, unless one already
+  covers it.
+- **A node that reboots gets its values again.** The OpenHaunt output remembered
+  what it last sent and would not repeat it, while the node had come back at its
+  defaults. A node seen going offline and back is sent every port afresh.
+
 ## 0.1.0
 
 ### Changed
