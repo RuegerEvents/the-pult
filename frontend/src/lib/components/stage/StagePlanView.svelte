@@ -167,6 +167,33 @@
 		view.z = panning.z - (event.clientY - panning.clientY) * perPixel;
 	}
 
+	/// A chip from the "Not placed" tray, dragged onto the plan: the fixture is
+	/// placed where it is dropped and becomes the selection, so the next thing the
+	/// operator does applies to it.
+	const CHIP = 'application/x-pult-fixture';
+
+	function onChipDragStart(event: DragEvent, id: string) {
+		if (!event.dataTransfer) return;
+		event.dataTransfer.setData(CHIP, id);
+		event.dataTransfer.effectAllowed = 'move';
+	}
+
+	function onDragOver(event: DragEvent) {
+		if (!event.dataTransfer?.types.includes(CHIP)) return;
+		event.preventDefault();
+		event.dataTransfer.dropEffect = 'move';
+	}
+
+	function onDrop(event: DragEvent) {
+		const id = event.dataTransfer?.getData(CHIP);
+		if (!id) return;
+		event.preventDefault();
+		const at = atPointer(event);
+		if (!at) return;
+		onplace?.(id, at.x, at.z);
+		select(id);
+	}
+
 	function onUp(event: PointerEvent) {
 		dragging = null;
 		panning = null;
@@ -295,6 +322,8 @@
 		onpointerup={onUp}
 		onpointercancel={onUp}
 		onwheel={onWheel}
+		ondragover={onDragOver}
+		ondrop={onDrop}
 		role="application"
 		aria-label="Stage plan"
 	>
@@ -485,9 +514,11 @@
 				<button
 					class="chip"
 					class:on={$selected.has(fixture.id)}
-					onclick={() => select(fixture.id)}
+					draggable="true"
+					ondragstart={(e) => onChipDragStart(e, fixture.id)}
+					onclick={(e) => (e.shiftKey ? toggle(fixture.id) : select(fixture.id))}
 					ondblclick={() => onplace?.(fixture.id, 0, 0)}
-					title="Double-click to drop it at the origin, then drag it into place"
+					title="Drag it onto the plan, or double-click to drop it at the origin"
 				>
 					{fixture.name}
 				</button>

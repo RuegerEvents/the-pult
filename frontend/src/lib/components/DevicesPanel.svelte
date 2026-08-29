@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { getClientContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
+	import { select, selected, toggle } from '$lib/stores/selection.js';
 	import OutputGaps from './OutputGaps.svelte';
 	import type { DevicesState, DiscoveredDevice } from '$lib/generated/index.js';
 
@@ -44,6 +45,14 @@
 		}
 	}
 
+	/// Select the fixture a node was adopted as: click alone, shift-click to add.
+	function pick(event: MouseEvent, device: DiscoveredDevice) {
+		const id = device.adopted_fixture_id;
+		if (!id) return;
+		if (event.shiftKey) toggle(id);
+		else select(id);
+	}
+
 	onMount(() => {
 		// devices is LOCAL state, not a collection — subscribed by path like session.
 		const apply = (v: unknown) => {
@@ -78,7 +87,11 @@
 	{:else}
 		<div class="device-list">
 			{#each listed as device (device.serial)}
-				<div class="device-row" class:offline={!device.online}>
+				<div
+					class="device-row"
+					class:offline={!device.online}
+					class:selected={!!device.adopted_fixture_id && $selected.has(device.adopted_fixture_id)}
+				>
 					<div class="device-info">
 						<span class="device-name">
 							<span class="dot" class:on={device.online}></span>
@@ -99,6 +112,14 @@
 					</div>
 					<div class="device-actions">
 						{#if device.adopted_fixture_id}
+							<button
+								class="chip-btn"
+								class:on={$selected.has(device.adopted_fixture_id)}
+								title="Select its fixture — shift-click to add to the selection"
+								onclick={(e) => pick(e, device)}
+							>
+								Select
+							</button>
 							<button
 								class="chip-btn"
 								disabled={busy === device.serial || !devices.active}
@@ -190,6 +211,8 @@
 		border-radius: 4px;
 	}
 	.device-row.offline { opacity: 0.6; }
+	.device-row.selected { background: #1a2a40; }
+	.chip-btn.on { border-color: #4a9eff; color: #4a9eff; }
 
 	.device-info {
 		display: flex;

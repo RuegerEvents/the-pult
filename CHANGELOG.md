@@ -18,6 +18,11 @@ bracketed form — so every release needs one and it has to be spelled that way.
   output — and the Outputs and Devices panels show each gap with a button that
   adds exactly the output it names. Deleting the OpenHaunt output no longer
   leaves adopted nodes silently undriven.
+- **Selecting without the plan.** The Patch panel has a selector on every row
+  and the Devices panel a *Select* button on every adopted node — click for
+  one, shift-click to add — so a fixture can be programmed before it has been
+  placed anywhere. Chips in the plan's *Not placed* tray can be dragged onto
+  the plan to place them where they land.
 
 ### Fixed
 

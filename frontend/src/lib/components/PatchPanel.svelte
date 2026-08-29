@@ -2,6 +2,7 @@
 	import { focusOnMount } from '$lib/actions.js';
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
+	import { select, selected, toggle } from '$lib/stores/selection.js';
 	import type { Fixture, FixtureType } from '$lib/generated/index.js';
 	import FixtureTypeEditor from './FixtureTypeEditor.svelte';
 	import {
@@ -41,6 +42,13 @@
 		});
 		newName = '';
 		creating = false;
+	}
+
+	/// Click selects this fixture alone; shift-click adds it to (or removes it from)
+	/// the selection, the same gesture the plan and the rig use.
+	function pick(event: MouseEvent, id: string) {
+		if (event.shiftKey) toggle(id);
+		else select(id);
 	}
 
 	/// Re-address a DMX fixture. Universe and address travel together in the schema,
@@ -92,14 +100,24 @@
 			<table class="rig">
 				<thead>
 					<tr>
-						<th>Name</th><th>Type</th><th>Uni</th><th>Address</th><th>Position</th><th>Live</th><th></th>
+						<th></th><th>Name</th><th>Type</th><th>Uni</th><th>Address</th><th>Position</th><th>Live</th><th></th>
 					</tr>
 				</thead>
 				<tbody>
 					{#each fixtures as fixture (fixture.id)}
 						{@const type = typeOf(fixture)}
 						{@const dmx = dmxAddress(fixture.address)}
-						<tr class:clash={clashes.has(fixture.id)}>
+						<tr class:clash={clashes.has(fixture.id)} class:selected={$selected.has(fixture.id)}>
+							<td>
+								<button
+									class="pick"
+									class:on={$selected.has(fixture.id)}
+									title="Select — shift-click to add to the selection"
+									aria-label="Select {fixture.name}"
+									aria-pressed={$selected.has(fixture.id)}
+									onclick={(e) => pick(e, fixture.id)}
+								></button>
+							</td>
 							<td>
 								<input
 									class="text-input"
@@ -186,6 +204,10 @@
 	.rig th { text-align: left; color: #777; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 6px 6px 0; }
 	.rig td { padding: 3px 6px 3px 0; vertical-align: middle; }
 	.rig tr.clash td { background: #3a1f1f; }
+	.rig tr.selected td { background: #1a2a40; }
+	.pick { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #555; background: none; padding: 0; cursor: pointer; display: block; }
+	.pick:hover { border-color: #4a9eff; }
+	.pick.on { background: #4a9eff; border-color: #4a9eff; }
 	.coords { color: #bbb; font-variant-numeric: tabular-nums; }
 	.node-address { color: #bbb; font-family: monospace; font-size: 12px; }
 	.live { display: flex; gap: 3px; flex-wrap: wrap; padding-top: 6px; }
