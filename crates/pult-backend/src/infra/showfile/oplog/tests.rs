@@ -117,3 +117,46 @@ async fn operations_come_back_oldest_first() {
     let order: Vec<u64> = all.iter().map(|o| o.seq).collect();
     assert_eq!(order, vec![1, 2, 3, 4], "replaying out of order would undo later writes");
 }
+
+/// The station writes its own telemetry into the log twice a second. If those rows
+/// counted against the window, a change made twenty minutes ago would have fallen out
+/// of reach of Ctrl-Z while its author was still thinking about it.
+#[tokio::test]
+async fn the_stations_own_writes_are_not_part_of_anybodys_history() {
+    let pool = showfile::open_in_memory().await.unwrap();
+    let node = NodeId(Uuid::new_v4());
+    let sam = Uuid::new_v4();
+
+    let mut theirs = an_op(node, 1, "name", "Act 1");
+    theirs.user_id = Some(sam);
+    theirs.previous = Some(serde_json::json!("Untitled"));
+    append(&pool, &theirs).await.unwrap();
+    for seq in 2..=20 {
+        append(&pool, &an_op(node, seq, "cpu", "busy")).await.unwrap();
+    }
+
+    let log = recent_by_people(&pool, 500).await.unwrap();
+    assert_eq!(log.len(), 1, "only what somebody asked for");
+    assert_eq!(log[0].user_id, Some(sam));
+}
+
+/// Newest first, because undo wants the most recent qualifying operation and the
+/// history panel reads top down.
+#[tokio::test]
+async fn a_persons_changes_come_back_newest_first() {
+    let pool = showfile::open_in_memory().await.unwrap();
+    let node = NodeId(Uuid::new_v4());
+    let sam = Uuid::new_v4();
+
+    for seq in 1..=3 {
+        let mut op = an_op(node, seq, "name", &format!("v{seq}"));
+        op.user_id = Some(sam);
+        op.timestamp = Utc::now() + chrono::Duration::seconds(seq as i64);
+        append(&pool, &op).await.unwrap();
+    }
+
+    let log = recent_by_people(&pool, 2).await.unwrap();
+    assert_eq!(log.len(), 2, "the limit is honoured");
+    assert_eq!(log[0].value, "v3");
+    assert_eq!(log[1].value, "v2");
+}

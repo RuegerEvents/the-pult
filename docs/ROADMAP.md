@@ -21,9 +21,10 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
 | Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. A port that says it can trace a shape is handed one descriptor instead of forty messages a second. Tested end to end against `tools/openhaunt-node-sim` and, since task 22, against real firmware on an ESP32. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
-| 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects are in; geometric selection is still ahead. |
+| 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects are in, and a selection is a question about the rig rather than a list. |
 | Selection | Working as a query over the rig: by type, name, sphere, box or the spec's radial cone, built up by adding, narrowing and removing, and ordered along an axis or outwards from a point. Re-evaluated as the rig changes, so a fixture patched under a live selection joins it. Queries cannot be saved as groups yet. |
 | Effects | Working. One primitive covers a shape and a step list, running from the programmer or a cue, at its own rate or a speed master's. Rendered identically on every station from replicated state, and handed to a node that can trace it for itself. No amplitude fade into one yet. |
+| Undo / history | Working, per person and across their clients. The oplog carries the author, the previous value and what an operation reverses, so undo is a query over it rather than a stack — which is what lets a tablet take back what the desk did. A History panel shows what everyone changed. No group undo: a drag is many operations and Ctrl-Z takes back one. |
 | Timecode | Not started. `FollowMode::Timecode` exists and nothing produces one. |
 | Distribution | Working. The frontend is built into the binaries that serve it, the console and the simulator each have a Tauri desktop app, and tagging builds all four for Linux x86_64 and aarch64, macOS arm64 and Windows. Nothing is signed and nothing auto-updates. |
 
@@ -1179,6 +1180,71 @@ they exist the types belong in `pult-schema` rather than the frontend, with an
 evaluator beside this one. Until something needs that, one implementation is better
 than two that can disagree — the comment at the top of `selection.ts` says so, so the
 next person knows it was a decision.
+
+### 31. Taking it back (done)
+
+Every console has an Oops key and every operator reaches for it before they can name
+what they meant to do. This is that, plus the shared list of what everyone has been
+doing, which turns out to be the more useful half on a two-operator tech.
+
+**There is no undo stack.** The oplog already holds every write in order, and a
+second list beside it would be a second thing to keep in step. So an operation
+carries three more fields — who asked for it, what was there before, and which
+operation it reverses — and undo is a query over the log. Three consequences fall
+out rather than being built: an undo replicates to peers like any other write, so a
+second station is not left showing a value that has been taken back; the same
+person's other client sees it; and redo is undoing an undo, so one mechanism covers
+both.
+
+**Undo is per person, not per browser.** That was the ask, and it is the reason the
+log rather than a stack: an operator with a desk and a tablet is one person, and
+either device takes back what the other did. A browser-local stack could not do that
+however carefully it was written. So the show gained a `users` table, a client says
+who it is when it connects and again on every reconnect, and every write it makes is
+attributed. A socket that came back anonymous would keep working and quietly stop
+being undoable, which is the kind of fault nobody notices until they press Ctrl-Z.
+
+**What undoes: everything editable, and nothing that moves lights.** The programmer
+counts, patch counts, cue timing counts. A `goNext` does not. Commands are excluded
+in `Operation::is_undoable` rather than at the call site, so a new command is
+non-undoable by default — the safe direction. An operator who pressed Ctrl-Z
+expecting to take back an edit would not thank a console that jumped the sequence
+instead; going back a cue is a different gesture and has a different name.
+
+**Undo and redo are told apart by chain depth, not by a flag.** An operation's depth
+is how far along a chain of reversals it sits: a change is 0, an undo of it 1, a redo
+of that 2. Undo takes the newest thing in effect at even depth, redo at odd. The
+first attempt used "does it point at something" and quietly took the change away
+again when you redid twice — an undo wearing the wrong label. And a fresh change ends
+the redo branch, checked separately, because putting an old value back on top of work
+done since is not what anybody means by redo.
+
+**Whether something is still in effect is recursive.** An operation is reversed when
+something points at it that is *itself* still in effect, so an undo that has since
+been redone no longer hides what it undid. Flat set membership says a change stays
+undone after it has been put back, and the second undo of a run then finds nothing to
+do.
+
+**The window counts edits, not rows.** Undo reads the most recent 500 authored
+operations. Counting every row instead would have made it a window of about a quarter
+of an hour, because a station writes its own telemetry into the log twice a second —
+so a rename made twenty minutes ago would have stopped being undoable while its
+author was still thinking about it. The same filter is what makes the History panel
+readable: it lists what people did, and the console's own doing does not appear,
+because nobody did it.
+
+**Seeing is shared even though undoing is not.** The History panel shows everyone,
+colour-coded and named, and marks which entries are yours to take back. On a
+two-operator tech the useful question is usually "what just happened", and the answer
+is often somebody else. Undos appear as themselves rather than being tidied away,
+which makes the list a true account.
+
+Left open: a group undo. Dragging a fader writes many operations and Ctrl-Z takes
+back one of them, which is right for a rename and wrong for a move — the fix is to
+mark a run of writes as one gesture, which the oplog can carry but nothing sets.
+Nothing prunes the log yet, so a long show's history grows without bound. And a user
+is a name and a colour, with no notion of a station being signed into: two people at
+one desk have to remember to switch.
 
 ## Further out
 

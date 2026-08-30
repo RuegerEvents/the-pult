@@ -10,8 +10,11 @@
 	import Toasts from '$lib/components/Toasts.svelte';
 	import { addToast } from '$lib/toasts.js';
 	import { initShowStores } from '$lib/stores/show.js';
+	import { identifyOnConnect } from '$lib/stores/user.js';
+	import { isTextField, redo, shortcutFor, undo } from '$lib/stores/undo.js';
 	import { restoreLayout } from '$lib/stores/layout.js';
 	import LayoutBar from '$lib/components/layout/LayoutBar.svelte';
+	import UserBar from '$lib/components/UserBar.svelte';
 	import '$lib/styles/tokens.css';
 	import '$lib/styles/controls.css';
 
@@ -30,10 +33,29 @@
 	// One store per collection, shared by every panel: a tiled workspace can have the
 	// same fixtures on screen four times, and four deep subscriptions to them is
 	// four copies of every update forty times a second.
-	initShowStores(data);
+	initShowStores(data, client);
 	// Which tiles this browser had up last time. The layouts themselves are the
 	// show's; which one is on screen is this operator's.
 	restoreLayout();
+	// And who this browser is, so its writes can be taken back. Said again on every
+	// reconnect by the client itself — a socket that came back anonymous would keep
+	// working and quietly stop being undoable.
+	identifyOnConnect();
+
+	/**
+	 * Ctrl-Z anywhere that is not a text field.
+	 *
+	 * On the window rather than on a panel, because undo is not any one panel's: an
+	 * operator who has just deleted a fixture in Patch and moved to the Plan still
+	 * means that fixture.
+	 */
+	function onKey(event: KeyboardEvent) {
+		const action = shortcutFor(event, isTextField(event.target));
+		if (!action) return;
+		event.preventDefault();
+		if (action === 'undo') undo();
+		else redo();
+	}
 
 	let connected = $state(false);
 	/// What the station says it is. Nothing waits on it — it is the version in the
@@ -79,6 +101,8 @@
 	});
 </script>
 
+<svelte:window onkeydown={onKey} />
+
 <div class="shell">
 	<header class="topbar">
 		<span class="brand" title={station ? `station ${station.nodeId}` : address}>
@@ -86,6 +110,7 @@
 		</span>
 		<LayoutBar />
 		<span class="spacer"></span>
+		<UserBar />
 		<ConnectionStatus {connected} />
 	</header>
 	<main>

@@ -12,6 +12,15 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **Undo and redo, per person.** Ctrl-Z takes back the last thing *you* changed,
+  wherever you are: sign in at the desk and on the tablet as the same person and
+  either takes back what the other did. There is no undo stack — an operation now
+  carries who asked for it, what was there before and which operation it reverses, so
+  undo is a query over the oplog. An undo therefore replicates to peers like any
+  other write, and redo is undoing an undo. Everything editable can be taken back;
+  a Go cannot, because an operator reaching for Ctrl-Z does not mean "move the
+  lights". A new History panel shows what everyone has changed, colour-coded and
+  named, with undos shown as themselves rather than tidied away.
 - **Selection is a question about the rig, not a list of fixtures.** Select by
   type, by name, within a radius, inside a region, or inside a cone from a point —
   the spec's radial selection — and build it up by adding, narrowing and removing.

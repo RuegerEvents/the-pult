@@ -38,9 +38,12 @@ const fixture = (id: string, x: number, typeId = 'par'): Fixture => ({
 	live_fades: {}
 });
 
-initShowStores({
-	fixtures: { subscribeDeep: (cb: (v: Fixture[]) => void) => rig.subscribe(cb) }
-} as unknown as DataRoot);
+initShowStores(
+	{ fixtures: { subscribeDeep: (cb: (v: Fixture[]) => void) => rig.subscribe(cb) } } as unknown as DataRoot,
+	// The socket is only reached for undo and identify, neither of which a
+	// selection test touches.
+	{} as never
+);
 
 beforeEach(() => {
 	rig.set([fixture('a', 0), fixture('b', 1), fixture('c', 2), fixture('d', 3, 'mover')]);

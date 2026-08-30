@@ -104,15 +104,23 @@ fn read_operation(row: &sqlx::sqlite::SqliteRow) -> Option<Operation> {
     })
 }
 
-/// Every operation in the log, newest first, for the history panel and for undo.
+/// The operations somebody asked for, newest first, for the history panel and undo.
+///
+/// Authored rows only, and that is load-bearing rather than tidy. A station writes
+/// its own telemetry into the log twice a second, so a window over *every* row is
+/// about a quarter of an hour long: an operator who renamed a fixture and then did
+/// something else for twenty minutes would find it had quietly stopped being
+/// undoable. Counting only what people did makes the window a count of edits, which
+/// is what an operator thinks it is.
 ///
 /// `limit` because a long show's log is thousands of rows and nobody scrolls that
 /// far — and because undo only ever needs the most recent one that qualifies.
-pub async fn recent(pool: &SqlitePool, limit: u32) -> Result<Vec<Operation>> {
+pub async fn recent_by_people(pool: &SqlitePool, limit: u32) -> Result<Vec<Operation>> {
     let rows = sqlx::query(
         "SELECT seq, node_id, op_id, clock_json, path_json, value_json, lifecycle, timestamp, \
                 user_id, previous_json, undoes \
-         FROM oplog ORDER BY timestamp DESC, seq DESC LIMIT ?1",
+         FROM oplog WHERE user_id IS NOT NULL \
+         ORDER BY timestamp DESC, seq DESC LIMIT ?1",
     )
     .bind(limit as i64)
     .fetch_all(pool)

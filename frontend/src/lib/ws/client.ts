@@ -1,4 +1,4 @@
-import type { ClientMessage, ServerMessage } from '$lib/generated/index.js';
+import type { ClientMessage, HistoryEntry, ServerMessage } from '$lib/generated/index.js';
 import type { JsonValue } from '$lib/generated/serde_json/JsonValue.js';
 import type { PathSegment } from '$lib/generated/index.js';
 
@@ -17,6 +17,8 @@ export class PultWsClient {
 	private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 	private reconnectDelay = 1000;
 	private messageQueue: ClientMessage[] = [];
+	/** Who this client last said it was, so a reconnect can say it again. */
+	private userId: string | null = null;
 	private connectListeners = new Set<() => void>();
 
 	onConnect: (() => void) | undefined = undefined;
@@ -51,6 +53,13 @@ export class PultWsClient {
 		this.socket.onopen = () => {
 			this.reconnectDelay = 1000;
 			console.log('[pult] WebSocket connected');
+			// Before anything else: a write that lands before the server knows who
+			// sent it is a write nobody can take back.
+			if (this.userId !== null) {
+				this.socket!.send(
+					JSON.stringify({ type: 'Identify', payload: { user_id: this.userId } })
+				);
+			}
 			// Re-register all active subscriptions with the server
 			for (const pattern of this.subscriptionHandlers.keys()) {
 				this.socket!.send(JSON.stringify({ type: 'Subscribe', payload: { pattern } }));
@@ -135,7 +144,16 @@ export class PultWsClient {
 			return;
 		}
 
-		if (msg.type === 'GetResult' || msg.type === 'SetAck' || msg.type === 'CallResult') {
+		// Every reply that carries a request id, so the promise waiting on it settles.
+		// A type left off this list does not fail — it hangs, which is worse, because
+		// the caller's `finally` never runs either.
+		if (
+			msg.type === 'GetResult' ||
+			msg.type === 'SetAck' ||
+			msg.type === 'CallResult' ||
+			msg.type === 'UndoResult' ||
+			msg.type === 'HistoryResult'
+		) {
 			const id = msg.payload.request_id;
 			const pending = this.pending.get(id);
 			if (pending) {
@@ -199,6 +217,48 @@ export class PultWsClient {
 				type: 'Set',
 				payload: { path: path.map(segmentFromJs), value: value as JsonValue, request_id: id },
 			});
+		});
+	}
+
+	/**
+	 * Say who is at this client, so its writes can be taken back.
+	 *
+	 * Remembered and re-sent on reconnect: a socket that drops mid-show and comes
+	 * back anonymous would keep working and quietly stop being undoable, which is
+	 * the kind of fault nobody notices until they press Ctrl-Z.
+	 */
+	identify(userId: string | null): void {
+		this.userId = userId;
+		this.send({ type: 'Identify', payload: { user_id: userId } });
+	}
+
+	/** Take back this user's last change, or put back their last undo. */
+	async undo(redo = false): Promise<(string | number)[] | null> {
+		const id = this.requestId();
+		return new Promise((resolve, reject) => {
+			this.pending.set(id, {
+				resolve: (msg) => {
+					if (msg.type === 'UndoResult') resolve(msg.payload.undone ?? null);
+					else reject(new Error('unexpected response'));
+				},
+				reject
+			});
+			this.send({ type: 'Undo', payload: { redo, request_id: id } });
+		});
+	}
+
+	/** The recent history, newest first. */
+	async history(limit = 100): Promise<HistoryEntry[]> {
+		const id = this.requestId();
+		return new Promise((resolve, reject) => {
+			this.pending.set(id, {
+				resolve: (msg) => {
+					if (msg.type === 'HistoryResult') resolve(msg.payload.entries);
+					else reject(new Error('unexpected response'));
+				},
+				reject
+			});
+			this.send({ type: 'History', payload: { limit, request_id: id } });
 		});
 	}
 

@@ -18,6 +18,7 @@
 import { readable, type Readable } from 'svelte/store';
 import type { Show } from '$lib/generated/index.js';
 import type { DataRoot } from '$lib/ws/data.js';
+import type { PultWsClient } from '$lib/ws/client.js';
 
 /** The tables that are collections, as opposed to the singletons beside them. */
 type Collections = {
@@ -30,13 +31,21 @@ type Row<T> = T extends { get(): Promise<(infer E)[]> } ? E : never;
 export type CollectionName = keyof Collections;
 
 let root: DataRoot | null = null;
+/**
+ * The socket itself, for the few things that are not path writes.
+ *
+ * Undo, identify and the history are asked of the connection rather than of a path,
+ * and a store has no Svelte context to pull one out of the way a component does.
+ */
+let socket: PultWsClient | null = null;
 const stores = new Map<string, Readable<unknown[]>>();
 /** Subscribers that asked for data before the connection existed. */
 let waiting: ((data: DataRoot) => void)[] = [];
 
 /** Point the shared stores at the live connection. Called once, from `+layout.svelte`. */
-export function initShowStores(data: DataRoot): void {
+export function initShowStores(data: DataRoot, ws: PultWsClient): void {
 	root = data;
+	socket = ws;
 	const queued = waiting;
 	waiting = [];
 	for (const start of queued) start(data);
@@ -63,6 +72,12 @@ function whenReady(use: (data: DataRoot) => void): void {
 export function showData(): DataRoot {
 	if (!root) throw new Error('the show stores were used before initShowStores');
 	return root;
+}
+
+/** The connection, for undo, identify and the history. */
+export function showClient(): PultWsClient {
+	if (!socket) throw new Error('the show stores were used before initShowStores');
+	return socket;
 }
 
 /** One collection of the show, live. */

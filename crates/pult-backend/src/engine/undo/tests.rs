@@ -44,7 +44,7 @@ fn op(user: Option<Uuid>, path: Path, value: serde_json::Value, previous: Option
     }
 }
 
-/// The log is read newest-first, as `oplog::recent` returns it.
+/// The log is read newest-first, as `oplog::recent_by_people` returns it.
 fn newest_first(ops: Vec<Operation>) -> Vec<Operation> {
     ops.into_iter().rev().collect()
 }
@@ -265,7 +265,7 @@ impl History {
         History { log: Vec::new(), user }
     }
 
-    /// Newest first, as `oplog::recent` returns it.
+    /// Newest first, as `oplog::recent_by_people` returns it.
     fn push(&mut self, op: Operation) {
         self.log.insert(0, op);
     }

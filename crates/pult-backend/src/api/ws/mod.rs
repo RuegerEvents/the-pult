@@ -29,6 +29,11 @@ pub struct SubscriptionRegistry(Arc<Mutex<RegistryInner>>);
 #[derive(Default)]
 struct RegistryInner {
     sessions: HashMap<SessionId, mpsc::UnboundedSender<ServerMessage>>,
+    /// Who each socket says it is, for attributing its writes.
+    ///
+    /// Per connection rather than per user: two browsers can be the same person, and
+    /// the point of the identity is that they then share one undo history.
+    users: HashMap<SessionId, Uuid>,
     subscriptions: HashMap<SessionId, Vec<PathPattern>>,
 }
 
@@ -37,9 +42,23 @@ impl SubscriptionRegistry {
         self.0.lock().unwrap().sessions.insert(id, tx);
     }
 
+    /// Remember who this socket says it is, or forget if it says nobody.
+    pub fn identify(&self, id: SessionId, user_id: Option<Uuid>) {
+        let mut inner = self.0.lock().unwrap();
+        match user_id {
+            Some(user) => inner.users.insert(id, user),
+            None => inner.users.remove(&id),
+        };
+    }
+
+    pub fn user_of(&self, id: SessionId) -> Option<Uuid> {
+        self.0.lock().unwrap().users.get(&id).copied()
+    }
+
     pub fn remove_session(&self, id: SessionId) {
         let mut inner = self.0.lock().unwrap();
         inner.sessions.remove(&id);
+        inner.users.remove(&id);
         inner.subscriptions.remove(&id);
     }
 
@@ -166,11 +185,52 @@ async fn handle_client_message(
             send_to_session(state, session_id, ServerMessage::GetResult { path, value, request_id });
         }
 
+        ClientMessage::Identify { user_id } => {
+            state.ws_registry.identify(session_id, user_id);
+        }
+
+        ClientMessage::Undo { redo, request_id } => {
+            let msg = match state.ws_registry.user_of(session_id) {
+                Some(user_id) => {
+                    let undone = state.engine.undo(user_id, redo).await;
+                    ServerMessage::UndoResult { request_id, undone: undone.map(|op| op.path) }
+                }
+                // A client that has not said who it is has no history of its own, and
+                // guessing at one would take back somebody else's work.
+                None => ServerMessage::UndoResult { request_id, undone: None },
+            };
+            send_to_session(state, session_id, msg);
+        }
+
+        ClientMessage::History { limit, request_id } => {
+            let log = state.engine.history(limit.min(500)).await;
+            let entries = log
+                .iter()
+                .map(|op| pult_schema::ws::HistoryEntry {
+                    id: op.id,
+                    user_id: op.user_id,
+                    path: op.path.clone(),
+                    at: op.timestamp.to_rfc3339(),
+                    undoes: op.undoes,
+                    undoable: op.is_undoable(),
+                })
+                .collect();
+            send_to_session(state, session_id, ServerMessage::HistoryResult { request_id, entries });
+        }
+
         ClientMessage::Set { path, value, request_id } => {
             // Determine lifecycle from path — all top-level sets default to Persisted
             // unless the path corresponds to a known SYNCED field.
             let lifecycle = infer_lifecycle(&path);
-            let result = state.engine.set(path.clone(), lifecycle, value.clone()).await;
+            // Attributed where the client has said who it is, so it can be taken
+            // back; anonymous otherwise, which is a write nobody can undo rather
+            // than one attributed to a guess.
+            let result = match state.ws_registry.user_of(session_id) {
+                Some(user_id) => {
+                    state.engine.set_as(user_id, path.clone(), lifecycle, value.clone()).await
+                }
+                None => state.engine.set(path.clone(), lifecycle, value.clone()).await,
+            };
             let msg = match result {
                 Ok(()) => ServerMessage::SetAck { request_id, ok: true, error: None },
                 Err(e) => ServerMessage::SetAck {

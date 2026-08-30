@@ -631,7 +631,7 @@ impl ShowEngine {
                     let _ = reply.send(done);
                 }
                 EngineCommand::History { limit, reply } => {
-                    let log = oplog::recent(&self.pool, limit).await.unwrap_or_default();
+                    let log = oplog::recent_by_people(&self.pool, limit).await.unwrap_or_default();
                     let _ = reply.send(log);
                 }
                 EngineCommand::Subscribe { pattern, reply } => {
@@ -1049,7 +1049,7 @@ impl ShowEngine {
     /// reversed, so it replicates to peers, reaches the same user's other client,
     /// and turns up in the history as itself.
     async fn take_back(&mut self, user_id: Uuid, redo: bool) -> Option<Operation> {
-        let log = oplog::recent(&self.pool, UNDO_DEPTH).await.ok()?;
+        let log = oplog::recent_by_people(&self.pool, UNDO_DEPTH).await.ok()?;
         let target = if redo {
             undo::next_to_redo(&log, user_id)?
         } else {

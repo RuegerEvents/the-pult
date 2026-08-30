@@ -29,6 +29,18 @@ pub enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// What an Undo actually took back, or nothing when there was nothing to take.
+    UndoResult {
+        request_id: String,
+        /// A short account of what moved, for the toast: "took back Patch → Spot 3".
+        #[serde(skip_serializing_if = "Option::is_none")]
+        undone: Option<crate::path::Path>,
+    },
+    /// The recent history, newest first.
+    HistoryResult {
+        request_id: String,
+        entries: Vec<crate::ws::HistoryEntry>,
+    },
     /// Push notification for a subscribed path pattern.
     Update {
         path: Path,
