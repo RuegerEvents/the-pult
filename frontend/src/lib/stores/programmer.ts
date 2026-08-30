@@ -18,7 +18,14 @@
  */
 
 import { derived, get, type Readable } from 'svelte/store';
-import type { Cue, ParameterKind, ParameterValue, ProgrammerValue, Sequence } from '$lib/generated/index.js';
+import type {
+	Cue,
+	EffectSpec,
+	ParameterKind,
+	ParameterValue,
+	ProgrammerValue,
+	Sequence
+} from '$lib/generated/index.js';
 import { parameterKey } from '$lib/patch.js';
 import { entryId, entriesFromCue, sameValue, storeCaptures } from '$lib/programmer.js';
 import { collection, show, showData } from './show.js';
@@ -102,6 +109,75 @@ async function flush(): Promise<void> {
 			});
 		}
 	}
+}
+
+/**
+ * Put an effect into the programmer, one spec per fixture.
+ *
+ * The specs differ only in phase — `specsFor` builds them, sharing one `effect_id`
+ * so the panel can gather them back afterwards. The anchor is set here rather than
+ * when the panel was opened, so the effect starts its first cycle at the moment the
+ * operator pressed Apply.
+ *
+ * Written straight through rather than staged like `setValue`: applying an effect is
+ * one deliberate act, not a fader being dragged, so there is no burst to coalesce.
+ */
+export async function setEffect(
+	kind: ParameterKind,
+	specs: Record<string, EffectSpec>
+): Promise<void> {
+	const data = showData();
+	const key = parameterKey(kind);
+	const at = Date.now();
+	const current = new Map(held.map((entry) => [entry.id, entry]));
+
+	for (const [fixtureId, spec] of Object.entries(specs)) {
+		const id = entryId(fixtureId, key);
+		const anchored = { ...spec, t0: at };
+		// A value pending from a fader drag would land after this and cover it.
+		pending.delete(id);
+
+		if (current.has(id)) {
+			await data.programmer_values.byId(id).effect.set(anchored);
+		} else {
+			await data.programmer_values.create({
+				id,
+				fixture_id: fixtureId,
+				parameter_kind: kind,
+				// Where the parameter falls back to if the effect cannot be rendered.
+				value: spec.low,
+				effect: anchored,
+				locked: false
+			});
+		}
+	}
+}
+
+/**
+ * Take an effect off every entry that carries it.
+ *
+ * The entries themselves stay, holding their last value: an operator taking the
+ * chase off a group is asking for it to stop moving, not for the lights to drop
+ * back to whatever the cue underneath says.
+ */
+export async function removeEffect(effectId: string): Promise<void> {
+	const data = showData();
+	for (const entry of held) {
+		if (entry.effect?.effect_id !== effectId) continue;
+		await data.programmer_values.byId(entry.id).effect.set(null);
+	}
+}
+
+/** Every distinct effect the programmer is holding, with the entries under it. */
+export function effectsHeld(entries: ProgrammerValue[]): Map<string, ProgrammerValue[]> {
+	const out = new Map<string, ProgrammerValue[]>();
+	for (const entry of entries) {
+		if (!entry.effect) continue;
+		const run = out.get(entry.effect.effect_id) ?? [];
+		run.push(entry);
+		out.set(entry.effect.effect_id, run);
+	}
+	return out;
 }
 
 // ── Emptying it ───────────────────────────────────────────────────────────────

@@ -59,6 +59,21 @@ export const PRESETS: Preset[] = [
 		)
 	},
 	{
+		key: 'effects',
+		name: 'Effects',
+		// Everything a chase is built from, in reach at once: the rig to pick heads
+		// in, the effect editor beside it, the tempo they follow, and the values
+		// panel to see what is actually being held.
+		tree: split(
+			'Column',
+			[
+				split('Row', [tabs(['rig', 'plan']), tabs(['effects'])], [0.5, 0.5]),
+				split('Row', [tabs(['speedmasters']), tabs(['values'])], [0.42, 0.58])
+			],
+			[0.55, 0.45]
+		)
+	},
+	{
 		key: 'flows',
 		name: 'Flows',
 		tree: split('Row', [tabs(['flows']), tabs(['devices'])], [0.72, 0.28])

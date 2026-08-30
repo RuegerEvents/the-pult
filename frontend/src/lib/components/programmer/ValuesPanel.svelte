@@ -13,11 +13,12 @@
 	 * amber is what is reaching the rig.
 	 */
 
-	import type { ParameterKind, ParameterValue } from '$lib/generated/index.js';
+	import type { EffectSpec, ParameterKind, ParameterValue } from '$lib/generated/index.js';
 	import { commonValue, editableParameters } from '$lib/programmer.js';
 	import { formatValue, kindLabel } from '$lib/patch.js';
 	import { collection } from '$lib/stores/show.js';
 	import { selection } from '$lib/stores/selection.js';
+	import { revealPanel } from '$lib/stores/layout.js';
 	import {
 		byKey,
 		cancelEdit,
@@ -26,10 +27,18 @@
 		entries,
 		lockAll,
 		remove,
+		removeEffect,
 		setValue,
 		toggleLock,
 		updateEdit
 	} from '$lib/stores/programmer.js';
+	/** What an effect chip says: the shape and the rate, which is all that fits. */
+	function effectSummary(effect: EffectSpec): string {
+		const shape = 'Steps' in effect.curve ? `${effect.curve.Steps.length} steps` : effect.curve.Shape.toLowerCase();
+		const rate = 'Hz' in effect.rate ? `${effect.rate.Hz} Hz` : 'master';
+		return `${shape} · ${rate}`;
+	}
+
 	import PanTiltPad from './controls/PanTiltPad.svelte';
 	import ValueControl from './controls/ValueControl.svelte';
 	import StoreMenu from './StoreMenu.svelte';
@@ -175,7 +184,19 @@
 						{#each group.held as entry (entry.id)}
 							<div class="entry" class:locked={entry.locked}>
 								<span class="param">{kindLabel(entry.parameter_kind)}</span>
-								<span class="mono value">{formatValue(entry.value)}</span>
+								{#if entry.effect}
+									<!-- The value under an effect is only where it falls back to, so
+									     showing it would be showing a number the light is not at.
+									     What is worth saying is that something periodic has this
+									     parameter, and what it is. -->
+									<button
+										class="chip-effect"
+										title="Open the effect on this parameter"
+										onclick={() => revealPanel('effects')}
+									>{effectSummary(entry.effect)}</button>
+								{:else}
+									<span class="mono value">{formatValue(entry.value)}</span>
+								{/if}
 								<button
 									class="icon"
 									title={entry.locked ? 'Release this value' : 'Park this value'}
@@ -184,6 +205,14 @@
 								>
 									{entry.locked ? '🔒' : '🔓'}
 								</button>
+								{#if entry.effect}
+									<button
+										class="icon"
+										title="Stop this effect, leaving the value where it is"
+										aria-label="Stop the effect"
+										onclick={() => removeEffect(entry.effect!.effect_id)}
+									>⏹</button>
+								{/if}
 								<button
 									class="icon drop"
 									title="Give this parameter back to playback"
@@ -377,6 +406,23 @@
 	.entry:hover {
 		background: var(--bg-hover);
 	}
+	/* Amber, like everything else the programmer is holding over playback. */
+	.chip-effect {
+		font-size: var(--font-xs);
+		padding: 2px 8px;
+		border-radius: 999px;
+		border: 1px solid var(--live);
+		background: none;
+		color: var(--live);
+		font-family: inherit;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.chip-effect:hover {
+		background: var(--live);
+		color: var(--bg);
+	}
+
 	.entry.locked {
 		color: var(--live);
 	}

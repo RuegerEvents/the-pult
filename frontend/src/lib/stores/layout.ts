@@ -16,7 +16,16 @@ import { browser } from '$app/environment';
 import { stopEditing } from './editing.js';
 import { get, writable } from 'svelte/store';
 import type { Layout, LayoutNode } from '$lib/generated/index.js';
-import { movePanel, removePanel, resize, addTab, tidy, type DropSide, type Path } from '$lib/layout.js';
+import {
+	addTab,
+	findPanel,
+	movePanel,
+	removePanel,
+	resize,
+	tidy,
+	type DropSide,
+	type Path
+} from '$lib/layout.js';
 import { DEFAULT_PRESET, presetByKey } from '$lib/layout/presets.js';
 import { collection, showData } from './show.js';
 
@@ -129,6 +138,35 @@ export async function removeLayout(id: string): Promise<void> {
 // ── Rearranging ───────────────────────────────────────────────────────────────
 
 export const openPanel = (path: Path, panel: string) => change(addTab(get(tree), path, panel));
+
+/**
+ * Bring a panel to the front, opening it if it is not on screen.
+ *
+ * For the places one panel points at another — an effect chip in the values panel
+ * saying "this is what has your Intensity". The operator wants to *see* the effects
+ * panel; where in the workspace it lives is not something they should have to know,
+ * and opening a second copy of one already on screen would be worse than doing
+ * nothing.
+ *
+ * With nowhere obvious to put it, it goes in the first tile. That is arbitrary, but
+ * the alternative is refusing to show the operator the thing they asked for.
+ */
+export function revealPanel(panel: string): void {
+	const at = findPanel(get(tree), panel);
+	openPanel(at ?? firstTile(get(tree)), panel);
+}
+
+/** The path of the top-left tile, as somewhere to put a panel with no home. */
+function firstTile(node: LayoutNode): Path {
+	const path: Path = [];
+	let here = node;
+	while (here.type === 'Split') {
+		path.push(0);
+		here = here.children[0];
+	}
+	return path;
+}
+
 /**
  * Close a panel, and lock it again on the way out.
  *

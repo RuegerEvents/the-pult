@@ -21,6 +21,12 @@ bracketed form — so every release needs one and it has to be spelled that way.
   parameter's default value with the right control for its kind, and pick
   `Raw` or `Named` — so a light nobody has written a profile for can be
   patched without editing JSON.
+- **An effects panel.** Pick a selection, choose a shape or build a step list,
+  set its rate in hertz or hand it to a speed master, and spread it across the
+  fixtures — together, as a chase, from the centre out, in wings, in groups, or
+  randomly. A waveform shows a dot per fixture where it currently sits. The
+  values panel shows an amber chip for a parameter under an effect and opens the
+  editor when it is clicked.
 - **Speed masters, with a tap button.** A new panel holds the tempos effects
   follow: tap along with the band, halve or double it, run or stop it, and watch
   a beat dot. A tap writes the tempo and its anchor together, so every station

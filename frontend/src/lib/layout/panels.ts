@@ -13,6 +13,7 @@
 import type { Component } from 'svelte';
 
 import DevicesPanel from '$lib/components/DevicesPanel.svelte';
+import EffectsPanel from '$lib/components/effects/EffectsPanel.svelte';
 import FlowEditor from '$lib/components/flow/FlowEditor.svelte';
 import OutputsPanel from '$lib/components/OutputsPanel.svelte';
 import PatchPanel from '$lib/components/PatchPanel.svelte';
@@ -62,7 +63,10 @@ export const PANELS = {
 	show: { title: 'Show', component: ShowPanel, fills: false },
 	session: { title: 'Session', component: SessionPanel, fills: false },
 	devices: { title: 'Devices', component: DevicesPanel, fills: false },
-	speedmasters: { title: 'Speed masters', component: SpeedMastersPanel, fills: false, editable: true }
+	speedmasters: { title: 'Speed masters', component: SpeedMastersPanel, fills: false, editable: true },
+	// No edit toggle: this panel is an editor, and it writes to the programmer
+	// rather than to the show.
+	effects: { title: 'Effects', component: EffectsPanel, fills: false }
 } as const satisfies Record<string, PanelMeta>;
 
 export const isPanel = (id: string): id is PanelId => id in PANELS;

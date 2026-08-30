@@ -934,6 +934,53 @@ Found by driving it: the create form used `autofocus`, which browsers apply on p
 load and not reliably to an input that has just been inserted. Every other panel here
 uses the `focusOnMount` action, and now so does this one.
 
+### 25. The effects panel (done)
+
+Where a chase is built. No Edit toggle — this panel *is* an editor, and it writes to
+the programmer, which is the scratch buffer.
+
+**The waveform is the panel.** An operator asking for "a chase across these six"
+wants to see six dots moving round one curve, not read six phase numbers. The dots
+are drawn from the same arithmetic `model/effects.rs` renders with, so they are where
+the lights are; a browser that worked it out differently would be drawing a lie, and
+`effects.test.ts` asserts the same numeric table the engine's tests do.
+
+**Spreads are where "make them chase" becomes a number per fixture.** Even, Chase,
+Reversed, Centre out, Wings, Groups and Random, each tested at one, four and five
+fixtures — a selection of one has to survive every one of them, because "chase these"
+with one light selected is an ordinary thing to do by accident and dividing by n − 1
+would give NaN. Chase is `i / n` rather than `i / (n − 1)` on purpose: the last
+fixture should be one step short of the first, not on top of it, or a four-light
+chase looks like three.
+
+**A random spread is a seed, not a roll.** `Math.random()` would make the phases a
+fact about this browser at this moment, which is exactly what they must not be. The
+seed is stored and the phases are rebuilt from it, so two consoles chase identically
+and a reload does not reshuffle the rig. Reseeding is how you ask for a different
+arrangement.
+
+**One `effect_id` across the selection**, so the panel can gather a selection's worth
+of specs back into one editable effect rather than the operator finding six unrelated
+sines to change one at a time. The anchor is set on Apply, not on opening the panel:
+one set when the panel opened would start the effect part way through its first cycle.
+
+`setEffect` writes straight through rather than staging like `setValue`. Applying an
+effect is one deliberate act, not a fader being dragged, so there is no burst to
+coalesce — but it does clear any pending value for the same key first, or a drag
+still in flight would land after it and cover it.
+
+**A chip in the values panel, not a number.** The value under an effect is only where
+it falls back to, so showing it would show a number the light is not at. The chip says
+what has the parameter — `sine · 0.5 Hz` — and opens the effects panel, for which
+`revealPanel` is new: bring a panel to the front wherever it lives, or open it if it
+is not on screen. Where in the workspace a panel sits is not something an operator
+should have to know to follow a link.
+
+Two things the browser found. The parameter picker bound a null while the effect used
+a fallback, so it drew a blank box over a working effect. And `bpm` is an `f32`, so a
+tapped 56.1 comes back as 56.099998474121094 and a number input shows every digit —
+rounded for display now, which is a console that can count.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

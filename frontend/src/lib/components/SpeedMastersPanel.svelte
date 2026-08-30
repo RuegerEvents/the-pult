@@ -192,13 +192,16 @@
 				</button>
 
 				<label class="bpm">
+					<!-- Rounded for display only. `bpm` is an f32 in the schema, so 56.1
+					     comes back as 56.099998474121094, and a number input shows every
+					     digit of it — which reads as a console that cannot count. -->
 					<input
 						class="input"
 						type="number"
 						min="1"
 						max="600"
 						step="0.1"
-						value={master.bpm}
+						value={tidyBpm(master.bpm)}
 						onchange={(e) => setBpm(master, Number(e.currentTarget.value))}
 					/>
 					<span>bpm</span>
