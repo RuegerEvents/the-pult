@@ -14,16 +14,17 @@ The spec is the product. This is the build order for getting there, and the gap 
 | WebSocket API | Working. Path-pattern subscribe, set, call, and broadcast fan-out. |
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
 | Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness and latency, vector-clock conflict resolution, and leader failover. Stations publish themselves and are visible in the UI. |
-| Frontend | Working for show, session, sequences, cues, patch, and the programmer. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
-| Playback engine | Working. Fades, active-cue tracking, and FollowAfter cues at 40 Hz. |
+| Frontend | Working for show, session, sequences, cues, patch, the programmer, effects and speed masters. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. Panels that can change the show open read-only behind an Edit toggle and are sized for a finger. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
+| Playback engine | Working. Fades, active-cue tracking, FollowAfter cues and effects at 40 Hz, anchored on the cue's `went_at` so two stations render the same instant rather than each measuring from its own arrival. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Configured from the `outputs` collection and editable while the show is up, with per-output status in the UI. Flags only seed an empty showfile. |
 | Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. |
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
-| Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. Tested end to end against `tools/openhaunt-node-sim`, which is all there is until there is firmware. |
+| Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. A port that says it can trace a shape is handed one descriptor instead of forty messages a second. Tested end to end against `tools/openhaunt-node-sim` and, since task 22, against real firmware on an ESP32. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
-| 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects, phasers and geometric selection are still ahead. |
+| 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects are in; geometric selection is still ahead. |
 | Selection | Working as a list: ordered, reorderable, its own panel, kept apart from the programmer. Still a list of ids rather than the geometric query the spec asks for. |
-| Effects, timecode | Not started. No schema for either yet. |
+| Effects | Working. One primitive covers a shape and a step list, running from the programmer or a cue, at its own rate or a speed master's. Rendered identically on every station from replicated state, and handed to a node that can trace it for itself. No amplitude fade into one yet. |
+| Timecode | Not started. `FollowMode::Timecode` exists and nothing produces one. |
 | Distribution | Working. The frontend is built into the binaries that serve it, the console and the simulator each have a Tauri desktop app, and tagging builds all four for Linux x86_64 and aarch64, macOS arm64 and Windows. Nothing is signed and nothing auto-updates. |
 
 ## Task list
@@ -576,9 +577,6 @@ Left open:
 - **No auto-update.** `latest.json` and a Tauri updater keypair are the next step.
 - **32-bit Raspberry Pi is not built.** The arm64 runner is aarch64, which is
   64-bit Raspberry Pi OS.
-- **The simulator's panel cannot restart the node.** `openhaunt_node_sim::start` has no
-  shutdown, so a module is chosen with a flag and lives for the process. Adding
-  cancellation is what settles it, and it would serve the tests too.
 
 ### 17. Three fields nothing ever read (done)
 
@@ -1061,15 +1059,52 @@ That leaves, from the gap list: device rename and configuration, blind, highligh
 fan, go-back, release and rate, and a timecode source. All of them want backend work
 first except blind, which wants a second programmer buffer.
 
+### 28. The demo, and what is left (done)
+
+`scripts/demo.sh` starts a third node on `configs/fog-machine.json`, whose fog output
+advertises every shape — so the demo has something to point at when it claims an
+effect leaves the console as one message. Its "Try, in order" gains the effect, the
+tap, the fade and the read-only patch, and now ends at thirteen steps rather than
+eight.
+
+`scripts/demo-seed.mjs` seeds a 120 bpm master at half speed and a third cue,
+*Possession*, with a colour sine on the two heads half a cycle apart. Verified by
+running it: both resolve to 1.0 Hz off the master, and the two heads' blue channels
+sum to 1.00 at every reading, which is what "half a cycle apart" means when you can
+see it.
+
+Two stale things removed. The state table said effects and timecode were "not
+started" with no schema; they are now separate rows because one is done and the
+other is not, and `FollowMode::Timecode` has existed unimplemented since task 3.
+And task 16 still listed "the simulator's panel cannot restart the node" as open,
+which `Stopper` fixed.
+
+**What is left of the GUI gaps**, all of which want something before they can be
+built rather than being merely unwritten:
+
+- **Device rename and configuration.** A node's name comes from its TXT record and
+  `POST /api/v1/config` takes one. Nothing asks.
+- **Blind.** Programming a look nobody sees needs a second programmer buffer, and
+  the priority rule in `playback/programmer.rs` currently has exactly one overlay.
+- **Highlight and fan.** Highlight wants a temporary override above the programmer;
+  fan wants the spread arithmetic from task 25 applied to values rather than phases,
+  which is a smaller job than it was before that landed.
+- **Go back, release, and rate.** Going back needs the cue *before* this one on the
+  same anchor arithmetic; rate is a live multiplier on a running fade, which the
+  `Fade` struct has no room for yet.
+- **A timecode source.** `FollowMode::Timecode` is matched and ignored. It should
+  wait for the beat-grid work rather than sit beside it.
+
+Task 8 — the WASM plugin runtime — is still the largest thing not started, and is
+next.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.
 
 **Selection as a geometric query.** Selections are meant to be generated from the rig by geometric functions and re-evaluated as the rig changes, not stored as fixture lists. That is a query language. It needed positions first, and task 13 is where a rig finally gets them; task 14 built the panel that will show the result, as the list of ids that comes first.
 
-**Effects and phasers.** Derived from the 3D selection with modifiers that can themselves be dynamic. Needs selection.
-
-**3D programmer.** The rig *view* is task 13 and programming in it is task 14 — the camera frames a picked fixture, pan and tilt are grabbed by ring and arc, and the quicksheet opens at the light. What that leaves is the rest of the spec's §Programming: effects and phasers over a selection, and the parts of a fixture that are not intensity, colour and position.
+**3D programmer.** The rig *view* is task 13 and programming in it is task 14 — the camera frames a picked fixture, pan and tilt are grabbed by ring and arc, and the quicksheet opens at the light. Effects over a selection are task 25. What that leaves of the spec's §Programming is blind, highlight and fan, and modifiers that are themselves dynamic — an effect whose rate is an effect.
 
 **Waveform timecode and "timecode without timecode".** Beat grids, markers, live audio analysis for band sync. Should subsume the `Timecode` follow mode rather than sit beside it.
 

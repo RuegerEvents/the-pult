@@ -12,77 +12,46 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
-- **Panels that can change the show open read-only.** An Edit toggle in the
-  tile chrome unlocks one; closing it locks it again. Patch is the first: in
-  view mode it is text cells and the row selectors, and the inputs, delete
-  buttons and *+ Fixture* are not there at all rather than greyed out. Controls
-  across the programmer are sized for a finger.
-- **Fixture types can be edited properly.** Rename a type, set each
-  parameter's default value with the right control for its kind, and pick
-  `Raw` or `Named` — so a light nobody has written a profile for can be
-  patched without editing JSON.
-- **Device detail, more than one plan, and positions by typing.** A device row
-  opens to show its address, firmware, module and a port table saying which
-  shapes each port can trace for itself. A show can hold several stage plans and
-  switch between them, with the 3D rig following, and a plan can be turned to
-  match the room. Fixture positions can be typed as x, trim and z, and given a
-  resting direction. Flows can be renamed.
-- **Cue timing, and a strip showing what a cue is doing.** Fade in and out,
-  follow mode and per-capture fade, delay and curve are all editable now — the
-  backend has honoured them since the playback engine landed and there was
-  nowhere to type them. A running cue shows the fades and effects it is actually
-  producing. Cues can be inserted between two others and dragged into a different
-  order, which is what fractional cue numbers were always for.
-- **An effects panel.** Pick a selection, choose a shape or build a step list,
-  set its rate in hertz or hand it to a speed master, and spread it across the
-  fixtures — together, as a chase, from the centre out, in wings, in groups, or
-  randomly. A waveform shows a dot per fixture where it currently sits. The
-  values panel shows an amber chip for a parameter under an effect and opens the
-  editor when it is clicked.
-- **Speed masters, with a tap button.** A new panel holds the tempos effects
-  follow: tap along with the band, halve or double it, run or stop it, and watch
-  a beat dot. A tap writes the tempo and its anchor together, so every station
-  lands on the same beat rather than each drifting on from where it was.
-- **Effects have a shape in the schema.** `EffectSpec` describes one periodic
-  instruction — a curve that is either a shape scaled between two values or a
-  list of keyframes carrying their own, plus rate, width, direction, per-fixture
-  phase and spread — and can be held in the programmer or stored in a cue
-  capture. A `SpeedMaster` collection carries a tempo several effects can
-  follow. Nothing renders them yet.
-- **Effects run.** The engine renders a shape or a step list into a fixture
-  parameter on every tick, from the cue's anchor or the programmer's own, at a
-  rate given in Hz or borrowed from a speed master. A programmer effect beats a
-  cue effect, and grabbing a fader takes that light out of the chase. Nothing
-  leaves the console differently yet.
-- **Nodes are told the shape, not the samples.** An OpenHaunt port that says
-  in `/info` which shapes it can trace is handed one description and then left
-  alone, instead of a value forty times a second; a port that advertises
-  `transitions` gets a three second fade as one timed `set` rather than a
-  hundred and twenty samples. The console publishes a retained
-  `openhaunt/clock` once a second so a node can place the start of a cycle. A
-  port that advertises nothing behaves exactly as before.
-- **The simulated node traces shapes for itself.** `openhaunt-node-sim`
-  advertises what each port can do, renders a shape or a timed fade at 40 Hz
-  without being sent anything, and tracks the console's clock from
-  `openhaunt/clock`. Its window shows a badge beside a port that is tracing, and
-  its config editor has per-port capability toggles. The curve arithmetic is
-  written from the protocol documents rather than shared with the console, and
-  both test suites assert the same numbers.
-- **A Go says when it happened.** `Sequence.went_at`, with `goNext` and
-  `goToCue` taking an optional `at`, so every station anchors a cue's fades and
-  effects at the same millisecond instead of at whenever each of them processed
-  the command.
-
-### Removed
-
-- **Three fields nothing ever read.** `Show.is_running`, `Show.active_sequence`
-  and `Fixture.active_preset` are gone, along with the Show panel's
-  Running/Stopped button, which toggled a flag no code consulted. All three were
-  SYNCED, so they had no SQL column and their removal needs no migration; a
-  showfile or a peer that still names one loads fine.
-
-### Added
-
+- **Effects.** A shape or a list of keyframes, applied across a selection and
+  spread as a chase, from the centre out, in wings, in groups or at random. A new
+  Effects panel builds one against a live waveform with a dot per fixture; the
+  Programmer shows an amber chip for a parameter under an effect rather than a
+  number, because the value beneath is only where it falls back to. Effects are
+  held in the programmer or stored into a cue, and every station renders the same
+  one from replicated state, so two consoles chase in step.
+- **Speed masters.** A tempo several effects follow, tapped along with the band.
+  Halve or double it, run or stop it, watch a beat dot. A tap writes the tempo and
+  its anchor together, which is what makes a tempo change a step every station
+  lands on rather than a drift each one accumulates.
+- **A node is told the shape, not the samples.** An OpenHaunt port that says in
+  `/info` which shapes it can trace is handed one descriptor and then left alone.
+  On real firmware a half-hertz sine is one MQTT message and then twelve seconds
+  of silence, where forty a second used to go out; a three second fade is one
+  timed `set` rather than a hundred and twenty samples. The console publishes a
+  retained `openhaunt/clock` so every node times its cycles against the same
+  answer. A port that advertises nothing is driven exactly as before.
+- **Cue timing has somewhere to be typed.** Fade in and out, follow mode, and
+  per-capture fade, delay and curve — all honoured by the playback engine since it
+  landed, and none of them reachable. A running cue now shows a strip of the fades
+  and effects it is actually producing, which during a three second fade is not
+  what the cue list says. Cues can be inserted between two others and dragged into
+  a different order.
+- **Panels that can change the show open read-only.** An Edit toggle in the tile
+  chrome unlocks one and closing it locks it again, because a console is a tablet
+  on a truss as often as it is a desk. Locked controls are absent rather than
+  greyed out. Controls across the programmer are sized for a finger.
+- **Fixture types can be edited properly.** Rename one, set each parameter's
+  default value with the right control for its kind, and pick `Raw` or `Named`, so
+  a light nobody has written a profile for can be patched without editing JSON.
+- **Device detail, several stage plans, and positions by typing.** A device row
+  opens to show its address, firmware, module and a port table saying what each
+  port can trace for itself. A show can hold more than one plan and switch between
+  them, with the 3D rig following, and a plan can be turned to match the room.
+  Positions can be typed as x, trim and z with a resting direction. Flows can be
+  renamed.
+- **A Go says when it happened.** `goNext` and `goToCue` carry the time, so every
+  station anchors a cue's fades and effects at the same millisecond instead of at
+  whenever each of them processed the command.
 - **The console says when a fixture has no way out.** A new LOCAL
   `output_coverage` path lists the fixtures no enabled output reaches — a DMX
   fixture on a universe nothing carries, or an adopted node with no OpenHaunt
@@ -94,6 +63,14 @@ bracketed form — so every release needs one and it has to be spelled that way.
   one, shift-click to add — so a fixture can be programmed before it has been
   placed anywhere. Chips in the plan's *Not placed* tray can be dragged onto
   the plan to place them where they land.
+
+### Removed
+
+- **Three fields nothing ever read.** `Show.is_running`, `Show.active_sequence`
+  and `Fixture.active_preset` are gone, along with the Show panel's
+  Running/Stopped button, which toggled a flag no code consulted. All three were
+  SYNCED, so they had no SQL column and their removal needs no migration; a
+  showfile or a peer that still names one loads fine.
 
 ### Fixed
 

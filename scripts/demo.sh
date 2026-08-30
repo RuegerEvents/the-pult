@@ -171,7 +171,7 @@ start_station "$SHOWFILE" "$PORT" "$SYNC_PORT" "$BROKER_PORT" "$DEMO_DIR/backend
 # ── Simulated devices ─────────────────────────────────────────────────────────
 
 if [ "$SIMS" = 1 ]; then
-  echo "starting two simulated OpenHaunt nodes"
+  echo "starting three simulated OpenHaunt nodes"
   # --auto presses contact 0 every couple of seconds, so a flow wired to it
   # visibly fires without anyone having to hold a button.
   "$ROOT/target/debug/openhaunt-node-sim" --module input --serial 1a2b3c --port 8801 --auto 2500 \
@@ -179,6 +179,13 @@ if [ "$SIMS" = 1 ]; then
   PIDS+=($!)
   "$ROOT/target/debug/openhaunt-node-sim" --module relay --serial 4d5e6f --port 8802 \
     > "$DEMO_DIR/sim-relay.log" 2>&1 &
+  PIDS+=($!)
+  # A module the catalogue has never heard of, whose fog output advertises every
+  # shape: this is the node that shows an effect leaving the console as one
+  # message instead of forty a second.
+  "$ROOT/target/debug/openhaunt-node-sim" \
+    --config "$ROOT/tools/openhaunt-node-sim/configs/fog-machine.json" \
+    > "$DEMO_DIR/sim-fog.log" 2>&1 &
   PIDS+=($!)
 fi
 
@@ -282,12 +289,30 @@ if [ "$SIMS" = 1 ]; then
        node on the adopted node's Contact:0 and wire it up: the simulator
        presses that contact every 2.5s, so the cue starts stepping.
     5. Devices — Adopt the Mains Relay too, then set Switch:0 from Patch and
-       watch .demo/sim-relay.log record the output.
-    6. Plan — upload a ground plan (a PDF works; page one is used), click two
+       watch .demo/sim-relay.log record the output. Open a device's row: the
+       Can trace column is what the node said it can do for itself.
+    6. Effects, from the layout menu — select the two heads, pick Chase for the
+       spread, Apply. They breathe half a cycle apart in the rig and the plan,
+       and the Programmer shows an amber chip instead of a number, because the
+       value under an effect is only where it falls back to.
+    7. Speed masters — Tap along with something at about 120. Switch the effect's
+       rate from Own rate to that master and the heads follow the tap; the beat
+       dot and the lights agree, because both are worked out from the same
+       replicated tempo and anchor.
+    8. Devices — Adopt the Crypt fogger. Its fog output advertises every shape,
+       so putting an effect on it sends one descriptor and then nothing:
+       `grep effect .demo/sim-fog.log` shows one line while the port moves on
+       its own. Clear it and there are two more — a clear and a value.
+    9. Playback — GO with a three second fade in and watch the running strip
+       under the cue name list the fades in flight, then empty as they land.
+   10. Patch — it opens read-only. Edit in the tile chrome shows the inputs, the
+       delete buttons and a position editor; Done hides them again.
+   11. Plan — upload a ground plan (a PDF works; page one is used), click two
        points whose real distance apart you know to set the scale, then drag the
-       fixtures onto it in Move mode.
-    7. Outputs — add an Art-Net output and watch its frame rate appear.
-    8. Stations — this console, its cpu and memory, and what it is sending.
+       fixtures onto it in Move mode. Turn it if the drawing is not square to
+       the room.
+   12. Outputs — add an Art-Net output and watch its frame rate appear.
+   13. Stations — this console, its cpu and memory, and what it is sending.
 EOF
 fi
 

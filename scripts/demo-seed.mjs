@@ -131,6 +131,54 @@ try {
 		delay_in_ms: 0
 	});
 
+	// A tempo for effects to follow. 120 bpm halved is one cycle a second: slow
+	// enough to watch, fast enough to be obviously moving.
+	const master = {
+		id: id(),
+		name: 'Chases',
+		bpm: 120,
+		multiplier: 0.5,
+		running: true,
+		t0: Date.now()
+	};
+	await create('speed_masters', master);
+
+	// One id across both heads, so the effects panel gathers them back into a
+	// single editable effect rather than two unrelated sines.
+	const chaseId = id();
+	// The two moving heads, as they came back from the show rather than as the
+	// list above spelled them: `patched` carries the ids the effect needs.
+	const movers = patched.filter((f) => f.name.startsWith('Head'));
+
+	/**
+	 * A colour sine on one head, at the phase given.
+	 *
+	 * Stored with `t0: null`: a capture's anchor is the cue's `went_at`, decided
+	 * afresh on every Go, so two consoles replaying this cue start the same cycle
+	 * rather than each remembering its own.
+	 */
+	const sine = (fixture, phase) => ({
+		fixture_id: fixture.id,
+		parameter_kind: 'ColorRgb',
+		value: { type: 'Color', value: { r: 0, g: 0, b: 0 } },
+		fade_in_ms: 0,
+		fade_out_ms: 0,
+		delay_in_ms: 0,
+		effect: {
+			effect_id: chaseId,
+			curve: { Shape: 'Sine' },
+			rate: { Master: { id: master.id, multiplier: 1 } },
+			low: { type: 'Color', value: { r: 0.4, g: 0, b: 0 } },
+			high: { type: 'Color', value: { r: 0, g: 0.2, b: 1 } },
+			width: 0.5,
+			direction: 'Forward',
+			phase,
+			spread: 'Linear',
+			t0: null
+		},
+		easing: 'Linear'
+	});
+
 	const cues = [
 		{
 			id: id(),
@@ -148,8 +196,23 @@ try {
 			number: 2,
 			captures: patched.map((f) => capture(f, 1.0)),
 			follow_mode: 'Manual',
-			fade_in_ms: 150,
+			fade_in_ms: 3000,
 			fade_out_ms: 1500,
+			is_active: false
+		},
+		{
+			id: id(),
+			name: 'Possession',
+			number: 3,
+			// Everything up, and the two heads cycling through colour against each
+			// other on the speed master.
+			captures: [
+				...patched.map((f) => capture(f, 0.8)),
+				...movers.map((f, i) => sine(f, i * 0.5))
+			],
+			follow_mode: 'Manual',
+			fade_in_ms: 1000,
+			fade_out_ms: 1000,
 			is_active: false
 		}
 	];
@@ -159,7 +222,8 @@ try {
 		id: id(),
 		name: 'Haunt',
 		cue_ids: cues.map((c) => c.id),
-		active_cue_index: null
+		active_cue_index: null,
+		went_at: null
 	};
 	await create('sequences', sequence);
 
@@ -234,7 +298,7 @@ try {
 	);
 
 	console.log(
-		`  seeded: ${patched.length} fixtures, ${cues.length} cues, 1 sequence, 2 flows`
+		`  seeded: ${patched.length} fixtures, ${cues.length} cues, 1 sequence, 1 speed master, 2 flows`
 	);
 	process.exit(0);
 } catch (error) {
