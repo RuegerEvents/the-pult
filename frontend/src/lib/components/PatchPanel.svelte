@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { focusOnMount } from '$lib/actions.js';
 	import { editing } from '$lib/stores/editing.js';
+	import PositionEditor from './PositionEditor.svelte';
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { select, selected, toggle } from '$lib/stores/selection.js';
@@ -187,18 +188,18 @@
 								     so there is nothing here to type into. -->
 								<td colspan="2" class="node-address">{addressLabel(fixture)}</td>
 							{/if}
-							<td>
-								{#if fixture.position}
+							<td class="position-cell">
+								{#if $unlocked}
+									<!-- Dragging in the plan is right for a whole rig at once and
+									     useless for the one light that has to be at exactly 4.2
+									     metres because the drawing says so. -->
+									<PositionEditor
+										position={fixture.position}
+										onchange={(next) => data.fixtures.byId(fixture.id).position.set(next)}
+									/>
+								{:else if fixture.position}
 									{@const p = 'Point' in fixture.position ? fixture.position.Point : fixture.position.Axial.position}
 									<span class="coords">{p.x.toFixed(1)}, {p.y.toFixed(1)}, {p.z.toFixed(1)}</span>
-								{:else if $unlocked}
-									<button
-										class="btn btn-ghost btn-icon"
-										title="Give this fixture a place in the rig"
-										onclick={() => data.fixtures.byId(fixture.id).position.set({ Point: { x: 0, y: 0, z: 0 } })}
-									>
-										Place
-									</button>
 								{:else}
 									<span class="hint">not placed</span>
 								{/if}
@@ -259,4 +260,5 @@
 	/* Buttons and inputs come from `styles/controls.css` now; `.narrow` is the one
 	   size this table needs that the shared sheet has no opinion about. */
 	.input.narrow { width: 5rem; }
+	.position-cell { min-width: 20rem; }
 </style>

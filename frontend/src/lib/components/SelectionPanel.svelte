@@ -122,8 +122,10 @@
 		display: grid;
 		grid-template-columns: auto 20px 10px 1fr auto;
 		align-items: center;
-		gap: 7px;
-		padding: 3px 6px;
+		gap: var(--pad);
+		padding: 4px 6px;
+		/* Reordered by dragging with a finger, so a row has to be one. */
+		min-height: var(--hit);
 		border-radius: 3px;
 		border-top: 2px solid transparent;
 		color: var(--text);

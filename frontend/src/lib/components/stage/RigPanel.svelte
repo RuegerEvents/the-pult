@@ -11,6 +11,7 @@
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { collection } from '$lib/stores/show.js';
 	import { selection } from '$lib/stores/selection.js';
+	import { shownPlanId } from '$lib/stores/stage.js';
 	import Rig3D from './Rig3D.svelte';
 
 	const client = getClientContext();
@@ -23,7 +24,9 @@
 	let follow = $state(true);
 	let rig = $state<Rig3D | null>(null);
 
-	const plan = $derived($plans[0] ?? null);
+	// The same plan the plan panel is showing. A show with two rooms in it had the
+	// rig drawing the first one's floor under the second one's lights.
+	const plan = $derived($plans.find((p) => p.id === $shownPlanId) ?? $plans[0] ?? null);
 	const planUrl = $derived(plan ? client.httpUrl(`/assets/${plan.asset}`) : null);
 </script>
 

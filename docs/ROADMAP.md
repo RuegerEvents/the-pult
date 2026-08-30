@@ -1018,6 +1018,49 @@ console had before there was anywhere to type these.
 `DEFAULT_FADE_MS` replaces the hardcoded `500` and the `0, 0, 0` that every stored
 capture used to get.
 
+### 27. Devices, plans, positions and a flow's name (done)
+
+The remaining gaps where the backend had a field and the frontend had no way in.
+
+**A device's detail.** Address, host, firmware and protocol version, module id and
+serial — and a port table with a *Can trace* column reading the capability the node
+advertised in `/info`. Behind a disclosure because it is what you look at when
+something is wrong and clutter the rest of the time. Adopt and Forget go behind the
+lock; Find and Select stay live, because neither changes the show.
+
+**More than one plan.** A show has as many as it has rooms, and the panel showed the
+first and offered no way to reach the others — worse, the upload button *replaced*
+the plan you had, so a second room cost you the first. There is a picker now, `New
+plan` adds, and `stores/stage.ts` holds which one this browser is looking at so the
+3D rig draws the same room's floor. Not show data, for the same reason the layout is
+not: two operators at two screens want different rooms up.
+
+**Plan rotation.** `stage.ts` has rotated plans since positions landed and nothing
+could set the angle. A drawing squared up to the page is rarely squared up to the
+room.
+
+**Positions by typing.** Dragging in the plan is right for a whole rig at once and
+useless for the one light that has to be at exactly 4.2 metres because the drawing
+says so. `PositionEditor` gives x, trim and z — trim, because that is the word on the
+plot an operator is copying — and a checkbox that turns a `Point` into an `Axial` one
+with a direction vector. `splitPosition`/`joinPosition` keep the two forms from
+drifting apart: they are the same fact with one detail added, and an editor should
+not make somebody choose a variant before they can type a number. A new direction
+points straight down, because a light with no aim yet is hanging, and aiming it at
+the origin would point an upstage light across the room.
+
+**A flow's name.** How you find one in a list of twenty, and there was no way to
+change it. Double-click, behind the lock beside delete.
+
+Found by driving it: the maximised view draws its own chrome and had no Edit toggle,
+so filling the screen with a panel — exactly when there is room to edit it — was the
+one place the lock could not be undone. And the device row was a flex row, which laid
+the new detail panel out *beside* the name instead of beneath it; it is a grid now.
+
+That leaves, from the gap list: device rename and configuration, blind, highlight and
+fan, go-back, release and rate, and a timecode source. All of them want backend work
+first except blind, which wants a second programmer buffer.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

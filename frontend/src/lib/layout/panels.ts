@@ -54,15 +54,15 @@ export const PANELS = {
 	playback: { title: 'Playback', component: SequenceRunner, fills: false, editable: true },
 	values: { title: 'Programmer', component: ValuesPanel, fills: true },
 	selection: { title: 'Selection', component: SelectionPanel, fills: true },
-	plan: { title: 'Plan', component: PlanPanel, fills: true },
+	plan: { title: 'Plan', component: PlanPanel, fills: true, editable: true },
 	rig: { title: '3D Rig', component: RigPanel, fills: true },
 	patch: { title: 'Patch', component: PatchPanel, fills: false, editable: true },
-	flows: { title: 'Flows', component: FlowEditor, fills: true },
+	flows: { title: 'Flows', component: FlowEditor, fills: true, editable: true },
 	outputs: { title: 'Outputs', component: OutputsPanel, fills: false },
 	stations: { title: 'Stations', component: StationsPanel, fills: false },
 	show: { title: 'Show', component: ShowPanel, fills: false },
 	session: { title: 'Session', component: SessionPanel, fills: false },
-	devices: { title: 'Devices', component: DevicesPanel, fills: false },
+	devices: { title: 'Devices', component: DevicesPanel, fills: false, editable: true },
 	speedmasters: { title: 'Speed masters', component: SpeedMastersPanel, fills: false, editable: true },
 	// No edit toggle: this panel is an editor, and it writes to the programmer
 	// rather than to the show.

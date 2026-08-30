@@ -3,13 +3,47 @@
 	import { getClientContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
 	import { select, selected, toggle } from '$lib/stores/selection.js';
+	import { editing } from '$lib/stores/editing.js';
 	import OutputGaps from './OutputGaps.svelte';
 	import type { DevicesState, DiscoveredDevice } from '$lib/generated/index.js';
 
 	const client = getClientContext();
 
+	// Find and Select stay live: neither changes the show. Adopt patches a fixture
+	// and Forget unpatches one, which is what the lock is for.
+	const unlocked = editing('devices');
+
 	let devices = $state<DevicesState>({ discovered: {}, broker_addr: null, active: false });
 	let busy = $state<string | null>(null);
+	/** Which rows have their detail open. Per browser, not show data. */
+	let open = $state<Set<string>>(new Set());
+
+	function toggleOpen(serial: string) {
+		const next = new Set(open);
+		if (!next.delete(serial)) next.add(serial);
+		open = next;
+	}
+
+	/** Seconds of uptime as something a person reads. */
+	function uptime(seconds: number): string {
+		if (seconds < 60) return `${seconds}s`;
+		if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+		const hours = Math.floor(seconds / 3600);
+		return hours < 48 ? `${hours}h ${Math.floor((seconds % 3600) / 60)}m` : `${Math.floor(hours / 24)}d`;
+	}
+
+	/**
+	 * How long ago a health message arrived.
+	 *
+	 * Worth showing because a node that has gone quiet still reports its last known
+	 * temperature, and "38 °C" from four minutes ago is a different fact from
+	 * "38 °C" from four seconds ago.
+	 */
+	function ago(iso: string): string {
+		const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+		if (seconds < 90) return `${seconds}s ago`;
+		return `${Math.round(seconds / 60)}m ago`;
+	}
 
 	const listed = $derived(Object.values(devices.discovered) as DiscoveredDevice[]);
 
@@ -92,6 +126,12 @@
 					class:offline={!device.online}
 					class:selected={!!device.adopted_fixture_id && $selected.has(device.adopted_fixture_id)}
 				>
+					<button
+						class="disclose"
+						aria-expanded={open.has(device.serial)}
+						aria-label="Details for {device.name}"
+						onclick={() => toggleOpen(device.serial)}
+					>{open.has(device.serial) ? '▾' : '▸'}</button>
 					<div class="device-info">
 						<span class="device-name">
 							<span class="dot" class:on={device.online}></span>
@@ -120,14 +160,16 @@
 							>
 								Select
 							</button>
-							<button
-								class="chip-btn"
-								disabled={busy === device.serial || !devices.active}
-								onclick={() => act('forget', device)}
-							>
-								Forget
-							</button>
-						{:else}
+							{#if $unlocked}
+								<button
+									class="chip-btn"
+									disabled={busy === device.serial || !devices.active}
+									onclick={() => act('forget', device)}
+								>
+									Forget
+								</button>
+							{/if}
+						{:else if $unlocked}
 							<button
 								class="chip-btn adopt"
 								disabled={busy === device.serial || !devices.active || !ports(device)}
@@ -146,6 +188,72 @@
 							Find
 						</button>
 					</div>
+
+					{#if open.has(device.serial)}
+						<!-- Everything the node has told this console about itself. Behind a
+						     disclosure because it is what you look at when something is
+						     wrong, and clutter the rest of the time. -->
+						<div class="detail">
+							<dl>
+								<dt>Address</dt><dd class="mono">{device.ip}:{device.port}</dd>
+								<dt>Host</dt><dd class="mono">{device.host}</dd>
+								<dt>Firmware</dt><dd>{device.fw || '—'} · protocol {device.protocol_version || '—'}</dd>
+								<dt>Module</dt>
+								<dd class="mono">
+									{device.module_type.toString(16).padStart(4, '0')}
+									{#if device.module_serial}· {device.module_serial}{/if}
+									{#if device.module_rev}· rev {device.module_rev}{/if}
+								</dd>
+								{#if device.health}
+									{@const h = device.health}
+									<dt>Health</dt>
+									<dd>
+										up {uptime(h.uptime_s)}
+										{#if h.temperature_c !== null}· {h.temperature_c.toFixed(1)} °C{/if}
+										{#if h.poe_class !== null}· PoE class {h.poe_class}{/if}
+										{#if h.reported_at}· {ago(h.reported_at)}{/if}
+									</dd>
+									{#if h.errors.length > 0}
+										<dt>Errors</dt><dd class="bad">{h.errors.join(', ')}</dd>
+									{/if}
+								{/if}
+							</dl>
+
+							{#if device.description?.ports?.length}
+								<table class="ports">
+									<thead>
+										<tr><th>#</th><th>Name</th><th>Flow</th><th>Type</th><th>Can trace</th></tr>
+									</thead>
+									<tbody>
+										{#each device.description.ports as port (port.port)}
+											{@const traces = device.effects?.ports?.find((p) => p.port === port.port)}
+											<tr>
+												<td class="mono">{port.port}</td>
+												<td>{port.name}</td>
+												<td>{port.access === 'readonly' ? 'read' : 'driven'}</td>
+												<td>
+													{port.dataType}{#if port.unit}<span class="dim"> {port.unit}</span>{/if}
+												</td>
+												<td>
+													<!-- What the node said it can do for itself. Absent is the
+													     default and means the console renders every value. -->
+													{#if traces}
+														{#each traces.shapes as shape (shape)}
+															<span class="cap">{shape}</span>
+														{/each}
+														{#if traces.steps}<span class="cap">steps</span>{/if}
+														{#if traces.transitions}<span class="cap">fades</span>{/if}
+													{:else}
+														<span class="dim">—</span>
+													{/if}
+												</td>
+											</tr>
+										{/each}
+									</tbody>
+								</table>
+							{/if}
+						</div>
+					{/if}
 				</div>
 			{/each}
 		</div>
@@ -200,10 +308,13 @@
 		gap: 4px;
 	}
 
+	/* A grid rather than a flex row now that a detail panel has to span the whole
+	   width beneath the other three. As a flex row it laid the detail out beside the
+	   name and everything overlapped. */
 	.device-row {
-		display: flex;
-		align-items: flex-start;
-		justify-content: space-between;
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: start;
 		gap: 8px;
 		padding: 6px 8px;
 		background: #1e1e1e;
@@ -280,5 +391,73 @@
 		font-size: 0.68rem;
 		color: #555;
 		margin-top: 8px;
+	}
+	.disclose {
+		background: none;
+		border: none;
+		color: var(--text-dim);
+		font: inherit;
+		cursor: pointer;
+		padding: 0 6px 0 0;
+		align-self: start;
+	}
+
+	.detail {
+		/* Under all three columns, not beside them. */
+		grid-column: 1 / -1;
+		border-top: 1px solid var(--line);
+		margin-top: 8px;
+		padding-top: 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.detail dl {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 3px 12px;
+		font-size: 12px;
+		margin: 0;
+	}
+	.detail dt {
+		color: var(--text-dim);
+	}
+	.detail dd {
+		margin: 0;
+		color: var(--text);
+	}
+	.detail dd.bad {
+		color: var(--bad);
+	}
+
+	.ports {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 12px;
+	}
+	.ports th {
+		text-align: left;
+		color: var(--text-dim);
+		font-weight: 500;
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		padding-bottom: 3px;
+	}
+	.ports td {
+		padding: 3px 8px 3px 0;
+	}
+
+	/* What a port said it can trace for itself. Absent means the console renders
+	   every value and streams it, which is what every node did before. */
+	.cap {
+		display: inline-block;
+		font-size: 10px;
+		padding: 0 6px;
+		margin: 0 2px 2px 0;
+		border-radius: 999px;
+		border: 1px solid var(--accent);
+		color: var(--accent);
 	}
 </style>

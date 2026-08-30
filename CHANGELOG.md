@@ -21,6 +21,12 @@ bracketed form — so every release needs one and it has to be spelled that way.
   parameter's default value with the right control for its kind, and pick
   `Raw` or `Named` — so a light nobody has written a profile for can be
   patched without editing JSON.
+- **Device detail, more than one plan, and positions by typing.** A device row
+  opens to show its address, firmware, module and a port table saying which
+  shapes each port can trace for itself. A show can hold several stage plans and
+  switch between them, with the 3D rig following, and a plan can be turned to
+  match the room. Fixture positions can be typed as x, trim and z, and given a
+  resting direction. Flows can be renamed.
 - **Cue timing, and a strip showing what a cue is doing.** Fade in and out,
   follow mode and per-capture fade, delay and curve are all editable now — the
   backend has honoured them since the playback engine landed and there was

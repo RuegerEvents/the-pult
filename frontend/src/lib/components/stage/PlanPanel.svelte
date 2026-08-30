@@ -11,6 +11,8 @@
 	import { addToast } from '$lib/toasts.js';
 	import { calibrationScale, fixturePoint, originForPixel } from '$lib/stage.js';
 	import { collection } from '$lib/stores/show.js';
+	import { editing } from '$lib/stores/editing.js';
+	import { shownPlanId } from '$lib/stores/stage.js';
 	import { pruneSelection, selection } from '$lib/stores/selection.js';
 	import StagePlanView from './StagePlanView.svelte';
 	import { guessScale, uploadPlan } from './upload.js';
@@ -19,6 +21,10 @@
 	const client = getClientContext();
 
 	const plans = collection('stage_plans');
+	// Program and Move stay live: placing and aiming a light is what the panel is
+	// for. The lock covers the plan itself — its scale, its origin, its angle, and
+	// whether it is there at all.
+	const unlocked = editing('plan');
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
 
@@ -29,7 +35,15 @@
 	let realLength = $state('');
 	let view = $state<StagePlanView | null>(null);
 
-	const plan = $derived($plans[0] ?? null);
+	/**
+	 * Which plan is on screen.
+	 *
+	 * A show has as many plans as it has rooms — a main stage and a foyer, a ground
+	 * plan and a truss plot — and the panel showed the first one and offered no way
+	 * to reach the rest. Which one *this browser* is looking at is not show data, so
+	 * it lives here.
+	 */
+	const plan = $derived($plans.find((p) => p.id === $shownPlanId) ?? $plans[0] ?? null);
 	const planUrl = $derived(plan ? client.httpUrl(`/assets/${plan.asset}`) : null);
 	const placedCount = $derived($fixtures.filter((f) => fixturePoint(f) !== null).length);
 
@@ -37,14 +51,14 @@
 	// rig has changed.
 	$effect(() => pruneSelection($fixtures.map((f) => f.id)));
 
-	async function choose(event: Event) {
+	async function choose(event: Event, { asNew = false } = {}) {
 		const input = event.currentTarget as HTMLInputElement;
 		const file = input.files?.[0];
 		if (!file) return;
 		uploading = true;
 		try {
 			const uploaded = await uploadPlan(file, client.httpUrl('/assets'));
-			if (plan) {
+			if (plan && !asNew) {
 				// Replacing the drawing keeps the calibration: a revised ground plan is
 				// almost always the same room at the same scale.
 				await data.stage_plans.byId(plan.id).asset.set(uploaded.sha256);
@@ -126,12 +140,39 @@
 			<button class:on={mode === 'move'} onclick={() => (mode = 'move')}>Move</button>
 		</div>
 
-		<label class="ghost file">
-			{uploading ? 'Uploading…' : plan ? 'Replace plan' : 'Upload plan'}
-			<input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" onchange={choose} />
-		</label>
+		{#if $plans.length > 1}
+			<select
+				class="ghost"
+				value={plan?.id ?? ''}
+				onchange={(e) => shownPlanId.set(e.currentTarget.value)}
+			>
+				{#each $plans as p (p.id)}
+					<option value={p.id}>{p.name}</option>
+				{/each}
+			</select>
+		{/if}
 
-		{#if plan}
+		{#if $unlocked}
+			<label class="ghost file">
+				{uploading ? 'Uploading…' : plan ? 'Replace plan' : 'Upload plan'}
+				<input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" onchange={choose} />
+			</label>
+			{#if plan}
+				<!-- Adds rather than replaces. A second room is a second plan, and the
+				     upload button above was the only way in, so uploading one meant
+				     losing the one you had. -->
+				<label class="ghost file">
+					New plan
+					<input
+						type="file"
+						accept="image/png,image/jpeg,image/webp,application/pdf"
+						onchange={(e) => choose(e, { asNew: true })}
+					/>
+				</label>
+			{/if}
+		{/if}
+
+		{#if plan && $unlocked}
 			<button
 				class="ghost"
 				class:on={mode === 'scale'}
@@ -164,6 +205,21 @@
 					onchange={(e) => data.stage_plans.byId(plan.id).visible.set(e.currentTarget.checked)}
 				/>
 				Show
+			</label>
+			<!-- `stage.ts` has rotated plans since positions landed and nothing could
+			     set the angle. A drawing squared up to the page is rarely squared up
+			     to the room. -->
+			<label class="opacity">
+				Turn
+				<input
+					type="range"
+					min="-180"
+					max="180"
+					step="1"
+					value={plan.rotation_deg}
+					oninput={(e) => data.stage_plans.byId(plan.id).rotation_deg.set(Number(e.currentTarget.value))}
+				/>
+				<span class="mono deg">{Math.round(plan.rotation_deg)}°</span>
 			</label>
 			<button class="ghost" onclick={() => data.stage_plans.byId(plan.id).delete()}>Remove plan</button>
 		{/if}
@@ -241,4 +297,10 @@
 	.ghost { background: none; border: 1px solid var(--line-strong); border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
 	.ghost:hover { border-color: var(--line-input); color: #fff; }
 	.ghost.on { border-color: var(--accent); color: var(--accent); }
+	.deg {
+		color: var(--text-dim);
+		font-size: 11px;
+		min-width: 2.6rem;
+		text-align: right;
+	}
 </style>

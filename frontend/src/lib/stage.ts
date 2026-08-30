@@ -22,6 +22,7 @@
 
 import type {
 	Fixture,
+	FixturePosition,
 	FixtureType,
 	ParameterKind,
 	ParameterValue,
@@ -36,6 +37,41 @@ import { parameterKey } from './patch.js';
 export type PlanPoint = { x: number; z: number };
 
 /** Where a fixture hangs, or `null` if it has never been placed. */
+/**
+ * A position as a point and the direction it faces at rest, whichever form it is in.
+ *
+ * `Point` and `Axial` are the same fact with one detail added, so an editor should
+ * not make an operator choose before they can type a number. `null` for a direction
+ * means "hangs, faces nowhere in particular" — a par can, and a moving head cannot,
+ * because pan and tilt are angles away from *something*.
+ */
+export function splitPosition(position: FixturePosition | null): {
+	point: Vec3;
+	direction: Vec3 | null;
+} {
+	if (!position) return { point: { x: 0, y: 0, z: 0 }, direction: null };
+	if ('Point' in position) return { point: position.Point, direction: null };
+	return { point: position.Axial.position, direction: position.Axial.direction };
+}
+
+/**
+ * And back again. A direction of `null` is a `Point`; anything else is `Axial`.
+ *
+ * Going through this rather than writing the variant by hand is what keeps the two
+ * forms from drifting apart in the panels that edit them.
+ */
+export function joinPosition(point: Vec3, direction: Vec3 | null): FixturePosition {
+	return direction ? { Axial: { position: point, direction } } : { Point: point };
+}
+
+/**
+ * Straight down, which is where a light hung on a bar points before anybody aims it.
+ *
+ * Given as the direction when an operator turns a plain point into an axial one, so
+ * that the answer is a light pointing at the floor rather than at the origin.
+ */
+export const HANGING = { x: 0, y: -1, z: 0 };
+
 export function fixturePoint(fixture: Fixture): Vec3 | null {
 	const position = fixture.position;
 	if (!position) return null;

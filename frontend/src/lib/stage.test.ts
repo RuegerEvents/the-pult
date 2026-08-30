@@ -1,21 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import type { Fixture, FixtureType, ParameterValue, StagePlan } from './generated/index.js';
 import {
+	HANGING,
+	aimAt,
+	beamDirection,
+	beamSpot,
 	calibrationScale,
 	fixtureBounds,
 	fixtureFacing,
 	fixtureOutput,
 	fixturePoint,
 	fixtureTint,
+	joinPosition,
 	originForPixel,
-	aimAt,
-	beamDirection,
-	beamSpot,
 	panAngle,
 	pixelToPlan,
-	tiltAngle,
 	planExtent,
-	planToPixel
+	planToPixel,
+	splitPosition,
+	tiltAngle
 } from './stage.js';
 
 const plan = (over: Partial<StagePlan> = {}): StagePlan => ({
@@ -452,5 +455,53 @@ describe('the rig in three dimensions', () => {
 	it('gives a beam pointing at the sky a length rather than an infinity', async () => {
 		const { throwDistance } = await import('./stage.js');
 		expect(Number.isFinite(throwDistance({ x: 0, y: 2, z: 0 }, { x: 0, y: 1, z: 0 }))).toBe(true);
+	});
+});
+
+describe('a position, in its two forms', () => {
+	/**
+	 * `Point` and `Axial` are the same fact with one detail added, so an editor
+	 * should not make an operator choose a variant before they can type a number.
+	 * These two are what keep the panels from drifting apart about which is which.
+	 */
+	it('splits a plain point and puts it back unchanged', () => {
+		const point = { Point: { x: 1, y: 2, z: 3 } };
+		const parts = splitPosition(point);
+
+		expect(parts.point).toEqual({ x: 1, y: 2, z: 3 });
+		expect(parts.direction).toBeNull();
+		expect(joinPosition(parts.point, parts.direction)).toEqual(point);
+	});
+
+	it('splits an axial one and puts it back unchanged', () => {
+		const axial = {
+			Axial: { position: { x: 1, y: 6, z: -2 }, direction: { x: 0, y: -1, z: 0.5 } }
+		};
+		const parts = splitPosition(axial);
+
+		expect(parts.point).toEqual({ x: 1, y: 6, z: -2 });
+		expect(parts.direction).toEqual({ x: 0, y: -1, z: 0.5 });
+		expect(joinPosition(parts.point, parts.direction)).toEqual(axial);
+	});
+
+	it('treats an unplaced fixture as the origin, facing nowhere', () => {
+		const parts = splitPosition(null);
+		expect(parts.point).toEqual({ x: 0, y: 0, z: 0 });
+		expect(parts.direction).toBeNull();
+	});
+
+	/** A direction turns a point into an axial position, and only that. */
+	it('picks the variant from whether there is a direction', () => {
+		expect(joinPosition({ x: 0, y: 0, z: 0 }, null)).toHaveProperty('Point');
+		expect(joinPosition({ x: 0, y: 0, z: 0 }, HANGING)).toHaveProperty('Axial');
+	});
+
+	/**
+	 * A light with no aim yet is hanging, so the default direction points at the
+	 * floor beneath it rather than at the origin — which for a light upstage would
+	 * be aiming it across the room.
+	 */
+	it('defaults a new direction to straight down', () => {
+		expect(HANGING).toEqual({ x: 0, y: -1, z: 0 });
 	});
 });

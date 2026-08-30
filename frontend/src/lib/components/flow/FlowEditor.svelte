@@ -26,6 +26,7 @@
 	import { canConnect, graphOf, nextNodePosition, nodeTag } from '$lib/flow.js';
 
 	import { setFlowContext } from './context.js';
+	import { editing } from '$lib/stores/editing.js';
 	import ActionNode from './ActionNode.svelte';
 	import ButtonNode from './ButtonNode.svelte';
 	import ConditionNode from './ConditionNode.svelte';
@@ -44,6 +45,17 @@
 	let cues = $state<Cue[]>([]);
 
 	let selectedId = $state<string | null>(null);
+	// A flow's name is how an operator finds it in a list of twenty, so renaming is
+	// behind the lock along with deleting: both are edits to the show, done rarely.
+	const unlocked = editing('flows');
+	let renaming = $state<string | null>(null);
+	let draftName = $state('');
+
+	async function saveName(id: string) {
+		const trimmed = draftName.trim();
+		if (trimmed) await data.flows.byId(id).name.set(trimmed);
+		renaming = null;
+	}
 	let creating = $state(false);
 	let newName = $state('');
 
@@ -241,21 +253,44 @@
 			<ul>
 				{#each flows as flow (flow.id)}
 					<li>
-						<button
-							class="pick"
-							class:current={flow.id === selectedId}
-							class:off={!flow.enabled}
-							onclick={() => (selectedId = flow.id)}
-						>
-							{flow.name}
-						</button>
+						{#if renaming === flow.id && $unlocked}
+							<form
+								class="rename"
+								onsubmit={(e) => { e.preventDefault(); saveName(flow.id); }}
+							>
+								<input
+									class="input"
+									bind:value={draftName}
+									use:focusOnMount
+									onblur={() => saveName(flow.id)}
+									onkeydown={(e) => { if (e.key === 'Escape') renaming = null; }}
+								/>
+							</form>
+						{:else}
+							<button
+								class="pick"
+								class:current={flow.id === selectedId}
+								class:off={!flow.enabled}
+								title={$unlocked ? 'Click to open, double-click to rename' : undefined}
+								onclick={() => (selectedId = flow.id)}
+								ondblclick={() => {
+									if (!$unlocked) return;
+									renaming = flow.id;
+									draftName = flow.name;
+								}}
+							>
+								{flow.name}
+							</button>
+						{/if}
 						<input
 							type="checkbox"
 							title={flow.enabled ? 'Switch off' : 'Switch on'}
 							checked={flow.enabled}
 							onchange={(e) => data.flows.byId(flow.id).enabled.set(e.currentTarget.checked)}
 						/>
-						<button class="danger" title="Delete flow" onclick={() => deleteFlow(flow)}>×</button>
+						{#if $unlocked}
+							<button class="danger" title="Delete flow" onclick={() => deleteFlow(flow)}>×</button>
+						{/if}
 					</li>
 				{/each}
 			</ul>
@@ -348,4 +383,11 @@
 	.board :global(.svelte-flow__edge.selected .svelte-flow__edge-path) { stroke: #4a9eff; }
 	.board :global(.svelte-flow__controls-button) { background: #252525; border-bottom: 1px solid #2e2e2e; fill: #bbb; }
 	.board :global(.svelte-flow__controls-button:hover) { background: #2e2e2e; }
+	.rename {
+		flex: 1;
+		min-width: 0;
+	}
+	.rename .input {
+		width: 100%;
+	}
 </style>

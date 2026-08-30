@@ -7,11 +7,14 @@
 	 * programming needs.
 	 */
 
-	import { PANELS, isPanel, panelTitle } from '$lib/layout/panels.js';
+	import { PANELS, isPanel, panelTitle, type PanelMeta } from '$lib/layout/panels.js';
 	import { dragging, maximised, tree } from '$lib/stores/layout.js';
+	import EditToggle from './EditToggle.svelte';
 	import Tile from './Tile.svelte';
 
-	const big = $derived($maximised && isPanel($maximised) ? PANELS[$maximised] : null);
+	const big: PanelMeta | null = $derived(
+		$maximised && isPanel($maximised) ? PANELS[$maximised] : null
+	);
 </script>
 
 <div class="workspace" class:dragging={$dragging}>
@@ -20,6 +23,14 @@
 		<div class="full">
 			<div class="bar">
 				<span class="title">{panelTitle($maximised)}</span>
+				<span class="spacer"></span>
+				<!-- The maximised view draws its own chrome, and left this out. Filling
+				     the screen with a panel is exactly when there is room to edit it,
+				     so leaving the toggle behind in the tile made maximising the one
+				     place the lock could not be undone. -->
+				{#if big.editable}
+					<EditToggle panel={$maximised} />
+				{/if}
 				<button class="chip" onclick={() => maximised.set(null)}>⤡ Back to the workspace</button>
 			</div>
 			<div class="body" class:fills={big.fills}><Panel /></div>
@@ -78,5 +89,8 @@
 	}
 	.body.fills {
 		overflow: hidden;
+	}
+	.bar .spacer {
+		flex: 1;
 	}
 </style>
