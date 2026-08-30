@@ -338,8 +338,11 @@ fn a_retained_sample_seeds_but_never_corrects() {
     clock.feed(90_000, 2, 10_000, true);
     assert_eq!(clock.offset_ms(), Some(1_000), "and left alone");
 
+    // A live one does correct it. Five hundred milliseconds out is more than one
+    // step may cover, so it moves by the slew limit and would reach the rest over
+    // the next few seconds.
     clock.feed(11_500, 3, 10_000, false);
-    assert_eq!(clock.offset_ms(), Some(1_100), "a live one corrects");
+    assert_eq!(clock.offset_ms(), Some(1_000 + MAX_SLEW_MS), "a live one corrects");
 }
 
 /// The broker restarted and replayed its retained clock, so `seq` went backwards.
@@ -363,4 +366,21 @@ fn with_no_sample_yet_the_nodes_own_clock_is_the_answer() {
     let clock = ClockOffset::default();
     assert_eq!(clock.console_now(5_000), 5_000);
     assert_eq!(clock.offset_ms(), None);
+}
+
+/// One wildly late message must not step every running effect by its whole error at
+/// once. The firmware limits the same correction to the same number, and it has to:
+/// two nodes on one broker correcting at different rates would drift apart from each
+/// other for as long as the correction took.
+#[test]
+fn a_large_correction_arrives_gradually_rather_than_as_a_jolt() {
+    let mut clock = ClockOffset::default();
+    clock.feed(10_000, 1, 10_000, false);
+    assert_eq!(clock.offset_ms(), Some(0));
+
+    clock.feed(20_000, 2, 10_000, false);
+    assert_eq!(clock.offset_ms(), Some(MAX_SLEW_MS), "a fifth of ten seconds, clamped");
+
+    clock.feed(20_000, 3, 10_000, false);
+    assert_eq!(clock.offset_ms(), Some(2 * MAX_SLEW_MS), "and again on the next");
 }

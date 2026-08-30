@@ -344,6 +344,19 @@ pub const CLOCK_TOPIC: &str = "openhaunt/clock";
 /// smoothed rather than taken outright because the error being corrected is one-way
 /// network latency, which varies; a jump straight to each sample would jog a running
 /// effect by however much that varied.
+/// How far each live sample moves the estimate. A fifth: quick enough to settle in
+/// a few seconds, slow enough that one late message is not a visible jolt.
+pub const SMOOTHING: f64 = 0.2;
+
+/// The most a single correction may move the estimate, in milliseconds.
+///
+/// Without it, one wildly late message would step every running effect by its whole
+/// error at once. With it, a genuine large offset still arrives, just over a few
+/// seconds. The firmware's `oh_clock_sync.c` uses the same number, and it has to:
+/// two nodes on one broker correcting at different rates would drift apart from each
+/// other for as long as the correction took.
+pub const MAX_SLEW_MS: i64 = 50;
+
 #[derive(Debug, Default)]
 pub struct ClockOffset {
     offset_ms: Option<i64>,
@@ -371,7 +384,9 @@ impl ClockOffset {
             None => self.offset_ms = Some(sample),
             Some(_) if retained => {}
             Some(current) => {
-                self.offset_ms = Some(current + ((sample - current) as f64 * 0.2) as i64)
+                let step =
+                    ((sample - current) as f64 * SMOOTHING) as i64;
+                self.offset_ms = Some(current + step.clamp(-MAX_SLEW_MS, MAX_SLEW_MS));
             }
         }
     }

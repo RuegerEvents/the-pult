@@ -815,6 +815,44 @@ one still loads into the editor to be fixed. `configs/fog-machine.json` and
 `configs/mirror.json` both advertise now, and the mirror's engraved line advertises
 steps and no shapes, which is the honest answer for a string.
 
+### 22. The firmware renders too (done)
+
+Two commits in [the firmware repo](https://github.com/OpenHaunt/node), not this one:
+a pure-C core with host tests, then the integration. `oh_curve.c` is the third
+implementation of the numeric table, after `model/effects.rs` and the simulator's
+`motion.rs`, and the three share no code by design.
+
+**What the bench showed.** A 0.5 Hz sine, applied from a running the-pult to an
+adopted ESP32-1732S019, is *one* MQTT message and then twelve seconds of silence
+while the strip port moves on its own. At 40 Hz that window used to be 480 messages.
+A three second ease-in-out fade arrives as one timed `set` and the node walks it:
+0.003, 0.10, 0.33, 0.66, 0.90, 1.0.
+
+**The clock is not a formality.** Between an NTP-synced node and an NTP-synced
+console on one LAN, the measured offset settled around -100 ms. That is well over a
+tenth of a cycle on a 2 Hz chase, and it is exactly the skew `openhaunt/clock` exists
+to absorb — the assumption that two NTP clients agree closely enough to share a phase
+turns out to be worth checking, and does not hold.
+
+**A plain `set` always cancels.** Stopping an effect is a clear and a value, and
+`MqttLink::publish` spawns a task per publish, so the two can arrive either way
+round. On the bench they did: the value landed before the clear. Both orders leave
+the port in the right place, because a value takes the port back on its own — which
+was designed in rather than discovered, but it is good to have watched it happen.
+
+**A node upgraded in the field advertises nothing until its module is re-applied.**
+The description is stored, and one written before the `effects` bits existed has none.
+`oh vmod preset led` fixes it; a real module's EEPROM would carry the new field.
+Worth knowing before wondering why the console is still streaming values at a node
+whose firmware plainly supports better.
+
+Three smaller things the compiler and the bench found, in the order they hurt:
+a `-Wformat-truncation` error the host clang build does not produce but the Xtensa
+GCC one does; a 1 KiB default MQTT RX buffer that would have dropped a sixteen-step
+chase silently, now 4 KiB; and a `display_dirty` flag added and then removed on the
+spot, because the display already marks itself dirty on any `OH_EVENT` and the field
+had no reader — which is the same fault task 17 spent a commit removing.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.
