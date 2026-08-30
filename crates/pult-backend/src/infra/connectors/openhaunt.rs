@@ -16,8 +16,10 @@ use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 
 use anyhow::Result;
-use pult_schema::types::fixture::{
-    Fixture, FixtureAddress, ParameterDirection, ParameterValue,
+use pult_schema::types::{
+    effect::{Curve, Direction, Easing, RunningEffect, RunningFade, Shape},
+    fixture::{Fixture, FixtureAddress, ParameterDirection, ParameterValue},
+    openhaunt::PortEffectCapability,
 };
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
@@ -53,6 +55,13 @@ pub struct OpenHauntOutput {
     /// rebooted and sits at its defaults, so what it was last sent no longer
     /// describes it and is forgotten, which makes every port get sent again.
     was_online: BTreeMap<String, bool>,
+    /// The last shape handed to each port, so a description that has not changed is
+    /// not sent again. This is what turns a chase into one message: the value it
+    /// renders moves on every tick, but the description of it does not.
+    last_sent_effect: BTreeMap<(String, u8), serde_json::Value>,
+    /// Ports currently tracing a shape for themselves. A port leaving this set has to
+    /// be told to stop before it is sent a value again, or it would keep tracing.
+    offloaded: std::collections::BTreeSet<(String, u8)>,
 }
 
 impl OpenHauntOutput {
@@ -71,6 +80,8 @@ impl OpenHauntOutput {
             sequence: SequenceCounter::default(),
             last_sent: BTreeMap::new(),
             was_online: BTreeMap::new(),
+            last_sent_effect: BTreeMap::new(),
+            offloaded: Default::default(),
         })
     }
 
@@ -123,7 +134,12 @@ impl OpenHauntOutput {
         Ok(())
     }
 
-    /// Send the ports that changed on every fixture that lives on a node.
+    /// Send each port whatever is the least it needs to hear.
+    ///
+    /// In order of preference: a shape it can trace on its own, a fade it can run on
+    /// its own, or the stream of values every node has always got. The first two are
+    /// sent once and then nothing more, which is the whole point — a three second
+    /// fade was a hundred and twenty messages and is now one.
     fn drive_the_ports(&mut self, patch: &Patch) {
         self.forget_what_rebooted_nodes_were_sent();
         for fixture in &patch.fixtures {
@@ -138,13 +154,58 @@ impl OpenHauntOutput {
                     continue;
                 }
                 let Some(port) = parameter.binding.port() else { continue };
-                let value = fixture
-                    .live_values
-                    .get(&parameter_key(&parameter.kind))
-                    .unwrap_or(&parameter.default_value);
-                let payload = port_payload(value);
-
+                let param_key = parameter_key(&parameter.kind);
                 let key = (serial.to_string(), port);
+                let capable = self.capability(serial, port);
+
+                // 1. A shape the port has said it can trace.
+                if let Some(effect) = fixture.live_effects.get(&param_key) {
+                    if let Some(payload) = capable
+                        .as_ref()
+                        .filter(|c| supports(c, effect))
+                        .and_then(|_| effect_payload(effect))
+                    {
+                        if self.last_sent_effect.get(&key) != Some(&payload) {
+                            debug!("[openhaunt] {serial} port {port} traces {payload}");
+                            self.last_sent_effect.insert(key.clone(), payload.clone());
+                            self.devices.set_effect(serial.to_string(), port, Some(payload));
+                        }
+                        self.offloaded.insert(key);
+                        continue;
+                    }
+                }
+
+                // 2. Not tracing, but it was: take the shape back before anything else.
+                if self.offloaded.remove(&key) {
+                    debug!("[openhaunt] {serial} port {port} stops tracing");
+                    self.last_sent_effect.remove(&key);
+                    self.devices.set_effect(serial.to_string(), port, None);
+                    // The node has gone back to whatever value it was left holding,
+                    // which is not what this plugin last recorded sending it, so the
+                    // value below has to go out even if it looks unchanged.
+                    self.last_sent.remove(&key);
+                }
+
+                // 3. A fade the port can run itself, described once.
+                if let Some(fade) = fixture.live_fades.get(&param_key) {
+                    if capable.as_ref().is_some_and(|c| c.transitions) {
+                        let payload = transition_payload(fade);
+                        if self.last_sent_effect.get(&key) != Some(&payload) {
+                            debug!("[openhaunt] {serial} port {port} fades {payload}");
+                            self.last_sent_effect.insert(key.clone(), payload.clone());
+                            // Where the fade is going is where the port will be when
+                            // it lands, so recording it now means the arrival is not
+                            // sent again as a value afterwards.
+                            self.last_sent.insert(key, port_payload(&fade.to));
+                            self.devices.set_output(serial.to_string(), port, payload);
+                        }
+                        continue;
+                    }
+                }
+
+                // 4. The stream of values, as it has always been.
+                let value = fixture.live_values.get(&param_key).unwrap_or(&parameter.default_value);
+                let payload = port_payload(value);
                 if self.last_sent.get(&key) == Some(&payload) {
                     continue;
                 }
@@ -154,6 +215,17 @@ impl OpenHauntOutput {
             }
         }
         self.forget_what_is_no_longer_patched(&patch.fixtures);
+    }
+
+    /// What this port said it could do for itself, if anything.
+    fn capability(&self, serial: &str, port: u8) -> Option<PortEffectCapability> {
+        self.directory
+            .borrow()
+            .entries
+            .get(serial)
+            .and_then(|entry| entry.effects.as_ref())
+            .and_then(|caps| caps.port(port))
+            .cloned()
     }
 
     /// A node that went offline and came back is at its defaults, whatever it was
@@ -170,6 +242,11 @@ impl OpenHauntOutput {
             let before = self.was_online.insert(serial.clone(), online).unwrap_or(false);
             if online && !before {
                 self.last_sent.retain(|(s, _), _| *s != serial);
+                // A rebooted node is not tracing anything either, whatever it was
+                // handed before it went. Forgetting is what makes the shape go out
+                // again on the next pass.
+                self.last_sent_effect.retain(|(s, _), _| *s != serial);
+                self.offloaded.retain(|(s, _)| *s != serial);
             }
         }
     }
@@ -184,6 +261,8 @@ impl OpenHauntOutput {
         let patched: std::collections::BTreeSet<&str> =
             fixtures.iter().filter_map(|f| f.address.serial()).collect();
         self.last_sent.retain(|(serial, _), _| patched.contains(serial.as_str()));
+        self.last_sent_effect.retain(|(serial, _), _| patched.contains(serial.as_str()));
+        self.offloaded.retain(|(serial, _)| patched.contains(serial.as_str()));
     }
 }
 
@@ -226,6 +305,94 @@ fn port_payload(value: &ParameterValue) -> serde_json::Value {
 
 fn to_byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+// ── What a node is told instead of values ─────────────────────────────────────
+
+/// The wire spelling of a shape. Lower case and hyphenated, as the port advertises
+/// them, so what a node says it can do and what it is asked to do are the same string.
+fn shape_name(shape: Shape) -> &'static str {
+    match shape {
+        Shape::Sine => "sine",
+        Shape::Triangle => "triangle",
+        Shape::Square => "square",
+        Shape::SawUp => "saw-up",
+        Shape::SawDown => "saw-down",
+    }
+}
+
+fn easing_name(easing: Easing) -> &'static str {
+    match easing {
+        Easing::Step => "step",
+        Easing::Linear => "linear",
+        Easing::EaseIn => "ease-in",
+        Easing::EaseOut => "ease-out",
+        Easing::EaseInOut => "ease-in-out",
+    }
+}
+
+/// Whether this port can be trusted with this particular effect.
+///
+/// Asked shape by shape rather than as a single flag, because a relay that can chop
+/// a square wave has no way to trace a sine and saying so is cheaper than finding out.
+/// A node that cannot is not sent a description it would ignore in silence; it gets
+/// the stream of values it has always had.
+fn supports(capability: &PortEffectCapability, effect: &RunningEffect) -> bool {
+    match &effect.curve {
+        Curve::Shape(shape) => capability.has_shape(shape_name(*shape)),
+        Curve::Steps(steps) => capability.steps && !steps.is_empty(),
+    }
+}
+
+/// One effect, in the shape a node reads.
+///
+/// Values go out in the port's own payload shape rather than the schema's, so a node
+/// parses the endpoints of a shape with exactly the code it already uses for a `set`.
+fn effect_payload(effect: &RunningEffect) -> Option<serde_json::Value> {
+    let curve = match &effect.curve {
+        Curve::Shape(shape) => serde_json::json!({ "shape": shape_name(*shape) }),
+        Curve::Steps(steps) => serde_json::json!({
+            "steps": steps
+                .iter()
+                .map(|step| serde_json::json!({
+                    "at": step.at,
+                    "value": port_payload(&step.value),
+                    "easing": easing_name(step.easing),
+                }))
+                .collect::<Vec<_>>(),
+        }),
+    };
+
+    Some(serde_json::json!({
+        "id": effect.effect_id,
+        "curve": curve,
+        "rate": effect.rate_hz,
+        "phase": effect.phase,
+        "direction": match effect.direction {
+            Direction::Forward => "forward",
+            Direction::Backward => "backward",
+        },
+        "width": effect.width,
+        "low": port_payload(&effect.low),
+        "high": port_payload(&effect.high),
+        "t0": effect.t0,
+    }))
+}
+
+/// A fade, as a `set` that says when rather than a `set` repeated forty times a second.
+///
+/// The destination is at the top level in the port's ordinary payload shape, so a node
+/// that ignores the timing keys entirely still lands on the right value — just
+/// immediately. That is the fallback the whole design leans on: unknown keys are
+/// harmless, so nothing has to be negotiated.
+fn transition_payload(fade: &RunningFade) -> serde_json::Value {
+    let mut payload = port_payload(&fade.to);
+    if let Some(map) = payload.as_object_mut() {
+        map.insert("fade_ms".into(), fade.duration_ms.into());
+        map.insert("t0".into(), fade.t0.into());
+        map.insert("curve".into(), easing_name(fade.easing).into());
+    }
+    payload
 }
 
 #[cfg(test)]

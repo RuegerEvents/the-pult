@@ -103,6 +103,28 @@ pub fn output_topic(serial: &str, port: u8) -> String {
     format!("openhaunt/{serial}/output/{port}/set")
 }
 
+/// The topic a node listens on for a shape to trace on one of its output ports.
+pub fn effect_topic(serial: &str, port: u8) -> String {
+    format!("openhaunt/{serial}/output/{port}/effect")
+}
+
+/// Where the console publishes what time it thinks it is.
+///
+/// One topic for every node rather than one per node, and deliberately not under a
+/// serial: the whole point is that every node on this broker agrees with every other
+/// about when a cycle started. Retained, so a node that joins between ticks has an
+/// answer immediately rather than after up to a second of rendering against nothing.
+pub const CLOCK_TOPIC: &str = "openhaunt/clock";
+
+/// What the console publishes on [`CLOCK_TOPIC`].
+///
+/// `seq` counts up so a node can tell a fresh sample from a retained one replayed
+/// after a broker restart, and reset its estimate rather than smoothing towards a
+/// number from before the gap.
+pub fn clock_payload(now_ms: u64, seq: u64) -> Vec<u8> {
+    serde_json::json!({ "t": now_ms, "seq": seq }).to_string().into_bytes()
+}
+
 // ── Connection ────────────────────────────────────────────────────────────────
 
 /// A live connection to the broker, feeding parsed events into a channel.
@@ -160,10 +182,15 @@ impl MqttLink {
 
     /// Publish to a node. Fire and forget: a device that is not answering must not
     /// hold up the tick that produced the value.
-    pub fn publish(&self, topic: String, payload: Vec<u8>) {
+    ///
+    /// `retain` is for the clock and nothing else so far. A retained value is what the
+    /// broker hands a node the moment it subscribes, which is the difference between a
+    /// node that can place a cycle as soon as it connects and one that renders against
+    /// a guess until the next tick comes round.
+    pub fn publish(&self, topic: String, payload: Vec<u8>, retain: bool) {
         let client = self.client.clone();
         tokio::spawn(async move {
-            if let Err(e) = client.publish(&topic, QoS::AtLeastOnce, false, payload).await {
+            if let Err(e) = client.publish(&topic, QoS::AtLeastOnce, retain, payload).await {
                 debug!("[devices] publish to {topic}: {e}");
             }
         });

@@ -10,6 +10,7 @@
 //! anything, which is the same gate playback uses for follow cues.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use chrono::Utc;
 use mdns_sd::{ServiceDaemon, ServiceEvent};
@@ -20,6 +21,7 @@ use pult_schema::{
     path::{Path, PathPattern, PathSegment},
     types::{
         devices::{DevicesState, DiscoveredDevice},
+        openhaunt::EffectCapability,
         fixture::{Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDirection},
         openhaunt,
         output::{OutputConfig, OutputKind},
@@ -69,6 +71,8 @@ pub enum DeviceCommand {
     Forget { serial: String, reply: oneshot::Sender<Result<(), String>> },
     /// Drive one output port on a node.
     SetOutput { serial: String, port: u8, value: serde_json::Value },
+    /// Hand one output port a shape to trace, or `None` to take it back.
+    SetEffect { serial: String, port: u8, payload: Option<serde_json::Value> },
     Event(DeviceEvent),
     Stop,
 }
@@ -101,6 +105,11 @@ impl DeviceHandle {
     pub fn set_output(&self, serial: String, port: u8, value: serde_json::Value) {
         let _ = self.0.try_send(DeviceCommand::SetOutput { serial, port, value });
     }
+
+    /// Hand an output port a shape, or `None` to stop it tracing one. Same rule.
+    pub fn set_effect(&self, serial: String, port: u8, payload: Option<serde_json::Value>) {
+        let _ = self.0.try_send(DeviceCommand::SetEffect { serial, port, payload });
+    }
 }
 
 // ── Directory ─────────────────────────────────────────────────────────────────
@@ -121,6 +130,13 @@ pub struct DeviceEntry {
     pub module_type: u16,
     pub universe: Option<u16>,
     pub online: bool,
+    /// Which of this node's ports can trace a shape for themselves.
+    ///
+    /// Here as well as on the discovered device because an output plugin is handed
+    /// the directory and never the device list — it has to decide port by port
+    /// whether to send a description or a stream of samples, and this is where it
+    /// looks.
+    pub effects: Option<EffectCapability>,
 }
 
 // ── Manager ───────────────────────────────────────────────────────────────────
@@ -141,6 +157,9 @@ pub struct DeviceManager {
     /// way is driven over MQTT; one that has been adopted but has not connected yet
     /// still has to be reachable, and for that there is HTTP.
     on_broker: std::collections::BTreeSet<String>,
+    /// Counts up with every clock publish, so a node can tell a fresh sample from a
+    /// retained one replayed after the broker restarted.
+    clock_seq: u64,
 }
 
 impl DeviceManager {
@@ -172,6 +191,7 @@ impl DeviceManager {
                 mqtt: None,
                 mqtt_tx,
                 on_broker: Default::default(),
+                clock_seq: 0,
             },
             DeviceHandle(tx),
             directory_rx,
@@ -190,6 +210,13 @@ impl DeviceManager {
         // A console restarted mid-show comes up already leading, with devices already
         // adopted. Nothing will announce that, so it is checked once here.
         self.reconsider_leadership().await;
+
+        // The first periodic thing in this loop. A node tracing a shape has to know
+        // what time the console thinks it is, or it cannot place the start of a cycle,
+        // and a second is often enough: the estimate is smoothed and the error it is
+        // correcting is one-way LAN latency, a few milliseconds.
+        let mut clock = tokio::time::interval(Duration::from_secs(1));
+        clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -210,10 +237,14 @@ impl DeviceManager {
                         DeviceCommand::SetOutput { serial, port, value } => {
                             self.set_output(&serial, port, value).await;
                         }
+                        DeviceCommand::SetEffect { serial, port, payload } => {
+                            self.set_effect(&serial, port, payload).await;
+                        }
                     }
                 }
                 Some(event) = mqtt_rx.recv() => self.handle_mqtt(event).await,
                 Some(_) = sessions.next() => self.reconsider_leadership().await,
+                _ = clock.tick() => self.publish_clock().await,
             }
         }
         if let Some(mqtt) = self.mqtt.take() {
@@ -449,10 +480,13 @@ impl DeviceManager {
                 info!("[devices] {} ({}) at {ip}:{port}", device.name, device.module_name);
                 self.state.discovered.insert(serial.clone(), device);
 
-                if let Some((mains, description)) = self.ask_the_node_what_it_is(&serial).await {
+                if let Some((mains, description, effects)) =
+                    self.ask_the_node_what_it_is(&serial).await
+                {
                     if let Some(device) = self.state.discovered.get_mut(&serial) {
                         device.is_mains = mains;
                         device.description = Some(description);
+                        device.effects = effects;
                     }
                 }
                 self.reconcile_adoptions().await;
@@ -490,19 +524,30 @@ impl DeviceManager {
 
     /// Ask the node what it is: whether it switches mains, and what its ports are.
     ///
-    /// One round trip for both, because they arrive in the same body. The mains
+    /// One round trip for all three, because they arrive in the same body. The mains
     /// flag in the descriptor is the authority; the TXT guess above is only there
     /// so the panel can warn without waiting. None means the node did not answer,
     /// in which case the guess stands and it stays undescribed.
-    async fn ask_the_node_what_it_is(&self, serial: &str) -> Option<(bool, openhaunt::NodeDescription)> {
+    ///
+    /// Effect capability is read from the raw body rather than out of the parsed
+    /// description, and that is not an accident: `fixture_type_id` hashes the
+    /// serialised `NodeDescription`, so a port that started advertising `effects`
+    /// through that struct would give every node of its kind a fresh fixture type
+    /// and orphan every parameter already patched against the old one. Serde drops
+    /// the unknown key, the id stays put, and the capability is picked up alongside.
+    async fn ask_the_node_what_it_is(
+        &self,
+        serial: &str,
+    ) -> Option<(bool, openhaunt::NodeDescription, Option<EffectCapability>)> {
         let info: serde_json::Value = self.get_json(serial, "info").await?;
         let mains = info["module"]["flags"]
             .as_u64()
             .is_some_and(|flags| flags as u32 & openhaunt::MODULE_FLAG_MAINS != 0);
+        let effects = openhaunt::effect_capability_from(&info);
         // The whole body, not just the two keys: `ports` and `dmx` both default,
         // so firmware that predates self-description parses as having neither.
         let description = serde_json::from_value(info).unwrap_or_default();
-        Some((mains, description))
+        Some((mains, description, effects))
     }
 
     /// Work out which devices are adopted, from the fixtures rather than from memory.
@@ -632,7 +677,7 @@ impl DeviceManager {
         match &self.mqtt {
             Some(mqtt) if self.on_broker.contains(serial) => {
                 let payload = serde_json::to_vec(&value).unwrap_or_default();
-                mqtt.publish(mqtt::output_topic(serial, port), payload);
+                mqtt.publish(mqtt::output_topic(serial, port), payload, false);
             }
             _ => {
                 let body = serde_json::json!({ "outputs": { port.to_string(): value } });
@@ -641,6 +686,49 @@ impl DeviceManager {
                 }
             }
         }
+    }
+
+    /// Hand one output port a shape to trace, or take it back with `None`.
+    ///
+    /// The same two routes as a value, for the same reasons. What is different is how
+    /// rarely this is called: a shape is described once and then the node is left to
+    /// it, so where an output port would have seen forty messages a second it now sees
+    /// one and then silence.
+    async fn set_effect(&self, serial: &str, port: u8, payload: Option<serde_json::Value>) {
+        let descriptor = payload.unwrap_or_else(|| serde_json::json!({ "clear": true }));
+        match &self.mqtt {
+            Some(mqtt) if self.on_broker.contains(serial) => {
+                let body = serde_json::to_vec(&descriptor).unwrap_or_default();
+                mqtt.publish(mqtt::effect_topic(serial, port), body, false);
+            }
+            _ => {
+                let body = serde_json::json!({ "effects": { port.to_string(): descriptor } });
+                if let Err(e) = self.post(serial, "state", body).await {
+                    debug!("[devices] {serial} effect {port}: {e}");
+                }
+            }
+        }
+    }
+
+    /// Say what time it is, for the nodes tracing a shape against it.
+    ///
+    /// Only while this station is actually driving devices. A follower publishing its
+    /// own idea of the time onto the leader's broker would give every node two
+    /// answers, and the whole point of the topic is that there is one.
+    async fn publish_clock(&mut self) {
+        let Some(mqtt) = &self.mqtt else { return };
+        if !self.state.active {
+            return;
+        }
+        self.clock_seq += 1;
+        let now = pult_schema::types::sequence::now_ms();
+        mqtt.publish(
+            mqtt::CLOCK_TOPIC.to_string(),
+            mqtt::clock_payload(now, self.clock_seq),
+            // Retained, so a node that connects between ticks can place a cycle at
+            // once rather than rendering against a guess for up to a second.
+            true,
+        );
     }
 
     /// Tell a node where to publish, and what to do with the universe it gateways.
@@ -752,6 +840,7 @@ impl DeviceManager {
                             module_type: d.module_type,
                             universe: universes.get(&d.serial).copied().flatten(),
                             online: d.online,
+                            effects: d.effects.clone(),
                         },
                     )
                 })

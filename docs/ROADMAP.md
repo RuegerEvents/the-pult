@@ -723,6 +723,51 @@ Left open:
   the same question task 10 left open about partitioning, arriving from another
   direction.
 
+### 20. Telling a node the shape instead of the samples (done)
+
+The console side of the wire. A node that can trace a shape for itself is handed a
+description and then left alone; one that cannot sees exactly what it always saw.
+
+The arithmetic is the argument. A three second fade at 40 Hz is a hundred and twenty
+MQTT messages to a node that could have been told "go to 1.0 over three seconds"
+once. A chase is worse: it never stops. `drive_the_ports` now sends each port the
+least it needs to hear — a shape, or a timed `set`, or the stream of values — and the
+tests mostly assert what was *not* sent.
+
+**Capability is per port and per shape.** A relay that can chop a square wave has no
+way to trace a sine, and a port that lists its shapes lets the console find that out
+without trying. Absent means the old behaviour, so nothing is negotiated and firmware
+that has never heard of any of this is unaffected. It is read out of the raw `/info`
+body rather than through `PortDescription`, for the reason task 18 records, and a
+test now pins that end to end by adopting the same node twice — once advertising,
+once not — and asserting one fixture type.
+
+**Two messages, in order, to stop.** Taking a light out of a chase is `{"clear":true}`
+and then a value, and the plugin drops its record of what the port was last sent so
+the value goes out even when it looks unchanged. The node has gone back to holding
+whatever the shape left it on, which is not what the console last recorded sending it.
+Either message alone leaves the light wrong.
+
+**A clock, because a phase needs one.** `openhaunt/clock`, retained, once a second
+while this station is driving. Retained matters: a node connecting between ticks gets
+an answer on subscribe rather than rendering against a guess for up to a second.
+`seq` counts up so a node can tell a fresh sample from a retained one replayed after
+the broker restarted. This is the first periodic thing in `DeviceManager::run`, which
+until now was entirely event-driven.
+
+Only the driving station publishes it. A follower putting its own idea of the time on
+the leader's broker would give every node two answers, and the entire point of the
+topic is that there is one.
+
+**A timed `set` degrades to an untimed one.** The destination sits at the top level in
+the port's ordinary payload shape and the timing rides beside it, so a node that
+ignores `fade_ms` still lands on the right value — just immediately. That is the
+fallback the whole design leans on: unknown keys are harmless, so no version has to be
+agreed.
+
+Nothing on the console renders differently. Art-Net, sACN and the universe cache still
+read `live_values` and are untouched.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

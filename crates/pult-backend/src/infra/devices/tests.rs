@@ -32,6 +32,7 @@ use crate::{engine::ShowEngine, infra::showfile};
 
 const DMX_OUT: u16 = 0x0001;
 const DIGITAL_IN: u16 = 0x0002;
+const WS2812: u16 = 0x0003;
 const MAINS_RELAY: u16 = 0x0004;
 const OLED: u16 = 0x0005;
 const DRY_CONTACT: u16 = 0x0006;
@@ -59,6 +60,23 @@ fn firmware(module_type: u16) -> Firmware {
                 "port": n, "name": format!("Input {}", n + 1),
                 "access": "readonly", "dataType": "boolean", "class": "contact",
             })).collect::<Vec<_>>() }),
+        ),
+        // The module that can trace everything, which is what makes it the one to
+        // test offload against.
+        WS2812 => (
+            "LED Strip",
+            0,
+            serde_json::json!({ "ports": [
+                { "port": 0, "name": "Strip colour", "access": "readwrite",
+                  "dataType": "color", "class": "color",
+                  "effects": { "shapes": ["sine", "triangle", "square", "saw-up", "saw-down"],
+                               "steps": true, "transitions": true } },
+                { "port": 1, "name": "Brightness", "access": "readwrite",
+                  "dataType": "number", "unit": "percent", "minimum": 0, "maximum": 1,
+                  "default": 0, "class": "intensity",
+                  "effects": { "shapes": ["sine", "triangle", "square", "saw-up", "saw-down"],
+                               "steps": true, "transitions": true } },
+            ]}),
         ),
         MAINS_RELAY => (
             "Mains Relay",
@@ -1036,4 +1054,157 @@ async fn a_follower_with_nothing_adopted_still_says_it_is_not_driving() {
         h.state().await.discovered.contains_key("watched"),
         "a follower keeps browsing and keeps showing what it finds",
     );
+}
+
+// ── Effect capability ─────────────────────────────────────────────────────────
+
+/// The capability is read out of the same `/info` body as everything else, and it
+/// reaches the directory, which is where an output plugin looks — the plugin is
+/// handed a patch and never the device list.
+#[tokio::test]
+async fn what_a_port_says_it_can_trace_reaches_the_directory() {
+    let h = harness().await;
+    let (addr, _log) = a_node(
+        0,
+        serde_json::json!({
+            "ports": [
+                { "port": 0, "name": "Strip colour", "access": "readwrite", "dataType": "color",
+                  "class": "color",
+                  "effects": { "shapes": ["sine", "square"], "steps": true, "transitions": true } },
+                { "port": 1, "name": "Brightness", "access": "readwrite", "dataType": "number",
+                  "class": "intensity" },
+            ],
+        }),
+    )
+    .await;
+
+    h.resolve_at("strip1", MAINS_RELAY, addr).await;
+
+    let entry = h.directory.borrow().entries.get("strip1").cloned().expect("in the directory");
+    let caps = entry.effects.expect("the node said something");
+    let colour = caps.port(0).expect("port 0 did");
+    assert!(colour.has_shape("sine"));
+    assert!(colour.steps);
+    assert!(colour.transitions);
+    assert!(caps.port(1).is_none(), "and port 1 did not, so it offers nothing");
+}
+
+/// The trap, end to end this time: adopting a node whose ports advertise effects
+/// must land on the same fixture type as adopting one whose ports do not, or every
+/// parameter patched against the old id is orphaned by a firmware update.
+#[tokio::test]
+async fn advertising_effects_does_not_change_the_fixture_type_a_node_adopts_as() {
+    let ports = |effects: bool| {
+        let mut port = serde_json::json!({
+            "port": 0, "name": "Relay", "access": "readwrite", "dataType": "boolean",
+            "class": "switch",
+        });
+        if effects {
+            port["effects"] = serde_json::json!({ "shapes": ["square"], "steps": true });
+        }
+        serde_json::json!({ "ports": [port] })
+    };
+
+    let plain = harness().await;
+    let (addr, _log) = a_node(0, ports(false)).await;
+    plain.resolve_at("relay1", MAINS_RELAY, addr).await;
+    let before = plain.devices.adopt("relay1".into()).await.unwrap();
+
+    let advertising = harness().await;
+    let (addr, _log) = a_node(0, ports(true)).await;
+    advertising.resolve_at("relay1", MAINS_RELAY, addr).await;
+    let after = advertising.devices.adopt("relay1".into()).await.unwrap();
+
+    let type_of = |h: &Harness, id: Uuid| {
+        let engine = h.engine.clone();
+        async move {
+            let fixture = engine
+                .get(vec![
+                    PathSegment::Key("fixtures".into()),
+                    PathSegment::Id(id),
+                    PathSegment::Key("fixture_type_id".into()),
+                ])
+                .await
+                .unwrap();
+            fixture
+        }
+    };
+
+    assert_eq!(
+        type_of(&plain, before).await,
+        type_of(&advertising, after).await,
+        "the unknown key must not reach the hash that names the fixture type",
+    );
+}
+
+/// A node with no broker connection is still reachable over HTTP, and a shape has
+/// to travel that way too or a node adopted but not yet connected would silently
+/// keep tracing whatever it had.
+#[tokio::test]
+async fn a_shape_reaches_a_node_over_http_when_it_is_not_on_the_broker() {
+    let h = harness().await;
+    let (addr, log) = a_node(
+        0,
+        serde_json::json!({
+            "ports": [
+                { "port": 0, "name": "Relay", "access": "readwrite", "dataType": "boolean",
+                  "class": "switch", "effects": { "shapes": ["square"], "steps": true } },
+            ],
+        }),
+    )
+    .await;
+    h.resolve_at("relay1", MAINS_RELAY, addr).await;
+
+    let descriptor = serde_json::json!({ "curve": { "shape": "square" }, "rate": 1.0 });
+    h.devices.set_effect("relay1".into(), 0, Some(descriptor.clone()));
+    eventually("the descriptor to arrive", || async {
+        log.lock().unwrap().outputs.iter().any(|b| b["effects"]["0"] == descriptor)
+    })
+    .await;
+
+    h.devices.set_effect("relay1".into(), 0, None);
+    eventually("the clear to arrive", || async {
+        log.lock()
+            .unwrap()
+            .outputs
+            .iter()
+            .any(|b| b["effects"]["0"] == serde_json::json!({ "clear": true }))
+    })
+    .await;
+}
+
+/// The clock is what lets a node place the start of a cycle, so it has to be there
+/// before anything is asked to trace one — and retained, so a node that connects
+/// between ticks gets an answer at once rather than rendering against a guess.
+#[tokio::test]
+async fn the_console_says_what_time_it_is_once_driving_starts() {
+    let h = harness().await;
+    h.resolve("relay1", MAINS_RELAY, None).await;
+    h.devices.adopt("relay1".into()).await.unwrap();
+
+    // A node that subscribes after the fact: a retained message is delivered on
+    // subscribe, which is the whole reason for the flag.
+    let mut options =
+        MqttOptions::new("clock-watcher", "127.0.0.1", broker_port(&h).await);
+    options.set_keep_alive(std::time::Duration::from_secs(5));
+    let (client, mut eventloop) = AsyncClient::new(options, 16);
+    let seen: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorder = seen.clone();
+    tokio::spawn(async move {
+        while let Ok(event) = eventloop.poll().await {
+            if let rumqttc::Event::Incoming(rumqttc::Packet::Publish(p)) = event {
+                if let Ok(body) = serde_json::from_slice::<serde_json::Value>(&p.payload) {
+                    recorder.lock().unwrap().push(body);
+                }
+            }
+        }
+    });
+    client.subscribe("openhaunt/clock", QoS::AtLeastOnce).await.unwrap();
+
+    eventually("the console to say what time it is", || async {
+        seen.lock().unwrap().iter().any(|body| {
+            body["t"].as_u64().is_some_and(|t| t > 1_600_000_000_000) && body["seq"].is_number()
+        })
+    })
+    .await;
 }

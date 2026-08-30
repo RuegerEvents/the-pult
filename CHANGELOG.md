@@ -18,6 +18,13 @@ bracketed form — so every release needs one and it has to be spelled that way.
   phase and spread — and can be held in the programmer or stored in a cue
   capture. A `SpeedMaster` collection carries a tempo several effects can
   follow. Nothing renders them yet.
+- **Nodes are told the shape, not the samples.** An OpenHaunt port that says
+  in `/info` which shapes it can trace is handed one description and then left
+  alone, instead of a value forty times a second; a port that advertises
+  `transitions` gets a three second fade as one timed `set` rather than a
+  hundred and twenty samples. The console publishes a retained
+  `openhaunt/clock` once a second so a node can place the start of a cycle. A
+  port that advertises nothing behaves exactly as before.
 - **Effects run.** The engine renders a shape or a step list into a fixture
   parameter on every tick, from the cue's anchor or the programmer's own, at a
   rate given in Hz or borrowed from a speed master. A programmer effect beats a

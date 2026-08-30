@@ -5,6 +5,7 @@ use pult_schema::types::{
         FixtureType, ParameterBinding, ParameterDefinition, ParameterKind,
     },
     openhaunt as modules,
+    openhaunt::{EffectCapability, PortEffectCapability},
 };
 
 use super::*;
@@ -83,7 +84,28 @@ fn directory(entries: Vec<(&str, DeviceEntry)>) -> watch::Receiver<DeviceDirecto
 }
 
 fn an_entry(ip: &str, module_type: u16, universe: Option<u16>, online: bool) -> DeviceEntry {
-    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universe, online }
+    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universe, online, effects: None }
+}
+
+/// The same node, with one port that says what it can trace for itself.
+fn a_capable_entry(
+    ip: &str,
+    module_type: u16,
+    port: u8,
+    shapes: &[&str],
+    transitions: bool,
+) -> DeviceEntry {
+    DeviceEntry {
+        effects: Some(EffectCapability {
+            ports: vec![PortEffectCapability {
+                port,
+                shapes: shapes.iter().map(|s| s.to_string()).collect(),
+                steps: true,
+                transitions,
+            }],
+        }),
+        ..an_entry(ip, module_type, None, true)
+    }
 }
 
 fn a_node_fixture(fixture_type: &FixtureType, serial: &str, universe: Option<u16>) -> Fixture {
@@ -422,4 +444,391 @@ async fn a_console_with_no_node_fixtures_sends_nothing_at_all() {
     let anything =
         tokio::time::timeout(std::time::Duration::from_millis(100), recv(&socket)).await;
     assert!(anything.is_err(), "a discovered device is not an adopted one");
+}
+
+// ── Offload ───────────────────────────────────────────────────────────────────
+//
+// The point of all of this is a message count. A three second fade at 40 Hz is a
+// hundred and twenty messages to a node that could have been told "go there over
+// three seconds" once, and a chase never stops producing them at all. So most of
+// these tests assert what was *not* sent.
+
+use pult_schema::types::effect::{
+    Curve, Direction, Easing, EffectSource, RunningEffect, RunningFade, Shape,
+};
+
+/// Everything the plugin sent, of both kinds, in order.
+///
+/// One drain, because the channel is consumed by reading it: asking for the values
+/// and then for the shapes throws the values away and reports that none were sent,
+/// which is a convincing-looking green as often as it is a convincing-looking red.
+fn everything(
+    rx: &mut tokio::sync::mpsc::Receiver<DeviceCommand>,
+) -> Vec<(&'static str, String, u8, Option<serde_json::Value>)> {
+    let mut out = Vec::new();
+    while let Ok(cmd) = rx.try_recv() {
+        match cmd {
+            DeviceCommand::SetOutput { serial, port, value } => {
+                out.push(("set", serial, port, Some(value)))
+            }
+            DeviceCommand::SetEffect { serial, port, payload } => {
+                out.push(("effect", serial, port, payload))
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+type Message = (&'static str, String, u8, Option<serde_json::Value>);
+
+fn of_kind(messages: &[Message], kind: &str, port: u8) -> Vec<Message> {
+    messages.iter().filter(|m| m.0 == kind && m.2 == port).cloned().collect()
+}
+
+fn a_running_sine(t0: u64) -> RunningEffect {
+    RunningEffect {
+        effect_id: Uuid::nil(),
+        curve: Curve::Shape(Shape::Sine),
+        rate_hz: 0.5,
+        low: ParameterValue::Float(0.0),
+        high: ParameterValue::Float(1.0),
+        width: 0.5,
+        direction: Direction::Forward,
+        phase: 0.25,
+        t0,
+        source: EffectSource::Programmer,
+    }
+}
+
+/// The whole bargain: the value moves on every pass and the node hears about it once.
+#[tokio::test]
+async fn a_capable_port_is_handed_the_shape_once_and_then_left_alone() {
+    let (devices, mut received) = a_recording_device_handle();
+    let mut output = OpenHauntOutput::new(
+        directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]),
+        devices,
+        5568,
+    )
+    .await
+    .unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_effects.insert("Intensity".into(), a_running_sine(1_000));
+
+    // Three passes, with the rendered value somewhere different on each.
+    for level in [0.5f32, 0.9, 0.1] {
+        fixture.live_values.insert("Intensity".into(), ParameterValue::Float(level));
+        output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+    }
+
+    let messages = everything(&mut received);
+    let effects = of_kind(&messages, "effect", 1);
+    assert_eq!(effects.len(), 1, "described once, not once a pass: {effects:?}");
+    assert_eq!(effects[0].1, "strip1");
+    let payload = effects[0].3.as_ref().expect("a description, not a clear");
+    assert_eq!(payload["curve"], serde_json::json!({ "shape": "sine" }));
+    assert_eq!(payload["rate"], 0.5);
+    assert_eq!(payload["phase"], 0.25);
+    assert_eq!(payload["t0"], 1_000);
+    assert_eq!(payload["low"], serde_json::json!({ "value": 0.0 }));
+
+    assert!(
+        of_kind(&messages, "set", 1).is_empty(),
+        "and the port is sent no values at all while it is tracing",
+    );
+}
+
+/// A port that never said it could trace a sine is not sent one. Nothing is
+/// negotiated: silence in `/info` means the old behaviour, exactly as before.
+#[tokio::test]
+async fn a_port_that_says_nothing_gets_values_as_it_always_did() {
+    let (devices, mut received) = a_recording_device_handle();
+    let mut output = OpenHauntOutput::new(
+        directory(vec![("strip1", an_entry("127.0.0.1", WS2812, None, true))]),
+        devices,
+        5568,
+    )
+    .await
+    .unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_effects.insert("Intensity".into(), a_running_sine(1_000));
+    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(0.5));
+
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+
+    let messages = everything(&mut received);
+    assert!(of_kind(&messages, "effect", 1).is_empty(), "no description");
+    assert!(
+        of_kind(&messages, "set", 1).iter().any(|m| m.3.as_ref().unwrap()["value"] == 0.5),
+        "the rendered value, as ever",
+    );
+}
+
+/// A port that can chop a square wave still cannot trace a sine, and saying so per
+/// shape is what stops the console handing it one it would ignore in silence.
+#[tokio::test]
+async fn a_shape_the_port_did_not_list_falls_back_to_values() {
+    let (devices, mut received) = a_recording_device_handle();
+    let mut output = OpenHauntOutput::new(
+        directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["square"], false))]),
+        devices,
+        5568,
+    )
+    .await
+    .unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_effects.insert("Intensity".into(), a_running_sine(1_000));
+    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(0.5));
+
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+
+    let messages = everything(&mut received);
+    assert!(of_kind(&messages, "effect", 1).is_empty(), "a sine is not a square");
+    assert!(!of_kind(&messages, "set", 1).is_empty(), "so it gets values");
+}
+
+/// Taking a light out of a chase has to reach the node as two messages in order:
+/// stop tracing, then here is a value. Either one alone leaves it wrong.
+#[tokio::test]
+async fn clearing_an_effect_stops_the_node_and_then_gives_it_a_value() {
+    let (devices, mut received) = a_recording_device_handle();
+    let mut output = OpenHauntOutput::new(
+        directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]),
+        devices,
+        5568,
+    )
+    .await
+    .unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_effects.insert("Intensity".into(), a_running_sine(1_000));
+    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(0.5));
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+    let _ = everything(&mut received);
+
+    // The operator grabs the fader: nothing periodic any more, and the value it
+    // happens to land on is the one it was already rendering.
+    fixture.live_effects.clear();
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+
+    let all = everything(&mut received);
+    let messages: Vec<_> = all.iter().filter(|m| m.2 == 1).collect();
+    assert_eq!(messages.len(), 2, "exactly two: {messages:?}");
+    assert_eq!(messages[0].0, "effect");
+    assert_eq!(messages[0].3, None, "stop tracing");
+    assert_eq!(messages[1].0, "set");
+    assert_eq!(
+        messages[1].3.as_ref().unwrap()["value"],
+        0.5,
+        "and the value goes out even though it is the same one the plugin last recorded",
+    );
+}
+
+/// Tapping a speed master changes the rate and the anchor, and both are in the
+/// description, so the same dedup that kept the node quiet now speaks up.
+#[tokio::test]
+async fn a_change_of_tempo_sends_one_more_description() {
+    let (devices, mut received) = a_recording_device_handle();
+    let mut output = OpenHauntOutput::new(
+        directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]),
+        devices,
+        5568,
+    )
+    .await
+    .unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_effects.insert("Intensity".into(), a_running_sine(1_000));
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+    assert_eq!(of_kind(&everything(&mut received), "effect", 1).len(), 1);
+
+    fixture
+        .live_effects
+        .insert("Intensity".into(), RunningEffect { rate_hz: 2.0, t0: 9_000, ..a_running_sine(1_000) });
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+
+    let again = of_kind(&everything(&mut received), "effect", 1);
+    assert_eq!(again.len(), 1, "one more, not one a pass");
+    let payload = again[0].3.as_ref().unwrap();
+    assert_eq!(payload["rate"], 2.0);
+    assert_eq!(payload["t0"], 9_000);
+}
+
+/// A step chase goes out as its keyframes, in the port's own payload shape, so a
+/// node parses each value with the code it already has for a `set`.
+#[tokio::test]
+async fn a_step_chase_goes_out_as_its_keyframes() {
+    let (devices, mut received) = a_recording_device_handle();
+    let mut output = OpenHauntOutput::new(
+        directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 0, &[], false))]),
+        devices,
+        5568,
+    )
+    .await
+    .unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_effects.insert(
+        "ColorRgb".into(),
+        RunningEffect {
+            curve: Curve::Steps(vec![
+                pult_schema::types::effect::Step {
+                    at: 0.0,
+                    value: ParameterValue::Color { r: 1.0, g: 0.0, b: 0.0 },
+                    easing: Easing::Step,
+                },
+                pult_schema::types::effect::Step {
+                    at: 0.5,
+                    value: ParameterValue::Color { r: 0.0, g: 1.0, b: 0.0 },
+                    easing: Easing::Linear,
+                },
+            ]),
+            ..a_running_sine(0)
+        },
+    );
+
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+
+    let effects = of_kind(&everything(&mut received), "effect", 0);
+    assert_eq!(effects.len(), 1);
+    let steps = &effects[0].3.as_ref().unwrap()["curve"]["steps"];
+    assert_eq!(steps[0]["value"], serde_json::json!({ "r": 255, "g": 0, "b": 0 }));
+    assert_eq!(steps[0]["easing"], "step");
+    assert_eq!(steps[1]["at"], 0.5);
+    assert_eq!(steps[1]["easing"], "linear");
+}
+
+// ── Transitions ───────────────────────────────────────────────────────────────
+
+/// A three second fade was a hundred and twenty messages. It is one.
+#[tokio::test]
+async fn a_fade_on_a_capable_port_is_one_timed_set_and_nothing_after_it() {
+    let (devices, mut received) = a_recording_device_handle();
+    let mut output = OpenHauntOutput::new(
+        directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], true))]),
+        devices,
+        5568,
+    )
+    .await
+    .unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_fades.insert(
+        "Intensity".into(),
+        RunningFade {
+            from: ParameterValue::Float(0.0),
+            to: ParameterValue::Float(1.0),
+            t0: 5_000,
+            duration_ms: 3_000,
+            easing: Easing::EaseInOut,
+            cue_id: Uuid::nil(),
+        },
+    );
+
+    // Three passes part way through the fade, with the interpolated value moving.
+    for level in [0.1f32, 0.4, 0.8] {
+        fixture.live_values.insert("Intensity".into(), ParameterValue::Float(level));
+        output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+    }
+
+    let messages = of_kind(&everything(&mut received), "set", 1);
+    assert_eq!(messages.len(), 1, "one timed set, no samples: {messages:?}");
+    let payload = messages[0].3.as_ref().unwrap();
+    assert_eq!(payload["value"], 1.0, "the destination, not where it is now");
+    assert_eq!(payload["fade_ms"], 3_000);
+    assert_eq!(payload["t0"], 5_000);
+    assert_eq!(payload["curve"], "ease-in-out");
+
+    // The fade lands. The console's value now equals where the node already is, and
+    // the recorded send is what stops it being repeated.
+    fixture.live_fades.clear();
+    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+
+    assert!(
+        of_kind(&everything(&mut received), "set", 1).is_empty(),
+        "and nothing at all when it arrives",
+    );
+}
+
+/// A port that did not advertise `transitions` gets the fade interpolated for it,
+/// sample by sample, exactly as before.
+#[tokio::test]
+async fn a_fade_on_a_port_that_cannot_time_one_is_still_interpolated_here() {
+    let (devices, mut received) = a_recording_device_handle();
+    let mut output = OpenHauntOutput::new(
+        directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]),
+        devices,
+        5568,
+    )
+    .await
+    .unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_fades.insert(
+        "Intensity".into(),
+        RunningFade {
+            from: ParameterValue::Float(0.0),
+            to: ParameterValue::Float(1.0),
+            t0: 5_000,
+            duration_ms: 3_000,
+            easing: Easing::Linear,
+            cue_id: Uuid::nil(),
+        },
+    );
+
+    for level in [0.1f32, 0.4, 0.8] {
+        fixture.live_values.insert("Intensity".into(), ParameterValue::Float(level));
+        output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+    }
+
+    let messages = of_kind(&everything(&mut received), "set", 1);
+    assert_eq!(messages.len(), 3, "one per pass, as ever");
+    assert!(
+        messages.iter().all(|m| m.3.as_ref().unwrap().get("fade_ms").is_none()),
+        "and untimed",
+    );
+}
+
+/// A node that reboots is at its defaults and has forgotten the shape it was
+/// tracing. The console has to say it again, and the existing offline-to-online
+/// rule is what notices.
+#[tokio::test]
+async fn a_node_that_reboots_is_told_the_shape_again() {
+    let (devices, mut received) = a_recording_device_handle();
+    let (tx, directory_rx) = watch::channel(DeviceDirectory {
+        entries: [("strip1".to_string(), a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]
+            .into_iter()
+            .collect(),
+    });
+    let mut output = OpenHauntOutput::new(directory_rx, devices, 5568).await.unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_effects.insert("Intensity".into(), a_running_sine(1_000));
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+    assert_eq!(of_kind(&everything(&mut received), "effect", 1).len(), 1, "said once");
+
+    // Away and back.
+    tx.send_modify(|d| d.entries.get_mut("strip1").unwrap().online = false);
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+    tx.send_modify(|d| d.entries.get_mut("strip1").unwrap().online = true);
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[]).await.unwrap();
+
+    assert_eq!(
+        of_kind(&everything(&mut received), "effect", 1).len(),
+        1,
+        "and said again after the reboot",
+    );
 }
