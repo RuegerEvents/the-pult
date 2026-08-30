@@ -1458,7 +1458,7 @@ mod tests {
             second["effects"]["1"],
         );
 
-        sim.stop.stop();
+        sim.stop.stop().await;
     }
 
     /// Clearing stops the shape and leaves the port where it was. The console
@@ -1495,7 +1495,7 @@ mod tests {
         assert_eq!(stopped["outputs"]["1"], later["outputs"]["1"], "held where it stopped");
         assert!(later["effects"].get("1").is_none(), "and nothing is tracing");
 
-        sim.stop.stop();
+        sim.stop.stop().await;
     }
 
     /// A three second fade arrives as one message and the node walks it. This is
@@ -1529,7 +1529,7 @@ mod tests {
         assert_eq!(arrived["outputs"]["1"]["value"].as_f64().unwrap(), 1.0, "there");
         assert!(arrived["effects"].get("1").is_none(), "and done");
 
-        sim.stop.stop();
+        sim.stop.stop().await;
     }
 
     /// A console that has decided to send a value has taken the port back. A shape
@@ -1559,7 +1559,7 @@ mod tests {
         assert_eq!(held["outputs"]["1"], json!({ "value": 0.42 }), "and it stays put");
         assert!(held["effects"].get("1").is_none(), "nothing tracing");
 
-        sim.stop.stop();
+        sim.stop.stop().await;
     }
 
     /// The strip advertises what it can do, and a relay honestly advertises less.
@@ -1578,7 +1578,7 @@ mod tests {
         assert!(brightness["shapes"].as_array().unwrap().iter().any(|s| s == "sine"));
         assert_eq!(brightness["steps"], true);
         assert_eq!(brightness["transitions"], true);
-        sim.stop.stop();
+        sim.stop.stop().await;
 
         let relay = start(SimConfig::new(ModuleKind::MainsRelay, "relay5")).await.unwrap();
         let info: Value = reqwest::get(format!("http://{}/api/v1/info", relay.http_addr))
@@ -1590,7 +1590,7 @@ mod tests {
         let shapes = info["ports"][0]["effects"]["shapes"].as_array().unwrap().clone();
         assert_eq!(shapes, vec![json!("square")], "two states, so only chopping");
         assert_eq!(info["ports"][0]["effects"]["transitions"], false, "and nothing to cross");
-        relay.stop.stop();
+        relay.stop.stop().await;
     }
 
     /// A port the node reads is never driven, so advertising on one is a promise
