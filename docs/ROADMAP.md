@@ -662,6 +662,67 @@ No migration anywhere. `captures` is one JSON column, `#[serde(default)]` covers
 new keys, and a cue or sequence written before any of this reads back with no effect
 and no anchor.
 
+### 19. The effect pass (done)
+
+`model/effects.rs` renders; `playback.rs` decides what is running and what wins.
+Nothing has left the console yet — an effect is still turned into a stream of values
+like everything else — but the console now has something periodic in it.
+
+**Two clocks, because there are two questions.** `Playback::tick` takes both an
+`Instant` and a wall-clock millisecond now. A fade's progress is an elapsed duration,
+and `Instant` is the only clock that cannot go backwards underneath one. An effect's
+phase is a position on a clock that every station shares, and `Instant` is not shared
+with anything — it is not even comparable between two processes on the same machine.
+
+**The anchor is the cue, not this station's arrival.** `start_cue` places the
+sequence's `went_at` on the monotonic clock and starts the cue's fades from there, so
+a console that processed the Go 600 ms late starts its fade 600 ms in rather than at
+the beginning. Before this, two stations were visibly out of step for the length of
+every fade. For an effect it would have been worse: out of step for good, because an
+effect never arrives anywhere to resynchronise at.
+
+**Precedence, which falls out of the write order.** The overlay writes last, so the
+rule is: a programmer effect beats a cue effect beats a cue value, and a plain
+programmer value covers all of them. That last one is how an operator takes one light
+out of a chase by grabbing its fader, and it is why `Overlay::held` became an enum
+rather than gaining a second map. A cue effect under a held key keeps rendering into
+`beneath`, exactly as a fade already did, so releasing lands on where the chase has
+got to rather than where it was when the fader was grabbed.
+
+**What the plugins are told, and what they are not.** `SetLiveEffects` and
+`SetLiveFades` describe *why* a value is moving, and only for the winner on each key.
+A plain programmer value over a chase produces no entry at all, and the absence is the
+message: it is what tells a node to stop tracing a shape and take values again. Unlike
+`emit`, this one keeps a cache of what it last said, because these two fields are
+LOCAL and playback is their only writer — there is no other hand for the cache to be
+wrong about, which is exactly the thing that made a cache wrong for `live_values`.
+
+**Determinism, concretely.** The inputs to a rendered value are the spec, the speed
+master, `went_at` and the wall clock, and all but the clock are replicated. Nothing
+accumulates per station, so there is no drift to accumulate. A tempo edit rewrites bpm
+and anchor together and is re-resolved on the next tick, which makes it a bounded step
+in phase rather than a slide. The rate is resolved every tick rather than stored
+resolved, so editing a master reaches every effect following it without anything
+having to go looking for them.
+
+One thing worth writing down because it was got wrong first: an effect the programmer
+holds with no anchor of its own falls back to the epoch, not to now. Anchoring on the
+current tick moves the anchor forward exactly as fast as time passes, and the effect
+sits perfectly still.
+
+Left open:
+
+- **No amplitude fade into an effect.** An effect starts at full size the moment its
+  cue goes. Fading a chase up is a real thing to want and it needs a second envelope.
+- **Inter-station clock skew is assumed, not measured.** Every station is taken to be
+  NTP-close. A 50 ms skew on a 2 Hz chase is a tenth of a cycle, which is visible. The
+  peer heartbeat already measures round-trip time in `infra/sync/peer.rs`, so an offset
+  could ride along on it; nothing does yet.
+- **A tick never idles while an effect runs**, on every station, and a 500-fixture rig
+  is 500 writes a tick. `emit` drops the no-ops, but the work is still done. This is
+  the same question task 10 left open about partitioning, arriving from another
+  direction.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

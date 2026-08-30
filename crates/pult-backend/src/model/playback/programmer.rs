@@ -17,21 +17,46 @@
 
 use std::collections::HashMap;
 
-use pult_schema::types::{fixture::ParameterValue, programmer::ProgrammerValue};
+use pult_schema::types::{
+    effect::{EffectSource, RunningEffect},
+    fixture::ParameterValue,
+    programmer::ProgrammerValue,
+};
 use uuid::Uuid;
 
-use super::{parameter_key, zero_like, Changes, ShowView};
+use super::{effects, parameter_key, zero_like, Changes, ShowView};
 
 /// A fixture and one of its parameter keys: what the programmer holds one of.
 pub type Key = (Uuid, String);
 
+/// What the programmer puts on a key it has taken.
+///
+/// An entry asserts one or the other, never both: grabbing a fader and putting a sine
+/// on it are the same act of taking hold of one parameter, and the difference is only
+/// in whether the answer changes on its own from one tick to the next.
+#[derive(Debug, Clone)]
+pub enum Held {
+    Value(ParameterValue),
+    Effect(RunningEffect),
+}
+
+impl Held {
+    fn value_at(&self, wall_ms: u64) -> ParameterValue {
+        match self {
+            Held::Value(value) => value.clone(),
+            Held::Effect(effect) => effects::value_at(effect, wall_ms),
+        }
+    }
+}
+
 /// What the programmer is asserting, and what it is asserting it over.
 #[derive(Debug, Default)]
 pub struct Overlay {
-    /// The value the programmer currently puts on each key it has taken.
-    held: HashMap<Key, ParameterValue>,
+    /// What the programmer currently puts on each key it has taken.
+    held: HashMap<Key, Held>,
     /// What each held key would be showing if the programmer let go right now.
-    /// Fades write here while they run, so this follows the cue rather than freezing.
+    /// Fades and cue effects write here while they run, so this follows the cue rather
+    /// than freezing.
     beneath: HashMap<Key, ParameterValue>,
 }
 
@@ -46,9 +71,29 @@ impl Overlay {
         !self.held.is_empty()
     }
 
-    /// The value the programmer puts on this key, if it holds it.
-    pub fn covering(&self, fixture_id: Uuid, key: &str) -> Option<&ParameterValue> {
-        self.held.get(&(fixture_id, key.to_string()))
+    /// The value the programmer puts on this key right now, if it holds it.
+    ///
+    /// Rendered rather than looked up, because a held effect is a different value on
+    /// every tick.
+    pub fn covering(&self, fixture_id: Uuid, key: &str, wall_ms: u64) -> Option<ParameterValue> {
+        self.held.get(&(fixture_id, key.to_string())).map(|held| held.value_at(wall_ms))
+    }
+
+    /// Whether the programmer has this key at all, whatever it is putting on it.
+    pub fn holds(&self, fixture_id: Uuid, key: &str) -> bool {
+        self.held.contains_key(&(fixture_id, key.to_string()))
+    }
+
+    /// The effects the programmer is holding, for the plugins that can offload one.
+    ///
+    /// A key held as a plain value is deliberately absent rather than listed as
+    /// nothing: absence is what tells a node to stop tracing a shape and take values
+    /// again.
+    pub fn held_effects(&self) -> impl Iterator<Item = (&Key, &RunningEffect)> {
+        self.held.iter().filter_map(|(key, held)| match held {
+            Held::Effect(effect) => Some((key, effect)),
+            Held::Value(_) => None,
+        })
     }
 
     /// Record where a fade has got to under a key the programmer is holding.
@@ -57,15 +102,16 @@ impl Overlay {
     }
 
     /// Take the keys the programmer wants, give back the ones it has let go of.
-    pub fn assert(&mut self, view: &ShowView<'_>, changes: &mut Changes) {
-        let wanted = wanted_values(view.programmer);
+    pub fn assert(&mut self, view: &ShowView<'_>, wall_ms: u64, changes: &mut Changes) {
+        let wanted = wanted(view.programmer, view.speed_masters);
         if wanted.is_empty() && self.held.is_empty() {
             return;
         }
 
         self.release(&wanted, changes);
 
-        for (key, value) in wanted {
+        for (key, want) in wanted {
+            let value = want.value_at(wall_ms);
             match self.held.get(&key) {
                 // Newly taken: remember what was showing, so releasing can put it back.
                 None => {
@@ -79,19 +125,19 @@ impl Overlay {
                 // the key back, and treat what they wrote as the new value underneath.
                 Some(asserted) => {
                     if let Some(live) = view.live_value(key.0, &key.1) {
-                        if &live != asserted {
+                        if live != asserted.value_at(wall_ms) {
                             self.beneath.insert(key.clone(), live);
                         }
                     }
                 }
             }
-            self.held.insert(key.clone(), value.clone());
+            self.held.insert(key.clone(), want);
             changes.entry(key.0).or_default().insert(key.1, value);
         }
     }
 
     /// Put back what was under every key the programmer no longer wants.
-    fn release(&mut self, wanted: &HashMap<Key, ParameterValue>, changes: &mut Changes) {
+    fn release(&mut self, wanted: &HashMap<Key, Held>, changes: &mut Changes) {
         let released: Vec<Key> =
             self.held.keys().filter(|key| !wanted.contains_key(*key)).cloned().collect();
         for key in released {
@@ -102,17 +148,40 @@ impl Overlay {
     }
 }
 
-/// What the programmer entries add up to, one value per key.
+/// What the programmer entries add up to, one hold per key.
 ///
 /// Two entries for the same parameter should not exist — the frontend derives an
 /// entry's id from the fixture and the key precisely so that they cannot — but a
 /// peer that disagrees must not make the output flicker between them, so the last
 /// one read wins and stays won.
-fn wanted_values(entries: &[ProgrammerValue]) -> HashMap<Key, ParameterValue> {
+///
+/// An effect is resolved here rather than stored resolved, so that editing the speed
+/// master an entry follows changes what it does on the very next tick without anything
+/// having to go looking for the entries that named it.
+fn wanted(
+    entries: &[ProgrammerValue],
+    masters: &[pult_schema::types::speedmaster::SpeedMaster],
+) -> HashMap<Key, Held> {
     entries
         .iter()
         .map(|entry| {
-            ((entry.fixture_id, parameter_key(&entry.parameter_kind)), entry.value.clone())
+            let key = (entry.fixture_id, parameter_key(&entry.parameter_kind));
+            let held = match &entry.effect {
+                // A programmer effect carries its own anchor, set when the operator
+                // applied it. An entry that arrived without one falls back to the
+                // epoch rather than to now: any fixed instant will do, but it has to
+                // be fixed. Anchoring on the current tick would move the anchor
+                // forward exactly as fast as time passes, and the effect would sit
+                // still for ever.
+                Some(spec) => Held::Effect(effects::resolve(
+                    spec,
+                    masters,
+                    0,
+                    EffectSource::Programmer,
+                )),
+                None => Held::Value(entry.value.clone()),
+            };
+            (key, held)
         })
         .collect()
 }

@@ -637,10 +637,17 @@ impl ShowEngine {
         let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
         let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
             self.read_collection("programmer_values");
+        let masters: Vec<pult_schema::types::speedmaster::SpeedMaster> =
+            self.read_collection("speed_masters");
+
+        // Read once per tick rather than per effect: every station has to place this
+        // tick at one instant, and asking the clock twice inside a tick would put two
+        // fixtures on the same cue a fraction of a cycle apart.
+        let wall_ms = pult_schema::types::sequence::now_ms();
 
         let effects = {
-            let view = ShowView::new(&sequences, &cues, &fixtures, &programmer);
-            self.playback.tick(tokio::time::Instant::now().into_std(), &view)
+            let view = ShowView::new(&sequences, &cues, &fixtures, &programmer, &masters);
+            self.playback.tick(tokio::time::Instant::now().into_std(), wall_ms, &view)
         };
 
         // A follower takes its cue positions from the leader, so only the leader
@@ -656,16 +663,30 @@ impl ShowEngine {
                     self.apply_local(path, serde_json::to_value(values).unwrap_or_default()).await;
                     moved.push(fixture_id);
                 }
+                PlaybackEffect::SetLiveEffects { fixture_id, effects } => {
+                    let path = entity_field_path("fixtures", fixture_id, "live_effects");
+                    self.apply_local(path, serde_json::to_value(effects).unwrap_or_default())
+                        .await;
+                    moved.push(fixture_id);
+                }
+                PlaybackEffect::SetLiveFades { fixture_id, fades } => {
+                    let path = entity_field_path("fixtures", fixture_id, "live_fades");
+                    self.apply_local(path, serde_json::to_value(fades).unwrap_or_default()).await;
+                    moved.push(fixture_id);
+                }
                 PlaybackEffect::SetCueActive { cue_id, is_active } => {
                     let path = entity_field_path("cues", cue_id, "is_active");
                     self.apply_local(path, serde_json::Value::Bool(is_active)).await;
                 }
-                PlaybackEffect::GoNext { sequence_id } => {
+                PlaybackEffect::GoNext { sequence_id, at } => {
                     if is_follower {
                         continue;
                     }
                     let path = entity_field_path("sequences", sequence_id, "goNext");
-                    self.run_synced_command(path, serde_json::json!({})).await;
+                    // The instant the follow came due, not the instant this station
+                    // got round to acting on it, so every station anchors the cue the
+                    // follow fires at the same millisecond.
+                    self.run_synced_command(path, serde_json::json!({ "at": at })).await;
                 }
             }
         }

@@ -2121,3 +2121,82 @@ mod watching_playback {
         );
     }
 }
+
+/// `live_effects` is the first LOCAL entity field in the system, so this pins the two
+/// halves of what LOCAL means: it reaches a frontend watching the fixture, and it
+/// does not reach the showfile's oplog or, through that, any peer.
+#[tokio::test]
+async fn a_running_effect_is_broadcast_but_never_logged() {
+    let h = harness().await;
+    let fixture = a_fixture("Spot", 1);
+    h.engine
+        .set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture))
+        .await
+        .unwrap();
+
+    let logged_before = showfile::oplog::len(&h.pool).await.unwrap();
+    let mut updates = h.broadcast.0.subscribe();
+
+    let running = serde_json::json!({
+        "Intensity": {
+            "effect_id": Uuid::nil(),
+            "curve": { "Shape": "Sine" },
+            "rate_hz": 1.0,
+            "low": { "type": "Float", "value": 0.0 },
+            "high": { "type": "Float", "value": 1.0 },
+            "width": 0.5,
+            "direction": "Forward",
+            "phase": 0.0,
+            "t0": 1_000,
+            "source": "Programmer",
+        }
+    });
+    h.engine
+        .set(
+            entity_field_path("fixtures", fixture.id, "live_effects"),
+            Lifecycle::Local,
+            running.clone(),
+        )
+        .await
+        .unwrap();
+
+    let back = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
+    assert_eq!(back["live_effects"], running, "readable back");
+
+    let update = tokio::time::timeout(std::time::Duration::from_secs(1), updates.recv())
+        .await
+        .expect("a frontend watching this fixture hears about it")
+        .unwrap();
+    assert!(format!("{update:?}").contains("live_effects"), "and it names the field");
+
+    assert_eq!(
+        showfile::oplog::len(&h.pool).await.unwrap(),
+        logged_before,
+        "LOCAL must not reach the oplog, and so must never reach a peer",
+    );
+}
+
+/// The other half of LOCAL: it is not persisted either, so a reload starts with
+/// nothing moving rather than with a description of a cycle that stopped hours ago.
+#[tokio::test]
+async fn running_effects_do_not_survive_a_reload() {
+    let mut h = harness().await;
+    let fixture = a_fixture("Spot", 1);
+    h.engine
+        .set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture))
+        .await
+        .unwrap();
+    h.engine
+        .set(
+            entity_field_path("fixtures", fixture.id, "live_effects"),
+            Lifecycle::Local,
+            serde_json::json!({ "Intensity": null }),
+        )
+        .await
+        .ok();
+
+    h.reload().await;
+
+    let back = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
+    assert_eq!(back["live_effects"], serde_json::json!({}), "nothing is moving yet");
+}

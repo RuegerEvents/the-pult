@@ -18,6 +18,11 @@ bracketed form — so every release needs one and it has to be spelled that way.
   phase and spread — and can be held in the programmer or stored in a cue
   capture. A `SpeedMaster` collection carries a tempo several effects can
   follow. Nothing renders them yet.
+- **Effects run.** The engine renders a shape or a step list into a fixture
+  parameter on every tick, from the cue's anchor or the programmer's own, at a
+  rate given in Hz or borrowed from a speed master. A programmer effect beats a
+  cue effect, and grabbing a fader takes that light out of the chase. Nothing
+  leaves the console differently yet.
 - **A Go says when it happened.** `Sequence.went_at`, with `goNext` and
   `goToCue` taking an optional `at`, so every station anchors a cue's fades and
   effects at the same millisecond instead of at whenever each of them processed
