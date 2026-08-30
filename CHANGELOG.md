@@ -12,6 +12,15 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **Selection is a question about the rig, not a list of fixtures.** Select by
+  type, by name, within a radius, inside a region, or inside a cone from a point —
+  the spec's radial selection — and build it up by adding, narrowing and removing.
+  The result is re-evaluated against the rig, so patching a sixth mover adds it to
+  "every mover" without anyone touching the selection, which is what makes a
+  selection survive a festival rig being rebuilt. Order it along an axis or
+  outwards from a point, which is what an effect then spreads along. Clicking
+  still works and combines with the rest; *Freeze* turns a question back into a
+  plain list.
 - **Effects.** A shape or a list of keyframes, applied across a selection and
   spread as a chase, from the centre out, in wings, in groups or at random. A new
   Effects panel builds one against a live waveform with a dot per fixture; the

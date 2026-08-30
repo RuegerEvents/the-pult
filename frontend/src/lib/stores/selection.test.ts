@@ -1,10 +1,53 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { get } from 'svelte/store';
-import { clearSelection, pruneSelection, remove, reorder, select, selection, toggle } from './selection.js';
+import { get, writable } from 'svelte/store';
 
-beforeEach(() => clearSelection());
+import type { DataRoot } from '$lib/ws/data.js';
+import type { Fixture } from '$lib/generated/index.js';
+import { initShowStores } from './show.js';
+import {
+	addClause,
+	clearSelection,
+	freeze,
+	query,
+	remove,
+	reorder,
+	select,
+	selection,
+	setOrder,
+	toggle
+} from './selection.js';
 
-describe('selection', () => {
+/**
+ * A rig for the store to select out of.
+ *
+ * The selection is derived from a query *and the fixtures*, so a test without a rig
+ * would be testing that nothing matches nothing. That is itself the property which
+ * retired `pruneSelection` — a fixture that has left the rig cannot stay selected —
+ * so the rig has to be real for any of this to mean anything.
+ */
+const rig = writable<Fixture[]>([]);
+
+const fixture = (id: string, x: number, typeId = 'par'): Fixture => ({
+	id,
+	name: id.toUpperCase(),
+	fixture_type_id: typeId,
+	address: { Dmx: { universe: 1, address: 1 } },
+	position: { Point: { x, y: 5, z: 0 } },
+	live_values: {},
+	live_effects: {},
+	live_fades: {}
+});
+
+initShowStores({
+	fixtures: { subscribeDeep: (cb: (v: Fixture[]) => void) => rig.subscribe(cb) }
+} as unknown as DataRoot);
+
+beforeEach(() => {
+	rig.set([fixture('a', 0), fixture('b', 1), fixture('c', 2), fixture('d', 3, 'mover')]);
+	clearSelection();
+});
+
+describe('picking by hand', () => {
 	it('replaces what was held when one fixture is picked', () => {
 		select('a');
 		select('b');
@@ -19,33 +62,14 @@ describe('selection', () => {
 		expect(get(selection)).toEqual(['b']);
 	});
 
-	it('keeps the order things were added in', () => {
-		toggle('c');
+	it('drops one with the × beside it', () => {
 		toggle('a');
 		toggle('b');
-		expect(get(selection)).toEqual(['c', 'a', 'b']);
-	});
-
-	it('drops fixtures that have left the rig', () => {
-		toggle('a');
-		toggle('b');
-		pruneSelection(['b']);
+		remove('a');
 		expect(get(selection)).toEqual(['b']);
 	});
 
-	it('leaves the selection alone when nothing has gone', () => {
-		toggle('a');
-		const before = get(selection);
-		pruneSelection(['a', 'b']);
-		// The same array, not an equal one: a new one would re-render every fixture
-		// on the plan each time a fixture list is delivered, which is every frame
-		// of every fade.
-		expect(get(selection)).toBe(before);
-	});
-});
-
-describe('ordering the selection', () => {
-	it('moves one fixture to another place in the order', () => {
+	it('reorders by dragging', () => {
 		toggle('a');
 		toggle('b');
 		toggle('c');
@@ -53,36 +77,106 @@ describe('ordering the selection', () => {
 		expect(get(selection)).toEqual(['c', 'a', 'b']);
 	});
 
-	it('moves one down as readily as up', () => {
+	it('ignores a drag that lands outside the list', () => {
+		toggle('a');
+		toggle('b');
+		reorder(0, 9);
+		expect(get(selection)).toEqual(['a', 'b']);
+	});
+
+	/**
+	 * Shift-clicking across a truss should not grow a chain of one-id clauses; the
+	 * trailing hand-picked clause is extended instead.
+	 */
+	it('keeps hand-picking to a single clause', () => {
 		toggle('a');
 		toggle('b');
 		toggle('c');
-		reorder(0, 2);
-		expect(get(selection)).toEqual(['b', 'c', 'a']);
+		expect(get(query).clauses).toHaveLength(1);
+	});
+});
+
+describe('selecting by asking a question', () => {
+	it('picks out everything of a type, in rig order', () => {
+		addClause('Add', { kind: 'OfType', typeId: 'par' });
+		expect(get(selection)).toEqual(['a', 'b', 'c']);
 	});
 
-	it('leaves the order alone for a drop that landed nowhere', () => {
-		toggle('a');
-		toggle('b');
-		const before = get(selection);
-		reorder(0, 5);
-		reorder(-1, 0);
-		reorder(1, 1);
-		expect(get(selection)).toBe(before);
+	/**
+	 * The whole point, and the reason the spec asks for it: a rig that changes under
+	 * a selection is the normal case at a festival, and the selection should still
+	 * mean what it said.
+	 */
+	it('picks up a fixture patched after the question was asked', () => {
+		addClause('Add', { kind: 'OfType', typeId: 'par' });
+		expect(get(selection)).toHaveLength(3);
+
+		rig.update((f) => [...f, fixture('e', 4)]);
+		expect(get(selection)).toEqual(['a', 'b', 'c', 'e']);
 	});
 
-	it('drops one fixture and keeps the rest in order', () => {
+	/**
+	 * And the other direction, which is what retired `pruneSelection`: a deleted
+	 * fixture stops matching, so it leaves without anything having to notice.
+	 */
+	it('lets go of a fixture that has left the rig', () => {
+		addClause('Add', { kind: 'Everything' });
+		expect(get(selection)).toHaveLength(4);
+
+		rig.update((f) => f.filter((x) => x.id !== 'b'));
+		expect(get(selection)).toEqual(['a', 'c', 'd']);
+	});
+
+	it('lets go of a hand-picked fixture that has left too', () => {
 		toggle('a');
 		toggle('b');
-		toggle('c');
-		remove('b');
+		rig.update((f) => f.filter((x) => x.id !== 'a'));
+		expect(get(selection)).toEqual(['b']);
+	});
+
+	it('adjusts a question by hand without losing the question', () => {
+		addClause('Add', { kind: 'OfType', typeId: 'par' });
+		toggle('d');
+		expect(get(selection)).toEqual(['a', 'b', 'c', 'd']);
+
+		// The geometry is still there, so a new par still arrives.
+		rig.update((f) => [...f, fixture('e', 4)]);
+		expect(get(selection)).toContain('e');
+	});
+
+	it('removes a fixture the question picked, by dropping it', () => {
+		addClause('Add', { kind: 'OfType', typeId: 'par' });
+		toggle('b');
 		expect(get(selection)).toEqual(['a', 'c']);
 	});
 
-	it('leaves the selection alone when asked to drop something not in it', () => {
-		toggle('a');
-		const before = get(selection);
-		remove('z');
-		expect(get(selection)).toBe(before);
+	it('orders along an axis', () => {
+		addClause('Add', { kind: 'Everything' });
+		setOrder({ kind: 'ByAxis', axis: 'x', descending: true });
+		expect(get(selection)).toEqual(['d', 'c', 'b', 'a']);
+	});
+});
+
+describe('freezing a question into a list', () => {
+	/**
+	 * The way out of a query that is nearly right. Reordering one is not a thing you
+	 * can coherently do — a hand-made order is an answer about particular fixtures,
+	 * and the question outlives them — so dragging freezes first.
+	 */
+	it('keeps what is selected and stops following the rig', () => {
+		addClause('Add', { kind: 'OfType', typeId: 'par' });
+		freeze();
+		expect(get(selection)).toEqual(['a', 'b', 'c']);
+
+		rig.update((f) => [...f, fixture('e', 4)]);
+		expect(get(selection)).toEqual(['a', 'b', 'c']);
+	});
+
+	it('dragging a query freezes it', () => {
+		addClause('Add', { kind: 'Everything' });
+		setOrder({ kind: 'ByAxis', axis: 'x' });
+		reorder(3, 0);
+		expect(get(selection)).toEqual(['d', 'a', 'b', 'c']);
+		expect(get(query).order).toEqual({ kind: 'Manual' });
 	});
 });

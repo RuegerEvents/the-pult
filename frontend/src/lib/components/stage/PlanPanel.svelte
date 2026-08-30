@@ -13,7 +13,7 @@
 	import { collection } from '$lib/stores/show.js';
 	import { editing } from '$lib/stores/editing.js';
 	import { shownPlanId } from '$lib/stores/stage.js';
-	import { pruneSelection, selection } from '$lib/stores/selection.js';
+	import { selection } from '$lib/stores/selection.js';
 	import StagePlanView from './StagePlanView.svelte';
 	import { guessScale, uploadPlan } from './upload.js';
 
@@ -47,9 +47,8 @@
 	const planUrl = $derived(plan ? client.httpUrl(`/assets/${plan.asset}`) : null);
 	const placedCount = $derived($fixtures.filter((f) => fixturePoint(f) !== null).length);
 
-	// A deleted fixture must not stay selected, and this is the panel that knows the
-	// rig has changed.
-	$effect(() => pruneSelection($fixtures.map((f) => f.id)));
+	// Nothing prunes the selection any more: it is a query over the rig, so a
+	// deleted fixture stops matching and leaves on the next evaluation.
 
 	async function choose(event: Event, { asNew = false } = {}) {
 		const input = event.currentTarget as HTMLInputElement;

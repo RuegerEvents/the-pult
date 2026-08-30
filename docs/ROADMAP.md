@@ -22,7 +22,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. A port that says it can trace a shape is handed one descriptor instead of forty messages a second. Tested end to end against `tools/openhaunt-node-sim` and, since task 22, against real firmware on an ESP32. |
 | WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
 | 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects are in; geometric selection is still ahead. |
-| Selection | Working as a list: ordered, reorderable, its own panel, kept apart from the programmer. Still a list of ids rather than the geometric query the spec asks for. |
+| Selection | Working as a query over the rig: by type, name, sphere, box or the spec's radial cone, built up by adding, narrowing and removing, and ordered along an axis or outwards from a point. Re-evaluated as the rig changes, so a fixture patched under a live selection joins it. Queries cannot be saved as groups yet. |
 | Effects | Working. One primitive covers a shape and a step list, running from the programmer or a cue, at its own rate or a speed master's. Rendered identically on every station from replicated state, and handed to a node that can trace it for itself. No amplitude fade into one yet. |
 | Timecode | Not started. `FollowMode::Timecode` exists and nothing produces one. |
 | Distribution | Working. The frontend is built into the binaries that serve it, the console and the simulator each have a Tauri desktop app, and tagging builds all four for Linux x86_64 and aarch64, macOS arm64 and Windows. Nothing is signed and nothing auto-updates. |
@@ -1138,11 +1138,53 @@ computes every fixture. Task 10 named that and it is still the answer for a rig 
 fixture's whole `live_values` map per tick and the engine then serialises it whole; a
 per-key write would cut both. Neither is worth doing on these numbers.
 
+### 30. Selection as a question about the rig (done)
+
+The spec has asked for this since the first read and said why: a selection should be
+*generated* from the rig by geometric functions and re-evaluated as the rig changes,
+"useful for festivals, changing fixtures". Task 14 built the list of ids that comes
+first. This is the query underneath it.
+
+**A list of ids is a photograph of a rig that has since been rebuilt.** "The four
+movers on the downstage truss" is still true after somebody patches a fifth; a list
+of four ids is not. Verified the way it matters: with "every Spot" selected, patching
+a third Spot took the count from two to three with nobody touching the panel.
+
+**Read left to right, because that is how an operator says it.** A query is a list of
+clauses that each add, narrow or remove — "all the movers, of those the downstage
+ones, but not the broken one". A boolean tree would be more general and nobody wants
+to type one. Nothing here forecloses a tree if a query ever needs one.
+
+**Hand-picking is a query too.** A click builds an `Ids` clause, so clicking and a
+geometric selection are the same kind of thing and combine: shift-click one more
+light onto "every Spot" and the geometry still picks up the next Spot patched. There
+is one representation rather than a list *and* a query with rules about which wins.
+
+**Order is part of the selection, not decoration.** An effect spreads along it, so
+this is what makes a chase run left to right rather than in patch order. Ties break
+by name, so two fixtures at the same point come out the same on two consoles rather
+than in whatever order each happened to list the rig.
+
+**An unplaced fixture fails every geometric term**, and sorts last rather than to the
+origin — where it would sit in the middle of the rig pretending to be somewhere. That
+is why `Everything` and `OfType` exist: they are how a rig in flight cases is
+reachable at all.
+
+**`pruneSelection` is gone.** It existed because a list could hold a fixture that had
+left the rig; a query cannot. The panel that called it no longer needs to know the rig
+changed. That is the shape of the whole change: a question does not go stale.
+
+Left open: a query cannot be saved. Groups are the obvious next thing and the moment
+they exist the types belong in `pult-schema` rather than the frontend, with an
+evaluator beside this one. Until something needs that, one implementation is better
+than two that can disagree — the comment at the top of `selection.ts` says so, so the
+next person knows it was a decision.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.
 
-**Selection as a geometric query.** Selections are meant to be generated from the rig by geometric functions and re-evaluated as the rig changes, not stored as fixture lists. That is a query language. It needed positions first, and task 13 is where a rig finally gets them; task 14 built the panel that will show the result, as the list of ids that comes first.
+**Saved groups.** Task 30 made a selection a query; nothing can store one yet. The moment a group is show data the query types move to `pult-schema` and the backend gets an evaluator beside the frontend's.
 
 **3D programmer.** The rig *view* is task 13 and programming in it is task 14 — the camera frames a picked fixture, pan and tilt are grabbed by ring and arc, and the quicksheet opens at the light. Effects over a selection are task 25. What that leaves of the spec's §Programming is blind, highlight and fan, and modifiers that are themselves dynamic — an effect whose rate is an effect.
 
