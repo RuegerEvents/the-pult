@@ -21,6 +21,8 @@ use std::{
     time::Duration,
 };
 
+pub mod motion;
+
 use anyhow::Result;
 use axum::{extract::State, routing::{get, post}, Json, Router};
 use rumqttc::{AsyncClient, ConnectionError, Event, LastWill, MqttOptions, Packet, QoS};
@@ -61,6 +63,14 @@ pub struct PortDescription {
     pub default: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
+    /// What this port can trace for itself, if anything.
+    ///
+    /// Absent is the default and means the console renders every value and streams
+    /// it, which is what every node did before any of this existed. Saying so per
+    /// port rather than per node is what lets one module have a strip that can trace
+    /// a sine beside a relay that can only be chopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<motion::PortEffects>,
 }
 
 impl PortDescription {
@@ -80,7 +90,14 @@ impl PortDescription {
             maximum: None,
             default: None,
             class: None,
+            effects: None,
         }
+    }
+
+    /// Declare what this port can trace.
+    pub fn effects(mut self, effects: motion::PortEffects) -> Self {
+        self.effects = Some(effects);
+        self
     }
 
     pub fn class(mut self, class: impl Into<String>) -> Self {
@@ -238,6 +255,26 @@ impl NodeConfig {
                     port.port, port.data_type,
                 ));
             }
+            if let Some(effects) = &port.effects {
+                // A console only ever hands a shape to a port it drives. Advertising
+                // on a port it reads is not dangerous, it is just a promise nothing
+                // will ever ask this node to keep.
+                if port.is_input() {
+                    problems.push(format!(
+                        "port {} is readonly but advertises effects; nothing drives an input",
+                        port.port,
+                    ));
+                }
+                // A string has no midpoint and no ordering, so there is no shape to
+                // trace between two of them. Steps are a different matter: a list of
+                // messages shown in turn is a perfectly good chase.
+                if port.data_type == "string" && !effects.shapes.is_empty() {
+                    problems.push(format!(
+                        "port {} is a string but lists shapes; only steps make sense on one",
+                        port.port,
+                    ));
+                }
+            }
         }
         problems
     }
@@ -366,23 +403,32 @@ impl ModuleKind {
                     P::new(n, INPUT_NAMES[n as usize], "readonly", "boolean").class("contact")
                 })
                 .collect(),
+            // The strip is the module that can do all of it: both ports take a
+            // shape, a step list and a timed move.
             ModuleKind::Ws2812 => vec![
-                P::new(0, "Strip colour", "readwrite", "color").class("color"),
+                P::new(0, "Strip colour", "readwrite", "color")
+                    .class("color")
+                    .effects(motion::PortEffects::all()),
                 P::new(1, "Brightness", "readwrite", "number")
                     .unit("percent")
                     .range(0.0, 1.0)
                     .default_at(0.0)
-                    .class("intensity"),
+                    .class("intensity")
+                    .effects(motion::PortEffects::all()),
             ],
-            ModuleKind::MainsRelay => {
-                vec![P::new(0, "Relay", "readwrite", "boolean").default_at(0.0).class("switch")]
-            }
+            // A relay has two states, so it can be chopped and it can be stepped,
+            // and there is nothing in between for a sine to trace or a fade to cross.
+            ModuleKind::MainsRelay => vec![P::new(0, "Relay", "readwrite", "boolean")
+                .default_at(0.0)
+                .class("switch")
+                .effects(motion::PortEffects::switching())],
             ModuleKind::Oled => vec![P::new(0, "Line", "readwrite", "string").class("text")],
             ModuleKind::DryContact => (0..4)
                 .map(|n| {
                     P::new(n, CONTACT_NAMES[n as usize], "readwrite", "boolean")
                         .default_at(0.0)
                         .class("switch")
+                        .effects(motion::PortEffects::switching())
                 })
                 .collect(),
             ModuleKind::Environment => vec![
@@ -508,6 +554,9 @@ pub struct Snapshot {
     pub mqtt_connected: bool,
     /// Output ports as the node holds them, keyed by port number.
     pub outputs: BTreeMap<String, Value>,
+    /// What each port is tracing on its own, keyed by port. The values in `outputs`
+    /// are still the truth about where the port is; this says why they are moving.
+    pub effects: BTreeMap<String, Value>,
     /// The last thing published on each input port, keyed the same way.
     pub inputs: BTreeMap<String, Value>,
     /// How many times a console has asked this node to blink.
@@ -600,6 +649,10 @@ struct Node {
     state_tx: Arc<watch::Sender<BTreeMap<String, Value>>>,
     identified: Arc<Mutex<usize>>,
     snapshot: Arc<watch::Sender<Snapshot>>,
+    /// What each port is doing that one value cannot describe.
+    motions: Arc<Mutex<BTreeMap<u8, motion::Motion>>>,
+    /// What this node thinks the console's clock reads.
+    clock: Arc<Mutex<motion::ClockOffset>>,
 }
 
 impl Node {
@@ -608,6 +661,94 @@ impl Node {
     /// see depends on whether anybody is watching.
     fn describe(&self, change: impl FnOnce(&mut Snapshot)) {
         self.snapshot.send_modify(change);
+    }
+
+    /// Put a value on a port.
+    ///
+    /// Everything that changes an output goes through here — a `set` off MQTT, a
+    /// `POST /state`, and the renderer forty times a second — so there is one answer
+    /// to "where is this port" rather than one per caller.
+    fn write_port(&self, port: &str, value: Value) {
+        self.state_tx.send_modify(|state| {
+            state.insert(port.to_string(), value.clone());
+        });
+        self.describe(|s| {
+            s.outputs.insert(port.to_string(), value);
+        });
+    }
+
+    fn port_value(&self, port: &str) -> Option<Value> {
+        self.state_tx.borrow().get(port).cloned()
+    }
+
+    /// Start, replace, or stop what a port is tracing, and say so in the snapshot.
+    fn set_motion(&self, port: u8, what: Option<motion::Motion>) {
+        {
+            let mut motions = self.motions.lock().unwrap();
+            match what {
+                Some(motion) => motions.insert(port, motion),
+                None => motions.remove(&port),
+            };
+        }
+        let described = motion::describe_all(&self.motions.lock().unwrap());
+        self.describe(|s| s.effects = described);
+    }
+
+    /// The console's clock, as best this node can tell.
+    fn console_now(&self) -> i64 {
+        self.clock.lock().unwrap().console_now(now_ms() as i64)
+    }
+}
+
+/// Trace whatever the ports have been given, on this node's own initiative.
+///
+/// This is the whole point of the exercise: nothing on the network says anything
+/// while this runs. It writes through the same store a `set` writes to, so
+/// `GET /api/v1/state` and the panel both see a port that is genuinely moving rather
+/// than a description of one that might be.
+async fn run_renderer(node: Node) {
+    let mut ticker = tokio::time::interval(Duration::from_millis(25));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        ticker.tick().await;
+        let now = node.console_now();
+
+        let due: Vec<(u8, motion::Motion)> = {
+            let motions = node.motions.lock().unwrap();
+            motions.iter().map(|(port, m)| (*port, m.clone())).collect()
+        };
+        if due.is_empty() {
+            continue;
+        }
+
+        let mut finished = Vec::new();
+        for (port, what) in due {
+            let key = port.to_string();
+            match &what {
+                motion::Motion::Effect(effect) => {
+                    let value = effect.sample(now);
+                    // A port already showing this value is left alone: at 40 Hz a
+                    // square wave is the same answer for twenty ticks running.
+                    if node.port_value(&key).as_ref() != Some(&value) {
+                        node.write_port(&key, value);
+                    }
+                }
+                motion::Motion::Transition(transition) => {
+                    let (value, done) = transition.sample(now);
+                    if node.port_value(&key).as_ref() != Some(&value) {
+                        node.write_port(&key, value);
+                    }
+                    // A fade that has arrived is over. An effect never is.
+                    if done {
+                        finished.push(port);
+                    }
+                }
+            }
+        }
+        for port in finished {
+            node.set_motion(port, None);
+        }
     }
 }
 
@@ -628,6 +769,7 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         broker: None,
         mqtt_connected: false,
         outputs: BTreeMap::new(),
+        effects: BTreeMap::new(),
         inputs: BTreeMap::new(),
         identified: 0,
         started_ms: now_ms(),
@@ -639,6 +781,8 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         state_tx: Arc::new(state_tx),
         identified: Arc::new(Mutex::new(0)),
         snapshot: Arc::new(snapshot_tx),
+        motions: Arc::new(Mutex::new(BTreeMap::new())),
+        clock: Arc::new(Mutex::new(motion::ClockOffset::default())),
     };
     let stop = Stopper::default();
 
@@ -655,6 +799,10 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         s.http_addr = http_addr.to_string();
         s.sacn_addr = sacn_addr.map(|a| a.to_string());
     });
+
+    // Before the MQTT task, so a descriptor that arrives in the first millisecond
+    // has something already running to be picked up by.
+    stop.holds(tokio::spawn(run_renderer(node.clone())));
 
     let auto = node_config.auto_ms.map(Duration::from_millis);
     stop.holds(tokio::spawn(run_mqtt(node, broker_rx, inputs_rx, auto)));
@@ -759,21 +907,29 @@ async fn info(State(node): State<Node>) -> Json<Value> {
 }
 
 async fn read_state(State(node): State<Node>) -> Json<Value> {
-    Json(json!({ "outputs": node.state_tx.borrow().clone() }))
+    let mut body = json!({ "outputs": node.state_tx.borrow().clone() });
+    let motions = motion::describe_all(&node.motions.lock().unwrap());
+    if !motions.is_empty() {
+        body["effects"] = json!(motions);
+    }
+    if let Some(offset) = node.clock.lock().unwrap().offset_ms() {
+        body["consoleOffsetMs"] = json!(offset);
+    }
+    Json(body)
 }
 
 async fn write_state(State(node): State<Node>, Json(body): Json<Value>) -> Json<Value> {
     if let Some(outputs) = body["outputs"].as_object() {
-        node.state_tx.send_modify(|state| {
-            for (port, value) in outputs {
-                state.insert(port.clone(), value.clone());
-            }
-        });
-        node.describe(|s| {
-            for (port, value) in outputs {
-                s.outputs.insert(port.clone(), value.clone());
-            }
-        });
+        for (port, value) in outputs {
+            apply_set(&node, port, value);
+        }
+    }
+    // The same two things a node hears over MQTT, for a console that has adopted it
+    // but has not yet told it where the broker is.
+    if let Some(effects) = body["effects"].as_object() {
+        for (port, descriptor) in effects {
+            apply_effect(&node, port, descriptor);
+        }
     }
     Json(json!({ "ok": true }))
 }
@@ -815,9 +971,13 @@ async fn run_mqtt(
     let (client, mut eventloop) = AsyncClient::new(options, 32);
     let _ = client.publish(&status, QoS::AtLeastOnce, true, "offline").await;
     let _ = client.publish(&status, QoS::AtLeastOnce, true, "online").await;
+    // Both verbs, not just `set`: a port can be handed a shape as well as a value.
     let _ = client
-        .subscribe(format!("openhaunt/{serial}/output/+/set"), QoS::AtLeastOnce)
+        .subscribe(format!("openhaunt/{serial}/output/+/+"), QoS::AtLeastOnce)
         .await;
+    // Not under this node's serial. The console publishes one clock for every node
+    // on the broker, because the whole point is that they agree with each other.
+    let _ = client.subscribe(motion::CLOCK_TOPIC, QoS::AtLeastOnce).await;
 
     let mut health = tokio::time::interval(Duration::from_secs(10));
     let mut ticker = auto.map(tokio::time::interval);
@@ -828,7 +988,11 @@ async fn run_mqtt(
         tokio::select! {
             event = eventloop.poll() => match event {
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
-                    apply_output(&node, &publish.topic, &publish.payload);
+                    if publish.topic == motion::CLOCK_TOPIC {
+                        take_clock_sample(&node, &publish.payload, publish.retain);
+                    } else {
+                        apply_output(&node, &publish.topic, &publish.payload);
+                    }
                 }
                 // The one packet worth noticing on its own: until it arrives the
                 // node is configured but not yet talking to anything.
@@ -885,6 +1049,19 @@ fn unprompted(node: &Node, state: bool) -> Option<Input> {
     })
 }
 
+/// One `openhaunt/clock` message.
+///
+/// `retain` matters: the broker replays the last one on subscribe, and it was
+/// published at an unknown time in the past. It seeds the estimate and is never
+/// allowed to correct it.
+fn take_clock_sample(node: &Node, payload: &[u8], retained: bool) {
+    let Ok(body) = serde_json::from_slice::<Value>(payload) else { return };
+    let (Some(t), Some(seq)) = (body["t"].as_i64(), body["seq"].as_u64()) else { return };
+    let mut clock = node.clock.lock().unwrap();
+    clock.feed(t, seq, now_ms() as i64, retained);
+    debug!("[sim] {} console offset {:?} ms", node.config.serial, clock.offset_ms());
+}
+
 fn connection_lost(node: &Node, error: &ConnectionError) {
     debug!("[sim] {} mqtt: {error}", node.config.serial);
     node.describe(|s| s.mqtt_connected = false);
@@ -923,17 +1100,61 @@ async fn publish_input(client: &AsyncClient, node: &Node, input: Input) {
     let _ = client.publish(topic, QoS::AtLeastOnce, false, payload.to_string()).await;
 }
 
-/// `openhaunt/<sn>/output/<n>/set` → port `n`.
+/// `openhaunt/<sn>/output/<n>/{set,effect}` → port `n`.
 fn apply_output(node: &Node, topic: &str, payload: &[u8]) {
-    let Some(port) = topic.split('/').nth(3) else { return };
-    let Ok(value) = serde_json::from_slice::<Value>(payload) else { return };
-    info!("[sim] {} output {port} <- {value}", node.config.serial);
-    node.state_tx.send_modify(|state| {
-        state.insert(port.to_string(), value.clone());
-    });
-    node.describe(|s| {
-        s.outputs.insert(port.to_string(), value);
-    });
+    let mut parts = topic.split('/').skip(3);
+    let Some(port) = parts.next() else { return };
+    let verb = parts.next().unwrap_or("set");
+    let Ok(body) = serde_json::from_slice::<Value>(payload) else { return };
+    match verb {
+        "effect" => apply_effect(node, port, &body),
+        _ => apply_set(node, port, &body),
+    }
+}
+
+/// A value, with or without a time to reach it by.
+///
+/// A `set` carrying no timing at all is the path this node has always had: apply it
+/// and be done. Either way it cancels whatever the port was tracing — a console that
+/// has decided to send a value has taken the port back, and a shape still running
+/// underneath would overwrite it on the next tick.
+fn apply_set(node: &Node, port: &str, body: &Value) {
+    let Ok(number) = port.parse::<u8>() else { return };
+    let from = node.port_value(port).unwrap_or_else(|| json!({ "value": 0.0 }));
+
+    match motion::parse_transition(body, from, node.console_now()) {
+        Some(transition) => {
+            info!(
+                "[sim] {} output {port} fades to {} over {} ms",
+                node.config.serial, transition.to, transition.duration_ms,
+            );
+            node.set_motion(number, Some(motion::Motion::Transition(transition)));
+        }
+        None => {
+            info!("[sim] {} output {port} <- {body}", node.config.serial);
+            node.set_motion(number, None);
+            node.write_port(port, body.clone());
+        }
+    }
+}
+
+/// A shape to trace, or `{"clear": true}` to stop.
+///
+/// Clearing leaves the port wherever the shape had got to. The console follows a
+/// clear with a value precisely because of that: this node has no opinion about where
+/// a stopped effect should leave things.
+fn apply_effect(node: &Node, port: &str, body: &Value) {
+    let Ok(number) = port.parse::<u8>() else { return };
+    match motion::parse_effect(body) {
+        Some(effect) => {
+            info!("[sim] {} output {port} traces {body}", node.config.serial);
+            node.set_motion(number, Some(motion::Motion::Effect(effect)));
+        }
+        None => {
+            info!("[sim] {} output {port} stops tracing", node.config.serial);
+            node.set_motion(number, None);
+        }
+    }
 }
 
 // ── sACN ──────────────────────────────────────────────────────────────────────
@@ -1185,5 +1406,216 @@ mod tests {
     fn a_datagram_that_is_not_e131_is_ignored() {
         assert_eq!(parse_e131(b"hello"), None);
         assert_eq!(parse_e131(&[0u8; 200]), None);
+    }
+
+
+    // ── Tracing a shape ───────────────────────────────────────────────────────
+    //
+    // The point of these is that nothing on the network says anything while they
+    // run. A value that moves between two reads moved because this node moved it.
+
+    /// A node handed a shape animates on its own, and `GET /api/v1/state` sees it,
+    /// because the renderer writes through the same store a `set` writes to.
+    #[tokio::test]
+    async fn a_port_handed_a_shape_animates_without_being_told_again() {
+        let sim = start(SimConfig::new(ModuleKind::Ws2812, "strip1")).await.unwrap();
+        let node_url = format!("http://{}/api/v1/state", sim.http_addr);
+        let client = reqwest::Client::new();
+
+        // A one-second sine on the brightness port, anchored now.
+        client
+            .post(&node_url)
+            .json(&json!({ "effects": { "1": {
+                "id": "fx", "curve": { "shape": "sine" }, "rate": 1.0, "phase": 0.0,
+                "direction": "forward", "width": 0.5,
+                "low": { "value": 0.0 }, "high": { "value": 1.0 },
+                "t0": now_ms(),
+            }}}))
+            .send()
+            .await
+            .unwrap();
+
+        let read = || async {
+            let body: Value = client.get(&node_url).send().await.unwrap().json().await.unwrap();
+            body
+        };
+
+        // The renderer runs at 40 Hz; a sixth of a second is several ticks and a
+        // sixth of a cycle, so the value cannot honestly be the same.
+        let first = read().await;
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        let second = read().await;
+
+        assert!(
+            first["outputs"]["1"] != second["outputs"]["1"],
+            "the port should have moved on its own: {} then {}",
+            first["outputs"]["1"],
+            second["outputs"]["1"],
+        );
+        assert!(
+            second["effects"]["1"]["summary"].as_str().is_some_and(|s| s.contains("sine")),
+            "and it says what it is tracing: {}",
+            second["effects"]["1"],
+        );
+
+        sim.stop.stop();
+    }
+
+    /// Clearing stops the shape and leaves the port where it was. The console
+    /// follows a clear with a value for exactly that reason: this node has no
+    /// opinion about where a stopped effect should leave things.
+    #[tokio::test]
+    async fn clearing_a_shape_stops_the_port_where_it_stands() {
+        let sim = start(SimConfig::new(ModuleKind::Ws2812, "strip2")).await.unwrap();
+        let node_url = format!("http://{}/api/v1/state", sim.http_addr);
+        let client = reqwest::Client::new();
+
+        client
+            .post(&node_url)
+            .json(&json!({ "effects": { "1": {
+                "curve": { "shape": "saw-up" }, "rate": 1.0, "phase": 0.0,
+                "low": { "value": 0.0 }, "high": { "value": 1.0 }, "t0": now_ms(),
+            }}}))
+            .send()
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        client
+            .post(&node_url)
+            .json(&json!({ "effects": { "1": { "clear": true } } }))
+            .send()
+            .await
+            .unwrap();
+
+        let stopped: Value = client.get(&node_url).send().await.unwrap().json().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        let later: Value = client.get(&node_url).send().await.unwrap().json().await.unwrap();
+
+        assert_eq!(stopped["outputs"]["1"], later["outputs"]["1"], "held where it stopped");
+        assert!(later["effects"].get("1").is_none(), "and nothing is tracing");
+
+        sim.stop.stop();
+    }
+
+    /// A three second fade arrives as one message and the node walks it. This is
+    /// the other half of the bargain: a hundred and twenty messages become one.
+    #[tokio::test]
+    async fn a_timed_set_is_walked_rather_than_jumped_to() {
+        let sim = start(SimConfig::new(ModuleKind::Ws2812, "strip3")).await.unwrap();
+        let node_url = format!("http://{}/api/v1/state", sim.http_addr);
+        let client = reqwest::Client::new();
+
+        client.post(&node_url).json(&json!({ "outputs": { "1": { "value": 0.0 } } }))
+            .send().await.unwrap();
+        client
+            .post(&node_url)
+            .json(&json!({ "outputs": { "1": {
+                "value": 1.0, "fade_ms": 400, "curve": "linear", "t0": now_ms(),
+            }}}))
+            .send()
+            .await
+            .unwrap();
+
+        // Part way through: somewhere between the ends, and at neither of them.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let midway: Value = client.get(&node_url).send().await.unwrap().json().await.unwrap();
+        let level = midway["outputs"]["1"]["value"].as_f64().unwrap();
+        assert!(level > 0.05 && level < 0.95, "part way there, not jumped: {level}");
+
+        // And it arrives, and stops being a transition once it has.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let arrived: Value = client.get(&node_url).send().await.unwrap().json().await.unwrap();
+        assert_eq!(arrived["outputs"]["1"]["value"].as_f64().unwrap(), 1.0, "there");
+        assert!(arrived["effects"].get("1").is_none(), "and done");
+
+        sim.stop.stop();
+    }
+
+    /// A console that has decided to send a value has taken the port back. A shape
+    /// still running underneath would overwrite it on the very next tick.
+    #[tokio::test]
+    async fn a_plain_set_cancels_whatever_the_port_was_tracing() {
+        let sim = start(SimConfig::new(ModuleKind::Ws2812, "strip4")).await.unwrap();
+        let node_url = format!("http://{}/api/v1/state", sim.http_addr);
+        let client = reqwest::Client::new();
+
+        client
+            .post(&node_url)
+            .json(&json!({ "effects": { "1": {
+                "curve": { "shape": "sine" }, "rate": 2.0, "phase": 0.0,
+                "low": { "value": 0.0 }, "high": { "value": 1.0 }, "t0": now_ms(),
+            }}}))
+            .send()
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        client.post(&node_url).json(&json!({ "outputs": { "1": { "value": 0.42 } } }))
+            .send().await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        let held: Value = client.get(&node_url).send().await.unwrap().json().await.unwrap();
+        assert_eq!(held["outputs"]["1"], json!({ "value": 0.42 }), "and it stays put");
+        assert!(held["effects"].get("1").is_none(), "nothing tracing");
+
+        sim.stop.stop();
+    }
+
+    /// The strip advertises what it can do, and a relay honestly advertises less.
+    /// The console reads this and nothing else to decide what to send.
+    #[tokio::test]
+    async fn info_says_which_ports_can_trace_a_shape() {
+        let sim = start(SimConfig::new(ModuleKind::Ws2812, "strip5")).await.unwrap();
+        let info: Value = reqwest::get(format!("http://{}/api/v1/info", sim.http_addr))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        let brightness = &info["ports"][1]["effects"];
+        assert!(brightness["shapes"].as_array().unwrap().iter().any(|s| s == "sine"));
+        assert_eq!(brightness["steps"], true);
+        assert_eq!(brightness["transitions"], true);
+        sim.stop.stop();
+
+        let relay = start(SimConfig::new(ModuleKind::MainsRelay, "relay5")).await.unwrap();
+        let info: Value = reqwest::get(format!("http://{}/api/v1/info", relay.http_addr))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let shapes = info["ports"][0]["effects"]["shapes"].as_array().unwrap().clone();
+        assert_eq!(shapes, vec![json!("square")], "two states, so only chopping");
+        assert_eq!(info["ports"][0]["effects"]["transitions"], false, "and nothing to cross");
+        relay.stop.stop();
+    }
+
+    /// A port the node reads is never driven, so advertising on one is a promise
+    /// nothing will ever ask it to keep. The editor should say so.
+    #[test]
+    fn advertising_effects_on_an_input_is_a_problem() {
+        let mut config = ModuleKind::Environment.config("aaaaaa");
+        config.ports[0].effects = Some(motion::PortEffects::all());
+        let problems = config.problems();
+        assert!(
+            problems.iter().any(|p| p.contains("readonly") && p.contains("effects")),
+            "{problems:?}",
+        );
+    }
+
+    #[test]
+    fn a_string_port_may_step_but_has_no_shape_to_trace() {
+        let mut config = ModuleKind::Oled.config("bbbbbb");
+        config.ports[0].effects = Some(motion::PortEffects { steps: true, ..Default::default() });
+        assert!(config.problems().is_empty(), "a list of messages in turn is fine");
+
+        config.ports[0].effects = Some(motion::PortEffects::all());
+        assert!(
+            config.problems().iter().any(|p| p.contains("string") && p.contains("shapes")),
+            "but there is nothing between two strings for a sine to trace",
+        );
     }
 }

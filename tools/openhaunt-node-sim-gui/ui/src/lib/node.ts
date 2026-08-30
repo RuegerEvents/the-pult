@@ -19,7 +19,25 @@ export type PortDescription = {
 	maximum?: number;
 	default?: number;
 	class?: string;
+	/** What this port can trace for itself. Absent means the console sends every value. */
+	effects?: PortEffects;
 };
+
+/**
+ * What one port has told the console it can do without being sent every value.
+ *
+ * Shapes are named rather than flagged because a relay that can chop a square wave
+ * has no way to trace a sine, and there is no point letting a console find that out
+ * by trying.
+ */
+export type PortEffects = {
+	shapes: string[];
+	steps: boolean;
+	transitions: boolean;
+};
+
+/** Every shape the protocol names, for the config editor's checkboxes. */
+export const SHAPES = ['sine', 'triangle', 'square', 'saw-up', 'saw-down'];
 
 /** The universe a gateway forwards, present only on a node that forwards one. */
 export type DmxDescription = { protocols: string[]; universes: number };
@@ -59,6 +77,14 @@ export type Snapshot = {
 	broker: string | null;
 	mqttConnected: boolean;
 	outputs: Record<string, unknown>;
+	/**
+	 * What each port is tracing on its own, keyed by port.
+	 *
+	 * `outputs` is still the truth about where a port is; this says why it is
+	 * moving, which is the difference between a node being driven and a node
+	 * running something.
+	 */
+	effects: Record<string, { summary?: string }>;
 	inputs: Record<string, unknown>;
 	identified: number;
 	startedMs: number;

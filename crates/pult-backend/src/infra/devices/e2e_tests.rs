@@ -317,3 +317,117 @@ async fn a_button_on_a_node_advances_a_cue() {
     })
     .await;
 }
+
+/// The whole offload path, against a node that shares no code with the console.
+///
+/// The console works out a shape, the plugin decides the node can trace it, one
+/// message crosses the wire, and then the node moves on its own while nothing at all
+/// is said to it. That last part is the claim worth testing end to end: the values
+/// change between two reads, and no console is talking.
+#[tokio::test]
+async fn a_node_that_can_trace_a_shape_is_left_to_get_on_with_it() {
+    use openhaunt_node_sim::motion;
+    use pult_schema::types::{
+        effect::{Curve, Direction, EffectSource, RunningEffect, Shape},
+        fixture::{FixtureType, ParameterValue},
+    };
+
+    use crate::infra::connectors::{dmx::Patch, openhaunt::OpenHauntOutput, OutputPlugin};
+
+    let h = harness().await;
+    let sim = a_simulated_node(&h, ModuleKind::Ws2812, "e2e-strip").await;
+    h.devices.adopt("e2e-strip".into()).await.unwrap();
+
+    // What the node said about itself reached the directory, which is where the
+    // plugin looks before it decides to send a shape rather than samples.
+    let capable = h
+        .directory
+        .borrow()
+        .entries
+        .get("e2e-strip")
+        .and_then(|e| e.effects.clone())
+        .and_then(|c| c.port(1).cloned())
+        .expect("the node advertised its brightness port");
+    assert!(capable.has_shape("sine"));
+
+    let mut output =
+        OpenHauntOutput::new(h.directory.clone(), h.devices.clone(), 5568).await.unwrap();
+
+    let mut fixtures = h.fixtures().await;
+    let types: Vec<FixtureType> = h
+        .engine
+        .get(vec![PathSegment::Key("fixture_types".into())])
+        .await
+        .map(|v| serde_json::from_value(v).unwrap())
+        .unwrap();
+
+    // A one-second sine on the brightness port, as playback would have worked it out.
+    let now = pult_schema::types::sequence::now_ms();
+    fixtures[0].live_effects.insert(
+        "Intensity".into(),
+        RunningEffect {
+            effect_id: uuid::Uuid::new_v4(),
+            curve: Curve::Shape(Shape::Sine),
+            rate_hz: 1.0,
+            low: ParameterValue::Float(0.0),
+            high: ParameterValue::Float(1.0),
+            width: 0.5,
+            direction: Direction::Forward,
+            phase: 0.0,
+            t0: now,
+            source: EffectSource::Programmer,
+        },
+    );
+
+    let patch =
+        Patch { fixtures, fixture_types: types.into_iter().map(|t| (t.id, t)).collect() };
+    output.send(&patch, &[]).await.unwrap();
+
+    // The node has been told, once.
+    let watching = sim.snapshot.clone();
+    eventually("the node to start tracing", || {
+        let watching = watching.clone();
+        async move { watching.borrow().effects.contains_key("1") }
+    })
+    .await;
+    let summary = sim.snapshot.borrow().effects["1"]["summary"].as_str().unwrap().to_string();
+    assert!(summary.contains("sine"), "and it knows what it is tracing: {summary}");
+
+    // And now it moves without being told again. Nothing is sent in this window.
+    let first = sim.snapshot.borrow().outputs.get("1").cloned();
+    tokio::time::sleep(std::time::Duration::from_millis(160)).await;
+    let second = sim.snapshot.borrow().outputs.get("1").cloned();
+    assert!(
+        first != second,
+        "the node should have moved on its own: {first:?} then {second:?}",
+    );
+
+    // Taking the shape away stops it, and the console follows with a value.
+    let mut settled = patch.fixtures.clone();
+    settled[0].live_effects.clear();
+    settled[0].live_values.insert("Intensity".into(), ParameterValue::Float(0.25));
+    output
+        .send(&Patch { fixtures: settled, fixture_types: patch.fixture_types.clone() }, &[])
+        .await
+        .unwrap();
+
+    let watching = sim.snapshot.clone();
+    eventually("the node to stop and take the value", || {
+        let watching = watching.clone();
+        async move {
+            let snapshot = watching.borrow();
+            snapshot.effects.is_empty()
+                && snapshot.outputs.get("1") == Some(&serde_json::json!({ "value": 0.25 }))
+        }
+    })
+    .await;
+
+    // Two constants, written separately in two crates that share no code, naming the
+    // topic the shape above was timed against. A shape is only as good as the clock
+    // under it, and a clock published where nobody is listening is no clock at all.
+    assert_eq!(
+        motion::CLOCK_TOPIC,
+        crate::infra::devices::mqtt::CLOCK_TOPIC,
+        "the node subscribes to the topic the console publishes",
+    );
+}

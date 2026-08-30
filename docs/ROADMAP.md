@@ -768,6 +768,53 @@ agreed.
 Nothing on the console renders differently. Art-Net, sACN and the universe cache still
 read `live_values` and are untouched.
 
+### 21. The simulated node renders for itself (done)
+
+The other end of task 20. `openhaunt-node-sim` now advertises what each of its ports
+can trace, accepts a descriptor, and animates on its own while nothing on the network
+says anything to it.
+
+**Written from the documents, not shared with the console.** `src/motion.rs` is a
+second implementation of the five shapes, the five easings and the cycle arithmetic,
+and it deliberately imports nothing from `pult-schema`. That is the reason the
+simulator exists: two implementations that agree because they were both written from
+the protocol prove the protocol is unambiguous, and two that agree because they share
+a module prove nothing. Both test suites assert the same numeric table, and
+`test_curve.c` in the firmware will be the third.
+
+The one shared constant is the clock topic, and the end-to-end test asserts the two
+crates' spellings of it match — a shape is only as good as the clock under it, and a
+clock published where nobody is listening is no clock at all.
+
+**Every write to a port goes through one place.** `Node::write_port` is the single
+answer to "where is this port", used by a `set` off MQTT, by `POST /state`, and by
+`run_renderer` forty times a second. So `GET /api/v1/state` and the panel both see a
+port that is genuinely moving rather than a description of one that might be, and the
+end-to-end test can prove the node moved by reading it twice.
+
+**A `set` always cancels.** A console that has decided to send a value has taken the
+port back; a shape still running underneath would overwrite it on the very next tick.
+Clearing an effect leaves the port exactly where the shape had got to, which is why
+the console follows a clear with a value — this node has no opinion about where a
+stopped chase should leave things, and inventing one would be inventing state the
+console does not know about.
+
+**The clock estimate is smoothed and slew-safe.** The first live sample is taken
+outright; later ones move a fifth of the way, because the error being corrected is
+one-way network latency and a jump straight to each sample would jog a running effect
+by however much that varied. A retained sample only ever seeds: the broker replays it
+on subscribe and it was published at an unknown time in the past. A `seq` that goes
+backwards means the broker restarted, and the estimate starts again rather than being
+dragged through a number from before the gap.
+
+**The editor can lie, and the config checker says so.** A `readonly` port that
+advertises effects is a promise nothing will ever ask this node to keep, and a string
+port that lists shapes is claiming there is something between two strings for a sine
+to trace. Both are `problems()`, not deserialisation failures, so a config file with
+one still loads into the editor to be fixed. `configs/fog-machine.json` and
+`configs/mirror.json` both advertise now, and the mirror's engraved line advertises
+steps and no shapes, which is the honest answer for a string.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

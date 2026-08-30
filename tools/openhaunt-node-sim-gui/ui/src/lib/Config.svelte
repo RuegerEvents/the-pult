@@ -9,13 +9,24 @@
 		DATA_TYPES,
 		MAINS_FLAG,
 		problems,
+		SHAPES,
 		UNITS,
 		type Demo,
 		type NodeConfig,
+		type PortEffects,
 		type Snapshot
 	} from './node.js';
 
 	let { node }: { node: Snapshot } = $props();
+
+	/// Add or remove one shape from a port's list, keeping the order the protocol
+	/// names them in rather than the order they were clicked.
+	function toggleShape(effects: PortEffects, shape: string, on: boolean): PortEffects {
+		const wanted = new Set(effects.shapes);
+		if (on) wanted.add(shape);
+		else wanted.delete(shape);
+		return { ...effects, shapes: SHAPES.filter((s) => wanted.has(s)) };
+	}
 
 	// The draft is the panel's own copy, so half-typed nonsense never reaches the
 	// running node. `running` is what the node last told us it is, and the two
@@ -294,6 +305,45 @@
 						onclick={() => (draft.ports = draft.ports.filter((_, n) => n !== i))}>×</button
 					>
 				</div>
+
+				<!-- What this port can do without being sent every value. Off is the
+				     default and means the console renders and streams, which is what
+				     every node did before any of this existed. -->
+				<div class="effects">
+					<label class="check">
+						<input
+							type="checkbox"
+							checked={!!port.effects}
+							onchange={(e) =>
+								(port.effects = e.currentTarget.checked
+									? { shapes: [], steps: false, transitions: false }
+									: undefined)}
+						/>
+						<span>traces its own</span>
+					</label>
+					{#if port.effects}
+						{@const declared = port.effects}
+						{#each SHAPES as shape}
+							<label class="check">
+								<input
+									type="checkbox"
+									checked={declared.shapes.includes(shape)}
+									onchange={(e) =>
+										(port.effects = toggleShape(declared, shape, e.currentTarget.checked))}
+								/>
+								<span>{shape}</span>
+							</label>
+						{/each}
+						<label class="check">
+							<input type="checkbox" bind:checked={port.effects.steps} />
+							<span>steps</span>
+						</label>
+						<label class="check">
+							<input type="checkbox" bind:checked={port.effects.transitions} />
+							<span>fades</span>
+						</label>
+					{/if}
+				</div>
 			{/each}
 			<datalist id="units">
 				{#each UNITS as unit}<option value={unit}></option>{/each}
@@ -469,6 +519,24 @@
 		align-items: center;
 		margin-bottom: 4px;
 		min-width: 62rem;
+	}
+
+	/* Under its port's row rather than beside it: seven more checkboxes on one line
+	   would push the grid past any window worth having. */
+	.effects {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 4px 12px;
+		margin: 0 0 10px 3.9rem;
+		padding-bottom: 8px;
+		border-bottom: 1px dashed var(--line);
+		min-width: 58rem;
+	}
+
+	.effects .check {
+		font-size: 0.68rem;
+		color: var(--dim);
 	}
 
 	.row.head span {

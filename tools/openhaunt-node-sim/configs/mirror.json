@@ -14,7 +14,18 @@
       "name": "Glass tint",
       "access": "readwrite",
       "dataType": "color",
-      "class": "color"
+      "class": "color",
+      "effects": {
+        "shapes": [
+          "sine",
+          "triangle",
+          "square",
+          "saw-up",
+          "saw-down"
+        ],
+        "steps": true,
+        "transitions": true
+      }
     },
     {
       "port": 1,
@@ -25,14 +36,30 @@
       "minimum": 0,
       "maximum": 1,
       "default": 0,
-      "class": "intensity"
+      "class": "intensity",
+      "effects": {
+        "shapes": [
+          "sine",
+          "triangle",
+          "square",
+          "saw-up",
+          "saw-down"
+        ],
+        "steps": true,
+        "transitions": true
+      }
     },
     {
       "port": 2,
       "name": "Engraved line",
       "access": "readwrite",
       "dataType": "string",
-      "class": "text"
+      "class": "text",
+      "effects": {
+        "shapes": [],
+        "steps": true,
+        "transitions": false
+      }
     },
     {
       "port": 3,
@@ -51,7 +78,9 @@
     }
   ],
   "dmx": {
-    "protocols": ["sacn"],
+    "protocols": [
+      "sacn"
+    ],
     "universes": 1
   },
   "httpPort": 8814,

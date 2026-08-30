@@ -18,7 +18,18 @@
       "minimum": 0,
       "maximum": 1,
       "default": 0,
-      "class": "intensity"
+      "class": "intensity",
+      "effects": {
+        "shapes": [
+          "sine",
+          "triangle",
+          "square",
+          "saw-up",
+          "saw-down"
+        ],
+        "steps": true,
+        "transitions": true
+      }
     },
     {
       "port": 1,
@@ -26,7 +37,14 @@
       "access": "readwrite",
       "dataType": "boolean",
       "default": 0,
-      "class": "switch"
+      "class": "switch",
+      "effects": {
+        "shapes": [
+          "square"
+        ],
+        "steps": true,
+        "transitions": false
+      }
     },
     {
       "port": 2,

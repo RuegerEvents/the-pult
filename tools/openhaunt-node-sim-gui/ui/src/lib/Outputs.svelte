@@ -22,6 +22,11 @@
 		return `${level}${unitLabel(unit)}`;
 	}
 
+	/** What this port is tracing on its own, if anything. */
+	function tracing(port: number): string | null {
+		return node.effects?.[String(port)]?.summary ?? null;
+	}
+
 	/** Anything the console sent to a port this node never described. */
 	const unrecognised = $derived(
 		Object.entries(node.outputs).filter(
@@ -43,18 +48,21 @@
 				<span class="port mono">{port.port}</span>
 				<span class="lamp"></span>
 				<span class="name">{port.name}</span>
+				{#if tracing(port.port)}<span class="tracing mono">{tracing(port.port)}</span>{/if}
 				<span class="state">{on ? 'closed' : 'open'}</span>
 			</div>
 		{:else if port.dataType === 'color'}
 			{@const colour = readColor(node.outputs[String(port.port)])}
 			<div class="strip" style:background={colour ?? '#000'}>
 				<span class="mono">{colour ?? 'unlit'}</span>
+				{#if tracing(port.port)}<span class="tracing mono">{tracing(port.port)}</span>{/if}
 			</div>
 		{:else if port.dataType === 'number'}
 			{@const level = readNumber(node.outputs[String(port.port)])}
 			<div class="reading">
 				<span class="port mono">{port.port}</span>
 				<span class="name">{port.name}</span>
+				{#if tracing(port.port)}<span class="tracing mono">{tracing(port.port)}</span>{/if}
 				<span class="mono value">
 					{level === null ? '—' : format(level, port.unit)}
 				</span>
@@ -105,6 +113,18 @@
 
 	.name {
 		font-size: 0.8rem;
+	}
+
+	/* A port moving because the node is moving it, rather than because the console
+	   sent a value. Worth telling apart at a glance: it is the whole point. */
+	.tracing {
+		margin-left: auto;
+		font-size: 0.68rem;
+		padding: 1px 6px;
+		border-radius: 999px;
+		border: 1px solid var(--warn);
+		color: var(--warn);
+		white-space: nowrap;
 	}
 
 	.lamp {

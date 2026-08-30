@@ -22,3 +22,9 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# Only the tests need an HTTP client: they drive this node through the same API a
+# console uses, rather than reaching into it, so what they prove is the protocol
+# surface rather than the implementation behind it.
+reqwest = { workspace = true }

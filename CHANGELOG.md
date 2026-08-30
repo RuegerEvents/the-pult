@@ -18,6 +18,11 @@ bracketed form — so every release needs one and it has to be spelled that way.
   phase and spread — and can be held in the programmer or stored in a cue
   capture. A `SpeedMaster` collection carries a tempo several effects can
   follow. Nothing renders them yet.
+- **Effects run.** The engine renders a shape or a step list into a fixture
+  parameter on every tick, from the cue's anchor or the programmer's own, at a
+  rate given in Hz or borrowed from a speed master. A programmer effect beats a
+  cue effect, and grabbing a fader takes that light out of the chase. Nothing
+  leaves the console differently yet.
 - **Nodes are told the shape, not the samples.** An OpenHaunt port that says
   in `/info` which shapes it can trace is handed one description and then left
   alone, instead of a value forty times a second; a port that advertises
@@ -25,11 +30,13 @@ bracketed form — so every release needs one and it has to be spelled that way.
   hundred and twenty samples. The console publishes a retained
   `openhaunt/clock` once a second so a node can place the start of a cycle. A
   port that advertises nothing behaves exactly as before.
-- **Effects run.** The engine renders a shape or a step list into a fixture
-  parameter on every tick, from the cue's anchor or the programmer's own, at a
-  rate given in Hz or borrowed from a speed master. A programmer effect beats a
-  cue effect, and grabbing a fader takes that light out of the chase. Nothing
-  leaves the console differently yet.
+- **The simulated node traces shapes for itself.** `openhaunt-node-sim`
+  advertises what each port can do, renders a shape or a timed fade at 40 Hz
+  without being sent anything, and tracks the console's clock from
+  `openhaunt/clock`. Its window shows a badge beside a port that is tracing, and
+  its config editor has per-port capability toggles. The curve arithmetic is
+  written from the protocol documents rather than shared with the console, and
+  both test suites assert the same numbers.
 - **A Go says when it happened.** `Sequence.went_at`, with `goNext` and
   `goToCue` taking an optional `at`, so every station anchors a cue's fades and
   effects at the same millisecond instead of at whenever each of them processed
