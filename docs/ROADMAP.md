@@ -900,6 +900,40 @@ fresh show broke: `fixtures/__create` refused a body that omitted `live_effects`
 which no client can know. LOCAL fields are `#[serde(default)]` now — a field the
 station works out for itself is not one a client should have to name.
 
+### 24. Speed masters (done)
+
+A tempo several effects follow, and a big button to tap it with.
+
+**Tap writes the tempo and the anchor together.** That pairing is the whole reason a
+tempo change is a bounded step in phase rather than a slide: every station re-resolves
+from the new bpm measured from the instant of the tap, so they all land in the same
+place rather than each drifting on from wherever it happened to be. Editing the bpm by
+hand re-anchors for the same reason, and starting a stopped master starts its beat
+*here* rather than resuming a cycle that has notionally been running the whole time it
+was off.
+
+**The average is over the run, not the last gap.** A hand is not a metronome, and at
+120 bpm a single 40 ms slip is 10 bpm — plainly audible. Anything before a two-second
+pause is dropped, because that is the operator stopping rather than tapping very
+slowly, and counting the pause as an interval would drag the tempo down for the next
+several taps. The panel shows how many taps are in the run, which is the difference
+between a tempo you trust and a number that appeared.
+
+**Tap and Run/Stop stay live when the panel is locked.** Both are done during a show,
+at speed, and a lock that stopped an operator following a tempo change is a lock
+nobody would leave on. What the lock covers is renaming, the multiplier, and delete.
+
+One beat clock for the panel rather than one per master: a dozen masters would be a
+dozen animation frames doing the same arithmetic against the same millisecond.
+
+`beatPhase` wraps rather than truncating, so a master whose anchor is slightly in the
+future — which clock skew between two consoles makes ordinary — puts its dot at the
+top of the beat rather than at a negative position.
+
+Found by driving it: the create form used `autofocus`, which browsers apply on page
+load and not reliably to an input that has just been inserted. Every other panel here
+uses the `focusOnMount` action, and now so does this one.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

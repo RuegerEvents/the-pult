@@ -19,6 +19,7 @@ import PatchPanel from '$lib/components/PatchPanel.svelte';
 import SelectionPanel from '$lib/components/SelectionPanel.svelte';
 import SequenceRunner from '$lib/components/SequenceRunner.svelte';
 import SessionPanel from '$lib/components/SessionPanel.svelte';
+import SpeedMastersPanel from '$lib/components/SpeedMastersPanel.svelte';
 import ShowPanel from '$lib/components/ShowPanel.svelte';
 import StationsPanel from '$lib/components/StationsPanel.svelte';
 import ValuesPanel from '$lib/components/programmer/ValuesPanel.svelte';
@@ -60,7 +61,8 @@ export const PANELS = {
 	stations: { title: 'Stations', component: StationsPanel, fills: false },
 	show: { title: 'Show', component: ShowPanel, fills: false },
 	session: { title: 'Session', component: SessionPanel, fills: false },
-	devices: { title: 'Devices', component: DevicesPanel, fills: false }
+	devices: { title: 'Devices', component: DevicesPanel, fills: false },
+	speedmasters: { title: 'Speed masters', component: SpeedMastersPanel, fills: false, editable: true }
 } as const satisfies Record<string, PanelMeta>;
 
 export const isPanel = (id: string): id is PanelId => id in PANELS;

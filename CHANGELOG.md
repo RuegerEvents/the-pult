@@ -21,6 +21,10 @@ bracketed form — so every release needs one and it has to be spelled that way.
   parameter's default value with the right control for its kind, and pick
   `Raw` or `Named` — so a light nobody has written a profile for can be
   patched without editing JSON.
+- **Speed masters, with a tap button.** A new panel holds the tempos effects
+  follow: tap along with the band, halve or double it, run or stop it, and watch
+  a beat dot. A tap writes the tempo and its anchor together, so every station
+  lands on the same beat rather than each drifting on from where it was.
 - **Effects have a shape in the schema.** `EffectSpec` describes one periodic
   instruction — a curve that is either a shape scaled between two values or a
   list of keyframes carrying their own, plus rate, width, direction, per-fixture
