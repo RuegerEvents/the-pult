@@ -9,7 +9,7 @@
 
 	import type { LayoutNode } from '$lib/generated/index.js';
 	import { panelsIn, type Path } from '$lib/layout.js';
-	import { PANELS, PANEL_IDS, isPanel, panelTitle } from '$lib/layout/panels.js';
+	import { PANELS, PANEL_IDS, isPanel, panelTitle, type PanelMeta } from '$lib/layout/panels.js';
 	import {
 		beginTabDrag,
 		closePanel,
@@ -19,13 +19,17 @@
 		tree
 	} from '$lib/stores/layout.js';
 	import DropZones from './DropZones.svelte';
+	import EditToggle from './EditToggle.svelte';
 
 	let { node, path }: { node: Extract<LayoutNode, { type: 'Tabs' }>; path: Path } = $props();
 
 	let adding = $state(false);
 
 	const shown = $derived(node.panels[Math.min(node.active, node.panels.length - 1)] ?? null);
-	const meta = $derived(shown && isPanel(shown) ? PANELS[shown] : null);
+	// Annotated rather than inferred: `as const satisfies` narrows each entry to its
+	// own literal type, so an entry that does not set `editable` has no such property
+	// at all and asking about it is an error rather than `undefined`.
+	const meta: PanelMeta | null = $derived(shown && isPanel(shown) ? PANELS[shown] : null);
 	const spare = $derived(PANEL_IDS.filter((id) => !panelsIn($tree).includes(id)));
 
 	function show(panel: string) {
@@ -84,6 +88,12 @@
 				</div>
 			{/if}
 		</div>
+
+		<!-- Before the maximise chip, so the toggle sits in the same place whether or
+		     not a tile can be maximised, and never moves under a thumb. -->
+		{#if shown && meta?.editable}
+			<EditToggle panel={shown} />
+		{/if}
 
 		{#if shown}
 			<button

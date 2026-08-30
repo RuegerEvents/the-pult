@@ -9,6 +9,7 @@ import {
 	formatValue,
 	isDmx,
 	kindFromLabel,
+	kindOption,
 	kindLabel,
 	nextFreeAddress,
 	parameterKey,
@@ -75,16 +76,43 @@ describe('parameter keys', () => {
 });
 
 describe('picking a kind', () => {
-	it('numbers a switch or contact after the port it is bound to', () => {
+	it('numbers the numbered kinds after the channel or port they are bound to', () => {
 		expect(kindFromLabel('Switch', 2)).toEqual({ Switch: 2 });
 		expect(kindFromLabel('Contact', 5)).toEqual({ Contact: 5 });
+		expect(kindFromLabel('Raw', 7)).toEqual({ Raw: 7 });
 		expect(kindFromLabel('Intensity', 5)).toBe('Intensity');
 	});
 
-	it('round-trips every kind in the picker back to its own label', () => {
+	it('round-trips every kind in the picker back to the option it picks', () => {
 		for (const label of PARAMETER_KINDS) {
-			expect(kindLabel(kindFromLabel(label, 1))).toBe(label);
+			expect(kindOption(kindFromLabel(label, 1))).toBe(label);
 		}
+	});
+
+	/**
+	 * The two questions a kind gets asked, which are not the same question.
+	 *
+	 * `kindOption` answers "which of the fixed options is this", which is what a
+	 * `<select>` needs. `kindLabel` answers "what is this called", and for a named
+	 * parameter the answer is the name the device gave it — not the word "Named",
+	 * which would tell an operator nothing about which port they were looking at.
+	 */
+	it('shows a named parameter its own name but picks the Named option', () => {
+		const fog = kindFromLabel('Named', 0, 'Fog output');
+		expect(fog).toEqual({ Named: 'Fog output' });
+		expect(kindLabel(fog)).toBe('Fog output');
+		expect(kindOption(fog)).toBe('Named');
+	});
+
+	/**
+	 * A name is the whole identity of a named parameter: it is what the operator
+	 * reads and what the `live_values` key is built from. An empty one would be a
+	 * row with no label bound to a key of `Named:`, so it gets something visible
+	 * to type over instead.
+	 */
+	it('never leaves a named parameter without a name', () => {
+		expect(kindFromLabel('Named', 0)).toEqual({ Named: 'Unnamed' });
+		expect(kindFromLabel('Named', 0, '   ')).toEqual({ Named: 'Unnamed' });
 	});
 
 	it('reads sensors and drives everything else', () => {

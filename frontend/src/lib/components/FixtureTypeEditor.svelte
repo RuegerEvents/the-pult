@@ -13,12 +13,19 @@
 		bindingChannel,
 		defaultDirectionFor,
 		defaultValueFor,
+		formatValue,
 		kindFromLabel,
 		kindLabel,
+		kindOption,
 		PARAMETER_KINDS
 	} from '$lib/patch.js';
+	import { editing } from '$lib/stores/editing.js';
+	import ValueControl from './programmer/controls/ValueControl.svelte';
 
 	const data = getDataContext();
+	// The same lock as the fixtures below it: this editor lives in the Patch panel
+	// and changing a type reaches every fixture already patched against it.
+	const unlocked = editing('patch');
 
 	let types = $state<FixtureType[]>([]);
 	let expanded = $state<string | null>(null);
@@ -100,12 +107,24 @@
 		await setParameters(type, parameters);
 	}
 
-	/// Choosing a kind by name. `Switch` and `Contact` are numbered after the port
-	/// they sit on, so the number is never typed twice.
+	/// Choosing a kind by name. `Switch`, `Contact` and `Raw` are numbered after the
+	/// channel or port they sit on, so the number is never typed twice.
 	async function setKind(type: FixtureType, index: number, label: string) {
 		const parameter = type.parameters[index];
 		const slot = bindingSlot(parameter.binding);
-		await updateParameter(type, index, { kind: kindFromLabel(label, slot) });
+		await updateParameter(type, index, {
+			// A parameter changing *into* a named one keeps whatever it was called if
+			// it already had a name, and otherwise gets a placeholder to type over.
+			kind: kindFromLabel(label, slot, kindLabel(parameter.kind))
+		});
+	}
+
+	/// Renaming a named parameter. The name is the whole identity of one — it is what
+	/// the operator sees and what its `live_values` key is built from — so an empty
+	/// one is refused rather than written.
+	async function renameParameter(type: FixtureType, index: number, name: string) {
+		if (!name.trim()) return;
+		await updateParameter(type, index, { kind: { Named: name.trim() } });
 	}
 
 	/// Moving a parameter between a DMX channel and a module port. The numbered kinds
@@ -128,15 +147,17 @@
 <section class="block">
 	<header class="block-head">
 		<h2>Fixture types</h2>
-		<button class="ghost" onclick={() => (creating = !creating)}>
-			{creating ? 'Cancel' : '+ Type'}
-		</button>
+		{#if $unlocked}
+			<button class="btn btn-ghost" onclick={() => (creating = !creating)}>
+				{creating ? 'Cancel' : '+ Type'}
+			</button>
+		{/if}
 	</header>
 
-	{#if creating}
+	{#if creating && $unlocked}
 		<form class="new-row" onsubmit={(e) => { e.preventDefault(); createType(); }}>
-			<input class="text-input" placeholder="Type name, e.g. Source Four" bind:value={newName} use:focusOnMount />
-			<button class="primary" type="submit">Create</button>
+			<input class="input" placeholder="Type name, e.g. Source Four" bind:value={newName} use:focusOnMount />
+			<button class="btn btn-primary" type="submit">Create</button>
 		</form>
 	{/if}
 
@@ -156,51 +177,84 @@
 					<span class="name">{type.name}</span>
 					<span class="meta">{type.channel_count} ch · {type.parameters.length} params</span>
 				</button>
-				<button class="danger" title="Delete type" onclick={() => data.fixture_types.byId(type.id).delete()}>×</button>
+				{#if $unlocked}
+					<button
+						class="btn btn-danger btn-icon"
+						title="Delete {type.name}"
+						onclick={() => data.fixture_types.byId(type.id).delete()}
+					>×</button>
+				{:else}
+					<span></span>
+				{/if}
 
 				{#if expanded === type.id}
 					<div class="detail">
 						<label class="field">
+							<span>Name</span>
+							{#if $unlocked}
+								<input
+									class="input"
+									value={type.name}
+									onchange={(e) => data.fixture_types.byId(type.id).name.set(e.currentTarget.value)}
+								/>
+							{:else}
+								<span class="reading">{type.name}</span>
+							{/if}
+						</label>
+						<label class="field">
 							<span>Manufacturer</span>
-							<input
-								class="text-input"
-								value={type.manufacturer}
-								onchange={(e) => data.fixture_types.byId(type.id).manufacturer.set(e.currentTarget.value)}
-							/>
+							{#if $unlocked}
+								<input
+									class="input"
+									value={type.manufacturer}
+									onchange={(e) => data.fixture_types.byId(type.id).manufacturer.set(e.currentTarget.value)}
+								/>
+							{:else}
+								<span class="reading">{type.manufacturer}</span>
+							{/if}
 						</label>
 
 						<table class="params">
 							<thead>
-								<tr><th>Parameter</th><th>Flow</th><th>On</th><th>Slot</th><th></th></tr>
+								<tr><th>Parameter</th><th>Flow</th><th>On</th><th>Slot</th><th>Default</th><th></th></tr>
 							</thead>
 							<tbody>
 								{#each type.parameters as param, i (i)}
 									{@const onDmx = bindingChannel(param.binding) !== null}
 									<tr>
-										<td>
-											{#if typeof param.kind === 'object' && 'Named' in param.kind}
-												<!-- A port the device named itself. There is nothing to choose
-												     between: the name is what the node called it, and picking
-												     something else off a list would only be this console
-												     disagreeing with the device about what it is. -->
-												<span class="named" title="Named by the device">
-													{param.kind.Named}
-												</span>
+										<td class="kind">
+											{#if !$unlocked}
+												<span class="reading">{kindLabel(param.kind)}</span>
 											{:else}
 												<select
-													class="text-input"
-													value={kindLabel(param.kind)}
+													class="select"
+													value={kindOption(param.kind)}
 													onchange={(e) => setKind(type, i, e.currentTarget.value)}
 												>
 													{#each PARAMETER_KINDS as kind}
 														<option value={kind}>{kind}</option>
 													{/each}
 												</select>
+												{#if typeof param.kind === 'object' && 'Named' in param.kind}
+													<!-- The name is the whole identity of a named parameter, so
+													     it is typed here rather than inferred. A device that
+													     named its own port supplies this on adoption; a type
+													     built by hand needs somewhere to say it. -->
+													<input
+														class="input"
+														value={param.kind.Named}
+														placeholder="what the device calls it"
+														onchange={(e) => renameParameter(type, i, e.currentTarget.value)}
+													/>
+												{/if}
 											{/if}
 										</td>
 										<td>
+											{#if !$unlocked}
+												<span class="reading">{param.direction === 'Input' ? 'Read' : 'Driven'}</span>
+											{:else}
 											<select
-												class="text-input"
+												class="select"
 												value={param.direction}
 												onchange={(e) =>
 													updateParameter(type, i, {
@@ -210,10 +264,14 @@
 												<option value="Output">Driven</option>
 												<option value="Input">Read</option>
 											</select>
+											{/if}
 										</td>
 										<td>
+											{#if !$unlocked}
+												<span class="reading">{onDmx ? 'DMX' : 'Port'}</span>
+											{:else}
 											<select
-												class="text-input"
+												class="select"
 												value={onDmx ? 'Dmx' : 'Port'}
 												onchange={(e) =>
 													setBinding(
@@ -227,10 +285,14 @@
 												<option value="Dmx">DMX channel</option>
 												<option value="Port">Module port</option>
 											</select>
+											{/if}
 										</td>
 										<td>
+											{#if !$unlocked}
+												<span class="reading">{bindingSlot(param.binding)}</span>
+											{:else}
 											<input
-												class="text-input narrow"
+												class="input narrow"
 												type="number"
 												min={onDmx ? 1 : 0}
 												max={onDmx ? 512 : 255}
@@ -244,14 +306,35 @@
 															: portBinding(Number(e.currentTarget.value))
 													)}
 											/>
+											{/if}
 											{#if onDmx && isColour(param.kind)}<span class="hint">+2</span>{/if}
 										</td>
-										<td><button class="danger" onclick={() => removeParameter(type, i)}>×</button></td>
+										<td class="default-cell">
+											<!-- Where this parameter sits before anything drives it. Read by
+											     the output plugins for a fixture that has never been touched,
+											     so a moving head can rest centred rather than hard left. -->
+											{#if $unlocked}
+												<ValueControl
+													value={param.default_value}
+													label="Default"
+													oninput={(v) => updateParameter(type, i, { default_value: v })}
+												/>
+											{:else}
+												<span class="reading">{formatValue(param.default_value)}</span>
+											{/if}
+										</td>
+										<td>
+											{#if $unlocked}
+												<button class="btn btn-danger btn-icon" onclick={() => removeParameter(type, i)}>×</button>
+											{/if}
+										</td>
 									</tr>
 								{/each}
 							</tbody>
 						</table>
-						<button class="ghost" onclick={() => addParameter(type)}>+ Parameter</button>
+						{#if $unlocked}
+							<button class="btn btn-ghost" onclick={() => addParameter(type)}>+ Parameter</button>
+						{/if}
 					</div>
 				{/if}
 			</li>
@@ -265,7 +348,7 @@
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
 	.list { list-style: none; display: flex; flex-direction: column; gap: 2px; }
 	.row { display: grid; grid-template-columns: 1fr auto; align-items: center; background: #202020; border: 1px solid #2e2e2e; border-radius: 4px; }
-	.disclosure { display: flex; align-items: center; gap: 8px; background: none; border: none; color: inherit; font: inherit; text-align: left; padding: 8px 10px; cursor: pointer; width: 100%; }
+	.disclosure { display: flex; align-items: center; gap: 8px; background: none; border: none; color: inherit; font: inherit; text-align: left; padding: 8px 10px; cursor: pointer; width: 100%; min-height: var(--hit); }
 	.caret { display: inline-block; transition: transform 0.12s; color: #777; }
 	.caret.open { transform: rotate(90deg); }
 	.name { font-weight: 500; }
@@ -275,16 +358,15 @@
 	.field span { color: #999; font-size: 12px; min-width: 90px; }
 	.params { width: 100%; border-collapse: collapse; font-size: 13px; }
 	.params th { text-align: left; color: #777; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; }
-	.params td { padding: 2px 6px 2px 0; }
+	.params td { padding: 6px 6px 6px 0; height: var(--hit); vertical-align: middle; }
 	.hint { color: #777; font-size: 11px; margin-left: 4px; }
-	.named { display: inline-block; padding: 4px 6px; border: 1px dashed #3a3a3a; border-radius: 3px; color: #bbb; }
 	.new-row { display: flex; gap: 6px; margin-bottom: 8px; }
 	.empty { color: #777; font-size: 13px; padding: 8px 0; }
-	.text-input { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 4px 6px; font: inherit; }
-	.text-input.narrow { width: 70px; }
-	.primary { background: #2f6fd0; border: none; border-radius: 3px; color: #fff; padding: 5px 12px; font: inherit; cursor: pointer; }
-	.ghost { background: none; border: 1px solid #3a3a3a; border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; cursor: pointer; }
-	.ghost:hover { border-color: #555; color: #fff; }
-	.danger { background: none; border: none; color: #777; font-size: 16px; line-height: 1; padding: 4px 8px; cursor: pointer; }
-	.danger:hover { color: #e05555; }
+	/* Buttons and inputs come from `styles/controls.css`. */
+	.input.narrow { width: 5rem; }
+	.kind { display: flex; align-items: center; gap: 6px; }
+	.default-cell { min-width: 9rem; }
+	/* What a field shows when the panel is locked: the value, plainly, in the space
+	   the control would have taken, so unlocking does not reflow the table. */
+	.reading { color: var(--text); padding: 0 2px; }
 </style>

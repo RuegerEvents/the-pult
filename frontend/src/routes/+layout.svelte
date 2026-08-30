@@ -13,6 +13,7 @@
 	import { restoreLayout } from '$lib/stores/layout.js';
 	import LayoutBar from '$lib/components/layout/LayoutBar.svelte';
 	import '$lib/styles/tokens.css';
+	import '$lib/styles/controls.css';
 
 	let { children } = $props();
 

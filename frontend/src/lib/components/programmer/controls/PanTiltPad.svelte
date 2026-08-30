@@ -82,7 +82,7 @@
 		padding: 0;
 		width: 100%;
 		aspect-ratio: 4 / 3;
-		max-height: 130px;
+		max-height: 150px;
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius);
 		background: var(--bg-sunken);
@@ -115,8 +115,8 @@
 
 	.handle {
 		position: absolute;
-		width: 11px;
-		height: 11px;
+		width: 16px;
+		height: 16px;
 		margin: -6px 0 0 -6px;
 		border: 2px solid var(--live);
 		border-radius: 50%;

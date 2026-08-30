@@ -10,11 +10,18 @@ import type {
 /**
  * The parameter kinds an operator can pick from, as selector labels.
  *
- * `Switch` and `Contact` carry a port number in the schema. The operator never
- * types that number twice: it follows the port the parameter is bound to. `Raw`
- * is left out — a raw channel is addressed by its binding, not chosen by name.
- * So is `Named`: that one comes from a device describing a port this console has
- * no word for, and is never something to pick off a list.
+ * `Switch`, `Contact` and `Raw` carry a number in the schema. The operator never
+ * types that number twice: it follows the channel or port the parameter is bound to.
+ *
+ * `Raw` is on the list because a fixture type built by hand for a light nobody has
+ * written a profile for is mostly raw channels — "channel 5 does something, I do not
+ * care what, put it on a fader". Leaving it off meant that light could not be
+ * patched at all without editing JSON.
+ *
+ * `Named` is on it for the mirror-image reason: a device described a port this
+ * console has no word for, and an operator building a type by hand should be able to
+ * say the same thing. Picking it asks for the name, which is the whole identity of
+ * the parameter and what its `live_values` key is built from.
  */
 export const PARAMETER_KINDS = [
 	'Intensity',
@@ -27,8 +34,13 @@ export const PARAMETER_KINDS = [
 	'Temperature',
 	'Humidity',
 	'AirQuality',
-	'Text'
+	'Text',
+	'Raw',
+	'Named'
 ] as const;
+
+/** The kinds that need something typed in beside the picker. */
+export const KIND_NEEDS_NAME = 'Named';
 
 /**
  * The selector label for a kind: the numbered kinds drop their number, and a
@@ -40,11 +52,31 @@ export function kindLabel(kind: ParameterKind): string {
 	return Object.keys(kind)[0];
 }
 
-/** Turn a selector label back into a kind, numbering it after the port it sits on. */
-export function kindFromLabel(label: string, portIndex: number): ParameterKind {
+/**
+ * Turn a selector label back into a kind, numbering it after the port it sits on.
+ *
+ * `name` is only read for `Named`, and only that kind can be wrong without it: a
+ * parameter named nothing has no `live_values` key and no label, so an empty one
+ * falls back to something visible rather than to a blank row.
+ */
+export function kindFromLabel(label: string, portIndex: number, name?: string): ParameterKind {
 	if (label === 'Switch') return { Switch: portIndex };
 	if (label === 'Contact') return { Contact: portIndex };
+	if (label === 'Raw') return { Raw: portIndex };
+	if (label === 'Named') return { Named: name?.trim() || 'Unnamed' };
 	return label as ParameterKind;
+}
+
+/**
+ * The label a kind picks in the selector, as opposed to what it shows an operator.
+ *
+ * `kindLabel` answers "what is this called" and gives a named parameter its own
+ * name, which is right everywhere it is read. A `<select>` needs the other answer:
+ * which of the fixed options is this one.
+ */
+export function kindOption(kind: ParameterKind): string {
+	if (typeof kind === 'string') return kind;
+	return Object.keys(kind)[0];
 }
 
 /** Which way a kind usually flows. A sensor reads; a relay is driven. */

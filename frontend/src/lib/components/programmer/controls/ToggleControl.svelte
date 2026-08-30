@@ -25,14 +25,17 @@
 	.toggle {
 		display: inline-flex;
 		align-items: center;
-		gap: 7px;
-		padding: 2px 8px 2px 2px;
+		gap: 8px;
+		/* Pressed, not dragged, so the height is padding around a small knob rather
+		   than a 44px pill. */
+		min-height: var(--control-h);
+		padding: 2px 14px 2px 4px;
 		border: 1px solid var(--line-strong);
 		border-radius: 12px;
 		background: var(--bg-sunken);
 		color: var(--text-dim);
 		font: inherit;
-		font-size: var(--font-xs);
+		font-size: var(--font-sm);
 		cursor: pointer;
 	}
 	.toggle.on {
@@ -41,8 +44,8 @@
 	}
 
 	.knob {
-		width: 16px;
-		height: 16px;
+		width: 20px;
+		height: 20px;
 		border-radius: 50%;
 		background: var(--line-input);
 		transition: background 0.12s;

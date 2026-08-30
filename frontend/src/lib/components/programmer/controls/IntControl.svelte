@@ -32,8 +32,8 @@
 	}
 
 	button {
-		width: 22px;
-		height: 22px;
+		width: var(--control-h);
+		height: var(--control-h);
 		flex: none;
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius);
@@ -49,15 +49,17 @@
 	}
 
 	input {
-		width: 62px;
+		width: 72px;
+		min-height: var(--control-h);
 		background: var(--bg-sunken);
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius);
 		color: var(--text);
 		font: inherit;
 		font-family: monospace;
-		font-size: var(--font-xs);
-		padding: 3px 6px;
+		font-size: var(--font-sm);
+		padding: 3px 8px;
+		text-align: center;
 	}
 	input:focus {
 		outline: none;

@@ -239,11 +239,18 @@ pub struct Fixture {
     /// What they are for is the two readers that cannot compute them: an output plugin
     /// deciding whether to hand a shape to a node instead of streaming samples at it,
     /// and a panel drawing where each fixture sits in the cycle.
+    ///
+    /// Defaulted on the wire: a LOCAL field is worked out by the station that holds
+    /// it, so a client creating a fixture has nothing to say about it and should not
+    /// have to name it. Without this, `fixtures/__create` refuses a body that is
+    /// otherwise complete because it omitted a field only the engine can fill.
+    #[serde(default)]
     #[pult(lifecycle = LOCAL)]
     pub live_effects: HashMap<String, RunningEffect>,
     /// The fades this station is part way through, keyed by parameter key. LOCAL for
     /// the same reason, and read by the same plugin to hand a timed move to a node
-    /// that can run it unattended.
+    /// that can run it unattended. Defaulted for the same reason as above.
+    #[serde(default)]
     #[pult(lifecycle = LOCAL)]
     pub live_fades: HashMap<String, RunningFade>,
 }

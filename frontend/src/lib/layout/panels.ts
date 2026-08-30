@@ -36,6 +36,16 @@ export type PanelMeta = {
 	 * given — a canvas, a plan, a graph. Everything else scrolls inside its tile.
 	 */
 	fills: boolean;
+	/**
+	 * True when this panel can change the show and so opens read-only, with an
+	 * Edit toggle in the tile chrome.
+	 *
+	 * Not every panel that writes wants one. The programmer writes constantly and is
+	 * the whole point of being at the console; an effects editor is an editor. What
+	 * this marks is the panels where a mis-hit is expensive and rare: unpatching a
+	 * fixture, forgetting a device, renaming a flow mid-show.
+	 */
+	editable?: boolean;
 };
 
 export const PANELS = {
@@ -44,7 +54,7 @@ export const PANELS = {
 	selection: { title: 'Selection', component: SelectionPanel, fills: true },
 	plan: { title: 'Plan', component: PlanPanel, fills: true },
 	rig: { title: '3D Rig', component: RigPanel, fills: true },
-	patch: { title: 'Patch', component: PatchPanel, fills: false },
+	patch: { title: 'Patch', component: PatchPanel, fills: false, editable: true },
 	flows: { title: 'Flows', component: FlowEditor, fills: true },
 	outputs: { title: 'Outputs', component: OutputsPanel, fills: false },
 	stations: { title: 'Stations', component: StationsPanel, fills: false },

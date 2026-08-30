@@ -34,6 +34,24 @@
 	--bad: #ef4444;
 
 	--radius: 4px;
+	--font-md: 14px;
 	--font-sm: 12px;
 	--font-xs: 11px;
+
+	/*
+	 * Touch sizing.
+	 *
+	 * A console is a tablet on a truss as often as it is a desk with a mouse, and
+	 * the panels written first are mouse-sized: 20-pixel rows, 6-pixel buttons. 44px
+	 * is the figure both Apple and Google settle on for a finger, and it is the one
+	 * every control converted from here on is built to.
+	 *
+	 * `--hit` is the *target*, which a control reaches with padding rather than by
+	 * being 44 pixels tall — a row of 44px faders would put four on a tablet screen.
+	 * `--control-h` is how tall a control actually draws.
+	 */
+	--hit: 44px;
+	--control-h: 36px;
+	--fader-h: 36px;
+	--pad: 10px;
 }

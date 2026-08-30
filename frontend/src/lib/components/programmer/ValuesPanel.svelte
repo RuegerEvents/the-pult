@@ -281,13 +281,16 @@
 
 	.row {
 		display: grid;
-		grid-template-columns: 84px 46px minmax(0, 1fr);
+		grid-template-columns: 92px 52px minmax(0, 1fr);
 		align-items: center;
-		gap: 8px;
+		gap: var(--pad);
 		padding: 4px 6px;
 		margin: 0 -6px;
 		border-radius: var(--radius);
 		min-width: 0;
+		/* Tall enough to hit standing up, from the fader inside it rather than from
+		   padding: a row of these is what an operator spends the show in. */
+		min-height: var(--hit);
 	}
 	.row.held {
 		background: #f59e0b14;

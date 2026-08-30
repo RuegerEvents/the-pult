@@ -853,6 +853,53 @@ chase silently, now 4 KiB; and a `display_dirty` flag added and then removed on 
 spot, because the display already marks itself dirty on any `OH_EVENT` and the field
 had no reader — which is the same fault task 17 spent a commit removing.
 
+### 23. View by default, edit on purpose (done)
+
+The rule, the shared controls it needs, and the Patch panel as the worked example.
+
+**Why a lock at all.** A console is a tablet gaffer-taped to a truss as often as it
+is a desk with a mouse, and every panel written so far is two things at once: a view
+of the show and a way to change it. On a laptop that costs nothing. On a tablet, a
+delete button eight pixels from a row selector is a fixture unpatched during a show.
+So a panel that can change the show opens read-only and says so, and the operator
+unlocks it deliberately.
+
+**The toggle is in the tile chrome, not in the panel.** It is the same control with
+the same meaning everywhere it appears, and a panel's own buttons are exactly what it
+must not be mistaken for. `PanelMeta.editable` marks which panels get one; closing a
+panel locks it again, so reopening it an hour into a show does not put an unlocked
+delete under a thumb with nothing having said so.
+
+**Controls are removed from the DOM, not disabled.** A greyed-out button invites a
+second, harder press. One that is not there says what it means. In view mode the
+Patch panel is text cells and the row selectors — because selecting a fixture changes
+nothing about the show and is what an operator does most.
+
+**`styles/controls.css`, beside `tokens.css` and with the same policy.** Tokens say
+what the colours are; this says what buttons, inputs and rows look like. Panels
+written before it keep their own styles rather than being churned. `--hit: 44px` is
+the target every converted control is built to, but a control reaches it with padding
+rather than by *being* 44 pixels — a row of 44px faders puts four on a tablet screen.
+The exception is the fader itself, which is dragged rather than pressed and so has to
+be the size of the gesture: that is what `--fader-h` is for.
+
+**Two kinds the picker was missing.** `Raw` and `Named` were left off the parameter
+list on the reasoning that neither is chosen by name — a raw channel is addressed by
+its binding, and a named parameter comes from a device describing itself. Both
+arguments are right about where those kinds *come from* and wrong about who has to
+type one: a light nobody has written a profile for is mostly raw channels, and
+building its type by hand was impossible without editing JSON. So `kindFromLabel`
+takes a name, and `kindOption` joins `kindLabel` — the two answer different questions
+and a `<select>` needs the other one. A named parameter shows its own name, because
+the word "Named" tells an operator nothing about which port they are looking at.
+
+**Two things the browser found.** Per-parameter `default_value` had a schema field, a
+reader in the output plugins and no way to set it; it is a `ValueControl` in the type
+editor now, so a moving head can rest centred rather than hard left. And seeding a
+fresh show broke: `fixtures/__create` refused a body that omitted `live_effects`,
+which no client can know. LOCAL fields are `#[serde(default)]` now — a field the
+station works out for itself is not one a client should have to name.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

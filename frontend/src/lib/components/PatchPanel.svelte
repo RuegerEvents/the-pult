@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { focusOnMount } from '$lib/actions.js';
+	import { editing } from '$lib/stores/editing.js';
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { select, selected, toggle } from '$lib/stores/selection.js';
@@ -16,6 +17,8 @@
 	} from '$lib/patch.js';
 
 	const data = getDataContext();
+	// Selecting is always live; changing the rig is not. See `stores/editing.ts`.
+	const unlocked = editing('patch');
 
 	let fixtures = $state<Fixture[]>([]);
 	let types = $state<FixtureType[]>([]);
@@ -76,20 +79,25 @@
 	<section class="block">
 		<header class="block-head">
 			<h2>Fixtures</h2>
-			<button class="ghost" disabled={types.length === 0} onclick={() => (creating = !creating)}>
-				{creating ? 'Cancel' : '+ Fixture'}
-			</button>
+			<!-- Removed from the DOM rather than disabled or dimmed. A control that is
+			     visible but inert invites a second, harder press; one that is not there
+			     says what it means. -->
+			{#if $unlocked}
+				<button class="btn btn-ghost" disabled={types.length === 0} onclick={() => (creating = !creating)}>
+					{creating ? 'Cancel' : '+ Fixture'}
+				</button>
+			{/if}
 		</header>
 
-		{#if creating}
+		{#if creating && $unlocked}
 			<form class="new-row" onsubmit={(e) => { e.preventDefault(); createFixture(); }}>
-				<input class="text-input" placeholder="Fixture name" bind:value={newName} use:focusOnMount />
-				<select class="text-input" bind:value={newTypeId}>
+				<input class="input" placeholder="Fixture name" bind:value={newName} use:focusOnMount />
+				<select class="select" bind:value={newTypeId}>
 					{#each types as type (type.id)}
 						<option value={type.id}>{type.name}</option>
 					{/each}
 				</select>
-				<button class="primary" type="submit">Patch</button>
+				<button class="btn btn-primary" type="submit">Patch</button>
 			</form>
 		{/if}
 
@@ -111,7 +119,7 @@
 						<tr class:clash={clashes.has(fixture.id)} class:selected={$selected.has(fixture.id)}>
 							<td>
 								<button
-									class="pick"
+									class="pick hit"
 									class:on={$selected.has(fixture.id)}
 									title="Select — shift-click to add to the selection"
 									aria-label="Select {fixture.name}"
@@ -120,42 +128,58 @@
 								></button>
 							</td>
 							<td>
-								<input
-									class="text-input"
-									value={fixture.name}
-									onchange={(e) => data.fixtures.byId(fixture.id).name.set(e.currentTarget.value)}
-								/>
+								{#if $unlocked}
+									<input
+										class="input"
+										value={fixture.name}
+										onchange={(e) => data.fixtures.byId(fixture.id).name.set(e.currentTarget.value)}
+									/>
+								{:else}
+									{fixture.name}
+								{/if}
 							</td>
 							<td>
-								<select
-									class="text-input"
-									value={fixture.fixture_type_id}
-									onchange={(e) => data.fixtures.byId(fixture.id).fixture_type_id.set(e.currentTarget.value)}
-								>
-									{#each types as t (t.id)}
-										<option value={t.id}>{t.name}</option>
-									{/each}
-								</select>
+								{#if $unlocked}
+									<select
+										class="select"
+										value={fixture.fixture_type_id}
+										onchange={(e) => data.fixtures.byId(fixture.id).fixture_type_id.set(e.currentTarget.value)}
+									>
+										{#each types as t (t.id)}
+											<option value={t.id}>{t.name}</option>
+										{/each}
+									</select>
+								{:else}
+									{type?.name ?? '—'}
+								{/if}
 							</td>
 							{#if dmx}
 								<td>
-									<input
-										class="text-input narrow"
-										type="number"
-										min="0"
-										value={dmx.universe}
-										onchange={(e) => setDmx(fixture, { universe: Number(e.currentTarget.value) })}
-									/>
+									{#if $unlocked}
+										<input
+											class="input narrow"
+											type="number"
+											min="0"
+											value={dmx.universe}
+											onchange={(e) => setDmx(fixture, { universe: Number(e.currentTarget.value) })}
+										/>
+									{:else}
+										{dmx.universe}
+									{/if}
 								</td>
 								<td>
-									<input
-										class="text-input narrow"
-										type="number"
-										min="1"
-										max="512"
-										value={dmx.address}
-										onchange={(e) => setDmx(fixture, { address: Number(e.currentTarget.value) })}
-									/>
+									{#if $unlocked}
+										<input
+											class="input narrow"
+											type="number"
+											min="1"
+											max="512"
+											value={dmx.address}
+											onchange={(e) => setDmx(fixture, { address: Number(e.currentTarget.value) })}
+										/>
+									{:else}
+										{dmx.address}
+									{/if}
 									<span class="hint">{channelRange(fixture, type?.channel_count ?? 1)}</span>
 								</td>
 							{:else}
@@ -167,14 +191,16 @@
 								{#if fixture.position}
 									{@const p = 'Point' in fixture.position ? fixture.position.Point : fixture.position.Axial.position}
 									<span class="coords">{p.x.toFixed(1)}, {p.y.toFixed(1)}, {p.z.toFixed(1)}</span>
-								{:else}
+								{:else if $unlocked}
 									<button
-										class="ghost small"
+										class="btn btn-ghost btn-icon"
 										title="Give this fixture a place in the rig"
 										onclick={() => data.fixtures.byId(fixture.id).position.set({ Point: { x: 0, y: 0, z: 0 } })}
 									>
 										Place
 									</button>
+								{:else}
+									<span class="hint">not placed</span>
 								{/if}
 							</td>
 							<td class="live">
@@ -184,7 +210,15 @@
 									{/each}
 								{/if}
 							</td>
-							<td><button class="danger" title="Unpatch" onclick={() => data.fixtures.byId(fixture.id).delete()}>×</button></td>
+							<td>
+								{#if $unlocked}
+									<button
+										class="btn btn-danger btn-icon"
+										title="Unpatch {fixture.name}"
+										onclick={() => data.fixtures.byId(fixture.id).delete()}
+									>×</button>
+								{/if}
+							</td>
 						</tr>
 					{/each}
 				</tbody>
@@ -203,12 +237,17 @@
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
 	.rig { width: 100%; border-collapse: collapse; font-size: 13px; }
 	.rig th { text-align: left; color: #777; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 6px 6px 0; }
-	.rig td { padding: 3px 6px 3px 0; vertical-align: middle; }
+	/* Rows tall enough to hit standing up. Reading is the common case, so the height
+	   comes from padding rather than from every cell holding a 44px control. */
+	.rig td { padding: 8px 6px; vertical-align: middle; height: var(--hit); }
 	.rig tr.clash td { background: #3a1f1f; }
 	.rig tr.selected td { background: #1a2a40; }
-	.pick { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #555; background: none; padding: 0; cursor: pointer; display: block; }
-	.pick:hover { border-color: #4a9eff; }
-	.pick.on { background: #4a9eff; border-color: #4a9eff; }
+	/* Drawn small so a row of them is still a table; `.hit` puts a finger-sized
+	   target around each one, because selecting is what an operator does most and
+	   the one thing that stays live when the panel is locked. */
+	.pick { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line-input); background: none; padding: 0; cursor: pointer; display: block; }
+	.pick:hover { border-color: var(--accent); }
+	.pick.on { background: var(--accent); border-color: var(--accent); }
 	.coords { color: #bbb; font-variant-numeric: tabular-nums; }
 	.node-address { color: #bbb; font-family: monospace; font-size: 12px; }
 	.live { display: flex; gap: 3px; flex-wrap: wrap; padding-top: 6px; }
@@ -217,13 +256,7 @@
 	.new-row { display: flex; gap: 6px; margin-bottom: 8px; }
 	.empty { color: #777; font-size: 13px; padding: 8px 0; }
 	.warn { color: #e08a55; font-size: 12px; margin-top: 8px; }
-	.text-input { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 4px 6px; font: inherit; }
-	.text-input.narrow { width: 72px; }
-	.primary { background: #2f6fd0; border: none; border-radius: 3px; color: #fff; padding: 5px 12px; font: inherit; cursor: pointer; }
-	.ghost { background: none; border: 1px solid #3a3a3a; border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; cursor: pointer; }
-	.ghost.small { padding: 2px 8px; font-size: 12px; }
-	.ghost:hover:not(:disabled) { border-color: #555; color: #fff; }
-	.ghost:disabled { opacity: 0.4; cursor: not-allowed; }
-	.danger { background: none; border: none; color: #777; font-size: 16px; line-height: 1; padding: 4px 8px; cursor: pointer; }
-	.danger:hover { color: #e05555; }
+	/* Buttons and inputs come from `styles/controls.css` now; `.narrow` is the one
+	   size this table needs that the shared sheet has no opinion about. */
+	.input.narrow { width: 5rem; }
 </style>

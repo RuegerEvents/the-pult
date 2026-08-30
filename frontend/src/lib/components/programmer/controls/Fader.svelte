@@ -109,8 +109,11 @@
 <style>
 	.fader {
 		position: relative;
-		height: 22px;
-		min-width: 90px;
+		/* A fader is dragged, so unlike a button it has to *be* the size of the
+		   gesture rather than reaching it with padding. `--fader-h` is the one
+		   figure the touch conversion turns on. */
+		height: var(--fader-h);
+		min-width: 110px;
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius);
 		background: var(--bg-sunken);
@@ -136,9 +139,9 @@
 		display: flex;
 		align-items: center;
 		justify-content: flex-end;
-		padding-right: 6px;
+		padding-right: 8px;
 		font-family: monospace;
-		font-size: var(--font-xs);
+		font-size: var(--font-sm);
 		color: var(--text);
 		pointer-events: none;
 	}

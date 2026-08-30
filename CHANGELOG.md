@@ -12,6 +12,15 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **Panels that can change the show open read-only.** An Edit toggle in the
+  tile chrome unlocks one; closing it locks it again. Patch is the first: in
+  view mode it is text cells and the row selectors, and the inputs, delete
+  buttons and *+ Fixture* are not there at all rather than greyed out. Controls
+  across the programmer are sized for a finger.
+- **Fixture types can be edited properly.** Rename a type, set each
+  parameter's default value with the right control for its kind, and pick
+  `Raw` or `Named` — so a light nobody has written a profile for can be
+  patched without editing JSON.
 - **Effects have a shape in the schema.** `EffectSpec` describes one periodic
   instruction — a curve that is either a shape scaled between two values or a
   list of keyframes carrying their own, plus rate, width, direction, per-fixture

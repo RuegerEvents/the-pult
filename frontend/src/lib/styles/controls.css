@@ -1,0 +1,129 @@
+/*
+ * The controls a converted panel is built from.
+ *
+ * `tokens.css` says what the console's colours are; this says what its buttons,
+ * inputs and rows look like. Same policy: panels written before it keep their own
+ * styles rather than being churned, so a diff about the patch is about the patch.
+ *
+ * Everything here is sized for a finger. See `--hit` in tokens.css for why.
+ */
+
+.btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	min-height: var(--control-h);
+	/* The visible box is --control-h; the padding is what makes the *target* --hit
+	   without making a row of them unusably tall. */
+	padding: 0 14px;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius);
+	background: var(--bg-raised);
+	color: var(--text);
+	font-size: var(--font-sm);
+	font-family: inherit;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+	background: var(--bg-hover);
+	border-color: var(--line-input);
+}
+
+.btn:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+
+.btn-primary {
+	background: var(--accent-solid);
+	border-color: var(--accent-solid);
+	color: var(--text-bright);
+}
+
+.btn-primary:hover:not(:disabled) {
+	background: var(--accent);
+	border-color: var(--accent);
+}
+
+.btn-ghost {
+	background: transparent;
+	border-style: dashed;
+	color: var(--text-dim);
+}
+
+.btn-icon {
+	min-width: var(--control-h);
+	padding: 0 8px;
+}
+
+/* A destructive button says so before it is pressed, not after. */
+.btn-danger {
+	border-color: var(--bad);
+	color: var(--bad);
+}
+
+.btn-danger:hover:not(:disabled) {
+	background: var(--bad);
+	color: var(--text-bright);
+}
+
+/*
+ * Anything small that still has to be hittable: a checkbox, a row selector, an ✕.
+ *
+ * The element draws whatever size it likes and this puts an invisible 44px target
+ * around it, so a 12-pixel dot is still a finger-sized thing to press.
+ */
+.hit {
+	position: relative;
+}
+
+.hit::after {
+	content: '';
+	position: absolute;
+	inset: 50% auto auto 50%;
+	width: var(--hit);
+	height: var(--hit);
+	transform: translate(-50%, -50%);
+}
+
+.input,
+.select {
+	min-height: var(--control-h);
+	padding: 0 var(--pad);
+	border: 1px solid var(--line-input);
+	border-radius: var(--radius);
+	background: var(--bg-sunken);
+	color: var(--text);
+	font-size: var(--font-sm);
+	font-family: inherit;
+}
+
+.input:focus,
+.select:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+.input.mono {
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.input.narrow {
+	width: 5.5rem;
+}
+
+/* A row somebody has to hit accurately while standing up. */
+.row-touch {
+	display: flex;
+	align-items: center;
+	gap: var(--pad);
+	min-height: var(--hit);
+	padding: 4px var(--pad);
+}
+
+.row-touch + .row-touch {
+	border-top: 1px solid var(--line);
+}
