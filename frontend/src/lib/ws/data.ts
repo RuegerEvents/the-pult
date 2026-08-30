@@ -18,6 +18,7 @@ import type { Show } from '../generated/Show.js';
 import type { SpeedMaster } from '../generated/SpeedMaster.js';
 import type { StagePlan } from '../generated/StagePlan.js';
 import type { Station } from '../generated/Station.js';
+import type { User } from '../generated/User.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
 
@@ -73,6 +74,10 @@ export type StagePlanEntity = PathProxy<StagePlan> & {
 };
 
 export type StationEntity = PathProxy<Station> & {
+  delete(): Promise<void>;
+};
+
+export type UserEntity = PathProxy<User> & {
   delete(): Promise<void>;
 };
 
@@ -221,6 +226,17 @@ export type StationCollection = {
   [n: number]: StationEntity;
 };
 
+export type UserCollection = {
+  get(): Promise<User[]>;
+  set(value: User[]): Promise<void>;
+  subscribe(cb: (value: User[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: User[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): UserEntity;
+  nth(n: number): UserEntity;
+  create(entity: User): Promise<void>;
+  [n: number]: UserEntity;
+};
+
 // ── DataRoot ─────────────────────────────────────────────────────────────────
 
 /** Typed root for the pult:data context. Every field maps to a live path proxy. */
@@ -239,6 +255,7 @@ export type DataRoot = {
   speed_masters: SpeedMasterCollection;
   stage_plans: StagePlanCollection;
   stations: StationCollection;
+  users: UserCollection;
 };
 
 /** Create the typed root proxy. The runtime proxy handles all DataRoot operations generically. */

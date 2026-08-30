@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{lifecycle::Lifecycle, path::Path};
+use crate::{lifecycle::Lifecycle, path::Path, path::PathSegment};
 
 // Ord is how concurrent writes are broken apart: every node picks the same winner
 // because every node compares the same two ids.
@@ -77,6 +77,12 @@ impl VectorClock {
 }
 
 /// A single mutation wrapped with distributed metadata.
+///
+/// The last three fields are what makes the oplog an undo history as well as a
+/// replication log. Undo is not a separate stack kept beside this: an undo *is* a
+/// write, logged like any other, which means it replicates to peers for free, a
+/// second client of the same user sees it, and the history panel is a view of one
+/// list rather than a reconciliation of two.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Operation {
     pub id: Uuid,
@@ -88,6 +94,29 @@ pub struct Operation {
     pub path: Path,
     pub value: serde_json::Value,
     pub timestamp: DateTime<Utc>,
+    /// Who asked for this, where anybody did.
+    ///
+    /// `None` for the engine's own writes — a fade advancing, a follow cue firing,
+    /// a station publishing its memory usage. Nobody pressed anything, so there is
+    /// nobody to attribute it to and nothing to undo.
+    #[serde(default)]
+    pub user_id: Option<Uuid>,
+    /// What was at this path before, so the write can be taken back.
+    ///
+    /// Captured at write time because the oplog is otherwise a list of destinations
+    /// with no record of where anything came from — replaying it forwards works and
+    /// running it backwards does not. `Some(Null)` and `None` are different: the
+    /// first means the path was empty and undo should empty it again, the second
+    /// means nothing was captured and this operation cannot be undone.
+    #[serde(default)]
+    pub previous: Option<serde_json::Value>,
+    /// The operation this one reverses, if it is an undo or a redo.
+    ///
+    /// Undo and redo are the same mechanism: each writes a value and points at what
+    /// it undid. Redo is undoing an undo, which is why one field covers both and why
+    /// the stack does not need to exist anywhere else.
+    #[serde(default)]
+    pub undoes: Option<Uuid>,
 }
 
 impl Operation {
@@ -108,8 +137,47 @@ impl Operation {
             path,
             value,
             timestamp: Utc::now(),
+            user_id: None,
+            previous: None,
+            undoes: None,
         }
     }
+
+    /// Say who did this and what they did it over.
+    pub fn by(mut self, user_id: Option<Uuid>, previous: Option<serde_json::Value>) -> Self {
+        self.user_id = user_id;
+        self.previous = previous;
+        self
+    }
+
+    /// Mark this operation as reversing another.
+    pub fn reversing(mut self, undone: Uuid) -> Self {
+        self.undoes = Some(undone);
+        self
+    }
+
+    /// Whether this operation is one a person could ask to take back.
+    ///
+    /// Three things have to hold. Somebody has to have asked for it — the engine's
+    /// own writes have no author and no meaning as an undo. Something has to have
+    /// been captured to put back. And it has to be a value write rather than a
+    /// command: `goNext` has no inverse worth the name, and an operator who pressed
+    /// Ctrl-Z expecting to take back an edit would not thank a console that moved
+    /// the lights instead. Going back a cue is a different gesture with a different
+    /// name.
+    pub fn is_undoable(&self) -> bool {
+        self.user_id.is_some() && self.previous.is_some() && !is_command_path(&self.path)
+    }
+}
+
+/// Whether a path names a registered command rather than a field.
+///
+/// Commands are dispatched by the last segment matching a registration, which is
+/// what this asks. Keeping it here rather than in the engine means the oplog can
+/// answer "was that an edit or a button press" without the engine's help.
+pub fn is_command_path(path: &Path) -> bool {
+    let Some(PathSegment::Key(last)) = path.last() else { return false };
+    crate::commands::registered_command(last).is_some()
 }
 
 #[cfg(test)]

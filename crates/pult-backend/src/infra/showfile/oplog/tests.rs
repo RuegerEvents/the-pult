@@ -17,6 +17,9 @@ fn an_op(node: NodeId, seq: u64, field: &str, value: &str) -> Operation {
         path: vec![PathSegment::Key("sequences".into()), PathSegment::Key(field.into())],
         value: serde_json::json!(value),
         timestamp: Utc::now(),
+        user_id: None,
+        previous: None,
+        undoes: None,
     }
 }
 

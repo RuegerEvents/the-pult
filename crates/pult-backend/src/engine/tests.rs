@@ -580,6 +580,9 @@ async fn a_peer_operation_is_applied_and_broadcast_locally() {
         value: json(&"Renamed by peer"),
         lifecycle: Lifecycle::Persisted,
         timestamp: Utc::now(),
+        user_id: None,
+        previous: None,
+        undoes: None,
     };
     h.engine.0.send(EngineCommand::ApplyPeerOperation(op)).await.unwrap();
 

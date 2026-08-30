@@ -12,6 +12,7 @@ pub mod flow;
 pub mod stage;
 pub mod programmer;
 pub mod speedmaster;
+pub mod user;
 pub mod layout;
 
 pub use fixture::{Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
@@ -22,6 +23,7 @@ pub use effect::{
     Spread, Step,
 };
 pub use speedmaster::{SpeedMaster, SpeedMasterCreate, SpeedMasterPatch};
+pub use user::{colour_for, User, UserCreate, UserPatch, USER_COLOURS};
 pub use show::{Show, ShowCreate, ShowPatch};
 pub use session::{DiscoveredSession, SessionState};
 pub use devices::{DeviceHealth, DevicesState, DiscoveredDevice};

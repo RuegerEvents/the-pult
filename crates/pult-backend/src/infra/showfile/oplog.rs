@@ -15,8 +15,9 @@ use uuid::Uuid;
 pub async fn append(pool: &SqlitePool, op: &Operation) -> Result<()> {
     sqlx::query(
         "INSERT OR REPLACE INTO oplog \
-         (seq, node_id, op_id, clock_json, path_json, value_json, lifecycle, timestamp) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+         (seq, node_id, op_id, clock_json, path_json, value_json, lifecycle, timestamp, \
+          user_id, previous_json, undoes) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )
     .bind(op.seq as i64)
     .bind(op.node_id.0.to_string())
@@ -26,6 +27,12 @@ pub async fn append(pool: &SqlitePool, op: &Operation) -> Result<()> {
     .bind(serde_json::to_string(&op.value)?)
     .bind(serde_json::to_string(&op.lifecycle)?)
     .bind(op.timestamp.to_rfc3339())
+    .bind(op.user_id.map(|id| id.to_string()))
+    // `Some(Null)` and `None` are different and the column has to keep them apart:
+    // the first means the path was empty and undo should empty it again, the second
+    // means nothing was captured and there is nothing to go back to.
+    .bind(op.previous.as_ref().map(serde_json::to_string).transpose()?)
+    .bind(op.undoes.map(|id| id.to_string()))
     .execute(pool)
     .await?;
     Ok(())
@@ -37,7 +44,8 @@ pub async fn append(pool: &SqlitePool, op: &Operation) -> Result<()> {
 /// operation's sequence number on the node that wrote it.
 pub async fn since(pool: &SqlitePool, known: &VectorClock) -> Result<Vec<Operation>> {
     let rows = sqlx::query(
-        "SELECT seq, node_id, op_id, clock_json, path_json, value_json, lifecycle, timestamp \
+        "SELECT seq, node_id, op_id, clock_json, path_json, value_json, lifecycle, timestamp, \
+                user_id, previous_json, undoes \
          FROM oplog ORDER BY timestamp, seq",
     )
     .fetch_all(pool)
@@ -76,7 +84,40 @@ fn read_operation(row: &sqlx::sqlite::SqliteRow) -> Option<Operation> {
         path: serde_json::from_str(&row.try_get::<String, _>("path_json").ok()?).ok()?,
         value: serde_json::from_str(&row.try_get::<String, _>("value_json").ok()?).ok()?,
         timestamp: DateTime::parse_from_rfc3339(&timestamp).ok()?.with_timezone(&Utc),
+        // Absent on a row written before undo existed, and on every engine write.
+        // Both read as "not something a person can take back", which is true.
+        user_id: row
+            .try_get::<Option<String>, _>("user_id")
+            .ok()
+            .flatten()
+            .and_then(|id| Uuid::parse_str(&id).ok()),
+        previous: row
+            .try_get::<Option<String>, _>("previous_json")
+            .ok()
+            .flatten()
+            .and_then(|json| serde_json::from_str(&json).ok()),
+        undoes: row
+            .try_get::<Option<String>, _>("undoes")
+            .ok()
+            .flatten()
+            .and_then(|id| Uuid::parse_str(&id).ok()),
     })
+}
+
+/// Every operation in the log, newest first, for the history panel and for undo.
+///
+/// `limit` because a long show's log is thousands of rows and nobody scrolls that
+/// far — and because undo only ever needs the most recent one that qualifies.
+pub async fn recent(pool: &SqlitePool, limit: u32) -> Result<Vec<Operation>> {
+    let rows = sqlx::query(
+        "SELECT seq, node_id, op_id, clock_json, path_json, value_json, lifecycle, timestamp, \
+                user_id, previous_json, undoes \
+         FROM oplog ORDER BY timestamp DESC, seq DESC LIMIT ?1",
+    )
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().filter_map(read_operation).collect())
 }
 
 #[cfg(test)]

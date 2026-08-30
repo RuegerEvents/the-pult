@@ -237,12 +237,24 @@ pub enum EngineCommand {
         path: Path,
         value: serde_json::Value,
         lifecycle: Lifecycle,
+        /// Who asked, where anybody did. `None` for the engine\'s own writes.
+        user_id: Option<Uuid>,
         reply: oneshot::Sender<Result<(), BackendError>>,
     },
     Get {
         path: Path,
         reply: oneshot::Sender<Result<serde_json::Value, BackendError>>,
     },
+    /// Take back this user's last change, or put back their last undo.
+    Undo {
+        user_id: Uuid,
+        redo: bool,
+        /// What was reversed, or `None` when there was nothing to reverse.
+        reply: oneshot::Sender<Option<Operation>>,
+    },
+    /// The recent operation log, for the history panel.
+    History { limit: u32, reply: oneshot::Sender<Vec<Operation>> },
+
     Subscribe {
         pattern: PathPattern,
         reply: oneshot::Sender<BoxStream<'static, serde_json::Value>>,
@@ -301,7 +313,39 @@ impl EngineHandle {
     ) -> Result<(), BackendError> {
         let (tx, rx) = oneshot::channel();
         self.0
-            .send(EngineCommand::Set { path, value, lifecycle, reply: tx })
+            .send(EngineCommand::Set { path, value, lifecycle, user_id: None, reply: tx })
+            .await
+            .map_err(|_| BackendError::ChannelClosed)?;
+        rx.await?
+    }
+
+    /// Take back a user's last change. `redo` puts back their last undo instead.
+    pub async fn undo(&self, user_id: Uuid, redo: bool) -> Option<Operation> {
+        let (tx, rx) = oneshot::channel();
+        self.0.send(EngineCommand::Undo { user_id, redo, reply: tx }).await.ok()?;
+        rx.await.ok().flatten()
+    }
+
+    /// The recent operation log, newest first.
+    pub async fn history(&self, limit: u32) -> Vec<Operation> {
+        let (tx, rx) = oneshot::channel();
+        if self.0.send(EngineCommand::History { limit, reply: tx }).await.is_err() {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// A write somebody asked for, so it can be taken back.
+    pub async fn set_as(
+        &self,
+        user_id: Uuid,
+        path: Path,
+        lifecycle: Lifecycle,
+        value: serde_json::Value,
+    ) -> Result<(), BackendError> {
+        let (tx, rx) = oneshot::channel();
+        self.0
+            .send(EngineCommand::Set { path, value, lifecycle, user_id: Some(user_id), reply: tx })
             .await
             .map_err(|_| BackendError::ChannelClosed)?;
         rx.await?
@@ -558,20 +602,37 @@ impl ShowEngine {
                         .ok_or_else(|| BackendError::PathNotFound(path));
                     let _ = reply.send(result);
                 }
-                EngineCommand::Set { path, value, lifecycle, reply } => {
+                EngineCommand::Set { path, value, lifecycle, user_id, reply } => {
+                    // Read before writing: the oplog is otherwise a list of
+                    // destinations with no record of where anything came from, and
+                    // replaying that forwards works while running it backwards does
+                    // not. Only for a write somebody asked for — the engine's own,
+                    // at 40 Hz, would pay for a read nobody will ever undo.
+                    let previous =
+                        user_id.map(|_| self.value_before(&path)).unwrap_or(None);
                     let result = self.apply_set(path.clone(), value.clone(), lifecycle).await;
                     if result.is_ok() {
                         self.state_version += 1;
                         self.record_write(&path, lifecycle);
-                        self.log_local_write(&path, &value, lifecycle).await;
+                        self.log_local_write(&path, &value, lifecycle, user_id, previous.clone(), None)
+                            .await;
                         self.broadcast_after_set(&path, value.clone());
                         if lifecycle != Lifecycle::Local {
                             if let Some(sync) = &self.sync {
-                                sync.broadcast_synced(path, value, self.clock.clone()).await;
+                                sync.broadcast_synced(path, value, self.clock.clone(), user_id, previous)
+                                    .await;
                             }
                         }
                     }
                     let _ = reply.send(result);
+                }
+                EngineCommand::Undo { user_id, redo, reply } => {
+                    let done = self.take_back(user_id, redo).await;
+                    let _ = reply.send(done);
+                }
+                EngineCommand::History { limit, reply } => {
+                    let log = oplog::recent(&self.pool, limit).await.unwrap_or_default();
+                    let _ = reply.send(log);
                 }
                 EngineCommand::Subscribe { pattern, reply } => {
                     let stream = self.broadcast.subscribe_filtered(pattern);
@@ -704,7 +765,7 @@ impl ShowEngine {
             self.state_version += 1;
             self.record_write(&path, Lifecycle::Synced);
             if let Some(sync) = &self.sync {
-                sync.broadcast_synced(path, args, self.clock.clone()).await;
+                sync.broadcast_synced(path, args, self.clock.clone(), None, None).await;
             }
         }
     }
@@ -849,10 +910,10 @@ impl ShowEngine {
         }
         self.state_version += 1;
         self.record_write(&path, Lifecycle::Synced);
-        self.log_local_write(&path, &value, Lifecycle::Synced).await;
+        self.log_local_write(&path, &value, Lifecycle::Synced, None, None, None).await;
         self.broadcast_after_set(&path, value.clone());
         if let Some(sync) = &self.sync {
-            sync.broadcast_synced(path, value, self.clock.clone()).await;
+            sync.broadcast_synced(path, value, self.clock.clone(), None, None).await;
         }
     }
 
@@ -921,10 +982,10 @@ impl ShowEngine {
 
         self.apply_set(path.clone(), values.clone(), Lifecycle::Synced).await?;
         self.record_write(&path, Lifecycle::Synced);
-        self.log_local_write(&path, &values, Lifecycle::Synced).await;
+        self.log_local_write(&path, &values, Lifecycle::Synced, None, None, None).await;
         self.broadcast_after_set(&path, values.clone());
         if let Some(sync) = &self.sync {
-            sync.broadcast_synced(path, values, self.clock.clone()).await;
+            sync.broadcast_synced(path, values, self.clock.clone(), None, None).await;
         }
         // The output side has to see it now: an input can arrive between two ticks,
         // and a relay that follows a button should not wait for the next one.
@@ -938,6 +999,9 @@ impl ShowEngine {
         path: &Path,
         value: &serde_json::Value,
         lifecycle: Lifecycle,
+        user_id: Option<Uuid>,
+        previous: Option<serde_json::Value>,
+        undoes: Option<Uuid>,
     ) {
         if lifecycle == Lifecycle::Local {
             return;
@@ -951,8 +1015,78 @@ impl ShowEngine {
             path: path.clone(),
             value: value.clone(),
             timestamp: chrono::Utc::now(),
+            user_id,
+            previous,
+            undoes,
         };
         self.log_operation(&op).await;
+    }
+
+    /// What is at a path right now, for the oplog to remember.
+    ///
+    /// A create has nothing before it and a delete has the whole entity, and both
+    /// read correctly here: `get_by_path` on a `__create` path finds nothing, and on
+    /// a `__delete` path finds the entity about to go. So one read covers all three
+    /// shapes of write and the undo code does not have to ask what kind it is.
+    fn value_before(&self, path: &Path) -> Option<serde_json::Value> {
+        let target = match path.as_slice() {
+            // `[table, "__create"]` — nothing is there yet.
+            [PathSegment::Key(_), PathSegment::Key(action)] if action == "__create" => {
+                return Some(serde_json::Value::Null)
+            }
+            // `[table, id, "__delete"]` — the entity itself is what is lost.
+            [table @ PathSegment::Key(_), id, PathSegment::Key(action)] if action == "__delete" => {
+                vec![table.clone(), id.clone()]
+            }
+            _ => path.clone(),
+        };
+        Some(self.state.get_by_path(&target).unwrap_or(serde_json::Value::Null))
+    }
+
+    /// Take back this user's most recent change, or put back their most recent undo.
+    ///
+    /// The undo is written like any other change and logged pointing at what it
+    /// reversed, so it replicates to peers, reaches the same user's other client,
+    /// and turns up in the history as itself.
+    async fn take_back(&mut self, user_id: Uuid, redo: bool) -> Option<Operation> {
+        let log = oplog::recent(&self.pool, UNDO_DEPTH).await.ok()?;
+        let target = if redo {
+            undo::next_to_redo(&log, user_id)?
+        } else {
+            undo::next_to_undo(&log, user_id)?
+        }
+        .clone();
+        let inverse = undo::inverse_of(&target)?;
+
+        let lifecycle = pult_schema::registry::path_lifecycle(&inverse.path);
+        let previous = self.value_before(&inverse.path);
+        self.apply_set(inverse.path.clone(), inverse.value.clone(), lifecycle).await.ok()?;
+
+        self.state_version += 1;
+        self.record_write(&inverse.path, lifecycle);
+        self.log_local_write(
+            &inverse.path,
+            &inverse.value,
+            lifecycle,
+            Some(user_id),
+            previous.clone(),
+            Some(target.id),
+        )
+        .await;
+        self.broadcast_after_set(&inverse.path, inverse.value.clone());
+        if lifecycle != Lifecycle::Local {
+            if let Some(sync) = &self.sync {
+                sync.broadcast_synced(
+                    inverse.path,
+                    inverse.value,
+                    self.clock.clone(),
+                    Some(user_id),
+                    previous,
+                )
+                .await;
+            }
+        }
+        Some(target)
     }
 
     /// Read one collection out of the state as typed entities.
@@ -1261,7 +1395,7 @@ impl ShowEngine {
         self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await?;
         self.record_write(&path, Lifecycle::Synced);
         if let Some(sync) = &self.sync {
-            sync.broadcast_synced(path, args, self.clock.clone()).await;
+            sync.broadcast_synced(path, args, self.clock.clone(), None, None).await;
         }
         Ok(serde_json::Value::Null)
     }
@@ -1514,6 +1648,16 @@ fn entity_id(
             reason: format!("missing or malformed {field}"),
         })
 }
+
+pub mod undo;
+
+/// How far back undo looks.
+///
+/// The oplog is a replication log first and grows for the length of a show, so undo
+/// reads a window rather than the lot. Five hundred operations is far more than
+/// anybody steps back through and small enough that a Ctrl-Z is a single indexed
+/// query rather than a scan of the evening.
+const UNDO_DEPTH: u32 = 500;
 
 #[cfg(test)]
 mod tests;

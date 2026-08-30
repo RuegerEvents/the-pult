@@ -109,6 +109,9 @@ async fn peer_write(node: &Node, from: NodeId, clock: VectorClock, path: Path, v
         path,
         value: serde_json::json!(value),
         timestamp: Utc::now(),
+        user_id: None,
+        previous: None,
+        undoes: None,
     };
     node.engine.0.send(EngineCommand::ApplyPeerOperation(op)).await.unwrap();
     // Ordered behind the operation on the engine's queue.

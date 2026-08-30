@@ -304,6 +304,10 @@ fn generate_sql_migration(workspace: &PathBuf) -> Result<()> {
         "    value_json  TEXT NOT NULL,\n",
         "    lifecycle   TEXT NOT NULL,\n",
         "    timestamp   TEXT NOT NULL,\n",
+        // Who asked, what was there before, and what this reverses. Nullable: the\n         // engine's own writes have no author, and an operation logged before undo\n         // existed captured nothing to put back.\n",
+        "    user_id     TEXT,\n",
+        "    previous_json TEXT,\n",
+        "    undoes      TEXT,\n",
         "    PRIMARY KEY (node_id, seq)\n",
         ");"
     ).to_string());

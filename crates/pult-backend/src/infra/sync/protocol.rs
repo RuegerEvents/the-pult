@@ -75,6 +75,14 @@ pub enum SyncMessage {
         path: Path,
         value: serde_json::Value,
         clock: VectorClock,
+        /// Who made the change, and what it replaced.
+        ///
+        /// Defaulted so a peer running an older build still parses the message —
+        /// its writes simply arrive unattributed, which is what they are.
+        #[serde(default)]
+        user_id: Option<uuid::Uuid>,
+        #[serde(default)]
+        previous: Option<serde_json::Value>,
     },
     Heartbeat {
         seq: u64,

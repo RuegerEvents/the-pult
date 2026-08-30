@@ -388,8 +388,8 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
             info!("[sync] received state snapshot from peer {}", peer_node_id.0);
             engine.apply_state_snapshot(state).await;
         }
-        SyncMessage::SyncedBroadcast { path, value, clock, .. } => {
-            apply_synced(engine, peer_node_id, path, value, clock).await;
+        SyncMessage::SyncedBroadcast { path, value, clock, user_id, previous, .. } => {
+            apply_synced(engine, peer_node_id, path, value, clock, user_id, previous).await;
         }
         // Heartbeat is answered in run_peer_loop, which holds the write half.
         SyncMessage::Heartbeat { .. } | SyncMessage::HeartbeatAck { .. } => {}
@@ -414,6 +414,8 @@ async fn apply_synced(
     path: Path,
     value: Value,
     clock: VectorClock,
+    user_id: Option<Uuid>,
+    previous: Option<Value>,
 ) {
     let lifecycle = pult_schema::registry::path_lifecycle(&path);
     let op = Operation {
@@ -425,6 +427,11 @@ async fn apply_synced(
         path,
         value,
         timestamp: Utc::now(),
+        // Carried from the peer rather than dropped, so this node's history can say
+        // who changed what wherever they were sitting.
+        user_id,
+        previous,
+        undoes: None,
     };
     let _ = engine.0.send(EngineCommand::ApplyPeerOperation(op)).await;
 }

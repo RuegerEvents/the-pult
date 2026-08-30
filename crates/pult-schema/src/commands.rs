@@ -15,3 +15,14 @@ pub struct CommandRegistration {
 }
 
 inventory::collect!(CommandRegistration);
+
+/// The registration for a command name, if there is one.
+///
+/// Used to tell an edit from a button press: a path whose last segment names a
+/// command is somebody pressing Go, and a path that does not is somebody changing
+/// the show. Undo cares about the difference.
+pub fn registered_command(name: &str) -> Option<&'static CommandRegistration> {
+    inventory::iter::<CommandRegistration>
+        .into_iter()
+        .find(|registration| registration.command_name == name)
+}

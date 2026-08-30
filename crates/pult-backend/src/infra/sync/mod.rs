@@ -30,6 +30,8 @@ pub enum SyncCommand {
         path: Path,
         value: serde_json::Value,
         clock: VectorClock,
+        user_id: Option<uuid::Uuid>,
+        previous: Option<serde_json::Value>,
     },
     /// Connect to a new peer (called by SessionManager on peer discovery).
     ConnectPeer {
@@ -64,8 +66,24 @@ pub enum SyncCommand {
 pub struct SyncHandle(pub mpsc::Sender<SyncCommand>);
 
 impl SyncHandle {
-    pub async fn broadcast_synced(&self, path: Path, value: serde_json::Value, clock: VectorClock) {
-        let _ = self.0.send(SyncCommand::BroadcastSynced { path, value, clock }).await;
+    /// Replicate a write, with who made it and what it replaced.
+    ///
+    /// The two extras ride along so a peer's oplog is as complete as this one's:
+    /// without them the history panel on another console could say what changed but
+    /// not who changed it, and a user whose two clients are on different stations
+    /// would find half their work unundoable.
+    pub async fn broadcast_synced(
+        &self,
+        path: Path,
+        value: serde_json::Value,
+        clock: VectorClock,
+        user_id: Option<uuid::Uuid>,
+        previous: Option<serde_json::Value>,
+    ) {
+        let _ = self
+            .0
+            .send(SyncCommand::BroadcastSynced { path, value, clock, user_id, previous })
+            .await;
     }
 
     pub async fn connect_peer(&self, addr: SocketAddr, session_id: Uuid, show_id: Uuid) {
@@ -213,12 +231,14 @@ impl SyncManager {
 
     async fn handle_command(&mut self, cmd: SyncCommand) {
         match cmd {
-            SyncCommand::BroadcastSynced { path, value, clock } => {
+            SyncCommand::BroadcastSynced { path, value, clock, user_id, previous } => {
                 let msg = SyncMessage::SyncedBroadcast {
                     node_id: self.node_id,
                     path,
                     value,
                     clock,
+                    user_id,
+                    previous,
                 };
                 self.fan_out(msg);
             }

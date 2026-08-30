@@ -98,6 +98,12 @@ CREATE TABLE IF NOT EXISTS stage_plans (
     visible INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    colour TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS collection_order (
     table_name TEXT NOT NULL,
     entity_id  TEXT NOT NULL,
@@ -114,6 +120,9 @@ CREATE TABLE IF NOT EXISTS oplog (
     value_json  TEXT NOT NULL,
     lifecycle   TEXT NOT NULL,
     timestamp   TEXT NOT NULL,
+    user_id     TEXT,
+    previous_json TEXT,
+    undoes      TEXT,
     PRIMARY KEY (node_id, seq)
 );
 

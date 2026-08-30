@@ -27,7 +27,21 @@ struct Upgrade {
     statements: &'static [&'static str],
 }
 
-const UPGRADES: &[Upgrade] = &[Upgrade {
+const UPGRADES: &[Upgrade] = &[
+    Upgrade {
+        // `add_missing_columns` walks the entity registry, and the oplog is not an
+        // entity — it is infrastructure, hand-written in the codegen. So the one
+        // additive change it has ever needed comes through here instead.
+        name: "oplog: who wrote it, what was there before, what it reverses",
+        table: "oplog",
+        applies: |columns| !columns.iter().any(|c| c == "user_id"),
+        statements: &[
+            "ALTER TABLE oplog ADD COLUMN user_id TEXT",
+            "ALTER TABLE oplog ADD COLUMN previous_json TEXT",
+            "ALTER TABLE oplog ADD COLUMN undoes TEXT",
+        ],
+    },
+    Upgrade {
     name: "fixtures: universe/dmx_address folded into address",
     table: "fixtures",
     // Both old columns are dropped at the end, so their presence is the flag.
@@ -41,7 +55,8 @@ const UPGRADES: &[Upgrade] = &[Upgrade {
         "ALTER TABLE fixtures DROP COLUMN universe",
         "ALTER TABLE fixtures DROP COLUMN dmx_address",
     ],
-}];
+    },
+];
 
 pub async fn run(pool: &SqlitePool) -> Result<()> {
     for upgrade in UPGRADES {
