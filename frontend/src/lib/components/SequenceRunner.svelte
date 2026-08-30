@@ -3,10 +3,17 @@
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Sequence, Cue } from '$lib/generated/index.js';
-	import { createCue } from '$lib/cues.js';
+	import { createCue, orderedCues, reorderCueIds } from '$lib/cues.js';
 	import { beginEdit, editingCue } from '$lib/stores/programmer.js';
+	import { editing } from '$lib/stores/editing.js';
+	import { collection } from '$lib/stores/show.js';
 
 	const data = getDataContext();
+	// GO and reset stay live: they are what a show is run with. What the lock covers
+	// is rewriting the cue list while it is being run from.
+	const unlocked = editing('playback');
+	/** For the running strip: what each station is actually rendering. */
+	const fixtures = collection('fixtures');
 
 	let sequences = $state<Sequence[]>([]);
 	let cues = $state<Record<string, Cue>>({});
@@ -19,6 +26,10 @@
 	let editingSeqName = $state('');
 	let editingCueId = $state<string | null>(null);
 	let editingCueName = $state('');
+	/** The cue a new one goes after, when inserting rather than appending. */
+	let insertAfter = $state<string | null>(null);
+	let dragFrom = $state<number | null>(null);
+	let dragOver = $state<number | null>(null);
 
 	async function createSequence() {
 		if (!newSeqName.trim()) return;
@@ -31,9 +42,57 @@
 		if (!newCueName.trim()) return;
 		const seq = sequences.find((s) => s.id === seqId);
 		if (!seq) return;
-		await createCue(data, seq, { name: newCueName.trim() });
+		await createCue(data, seq, Object.values(cues), {
+			name: newCueName.trim(),
+			after: insertAfter ?? undefined
+		});
 		newCueName = '';
 		addingCueTo = null;
+		insertAfter = null;
+	}
+
+	/** Cue timing, written straight through: this is an edit, not a fader. */
+	async function setCueTiming(cueId: string, patch: Partial<Cue>) {
+		const entity = data.cues.byId(cueId);
+		if (patch.fade_in_ms !== undefined) await entity.fade_in_ms.set(patch.fade_in_ms);
+		if (patch.fade_out_ms !== undefined) await entity.fade_out_ms.set(patch.fade_out_ms);
+		if (patch.follow_mode !== undefined) await entity.follow_mode.set(patch.follow_mode);
+	}
+
+	/**
+	 * Drop a dragged cue somewhere else in the list.
+	 *
+	 * Only the order changes. `Cue.number` is left alone, so a cue an operator calls
+	 * "cue 5" is still cue 5 after somebody moved cue 2 — renumbering on every drag
+	 * would make the numbers useless as names.
+	 */
+	async function dropCue(seq: Sequence, from: number, to: number) {
+		const next = reorderCueIds(seq.cue_ids, from, to);
+		if (next !== seq.cue_ids) await data.sequences.byId(seq.id).cue_ids.set(next);
+		dragFrom = null;
+		dragOver = null;
+	}
+
+	/** What is moving on the cue that is up, for the strip under it. */
+	function runningOn(seq: Sequence): { label: string; kind: 'effect' | 'fade' }[] {
+		const cueId = seq.active_cue_index !== null ? seq.cue_ids[seq.active_cue_index] : null;
+		if (!cueId) return [];
+		const out: { label: string; kind: 'effect' | 'fade' }[] = [];
+		for (const fixture of $fixtures) {
+			for (const [key, effect] of Object.entries(fixture.live_effects ?? {})) {
+				// Only what this cue put there. A programmer effect over the top is the
+				// operator's, not the cue's, and saying otherwise would be a lie.
+				if (effect && typeof effect.source === 'object' && effect.source.Cue === cueId) {
+					out.push({ label: `${fixture.name} · ${key}`, kind: 'effect' });
+				}
+			}
+			for (const [key, fade] of Object.entries(fixture.live_fades ?? {})) {
+				if (fade && fade.cue_id === cueId) {
+					out.push({ label: `${fixture.name} · ${key}`, kind: 'fade' });
+				}
+			}
+		}
+		return out;
 	}
 
 	// The time goes with the command: every station runs it from the same arguments,
@@ -95,12 +154,12 @@
 <div class="runner">
 	<div class="runner-header">
 		<h2 class="section-title">Sequences</h2>
-		{#if !creatingSeq}
+		{#if !creatingSeq && $unlocked}
 			<button class="new-btn" onclick={() => (creatingSeq = true)}>+ New</button>
 		{/if}
 	</div>
 
-	{#if creatingSeq}
+	{#if creatingSeq && $unlocked}
 		<form
 			class="new-seq-form"
 			onsubmit={(e) => {
@@ -156,7 +215,7 @@
 								onkeydown={(e) => { if (e.key === 'Escape') editingSeqId = null; }}
 							/>
 						</form>
-					{:else}
+					{:else if $unlocked}
 						<span
 							class="seq-name"
 							title="Click to rename"
@@ -165,14 +224,18 @@
 							onclick={() => { editingSeqId = seq.id; editingSeqName = seq.name; }}
 							onkeydown={(e) => { if (e.key === 'Enter') { editingSeqId = seq.id; editingSeqName = seq.name; } }}
 						>{seq.name}</span>
+					{:else}
+						<span class="seq-name">{seq.name}</span>
 					{/if}
 					<div class="seq-header-right">
 						<span class="seq-id dim mono">{seq.id.slice(0, 6)}</span>
-						<button
-							class="icon-btn delete-btn"
-							title="Delete sequence"
-							onclick={() => deleteSequence(seq.id)}
-						>✕</button>
+						{#if $unlocked}
+							<button
+								class="icon-btn delete-btn"
+								title="Delete sequence"
+								onclick={() => deleteSequence(seq.id)}
+							>✕</button>
+						{/if}
 					</div>
 				</div>
 
@@ -185,6 +248,19 @@
 						<span class="cue-idle">— no active cue —</span>
 					{/if}
 				</div>
+
+				<!-- What the cue that is up is actually doing. A cue list says what was
+				     asked for; this says what is happening, which during a three second
+				     fade or a running chase is a different thing. -->
+				{#if runningOn(seq).length > 0}
+					<div class="running">
+						{#each runningOn(seq) as item (item.label + item.kind)}
+							<span class="run-chip" class:fade={item.kind === 'fade'}>
+								{item.kind === 'effect' ? '∿' : '→'} {item.label}
+							</span>
+						{/each}
+					</div>
+				{/if}
 
 				<!-- Controls -->
 				<div class="controls">
@@ -220,7 +296,19 @@
 							{@const cue = cues[cueId]}
 							{@const isActive = seq.active_cue_index === i}
 							{#if cue}
-								<div class="cue-row" class:active={isActive} class:editing={$editingCue === cueId}>
+								<div
+									class="cue-row"
+									class:active={isActive}
+									class:editing={$editingCue === cueId}
+									class:drop-here={dragOver === i && dragFrom !== null && dragFrom !== i}
+									draggable={$unlocked}
+									role="listitem"
+									ondragstart={() => (dragFrom = i)}
+									ondragover={(e) => { e.preventDefault(); dragOver = i; }}
+									ondragleave={() => { if (dragOver === i) dragOver = null; }}
+									ondrop={(e) => { e.preventDefault(); if (dragFrom !== null) dropCue(seq, dragFrom, i); }}
+									ondragend={() => { dragFrom = null; dragOver = null; }}
+								>
 									<button
 										class="cue-go-area"
 										onclick={() => goToCue(seq.id, cueId)}
@@ -241,7 +329,7 @@
 													onkeydown={(e) => { if (e.key === 'Escape') editingCueId = null; e.stopPropagation(); }}
 												/>
 											</form>
-										{:else}
+										{:else if $unlocked}
 											<span
 												class="cue-row-name"
 												title="Click to rename"
@@ -250,6 +338,8 @@
 												onclick={(e) => { e.stopPropagation(); editingCueId = cueId; editingCueName = cue.name; }}
 												onkeydown={(e) => { if (e.key === 'Enter') { editingCueId = cueId; editingCueName = cue.name; } }}
 											>{cue.name}</span>
+										{:else}
+											<span class="cue-row-name">{cue.name}</span>
 										{/if}
 										<span class="captures dim mono" title="Parameters this cue stores">
 											{cue.captures.length}
@@ -264,17 +354,88 @@
 										title="Load this cue into the programmer to change it"
 										onclick={() => beginEdit(cue, seq)}
 									>Edit</button>
-									<button
-										class="icon-btn delete-btn"
-										title="Delete cue"
-										onclick={() => deleteCue(seq.id, cueId)}
-									>✕</button>
+									{#if $unlocked}
+										<button
+											class="icon-btn"
+											title="Insert a cue after this one"
+											aria-label="Insert after {cue.name}"
+											onclick={() => { addingCueTo = seq.id; insertAfter = cueId; }}
+										>⤵</button>
+										<button
+											class="icon-btn delete-btn"
+											title="Delete cue"
+											onclick={() => deleteCue(seq.id, cueId)}
+										>✕</button>
+									{/if}
 								</div>
+
+								<!-- The cue's own timing. Behind the lock because a fade time
+								     changed by a mis-hit is a look that arrives at the wrong
+								     moment, and nothing on stage says why. -->
+								{#if $unlocked}
+									<div class="cue-timing">
+										<label>
+											in
+											<input
+												class="num"
+												type="number"
+												min="0"
+												step="100"
+												value={cue.fade_in_ms}
+												onchange={(e) => setCueTiming(cueId, { fade_in_ms: Number(e.currentTarget.value) })}
+											/>
+										</label>
+										<label>
+											out
+											<input
+												class="num"
+												type="number"
+												min="0"
+												step="100"
+												value={cue.fade_out_ms}
+												onchange={(e) => setCueTiming(cueId, { fade_out_ms: Number(e.currentTarget.value) })}
+											/>
+										</label>
+										<label>
+											follow
+											<select
+												value={cue.follow_mode === 'Manual' ? 'Manual' : 'FollowAfter'}
+												onchange={(e) =>
+													setCueTiming(cueId, {
+														follow_mode:
+															e.currentTarget.value === 'Manual'
+																? 'Manual'
+																: { FollowAfter: { delay_ms: 0 } }
+													})}
+											>
+												<option value="Manual">On Go</option>
+												<option value="FollowAfter">Automatically</option>
+											</select>
+										</label>
+										{#if typeof cue.follow_mode === 'object' && 'FollowAfter' in cue.follow_mode}
+											{@const delay = cue.follow_mode.FollowAfter.delay_ms}
+											<label>
+												after
+												<input
+													class="num"
+													type="number"
+													min="0"
+													step="100"
+													value={delay}
+													onchange={(e) =>
+														setCueTiming(cueId, {
+															follow_mode: { FollowAfter: { delay_ms: Number(e.currentTarget.value) } }
+														})}
+												/>
+											</label>
+										{/if}
+									</div>
+								{/if}
 							{/if}
 						{/each}
 
 						<!-- Add cue -->
-						{#if addingCueTo === seq.id}
+						{#if addingCueTo === seq.id && $unlocked}
 							<form
 								class="add-cue-form"
 								onsubmit={(e) => {
@@ -711,5 +872,56 @@
 	.add-cue-btn:hover {
 		color: #4a9eff;
 		border-color: #4a9eff44;
+	}
+	/* What the cue that is up is actually doing, as opposed to what it asked for. */
+	.running {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		padding: 6px 10px 0;
+	}
+	.run-chip {
+		font-size: 10px;
+		padding: 1px 7px;
+		border-radius: 999px;
+		border: 1px solid var(--live);
+		color: var(--live);
+		white-space: nowrap;
+	}
+	/* A fade is on its way somewhere and will stop; an effect will not. Worth
+	   telling apart at a glance when a cue is half in. */
+	.run-chip.fade {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.cue-row.drop-here {
+		border-top: 2px solid var(--accent);
+	}
+
+	.cue-timing {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px 12px;
+		padding: 2px 10px 8px 34px;
+		font-size: 11px;
+		color: var(--text-dim);
+	}
+	.cue-timing label {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+	.cue-timing .num {
+		width: 4.5rem;
+	}
+	.cue-timing .num,
+	.cue-timing select {
+		background: var(--bg-sunken);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius);
+		color: var(--text);
+		font: inherit;
+		padding: 3px 6px;
 	}
 </style>

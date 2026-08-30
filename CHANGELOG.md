@@ -21,6 +21,12 @@ bracketed form — so every release needs one and it has to be spelled that way.
   parameter's default value with the right control for its kind, and pick
   `Raw` or `Named` — so a light nobody has written a profile for can be
   patched without editing JSON.
+- **Cue timing, and a strip showing what a cue is doing.** Fade in and out,
+  follow mode and per-capture fade, delay and curve are all editable now — the
+  backend has honoured them since the playback engine landed and there was
+  nowhere to type them. A running cue shows the fades and effects it is actually
+  producing. Cues can be inserted between two others and dragged into a different
+  order, which is what fractional cue numbers were always for.
 - **An effects panel.** Pick a selection, choose a shape or build a step list,
   set its rate in hertz or hand it to a speed master, and spread it across the
   fixtures — together, as a chase, from the centre out, in wings, in groups, or

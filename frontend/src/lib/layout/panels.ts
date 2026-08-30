@@ -51,7 +51,7 @@ export type PanelMeta = {
 };
 
 export const PANELS = {
-	playback: { title: 'Playback', component: SequenceRunner, fills: false },
+	playback: { title: 'Playback', component: SequenceRunner, fills: false, editable: true },
 	values: { title: 'Programmer', component: ValuesPanel, fills: true },
 	selection: { title: 'Selection', component: SelectionPanel, fills: true },
 	plan: { title: 'Plan', component: PlanPanel, fills: true },

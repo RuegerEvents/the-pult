@@ -10,8 +10,8 @@
 	 * because there is nothing to replace in a cue being made here and now.
 	 */
 
-	import type { Cue, Sequence } from '$lib/generated/index.js';
-	import { createCue } from '$lib/cues.js';
+	import type { Cue, Easing, Sequence } from '$lib/generated/index.js';
+	import { createCue, DEFAULT_FADE_MS } from '$lib/cues.js';
 	import { formatValue, kindLabel } from '$lib/patch.js';
 	import { clear, entries, storeInto } from '$lib/stores/programmer.js';
 	import { collection, showData } from '$lib/stores/show.js';
@@ -56,6 +56,29 @@
 			(target === 'new' ? name.trim().length > 0 : cue !== null)
 	);
 
+	/**
+	 * Per-capture timing, held here until Store.
+	 *
+	 * Zero means "use the cue's", which is what `Playback::start_cue` already does
+	 * with `fade_in_ms`, so leaving every row alone gives exactly the behaviour the
+	 * console had before there was anywhere to type these.
+	 */
+	type Timing = { fade: number; delay: number; easing: Easing };
+	let timing = $state<Record<string, Timing>>({});
+	const timingFor = (id: string): Timing =>
+		timing[id] ?? { fade: 0, delay: 0, easing: 'Linear' };
+	function setTiming(id: string, patch: Partial<Timing>) {
+		timing = { ...timing, [id]: { ...timingFor(id), ...patch } };
+	}
+
+	/** Cue-level timing for a new cue. An existing one keeps its own. */
+	let cueFadeIn = $state(DEFAULT_FADE_MS);
+	let cueFadeOut = $state(DEFAULT_FADE_MS);
+	// The picker's own two states, not the schema enum: a timecode follow needs a
+	// timecode source, which does not exist yet.
+	let followMode = $state<'Manual' | 'FollowAfter'>('Manual');
+	let followDelay = $state(0);
+
 	function tick(id: string, on: boolean) {
 		const next = new Set(dropped);
 		if (on) next.delete(id);
@@ -68,20 +91,29 @@
 		storing = true;
 		try {
 			if (target === 'new') {
-				await createCue(showData(), sequence, {
+				await createCue(showData(), sequence, $cues, {
 					name: name.trim(),
+					fadeInMs: cueFadeIn,
+					fadeOutMs: cueFadeOut,
+					followMode:
+						followMode === 'Manual' ? 'Manual' : { FollowAfter: { delay_ms: followDelay } },
 					captures: $entries
 						.filter((entry) => include.has(entry.id))
-						.map((entry) => ({
-							fixture_id: entry.fixture_id,
-							parameter_kind: entry.parameter_kind,
-							value: entry.value,
-							effect: entry.effect ? { ...entry.effect, t0: null } : null,
-							easing: 'Linear' as const,
-							fade_in_ms: 0,
-							fade_out_ms: 0,
-							delay_in_ms: 0
-						}))
+						.map((entry) => {
+							const t = timingFor(entry.id);
+							return {
+								fixture_id: entry.fixture_id,
+								parameter_kind: entry.parameter_kind,
+								value: entry.value,
+								// A stored effect drops its anchor: the cue's `went_at` is
+								// what it is measured from on every Go.
+								effect: entry.effect ? { ...entry.effect, t0: null } : null,
+								easing: t.easing,
+								fade_in_ms: t.fade,
+								fade_out_ms: 0,
+								delay_in_ms: t.delay
+							};
+						})
 				});
 			} else if (cue) {
 				await storeInto(cue, mode, include);
@@ -114,7 +146,12 @@
 			<div class="list">
 				<table>
 					<thead>
-						<tr><th></th><th>Fixture</th><th>Parameter</th><th>Value</th></tr>
+						<tr>
+							<th></th><th>Fixture</th><th>Parameter</th><th>Value</th>
+							<th title="Zero uses the cue's own fade">Fade</th>
+							<th>Delay</th>
+							<th>Curve</th>
+						</tr>
 					</thead>
 					<tbody>
 						{#each $entries as entry (entry.id)}
@@ -129,7 +166,55 @@
 								</td>
 								<td>{nameOf(entry.fixture_id)}</td>
 								<td>{kindLabel(entry.parameter_kind)}</td>
-								<td class="mono">{formatValue(entry.value)}</td>
+								<td class="mono">
+									{#if entry.effect}
+										<!-- What is stored is the shape, not the value under it. -->
+										<span class="chip-effect">
+											{'Steps' in entry.effect.curve
+												? `${entry.effect.curve.Steps.length} steps`
+												: entry.effect.curve.Shape.toLowerCase()}
+										</span>
+									{:else}
+										{formatValue(entry.value)}
+									{/if}
+								</td>
+								<td>
+									<input
+										class="num"
+										type="number"
+										min="0"
+										step="100"
+										placeholder="cue"
+										value={timingFor(entry.id).fade || ''}
+										aria-label="Fade for {kindLabel(entry.parameter_kind)}"
+										onchange={(e) => setTiming(entry.id, { fade: Number(e.currentTarget.value) || 0 })}
+									/>
+								</td>
+								<td>
+									<input
+										class="num"
+										type="number"
+										min="0"
+										step="100"
+										placeholder="0"
+										value={timingFor(entry.id).delay || ''}
+										aria-label="Delay for {kindLabel(entry.parameter_kind)}"
+										onchange={(e) => setTiming(entry.id, { delay: Number(e.currentTarget.value) || 0 })}
+									/>
+								</td>
+								<td>
+									<select
+										value={timingFor(entry.id).easing}
+										aria-label="Curve for {kindLabel(entry.parameter_kind)}"
+										onchange={(e) => setTiming(entry.id, { easing: e.currentTarget.value as Easing })}
+									>
+										<option value="Linear">Linear</option>
+										<option value="EaseIn">Ease in</option>
+										<option value="EaseOut">Ease out</option>
+										<option value="EaseInOut">Ease both</option>
+										<option value="Step">Snap</option>
+									</select>
+								</td>
 							</tr>
 						{/each}
 					</tbody>
@@ -171,6 +256,33 @@
 						use:focusOnMount
 						onkeydown={(e) => e.key === 'Enter' && canStore && store()}
 					/>
+					<!-- The cue's own timing, which every capture above falls back to. -->
+					<div class="timing">
+						<label class="field">
+							Fade in
+							<input class="num" type="number" min="0" step="100" bind:value={cueFadeIn} />
+							<span class="unit">ms</span>
+						</label>
+						<label class="field">
+							Fade out
+							<input class="num" type="number" min="0" step="100" bind:value={cueFadeOut} />
+							<span class="unit">ms</span>
+						</label>
+						<label class="field">
+							Follow
+							<select bind:value={followMode}>
+								<option value="Manual">On Go</option>
+								<option value="FollowAfter">Automatically</option>
+							</select>
+						</label>
+						{#if followMode !== 'Manual'}
+							<label class="field">
+								after
+								<input class="num" type="number" min="0" step="100" bind:value={followDelay} />
+								<span class="unit">ms</span>
+							</label>
+						{/if}
+					</div>
 				{:else}
 					<select bind:value={cueId}>
 						<option value={null}>Choose a cue…</option>
@@ -379,5 +491,38 @@
 		background: var(--line-strong);
 		color: var(--text-faint);
 		cursor: not-allowed;
+	}
+	.timing {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px 14px;
+		font-size: 12px;
+		color: var(--text-dim);
+	}
+	.timing .field {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+	}
+	.num {
+		width: 5rem;
+		background: var(--bg-sunken);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius);
+		color: var(--text);
+		font: inherit;
+		font-size: 12px;
+		padding: 3px 6px;
+	}
+	.unit {
+		color: var(--text-faint);
+		font-size: 11px;
+	}
+	.chip-effect {
+		font-size: 10px;
+		padding: 1px 7px;
+		border-radius: 999px;
+		border: 1px solid var(--live);
+		color: var(--live);
 	}
 </style>

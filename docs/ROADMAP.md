@@ -981,6 +981,43 @@ a fallback, so it drew a blank box over a working effect. And `bpm` is an `f32`,
 tapped 56.1 comes back as 56.099998474121094 and a number input shows every digit —
 rounded for display now, which is a console that can count.
 
+### 26. Cue timing, and what a cue is actually doing (done)
+
+The backend has had per-capture fade, delay and follow-after since task 3, and the
+frontend has never had anywhere to type them. It does now, along with the two things
+fractional cue numbers were always for.
+
+**A cue list says what was asked for; the running strip says what is happening.**
+During a three second fade or a running chase those are different things, and the
+difference is exactly what an operator wants to see. It reads `live_fades` and
+`live_effects` — the LOCAL fields task 19 added — and shows only what *this cue* put
+there: a programmer effect over the top is the operator's, not the cue's, and saying
+otherwise would be a lie. Fades are blue and arrowed because they are on their way
+somewhere and will stop; effects are amber because they will not.
+
+**Insert, at last.** `Cue.number` has been a float since the first sketch and nothing
+ever inserted, so cues were numbered by counting. `insertNumber` takes the midpoint,
+which is how a list survives being inserted into repeatedly without renumbering
+everything below — and appending to a list that ends at 4.75 gives 5, not 5.75.
+
+**Dragging a cue changes the order and not the numbers.** `cue_ids` is `ordered` in
+the schema, so that is what a drag rewrites. Renumbering would make a cue an operator
+calls "cue 5" stop being cue 5 because somebody moved cue 2, which is the one thing
+cue numbers exist to prevent.
+
+**GO and reset stay live when the panel is locked.** Running a show is what the panel
+is for. What the lock covers is rewriting the cue list while it is being run from:
+rename, delete, insert, reorder, and the timing — a fade time changed by a mis-hit is
+a look arriving at the wrong moment with nothing on stage to say why.
+
+The store menu gains a fade, a delay and a curve per capture, cue-level fade in and
+out, and a follow mode. Zero on a capture means "use the cue's", which is what
+`start_cue` already did, so leaving every row alone gives exactly the behaviour the
+console had before there was anywhere to type these.
+
+`DEFAULT_FADE_MS` replaces the hardcoded `500` and the `0, 0, 0` that every stored
+capture used to get.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.
