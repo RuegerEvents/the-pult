@@ -94,7 +94,6 @@ fn a_node_fixture(fixture_type: &FixtureType, serial: &str, universe: Option<u16
         address: FixtureAddress::OpenHaunt { serial: serial.into(), universe },
         position: None,
         live_values: HashMap::new(),
-        active_preset: None,
     }
 }
 
@@ -118,7 +117,6 @@ fn a_dmx_dimmer(universe: u16, level: f32) -> (Fixture, FixtureType) {
         address: FixtureAddress::Dmx { universe, address: 1 },
         position: None,
         live_values: HashMap::new(),
-        active_preset: None,
     };
     fixture.live_values.insert("Intensity".into(), ParameterValue::Float(level));
     (fixture, fixture_type)

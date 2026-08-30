@@ -201,7 +201,6 @@ mod tests {
             address,
             position: None,
             live_values: Default::default(),
-            active_preset: None,
         }
     }
 

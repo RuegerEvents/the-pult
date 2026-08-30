@@ -199,7 +199,6 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
         address: FixtureAddress::Dmx { universe: 1, address: 1 },
         position: None,
         live_values: Default::default(),
-        active_preset: None,
     };
     dimmer.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
 

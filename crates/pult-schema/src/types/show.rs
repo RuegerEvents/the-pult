@@ -16,12 +16,6 @@ pub struct Show {
     pub name: String,
     #[pult(lifecycle = PERSISTED)]
     pub created_at: DateTime<Utc>,
-    /// Whether the show engine is actively running.
-    #[pult(lifecycle = SYNCED)]
-    pub is_running: bool,
-    /// ID of the currently active sequence, if any.
-    #[pult(lifecycle = SYNCED)]
-    pub active_sequence: Option<Uuid>,
     /// The cue currently being edited, if any.
     ///
     /// Editing is load-tweak-Update rather than live: the cue is read into the

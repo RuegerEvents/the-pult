@@ -27,7 +27,6 @@ const fixture = (over: Partial<Fixture> = {}): Fixture => ({
 	address: { Dmx: { universe: 1, address: 1 } },
 	position: null,
 	live_values: {},
-	active_preset: null,
 	...over
 });
 

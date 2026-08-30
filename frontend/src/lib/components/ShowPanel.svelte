@@ -16,8 +16,6 @@
 			id: crypto.randomUUID(),
 			name: 'My Show',
 			created_at: new Date().toISOString(),
-			is_running: false,
-			active_sequence: null,
 			editing_cue: null
 		});
 	}
@@ -30,11 +28,6 @@
 		saving = false;
 	}
 
-	async function toggleRunning() {
-		if (!show) return;
-		await data.show.set({ ...show, is_running: !show.is_running });
-	}
-
 	onMount(() => {
 		// subscribe auto-fetches the current value and re-fetches on reconnect
 		return data.show.subscribe(v => { show = v as Show | null; });
@@ -44,16 +37,6 @@
 <div class="panel">
 	<div class="panel-header">
 		<span class="panel-title">Show</span>
-		{#if show}
-			<button
-				class="run-btn"
-				class:running={show.is_running}
-				onclick={toggleRunning}
-				title={show.is_running ? 'Stop show' : 'Run show'}
-			>
-				{show.is_running ? '■ Running' : '▶ Stopped'}
-			</button>
-		{/if}
 	</div>
 
 	{#if !show}
@@ -124,24 +107,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		color: #777;
-	}
-
-	.run-btn {
-		font-size: 0.7rem;
-		padding: 2px 8px;
-		border-radius: 3px;
-		border: 1px solid #555;
-		background: transparent;
-		color: #aaa;
-		cursor: pointer;
-		transition: all 0.15s;
-	}
-	.run-btn.running {
-		border-color: #22c55e;
-		color: #22c55e;
-	}
-	.run-btn:hover {
-		background: #333;
 	}
 
 	.field {

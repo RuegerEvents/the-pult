@@ -696,7 +696,6 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
         address: FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: None },
         position: None,
         live_values: Default::default(),
-        active_preset: None,
     };
     leader
         .engine

@@ -135,7 +135,6 @@ fn a_dimmer_patch(universe: u16, level: f32) -> Patch {
         address: FixtureAddress::Dmx { universe, address: 1 },
         position: None,
         live_values: HashMap::new(),
-        active_preset: None,
     };
     fixture.live_values.insert("Intensity".into(), ParameterValue::Float(level));
 

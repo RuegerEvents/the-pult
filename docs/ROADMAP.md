@@ -580,6 +580,30 @@ Left open:
   shutdown, so a module is chosen with a flag and lives for the process. Adding
   cancellation is what settles it, and it would serve the tests too.
 
+### 17. Three fields nothing ever read (done)
+
+`Show.is_running`, `Show.active_sequence` and `Fixture.active_preset` were in the
+schema from the first sketch of it and never acquired a reader. Nothing in the
+backend ever set `active_preset` to anything but `None`. `active_sequence` was
+never written at all — a sequence became active by having an `active_cue_index`,
+which is where playback actually looks. And `is_running` had a button in the Show
+panel that toggled it and one that nothing consulted: the engine ticks whenever
+`Playback::has_work()` says there is work, which is a better answer to "is the
+show running" than a flag an operator can get wrong.
+
+Removing them costs nothing, which is the point worth recording. All three are
+SYNCED, and a SYNCED field has no SQL column — `db.rs` loads by named columns and
+the generated migration is unchanged byte for byte after the edit, which the
+codegen run proves rather than asserts. There is no `deny_unknown_fields` anywhere
+in `crates/`, so a showfile or a peer that still mentions them deserialises fine
+with the field dropped on the floor. An old oplog row naming one is skipped with a
+warning on catch-up, in `apply_peer_operation`, which already handles a path that
+no longer resolves.
+
+The lifecycle test that proved a SYNCED field is not persisted was written against
+`is_running`, so it now runs against `editing_cue` — the SYNCED field on `Show`
+that does have a reader, and the one whose loss on reload would actually be felt.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

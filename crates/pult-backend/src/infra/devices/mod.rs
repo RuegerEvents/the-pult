@@ -558,7 +558,6 @@ impl DeviceManager {
             address: FixtureAddress::OpenHaunt { serial: serial.to_string(), universe },
             position: None,
             live_values: Default::default(),
-            active_preset: None,
         };
         let value = serde_json::to_value(&fixture).map_err(|e| e.to_string())?;
         self.engine

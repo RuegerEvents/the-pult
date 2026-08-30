@@ -87,8 +87,6 @@ fn a_show() -> Show {
         id: Uuid::new_v4(),
         name: "Hamlet".into(),
         created_at: Utc::now(),
-        is_running: false,
-        active_sequence: None,
         editing_cue: None,
     }
 }
@@ -118,7 +116,6 @@ fn a_fixture(name: &str, address: u16) -> Fixture {
         address: FixtureAddress::Dmx { universe: 1, address },
         position: None,
         live_values: Default::default(),
-        active_preset: None,
     }
 }
 
@@ -686,10 +683,11 @@ async fn a_singleton_field_can_be_patched_on_its_own() {
     let show = a_show();
     h.engine.set(key("show"), Lifecycle::Persisted, json(&show)).await.unwrap();
 
-    // is_running is SYNCED, name is PERSISTED.
+    // editing_cue is SYNCED, name is PERSISTED.
+    let cue_id = Uuid::new_v4();
     h.engine
-        .set(vec![PathSegment::Key("show".into()), PathSegment::Key("is_running".into())],
-             Lifecycle::Synced, json(&true))
+        .set(vec![PathSegment::Key("show".into()), PathSegment::Key("editing_cue".into())],
+             Lifecycle::Synced, json(&cue_id))
         .await
         .unwrap();
     h.engine
@@ -699,13 +697,13 @@ async fn a_singleton_field_can_be_patched_on_its_own() {
         .unwrap();
 
     let got = h.engine.get(key("show")).await.unwrap();
-    assert_eq!(got["is_running"], true);
+    assert_eq!(got["editing_cue"], json(&cue_id));
     assert_eq!(got["name"], "Macbeth");
 
     h.reload().await;
     let after = h.engine.get(key("show")).await.unwrap();
     assert_eq!(after["name"], "Macbeth");
-    assert_eq!(after["is_running"], false, "SYNCED field must not be persisted");
+    assert_eq!(after["editing_cue"], serde_json::Value::Null, "SYNCED field must not be persisted");
 }
 
 #[tokio::test]

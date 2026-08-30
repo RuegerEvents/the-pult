@@ -10,6 +10,14 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ## Unreleased
 
+### Removed
+
+- **Three fields nothing ever read.** `Show.is_running`, `Show.active_sequence`
+  and `Fixture.active_preset` are gone, along with the Show panel's
+  Running/Stopped button, which toggled a flag no code consulted. All three were
+  SYNCED, so they had no SQL column and their removal needs no migration; a
+  showfile or a peer that still names one loads fine.
+
 ### Added
 
 - **The console says when a fixture has no way out.** A new LOCAL

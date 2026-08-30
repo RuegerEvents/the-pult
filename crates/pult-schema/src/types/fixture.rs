@@ -230,8 +230,6 @@ pub struct Fixture {
     pub position: Option<FixturePosition>,
     #[pult(lifecycle = SYNCED)]
     pub live_values: HashMap<String, ParameterValue>,
-    #[pult(lifecycle = SYNCED)]
-    pub active_preset: Option<Uuid>,
 }
 
 #[cfg(test)]

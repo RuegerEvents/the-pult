@@ -25,8 +25,7 @@ try {
 	await set(['show'], {
 		id: id(),
 		name: 'Demo',
-		created_at: new Date().toISOString(),
-		is_running: false
+		created_at: new Date().toISOString()
 	});
 
 	// One ordinary DMX fixture type, so the Patch tab has something in it and an
@@ -99,7 +98,6 @@ try {
 			address: { Dmx: { universe: 1, address: 1 + index } },
 			position: { Point: at },
 			live_values: {},
-			active_preset: null
 		});
 	}
 
@@ -117,7 +115,6 @@ try {
 			address: { Dmx: { universe: 1, address: 11 + index * spot.channel_count } },
 			position: { Axial: { position: at, direction: { x: 0, y: -0.8, z: 0.6 } } },
 			live_values: {},
-			active_preset: null
 		});
 	}
 

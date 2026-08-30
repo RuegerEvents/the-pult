@@ -23,7 +23,6 @@ fn a_fixture() -> Fixture {
         address: FixtureAddress::Dmx { universe: 1, address: 1 },
         position: None,
         live_values: HashMap::new(),
-        active_preset: None,
     }
 }
 
