@@ -1098,6 +1098,46 @@ built rather than being merely unwritten:
 Task 8 — the WASM plugin runtime — is still the largest thing not started, and is
 next.
 
+### 29. What a tick actually costs (done)
+
+Task 19 left this open as a worry rather than a number: an effect never arrives
+anywhere, so a station running one never idles. Before effects existed a settled show
+stopped ticking; now a show with a chase up ticks at 40 Hz for as long as it is up, on
+every station. Measuring it found a real bug.
+
+**`ShowView` scanned the fixture slice for every lookup**, which made the tick
+quadratic in the size of the rig. `emit` looked up each fixture that moved, and
+`live_value` looked one up for every key a fade or an effect started on — both by
+walking the slice. Nothing noticed while a settled show stopped ticking, because the
+scans only happen on ticks that do work, and before effects there were very few of
+those in a row. The struct already indexed cues by id and did not index fixtures; it
+does now. A thousand fixtures went from 29% of the tick budget to 16%.
+
+**The numbers, release build, one effect across the whole rig:**
+
+| Rig | `Playback::tick` | Process CPU |
+|---|---|---|
+| idle | — | 0.2% |
+| 500 fixtures | 2.0 ms (8% of the 25 ms budget) | 24% of one core |
+| 2000 fixtures | 7.9 ms (32%) | ~137%, over one core |
+
+`Playback::tick` is the small half. The rest is the engine doing one `apply_local`,
+one broadcast and one output push per fixture that moved — which is the cost task 19
+actually named, and it is linear.
+
+**The failure mode is graceful, and by construction.** At 2000 fixtures the process
+is over one core and the tick cannot keep 40 Hz — but the effect still reaches the
+top and bottom of its range on time, because a value is computed from the wall clock
+rather than accumulated from the last one. A slow tick loses smoothness, not
+correctness, and two stations under different load still agree. That is the same
+property that makes stations agree at all, arriving somewhere it was not designed for.
+
+Left open, and unchanged: nothing partitions fixture computation, so every station
+computes every fixture. Task 10 named that and it is still the answer for a rig where
+24% of a core is not acceptable. The obvious cheaper win first is that `emit` clones a
+fixture's whole `live_values` map per tick and the engine then serialises it whole; a
+per-key write would cut both. Neither is worth doing on these numbers.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

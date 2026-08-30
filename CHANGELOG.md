@@ -74,6 +74,12 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Fixed
 
+- **A tick was quadratic in the size of the rig.** `ShowView` scanned the fixture
+  list for every lookup rather than indexing it, so the cost of a tick grew with
+  the square of the rig. It went unnoticed while a settled show stopped ticking
+  altogether; an effect never lets it settle. A thousand fixtures under one effect
+  went from 29% of the tick budget to 16%.
+
 - **Unpatching the last fixture reaches the output plugins.** The engine sent
   them nothing for an empty show, so whatever they remembered about the last
   fixture — including that nothing reached it — outlived it. One empty patch now

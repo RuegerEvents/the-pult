@@ -1244,3 +1244,128 @@ fn an_unchanged_description_is_not_written_again() {
     );
     assert!(live(&second, fixture.id, "Intensity").is_some(), "the value still goes out");
 }
+
+// ── What a tick costs ─────────────────────────────────────────────────────────
+//
+// Task 19 left this open: an effect never arrives anywhere, so a station running
+// one never idles. Before effects existed a settled show stopped ticking entirely;
+// now a show with a chase up ticks at 40 Hz for as long as it is up, on every
+// station. These put a number on it rather than leaving it as a worry.
+//
+// Not assertions about wall-clock speed — a loaded CI box would fail those, and a
+// test that fails because somebody else was compiling is a test people delete.
+// They print, and the one assertion is the shape of the work rather than its
+// duration: how many writes a tick asks the engine to make.
+
+/// A rig of `n` fixtures, all under one cue, all running a sine.
+fn a_rig_under_one_effect(n: usize) -> (Vec<Fixture>, Vec<Cue>, Vec<Sequence>) {
+    let fixtures: Vec<Fixture> = (0..n).map(|_| a_fixture()).collect();
+    let captures = fixtures
+        .iter()
+        .enumerate()
+        .map(|(i, f)| intensity_effect(f.id, a_sine(i as f32 / n as f32)))
+        .collect();
+    let cue = a_cue(0, captures);
+    let mut sequence = a_sequence(&[&cue], Some(0));
+    sequence.went_at = Some(0);
+    (fixtures, vec![cue], vec![sequence])
+}
+
+/// Roughly how long one tick takes, averaged over enough of them to mean something.
+fn cost_per_tick(n: usize, ticks: u32) -> std::time::Duration {
+    let (fixtures, cues, sequences) = a_rig_under_one_effect(n);
+    let mut playback = Playback::default();
+    let now = Instant::now();
+
+    // The first tick starts the cue and is not typical of the rest.
+    playback.tick(now, 0, &ShowView::new(&sequences, &cues, &fixtures, &[], &[]));
+
+    let started = Instant::now();
+    for i in 0..ticks {
+        playback.tick(
+            now + Duration::from_millis(i as u64 * 25),
+            i as u64 * 25,
+            &ShowView::new(&sequences, &cues, &fixtures, &[], &[]),
+        );
+    }
+    started.elapsed() / ticks
+}
+
+/// The headline number: what a tick costs at a few rig sizes.
+///
+/// The budget is 25 ms — that is the tick interval, and a tick that takes longer
+/// than the gap between ticks is a console that has fallen behind rather than a
+/// console that is busy.
+#[test]
+fn a_tick_costs_something_worth_writing_down() {
+    for n in [1, 50, 200, 500, 1000] {
+        let each = cost_per_tick(n, 200);
+        let share = each.as_secs_f64() / TICK.as_secs_f64() * 100.0;
+        println!("{n:>5} fixtures on one effect: {each:>10.2?} per tick ({share:.2}% of the budget)");
+    }
+}
+
+/// The thing task 19 actually worried about: how many writes a tick asks for.
+///
+/// `emit` compares against the show and drops the no-ops, so a rig holding still
+/// costs nothing to keep holding. A rig under an effect does not hold still, and
+/// this is the number that grows with it.
+#[test]
+fn a_tick_asks_for_one_write_per_moving_fixture_and_no_more() {
+    let (fixtures, cues, sequences) = a_rig_under_one_effect(500);
+    let mut playback = Playback::default();
+    let now = Instant::now();
+    playback.tick(now, 0, &ShowView::new(&sequences, &cues, &fixtures, &[], &[]));
+
+    let out = playback.tick(now, 25, &ShowView::new(&sequences, &cues, &fixtures, &[], &[]));
+
+    let values = out
+        .iter()
+        .filter(|e| matches!(e, PlaybackEffect::SetLiveValues { .. }))
+        .count();
+    let descriptions = out
+        .iter()
+        .filter(|e| {
+            matches!(e, PlaybackEffect::SetLiveEffects { .. } | PlaybackEffect::SetLiveFades { .. })
+        })
+        .count();
+
+    assert_eq!(values, 500, "one value write per fixture that moved");
+    assert_eq!(
+        descriptions, 0,
+        "and none of the descriptions again: they were said on the first tick and have not changed",
+    );
+}
+
+/// The other half of the same question, and the reassuring half: a rig that is not
+/// moving costs nothing per tick however large it is.
+///
+/// This is what makes the number above the honest worst case rather than the normal
+/// one. A show is mostly still.
+#[test]
+fn a_rig_that_is_holding_still_asks_for_nothing() {
+    let fixtures: Vec<Fixture> = (0..500).map(|_| a_fixture()).collect();
+    let captures = fixtures.iter().map(|f| intensity(f.id, 0.5)).collect();
+    let cue = a_cue(0, captures);
+    let sequences = [a_sequence(&[&cue], Some(0))];
+    let cues = [cue];
+
+    let mut playback = Playback::default();
+    let now = Instant::now();
+    // Take the cue and let its zero-length fades land.
+    playback.tick(now, 0, &ShowView::new(&sequences, &cues, &fixtures, &[], &[]));
+
+    // The show now says what the cue asked for, so the next tick has nothing to say.
+    let settled: Vec<Fixture> = fixtures
+        .iter()
+        .map(|f| {
+            let mut f = f.clone();
+            f.live_values.insert("Intensity".into(), ParameterValue::Float(0.5));
+            f
+        })
+        .collect();
+    let out = playback.tick(now, 25, &ShowView::new(&sequences, &cues, &settled, &[], &[]));
+
+    assert!(out.is_empty(), "a still rig asks for nothing: {} effects", out.len());
+    assert!(!playback.has_work(), "and the engine can stop ticking altogether");
+}

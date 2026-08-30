@@ -58,6 +58,14 @@ pub struct ShowView<'a> {
     pub sequences: &'a [Sequence],
     pub cues: HashMap<Uuid, &'a Cue>,
     pub fixtures: &'a [Fixture],
+    /// The same fixtures, by id.
+    ///
+    /// Built once a tick because everything that walks the rig then has to look one
+    /// up: `emit` for every fixture that moved, `live_value` for every key a fade or
+    /// an effect starts on. Scanning the slice for each of those made the tick
+    /// quadratic in the size of the rig, which nothing noticed while a settled show
+    /// stopped ticking — and an effect never lets it settle.
+    by_id: HashMap<Uuid, &'a Fixture>,
     /// What the programmer is holding. Replicated show state like everything else
     /// here, so every node computes the same overridden output for itself.
     pub programmer: &'a [ProgrammerValue],
@@ -77,9 +85,15 @@ impl<'a> ShowView<'a> {
             sequences,
             cues: cues.iter().map(|c| (c.id, c)).collect(),
             fixtures,
+            by_id: fixtures.iter().map(|f| (f.id, f)).collect(),
             programmer,
             speed_masters,
         }
+    }
+
+    /// One fixture, by id.
+    pub(super) fn fixture(&self, id: Uuid) -> Option<&'a Fixture> {
+        self.by_id.get(&id).copied()
     }
 
     /// The sequence a cue is playing under, and when that sequence last went.
@@ -95,12 +109,7 @@ impl<'a> ShowView<'a> {
     }
 
     pub(super) fn live_value(&self, fixture_id: Uuid, key: &str) -> Option<ParameterValue> {
-        self.fixtures
-            .iter()
-            .find(|f| f.id == fixture_id)?
-            .live_values
-            .get(key)
-            .cloned()
+        self.fixture(fixture_id)?.live_values.get(key).cloned()
     }
 }
 
@@ -438,7 +447,7 @@ impl Playback {
     fn emit(&self, view: &ShowView<'_>, changes: Changes, effects: &mut Vec<PlaybackEffect>) {
         for (fixture_id, changed) in changes {
             // A fixture that has left the rig has nowhere for a value to land.
-            let Some(fixture) = view.fixtures.iter().find(|f| f.id == fixture_id) else {
+            let Some(fixture) = view.fixture(fixture_id) else {
                 continue;
             };
             // Merge onto what the fixture already has, so a fade for one parameter
@@ -516,7 +525,7 @@ impl Playback {
         }
 
         // A fixture that has left the rig takes its record with it.
-        self.motion.retain(|id, _| view.fixtures.iter().any(|f| f.id == *id));
+        self.motion.retain(|id, _| view.by_id.contains_key(id));
     }
 
     fn fire_due_follows(&mut self, now: Instant, wall_ms: u64, effects: &mut Vec<PlaybackEffect>) {
