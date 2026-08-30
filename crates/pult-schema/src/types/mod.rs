@@ -1,6 +1,7 @@
 pub mod fixture;
 pub mod sequence;
 pub mod cue;
+pub mod effect;
 pub mod show;
 pub mod session;
 pub mod station;
@@ -10,14 +11,21 @@ pub mod output;
 pub mod flow;
 pub mod stage;
 pub mod programmer;
+pub mod speedmaster;
 pub mod layout;
 
 pub use fixture::{Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
 pub use cue::{Cue, CueCreate, CuePatch, FollowMode, ParameterCapture};
+pub use effect::{
+    Curve, Direction, Easing, EffectSpec, EffectSource, Rate, RunningEffect, RunningFade, Shape,
+    Spread, Step,
+};
+pub use speedmaster::{SpeedMaster, SpeedMasterCreate, SpeedMasterPatch};
 pub use show::{Show, ShowCreate, ShowPatch};
 pub use session::{DiscoveredSession, SessionState};
 pub use devices::{DeviceHealth, DevicesState, DiscoveredDevice};
+pub use openhaunt::{EffectCapability, PortEffectCapability};
 pub use output::{
     OutputConfig, OutputConfigCreate, OutputConfigPatch, OutputCoverage, OutputGap, OutputKind,
     OutputStatus, OutputStatuses,

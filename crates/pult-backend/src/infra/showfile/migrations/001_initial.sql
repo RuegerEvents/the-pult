@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS show (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS speed_masters (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    bpm REAL NOT NULL,
+    multiplier REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS stage_plans (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,

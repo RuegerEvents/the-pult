@@ -59,7 +59,7 @@ fn seq_path(id: Uuid, field: &str) -> Path {
 }
 
 fn a_sequence(name: &str) -> Sequence {
-    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None }
+    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None }
 }
 
 async fn create(node: &Node, seq: &Sequence) {
@@ -696,6 +696,8 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
         address: FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: None },
         position: None,
         live_values: Default::default(),
+        live_effects: Default::default(),
+        live_fades: Default::default(),
     };
     leader
         .engine

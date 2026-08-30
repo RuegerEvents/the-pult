@@ -37,7 +37,9 @@
 			fixture_type_id: newTypeId,
 			address: { Dmx: { universe: 1, address: nextFreeAddress(fixtures, 1, spanOf) } },
 			position: null,
-			live_values: {}
+			live_values: {},
+			live_effects: {},
+			live_fades: {}
 		});
 		newName = '';
 		creating = false;

@@ -126,6 +126,85 @@ impl NodeDescription {
     }
 }
 
+// ── What a node says it can render for itself ─────────────────────────────────
+
+/// What one port can be handed instead of a stream of values.
+///
+/// A node that can trace a shape on its own wants a description, not forty messages a
+/// second; one that cannot must never be sent a description it will ignore in silence.
+/// Nothing is assumed either way, so a port says so.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PortEffectCapability {
+    pub port: u8,
+    /// Shape names in the wire's spelling: `sine`, `triangle`, `square`, `saw-up`,
+    /// `saw-down`. Kept as strings rather than an enum because a node may name a shape
+    /// this console has never heard of, and the answer to that is to not use it.
+    pub shapes: Vec<String>,
+    pub steps: bool,
+    /// Whether a `set` carrying `fade_ms` is understood, so a fade can be handed over
+    /// whole instead of interpolated here.
+    pub transitions: bool,
+}
+
+impl PortEffectCapability {
+    /// Whether this port can be trusted with a particular shape.
+    pub fn has_shape(&self, shape: &str) -> bool {
+        self.shapes.iter().any(|s| s == shape)
+    }
+}
+
+/// Every port on one node that said anything about effects.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EffectCapability {
+    pub ports: Vec<PortEffectCapability>,
+}
+
+impl EffectCapability {
+    pub fn port(&self, port: u8) -> Option<&PortEffectCapability> {
+        self.ports.iter().find(|p| p.port == port)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ports.is_empty()
+    }
+}
+
+/// Read the per-port `effects` blocks out of a raw `/info` body.
+///
+/// Deliberately not a field on [`PortDescription`]. [`fixture_type_id`] hashes the
+/// serialised [`NodeDescription`], so a field there would give every adopted node a
+/// new fixture type the moment firmware started advertising effects, orphaning every
+/// parameter already patched against the old id. Serde ignores the unknown key, the
+/// hash stays put, and the capability is read from the raw JSON alongside — the same
+/// arrangement the mains flag already uses.
+pub fn effect_capability_from(info: &serde_json::Value) -> Option<EffectCapability> {
+    let ports: Vec<PortEffectCapability> = info["ports"]
+        .as_array()?
+        .iter()
+        .filter_map(|port| {
+            let effects = port.get("effects")?.as_object()?;
+            Some(PortEffectCapability {
+                port: port.get("port")?.as_u64()? as u8,
+                shapes: effects
+                    .get("shapes")
+                    .and_then(|s| s.as_array())
+                    .map(|list| {
+                        list.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()
+                    })
+                    .unwrap_or_default(),
+                steps: effects.get("steps").and_then(|v| v.as_bool()).unwrap_or(false),
+                transitions: effects
+                    .get("transitions")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            })
+        })
+        .collect();
+    if ports.is_empty() { None } else { Some(EffectCapability { ports }) }
+}
+
 // ── The fixture type that follows ─────────────────────────────────────────────
 
 /// The stable id of the fixture type a description becomes.
@@ -426,5 +505,72 @@ mod tests {
         let strip = described(0x0003);
         assert_eq!(strip.inputs(), 0);
         assert_eq!(strip.outputs(), 2);
+    }
+
+    #[test]
+    fn a_port_that_says_nothing_about_effects_offers_none() {
+        let info = serde_json::json!({
+            "ports": [
+                { "port": 0, "name": "Relay", "access": "readwrite", "dataType": "boolean" },
+            ],
+        });
+        assert!(effect_capability_from(&info).is_none());
+    }
+
+    #[test]
+    fn a_port_that_advertises_effects_is_read_out_of_the_raw_info() {
+        let info = serde_json::json!({
+            "ports": [
+                { "port": 0, "name": "Strip colour", "access": "readwrite", "dataType": "color",
+                  "effects": { "shapes": ["sine", "steps-are-not-a-shape"], "steps": true } },
+                { "port": 1, "name": "Brightness", "access": "readwrite", "dataType": "number",
+                  "effects": { "shapes": ["sine", "square"], "steps": false, "transitions": true } },
+                { "port": 2, "name": "Contact", "access": "readonly", "dataType": "boolean" },
+            ],
+        });
+
+        let caps = effect_capability_from(&info).expect("two ports advertise");
+        assert_eq!(caps.ports.len(), 2, "the silent port contributes nothing");
+
+        let colour = caps.port(0).unwrap();
+        assert!(colour.has_shape("sine"));
+        assert!(colour.steps);
+        assert!(!colour.transitions, "absent means no");
+
+        let brightness = caps.port(1).unwrap();
+        assert!(brightness.has_shape("square"));
+        assert!(!brightness.has_shape("triangle"));
+        assert!(brightness.transitions);
+
+        assert!(caps.port(2).is_none());
+    }
+
+    /// The trap this whole arrangement exists to avoid.
+    ///
+    /// `fixture_type_id` hashes the serialised description, so if `effects` were a
+    /// field on `PortDescription` then firmware that started advertising it would give
+    /// every adopted node a new fixture type and orphan every patched parameter.
+    /// Reading it from the raw JSON instead keeps the id where it was.
+    #[test]
+    fn firmware_that_starts_advertising_effects_does_not_re_type_the_node() {
+        let plain = serde_json::json!({
+            "ports": [
+                { "port": 0, "name": "Brightness", "access": "readwrite",
+                  "dataType": "number", "class": "intensity" },
+            ],
+        });
+        let mut advertising = plain.clone();
+        advertising["ports"][0]["effects"] =
+            serde_json::json!({ "shapes": ["sine"], "steps": true, "transitions": true });
+
+        let before: NodeDescription = serde_json::from_value(plain).unwrap();
+        let after: NodeDescription = serde_json::from_value(advertising.clone()).unwrap();
+
+        assert_eq!(
+            fixture_type_id(0x0003, &before),
+            fixture_type_id(0x0003, &after),
+            "the unknown key must not reach the hash",
+        );
+        assert!(effect_capability_from(&advertising).is_some(), "and must still be readable");
     }
 }

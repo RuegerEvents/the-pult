@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type {
 	Cue,
+	EffectSpec,
 	Fixture,
 	FixtureType,
 	ParameterCapture,
@@ -27,6 +28,8 @@ const fixture = (over: Partial<Fixture> = {}): Fixture => ({
 	address: { Dmx: { universe: 1, address: 1 } },
 	position: null,
 	live_values: {},
+	live_effects: {},
+	live_fades: {},
 	...over
 });
 
@@ -155,6 +158,7 @@ describe('storing', () => {
 		fixture_id: 'f',
 		parameter_kind: 'Intensity',
 		value: { type: 'Float', value: 0.7 },
+		effect: null,
 		locked: false,
 		...over
 	});
@@ -166,6 +170,8 @@ describe('storing', () => {
 		fade_in_ms: 0,
 		fade_out_ms: 0,
 		delay_in_ms: 0,
+		effect: null,
+		easing: 'Linear',
 		...over
 	});
 
@@ -219,7 +225,9 @@ describe('loading a cue back into the programmer', () => {
 				value: { type: 'Float', value: 0.4 },
 				fade_in_ms: 0,
 				fade_out_ms: 0,
-				delay_in_ms: 0
+				delay_in_ms: 0,
+				effect: null,
+				easing: 'Linear'
 			}
 		],
 		follow_mode: 'Manual',
@@ -285,5 +293,74 @@ describe('values', () => {
 	it('leaves text where it is, having nowhere to nudge it to', () => {
 		const text: ParameterValue = { type: 'Text', value: 'Beware' };
 		expect(nudge(text, 0.5)).toEqual(text);
+	});
+});
+
+describe('an effect through store and back', () => {
+	const spec = (t0: number | null): EffectSpec => ({
+		effect_id: 'fx',
+		curve: { Shape: 'Sine' },
+		rate: { Hz: 0.5 },
+		low: { type: 'Float', value: 0 },
+		high: { type: 'Float', value: 1 },
+		width: 0.5,
+		direction: 'Forward',
+		phase: 0.25,
+		spread: 'Linear',
+		t0
+	});
+
+	const held: ProgrammerValue = {
+		id: 'e1',
+		fixture_id: 'f',
+		parameter_kind: 'Intensity',
+		value: { type: 'Float', value: 0 },
+		effect: spec(1_000),
+		locked: false
+	};
+
+	it('drops the anchor on the way in, because the cue supplies one', () => {
+		const [capture] = storeCaptures([], [held], 'replace', new Set(['e1']));
+
+		expect(capture.effect).not.toBeNull();
+		expect(capture.effect?.t0).toBeNull();
+		expect(capture.effect?.phase).toBe(0.25);
+		expect(capture.effect?.rate).toEqual({ Hz: 0.5 });
+	});
+
+	it('takes a fresh one on the way out, because the operator is holding it again', () => {
+		const [capture] = storeCaptures([], [held], 'replace', new Set(['e1']));
+		const before = Date.now();
+
+		const [restored] = entriesFromCue({
+			id: 'c',
+			name: 'Look',
+			number: 1,
+			captures: [capture],
+			follow_mode: 'Manual',
+			fade_in_ms: 0,
+			fade_out_ms: 0,
+			is_active: false
+		});
+
+		expect(restored.effect?.phase).toBe(0.25);
+		expect(restored.effect?.t0).toBeGreaterThanOrEqual(before);
+	});
+
+	it('leaves a plain value alone', () => {
+		const plain = { ...held, effect: null };
+		const [capture] = storeCaptures([], [plain], 'replace', new Set(['e1']));
+
+		expect(capture.effect).toBeNull();
+		expect(entriesFromCue({
+			id: 'c',
+			name: 'Look',
+			number: 1,
+			captures: [capture],
+			follow_mode: 'Manual',
+			fade_in_ms: 0,
+			fade_out_ms: 0,
+			is_active: false
+		})[0].effect).toBeNull();
 	});
 });

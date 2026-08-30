@@ -22,7 +22,7 @@
 
 	async function createSequence() {
 		if (!newSeqName.trim()) return;
-		await data.sequences.create({ id: crypto.randomUUID(), name: newSeqName.trim(), cue_ids: [], active_cue_index: null });
+		await data.sequences.create({ id: crypto.randomUUID(), name: newSeqName.trim(), cue_ids: [], active_cue_index: null, went_at: null });
 		newSeqName = '';
 		creatingSeq = false;
 	}
@@ -36,12 +36,15 @@
 		addingCueTo = null;
 	}
 
+	// The time goes with the command: every station runs it from the same arguments,
+	// so a Go that carries when it happened anchors the cue's fades and effects at one
+	// millisecond everywhere rather than at whenever each station got the message.
 	async function goNext(seqId: string) {
-		await data.sequences.byId(seqId).goNext();
+		await data.sequences.byId(seqId).goNext({ at: Date.now() });
 	}
 
 	async function goToCue(seqId: string, cueId: string) {
-		await data.sequences.byId(seqId).goToCue({ cueId });
+		await data.sequences.byId(seqId).goToCue({ cueId, at: Date.now() });
 	}
 
 	async function resetSequence(seqId: string) {

@@ -76,6 +76,8 @@
 							fixture_id: entry.fixture_id,
 							parameter_kind: entry.parameter_kind,
 							value: entry.value,
+							effect: entry.effect ? { ...entry.effect, t0: null } : null,
+							easing: 'Linear' as const,
 							fade_in_ms: 0,
 							fade_out_ms: 0,
 							delay_in_ms: 0

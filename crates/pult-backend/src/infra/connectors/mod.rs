@@ -297,6 +297,8 @@ impl OutputManager {
                 address: address.clone(),
                 position: None,
                 live_values: Default::default(),
+                live_effects: Default::default(),
+                live_fades: Default::default(),
             })
             .collect()
     }

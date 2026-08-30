@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use super::effect::{RunningEffect, RunningFade};
 use crate::PultSchema;
 
 /// A point in the rig, in metres, from whatever origin the show uses.
@@ -230,6 +231,21 @@ pub struct Fixture {
     pub position: Option<FixturePosition>,
     #[pult(lifecycle = SYNCED)]
     pub live_values: HashMap<String, ParameterValue>,
+    /// What is moving on this fixture, keyed by parameter key.
+    ///
+    /// LOCAL rather than SYNCED, and the first LOCAL entity field in the system. Every
+    /// station works these out for itself from replicated state, so broadcasting them
+    /// would be sending each console a slower copy of what it has already computed.
+    /// What they are for is the two readers that cannot compute them: an output plugin
+    /// deciding whether to hand a shape to a node instead of streaming samples at it,
+    /// and a panel drawing where each fixture sits in the cycle.
+    #[pult(lifecycle = LOCAL)]
+    pub live_effects: HashMap<String, RunningEffect>,
+    /// The fades this station is part way through, keyed by parameter key. LOCAL for
+    /// the same reason, and read by the same plugin to hand a timed move to a node
+    /// that can run it unattended.
+    #[pult(lifecycle = LOCAL)]
+    pub live_fades: HashMap<String, RunningFade>,
 }
 
 #[cfg(test)]

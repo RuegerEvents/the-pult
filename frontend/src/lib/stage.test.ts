@@ -39,6 +39,8 @@ const fixture = (over: Partial<Fixture> = {}): Fixture => ({
 	address: { Dmx: { universe: 1, address: 1 } },
 	position: null,
 	live_values: {},
+	live_effects: {},
+	live_fades: {},
 	...over
 });
 
@@ -176,7 +178,9 @@ describe('what things are doing', () => {
 		// No dimmer channel: reporting it dark because there is no Intensity would
 		// be a lie about a fixture that is plainly on.
 		const lit = fixture({
-			live_values: { ColorRgb: { type: 'Color', value: { r: 0, g: 1, b: 0 } } }
+			live_values: { ColorRgb: { type: 'Color', value: { r: 0, g: 1, b: 0 } } },
+			live_effects: {},
+			live_fades: {}
 		});
 		expect(fixtureOutput(lit).level).toBe(1);
 		expect(fixtureTint(lit)).toBe('rgb(0, 255, 0)');
@@ -218,7 +222,9 @@ describe('pointing', () => {
 	it('points a centred mover the way it hangs', () => {
 		const facing = fixture({
 			position: { Axial: { position: { x: 0, y: 5, z: 0 }, direction: { x: 0, y: -1, z: 1 } } },
-			live_values: { Pan: { type: 'Float', value: 0.5 } }
+			live_values: { Pan: { type: 'Float', value: 0.5 } },
+			live_effects: {},
+			live_fades: {}
 		});
 		expect(panAngle(facing, mover)).toBeCloseTo(0, 6);
 	});
@@ -242,7 +248,9 @@ describe('pointing', () => {
 	const hung = (over: Record<string, ParameterValue> = {}) =>
 		fixture({
 			position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } },
-			live_values: { Pan: { type: 'Float', value: 0.5 }, Tilt: { type: 'Float', value: 0.5 }, ...over }
+			live_values: { Pan: { type: 'Float', value: 0.5 }, Tilt: { type: 'Float', value: 0.5 }, ...over },
+			live_effects: {},
+			live_fades: {}
 		});
 
 	it('nods either side of the elevation it was hung at', () => {
@@ -284,7 +292,9 @@ describe('pointing', () => {
 		// The behaviour before tilt existed: swinging keeps the hung elevation.
 		const rigged = fixture({
 			position: { Axial: { position: { x: 0, y: 5, z: 0 }, direction: { x: 0, y: -3, z: 4 } } },
-			live_values: { Pan: { type: 'Float', value: 0.5 } }
+			live_values: { Pan: { type: 'Float', value: 0.5 } },
+			live_effects: {},
+			live_fades: {}
 		});
 		const beam = beamDirection(rigged, mover);
 		expect(beam.y).toBeCloseTo(-0.6, 6);
@@ -306,7 +316,9 @@ describe('aiming a head', () => {
 	const hung = (over: Record<string, ParameterValue> = {}) =>
 		fixture({
 			position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } },
-			live_values: { Pan: { type: 'Float', value: 0.5 }, Tilt: { type: 'Float', value: 0.5 }, ...over }
+			live_values: { Pan: { type: 'Float', value: 0.5 }, Tilt: { type: 'Float', value: 0.5 }, ...over },
+			live_effects: {},
+			live_fades: {}
 		});
 
 	it('lands the beam where it was asked to', () => {

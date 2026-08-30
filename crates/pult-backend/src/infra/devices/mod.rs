@@ -428,6 +428,11 @@ impl DeviceManager {
                         .discovered
                         .get(&serial)
                         .and_then(|d| d.description.clone()),
+                    effects: self
+                        .state
+                        .discovered
+                        .get(&serial)
+                        .and_then(|d| d.effects.clone()),
                     // The TXT record is enough to warn; `/api/v1/info` confirms below.
                     is_mains: txt.get("mains").map(|v| v == "1").unwrap_or(false),
                     online: true,
@@ -558,6 +563,8 @@ impl DeviceManager {
             address: FixtureAddress::OpenHaunt { serial: serial.to_string(), universe },
             position: None,
             live_values: Default::default(),
+            live_effects: Default::default(),
+            live_fades: Default::default(),
         };
         let value = serde_json::to_value(&fixture).map_err(|e| e.to_string())?;
         self.engine

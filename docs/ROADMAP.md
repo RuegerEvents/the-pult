@@ -604,6 +604,64 @@ The lifecycle test that proved a SYNCED field is not persisted was written again
 `is_running`, so it now runs against `editing_cue` — the SYNCED field on `Show`
 that does have a reader, and the one whose loss on reload would actually be felt.
 
+### 18. The shape of an effect (done)
+
+Types only, no engine: `EffectSpec`, `SpeedMaster`, and the fields on `Cue`,
+`Sequence`, `Fixture` and `DiscoveredDevice` that carry them. Nothing renders yet,
+which is the point — the wire format and the storage format are settled before
+anything depends on them.
+
+**One primitive for sine and chase both.** A shape on intensity and a red-green-blue
+chase look like separate features and are separate features on most consoles. They
+differ only in what a cycle position maps to: a `Curve::Shape` reads a level out of a
+function and scales it between `low` and `high`, while `Curve::Steps` looks the
+position up in keyframes that carry real `ParameterValue`s. How fast, which way,
+where in the cycle this fixture sits — the same question either way, so it is asked
+once, in one envelope. That is why `EffectSpec` has no `kind` field.
+
+**Phase is a number, spread is a memory.** `EffectSpec::phase` is this fixture's
+absolute offset, worked out when the operator applied it. `Spread` records *how* they
+asked, so the GUI can re-apply the same arrangement to a different selection, and the
+engine never reads it. Rendering is then a pure function of one entry rather than of
+an entry plus its position in a selection that may since have changed — which matters
+because two stations must not disagree about what "third of five" means.
+
+**Where an effect is measured from.** `EffectSpec::t0` is `Some` in the programmer,
+set when it was applied, and `None` in a stored capture, where the cue's new
+`Sequence::went_at` is the anchor. So `go_next` and `go_to_cue` now take an optional
+`at`, and the frontend passes `Date.now()`. Commands run per station from the same
+arguments, and that is the whole mechanism: a Go carrying its time makes every
+console anchor the cue at one millisecond rather than at whenever its own actor got
+to the message. A `Rate::Master` ignores both and uses the master's own `t0`, which is
+what keeps every effect on one master in step.
+
+**Tempo is a replicated fact.** `SpeedMaster` is mixed lifecycle like `Cue`: name,
+bpm and multiplier persist, `running` and `t0` do not. Every tap and every bpm edit
+rewrites `t0` along with the tempo, so a tempo change is a bounded step in phase
+rather than a drift that grows — the new rate and the anchor it is measured from
+arrive together. A `t0` of 0 after a reload is a defined anchor, not a missing one.
+
+**The first LOCAL entity field.** `Fixture.live_effects` and `live_fades` are LOCAL,
+which the macro has supported since task 2 and nothing had used. Every station works
+them out for itself from replicated state, so broadcasting them would be sending each
+console a slower copy of what it already has. They exist for the two readers that
+cannot compute them: an output plugin deciding whether to hand a shape to a node
+instead of streaming samples at it, and a panel drawing where each fixture sits in
+its cycle. The generated migration confirms it — `speed_masters` appears with its
+four PERSISTED columns and `fixtures` gains none.
+
+**The trap worth naming.** `fixture_type_id` is a UUIDv5 over the serialised
+`NodeDescription`, so a port's effect capability must not be a field on
+`PortDescription`: firmware that started advertising effects would give every adopted
+node a fresh fixture type and orphan every parameter already patched against the old
+id. `effect_capability_from` reads it out of the raw `/info` body instead, the way
+the mains flag already is, and a test pins the id across a description that gains an
+`effects` block.
+
+No migration anywhere. `captures` is one JSON column, `#[serde(default)]` covers the
+new keys, and a cue or sequence written before any of this reads back with no effect
+and no anchor.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

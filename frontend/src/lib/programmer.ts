@@ -179,7 +179,12 @@ export function storeCaptures(
 			value: entry.value,
 			fade_in_ms: 0,
 			fade_out_ms: 0,
-			delay_in_ms: 0
+			delay_in_ms: 0,
+			// A stored effect drops its anchor: the cue's `went_at` is what it is
+			// measured from on every Go, so that two consoles replaying the cue
+			// start the same cycle rather than each remembering its own.
+			effect: entry.effect ? { ...entry.effect, t0: null } : null,
+			easing: 'Linear' as const
 		}));
 
 	if (mode === 'replace') return stored;
@@ -201,6 +206,9 @@ export function entriesFromCue(cue: Cue): ProgrammerValue[] {
 		fixture_id: capture.fixture_id,
 		parameter_kind: capture.parameter_kind,
 		value: capture.value,
+		// Back into the programmer, and anchored now: the operator is holding it
+		// again rather than replaying it from where the cue put it.
+		effect: capture.effect ? { ...capture.effect, t0: Date.now() } : null,
 		locked: false
 	}));
 }

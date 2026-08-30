@@ -10,6 +10,19 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ## Unreleased
 
+### Added
+
+- **Effects have a shape in the schema.** `EffectSpec` describes one periodic
+  instruction — a curve that is either a shape scaled between two values or a
+  list of keyframes carrying their own, plus rate, width, direction, per-fixture
+  phase and spread — and can be held in the programmer or stored in a cue
+  capture. A `SpeedMaster` collection carries a tempo several effects can
+  follow. Nothing renders them yet.
+- **A Go says when it happened.** `Sequence.went_at`, with `goNext` and
+  `goToCue` taking an optional `at`, so every station anchors a cue's fades and
+  effects at the same millisecond instead of at whenever each of them processed
+  the command.
+
 ### Removed
 
 - **Three fields nothing ever read.** `Show.is_running`, `Show.active_sequence`

@@ -11,6 +11,7 @@ use pult_schema::types::{
     sequence::Sequence,
 };
 
+use pult_schema::types::effect::Easing;
 use super::*;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -23,6 +24,8 @@ fn a_fixture() -> Fixture {
         address: FixtureAddress::Dmx { universe: 1, address: 1 },
         position: None,
         live_values: HashMap::new(),
+        live_effects: Default::default(),
+        live_fades: Default::default(),
     }
 }
 
@@ -47,6 +50,8 @@ fn intensity(fixture_id: Uuid, value: f32) -> ParameterCapture {
         fade_in_ms: 0,
         fade_out_ms: 0,
         delay_in_ms: 0,
+        effect: None,
+        easing: Easing::Linear,
     }
 }
 
@@ -56,6 +61,7 @@ fn a_sequence(cues: &[&Cue], active: Option<usize>) -> Sequence {
         name: "Act 1".into(),
         cue_ids: cues.iter().map(|c| c.id).collect(),
         active_cue_index: active,
+        went_at: None,
     }
 }
 
@@ -328,6 +334,8 @@ fn colour_fades_channel_by_channel() {
         fade_in_ms: 1000,
         fade_out_ms: 0,
         delay_in_ms: 0,
+        effect: None,
+        easing: Easing::Linear,
     };
     let cue = a_cue(0, vec![capture]);
     let fixtures = [fixture.clone()];
@@ -361,6 +369,8 @@ fn a_boolean_switches_at_the_top_of_the_fade_not_the_end() {
         fade_in_ms: 4000,
         fade_out_ms: 0,
         delay_in_ms: 0,
+        effect: None,
+        easing: Easing::Linear,
     };
     let cue = a_cue(0, vec![capture]);
     let fixtures = [fixture.clone()];
@@ -514,7 +524,7 @@ fn a_deleted_sequence_releases_its_cue() {
 /// the fixture and the parameter, and it is the *frontend* that derives the id from
 /// those two so that two consoles converge on one row.
 fn held(fixture_id: Uuid, kind: ParameterKind, value: ParameterValue) -> ProgrammerValue {
-    ProgrammerValue { id: Uuid::new_v4(), fixture_id, parameter_kind: kind, value, locked: false }
+    ProgrammerValue { id: Uuid::new_v4(), fixture_id, parameter_kind: kind, value, effect: None, locked: false }
 }
 
 fn held_intensity(fixture_id: Uuid, level: f32) -> ProgrammerValue {
@@ -749,6 +759,8 @@ fn the_programmer_leaves_parameters_it_does_not_hold_alone() {
                 fade_in_ms: 0,
                 fade_out_ms: 0,
                 delay_in_ms: 0,
+                effect: None,
+                easing: Easing::Linear,
             },
         ],
     );

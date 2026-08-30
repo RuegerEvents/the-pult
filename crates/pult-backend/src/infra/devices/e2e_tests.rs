@@ -199,6 +199,8 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
         address: FixtureAddress::Dmx { universe: 1, address: 1 },
         position: None,
         live_values: Default::default(),
+        live_effects: Default::default(),
+        live_fades: Default::default(),
     };
     dimmer.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
 
@@ -256,6 +258,7 @@ async fn a_button_on_a_node_advances_a_cue() {
         name: "Act 1".into(),
         cue_ids: vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()],
         active_cue_index: None,
+        went_at: None,
     };
     let flow = Flow { id: uuid::Uuid::new_v4(), name: "Front door".into(), enabled: true };
     let node = |kind| FlowNode {

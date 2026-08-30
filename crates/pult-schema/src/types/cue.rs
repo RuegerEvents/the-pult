@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use super::effect::{Easing, EffectSpec};
 use super::fixture::{ParameterKind, ParameterValue};
 use crate::PultSchema;
 
@@ -25,6 +26,18 @@ pub struct ParameterCapture {
     pub fade_in_ms: u32,
     pub fade_out_ms: u32,
     pub delay_in_ms: u32,
+    /// A periodic instruction instead of a destination. When this is set the capture
+    /// asserts a shape rather than a value, and `value` is only what the parameter
+    /// falls back to if the effect cannot be rendered.
+    ///
+    /// Defaulted rather than migrated: a cue stored before effects existed has no
+    /// `effect` key, and `captures` is one JSON column with nothing to alter.
+    #[serde(default)]
+    pub effect: Option<EffectSpec>,
+    /// The shape of this capture's own fade. Defaults to `Linear`, which is what
+    /// every fade did before there was a choice.
+    #[serde(default)]
+    pub easing: Easing,
 }
 
 /// A single lighting state snapshot with timing information.
@@ -50,4 +63,65 @@ pub struct Cue {
     /// True when this cue is currently being executed (output is active).
     #[pult(lifecycle = SYNCED)]
     pub is_active: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::effect::{Curve, Direction, Rate, Shape, Spread};
+
+    /// `captures` is one JSON column, so a cue stored before effects existed is read
+    /// back through this shape and nothing migrates it. The defaults are the whole
+    /// migration.
+    #[test]
+    fn a_capture_stored_before_effects_existed_still_parses() {
+        let legacy = serde_json::json!({
+            "fixture_id": Uuid::nil(),
+            "parameter_kind": { "Intensity": null },
+            "value": { "type": "Float", "value": 0.5 },
+            "fade_in_ms": 3000,
+            "fade_out_ms": 0,
+            "delay_in_ms": 0,
+        });
+
+        let parsed: ParameterCapture = serde_json::from_value(legacy).unwrap();
+        assert!(parsed.effect.is_none(), "no effect asserted");
+        assert_eq!(parsed.easing, Easing::Linear, "what every fade did before there was a choice");
+        assert_eq!(parsed.fade_in_ms, 3000);
+    }
+
+    #[test]
+    fn a_capture_carrying_an_effect_round_trips() {
+        let capture = ParameterCapture {
+            fixture_id: Uuid::nil(),
+            parameter_kind: ParameterKind::Intensity,
+            value: ParameterValue::Float(0.0),
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+            delay_in_ms: 0,
+            effect: Some(EffectSpec {
+                effect_id: Uuid::nil(),
+                curve: Curve::Shape(Shape::Sine),
+                rate: Rate::Hz(0.5),
+                low: ParameterValue::Float(0.0),
+                high: ParameterValue::Float(1.0),
+                width: 0.5,
+                direction: Direction::Forward,
+                phase: 0.25,
+                spread: Spread::Linear,
+                // A stored capture never carries an anchor: the cue's `went_at` is it.
+                t0: None,
+            }),
+            easing: Easing::EaseInOut,
+        };
+
+        let back: ParameterCapture =
+            serde_json::from_value(serde_json::to_value(&capture).unwrap()).unwrap();
+        let effect = back.effect.expect("survives the round trip");
+        assert_eq!(effect.curve, Curve::Shape(Shape::Sine));
+        assert_eq!(effect.rate, Rate::Hz(0.5));
+        assert_eq!(effect.phase, 0.25);
+        assert_eq!(effect.t0, None);
+        assert_eq!(back.easing, Easing::EaseInOut);
+    }
 }

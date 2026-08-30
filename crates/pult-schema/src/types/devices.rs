@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::types::openhaunt::NodeDescription;
+use crate::types::openhaunt::{EffectCapability, NodeDescription};
 
 /// What a node last said about itself on its health topic.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -57,6 +57,12 @@ pub struct DiscoveredDevice {
     /// fall back on, which is the point.
     #[serde(default)]
     pub description: Option<NodeDescription>,
+    /// Which of its ports can trace a shape on their own, read from the same `/info`
+    /// body but deliberately not from `description` — see
+    /// [`crate::types::openhaunt::effect_capability_from`] for why keeping it out of
+    /// the description matters.
+    #[serde(default)]
+    pub effects: Option<EffectCapability>,
     /// The module switches mains voltage. The panel says so before anything is
     /// adopted, because the consequence of a mistake here is not a dark light.
     pub is_mains: bool,

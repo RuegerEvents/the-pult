@@ -15,24 +15,30 @@ use super::cue::CueAccessor;
 #[pult_commands]
 impl Sequence {
     /// Advance to the next cue, wrapping to None if already at the last.
-    #[pult_command]
+    ///
+    /// Args: `{ "at": <console unix ms> }`, optional. Every station runs this command
+    /// from the same arguments, so carrying the time is what makes all of them anchor
+    /// the cue at the same millisecond rather than at whenever each of them got here.
+    #[pult_command(args = "{ at?: number }")]
     pub fn go_next(
         &mut self,
-        _args: serde_json::Value,
+        args: serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let next = self.active_cue_index.map(|i| i + 1).unwrap_or(0);
         self.active_cue_index = if next < self.cue_ids.len() { Some(next) } else { None };
+        self.went_at = Some(went_at(&args));
         Ok(())
     }
 
-    /// Jump to the cue with the given ID. Args: { "cueId": "<uuid>" }
-    #[pult_command(args = "{ cueId: string }")]
+    /// Jump to the cue with the given ID. Args: { "cueId": "<uuid>", "at"?: <ms> }
+    #[pult_command(args = "{ cueId: string, at?: number }")]
     pub fn go_to_cue(
         &mut self,
         args: serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let cue_id: Uuid = serde_json::from_value(args["cueId"].clone())?;
         self.active_cue_index = self.cue_ids.iter().position(|id| *id == cue_id);
+        self.went_at = Some(went_at(&args));
         Ok(())
     }
 }
@@ -52,4 +58,113 @@ pub struct Sequence {
     /// Index of the currently active cue within cue_ids, if any.
     #[pult(lifecycle = SYNCED)]
     pub active_cue_index: Option<usize>,
+    /// Console unix ms the current cue went.
+    ///
+    /// Fades and effects are both measured from here, which is why it is replicated
+    /// rather than kept per station: two consoles rendering the same cue have to
+    /// agree on when it started, not merely that it did.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub went_at: Option<u64>,
+}
+
+/// The `at` a Go was given, or now.
+///
+/// A station that fires a follow, or an operator pressing Go, supplies the time so
+/// every station anchors on the same instant. Nothing supplies it when the command
+/// arrives from an older peer or a hand-written API call, and then local now is the
+/// best available answer.
+fn went_at(args: &serde_json::Value) -> u64 {
+    args.get("at").and_then(|v| v.as_u64()).unwrap_or_else(now_ms)
+}
+
+/// Console unix ms.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a_sequence(cue_ids: Vec<Uuid>) -> Sequence {
+        Sequence {
+            id: Uuid::new_v4(),
+            name: "Act 1".into(),
+            cue_ids,
+            active_cue_index: None,
+            went_at: None,
+        }
+    }
+
+    /// The reason `at` exists. Every station runs the same command from the same
+    /// arguments, so a Go that carries its time anchors the cue at one millisecond
+    /// everywhere rather than at whenever each station's actor got round to it.
+    #[test]
+    fn a_go_that_carries_its_time_anchors_the_cue_there() {
+        let mut seq = a_sequence(vec![Uuid::new_v4(), Uuid::new_v4()]);
+
+        seq.go_next(serde_json::json!({ "at": 1_756_550_400_123u64 })).unwrap();
+        assert_eq!(seq.active_cue_index, Some(0));
+        assert_eq!(seq.went_at, Some(1_756_550_400_123));
+
+        seq.go_next(serde_json::json!({ "at": 1_756_550_403_000u64 })).unwrap();
+        assert_eq!(seq.active_cue_index, Some(1));
+        assert_eq!(seq.went_at, Some(1_756_550_403_000), "every Go re-anchors");
+    }
+
+    /// An older peer, or a hand-written API call, supplies no time. Local now is then
+    /// the best available answer, and the stations differ by their clock skew rather
+    /// than by nothing at all.
+    #[test]
+    fn a_go_without_a_time_anchors_now() {
+        let mut seq = a_sequence(vec![Uuid::new_v4()]);
+        let before = now_ms();
+
+        seq.go_next(serde_json::json!({})).unwrap();
+
+        let at = seq.went_at.expect("anchored regardless");
+        assert!(at >= before, "not before the call");
+        assert!(at <= now_ms(), "not after it either");
+    }
+
+    #[test]
+    fn jumping_to_a_cue_anchors_it_the_same_way() {
+        let target = Uuid::new_v4();
+        let mut seq = a_sequence(vec![Uuid::new_v4(), target]);
+
+        seq.go_to_cue(serde_json::json!({ "cueId": target, "at": 42u64 })).unwrap();
+        assert_eq!(seq.active_cue_index, Some(1));
+        assert_eq!(seq.went_at, Some(42));
+    }
+
+    /// Running off the end is still a Go: the sequence stops asserting anything, and
+    /// the anchor moves so that a wrap back to the top starts a fresh cycle rather
+    /// than resuming an old one.
+    #[test]
+    fn running_off_the_end_clears_the_cue_but_still_anchors() {
+        let mut seq = a_sequence(vec![Uuid::new_v4()]);
+        seq.active_cue_index = Some(0);
+
+        seq.go_next(serde_json::json!({ "at": 7u64 })).unwrap();
+        assert_eq!(seq.active_cue_index, None);
+        assert_eq!(seq.went_at, Some(7));
+    }
+
+    /// SYNCED, and added after showfiles existed, so a sequence written before it
+    /// has no key and reads back unanchored.
+    #[test]
+    fn a_sequence_stored_before_went_at_existed_still_parses() {
+        let legacy = serde_json::json!({
+            "id": Uuid::nil(),
+            "name": "Act 1",
+            "cue_ids": [],
+            "active_cue_index": null,
+        });
+        let parsed: Sequence = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.went_at, None);
+    }
 }

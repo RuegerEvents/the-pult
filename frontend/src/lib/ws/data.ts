@@ -15,6 +15,7 @@ import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { ProgrammerValue } from '../generated/ProgrammerValue.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Show } from '../generated/Show.js';
+import type { SpeedMaster } from '../generated/SpeedMaster.js';
 import type { StagePlan } from '../generated/StagePlan.js';
 import type { Station } from '../generated/Station.js';
 
@@ -59,8 +60,12 @@ export type ProgrammerValueEntity = PathProxy<ProgrammerValue> & {
 
 export type SequenceEntity = PathProxy<Sequence> & {
   delete(): Promise<void>;
-  goNext(): Promise<void>;
-  goToCue(args: { cueId: string }): Promise<void>;
+  goNext(args: { at?: number }): Promise<void>;
+  goToCue(args: { cueId: string, at?: number }): Promise<void>;
+};
+
+export type SpeedMasterEntity = PathProxy<SpeedMaster> & {
+  delete(): Promise<void>;
 };
 
 export type StagePlanEntity = PathProxy<StagePlan> & {
@@ -183,6 +188,17 @@ export type SequenceCollection = {
   [n: number]: SequenceEntity;
 };
 
+export type SpeedMasterCollection = {
+  get(): Promise<SpeedMaster[]>;
+  set(value: SpeedMaster[]): Promise<void>;
+  subscribe(cb: (value: SpeedMaster[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: SpeedMaster[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): SpeedMasterEntity;
+  nth(n: number): SpeedMasterEntity;
+  create(entity: SpeedMaster): Promise<void>;
+  [n: number]: SpeedMasterEntity;
+};
+
 export type StagePlanCollection = {
   get(): Promise<StagePlan[]>;
   set(value: StagePlan[]): Promise<void>;
@@ -220,6 +236,7 @@ export type DataRoot = {
   programmer_values: ProgrammerValueCollection;
   sequences: SequenceCollection;
   show: PathProxy<Show | null>;
+  speed_masters: SpeedMasterCollection;
   stage_plans: StagePlanCollection;
   stations: StationCollection;
 };

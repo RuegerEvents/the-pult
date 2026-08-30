@@ -97,6 +97,7 @@ async function flush(): Promise<void> {
 				fixture_id: fixtureId,
 				parameter_kind: kind,
 				value,
+				effect: null,
 				locked: false
 			});
 		}
@@ -156,7 +157,7 @@ export async function lockAll(locked = true): Promise<void> {
 export async function beginEdit(cue: Cue, sequence: Sequence | null): Promise<void> {
 	const data = showData();
 	await clear({ keepLocked: true });
-	if (sequence) await data.sequences.byId(sequence.id).goToCue({ cueId: cue.id });
+	if (sequence) await data.sequences.byId(sequence.id).goToCue({ cueId: cue.id, at: Date.now() });
 	for (const entry of entriesFromCue(cue)) {
 		await data.programmer_values.create(entry);
 	}

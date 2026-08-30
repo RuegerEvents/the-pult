@@ -16,6 +16,7 @@ use pult_schema::{
 };
 use uuid::Uuid;
 
+use pult_schema::types::effect::Easing;
 use super::*;
 use crate::infra::showfile;
 
@@ -92,7 +93,7 @@ fn a_show() -> Show {
 }
 
 fn a_sequence(name: &str, cue_ids: Vec<Uuid>) -> Sequence {
-    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None }
+    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None }
 }
 
 fn a_cue(name: &str, number: f64) -> Cue {
@@ -116,6 +117,8 @@ fn a_fixture(name: &str, address: u16) -> Fixture {
         address: FixtureAddress::Dmx { universe: 1, address },
         position: None,
         live_values: Default::default(),
+        live_effects: Default::default(),
+        live_fades: Default::default(),
     }
 }
 
@@ -1330,6 +1333,8 @@ fn an_intensity_cue(fixture_id: Uuid, level: f32, fade_in_ms: u32) -> Cue {
         fade_in_ms: 0,
         fade_out_ms: 0,
         delay_in_ms: 0,
+        effect: None,
+        easing: Easing::Linear,
     }];
     cue
 }
@@ -1952,6 +1957,8 @@ mod watching_playback {
                 fade_in_ms: 0,
                 fade_out_ms: 0,
                 delay_in_ms: 0,
+                effect: None,
+                easing: Easing::Linear,
             }],
             follow_mode: FollowMode::Manual,
             fade_in_ms: 0,
@@ -2046,6 +2053,8 @@ mod watching_playback {
                 fade_in_ms: 0,
                 fade_out_ms: 0,
                 delay_in_ms: 0,
+                effect: None,
+                easing: Easing::Linear,
             }],
             follow_mode: FollowMode::Manual,
             fade_in_ms: 0,

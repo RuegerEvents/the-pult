@@ -22,6 +22,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::{
+    types::effect::EffectSpec,
     types::fixture::{ParameterKind, ParameterValue},
     PultSchema,
 };
@@ -41,6 +42,14 @@ pub struct ProgrammerValue {
     pub parameter_kind: ParameterKind,
     #[pult(lifecycle = SYNCED)]
     pub value: ParameterValue,
+    /// A shape held instead of a value.
+    ///
+    /// An entry asserts either its value or its effect for the key, never both, so
+    /// the id derivation is unchanged: grabbing a fader and putting a sine on it are
+    /// the same act of taking hold of one parameter.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub effect: Option<EffectSpec>,
     /// Parked: survives Clear and Store, so one value can go into several cues.
     ///
     /// The spec calls this the parking function and asks for it explicitly — a value
