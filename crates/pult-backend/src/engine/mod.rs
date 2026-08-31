@@ -4,7 +4,7 @@ use std::sync::Arc;
 use futures::stream::BoxStream;
 use pult_schema::{
     commands::CommandRegistration,
-    events::operation::{NodeId, Operation, VectorClock},
+    events::operation::{Authorship, NodeId, Operation, VectorClock},
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
@@ -237,8 +237,9 @@ pub enum EngineCommand {
         path: Path,
         value: serde_json::Value,
         lifecycle: Lifecycle,
-        /// Who asked, where anybody did. `None` for the engine\'s own writes.
-        user_id: Option<Uuid>,
+        /// Who asked and what they were in the middle of. Empty for the engine\'s
+        /// own writes, which nobody asked for and nobody can take back.
+        authorship: Authorship,
         reply: oneshot::Sender<Result<(), BackendError>>,
     },
     Get {
@@ -249,8 +250,8 @@ pub enum EngineCommand {
     Undo {
         user_id: Uuid,
         redo: bool,
-        /// What was reversed, or `None` when there was nothing to reverse.
-        reply: oneshot::Sender<Option<Operation>>,
+        /// The paths it wrote, or empty when there was nothing to reverse.
+        reply: oneshot::Sender<Vec<Path>>,
     },
     /// The recent operation log, for the history panel.
     History { limit: u32, reply: oneshot::Sender<Vec<Operation>> },
@@ -313,17 +314,30 @@ impl EngineHandle {
     ) -> Result<(), BackendError> {
         let (tx, rx) = oneshot::channel();
         self.0
-            .send(EngineCommand::Set { path, value, lifecycle, user_id: None, reply: tx })
+            .send(EngineCommand::Set {
+                path,
+                value,
+                lifecycle,
+                authorship: Authorship::none(),
+                reply: tx,
+            })
             .await
             .map_err(|_| BackendError::ChannelClosed)?;
         rx.await?
     }
 
-    /// Take back a user's last change. `redo` puts back their last undo instead.
-    pub async fn undo(&self, user_id: Uuid, redo: bool) -> Option<Operation> {
+    /// Take back a user's last gesture. `redo` puts back their last undo instead.
+    ///
+    /// Returns the paths it actually wrote — one for an ordinary change, one per
+    /// fixture for a fan across a selection, and empty when there was nothing to
+    /// take back. Paths rather than operations because that is what moved: a drag is
+    /// four hundred operations and one thing changing.
+    pub async fn undo(&self, user_id: Uuid, redo: bool) -> Vec<Path> {
         let (tx, rx) = oneshot::channel();
-        self.0.send(EngineCommand::Undo { user_id, redo, reply: tx }).await.ok()?;
-        rx.await.ok().flatten()
+        if self.0.send(EngineCommand::Undo { user_id, redo, reply: tx }).await.is_err() {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
     }
 
     /// The recent operation log, newest first.
@@ -336,16 +350,28 @@ impl EngineHandle {
     }
 
     /// A write somebody asked for, so it can be taken back.
+    ///
+    /// `gesture` is the one act it was part of, where the client said so — a drag,
+    /// a fan across a selection — and `None` for a write that stands alone.
     pub async fn set_as(
         &self,
         user_id: Uuid,
+        gesture: Option<Uuid>,
         path: Path,
         lifecycle: Lifecycle,
         value: serde_json::Value,
     ) -> Result<(), BackendError> {
         let (tx, rx) = oneshot::channel();
         self.0
-            .send(EngineCommand::Set { path, value, lifecycle, user_id: Some(user_id), reply: tx })
+            .send(EngineCommand::Set {
+                path,
+                value,
+                lifecycle,
+                // `previous` is filled in by the engine, which is the only place
+                // that can read the old value without racing another write.
+                authorship: Authorship::by(Some(user_id), None).during(gesture),
+                reply: tx,
+            })
             .await
             .map_err(|_| BackendError::ChannelClosed)?;
         rx.await?
@@ -602,24 +628,23 @@ impl ShowEngine {
                         .ok_or_else(|| BackendError::PathNotFound(path));
                     let _ = reply.send(result);
                 }
-                EngineCommand::Set { path, value, lifecycle, user_id, reply } => {
+                EngineCommand::Set { path, value, lifecycle, mut authorship, reply } => {
                     // Read before writing: the oplog is otherwise a list of
                     // destinations with no record of where anything came from, and
                     // replaying that forwards works while running it backwards does
                     // not. Only for a write somebody asked for — the engine's own,
                     // at 40 Hz, would pay for a read nobody will ever undo.
-                    let previous =
-                        user_id.map(|_| self.value_before(&path)).unwrap_or(None);
+                    authorship.previous =
+                        authorship.user_id.map(|_| self.value_before(&path)).unwrap_or(None);
                     let result = self.apply_set(path.clone(), value.clone(), lifecycle).await;
                     if result.is_ok() {
                         self.state_version += 1;
                         self.record_write(&path, lifecycle);
-                        self.log_local_write(&path, &value, lifecycle, user_id, previous.clone(), None)
-                            .await;
+                        self.log_local_write(&path, &value, lifecycle, &authorship).await;
                         self.broadcast_after_set(&path, value.clone());
                         if lifecycle != Lifecycle::Local {
                             if let Some(sync) = &self.sync {
-                                sync.broadcast_synced(path, value, self.clock.clone(), user_id, previous)
+                                sync.broadcast_synced(path, value, self.clock.clone(), authorship)
                                     .await;
                             }
                         }
@@ -765,7 +790,7 @@ impl ShowEngine {
             self.state_version += 1;
             self.record_write(&path, Lifecycle::Synced);
             if let Some(sync) = &self.sync {
-                sync.broadcast_synced(path, args, self.clock.clone(), None, None).await;
+                sync.broadcast_synced(path, args, self.clock.clone(), Authorship::none()).await;
             }
         }
     }
@@ -910,10 +935,10 @@ impl ShowEngine {
         }
         self.state_version += 1;
         self.record_write(&path, Lifecycle::Synced);
-        self.log_local_write(&path, &value, Lifecycle::Synced, None, None, None).await;
+        self.log_local_write(&path, &value, Lifecycle::Synced, &Authorship::none()).await;
         self.broadcast_after_set(&path, value.clone());
         if let Some(sync) = &self.sync {
-            sync.broadcast_synced(path, value, self.clock.clone(), None, None).await;
+            sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
         }
     }
 
@@ -982,10 +1007,10 @@ impl ShowEngine {
 
         self.apply_set(path.clone(), values.clone(), Lifecycle::Synced).await?;
         self.record_write(&path, Lifecycle::Synced);
-        self.log_local_write(&path, &values, Lifecycle::Synced, None, None, None).await;
+        self.log_local_write(&path, &values, Lifecycle::Synced, &Authorship::none()).await;
         self.broadcast_after_set(&path, values.clone());
         if let Some(sync) = &self.sync {
-            sync.broadcast_synced(path, values, self.clock.clone(), None, None).await;
+            sync.broadcast_synced(path, values, self.clock.clone(), Authorship::none()).await;
         }
         // The output side has to see it now: an input can arrive between two ticks,
         // and a relay that follows a button should not wait for the next one.
@@ -999,9 +1024,7 @@ impl ShowEngine {
         path: &Path,
         value: &serde_json::Value,
         lifecycle: Lifecycle,
-        user_id: Option<Uuid>,
-        previous: Option<serde_json::Value>,
-        undoes: Option<Uuid>,
+        authorship: &Authorship,
     ) {
         if lifecycle == Lifecycle::Local {
             return;
@@ -1015,9 +1038,10 @@ impl ShowEngine {
             path: path.clone(),
             value: value.clone(),
             timestamp: chrono::Utc::now(),
-            user_id,
-            previous,
-            undoes,
+            user_id: authorship.user_id,
+            previous: authorship.previous.clone(),
+            undoes: authorship.undoes,
+            gesture: authorship.gesture,
         };
         self.log_operation(&op).await;
     }
@@ -1048,45 +1072,58 @@ impl ShowEngine {
     /// The undo is written like any other change and logged pointing at what it
     /// reversed, so it replicates to peers, reaches the same user's other client,
     /// and turns up in the history as itself.
-    async fn take_back(&mut self, user_id: Uuid, redo: bool) -> Option<Operation> {
-        let log = oplog::recent_by_people(&self.pool, UNDO_DEPTH).await.ok()?;
-        let target = if redo {
-            undo::next_to_redo(&log, user_id)?
+    async fn take_back(&mut self, user_id: Uuid, redo: bool) -> Vec<Path> {
+        let Ok(log) = oplog::recent_by_people(&self.pool, UNDO_DEPTH).await else {
+            return Vec::new();
+        };
+        let run = if redo {
+            undo::next_to_redo(&log, user_id)
         } else {
-            undo::next_to_undo(&log, user_id)?
-        }
-        .clone();
-        let inverse = undo::inverse_of(&target)?;
+            undo::next_to_undo(&log, user_id)
+        };
+        let Some(head) = run.first() else { return Vec::new() };
 
-        let lifecycle = pult_schema::registry::path_lifecycle(&inverse.path);
-        let previous = self.value_before(&inverse.path);
-        self.apply_set(inverse.path.clone(), inverse.value.clone(), lifecycle).await.ok()?;
-
-        self.state_version += 1;
-        self.record_write(&inverse.path, lifecycle);
-        self.log_local_write(
-            &inverse.path,
-            &inverse.value,
-            lifecycle,
-            Some(user_id),
-            previous.clone(),
-            Some(target.id),
-        )
-        .await;
-        self.broadcast_after_set(&inverse.path, inverse.value.clone());
-        if lifecycle != Lifecycle::Local {
-            if let Some(sync) = &self.sync {
-                sync.broadcast_synced(
-                    inverse.path,
-                    inverse.value,
-                    self.clock.clone(),
-                    Some(user_id),
-                    previous,
-                )
-                .await;
+        // Every write of the reversal points at the gesture it reverses and shares a
+        // gesture of its own, so putting a drag back is one Ctrl-Shift-Z rather than
+        // one per path — and so the next undo sees the reversal as the single act it
+        // was.
+        let reverses = undo::gesture_key(head);
+        let authorship =
+            Authorship::by(Some(user_id), None).during(Some(Uuid::new_v4())).reversing(reverses);
+        let inverses = undo::inverses_of_run(&run);
+        let mut moved = Vec::new();
+        for inverse in inverses {
+            let lifecycle = pult_schema::registry::path_lifecycle(&inverse.path);
+            // Before the write, or it reads back what it just put there and the undo
+            // becomes its own inverse.
+            let mut written = authorship.clone();
+            written.previous = self.value_before(&inverse.path);
+            if self.apply_set(inverse.path.clone(), inverse.value.clone(), lifecycle).await.is_err()
+            {
+                // One path of a gesture failing does not make the rest wrong. A
+                // fixture deleted by somebody else since is the ordinary case, and
+                // abandoning the other nineteen faders over it would be worse.
+                continue;
+            }
+            moved.push(inverse.path.clone());
+            self.state_version += 1;
+            self.record_write(&inverse.path, lifecycle);
+            self.log_local_write(&inverse.path, &inverse.value, lifecycle, &written).await;
+            self.broadcast_after_set(&inverse.path, inverse.value.clone());
+            if lifecycle != Lifecycle::Local {
+                if let Some(sync) = &self.sync {
+                    sync.broadcast_synced(
+                        inverse.path,
+                        inverse.value,
+                        self.clock.clone(),
+                        written,
+                    )
+                    .await;
+                }
             }
         }
-        Some(target)
+
+        moved
     }
 
     /// Read one collection out of the state as typed entities.
@@ -1395,7 +1432,7 @@ impl ShowEngine {
         self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await?;
         self.record_write(&path, Lifecycle::Synced);
         if let Some(sync) = &self.sync {
-            sync.broadcast_synced(path, args, self.clock.clone(), None, None).await;
+            sync.broadcast_synced(path, args, self.clock.clone(), Authorship::none()).await;
         }
         Ok(serde_json::Value::Null)
     }

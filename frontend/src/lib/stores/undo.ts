@@ -50,6 +50,12 @@ async function take(redoing: boolean): Promise<void> {
 			addToast(redoing ? 'Nothing to put back.' : 'Nothing to take back.');
 			return;
 		}
+		// Said out loud only when a press moved more than the operator was looking
+		// at. Taking back one rename is its own confirmation — the name changes on
+		// screen — but taking back a fan across twenty heads is worth a sentence.
+		if (undone.changed > 1) {
+			addToast(`${redoing ? 'Put back' : 'Took back'} ${undone.changed} changes.`);
+		}
 		historyVersion.update((n) => n + 1);
 	} catch {
 		addToast(redoing ? 'That would not redo.' : 'That would not undo.');

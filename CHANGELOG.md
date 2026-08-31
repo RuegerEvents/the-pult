@@ -12,6 +12,20 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **One drag is one Ctrl-Z.** A fader dragged across its travel is a few hundred
+  writes and, across a selection of twenty, a few thousand. It is one act, and undo
+  now treats it as one: the client marks everything written between a pointer going
+  down and coming up as a single gesture, and taking it back restores the value from
+  before the drag started rather than one frame into it. A held arrow key counts as a
+  drag too. Reversing a gesture writes one row per thing it touched rather than one
+  per write, so taking back four hundred writes does not put four hundred rows in the
+  log.
+- **A drag costs the log one row per fixture, not one per frame.** A write inside a
+  gesture replaces that gesture's earlier write to the same path instead of landing
+  beside it, keeping the value it started from and taking the one it ended on — which
+  is what both readers of the log want, since a peer catching up on a path needs only
+  where it ended and undo needs the pair. Two seconds of dragging across a selection
+  of twenty went from 2,400 rows to 20.
 - **Undo and redo, per person.** Ctrl-Z takes back the last thing *you* changed,
   wherever you are: sign in at the desk and on the tablet as the same person and
   either takes back what the other did. There is no undo stack — an operation now
@@ -92,6 +106,10 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Fixed
 
+- **An undo reaching a peer arrived as a fresh change.** A station sent the author of
+  a write and the value it replaced, but not which operation it reversed, so an undo
+  landed in the other station's log looking like an edit — and the next Ctrl-Z there
+  took back the wrong thing. Everything undo needs now travels together.
 - **A tick was quadratic in the size of the rig.** `ShowView` scanned the fixture
   list for every lookup rather than indexing it, so the cost of a tick grew with
   the square of the rig. It went unnoticed while a settled show stopped ticking

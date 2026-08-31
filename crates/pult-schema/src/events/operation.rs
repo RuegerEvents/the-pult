@@ -110,52 +110,79 @@ pub struct Operation {
     /// means nothing was captured and this operation cannot be undone.
     #[serde(default)]
     pub previous: Option<serde_json::Value>,
-    /// The operation this one reverses, if it is an undo or a redo.
+    /// The gesture this one reverses, if it is an undo or a redo.
     ///
     /// Undo and redo are the same mechanism: each writes a value and points at what
     /// it undid. Redo is undoing an undo, which is why one field covers both and why
     /// the stack does not need to exist anywhere else.
+    ///
+    /// It names a *gesture*, and an ordinary write is a gesture keyed by its own id
+    /// — so a row written before gestures existed still points at exactly what it
+    /// always did.
+    #[serde(default)]
+    pub undoes: Option<Uuid>,
+    /// The one thing an operator did that this write was part of.
+    ///
+    /// A drag across a fader is a few hundred pointer events and, over a selection of
+    /// twenty, a few thousand writes — but it is one act, and Ctrl-Z should take back
+    /// the act rather than the last frame of it. Only the client knows where a
+    /// gesture starts and stops, so it says: every write between a pointer going down
+    /// and coming up carries the same id.
+    ///
+    /// `None` means a write that stands alone, which is most of them, and is what an
+    /// older client sends.
+    #[serde(default)]
+    pub gesture: Option<Uuid>,
+}
+
+/// What makes a write undoable: who asked for it, what it replaced, and which
+/// gesture it belonged to.
+///
+/// Together rather than as three parameters because they are always decided
+/// together and never used apart, and because four trailing `Option`s in a row is a
+/// signature where two of them get swapped and nothing complains.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Authorship {
+    /// Who asked. `None` for the engine's own writes — a fade advancing, a station
+    /// publishing its memory use — which nobody did and nobody can take back.
+    #[serde(default)]
+    pub user_id: Option<Uuid>,
+    /// What was at the path before.
+    #[serde(default)]
+    pub previous: Option<serde_json::Value>,
+    /// The gesture this write was part of, if it was part of one.
+    #[serde(default)]
+    pub gesture: Option<Uuid>,
+    /// The gesture this write reverses, if it is an undo or a redo.
     #[serde(default)]
     pub undoes: Option<Uuid>,
 }
 
-impl Operation {
-    pub fn new(
-        node_id: NodeId,
-        seq: u64,
-        clock: VectorClock,
-        lifecycle: Lifecycle,
-        path: Path,
-        value: serde_json::Value,
-    ) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            node_id,
-            seq,
-            clock,
-            lifecycle,
-            path,
-            value,
-            timestamp: Utc::now(),
-            user_id: None,
-            previous: None,
-            undoes: None,
-        }
+impl Authorship {
+    /// Nobody: the engine's own writes.
+    pub fn none() -> Self {
+        Self::default()
     }
 
-    /// Say who did this and what they did it over.
-    pub fn by(mut self, user_id: Option<Uuid>, previous: Option<serde_json::Value>) -> Self {
-        self.user_id = user_id;
-        self.previous = previous;
+    /// A write somebody asked for, over what was there.
+    pub fn by(user_id: Option<Uuid>, previous: Option<serde_json::Value>) -> Self {
+        Self { user_id, previous, gesture: None, undoes: None }
+    }
+
+    /// The same, as part of one gesture.
+    pub fn during(mut self, gesture: Option<Uuid>) -> Self {
+        self.gesture = gesture;
         self
     }
 
-    /// Mark this operation as reversing another.
+    /// The same, taking back a gesture.
     pub fn reversing(mut self, undone: Uuid) -> Self {
         self.undoes = Some(undone);
         self
     }
+}
 
+impl Operation {
     /// Whether this operation is one a person could ask to take back.
     ///
     /// Three things have to hold. Somebody has to have asked for it — the engine's

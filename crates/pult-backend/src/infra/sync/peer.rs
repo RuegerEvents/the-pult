@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use pult_schema::{
-    events::operation::{NodeId, Operation, VectorClock},
+    events::operation::{Authorship, NodeId, Operation, VectorClock},
     path::Path,
 };
 use serde_json::Value;
@@ -388,8 +388,8 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
             info!("[sync] received state snapshot from peer {}", peer_node_id.0);
             engine.apply_state_snapshot(state).await;
         }
-        SyncMessage::SyncedBroadcast { path, value, clock, user_id, previous, .. } => {
-            apply_synced(engine, peer_node_id, path, value, clock, user_id, previous).await;
+        SyncMessage::SyncedBroadcast { path, value, clock, authorship, .. } => {
+            apply_synced(engine, peer_node_id, path, value, clock, authorship).await;
         }
         // Heartbeat is answered in run_peer_loop, which holds the write half.
         SyncMessage::Heartbeat { .. } | SyncMessage::HeartbeatAck { .. } => {}
@@ -414,8 +414,7 @@ async fn apply_synced(
     path: Path,
     value: Value,
     clock: VectorClock,
-    user_id: Option<Uuid>,
-    previous: Option<Value>,
+    authorship: Authorship,
 ) {
     let lifecycle = pult_schema::registry::path_lifecycle(&path);
     let op = Operation {
@@ -428,10 +427,15 @@ async fn apply_synced(
         value,
         timestamp: Utc::now(),
         // Carried from the peer rather than dropped, so this node's history can say
-        // who changed what wherever they were sitting.
-        user_id,
-        previous,
-        undoes: None,
+        // who changed what wherever they were sitting — and so a user whose desk and
+        // tablet are on different stations has one history rather than two. All four
+        // of these travel: an undo that arrived without its `undoes` would land in
+        // the other station's log as a fresh change, and the next Ctrl-Z there would
+        // take back the wrong thing.
+        user_id: authorship.user_id,
+        previous: authorship.previous,
+        undoes: authorship.undoes,
+        gesture: authorship.gesture,
     };
     let _ = engine.0.send(EngineCommand::ApplyPeerOperation(op)).await;
 }

@@ -12,12 +12,18 @@ use uuid::Uuid;
 
 /// Append one operation. Called for every write that is replicated, wherever it came
 /// from, so any node can serve catch-up for operations that originated elsewhere.
+///
+/// A write inside a gesture *replaces* that gesture's earlier write to the same
+/// path rather than adding a row beside it — see [`fold_into_the_gesture`].
 pub async fn append(pool: &SqlitePool, op: &Operation) -> Result<()> {
+    if fold_into_the_gesture(pool, op).await? {
+        return Ok(());
+    }
     sqlx::query(
         "INSERT OR REPLACE INTO oplog \
          (seq, node_id, op_id, clock_json, path_json, value_json, lifecycle, timestamp, \
-          user_id, previous_json, undoes) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+          user_id, previous_json, undoes, gesture) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     )
     .bind(op.seq as i64)
     .bind(op.node_id.0.to_string())
@@ -33,9 +39,63 @@ pub async fn append(pool: &SqlitePool, op: &Operation) -> Result<()> {
     // means nothing was captured and there is nothing to go back to.
     .bind(op.previous.as_ref().map(serde_json::to_string).transpose()?)
     .bind(op.undoes.map(|id| id.to_string()))
+    .bind(op.gesture.map(|id| id.to_string()))
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Fold a write into the gesture's existing row for that path, if there is one.
+///
+/// A drag writes the same path forty times a second — two seconds across twenty
+/// fixtures is 2,400 rows — and the log needs the last of those, not all of them.
+/// Both of the things the log is for want exactly that: a peer catching up on a path
+/// only needs where it ended, and undo wants the value from before the drag against
+/// the value it finished on. So the row keeps its `previous` and takes the new value.
+///
+/// **It takes the new `seq` too**, which is the part that makes this safe rather than
+/// merely smaller. Catch-up asks for everything past a sequence number, so a row that
+/// kept its first `seq` while its value moved would be invisible to a peer that had
+/// already caught up mid-drag — it would sit at the value the drag passed through
+/// when the two of them last spoke. Sequence numbers only ever go up, so the row is
+/// simply moved to the front of the queue.
+///
+/// **Only inside one gesture.** Two separate edits to the same path are two things
+/// somebody did and have to stay two rows, or the second would swallow the first and
+/// there would be nothing to take back to. That the boundary can be drawn at all is
+/// what gestures bought.
+///
+/// **Never a create.** Every create in a collection is written to the same
+/// `<table>/__create` path, so two fixtures patched in one gesture would fold into
+/// one row and the log would forget a fixture. Creates and deletes are written once
+/// per entity anyway, so there is nothing there to fold.
+async fn fold_into_the_gesture(pool: &SqlitePool, op: &Operation) -> Result<bool> {
+    let Some(gesture) = op.gesture else { return Ok(false) };
+    if is_a_create(op) {
+        return Ok(false);
+    }
+    let folded = sqlx::query(
+        "UPDATE oplog SET seq = ?1, clock_json = ?2, value_json = ?3, timestamp = ?4 \
+         WHERE node_id = ?5 AND gesture = ?6 AND path_json = ?7",
+    )
+    .bind(op.seq as i64)
+    .bind(serde_json::to_string(&op.clock)?)
+    .bind(serde_json::to_string(&op.value)?)
+    .bind(op.timestamp.to_rfc3339())
+    .bind(op.node_id.0.to_string())
+    .bind(gesture.to_string())
+    .bind(serde_json::to_string(&op.path)?)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(folded > 0)
+}
+
+/// Whether this operation brings an entity into being, and so shares its path with
+/// every other create in its collection.
+fn is_a_create(op: &Operation) -> bool {
+    use pult_schema::path::PathSegment;
+    matches!(op.path.as_slice(), [PathSegment::Key(_), PathSegment::Key(last)] if last == "__create")
 }
 
 /// Everything the holder of `known` has not seen, oldest first.
@@ -45,7 +105,7 @@ pub async fn append(pool: &SqlitePool, op: &Operation) -> Result<()> {
 pub async fn since(pool: &SqlitePool, known: &VectorClock) -> Result<Vec<Operation>> {
     let rows = sqlx::query(
         "SELECT seq, node_id, op_id, clock_json, path_json, value_json, lifecycle, timestamp, \
-                user_id, previous_json, undoes \
+                user_id, previous_json, undoes, gesture \
          FROM oplog ORDER BY timestamp, seq",
     )
     .fetch_all(pool)
@@ -101,6 +161,11 @@ fn read_operation(row: &sqlx::sqlite::SqliteRow) -> Option<Operation> {
             .ok()
             .flatten()
             .and_then(|id| Uuid::parse_str(&id).ok()),
+        gesture: row
+            .try_get::<Option<String>, _>("gesture")
+            .ok()
+            .flatten()
+            .and_then(|id| Uuid::parse_str(&id).ok()),
     })
 }
 
@@ -118,7 +183,7 @@ fn read_operation(row: &sqlx::sqlite::SqliteRow) -> Option<Operation> {
 pub async fn recent_by_people(pool: &SqlitePool, limit: u32) -> Result<Vec<Operation>> {
     let rows = sqlx::query(
         "SELECT seq, node_id, op_id, clock_json, path_json, value_json, lifecycle, timestamp, \
-                user_id, previous_json, undoes \
+                user_id, previous_json, undoes, gesture \
          FROM oplog WHERE user_id IS NOT NULL \
          ORDER BY timestamp DESC, seq DESC LIMIT ?1",
     )

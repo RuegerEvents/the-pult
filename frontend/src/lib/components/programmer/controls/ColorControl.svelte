@@ -16,6 +16,8 @@
 
 	type Rgb = { r: number; g: number; b: number };
 
+	import { asOneGesture } from '$lib/stores/gesture.js';
+
 	let { value, oninput }: { value: Rgb; oninput: (value: Rgb) => void } = $props();
 
 	let square = $state<HTMLDivElement | null>(null);
@@ -80,6 +82,7 @@
 	<div
 		class="square"
 		bind:this={square}
+		use:asOneGesture
 		role="application"
 		aria-label="Hue and saturation"
 		onpointerdown={(e) => {

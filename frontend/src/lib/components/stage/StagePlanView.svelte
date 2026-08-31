@@ -15,6 +15,7 @@
 	import { selected, select, toggle } from '$lib/stores/selection.js';
 	import { byKey, setValue } from '$lib/stores/programmer.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
+	import { asOneGesture } from '$lib/stores/gesture.js';
 
 	type Mode = 'move' | 'program' | 'scale' | 'origin';
 
@@ -315,6 +316,7 @@
 <div class="wrap">
 	<svg
 		bind:this={svg}
+		use:asOneGesture
 		viewBox="{view.x} {view.z} {view.width} {height}"
 		class:measuring={mode === 'scale' || mode === 'origin'}
 		onpointerdown={onBackgroundDown}

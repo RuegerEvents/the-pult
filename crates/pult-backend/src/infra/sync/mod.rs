@@ -1,7 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr};
 
 use pult_schema::{
-    events::operation::{NodeId, VectorClock},
+    events::operation::{Authorship, NodeId, VectorClock},
     path::Path,
 };
 use anyhow::Result;
@@ -30,8 +30,7 @@ pub enum SyncCommand {
         path: Path,
         value: serde_json::Value,
         clock: VectorClock,
-        user_id: Option<uuid::Uuid>,
-        previous: Option<serde_json::Value>,
+        authorship: Authorship,
     },
     /// Connect to a new peer (called by SessionManager on peer discovery).
     ConnectPeer {
@@ -77,12 +76,11 @@ impl SyncHandle {
         path: Path,
         value: serde_json::Value,
         clock: VectorClock,
-        user_id: Option<uuid::Uuid>,
-        previous: Option<serde_json::Value>,
+        authorship: Authorship,
     ) {
         let _ = self
             .0
-            .send(SyncCommand::BroadcastSynced { path, value, clock, user_id, previous })
+            .send(SyncCommand::BroadcastSynced { path, value, clock, authorship })
             .await;
     }
 
@@ -231,14 +229,13 @@ impl SyncManager {
 
     async fn handle_command(&mut self, cmd: SyncCommand) {
         match cmd {
-            SyncCommand::BroadcastSynced { path, value, clock, user_id, previous } => {
+            SyncCommand::BroadcastSynced { path, value, clock, authorship } => {
                 let msg = SyncMessage::SyncedBroadcast {
                     node_id: self.node_id,
                     path,
                     value,
                     clock,
-                    user_id,
-                    previous,
+                    authorship,
                 };
                 self.fan_out(msg);
             }

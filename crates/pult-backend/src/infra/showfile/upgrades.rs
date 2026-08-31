@@ -42,6 +42,15 @@ const UPGRADES: &[Upgrade] = &[
         ],
     },
     Upgrade {
+        // Separate from the one above rather than folded into it, because both
+        // shapes exist: a showfile from before undo has none of the four columns,
+        // and one written between the two changes has the first three.
+        name: "oplog: which gesture a write was part of",
+        table: "oplog",
+        applies: |columns| !columns.iter().any(|c| c == "gesture"),
+        statements: &["ALTER TABLE oplog ADD COLUMN gesture TEXT"],
+    },
+    Upgrade {
     name: "fixtures: universe/dmx_address folded into address",
     table: "fixtures",
     // Both old columns are dropped at the end, so their presence is the flag.

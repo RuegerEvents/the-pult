@@ -24,7 +24,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects are in, and a selection is a question about the rig rather than a list. |
 | Selection | Working as a query over the rig: by type, name, sphere, box or the spec's radial cone, built up by adding, narrowing and removing, and ordered along an axis or outwards from a point. Re-evaluated as the rig changes, so a fixture patched under a live selection joins it. Queries cannot be saved as groups yet. |
 | Effects | Working. One primitive covers a shape and a step list, running from the programmer or a cue, at its own rate or a speed master's. Rendered identically on every station from replicated state, and handed to a node that can trace it for itself. No amplitude fade into one yet. |
-| Undo / history | Working, per person and across their clients. The oplog carries the author, the previous value and what an operation reverses, so undo is a query over it rather than a stack — which is what lets a tablet take back what the desk did. A History panel shows what everyone changed. No group undo: a drag is many operations and Ctrl-Z takes back one. |
+| Undo / history | Working, per person and across their clients, and by gesture rather than by write — one drag is one Ctrl-Z. The oplog carries the author, the previous value and what an operation reverses, so undo is a query over it rather than a stack — which is what lets a tablet take back what the desk did. A History panel shows what everyone changed. Nothing prunes the log. |
 | Timecode | Not started. `FollowMode::Timecode` exists and nothing produces one. |
 | Distribution | Working. The frontend is built into the binaries that serve it, the console and the simulator each have a Tauri desktop app, and tagging builds all four for Linux x86_64 and aarch64, macOS arm64 and Windows. Nothing is signed and nothing auto-updates. |
 
@@ -1239,12 +1239,85 @@ two-operator tech the useful question is usually "what just happened", and the a
 is often somebody else. Undos appear as themselves rather than being tidied away,
 which makes the list a true account.
 
-Left open: a group undo. Dragging a fader writes many operations and Ctrl-Z takes
-back one of them, which is right for a rename and wrong for a move — the fix is to
-mark a run of writes as one gesture, which the oplog can carry but nothing sets.
-Nothing prunes the log yet, so a long show's history grows without bound. And a user
-is a name and a colour, with no notion of a station being signed into: two people at
-one desk have to remember to switch.
+Left open at the time: a group undo, which is task 32. Nothing prunes the log yet,
+so a long show's history grows without bound. And a user is a name and a colour, with
+no notion of a station being signed into: two people at one desk have to remember to
+switch.
+
+### 32. One drag, one press (done)
+
+Task 31 shipped with a hole in it: dragging a fader wrote a few hundred operations
+and Ctrl-Z took back the last one. Right for a rename, useless for a move. This
+closes it.
+
+**Only the client knows where an act begins.** The backend sees a stream of writes,
+and no amount of guessing at the gaps between them tells a drag from two quick edits
+— a slow drag has longer pauses in it than a fast pair of clicks. So the frontend
+says: everything written between a pointer going down and coming up carries one
+gesture id, stamped on the message in one place, `PultWsClient.set`. A drag reaches
+the socket through the programmer's staging, a path proxy and a panel's own handler,
+and any of the three remembering to pass a gesture along would eventually be the one
+that forgot.
+
+**A gesture is not closed when the pointer lifts.** The programmer stages a move and
+writes it on the next frame, and a fan across twenty fixtures is twenty round trips
+after that, so a gesture that ended with the pointer would leave its own tail outside
+it — and one drag would want three presses to take back. It closes 400 ms later
+instead. Closing late is free: the only thing a stale id could spoil is the *next*
+gesture, and beginning one replaces the id outright. The same timer gives a held
+arrow key a gesture, which is a drag with no pointer to say when it stopped.
+
+**An ordinary write is a gesture of one, keyed by its own id.** That is what keeps
+`undo.rs` a single code path rather than two, and it is why a row written before
+gestures existed still behaves exactly as it did. `undoes` came to name a gesture
+rather than an operation for the same reason, and needed no migration to do it.
+
+**Reversing a gesture writes one operation per thing it touched, not per operation.**
+Otherwise taking back four hundred writes would put four hundred rows in the log, and
+the log would grow faster the more of it you took back. The value it goes back to is
+the one from before the *first* write at that path, which is what "before the drag"
+means.
+
+Three rules found by getting them wrong first. **A create is keyed by what it made,
+not by where it was written** — two fixtures patched in one gesture are two writes to
+the same `fixtures/__create` path, and collapsing them by path deleted one and left
+the other standing. **A field written into something the gesture created is dropped**,
+because the entity is going away and putting a value back into it first describes a
+state nobody will ever see. And **the paths are unpicked newest first**, or a delete
+runs before the rename above it and the rename writes into a hole.
+
+**A gesture had to become the unit of `in_effect` and `depth` too.** Reversing a drag
+writes one row against four hundred, so three hundred and ninety-nine of the drag's
+operations have nothing pointing at them — and undo, looking at operations, found one
+of those still standing and took the same drag back again.
+
+Two things fixed on the way past. A peer received `user_id` and `previous` but not
+`undoes`, so an undo replicated to another station landed in its log as a fresh
+change and the next Ctrl-Z there took back the wrong thing; all four fields travel
+now, as one `Authorship`. And the codegen owns `001_initial.sql`, so the oplog's
+columns are declared in `tools/pult-codegen/src/main.rs` — a hand-edit to the
+migration is overwritten by the next `generate`.
+
+**And a gesture is what finally let the log stop growing at forty rows a second.** A
+write inside one replaces that gesture's earlier write to the same path rather than
+landing beside it: the row keeps the value the drag started from and takes the one it
+ended on, which is exactly the pair undo wants and exactly what a peer catching up on
+that path needs. Two seconds of dragging across a selection of twenty went from 2,400
+rows to 20. The row takes the new sequence number as well as the new value, and that
+is the part that makes it safe rather than merely smaller — catch-up asks for
+everything past a sequence number, so a row that kept its first one would be
+invisible to a peer that had already caught up mid-drag and would leave it sitting at
+whatever value the drag was passing through when the two of them last spoke. Only
+within one gesture, because two separate edits to the same path are two things
+somebody did and folding them would leave the second with nothing to go back to. And
+never a create, for the same reason creates are keyed by what they made.
+
+Left open: a gesture is per client, so two operators dragging the same fader from two
+consoles interleave into two gestures that each own half the writes. Undo still does
+the right thing for each of them, but "before the drag" means before *their* first
+write, not before the pair started. Nothing prunes the log. And nothing outside the
+pointer controls opens a gesture — a panel that writes several fields from one button
+could, and none does yet.
 
 ## Further out
 

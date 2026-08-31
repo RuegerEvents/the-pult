@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS oplog (
     user_id     TEXT,
     previous_json TEXT,
     undoes      TEXT,
+    gesture     TEXT,
     PRIMARY KEY (node_id, seq)
 );
 

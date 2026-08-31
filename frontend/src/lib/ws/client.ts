@@ -5,6 +5,9 @@ import type { PathSegment } from '$lib/generated/index.js';
 /** Called with the new value and the exact path it was written to. */
 export type SubscriptionHandler = (value: unknown, path: PathSegment[]) => void;
 
+/** What an undo actually took back: one path to name it, and how many there were. */
+export type UndoOutcome = { path: PathSegment[]; changed: number };
+
 type PendingRequest = {
 	resolve: (msg: ServerMessage) => void;
 	reject: (err: Error) => void;
@@ -19,6 +22,8 @@ export class PultWsClient {
 	private messageQueue: ClientMessage[] = [];
 	/** Who this client last said it was, so a reconnect can say it again. */
 	private userId: string | null = null;
+	/** The one act the writes going out right now are part of, if there is one. */
+	private gesture: string | null = null;
 	private connectListeners = new Set<() => void>();
 
 	onConnect: (() => void) | undefined = undefined;
@@ -215,7 +220,16 @@ export class PultWsClient {
 			});
 			this.send({
 				type: 'Set',
-				payload: { path: path.map(segmentFromJs), value: value as JsonValue, request_id: id },
+				payload: {
+					path: path.map(segmentFromJs),
+					value: value as JsonValue,
+					request_id: id,
+					// Stamped here rather than at every call site: a drag reaches the
+					// socket through the programmer's staging, a path proxy and a
+					// panel's own handler, and any of the three forgetting would make
+					// a drag cost a hundred Ctrl-Zs.
+					...(this.gesture ? { gesture: this.gesture } : {}),
+				},
 			});
 		});
 	}
@@ -232,14 +246,26 @@ export class PultWsClient {
 		this.send({ type: 'Identify', payload: { user_id: userId } });
 	}
 
-	/** Take back this user's last change, or put back their last undo. */
-	async undo(redo = false): Promise<(string | number)[] | null> {
+	/**
+	 * Mark every write from now until this is unset as one act.
+	 *
+	 * Not remembered across a reconnect, unlike the user: a gesture is a pointer
+	 * being held, and a socket that dropped in the middle of one has already lost
+	 * the drag. Whoever opened it closes it.
+	 */
+	duringGesture(gesture: string | null): void {
+		this.gesture = gesture;
+	}
+
+	/** Take back this user's last gesture, or put back their last undo. */
+	async undo(redo = false): Promise<UndoOutcome | null> {
 		const id = this.requestId();
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, {
 				resolve: (msg) => {
-					if (msg.type === 'UndoResult') resolve(msg.payload.undone ?? null);
-					else reject(new Error('unexpected response'));
+					if (msg.type !== 'UndoResult') return reject(new Error('unexpected response'));
+					const { undone, changed } = msg.payload;
+					resolve(undone ? { path: undone, changed } : null);
 				},
 				reject
 			});

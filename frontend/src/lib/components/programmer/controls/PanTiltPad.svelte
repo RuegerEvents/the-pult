@@ -8,6 +8,8 @@
 	 * moves in that direction.
 	 */
 
+	import { asOneGesture, nudging } from '$lib/stores/gesture.js';
+
 	let {
 		pan,
 		tilt,
@@ -36,6 +38,9 @@
 		const step = event.shiftKey ? 0.002 : 0.02;
 		const move = (dp: number, dt: number) => {
 			event.preventDefault();
+			// A held arrow key is a drag without a pointer. One gesture until it
+			// stops, so nudging a head into place costs one Ctrl-Z.
+			nudging();
 			if (dp && onpan && pan !== null) onpan(clamp(pan + dp));
 			if (dt && ontilt && tilt !== null) ontilt(clamp(tilt + dt));
 		};
@@ -52,6 +57,7 @@
 	type="button"
 	class="pad"
 	bind:this={pad}
+	use:asOneGesture
 	aria-label="Pan and tilt"
 	onpointerdown={(e) => {
 		pad?.setPointerCapture(e.pointerId);

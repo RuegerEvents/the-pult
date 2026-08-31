@@ -28,6 +28,7 @@
 	import { selected, select, toggle } from '$lib/stores/selection.js';
 	import { setValue } from '$lib/stores/programmer.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
+	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 
 	let {
 		fixtures,
@@ -328,6 +329,11 @@
 		}
 
 		grab = start;
+		// Aiming a head is one act however many frames it takes, so the whole drag
+		// costs one Ctrl-Z. Bounded here rather than by an action on the canvas,
+		// because a grab only counts once a gizmo is actually under the pointer —
+		// spinning the camera changes nothing there is to take back.
+		beginGesture();
 		window.addEventListener('pointermove', onDrag);
 		window.addEventListener('pointerup', endGrab, { once: true });
 	}
@@ -350,6 +356,7 @@
 	function endGrab() {
 		grab = null;
 		hovered = null;
+		endGesture();
 		window.removeEventListener('pointermove', onDrag);
 	}
 

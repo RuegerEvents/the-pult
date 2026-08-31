@@ -26,6 +26,14 @@ pub enum ClientMessage {
         path: Path,
         value: serde_json::Value,
         request_id: String,
+        /// The one act this write is part of, where it is part of one.
+        ///
+        /// A drag is hundreds of these and should cost one Ctrl-Z, and only the
+        /// client knows where the drag started. Defaulted, so a write that stands
+        /// alone says nothing and an older client keeps working.
+        #[serde(default)]
+        #[ts(optional)]
+        gesture: Option<uuid::Uuid>,
     },
     /// Say who is at this client.
     ///

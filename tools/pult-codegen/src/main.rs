@@ -304,10 +304,14 @@ fn generate_sql_migration(workspace: &PathBuf) -> Result<()> {
         "    value_json  TEXT NOT NULL,\n",
         "    lifecycle   TEXT NOT NULL,\n",
         "    timestamp   TEXT NOT NULL,\n",
-        // Who asked, what was there before, and what this reverses. Nullable: the\n         // engine's own writes have no author, and an operation logged before undo\n         // existed captured nothing to put back.\n",
+        // Who asked, what was there before, which gesture this write was part of,
+        // and which gesture it reverses. All nullable: the engine's own writes have
+        // no author, an operation logged before undo existed captured nothing to put
+        // back, and most writes are not part of a gesture and reverse nothing.
         "    user_id     TEXT,\n",
         "    previous_json TEXT,\n",
         "    undoes      TEXT,\n",
+        "    gesture     TEXT,\n",
         "    PRIMARY KEY (node_id, seq)\n",
         ");"
     ).to_string());

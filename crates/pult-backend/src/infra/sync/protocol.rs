@@ -4,7 +4,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
 use pult_schema::{
-    events::operation::{NodeId, Operation, VectorClock},
+    events::operation::{Authorship, NodeId, Operation, VectorClock},
     path::Path,
 };
 
@@ -75,14 +75,14 @@ pub enum SyncMessage {
         path: Path,
         value: serde_json::Value,
         clock: VectorClock,
-        /// Who made the change, and what it replaced.
+        /// Who made the change, what it replaced, and which gesture it was part of.
         ///
-        /// Defaulted so a peer running an older build still parses the message —
-        /// its writes simply arrive unattributed, which is what they are.
-        #[serde(default)]
-        user_id: Option<uuid::Uuid>,
-        #[serde(default)]
-        previous: Option<serde_json::Value>,
+        /// Flattened so the three read as fields of the message, which is what they
+        /// were before they were a struct, and defaulted so a peer running an older
+        /// build still parses it — its writes simply arrive unattributed, which is
+        /// what they are.
+        #[serde(flatten)]
+        authorship: Authorship,
     },
     Heartbeat {
         seq: u64,

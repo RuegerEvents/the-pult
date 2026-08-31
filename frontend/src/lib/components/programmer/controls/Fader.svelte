@@ -9,6 +9,8 @@
 	 * ends.
 	 */
 
+	import { asOneGesture, nudging } from '$lib/stores/gesture.js';
+
 	let {
 		value,
 		oninput,
@@ -63,6 +65,10 @@
 		const step = event.shiftKey ? 0.001 : 0.01;
 		const by = (delta: number) => {
 			event.preventDefault();
+			// A held arrow key is a drag with no pointer to say when it stopped, and
+			// sixty presses that each cost their own Ctrl-Z would be the same
+			// annoyance the gesture exists to remove. A pause ends it.
+			nudging();
 			oninput(clamp(value + delta));
 		};
 		switch (event.key) {
@@ -89,6 +95,7 @@
 <div
 	class="fader"
 	bind:this={track}
+	use:asOneGesture
 	role="slider"
 	tabindex="0"
 	aria-label={label}

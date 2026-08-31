@@ -583,6 +583,7 @@ async fn a_peer_operation_is_applied_and_broadcast_locally() {
         user_id: None,
         previous: None,
         undoes: None,
+        gesture: None,
     };
     h.engine.0.send(EngineCommand::ApplyPeerOperation(op)).await.unwrap();
 
@@ -2202,4 +2203,166 @@ async fn running_effects_do_not_survive_a_reload() {
 
     let back = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
     assert_eq!(back["live_effects"], serde_json::json!({}), "nothing is moving yet");
+}
+
+// ── Undo, over a real engine ──────────────────────────────────────────────────
+
+/// A drag against a live engine: many writes to one path under one gesture, one
+/// press to take them back, and the value that comes back is the one from before
+/// the drag started rather than one frame into it.
+#[tokio::test]
+async fn one_press_takes_back_a_whole_drag() {
+    let h = harness().await;
+    let sam = Uuid::new_v4();
+    let fixture = a_fixture("Spot L", 1);
+    h.engine
+        .set(
+            vec![PathSegment::Key("fixtures".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Persisted,
+            json(&fixture),
+        )
+        .await
+        .unwrap();
+
+    let name = vec![
+        PathSegment::Key("fixtures".into()),
+        PathSegment::Id(fixture.id),
+        PathSegment::Key("name".into()),
+    ];
+    let drag = Uuid::new_v4();
+    for step in ["a", "b", "c", "d"] {
+        h.engine
+            .set_as(sam, Some(drag), name.clone(), Lifecycle::Persisted, json(&step))
+            .await
+            .unwrap();
+    }
+
+    let moved = h.engine.undo(sam, false).await;
+    assert_eq!(moved.len(), 1, "one path moved, however many writes it took");
+    assert_eq!(h.engine.get(name.clone()).await.unwrap(), json(&"Spot L"));
+
+    // And it goes back where it ended, not one step in.
+    let moved = h.engine.undo(sam, true).await;
+    assert_eq!(moved.len(), 1);
+    assert_eq!(h.engine.get(name).await.unwrap(), json(&"d"));
+}
+
+/// Two fixtures added in one gesture are two writes to the same `fixtures/__create`
+/// path. Collapsing by path would delete the first and leave the second standing.
+#[tokio::test]
+async fn one_press_takes_back_everything_a_gesture_made() {
+    let h = harness().await;
+    let sam = Uuid::new_v4();
+    let gesture = Uuid::new_v4();
+
+    for name in ["Spot L", "Spot R"] {
+        h.engine
+            .set_as(
+                sam,
+                Some(gesture),
+                vec![PathSegment::Key("fixtures".into()), PathSegment::Key("__create".into())],
+                Lifecycle::Persisted,
+                json(&a_fixture(name, 1)),
+            )
+            .await
+            .unwrap();
+    }
+    let patched: Vec<Fixture> =
+        serde_json::from_value(h.engine.get(key("fixtures")).await.unwrap()).unwrap();
+    assert_eq!(patched.len(), 2, "both were patched");
+
+    let moved = h.engine.undo(sam, false).await;
+    assert_eq!(moved.len(), 2, "and both go away");
+    let left: Vec<Fixture> =
+        serde_json::from_value(h.engine.get(key("fixtures")).await.unwrap()).unwrap();
+    assert!(left.is_empty(), "no half-undone gesture, got {left:?}");
+}
+
+/// Writes made without a gesture are still their own act, so nothing about the
+/// ordinary single change moved.
+#[tokio::test]
+async fn a_change_with_no_gesture_is_still_one_press() {
+    let h = harness().await;
+    let sam = Uuid::new_v4();
+    let fixture = a_fixture("Spot L", 1);
+    h.engine
+        .set(
+            vec![PathSegment::Key("fixtures".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Persisted,
+            json(&fixture),
+        )
+        .await
+        .unwrap();
+
+    let name = vec![
+        PathSegment::Key("fixtures".into()),
+        PathSegment::Id(fixture.id),
+        PathSegment::Key("name".into()),
+    ];
+    h.engine.set_as(sam, None, name.clone(), Lifecycle::Persisted, json(&"Downstage")).await.unwrap();
+    h.engine.set_as(sam, None, name.clone(), Lifecycle::Persisted, json(&"Upstage")).await.unwrap();
+
+    assert_eq!(h.engine.undo(sam, false).await.len(), 1);
+    assert_eq!(h.engine.get(name.clone()).await.unwrap(), json(&"Downstage"), "one step back");
+    assert_eq!(h.engine.undo(sam, false).await.len(), 1);
+    assert_eq!(h.engine.get(name).await.unwrap(), json(&"Spot L"), "and another");
+}
+
+/// What a drag costs the log, end to end through a real engine.
+///
+/// Two seconds of dragging at forty frames a second across a selection of twenty is
+/// 2,400 writes, and before folding it was 2,400 rows. The log wants where each
+/// fixture ended up, which is twenty.
+#[tokio::test]
+async fn a_drag_costs_the_log_one_row_per_fixture() {
+    let h = harness().await;
+    let sam = Uuid::new_v4();
+    let drag = Uuid::new_v4();
+
+    let mut ids = Vec::new();
+    for i in 0..20 {
+        let fixture = a_fixture(&format!("Spot {i}"), i + 1);
+        ids.push(fixture.id);
+        h.engine
+            .set(
+                vec![PathSegment::Key("fixtures".into()), PathSegment::Key("__create".into())],
+                Lifecycle::Persisted,
+                json(&fixture),
+            )
+            .await
+            .unwrap();
+    }
+    let before = showfile::oplog::len(&h.pool).await.unwrap();
+
+    for frame in 0..80 {
+        for id in &ids {
+            h.engine
+                .set_as(
+                    sam,
+                    Some(drag),
+                    vec![
+                        PathSegment::Key("fixtures".into()),
+                        PathSegment::Id(*id),
+                        PathSegment::Key("name".into()),
+                    ],
+                    Lifecycle::Persisted,
+                    json(&format!("frame {frame}")),
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    let written = showfile::oplog::len(&h.pool).await.unwrap() - before;
+    assert_eq!(written, 20, "1,600 writes, one row per fixture");
+
+    // And one press still takes the whole thing back to before the drag.
+    let moved = h.engine.undo(sam, false).await;
+    assert_eq!(moved.len(), 20);
+    let after: Vec<Fixture> =
+        serde_json::from_value(h.engine.get(key("fixtures")).await.unwrap()).unwrap();
+    assert!(
+        after.iter().all(|f| f.name.starts_with("Spot ")),
+        "every fixture back to its own name, not to a frame of the drag"
+    );
 }

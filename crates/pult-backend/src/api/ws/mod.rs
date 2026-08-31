@@ -192,12 +192,18 @@ async fn handle_client_message(
         ClientMessage::Undo { redo, request_id } => {
             let msg = match state.ws_registry.user_of(session_id) {
                 Some(user_id) => {
-                    let undone = state.engine.undo(user_id, redo).await;
-                    ServerMessage::UndoResult { request_id, undone: undone.map(|op| op.path) }
+                    let moved = state.engine.undo(user_id, redo).await;
+                    // Named by the first path written, which is the newest thing the
+                    // gesture touched and so the one the operator last saw move.
+                    ServerMessage::UndoResult {
+                        request_id,
+                        changed: moved.len() as u32,
+                        undone: moved.into_iter().next(),
+                    }
                 }
                 // A client that has not said who it is has no history of its own, and
                 // guessing at one would take back somebody else's work.
-                None => ServerMessage::UndoResult { request_id, undone: None },
+                None => ServerMessage::UndoResult { request_id, undone: None, changed: 0 },
             };
             send_to_session(state, session_id, msg);
         }
@@ -218,7 +224,7 @@ async fn handle_client_message(
             send_to_session(state, session_id, ServerMessage::HistoryResult { request_id, entries });
         }
 
-        ClientMessage::Set { path, value, request_id } => {
+        ClientMessage::Set { path, value, request_id, gesture } => {
             // Determine lifecycle from path — all top-level sets default to Persisted
             // unless the path corresponds to a known SYNCED field.
             let lifecycle = infer_lifecycle(&path);
@@ -227,7 +233,10 @@ async fn handle_client_message(
             // than one attributed to a guess.
             let result = match state.ws_registry.user_of(session_id) {
                 Some(user_id) => {
-                    state.engine.set_as(user_id, path.clone(), lifecycle, value.clone()).await
+                    state
+                        .engine
+                        .set_as(user_id, gesture, path.clone(), lifecycle, value.clone())
+                        .await
                 }
                 None => state.engine.set(path.clone(), lifecycle, value.clone()).await,
             };

@@ -33,8 +33,15 @@ pub enum ServerMessage {
     UndoResult {
         request_id: String,
         /// A short account of what moved, for the toast: "took back Patch → Spot 3".
+        ///
+        /// One path even when a gesture touched many, because a message naming
+        /// twenty of them is not a message anybody reads. `changed` says how many
+        /// there were.
         #[serde(skip_serializing_if = "Option::is_none")]
         undone: Option<crate::path::Path>,
+        /// How many paths the gesture moved. One for an ordinary write.
+        #[serde(default)]
+        changed: u32,
     },
     /// The recent history, newest first.
     HistoryResult {
