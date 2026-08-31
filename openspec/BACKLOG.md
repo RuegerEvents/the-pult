@@ -51,9 +51,10 @@ plugin and orphaned data is shown in the Plugins panel. The entity machinery was
 reused rather than a per-plugin schema — values stay opaque JSON, which the
 non-goals argue for.
 
-Two things it left open: nothing prunes the oplog (see `history-pruning`), and
-there is no change notification, so a plugin holding a value in memory learns
-about an undo on its next read.
+Two things it left open. The oplog is now pruned — `history-pruning`, roadmap task
+37, which retains a plugin's writes by the same two rules as anything else and
+knows nothing about plugins to do it. Still open: there is no change notification,
+so a plugin holding a value in memory learns about an undo on its next read.
 
 ### typed-plugin-sdk
 Introspection is the right *wire*, and a poor thing to program against. A plugin
@@ -212,37 +213,32 @@ Left open: a station seeding offline can race a rename on another station, and
 the sync layer breaks that tie rather than intent. Self-healing, since the ids
 match.
 
-### history-pruning
-The oplog is never pruned. Nothing deletes a row —
-`crates/pult-backend/src/infra/showfile/oplog.rs` has `append`, `since`, `len`
-and `recent_by_people`, and no `DELETE` exists anywhere in the backend. So a
-showfile grows for as long as it is used, and a long tech week is paid for in
-disk and in the cost of every catch-up query over that table.
+### history-pruning — done, see `changes/archive/2026-08-31-history-pruning/`
+Shipped as roadmap task 37. Two retentions: authored rows bounded by the show's
+`history_depth`, unattributed ones by a station preference defaulting to an hour —
+counted differently on purpose, since `history_depth` counts changes because an
+operator does, and an absence is a duration.
 
-`history_depth` already exists as the number that should bound it — show data,
-clamped, settable over REST, defaulting from the station's `preferences.toml`
-(`crates/pult-schema/src/types/show.rs`) — but it bounds *reads* only: the
-`History` command clamps its limit to it (`engine/mod.rs:664`) and
-`recent_by_people` takes it as a SQL `LIMIT`. Everything past it is still on
-disk, invisible and unreachable. Pruning to that same number is the missing
-half.
-- When: on save, on open, on a timer, or every n appends. Deleting inside a show
-  that is running has to not stall the tick.
-- `history_depth` counts operations *by people* — `recent_by_people` filters
-  `user_id IS NOT NULL` on purpose, because a station writing telemetry twice a
-  second would otherwise make the window about a quarter of an hour. Pruning has
-  to keep that distinction: the engine's own rows are the bulk of the table and
-  the first thing to drop, but they are not what the number counts.
-- Sync is served from the same table. `since()` answers catch-up from it and
-  `len()` decides catch-up versus a snapshot, so pruning a row a peer has not
-  seen has to fall back to the snapshot path rather than lose the write. Does the
-  prune floor rise only to what every known peer has acknowledged, or does it cut
-  freely and let the snapshot cover it?
-- A peer that has been away longer than the retention, and a station rejoining a
-  session after a week, are the same case as a fresh station — worth stating so.
-- Undo across a prune: the boundary is where Ctrl-Z stops, which is what
-  `history_depth` promises, so the history panel should show the end of the log
-  as an end rather than as an empty scroll.
+The answers to the questions below: pruning runs on open and every thousand
+appends, spawned off the actor's loop so a `DELETE` cannot stall the tick; it
+keeps the by-people distinction, because that is what `recent_by_people`'s filter
+exists for; and the floor **cuts freely** rather than waiting on peer
+acknowledgement — a station that went home for the weekend would otherwise pin the
+log, which is the growth being fixed. A peer behind the floor gets a snapshot,
+which is the path every joining station already takes.
+
+The floor is a seq **per node**, not a timestamp, because catch-up compares a
+peer's vector-clock entry for the node that wrote each row. It is written before
+the rows go: over-reporting costs a snapshot, under-reporting loses a peer's
+writes silently. Pruning is local and never replicated.
+
+`since` was left alone — its missing `WHERE` is a per-request vector-clock
+predicate, so bounding the table is the fix for it. Measured: 25,160 rows cut to
+500 in 36 ms.
+
+Left open: nothing vacuums the file, so it stays at its high-water mark (see
+`showfile-management`). A station on an older build can short-change a peer from a
+pruned showfile, so a session should not mix builds across this.
 
 ## Showfiles
 

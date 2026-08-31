@@ -2786,3 +2786,152 @@ async fn a_change_by_the_operator_is_in_the_history() {
     assert_eq!(history[0].user_id, Some(User::DEFAULT_ID));
     assert!(history[0].is_undoable());
 }
+
+// ── The log has an end ────────────────────────────────────────────────────────
+//
+// Pruning runs off the actor's loop, so these assert what is in the showfile after
+// giving the spawned task a moment rather than awaiting a reply it does not send.
+
+use crate::infra::preferences::testing::own_file;
+
+/// Wait for the log to reach `want` rows, or give up. The prune is spawned, so
+/// there is nothing to await; polling is honest about that.
+async fn settles_at(pool: &sqlx::SqlitePool, want: u64) -> u64 {
+    for _ in 0..100 {
+        let n = oplog::len(pool).await.unwrap();
+        if n == want {
+            return n;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    oplog::len(pool).await.unwrap()
+}
+
+/// Fill the log with operations nobody performed, aged past any window.
+async fn old_telemetry(pool: &sqlx::SqlitePool, node: NodeId, count: u64) {
+    for seq in 1..=count {
+        let op = Operation {
+            id: Uuid::new_v4(),
+            node_id: node,
+            seq,
+            clock: VectorClock::default(),
+            lifecycle: Lifecycle::Synced,
+            path: vec![PathSegment::Key("stations".into()), PathSegment::Id(node.0)],
+            value: serde_json::json!({ "cpu": 1 }),
+            timestamp: Utc::now() - chrono::Duration::hours(6),
+            user_id: None,
+            previous: None,
+            undoes: None,
+            gesture: None,
+        };
+        crate::infra::showfile::oplog::append(pool, &op).await.unwrap();
+    }
+}
+
+/// A showfile that has been round a long tech week. Opening it is where the largest
+/// cut this will ever take happens.
+#[tokio::test]
+async fn opening_an_oversized_showfile_brings_the_log_within_the_retention() {
+    let _own = own_file();
+    let mut h = harness().await;
+    old_telemetry(&h.pool, NodeId(Uuid::new_v4()), 500).await;
+    assert_eq!(oplog::len(&h.pool).await.unwrap(), 500);
+
+    h.reload().await;
+
+    // One row survives: the operator this load seeded, which is unattributed too but
+    // written just now. That the window tells those two apart is the point.
+    assert_eq!(settles_at(&h.pool, 1).await, 1, "six hours of telemetry is past the hour kept");
+    let left = oplog::since(&h.pool, &VectorClock::default()).await.unwrap();
+    assert!(
+        matches!(left[0].path.first(), Some(PathSegment::Key(k)) if k == "users"),
+        "and what is left is the recent write, not the old ones"
+    );
+    assert!(!oplog::floor(&h.pool).await.unwrap().is_empty(), "and the floor says so");
+}
+
+/// The case bounding-at-open misses: a station left up for a fortnight.
+#[tokio::test]
+async fn a_running_show_prunes_without_being_restarted() {
+    let _own = own_file();
+    let mut h = harness().await;
+    h.reload().await;
+    old_telemetry(&h.pool, NodeId(Uuid::new_v4()), 300).await;
+
+    // Enough ordinary writes to cross the threshold while the show is up.
+    let seq = a_sequence("Act 1", vec![]);
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+    let name = field_path("sequences", seq.id, "name");
+    for i in 0..super::APPENDS_BETWEEN_PRUNES {
+        h.engine.set(name.clone(), Lifecycle::Persisted, json(&format!("v{i}"))).await.unwrap();
+    }
+
+    // The old telemetry goes; the show's own recent writes stay.
+    for _ in 0..100 {
+        if !oplog::floor(&h.pool).await.unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(!oplog::floor(&h.pool).await.unwrap().is_empty(), "it pruned while running");
+    assert_eq!(
+        h.engine.get(name).await.unwrap(),
+        json(&format!("v{}", super::APPENDS_BETWEEN_PRUNES - 1)),
+        "and the show is exactly where it was left"
+    );
+}
+
+/// Two triggers arriving together must not become two deletes racing on the floor.
+#[tokio::test]
+async fn two_triggers_at_once_produce_one_prune() {
+    let _own = own_file();
+    let mut h = harness().await;
+    old_telemetry(&h.pool, NodeId(Uuid::new_v4()), 200).await;
+
+    // Three loads in quick succession, each of which asks for a prune.
+    h.reload().await;
+    h.reload().await;
+    h.reload().await;
+
+    // The 200 old rows go; the operator the first load seeded stays.
+    assert_eq!(settles_at(&h.pool, 1).await, 1, "the log is cut");
+    let floor = oplog::floor(&h.pool).await.unwrap();
+    assert_eq!(floor.len(), 1, "and one floor row, not one per prune");
+}
+
+/// A `DELETE` over a long log inside the actor's loop would be a stalled tick.
+/// Spawning it is what keeps output running, so that is what this asserts.
+#[tokio::test]
+async fn output_keeps_running_while_the_log_is_pruned() {
+    let _own = own_file();
+    let mut h = harness().await;
+    h.reload().await;
+    old_telemetry(&h.pool, NodeId(Uuid::new_v4()), 2_000).await;
+
+    // The engine answers while the prune is in flight. A stalled actor would leave
+    // these hanging until the delete finished.
+    let before = std::time::Instant::now();
+    for i in 0..super::APPENDS_BETWEEN_PRUNES {
+        h.engine.set(key("show"), Lifecycle::Persisted, json(&a_show())).await.unwrap();
+        if i % 200 == 0 {
+            assert!(h.engine.get(key("show")).await.is_ok(), "the engine is still answering");
+        }
+    }
+    let elapsed = before.elapsed();
+
+    // The old telemetry goes, so what is left is this test's own writes. Polled
+    // rather than awaited: the prune is spawned, which is the property under test.
+    let ceiling = super::APPENDS_BETWEEN_PRUNES as u64 + 1;
+    let mut left = oplog::len(&h.pool).await.unwrap();
+    for _ in 0..100 {
+        if left <= ceiling {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        left = oplog::len(&h.pool).await.unwrap();
+    }
+    assert!(left <= ceiling, "the 2,000 old rows went: {left}");
+    // Not a benchmark — a canary. The writes above are microseconds each; if the
+    // actor had waited on a 2,000-row delete this would be seconds.
+    assert!(elapsed.as_secs() < 10, "the loop was blocked by the prune: {elapsed:?}");
+}

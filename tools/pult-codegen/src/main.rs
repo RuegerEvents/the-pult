@@ -316,6 +316,33 @@ fn generate_sql_migration(workspace: &PathBuf) -> Result<()> {
         ");"
     ).to_string());
 
+    // What the history panel and undo ask for: the newest rows somebody authored.
+    // Without this the query behind every Ctrl-Z scans a log that is now pruned but
+    // still long, and the retention delete that keeps it short scans it too.
+    parts.push(concat!(
+        "CREATE INDEX IF NOT EXISTS oplog_by_people\n",
+        "    ON oplog (user_id, timestamp DESC, seq DESC);"
+    ).to_string());
+
+    // How far this station has pruned, per node whose operations it cut.
+    //
+    // Not show data and never replicated: two stations legitimately hold different
+    // amounts of history, and one station's disk pressure is not everyone's lost
+    // history. It is a fact about *this copy* of the log, so it lives beside it.
+    //
+    // Per originating node rather than one number, because catch-up compares a peer's
+    // vector clock entry for the node that wrote a row. "Everything up to here is
+    // gone" is only meaningful about one node's sequence.
+    parts.push(concat!(
+        "CREATE TABLE IF NOT EXISTS oplog_floor (\n",
+        "    node_id           TEXT NOT NULL PRIMARY KEY,\n",
+        // Every operation from this node at or below this seq has been deleted, so a
+        // peer that has not reached it cannot be caught up from what is left and is
+        // sent a snapshot instead.
+        "    pruned_through_seq INTEGER NOT NULL\n",
+        ");"
+    ).to_string());
+
     // Assets are bytes, not entity fields: a stage plan is a few megabytes and has
     // no business in the oplog. Content-addressed, so the id is the check.
     parts.push(concat!(

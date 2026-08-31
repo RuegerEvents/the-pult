@@ -1583,6 +1583,91 @@ gesture for the end of a session — but lands on the default rather than on
 nobody, and forgets the stored identity so the next visit does not resume as
 whoever left.
 
+### 37. The log has an end (done)
+
+Nothing deleted an operation. `oplog.rs` had `append`, `since`, `len` and
+`recent_by_people` and no `DELETE` anywhere in the backend, so a showfile grew for
+as long as it was ever used. `history_depth` was already the number that should
+have bounded it and bounded the wrong thing: the `History` command clamped its
+limit to it and `recent_by_people` passed it as a SQL `LIMIT`, while everything
+past it stayed on disk, invisible and unreachable.
+
+Two facts made it a cost rather than untidiness. **The bulk of the table is not
+what anybody did** — a station replaces its own row every two seconds
+(`REPORT_INTERVAL`) as a SYNCED whole-row write, so it is logged: around 43,000
+rows per station per day, each carrying a whole `Station` struct. And **catch-up
+read the whole table**: `since` selects every row with no `WHERE` and filters in
+Rust, so every reconnecting peer deserialized the entire log to find the handful
+of operations it missed.
+
+**Two retentions, counted differently on purpose.** Authored rows are bounded by
+the show's `history_depth`, because that is already its promise about how far
+Ctrl-Z reaches. Unattributed rows — nothing undoes them, they never reach the
+history panel — are bounded by a *duration*, a station preference defaulting to an
+hour. One rule over both would have broken what `recent_by_people`'s filter exists
+for: at a row every two seconds, five hundred rows is a few minutes of edits. A
+count for one and an age for the other is not an inconsistency: `history_depth`
+counts changes because an operator counts changes, and an absence is a duration.
+
+**The floor is the part that makes deleting safe, and it is a seq per node.**
+Catch-up compares a peer's vector-clock entry for the node that *wrote* each row,
+so "everything up to here is gone" is only meaningful about one node's sequence; a
+single pruned-before timestamp would have compared two different kinds of thing.
+`operations_since` gained its third reason to answer `None` — it already had "an
+empty clock" and "replaying most of the log is a slow snapshot" — and the snapshot
+path it falls back to is the one every joining station already takes. Without it a
+peer behind the cut receives the surviving rows, sees no error, and believes it is
+caught up.
+
+The floor is written **before** the rows go, because the two failure directions
+are not symmetric: a floor recorded for rows that were not deleted costs
+unnecessary snapshots and stays correct, while rows deleted with no floor recorded
+is the silent half-answer. And a floor only ever rises — `MAX` in the upsert, so
+two prunes racing cannot interleave into a lower value.
+
+**Pruning is local and never replicated.** Two stations legitimately hold
+different amounts of history and each serves catch-up from what it has. Making
+deletion a replicated operation would have invented a new kind of write for the
+sync layer and let one station's disk pressure delete everyone's history.
+
+**It runs on open and then every thousand appends, spawned rather than awaited.**
+The engine is one actor, and this is the only place in it that issues a `DELETE`
+over what can be a million rows — awaiting that would be a stalled tick, which is
+a far worse failure than a log briefly too long. A flag stops a second prune
+starting beside one already running, since two concurrent deletes racing on the
+floor is the one way to get its ordering wrong. Driven by appends rather than a
+timer because what should pace the work is how much has been written; a timer
+wakes to do nothing on an idle show and still lands mid-burst on a busy one.
+
+**The first open of a long show was measured** rather than guessed, since it is
+the largest cut this will ever take and it happens at startup: a log of 25,160
+rows — a fortnight of two stations' telemetry plus five thousand edits — took
+**36 ms** to cut down to 500. The measurement is an `#[ignore]`d test rather than
+a threshold, because a number asserted there would fail on a slower disk without
+saying anything true.
+
+**`since` was deliberately left alone.** Its missing `WHERE` looks like an obvious
+win and is not: the predicate is a vector clock, so the query would be
+`(node_id = ? AND seq > ?) OR ...` built per request from the asking peer's clock,
+plus every row from a node that clock has never heard of. A query whose shape
+depends on the number of peers, to replace a filter that is only expensive because
+the table is unbounded, would be treating the symptom of the thing being fixed in
+the same change. The retention bounds the table, so it bounds the read.
+
+Two consequences worth holding on to. `HISTORY_DEPTH_MAX` now bounds what is
+*kept* as well as what is read, so a larger value is a larger showfile rather than
+only a longer query — its comment said "nothing prunes the log yet" and has been
+rewritten. And the History panel shows its oldest entry as a boundary: the rows
+past it are deleted rather than merely unlisted, and a list that simply ended
+would read as a bug.
+
+Left open: nothing vacuums the showfile, so SQLite keeps the freed pages and the
+file stays at its high-water mark — a `showfile-management` question, and not what
+this was paying down. **A station running a build without this change can
+short-change a peer from a pruned showfile**, since it serves catch-up without
+consulting a floor it does not know about; a session should not mix builds across
+it.
+
 ## Further out
 
 Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.

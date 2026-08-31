@@ -148,6 +148,14 @@ CREATE TABLE IF NOT EXISTS oplog (
     PRIMARY KEY (node_id, seq)
 );
 
+CREATE INDEX IF NOT EXISTS oplog_by_people
+    ON oplog (user_id, timestamp DESC, seq DESC);
+
+CREATE TABLE IF NOT EXISTS oplog_floor (
+    node_id           TEXT NOT NULL PRIMARY KEY,
+    pruned_through_seq INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS assets (
     sha256     TEXT NOT NULL PRIMARY KEY,
     mime       TEXT NOT NULL,

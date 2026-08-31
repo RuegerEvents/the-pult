@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     engine::{EngineCommand, EngineHandle, ShowEngine},
-    infra::showfile,
+    infra::showfile::{self, oplog},
 };
 
 use super::*;
@@ -30,6 +30,9 @@ struct Node {
     addr: SocketAddr,
     /// What this node has measured about its links, as the reporter would read it.
     sync_mgr_links: tokio::sync::watch::Receiver<pult_schema::types::station::PeerLinks>,
+    /// Its showfile, for tests that are about what is in the log rather than what
+    /// the engine will say about it.
+    pool: Arc<sqlx::SqlitePool>,
 }
 
 /// A backend node with its own engine, showfile, and sync port.
@@ -44,10 +47,11 @@ async fn a_node() -> Node {
     let sync_mgr_links = manager.peer_links();
     tokio::spawn(manager.run());
 
-    let (show_engine, _broadcast) = ShowEngine::new_with_rx(id, rx, pool, Some(sync.clone()));
+    let (show_engine, _broadcast) =
+        ShowEngine::new_with_rx(id, rx, pool.clone(), Some(sync.clone()));
     tokio::spawn(show_engine.run());
 
-    Node { id, engine, sync, addr, sync_mgr_links }
+    Node { id, engine, sync, addr, sync_mgr_links, pool }
 }
 
 fn seq_path(id: Uuid, field: &str) -> Path {
@@ -555,6 +559,96 @@ mod catch_up_decision {
 
         let missing = node.engine.operations_since(known).await.expect("a delta, not a snapshot");
         assert!(missing.is_empty());
+    }
+
+    // ── Once the log has an end ───────────────────────────────────────────────
+    //
+    // A pruned row a peer never saw is the one way pruning can corrupt a session
+    // rather than merely cost it a snapshot, so the guard is pinned from both
+    // sides: it has to fire when there is something missing, and it must not fire
+    // when there is not — a guard that always says "snapshot" would pass the first
+    // test and quietly defeat catch-up altogether.
+
+    #[tokio::test]
+    async fn a_peer_behind_the_prune_floor_gets_a_snapshot() {
+        let (node, _) = a_node_with_writes(6).await;
+        let known = node.engine.get_clock().await;
+
+        // Everything this peer knows about has been cut away since it last spoke.
+        let seq = known.0.get(&node.id).copied().unwrap_or(0);
+        oplog::raise_floor(&node.pool, node.id, seq + 1).await.unwrap();
+
+        assert!(
+            node.engine.operations_since(known).await.is_none(),
+            "what survives is not the whole answer, so the peer must be sent the show",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_peer_within_the_retention_still_gets_its_operations() {
+        let (node, seq) = a_node_with_writes(20).await;
+        let known = node.engine.get_clock().await;
+
+        // Pruned, but only up to what this peer already has.
+        let floor = known.0.get(&node.id).copied().unwrap_or(0);
+        oplog::raise_floor(&node.pool, node.id, floor).await.unwrap();
+
+        for name in ["missed one", "missed two"] {
+            node.engine
+                .set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!(name))
+                .await
+                .unwrap();
+        }
+
+        let missing = node
+            .engine
+            .operations_since(known)
+            .await
+            .expect("a peer that missed nothing pruned should still get a delta");
+        assert_eq!(missing.len(), 2, "and the guard has not collapsed into always-snapshot");
+        assert_eq!(missing[1].value, "missed two");
+    }
+
+    /// The property the whole change risks. A write made while a peer was away, then
+    /// pruned, must still reach it — by the snapshot, since the operation is gone.
+    #[tokio::test]
+    async fn a_write_made_while_a_peer_was_away_survives_being_pruned() {
+        let (leader, seq) = a_node_with_writes(3).await;
+        let known = leader.engine.get_clock().await;
+
+        // While the peer is away.
+        leader
+            .engine
+            .set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!("Act 2"))
+            .await
+            .unwrap();
+
+        // And then the log is cut past it, so the operation itself no longer exists.
+        let after = leader.engine.get_clock().await;
+        let cut = after.0.get(&leader.id).copied().unwrap_or(0);
+        sqlx::query("DELETE FROM oplog WHERE node_id = ?1 AND seq <= ?2")
+            .bind(leader.id.0.to_string())
+            .bind(cut as i64)
+            .execute(leader.pool.as_ref())
+            .await
+            .unwrap();
+        oplog::raise_floor(&leader.pool, leader.id, cut).await.unwrap();
+
+        // The peer asks for what it missed and is told to take the whole show.
+        assert!(
+            leader.engine.operations_since(known).await.is_none(),
+            "the operation is gone, so a delta would lose the write",
+        );
+
+        let follower = a_node().await;
+        follower.engine.apply_state_snapshot(leader.engine.get_snapshot().await).await;
+        let _ = follower.engine.get(seq_path(seq.id, "name")).await;
+
+        assert_eq!(
+            follower.engine.get(seq_path(seq.id, "name")).await.unwrap(),
+            serde_json::json!("Act 2"),
+            "and the write made while it was away is what it holds",
+        );
     }
 
     #[tokio::test]

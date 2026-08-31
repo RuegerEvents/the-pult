@@ -50,8 +50,9 @@ pub struct Show {
 pub const HISTORY_DEPTH_DEFAULT: u32 = 500;
 /// Below this, undo stops being useful faster than an operator notices it has.
 pub const HISTORY_DEPTH_MIN: u32 = 10;
-/// Above this, the window stops being a window. Nothing prunes the log yet, so this
-/// is the only thing keeping a long show's history from being read in full.
+/// Above this, the window stops being a window. It now bounds what is *kept* as well
+/// as what is read — the log is pruned to this number of authored changes — so a
+/// larger value is a larger showfile rather than only a longer query.
 pub const HISTORY_DEPTH_MAX: u32 = 10_000;
 
 fn default_history_depth() -> u32 {

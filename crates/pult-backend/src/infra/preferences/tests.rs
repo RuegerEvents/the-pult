@@ -88,3 +88,56 @@ fn per_plugin_settings_survive_a_round_trip() {
     );
     assert!(back.plugin_config("command-line").is_null());
 }
+
+// ── How long this station keeps what nobody did ───────────────────────────────
+
+#[test]
+fn a_console_that_has_never_been_told_keeps_an_hour_of_telemetry() {
+    let _own = own_file();
+    assert_eq!(load().oplog_retention_minutes, OPLOG_RETENTION_MINUTES_DEFAULT);
+}
+
+#[test]
+fn a_retention_that_was_written_comes_back() {
+    let _own = own_file();
+    save(&Preferences { oplog_retention_minutes: 240, ..Default::default() }).unwrap();
+    assert_eq!(load().oplog_retention_minutes, 240);
+}
+
+/// Getting this wrong costs snapshots rather than correctness, so a nonsense value
+/// means the nearest sensible one rather than a console that will not start.
+#[test]
+fn a_retention_out_of_range_is_brought_back_inside_it() {
+    let own = own_file();
+    std::fs::create_dir_all(own.0.parent().unwrap()).unwrap();
+
+    std::fs::write(&own.0, "oplog_retention_minutes = 0").unwrap();
+    assert_eq!(load().oplog_retention_minutes, OPLOG_RETENTION_MINUTES_MIN);
+
+    std::fs::write(&own.0, "oplog_retention_minutes = 99999999").unwrap();
+    assert_eq!(load().oplog_retention_minutes, OPLOG_RETENTION_MINUTES_MAX);
+}
+
+#[test]
+fn a_retention_that_will_not_parse_leaves_the_console_with_the_default() {
+    let own = own_file();
+    std::fs::create_dir_all(own.0.parent().unwrap()).unwrap();
+    std::fs::write(&own.0, "oplog_retention_minutes = \"forever\"").unwrap();
+
+    assert_eq!(load().oplog_retention_minutes, OPLOG_RETENTION_MINUTES_DEFAULT);
+}
+
+/// A file from a build that had never heard of this setting.
+#[test]
+fn a_file_written_before_the_retention_existed_still_opens() {
+    let own = own_file();
+    std::fs::create_dir_all(own.0.parent().unwrap()).unwrap();
+    std::fs::write(&own.0, "history_depth = 750").unwrap();
+
+    let prefs = load();
+    assert_eq!(prefs.history_depth, 750, "what it did say is kept");
+    assert_eq!(
+        prefs.oplog_retention_minutes, OPLOG_RETENTION_MINUTES_DEFAULT,
+        "and what it did not say is the default"
+    );
+}

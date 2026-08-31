@@ -549,7 +549,29 @@ pub struct ShowEngine {
     /// The fixture parameters some *Watch* node is looking at, so a fade can be
     /// offered to the flow tick without walking every graph on every frame.
     watched: std::collections::HashSet<(Uuid, String)>,
+    /// Appends since the log was last cut back.
+    ///
+    /// In memory rather than on disk: a station restarted often prunes at open and
+    /// rarely otherwise, which is the right amount for a station restarted often. The
+    /// case this counter is for is the one that never restarts.
+    ///
+    /// Atomic because the append path takes `&self` — a write is logged from the
+    /// same borrow that broadcasts it.
+    appends_since_prune: std::sync::atomic::AtomicU32,
+    /// Whether a prune is already running, so a second does not start beside it.
+    ///
+    /// Two concurrent deletes racing on the floor is the one way to get its ordering
+    /// wrong, and at a threshold of a thousand appends against a delete that takes
+    /// seconds, an overlap is reachable rather than theoretical.
+    pruning: Arc<std::sync::atomic::AtomicBool>,
 }
+
+/// How many appends between prunes.
+///
+/// Large enough that pruning is rare against the write rate, small enough that a
+/// station left up for a fortnight is bounded while it runs rather than only when it
+/// is next opened — which is the case that motivated this at all.
+const APPENDS_BETWEEN_PRUNES: u32 = 1_000;
 
 impl ShowEngine {
     /// Build an engine that owns its command channel. `main` uses `new_with_rx` so it
@@ -593,6 +615,8 @@ impl ShowEngine {
             pushed_fixtures: false,
             flows_dirty: true,
             watched: Default::default(),
+            appends_since_prune: Default::default(),
+            pruning: Default::default(),
         };
         (engine, broadcast)
     }
@@ -1487,6 +1511,13 @@ impl ShowEngine {
         if known.0.is_empty() {
             return None;
         }
+        // Anything below a prune floor is gone, so the rows that survive are not the
+        // whole answer to what this peer missed. Handing them over would report
+        // success and lose the writes that were cut, which is the one way pruning can
+        // corrupt a session rather than merely cost it a snapshot.
+        if oplog::behind_the_floor(known, &oplog::floor(&self.pool).await.ok()?) {
+            return None;
+        }
         let missing = oplog::since(&self.pool, known).await.ok()?;
         let total = oplog::len(&self.pool).await.unwrap_or(0);
         // Replaying most of the log is not catch-up, it is a slow snapshot.
@@ -1532,6 +1563,16 @@ impl ShowEngine {
         }
         if let Err(e) = oplog::append(&self.pool, op).await {
             warn!("[engine] could not write to the oplog: {e}");
+            return;
+        }
+        // Every so often, rather than on a timer: what should drive the work is how
+        // much has been written, and a timer would wake to do nothing on an idle show
+        // while still landing mid-burst on a busy one.
+        use std::sync::atomic::Ordering;
+        let n = self.appends_since_prune.fetch_add(1, Ordering::Relaxed) + 1;
+        if n >= APPENDS_BETWEEN_PRUNES {
+            self.appends_since_prune.store(0, Ordering::Relaxed);
+            self.prune_the_log();
         }
     }
 
@@ -1601,6 +1642,39 @@ impl ShowEngine {
             Err(e) => warn!("[engine] load_from_showfile: ShowState deserialization failed: {e}"),
         }
         self.seed_default_user().await;
+        // A showfile that has been round a long tech week arrives past both
+        // retentions, and this is the largest cut it will ever take.
+        self.prune_the_log();
+    }
+
+    /// Bring the log back within its retentions, off the actor's own loop.
+    ///
+    /// **Spawned rather than awaited.** The engine is one actor, and this is the only
+    /// place in it that issues a `DELETE` over what can be a million rows. Awaiting
+    /// that here would be a stalled tick — output stopping while the disk works —
+    /// which is a far worse failure than a log that is briefly still too long.
+    ///
+    /// Nothing waits on the result and nothing needs to: pruning is idempotent, and a
+    /// prune that fails or is interrupted leaves a log that is merely longer than it
+    /// should be, which the next one fixes.
+    fn prune_the_log(&self) {
+        use std::sync::atomic::Ordering;
+        if self.pruning.swap(true, Ordering::SeqCst) {
+            return; // One is already running; a second would race it on the floor.
+        }
+        let (pool, running) = (self.pool.clone(), self.pruning.clone());
+        let depth = self.history_depth();
+        let retention =
+            chrono::Duration::minutes(crate::infra::preferences::load().oplog_retention_minutes
+                as i64);
+        tokio::spawn(async move {
+            match oplog::prune(&pool, depth, retention).await {
+                Ok(0) => {}
+                Ok(cut) => debug!("[oplog] pruned {cut} operations"),
+                Err(e) => warn!("[oplog] could not prune: {e}"),
+            }
+            running.store(false, Ordering::SeqCst);
+        });
     }
 
     /// Give the show an operator, if it does not have one already.

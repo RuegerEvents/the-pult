@@ -18,8 +18,20 @@
 use std::path::PathBuf;
 
 use pult_schema::types::show::{clamp_history_depth, HISTORY_DEPTH_DEFAULT};
+
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+
+/// An hour: long enough that a peer dropping off a switch and coming back does not
+/// cost a snapshot, short enough that an hour of two stations' telemetry is a few
+/// thousand rows rather than a season's worth.
+pub const OPLOG_RETENTION_MINUTES_DEFAULT: u32 = 60;
+/// Below a minute the log stops being able to answer a reconnection at all, and
+/// every peer that blinks is sent the whole show.
+pub const OPLOG_RETENTION_MINUTES_MIN: u32 = 1;
+/// A week. Past this the retention is not bounding anything an operator would
+/// recognise as a session.
+pub const OPLOG_RETENTION_MINUTES_MAX: u32 = 60 * 24 * 7;
 
 /// The settings that outlive a show.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,6 +39,25 @@ use tracing::{info, warn};
 pub struct Preferences {
     /// What a newly created show starts its `history_depth` at.
     pub history_depth: u32,
+    /// How long this station keeps operations nobody performed, in minutes.
+    ///
+    /// The console's own writes — a fade advancing, a station publishing its memory
+    /// use — are logged because a peer catching up needs them, and are the bulk of
+    /// the table: one station writes its row every two seconds, for as long as it is
+    /// up. Nobody can undo them and they never appear in the history of what people
+    /// did, so the only thing that wants them is replication, and only for as long
+    /// as a peer might still be away.
+    ///
+    /// A station preference rather than show data, unlike `history_depth`. What it
+    /// encodes is "how long an absence should this machine be able to answer without
+    /// sending a snapshot", which is about this rig's network and this machine's
+    /// disk. Two stations in one session may legitimately differ, because pruning is
+    /// local and each serves catch-up from what it has.
+    ///
+    /// Getting it wrong costs snapshots rather than correctness: a peer that has
+    /// been away longer is sent the whole show, which is a path every joining
+    /// station already takes.
+    pub oplog_retention_minutes: u32,
     /// Per-plugin overrides, keyed by plugin id: `[plugins.natural-language-control]`.
     ///
     /// The most specific layer of a plugin's configuration, and the only one
@@ -40,6 +71,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Preferences {
             history_depth: HISTORY_DEPTH_DEFAULT,
+            oplog_retention_minutes: OPLOG_RETENTION_MINUTES_DEFAULT,
             plugins: std::collections::BTreeMap::new(),
         }
     }
@@ -59,6 +91,9 @@ impl Preferences {
     /// The same values, with anything out of range brought back inside it.
     pub fn sane(mut self) -> Self {
         self.history_depth = clamp_history_depth(self.history_depth);
+        self.oplog_retention_minutes = self
+            .oplog_retention_minutes
+            .clamp(OPLOG_RETENTION_MINUTES_MIN, OPLOG_RETENTION_MINUTES_MAX);
         self
     }
 }

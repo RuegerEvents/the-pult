@@ -16,7 +16,7 @@
 	import type { HistoryEntry } from '$lib/generated/index.js';
 	import { ago, colourOf, describeChange, pluginDatumName } from '$lib/users.js';
 	import { historyVersion, readHistory, undo } from '$lib/stores/undo.js';
-	import { collection } from '$lib/stores/show.js';
+	import { collection, show } from '$lib/stores/show.js';
 	import { users, userId } from '$lib/stores/user.js';
 
 	const fixtures = collection('fixtures');
@@ -25,6 +25,26 @@
 	const pluginData = collection('plugin_data');
 
 	let entries = $state<HistoryEntry[]>([]);
+
+	/**
+	 * How far back this show keeps its history.
+	 *
+	 * Asked for in full rather than a round hundred, because the log is now pruned to
+	 * this number and the end of the list is a real end. The backend clamps it to the
+	 * same value, so asking for more than the show keeps is not a way to see more.
+	 */
+	const depth = $derived($show?.history_depth ?? 500);
+
+	/**
+	 * Whether the list has reached the oldest change the show still holds.
+	 *
+	 * Read from the shape of the answer rather than from a new API: the log is pruned
+	 * to `depth` authored changes, so a full answer is one that ends where the show
+	 * does. Before pruning existed the rows past here were still on disk, invisible;
+	 * now they are gone, and an empty scroll would look like a bug rather than a
+	 * boundary.
+	 */
+	const atTheEnd = $derived(entries.length >= depth);
 	/** Redrawn on a timer so "2m ago" does not sit there saying "just now". */
 	let now = $state(Date.now());
 
@@ -54,7 +74,7 @@
 	$effect(() => {
 		// Re-read whenever this browser has changed something.
 		void $historyVersion;
-		readHistory(100).then((h) => (entries = h));
+		readHistory(depth).then((h) => (entries = h));
 	});
 
 	$effect(() => {
@@ -66,7 +86,7 @@
 <div class="history">
 	<header>
 		<h2>History</h2>
-		<button class="ghost" onclick={() => readHistory(100).then((h) => (entries = h))}>Refresh</button>
+		<button class="ghost" onclick={() => readHistory(depth).then((h) => (entries = h))}>Refresh</button>
 	</header>
 
 	{#if entries.length === 0}
@@ -93,15 +113,27 @@
 				</li>
 			{/each}
 		</ul>
-		{#if $userId}
-			<button class="ghost take-back" onclick={undo}>Take back my last change</button>
-		{:else}
-			<p class="empty">Say who you are in the top bar to take anything back.</p>
+		{#if atTheEnd}
+			<!-- Where Ctrl-Z stops, which is what `history_depth` promises. Said out
+			     loud because the changes past here are deleted rather than merely
+			     unlisted, and a list that simply ended would read as a bug. -->
+			<p class="boundary">
+				This is as far back as the show keeps — {depth} changes. Anything older has
+				been let go.
+			</p>
 		{/if}
+		<button class="ghost take-back" onclick={undo}>Take back my last change</button>
 	{/if}
 </div>
 
 <style>
+	.boundary {
+		color: var(--text-faint);
+		font-size: var(--font-xs);
+		text-align: center;
+		margin: 2px 0 0;
+	}
+
 	.history {
 		padding: 12px 14px;
 		display: flex;
