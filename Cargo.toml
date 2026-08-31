@@ -81,6 +81,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10"
 hex = "0.4"
 
+# Plugin bundles. `deflate` and nothing else: a bundle is a manifest, a component
+# and some scripts, and every other codec is another decoder to trust.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 # MQTT: an embedded broker the leader runs, and a client to talk to it.
 # No TLS on either: nodes are on the show's own network, and pulling in a second
 # rustls alongside reqwest's buys nothing here.
@@ -104,3 +108,21 @@ tauri-plugin-dialog = "2"
 # Distributed static registration
 inventory = "0.3"
 paste = "1"
+
+# The plugin runtime. 48 is the current LTS line (24 → 36 → 48); pinned exact
+# because wasmtime majors land monthly and the WASI minor the host links must
+# stay ahead of what the guests were built against.
+wasmtime = { version = "=48.0.1", default-features = false, features = ["async", "component-model", "cranelift", "runtime", "std"] }
+wasmtime-wasi = { version = "=48.0.1", default-features = false, features = ["p2"] }
+wasmtime-wasi-http = { version = "=48.0.1", default-features = false, features = ["p2", "default-send-request"] }
+
+# Watching plugin files for hot reload
+notify = "8"
+
+# Content types for plugin assets served off the disk (already in the tree via
+# rust-embed's mime-guess feature)
+mime_guess = "2"
+
+# Naming HTTP request parts in the plugin runtime's outbound gate (already in
+# the tree via axum and reqwest)
+http = "1"

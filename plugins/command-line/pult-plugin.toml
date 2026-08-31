@@ -1,0 +1,34 @@
+# The command line, as a plugin.
+#
+# This directory is also the worked example for writing one: a manifest, a
+# cdylib crate on the SDK, and (for the optional web-component panel) a plain
+# JavaScript file under assets/. `docs/PLUGINS.md` walks through all of it.
+
+[plugin]
+id = "command-line"
+name = "Command Line"
+version = "0.1.0"
+api = "0.1"
+wasm = "command_line.wasm"
+
+# A built-in frontend surface this plugin drives. The console renders the
+# panel; every keystroke's completion and every submitted line comes here.
+[[surfaces]]
+id = "console"
+kind = "console"
+title = "Command Line"
+
+# A panel this plugin ships as its own JavaScript — the worked example of the
+# second way to have UI. The console serves assets/panel.js and mounts the
+# custom element it defines into a tile.
+[[panels]]
+id = "monitor"
+title = "Programmer Monitor"
+element = "pult-cli-monitor"
+script = "panel.js"
+fills = true
+
+[permissions]
+# The whole point of a command line: read the show, write the show, press Go.
+data = "read-write"
+commands = true

@@ -19,6 +19,13 @@
 /tools/openhaunt-node-sim-gui/ui/node_modules/
 /tools/openhaunt-node-sim-gui/ui/dist/
 
+# The plugins workspace builds its own components; scripts/build-plugins.sh
+# copies each beside its manifest, where the station loads it from. Built, not
+# committed — and an operator's own plugin config is theirs, not the repo's.
+/plugins/target/
+/plugins/*/*.wasm
+/plugins/*/config.toml
+
 # Tauri's generated permission schemas, written beside each desktop shell.
 /crates/pult-gui/gen/
 /tools/openhaunt-node-sim-gui/gen/

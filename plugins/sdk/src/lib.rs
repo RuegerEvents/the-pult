@@ -1,0 +1,283 @@
+//! The plugin SDK: `wit/pult-plugin.wit`, wrapped for comfort.
+//!
+//! A plugin is one type implementing [`PultPlugin`], registered with
+//! [`plugin_main!`]. The raw bindings stay public underneath for anything the
+//! wrappers don't cover; the wrappers exist so a plugin works in
+//! `serde_json::Value` instead of JSON strings, and never touches the
+//! `export!` plumbing.
+//!
+//! ```ignore
+//! use pult_plugin_sdk::{self as sdk, PultPlugin};
+//!
+//! struct Hello;
+//!
+//! impl PultPlugin for Hello {
+//!     fn init(_config: serde_json::Value) -> Result<Self, String> {
+//!         sdk::log_info!("hello from a plugin");
+//!         Ok(Hello)
+//!     }
+//!     fn handle(&mut self, method: &str, _args: serde_json::Value, _ctx: serde_json::Value)
+//!         -> Result<serde_json::Value, String>
+//!     {
+//!         Err(format!("no method called {method:?}"))
+//!     }
+//! }
+//!
+//! sdk::plugin_main!(Hello);
+//! ```
+
+use serde_json::Value;
+
+wit_bindgen::generate!({
+    world: "plugin",
+    path: "../../wit",
+    pub_export_macro: true,
+    default_bindings_module: "pult_plugin_sdk",
+});
+
+/// What a plugin is. One instance lives for the life of the WASM instance;
+/// hot reload drops it and `init`s a fresh one.
+pub trait PultPlugin: Sized + 'static {
+    /// The manifest's `[config]` merged with `config.toml`. An `Err` marks the
+    /// plugin failed on the console, with this string as the reason.
+    fn init(config: Value) -> Result<Self, String>;
+
+    /// Every inbound call: surface traffic (`surface.exec`, `surface.complete`,
+    /// `surface.help`), WebSocket `plugin.<id>.<method>` calls, and other
+    /// plugins' `call_plugin`. `ctx` is the caller's context or `Value::Null`.
+    fn handle(&mut self, method: &str, args: Value, ctx: Value) -> Result<Value, String>;
+
+    /// A value under one of this plugin's subscriptions changed.
+    fn on_update(&mut self, _token: u64, _path: &[String], _value: Value) {}
+
+    /// About to be dropped — reload or shutdown. Nothing survives.
+    fn shutdown(&mut self) {}
+}
+
+/// The host, in `Value`s.
+pub mod host {
+    use super::Value;
+    use super::pult::plugin::{data, introspection, peers};
+
+    fn parse(text: String) -> Value {
+        serde_json::from_str(&text).unwrap_or(Value::Null)
+    }
+
+    fn text(value: &Value) -> String {
+        serde_json::to_string(value).unwrap_or_else(|_| "null".into())
+    }
+
+    /// Read a path. `Value::Null` where nothing is.
+    pub fn get(path: &[&str]) -> Result<Value, String> {
+        let path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+        data::get(&path).map(parse)
+    }
+
+    /// Write a path. Needs `data = "read-write"` in the manifest.
+    pub fn set(path: &[&str], value: &Value) -> Result<(), String> {
+        let path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+        data::set(&path, &text(value))
+    }
+
+    /// Invoke an entity command (`"sequences.goNext"`) or a station RPC
+    /// (`"session.join"`). Needs `commands = true` in the manifest.
+    pub fn call(method: &str, args: &Value) -> Result<Value, String> {
+        data::call(method, &text(args)).map(parse)
+    }
+
+    /// Subscribe to a slash-joined pattern; updates arrive at
+    /// [`super::PultPlugin::on_update`] carrying the returned token.
+    pub fn subscribe(pattern: &str) -> u64 {
+        data::subscribe(pattern)
+    }
+
+    pub fn unsubscribe(token: u64) {
+        data::unsubscribe(token);
+    }
+
+    /// Call another plugin. It must be named in this plugin's
+    /// `[dependencies]`; the current caller context travels along.
+    pub fn call_plugin(plugin: &str, method: &str, args: &Value) -> Result<Value, String> {
+        peers::call_plugin(plugin, method, &text(args)).map(parse)
+    }
+
+    /// The entity registry: every collection, its fields and lifecycles.
+    pub fn entities() -> Value {
+        parse(introspection::entities())
+    }
+
+    /// Every registered entity command, with `argsSchema` and `doc`.
+    pub fn commands() -> Value {
+        parse(introspection::commands())
+    }
+
+    /// Every station RPC reachable through [`call`].
+    pub fn rpcs() -> Value {
+        parse(introspection::rpcs())
+    }
+}
+
+pub use pult::plugin::logging::{log, LogLevel};
+
+#[macro_export]
+macro_rules! log_info {
+    ($($arg:tt)*) => { $crate::log($crate::LogLevel::Info, &format!($($arg)*)) };
+}
+#[macro_export]
+macro_rules! log_warn {
+    ($($arg:tt)*) => { $crate::log($crate::LogLevel::Warn, &format!($($arg)*)) };
+}
+#[macro_export]
+macro_rules! log_error {
+    ($($arg:tt)*) => { $crate::log($crate::LogLevel::Error, &format!($($arg)*)) };
+}
+#[macro_export]
+macro_rules! log_debug {
+    ($($arg:tt)*) => { $crate::log($crate::LogLevel::Debug, &format!($($arg)*)) };
+}
+
+/// The surface protocol: the JSON shapes the built-in console and bar panels
+/// speak over `surface.exec` / `surface.complete` / `surface.help`. Typed here
+/// so a plugin and the frontend agree by construction.
+pub mod surface {
+    use serde::{Deserialize, Serialize};
+
+    /// `surface.exec` args.
+    #[derive(Debug, Deserialize)]
+    pub struct ExecRequest {
+        pub line: String,
+    }
+
+    /// One line of scrollback.
+    #[derive(Debug, Serialize)]
+    pub struct OutputLine {
+        /// `"result"`, `"info"` or `"error"` — the surface styles them.
+        pub kind: String,
+        pub text: String,
+    }
+
+    /// Where in the input an error sits, in byte offsets.
+    #[derive(Debug, Serialize)]
+    pub struct ErrorSpan {
+        pub start: usize,
+        pub end: usize,
+    }
+
+    /// `surface.exec` result.
+    #[derive(Debug, Default, Serialize)]
+    pub struct ExecResponse {
+        pub lines: Vec<OutputLine>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub error: Option<ExecError>,
+        /// Things the surface should do in the browser, e.g. change the
+        /// selection. Absent means none.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub effects: Option<serde_json::Value>,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct ExecError {
+        pub message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub span: Option<ErrorSpan>,
+        /// What would have been accepted, for the message under the caret.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub expected: Vec<String>,
+    }
+
+    /// `surface.complete` args. `cursor` is a byte offset into `line`.
+    #[derive(Debug, Deserialize)]
+    pub struct CompleteRequest {
+        pub line: String,
+        pub cursor: usize,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct CompletionItem {
+        /// What is inserted.
+        pub text: String,
+        /// Shown dimmed beside it: a title, a type, a hint.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub detail: Option<String>,
+    }
+
+    /// `surface.complete` result. The surface replaces
+    /// `line[replace_from..cursor]` with the chosen item's text.
+    #[derive(Debug, Serialize)]
+    pub struct CompleteResponse {
+        pub items: Vec<CompletionItem>,
+        #[serde(rename = "replaceFrom")]
+        pub replace_from: usize,
+    }
+
+    /// `surface.help` args.
+    #[derive(Debug, Deserialize)]
+    pub struct HelpRequest {
+        #[serde(default)]
+        pub topic: Option<String>,
+    }
+
+    /// `surface.help` result: plain text with blank-line paragraphs.
+    #[derive(Debug, Serialize)]
+    pub struct HelpResponse {
+        pub text: String,
+    }
+}
+
+/// One line of surface scrollback, briefly.
+pub fn output_line(kind: &str, text: impl Into<String>) -> surface::OutputLine {
+    surface::OutputLine { kind: kind.to_string(), text: text.into() }
+}
+
+/// Wire a [`PultPlugin`] type into the component's exports. Call once, at the
+/// bottom of the plugin's `lib.rs`.
+#[macro_export]
+macro_rules! plugin_main {
+    ($ty:ty) => {
+        mod __pult_plugin_glue {
+            use super::*;
+
+            pub struct Component;
+
+            // One guest is one thread; the mutex is for the borrow checker,
+            // not for concurrency.
+            static INSTANCE: ::std::sync::Mutex<Option<$ty>> = ::std::sync::Mutex::new(None);
+
+            fn parse(text: &str) -> ::serde_json::Value {
+                ::serde_json::from_str(text).unwrap_or(::serde_json::Value::Null)
+            }
+
+            impl $crate::exports::pult::plugin::lifecycle::Guest for Component {
+                fn init(config: String) -> Result<(), String> {
+                    let plugin = <$ty as $crate::PultPlugin>::init(parse(&config))?;
+                    *INSTANCE.lock().unwrap() = Some(plugin);
+                    Ok(())
+                }
+
+                fn shutdown() {
+                    if let Some(mut plugin) = INSTANCE.lock().unwrap().take() {
+                        $crate::PultPlugin::shutdown(&mut plugin);
+                    }
+                }
+
+                fn on_update(token: u64, path: Vec<String>, value: String) {
+                    if let Some(plugin) = INSTANCE.lock().unwrap().as_mut() {
+                        $crate::PultPlugin::on_update(plugin, token, &path, parse(&value));
+                    }
+                }
+            }
+
+            impl $crate::exports::pult::plugin::rpc::Guest for Component {
+                fn handle(method: String, args: String, ctx: String) -> Result<String, String> {
+                    let mut guard = INSTANCE.lock().unwrap();
+                    let plugin = guard.as_mut().ok_or("plugin not initialised")?;
+                    let result =
+                        $crate::PultPlugin::handle(plugin, &method, parse(&args), parse(&ctx))?;
+                    Ok(result.to_string())
+                }
+            }
+
+            $crate::export!(Component with_types_in $crate);
+        }
+    };
+}

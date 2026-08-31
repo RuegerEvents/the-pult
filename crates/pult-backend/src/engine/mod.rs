@@ -11,7 +11,7 @@ use pult_schema::{
     registry::EntityMeta,
     types::{
         devices::DevicesState, output::{OutputCoverage, OutputStatuses},
-        session::SessionState, station::PeerLinks,
+        plugin::PluginsState, session::SessionState, station::PeerLinks,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,7 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     ("output_status", || serde_json::to_value(OutputStatuses::default()).unwrap_or_default()),
     ("output_coverage", || serde_json::to_value(OutputCoverage::default()).unwrap_or_default()),
     ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
+    ("plugins", || serde_json::to_value(PluginsState::default()).unwrap_or_default()),
 ];
 
 fn seed_local() -> BTreeMap<String, serde_json::Value> {

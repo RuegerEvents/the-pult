@@ -1,0 +1,250 @@
+//! Natural language in, command lines out.
+//!
+//! The model never touches the show. It is handed the command line's own
+//! grammar and a short summary of what exists, and asked to answer in command
+//! lines; whatever comes back is executed through the command-line plugin with
+//! the caller's own context — same selection, same user, same undo history.
+//! The command line is the safety boundary: anything the model invents that
+//! is not grammatical fails loudly there, with a span.
+
+mod http;
+
+use pult_plugin_sdk::{self as sdk, host, output_line, surface, PultPlugin};
+use serde_json::{json, Value};
+
+const SYSTEM_PROMPT: &str = "You operate a lighting console through its command line. \
+Answer with ONLY the command lines to run, one per line, no prose, no code fences. \
+Use the reference below for what exists. If the request cannot be done with these \
+commands, answer with one line starting with `!` explaining why, briefly.";
+
+struct NaturalLanguage {
+    provider: Provider,
+    /// The command line's grammar, fetched once at init — the model's manual.
+    grammar: String,
+}
+
+struct Provider {
+    base_url: String,
+    model: String,
+    api_key: Option<String>,
+    label: String,
+}
+
+impl Provider {
+    fn from_config(config: &Value) -> Result<Provider, String> {
+        let name = config.get("provider").and_then(Value::as_str).unwrap_or("ollama");
+        let (default_base, default_model, wants_key) = match name {
+            "ollama" => ("http://localhost:11434/v1", "qwen3:4b", false),
+            "openrouter" => ("https://openrouter.ai/api/v1", "anthropic/claude-haiku-4.5", true),
+            "openai" => ("https://api.openai.com/v1", "gpt-4.1-mini", true),
+            other => {
+                return Err(format!(
+                    "unknown provider {other:?} — ollama, openrouter or openai (or set base_url)"
+                ))
+            }
+        };
+        let base_url = match config.get("base_url").and_then(Value::as_str) {
+            Some(url) if !url.is_empty() => url.to_string(),
+            _ => default_base.to_string(),
+        };
+        let model = match config.get("model").and_then(Value::as_str) {
+            Some(m) if !m.is_empty() => m.to_string(),
+            _ => default_model.to_string(),
+        };
+        let api_key = config
+            .get("api_key_env")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .and_then(|name| std::env::var(name).ok())
+            .filter(|key| !key.is_empty());
+        if wants_key && api_key.is_none() {
+            sdk::log_warn!(
+                "{name} usually needs an API key; set the env var named by api_key_env"
+            );
+        }
+        Ok(Provider {
+            base_url,
+            label: format!("{name} · {model}"),
+            model,
+            api_key,
+        })
+    }
+}
+
+impl PultPlugin for NaturalLanguage {
+    fn init(config: Value) -> Result<Self, String> {
+        let provider = Provider::from_config(&config)?;
+        // The dependency is running — the manager loads it first or not us.
+        let grammar = host::call_plugin("command-line", "grammar", &json!({}))?;
+        let grammar = grammar
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or("the command line answered `grammar` with no text")?
+            .to_string();
+        sdk::log_info!("natural language ready, speaking to {}", provider.label);
+        Ok(NaturalLanguage { provider, grammar })
+    }
+
+    fn handle(&mut self, method: &str, args: Value, _ctx: Value) -> Result<Value, String> {
+        match method {
+            "surface.exec" | "exec" => {
+                let text = args
+                    .get("line")
+                    .and_then(Value::as_str)
+                    .ok_or("exec takes { \"line\": \"...\" }")?;
+                let response = self.run(text);
+                serde_json::to_value(&response).map_err(|e| e.to_string())
+            }
+            // A bar has no completions worth offering; the whole point is
+            // typing whatever you mean.
+            "surface.complete" => Ok(json!({ "items": [], "replaceFrom": 0 })),
+            "surface.help" => Ok(json!({ "text": self.help_text() })),
+            _ => Err(format!("natural language has no method called {method:?}")),
+        }
+    }
+}
+
+sdk::plugin_main!(NaturalLanguage);
+
+impl NaturalLanguage {
+    fn run(&self, text: &str) -> surface::ExecResponse {
+        match self.commands_for(text) {
+            Ok(commands) => self.execute(commands),
+            Err(message) => surface::ExecResponse {
+                lines: Vec::new(),
+                error: Some(surface::ExecError { message, span: None, expected: Vec::new() }),
+                effects: None,
+            },
+        }
+    }
+
+    /// One round trip to the model, and its reply read as command lines.
+    fn commands_for(&self, text: &str) -> Result<Vec<String>, String> {
+        let user = format!(
+            "# Command reference\n\n{}\n\n# What the show holds right now\n\n{}\n\n# Request\n\n{}",
+            self.grammar,
+            show_summary(),
+            text
+        );
+        let reply = http::chat(&http::ChatRequest {
+            base_url: &self.provider.base_url,
+            model: &self.provider.model,
+            api_key: self.provider.api_key.as_deref(),
+            system: SYSTEM_PROMPT,
+            user: &user,
+        })?;
+
+        let mut commands = Vec::new();
+        for line in reply.lines() {
+            let line = line.trim().trim_start_matches("```").trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(reason) = line.strip_prefix('!') {
+                return Err(format!("the model declined: {}", reason.trim()));
+            }
+            commands.push(line.to_string());
+        }
+        if commands.is_empty() {
+            return Err("the model answered with no commands".into());
+        }
+        Ok(commands)
+    }
+
+    /// Run each command through the command line, stopping at the first error:
+    /// a half-applied interpretation that carried on would be worse than one
+    /// that stopped where it went wrong.
+    fn execute(&self, commands: Vec<String>) -> surface::ExecResponse {
+        let mut lines = Vec::new();
+        let mut effects: Option<Value> = None;
+        for command in commands {
+            lines.push(output_line("info", format!("> {command}")));
+            match host::call_plugin("command-line", "exec", &json!({ "line": command })) {
+                Ok(result) => {
+                    for line in result.get("lines").and_then(Value::as_array).into_iter().flatten() {
+                        lines.push(output_line(
+                            line.get("kind").and_then(Value::as_str).unwrap_or("result"),
+                            line.get("text").and_then(Value::as_str).unwrap_or(""),
+                        ));
+                    }
+                    if let Some(error) = result.get("error").and_then(|e| e.get("message")) {
+                        lines.push(output_line(
+                            "error",
+                            error.as_str().unwrap_or("failed").to_string(),
+                        ));
+                        break;
+                    }
+                    // The last selection change wins, same as typing the
+                    // commands by hand.
+                    if let Some(e) = result.get("effects") {
+                        if !e.is_null() {
+                            effects = Some(e.clone());
+                        }
+                    }
+                }
+                Err(e) => {
+                    lines.push(output_line("error", e));
+                    break;
+                }
+            }
+        }
+        surface::ExecResponse { lines, error: None, effects }
+    }
+
+    fn help_text(&self) -> String {
+        format!(
+            "Type what you want in plain language — \"take the first five \
+fixtures to 80 percent\", \"next cue on the main sequence\".\n\n\
+A model turns it into command lines and runs them through the Command \
+Line plugin; the transcript shows exactly what ran, and undo takes it \
+back like anything else.\n\n\
+Speaking to: {}\nConfigured in the plugin's config.toml.",
+            self.provider.label
+        )
+    }
+}
+
+/// What exists, briefly — enough for the model to name things, small enough
+/// to cost nothing.
+fn show_summary() -> String {
+    let mut out = String::new();
+    if let Ok(fixtures) = host::get(&["fixtures"]) {
+        let names: Vec<String> = fixtures
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(60)
+            .enumerate()
+            .map(|(i, f)| {
+                format!("{}:{}", i + 1, f.get("name").and_then(Value::as_str).unwrap_or("?"))
+            })
+            .collect();
+        out.push_str(&format!("Fixtures ({}): {}\n", names.len(), names.join(", ")));
+    }
+    if let Ok(sequences) = host::get(&["sequences"]) {
+        let rows: Vec<String> = sequences
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(30)
+            .enumerate()
+            .map(|(i, s)| {
+                let cues = s
+                    .get("cue_ids")
+                    .and_then(Value::as_array)
+                    .map(|c| c.len())
+                    .unwrap_or(0);
+                format!(
+                    "{}:{} ({cues} cues)",
+                    i + 1,
+                    s.get("name").and_then(Value::as_str).unwrap_or("?")
+                )
+            })
+            .collect();
+        out.push_str(&format!("Sequences: {}\n", rows.join(", ")));
+    }
+    if out.is_empty() {
+        out.push_str("The show is empty.\n");
+    }
+    out
+}

@@ -2,15 +2,26 @@
 
 Distributed lighting console system.
 
+## Planning is spec-driven (OpenSpec)
+
+New features start as OpenSpec changes, not ad-hoc edits. `openspec/BACKLOG.md`
+holds the candidate changes with their open questions; `/opsx:propose <name>`
+turns one into a change under `openspec/changes/` (proposal, spec deltas,
+design, tasks), `/opsx:apply` implements it, `/opsx:archive` folds the spec
+deltas into `openspec/specs/` when done. `docs/ROADMAP.md` stays the record of
+*finished* work and the decisions made on the way; it is not the planning
+surface anymore.
+
 ## Architecture
 
 - **`crates/pult-macros`** — `#[derive(PultSchema)]` proc macro. Generates `PultEntity` impl, `{T}Patch`, `{T}Create`, `{T}Accessor` from annotated Rust structs.
 - **`crates/pult-schema`** — Data model + path accessor infrastructure. All entity types live here. Source of truth for the WebSocket protocol and sync protocol.
-- **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, SQLite showfiles, peer sync (mDNS + TCP), WASM plugin runtime (Phase 2), fixture connectors (Phase 2). `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
+- **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, SQLite showfiles, peer sync (mDNS + TCP), the WASM plugin runtime (`infra/plugins/`), fixture connectors. `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.
 - **`tools/openhaunt-node-sim`** — The node side of the OpenHaunt protocol, in software. A node *is* a `NodeConfig` — identity, module descriptor, and the ports it describes — so a JSON config file is the whole of what makes one node different from another. `configs/` holds worked examples of modules that are not in the catalogue at all.
 - **`tools/openhaunt-node-sim-gui`** — A Tauri window onto a simulated node: buttons for its inputs, and an editor for its config. Talks to the sim over Tauri IPC, so nothing about the OpenHaunt protocol changes to accommodate a debug UI. Applying a config stops the node and starts a new one in its place, without the window closing.
+- **`plugins/`** — WASM plugins: its own cargo workspace (own lockfile; guests build to `wasm32-wasip2`, which does not belong in the console's dependency graph). `sdk/` is what plugins are written against; `command-line` and `natural-language-control` are the reference plugins and the worked examples for `docs/PLUGINS.md`.
 - **`frontend/`** — SvelteKit static-adapter frontend. Built into the binaries that serve it.
 
 ## Lifecycle System
@@ -62,6 +73,29 @@ In dev, Vite proxies `/ws`, `/assets` and `/api` through to `PULT_BACKEND`
 A debug build reads `frontend/build` off the disk; a release build embeds it. If
 the directory is missing, `build.rs` leaves a placeholder page behind so a fresh
 clone still compiles.
+
+## WASM plugins
+
+The plugin API is `wit/pult-plugin.wit` plus runtime introspection — never a
+list. A plugin learns entities, commands and station RPCs from the
+`introspection` host functions (served from the `EntityMeta` /
+`CommandRegistration` inventories and `api/rpcs.rs`); nothing about the
+schema is enumerated in a plugin, the WIT, or the runtime, so the data model
+grows without touching any of them. Station RPCs live in
+`crates/pult-backend/src/api/rpcs.rs` — adding one there makes it callable
+from the WebSocket, callable from plugins, and visible to introspection at
+once.
+
+```
+scripts/build-plugins.sh                     # plugins/ workspace → components
+cargo run -p pult-backend -- --plugins plugins   # load them; edits hot-reload
+cargo test -p pult-backend --test plugins    # a real station loading them
+```
+
+`docs/PLUGINS.md` is the author guide. Plugin panels reach the frontend as
+LOCAL `plugins` state; the workspace reads the merged `allPanels` store
+(`frontend/src/lib/stores/plugins.ts`), so no frontend file lists plugin
+panels either.
 
 ## Running
 
@@ -145,6 +179,7 @@ and Windows. Two things are worth knowing before changing that workflow:
 
 ```
 cargo test                     # the workspace's default members
+cd plugins && cargo test       # the plugins workspace's pure crates (CLI grammar)
 cd frontend && npm test        # vitest, pure helpers only
 cd frontend && npm run check   # svelte-check
 ```

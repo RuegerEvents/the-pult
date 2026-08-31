@@ -1,0 +1,124 @@
+/// The plugin API. This file is the contract: the backend binds its host side
+/// from it and every plugin binds its guest side from it, so what a plugin can
+/// see and do is exactly what is written here.
+///
+/// Everything that crosses the boundary is JSON text. The engine's data model is
+/// serde_json all the way down, and no entity type appears in this file on
+/// purpose: a plugin learns the schema by asking `introspection` at runtime, so
+/// the data model can grow without this contract — or any plugin — changing.
+package pult:plugin@0.1.0;
+
+interface types {
+    /// A JSON value, as text. `"null"` where nothing is meant.
+    type json = string;
+
+    enum log-level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+}
+
+/// Path-based access to the show, mirroring the console's own DataHandle.
+///
+/// Paths are spelled exactly as on the WebSocket wire: segments like
+/// `["sequences", "<uuid>", "fade_time"]`, with `__create` and `__delete` as the
+/// collection sentinels. Lifecycle is derived from the path by the host, the
+/// same way it is for every other writer.
+interface data {
+    use types.{json};
+
+    /// Write a value. Gated by the manifest's `data = "read-write"`.
+    set: func(path: list<string>, value: json) -> result<_, string>;
+
+    /// Read a value. `"null"` for a path that holds nothing yet.
+    get: func(path: list<string>) -> result<json, string>;
+
+    /// Subscribe to a slash-joined pattern (`*` one segment, `**` any number),
+    /// e.g. `"sequences/**"`. Updates arrive as `lifecycle.on-update` calls
+    /// carrying the returned token.
+    subscribe: func(pattern: string) -> u64;
+
+    unsubscribe: func(token: u64);
+
+    /// Invoke a registered entity command (`"sequences.goNext"`) or a station
+    /// RPC (`"session.join"`, `"device.adopt"`) — the same names the WebSocket
+    /// `Call` takes. Gated by the manifest's `commands = true`.
+    call: func(method: string, args: json) -> result<json, string>;
+}
+
+/// The schema, served from the console's registries at runtime. What these
+/// return grows with the data model; a plugin that drives itself from here
+/// never goes stale.
+interface introspection {
+    use types.{json};
+
+    /// Every entity collection:
+    /// `[{ "entityName", "tableName", "isSingleton", "primaryKey",
+    ///     "fields": [{ "name", "lifecycle" }] }]`
+    entities: func() -> json;
+
+    /// Every registered entity command:
+    /// `[{ "table", "name", "argsTs", "argsSchema", "doc" }]`
+    commands: func() -> json;
+
+    /// Every station RPC reachable through `data.call`:
+    /// `[{ "method", "argsSchema", "doc" }]`
+    rpcs: func() -> json;
+}
+
+/// Calls between plugins.
+interface peers {
+    use types.{json};
+
+    /// Invoke another plugin's `rpc.handle`. Only plugins named in this
+    /// plugin's manifest `[dependencies]` can be called, and the host refuses
+    /// call cycles, so a dependency is a one-way street.
+    call-plugin: func(plugin: string, method: string, args: json) -> result<json, string>;
+}
+
+interface logging {
+    use types.{log-level};
+
+    /// Lands in the station's log, prefixed with the plugin id.
+    log: func(level: log-level, message: string);
+}
+
+interface lifecycle {
+    use types.{json};
+
+    /// Called once after instantiation. `config` is the manifest's `[config]`
+    /// table deep-merged under a `config.toml` beside it, as JSON. An error
+    /// here marks the plugin failed rather than loaded.
+    init: func(config: json) -> result<_, string>;
+
+    /// The plugin is about to be dropped — a reload, or the station going
+    /// down. Nothing survives it; hot reload is a fresh `init`.
+    shutdown: func();
+
+    /// A value under one of this plugin's subscriptions changed.
+    on-update: func(token: u64, path: list<string>, value: json);
+}
+
+interface rpc {
+    use types.{json};
+
+    /// The one inbound dispatch point. Frontend surface calls arrive as
+    /// `surface.exec` / `surface.complete` / `surface.help`, WebSocket
+    /// `plugin.<id>.<method>` calls as `<method>`, and other plugins'
+    /// `call-plugin` calls as whatever method they named. `ctx` is caller
+    /// context (browser selection, user id) or `"null"`.
+    handle: func(method: string, args: json, ctx: json) -> result<json, string>;
+}
+
+world plugin {
+    import data;
+    import introspection;
+    import peers;
+    import logging;
+
+    export lifecycle;
+    export rpc;
+}

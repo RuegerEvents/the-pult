@@ -199,15 +199,21 @@ async fn download(
 }
 
 fn serve(asset: assets::Asset) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, asset.mime),
-            // The name is the contents, so this response can never go stale.
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
-        ],
-        asset.bytes,
-    )
-        .into_response()
+    let mut headers = HeaderMap::new();
+    if let Ok(mime) = asset.mime.parse() {
+        headers.insert(header::CONTENT_TYPE, mime);
+    }
+    // The name is the contents, so this response can never go stale.
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    // A bundle is inert in a browser, but it is never a document either. Handing it
+    // back as an attachment means a link to one can only ever download it.
+    if asset.mime == assets::BUNDLE_MIME {
+        headers.insert(header::CONTENT_DISPOSITION, header::HeaderValue::from_static("attachment"));
+    }
+    (headers, asset.bytes).into_response()
 }
 
 /// Where the other stations serve HTTP.

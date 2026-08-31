@@ -9,7 +9,7 @@
 
 	import type { LayoutNode } from '$lib/generated/index.js';
 	import { panelsIn, type Path } from '$lib/layout.js';
-	import { PANELS, PANEL_IDS, isPanel, panelTitle, type PanelMeta } from '$lib/layout/panels.js';
+	import { type PanelMeta } from '$lib/layout/panels.js';
 	import {
 		beginTabDrag,
 		closePanel,
@@ -18,6 +18,7 @@
 		openPanel,
 		tree
 	} from '$lib/stores/layout.js';
+	import { allPanels } from '$lib/stores/plugins.js';
 	import DropZones from './DropZones.svelte';
 	import EditToggle from './EditToggle.svelte';
 
@@ -26,11 +27,11 @@
 	let adding = $state(false);
 
 	const shown = $derived(node.panels[Math.min(node.active, node.panels.length - 1)] ?? null);
-	// Annotated rather than inferred: `as const satisfies` narrows each entry to its
-	// own literal type, so an entry that does not set `editable` has no such property
-	// at all and asking about it is an error rather than `undefined`.
-	const meta: PanelMeta | null = $derived(shown && isPanel(shown) ? PANELS[shown] : null);
-	const spare = $derived(PANEL_IDS.filter((id) => !panelsIn($tree).includes(id)));
+	// The merged registry: built-ins plus whatever the station's plugins offer
+	// right now. A panel id nobody recognises falls through to the message below.
+	const meta: PanelMeta | null = $derived(shown ? ($allPanels[shown] ?? null) : null);
+	const spare = $derived(Object.keys($allPanels).filter((id) => !panelsIn($tree).includes(id)));
+	const titleOf = (id: string): string => $allPanels[id]?.title ?? id;
 
 	function show(panel: string) {
 		const at = node.panels.indexOf(panel);
@@ -51,12 +52,12 @@
 						beginTabDrag(path, panel, e);
 					}}
 				>
-					{panelTitle(panel)}
+					{titleOf(panel)}
 					<span
 						class="close"
 						role="button"
 						tabindex="-1"
-						aria-label="Close {panelTitle(panel)}"
+						aria-label="Close {titleOf(panel)}"
 						onpointerdown={(e) => {
 							e.stopPropagation();
 							closePanel(path, panel);
@@ -82,7 +83,7 @@
 									openPanel(path, id);
 									adding = false;
 								}}
-							>{PANELS[id].title}</button>
+							>{titleOf(id)}</button>
 						{/each}
 					{/if}
 				</div>
@@ -108,7 +109,7 @@
 	<div class="body" class:fills={meta?.fills}>
 		{#if meta}
 			{@const Panel = meta.component}
-			<Panel />
+			<Panel {...(meta.props ?? {})} />
 		{:else if shown}
 			<p class="unknown">This console has no panel called “{shown}”.</p>
 		{:else}

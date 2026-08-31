@@ -12,6 +12,7 @@
 	import { initShowStores } from '$lib/stores/show.js';
 	import { identifyOnConnect } from '$lib/stores/user.js';
 	import { isTextField, redo, shortcutFor, undo } from '$lib/stores/undo.js';
+	import { focusConsole } from '$lib/stores/plugins.js';
 	import { restoreLayout } from '$lib/stores/layout.js';
 	import LayoutBar from '$lib/components/layout/LayoutBar.svelte';
 	import UserBar from '$lib/components/UserBar.svelte';
@@ -50,6 +51,14 @@
 	 * means that fixture.
 	 */
 	function onKey(event: KeyboardEvent) {
+		// Ctrl/Cmd+K lands in a command line, wherever one is open. Allowed even
+		// from a text field: the browsers' own use of the key is a search bar,
+		// and stealing it from an input is exactly what an operator mid-rename
+		// pressing it means.
+		if (event.key.toLowerCase() === 'k' && (event.ctrlKey || event.metaKey)) {
+			if (focusConsole()) event.preventDefault();
+			return;
+		}
 		const action = shortcutFor(event, isTextField(event.target));
 		if (!action) return;
 		event.preventDefault();

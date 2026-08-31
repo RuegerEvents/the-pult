@@ -1915,6 +1915,59 @@ async fn a_fixture_position_round_trips_through_the_showfile() {
 }
 
 #[tokio::test]
+async fn a_plugin_package_round_trips_through_the_showfile() {
+    use pult_schema::types::plugin::{PluginPackage, PluginStage};
+
+    let mut h = harness().await;
+    let package = PluginPackage {
+        id: Uuid::new_v4(),
+        plugin_id: "command-line".into(),
+        name: "Command Line".into(),
+        version: "0.1.0".into(),
+        api: "0.1".into(),
+        sha256: "a3f9".repeat(16),
+        enabled: true,
+        stage: PluginStage::Runtime,
+        config: serde_json::json!({ "prompt": ">" }),
+    };
+    h.engine.set(create_path("plugin_packages"), Lifecycle::Persisted, json(&package)).await.unwrap();
+
+    h.reload().await;
+
+    let after = h.engine.get(entity_path("plugin_packages", package.id)).await.unwrap();
+    assert_eq!(after["plugin_id"], "command-line");
+    assert_eq!(after["sha256"], package.sha256, "the digest is what finds the bytes again");
+    assert_eq!(after["enabled"], true);
+    assert_eq!(after["stage"], "Runtime");
+    assert_eq!(after["config"]["prompt"], ">", "show-level config travels with the show");
+}
+
+#[tokio::test]
+async fn a_plugin_package_written_before_stage_existed_still_reads() {
+    let mut h = harness().await;
+    // What an older build wrote: no `stage`, no `config`. Both are
+    // `#[serde(default)]`, so the row is not a parse failure and the plugin is
+    // not silently dropped from a show that has been opened on a newer console.
+    let id = Uuid::new_v4();
+    let older = serde_json::json!({
+        "id": id,
+        "plugin_id": "command-line",
+        "name": "Command Line",
+        "version": "0.1.0",
+        "api": "0.1",
+        "sha256": "b7c2".repeat(16),
+        "enabled": true,
+    });
+    h.engine.set(create_path("plugin_packages"), Lifecycle::Persisted, older).await.unwrap();
+
+    h.reload().await;
+
+    let after = h.engine.get(entity_path("plugin_packages", id)).await.unwrap();
+    assert_eq!(after["stage"], "Both", "the default is the permissive one");
+    assert!(after["config"].is_null() || after["config"] == serde_json::json!(null));
+}
+
+#[tokio::test]
 async fn a_fixture_with_no_position_is_still_a_valid_fixture() {
     let mut h = harness().await;
     let fixture = a_fixture("Unplaced", 1);

@@ -123,3 +123,32 @@ async fn a_station_with_no_peers_to_ask_says_so_rather_than_failing() {
     let pool = a_store().await;
     assert!(fetch_from_peers(&pool, &digest(PNG), &[]).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn each_kind_of_asset_has_its_own_ceiling() {
+    let pool = a_store().await;
+
+    // A drawing and a bundle are not the same size of thing, so one number for
+    // both would either refuse a reasonable component or accept a photograph.
+    let plan_ceiling = ceiling_for("image/png").expect("a plan is storable");
+    let bundle_ceiling = ceiling_for(BUNDLE_MIME).expect("a bundle is storable");
+    assert!(bundle_ceiling > plan_ceiling, "wasm is bulkier than a drawing");
+    assert_eq!(MAX_BYTES, bundle_ceiling, "the body limit is the widest of them");
+
+    let too_big = vec![0u8; plan_ceiling + 1];
+    let err = put(&pool, "image/png", &too_big).await.unwrap_err().to_string();
+    assert!(err.contains(&plan_ceiling.to_string()), "{err}");
+    assert!(err.contains("image/png"), "the message names the kind that was refused: {err}");
+
+    // The same bytes are within a bundle's ceiling, which is the whole point of
+    // the table: the limit follows the kind, not the route.
+    assert!(put(&pool, BUNDLE_MIME, &too_big).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_kind_the_console_does_not_store_is_refused_by_name() {
+    let pool = a_store().await;
+
+    let err = put(&pool, "image/svg+xml", PNG).await.unwrap_err().to_string();
+    assert!(err.contains("image/svg+xml"), "{err}");
+}

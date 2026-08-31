@@ -66,6 +66,18 @@ CREATE TABLE IF NOT EXISTS outputs (
     node_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS plugin_packages (
+    id TEXT NOT NULL PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    version TEXT NOT NULL,
+    api TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    config TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sequences (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,

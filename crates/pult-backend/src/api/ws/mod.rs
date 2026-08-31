@@ -252,8 +252,25 @@ async fn handle_client_message(
         }
 
         ClientMessage::Call { method, args, request_id } => {
-            let msg = if method.starts_with("session.") || method.starts_with("device.") {
-                handle_local_call(&method, args, state).await
+            let msg = if let Some(rest) = method.strip_prefix("plugin.") {
+                // `plugin.<id>.<method...>` goes to that plugin's `rpc.handle`.
+                let (plugin, plugin_method) = rest.split_once('.').unwrap_or((rest, ""));
+                state
+                    .plugins
+                    .call(plugin.to_string(), plugin_method.to_string(), args)
+                    .await
+                    .map(|v| ServerMessage::CallResult { request_id: request_id.clone(), result: Some(v), error: None })
+                    .unwrap_or_else(|e| ServerMessage::CallResult {
+                        request_id,
+                        result: None,
+                        error: Some(e),
+                    })
+            } else if crate::api::rpcs::is_local_rpc(&method) {
+                let deps = crate::api::rpcs::LocalRpcDeps {
+                    session: state.session.clone(),
+                    devices: state.devices.clone(),
+                };
+                crate::api::rpcs::dispatch(&method, args, &deps).await
                     .map(|v| ServerMessage::CallResult { request_id: request_id.clone(), result: Some(v), error: None })
                     .unwrap_or_else(|e| ServerMessage::CallResult {
                         request_id,
@@ -280,60 +297,6 @@ async fn handle_client_message(
         ClientMessage::Ping => {
             send_to_session(state, session_id, ServerMessage::Pong);
         }
-    }
-}
-
-/// Calls against LOCAL state, which the engine's command registry knows nothing
-/// about — they go to the manager that owns the state rather than to an entity.
-async fn handle_local_call(
-    method: &str,
-    args: serde_json::Value,
-    state: &AppState,
-) -> Result<serde_json::Value, String> {
-    let serial = || {
-        args["serial"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| "missing serial".to_string())
-    };
-
-    match method {
-        "device.adopt" => {
-            let id = state.devices.adopt(serial()?).await?;
-            serde_json::to_value(id).map_err(|e| e.to_string())
-        }
-        "device.identify" => {
-            state.devices.identify(serial()?).await?;
-            Ok(serde_json::Value::Null)
-        }
-        "device.forget" => {
-            state.devices.forget(serial()?).await?;
-            Ok(serde_json::Value::Null)
-        }
-        "session.join" => {
-            let session_id: uuid::Uuid = serde_json::from_value(args["sessionId"].clone())
-                .map_err(|e| format!("invalid sessionId: {e}"))?;
-            state.session.join_session(session_id).await.map_err(|e| e)?;
-            Ok(serde_json::Value::Null)
-        }
-        "session.leave" => {
-            let _ = state.session.0.send(crate::infra::session::SessionCommand::Leave).await;
-            Ok(serde_json::Value::Null)
-        }
-        "session.create" => {
-            let show_name = args["showName"]
-                .as_str()
-                .unwrap_or("Untitled Show")
-                .to_string();
-            let show_id: uuid::Uuid = serde_json::from_value(args["showId"].clone())
-                .map_err(|e| format!("invalid showId: {e}"))?;
-            let session_id = state.session.create_session(show_name, show_id).await;
-            match session_id {
-                Some(id) => serde_json::to_value(id).map_err(|e| e.to_string()),
-                None => Err("failed to create session".into()),
-            }
-        }
-        _ => Err(format!("unknown method: {method}")),
     }
 }
 

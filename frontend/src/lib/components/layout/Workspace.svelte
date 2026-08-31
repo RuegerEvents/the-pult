@@ -7,14 +7,13 @@
 	 * programming needs.
 	 */
 
-	import { PANELS, isPanel, panelTitle, type PanelMeta } from '$lib/layout/panels.js';
+	import { type PanelMeta } from '$lib/layout/panels.js';
 	import { dragging, maximised, tree } from '$lib/stores/layout.js';
+	import { allPanels } from '$lib/stores/plugins.js';
 	import EditToggle from './EditToggle.svelte';
 	import Tile from './Tile.svelte';
 
-	const big: PanelMeta | null = $derived(
-		$maximised && isPanel($maximised) ? PANELS[$maximised] : null
-	);
+	const big: PanelMeta | null = $derived($maximised ? ($allPanels[$maximised] ?? null) : null);
 </script>
 
 <div class="workspace" class:dragging={$dragging}>
@@ -22,7 +21,7 @@
 		{@const Panel = big.component}
 		<div class="full">
 			<div class="bar">
-				<span class="title">{panelTitle($maximised)}</span>
+				<span class="title">{big.title}</span>
 				<span class="spacer"></span>
 				<!-- The maximised view draws its own chrome, and left this out. Filling
 				     the screen with a panel is exactly when there is room to edit it,
@@ -33,7 +32,7 @@
 				{/if}
 				<button class="chip" onclick={() => maximised.set(null)}>⤡ Back to the workspace</button>
 			</div>
-			<div class="body" class:fills={big.fills}><Panel /></div>
+			<div class="body" class:fills={big.fills}><Panel {...(big.props ?? {})} /></div>
 		</div>
 	{:else}
 		<Tile node={$tree} />

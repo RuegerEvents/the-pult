@@ -1,0 +1,42 @@
+# The plugins workspace: guests, not console.
+#
+# Separate from the root workspace on purpose. These crates compile to
+# wasm32-wasip2, carry wit-bindgen, and want a size-trimmed release profile —
+# none of which belongs in the console's dependency graph or lockfile. CI
+# builds this workspace with its own `--locked`.
+#
+# Build with `scripts/build-plugins.sh` (which passes the wasm target), or run
+# `cargo test` here on the host target for the pure crates.
+
+[workspace]
+resolver = "2"
+members = [
+    "sdk",
+    "command-line",
+    "command-line/core",
+    "natural-language-control",
+]
+# A plain `cargo test` here runs the pure crates on the host target; the
+# guests only link as wasm and are built by scripts/build-plugins.sh with
+# `--workspace --target wasm32-wasip2`.
+default-members = [
+    "command-line/core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wit-bindgen = "0.61"
+pult-plugin-sdk = { path = "sdk" }
+command-line-core = { path = "command-line/core" }
+uuid = { version = "1", default-features = false }
+
+# Components ship to operators' consoles; small beats fast-to-compile here.
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

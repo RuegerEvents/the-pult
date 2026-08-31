@@ -12,6 +12,7 @@ import type { FlowEdge } from '../generated/FlowEdge.js';
 import type { FlowNode } from '../generated/FlowNode.js';
 import type { Layout } from '../generated/Layout.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
+import type { PluginPackage } from '../generated/PluginPackage.js';
 import type { ProgrammerValue } from '../generated/ProgrammerValue.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Show } from '../generated/Show.js';
@@ -52,6 +53,10 @@ export type LayoutEntity = PathProxy<Layout> & {
 };
 
 export type OutputConfigEntity = PathProxy<OutputConfig> & {
+  delete(): Promise<void>;
+};
+
+export type PluginPackageEntity = PathProxy<PluginPackage> & {
   delete(): Promise<void>;
 };
 
@@ -171,6 +176,17 @@ export type OutputConfigCollection = {
   [n: number]: OutputConfigEntity;
 };
 
+export type PluginPackageCollection = {
+  get(): Promise<PluginPackage[]>;
+  set(value: PluginPackage[]): Promise<void>;
+  subscribe(cb: (value: PluginPackage[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: PluginPackage[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): PluginPackageEntity;
+  nth(n: number): PluginPackageEntity;
+  create(entity: PluginPackage): Promise<void>;
+  [n: number]: PluginPackageEntity;
+};
+
 export type ProgrammerValueCollection = {
   get(): Promise<ProgrammerValue[]>;
   set(value: ProgrammerValue[]): Promise<void>;
@@ -249,6 +265,7 @@ export type DataRoot = {
   flow_nodes: FlowNodeCollection;
   layouts: LayoutCollection;
   outputs: OutputConfigCollection;
+  plugin_packages: PluginPackageCollection;
   programmer_values: ProgrammerValueCollection;
   sequences: SequenceCollection;
   show: PathProxy<Show | null>;

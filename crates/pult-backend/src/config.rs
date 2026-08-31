@@ -32,6 +32,11 @@ pub struct Config {
     /// Use this station id instead of the one recorded beside the showfile.
     #[serde(default)]
     pub node_id: Option<Uuid>,
+    /// Directories to load WASM plugins from: each is one plugin's directory or
+    /// a directory of plugin directories. Empty means no plugin runtime work at
+    /// all, same philosophy as the output flags.
+    #[serde(default)]
+    pub plugin_dirs: Vec<std::path::PathBuf>,
 }
 
 fn default_bind() -> IpAddr { IpAddr::V4(Ipv4Addr::UNSPECIFIED) }
@@ -51,6 +56,7 @@ impl Default for Config {
             sacn: None,
             openhaunt_broker_port: default_broker_port(),
             node_id: None,
+            plugin_dirs: Vec::new(),
         }
     }
 }
