@@ -43,14 +43,17 @@ plugin sets.
 - A plugin holding an API key must NOT replicate its secrets.
 - Interaction with hot reload: an edit on one station — does it propagate?
 
-### plugin-datastores — see `changes/plugin-datastores/`
-Plugins have no persistence. A plugin wanting to remember anything across
-restarts has nowhere to put it.
-- A per-plugin key-value store in the showfile (PERSISTED, replicated) vs. a
-  station-local one vs. both — the lifecycle question again, per key.
-- Quotas; what happens to a store whose plugin is gone.
-- Could reuse the entity machinery: a plugin declaring a schema at load time
-  vs. opaque JSON blobs.
+### plugin-datastores — done, see `changes/archive/2026-08-31-plugin-datastores/`
+Shipped as roadmap task 35. Both scopes exist: `scope = "show"` is a PERSISTED
+`plugin_data` entity, `scope = "station"` is SQLite beside the preferences.
+Quotas are 1,000 keys and 1 MB, lowerable by the manifest; data outlives its
+plugin and orphaned data is shown in the Plugins panel. The entity machinery was
+reused rather than a per-plugin schema — values stay opaque JSON, which the
+non-goals argue for.
+
+Two things it left open: nothing prunes the oplog (see `history-pruning`), and
+there is no change notification, so a plugin holding a value in memory learns
+about an undo on its next read.
 
 ### typed-plugin-sdk
 Introspection is the right *wire*, and a poor thing to program against. A plugin
