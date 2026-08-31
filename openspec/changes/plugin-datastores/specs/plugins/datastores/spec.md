@@ -31,7 +31,7 @@ invalid manifest is.
 ### Requirement: A plugin can store, retrieve, list and delete values
 
 A plugin SHALL be able to write a JSON value at a key in one of its stores, read
-it back, delete it, and list the keys in a store filtered by prefix. A read of a
+it back, delete it, and ask for the keys in a store filtered by prefix. A read of a
 key that holds nothing SHALL be reported as absent rather than as an error.
 
 Values written SHALL be readable unchanged by the same plugin after the station
@@ -92,10 +92,23 @@ that station restarts.
 - **WHEN** a station writes station-scoped data, then opens a different show
 - **THEN** the same plugin on that station still reads the value
 
-### Requirement: Plugin data does not appear as something a person did
+### Requirement: A plugin's writes are the plugin's, unless the store says otherwise
 
-Writes to a plugin store SHALL NOT be undoable and SHALL NOT appear in the
-show's history of operator actions.
+Writes to a plugin store SHALL NOT be undoable and SHALL NOT appear in the show's
+history of operator actions.
+
+A store MAY declare that its writes are the operator's rather than the plugin's.
+Writes to such a store SHALL be undoable and SHALL appear in the history,
+attributed to the operator whose action caused them, and SHALL be named there by
+the plugin, the store and the key rather than by an identifier. This is what a
+plugin uses when the operator asked it to save something — a macro, a snippet —
+and would expect to take it back.
+
+A write no operator caused SHALL NOT be undoable and SHALL NOT appear in the
+history, whatever the store declares. A plugin writing on a timer, while
+starting up, or while handling a call no person made has no operator to attribute
+the write to, and guessing at one would put a stranger's action into somebody's
+undo history.
 
 #### Scenario: Undo after a plugin writes
 
@@ -106,6 +119,35 @@ show's history of operator actions.
 
 - **WHEN** a plugin writes to a show-scoped store
 - **THEN** no entry for it appears in the history of what people changed
+
+#### Scenario: Taking back what the operator asked the plugin to save
+
+- **WHEN** an operator asks a plugin to save something into a store it declared as the operator's, and then presses undo
+- **THEN** what the plugin saved is taken back
+- **AND** the history names it by the plugin, the store and the key
+
+#### Scenario: A plugin writing with nobody behind it
+
+- **WHEN** a plugin writes to a store it declared as the operator's, while handling something no person asked for
+- **THEN** the write is not undoable and does not appear in the history
+
+### Requirement: One key is one datum, on every station
+
+A key in a show-scoped store SHALL name the same datum on every station in the
+session, so that two stations writing the same key of the same store of the same
+plugin are writing to one place. Concurrent writes to one key SHALL resolve to a
+single value by the same rule the rest of the show uses, and SHALL NOT leave the
+store holding that key twice.
+
+#### Scenario: Two stations write the same key
+
+- **WHEN** two stations in a session each write the key `opening` in the same store of the same plugin
+- **THEN** the plugin on every station reads back one value for that key, not two entries
+
+#### Scenario: A station that was away catches up
+
+- **WHEN** a station rejoins after a key was written on both sides of the split
+- **THEN** the key holds one value once the session has converged
 
 ### Requirement: Stores are bounded
 
@@ -148,12 +190,39 @@ plugin, and SHALL be able to delete it deliberately.
 - **WHEN** an operator inspects stored data belonging to no installed plugin
 - **THEN** it is shown with the plugin id that wrote it and can be deleted
 
-### Requirement: An existing plugin keeps working
+### Requirement: A plugin need not use a store, and one built against an earlier contract keeps working
 
-A plugin built before this interface existed SHALL continue to load and run
-unchanged, and SHALL NOT be required to declare any store.
+A plugin SHALL NOT be required to declare any store, and one that declares none
+SHALL load and run exactly as it did before.
+
+A plugin built against an earlier *minor* version of the plugin contract SHALL
+continue to load and run unchanged, so that adding an interface does not strand
+the plugins already carried in showfiles. A station SHALL run a plugin whose
+declared contract version has the same major and a minor no greater than its
+own, and SHALL refuse any other with a reason saying which thing to change — the
+plugin rebuilt, or the console updated.
+
+A plugin built against a *different major* — including every version from before
+the contract settled at 1.0 — SHALL be refused by name rather than loaded
+wrongly. This is a one-time cost, taken because a contract that cannot grow
+additively would have to strand its plugins on every future addition instead.
 
 #### Scenario: A plugin that stores nothing
 
 - **WHEN** a plugin whose manifest declares no stores is loaded
 - **THEN** it loads and runs exactly as it did before
+
+#### Scenario: A plugin built before the station's contract grew
+
+- **WHEN** a plugin built against an earlier minor of the contract is loaded on a station whose contract has since gained an interface
+- **THEN** it loads and runs unchanged, importing only what it was built against
+
+#### Scenario: A plugin built against a contract the station does not have
+
+- **WHEN** a plugin declares a later minor than the station speaks
+- **THEN** it is refused with a reason naming the console as the thing to update
+
+#### Scenario: A plugin from before the contract settled
+
+- **WHEN** a plugin declares a different major version of the contract
+- **THEN** it is refused with a reason naming the plugin as the thing to rebuild

@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS outputs (
     node_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS plugin_data (
+    id TEXT NOT NULL PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    store TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS plugin_packages (
     id TEXT NOT NULL PRIMARY KEY,
     plugin_id TEXT NOT NULL,

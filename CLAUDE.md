@@ -122,6 +122,31 @@ Plugin configuration is three layers, most specific winning: the manifest's
 `preferences.toml`. Credentials belong in the last one or in env passthrough,
 never in the first two — those travel with the showfile.
 
+**A plugin can remember things.** A manifest declares `[[stores]]`, each
+`scope = "show"` (a PERSISTED `plugin_data` entity, so replication and the
+showfile come free) or `scope = "station"` (SQLite beside `preferences.toml`,
+`PULT_PLUGIN_DATA` to move it). Declaring the store is the permission — the
+host derives the location from `(plugin_id, store)`, so no guest can spell a
+name that reaches another plugin's data. A row's id is a UUIDv5 over
+`(plugin_id, store, key)`, which is what makes two stations writing one key
+write one row. Removing a plugin does not delete its stores; what is left over
+shows up in the Plugins panel under *Left behind*.
+
+A store write is **not** undoable and not in the History panel unless the store
+says `undoable = true`. Both come from whether the host attributes the write, so
+neither `Operation::is_undoable` nor the oplog's SQL knows what a plugin is.
+
+The WIT package is `pult:plugin@1.0.0` and a manifest's `api` is a **floor**:
+same major, station's minor at least the plugin's. It cannot be `0.x` — a
+component's imports carry the package version, and under semver a `0.x` minor
+bump is breaking, so every import would fail to resolve. `scripts/check-api-compat.sh`
+checks that a plugin built against an older minor still runs.
+
+```
+cargo test -p pult-backend --test stores   # what a plugin remembers
+scripts/check-api-compat.sh                # an older plugin still runs here
+```
+
 ## Running
 
 ```

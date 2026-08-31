@@ -21,6 +21,47 @@ struct NaturalLanguage {
     provider: Provider,
     /// The command line's grammar, fetched once at init — the model's manual.
     grammar: String,
+    /// Configuration as the layers composed it, before this machine's own
+    /// choice was laid over the top. Kept so that choosing again starts from
+    /// the same place rather than from the last answer.
+    config: Value,
+}
+
+/// Where this console remembers the operator's choice of model.
+///
+/// Station-scoped, and the reason is the whole distinction: which model is
+/// installed on *this* machine, or which provider this operator prefers at this
+/// desk, is not a fact about the show. Put it in a show-scoped store and it
+/// replicates to a console that has no Ollama on it, travels in the showfile,
+/// and lands in every backup.
+///
+/// Deliberately not a cache of anything derived. A cache would be the easier
+/// example and the wrong one: derived data is cheap to rebuild and a stale copy
+/// is worse than none, so an example built on it argues against its own feature.
+/// This is state — nothing can recompute what the operator picked.
+const PREFS: &str = "prefs";
+
+/// The composed configuration with this machine's remembered choice over it.
+///
+/// The most specific layer wins, and a choice made at this desk a moment ago is
+/// as specific as it gets — more so than the station's `preferences.toml`, which
+/// is what this console was set up with rather than what the operator just
+/// asked for.
+fn with_remembered_choice(config: &Value) -> Value {
+    let mut config = config.clone();
+    let Some(table) = config.as_object_mut() else { return config };
+    for key in ["provider", "model", "base_url"] {
+        match sdk::store::get::<String>(PREFS, key) {
+            Ok(Some(value)) if !value.is_empty() => {
+                table.insert(key.to_string(), Value::String(value));
+            }
+            Ok(_) => {}
+            // A store that will not answer is not a reason to refuse to start:
+            // the configured provider is a perfectly good answer.
+            Err(e) => sdk::log_warn!("could not read the remembered {key}: {e}"),
+        }
+    }
+    config
 }
 
 struct Provider {
@@ -73,7 +114,7 @@ impl Provider {
 
 impl PultPlugin for NaturalLanguage {
     fn init(config: Value) -> Result<Self, String> {
-        let provider = Provider::from_config(&config)?;
+        let provider = Provider::from_config(&with_remembered_choice(&config))?;
         // The dependency is running — the manager loads it first or not us.
         let grammar = host::call_plugin("command-line", "grammar", &json!({}))?;
         let grammar = grammar
@@ -82,7 +123,7 @@ impl PultPlugin for NaturalLanguage {
             .ok_or("the command line answered `grammar` with no text")?
             .to_string();
         sdk::log_info!("natural language ready, speaking to {}", provider.label);
-        Ok(NaturalLanguage { provider, grammar })
+        Ok(NaturalLanguage { provider, grammar, config })
     }
 
     fn handle(&mut self, method: &str, args: Value, _ctx: Value) -> Result<Value, String> {
@@ -99,6 +140,11 @@ impl PultPlugin for NaturalLanguage {
             // typing whatever you mean.
             "surface.complete" => Ok(json!({ "items": [], "replaceFrom": 0 })),
             "surface.help" => Ok(json!({ "text": self.help_text() })),
+            // Which model this console talks to, and a way to change it that
+            // outlives the session. The answer is remembered on this machine,
+            // so the next start speaks to the same one without being told.
+            "provider" => Ok(json!({ "label": self.provider.label })),
+            "use" => self.use_provider(args),
             _ => Err(format!("natural language has no method called {method:?}")),
         }
     }
@@ -107,6 +153,34 @@ impl PultPlugin for NaturalLanguage {
 sdk::plugin_main!(NaturalLanguage);
 
 impl NaturalLanguage {
+    /// Point this console at a different model, and remember that it was asked.
+    ///
+    /// The provider is built before anything is written, so a name that is not
+    /// a provider is refused with the same message it would get at startup and
+    /// nothing is remembered — a console cannot be left unable to start by one
+    /// mistyped word.
+    fn use_provider(&mut self, args: Value) -> Result<Value, String> {
+        let mut asked = self.config.clone();
+        let Some(table) = asked.as_object_mut() else {
+            return Err("this plugin's configuration is not a table".into());
+        };
+        for key in ["provider", "model", "base_url"] {
+            if let Some(value) = args.get(key).and_then(Value::as_str) {
+                table.insert(key.to_string(), Value::String(value.to_string()));
+            }
+        }
+
+        let provider = Provider::from_config(&asked)?;
+        for key in ["provider", "model", "base_url"] {
+            if let Some(value) = args.get(key).and_then(Value::as_str) {
+                sdk::store::set(PREFS, key, &value)?;
+            }
+        }
+        sdk::log_info!("now speaking to {}", provider.label);
+        self.provider = provider;
+        Ok(json!({ "label": self.provider.label }))
+    }
+
     fn run(&self, text: &str) -> surface::ExecResponse {
         match self.commands_for(text) {
             Ok(commands) => self.execute(commands),

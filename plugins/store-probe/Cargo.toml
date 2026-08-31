@@ -1,0 +1,12 @@
+[package]
+name = "store-probe"
+version.workspace = true
+edition.workspace = true
+description = "A test plugin that does nothing but exercise the store interface."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pult-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }

@@ -859,3 +859,124 @@ async fn losing_a_peer_forgets_the_latency_to_it() {
     .await;
     let _ = links.borrow_and_update();
 }
+
+// ── Plugin stores ─────────────────────────────────────────────────────────────
+
+/// A show-scoped plugin store is an ordinary entity, so it replicates like one.
+///
+/// This is the whole payoff of not writing a bespoke table for it: nothing in
+/// the sync layer knows what a plugin is, and a macro written on one console is
+/// on the other because `plugin_data` is a collection like any other.
+#[tokio::test]
+async fn a_plugins_show_scoped_write_reaches_the_other_station() {
+    use pult_schema::types::PluginDatum;
+
+    let one = a_node().await;
+    let two = a_node().await;
+    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    let id = PluginDatum::id_for("macros", "saved", "opening");
+    let datum = PluginDatum {
+        id,
+        plugin_id: "macros".into(),
+        store: "saved".into(),
+        key: "opening".into(),
+        value: serde_json::json!("what the operator saved"),
+    };
+    one.engine
+        .set(
+            vec![
+                PathSegment::Key("plugin_data".into()),
+                PathSegment::Key("__create".into()),
+            ],
+            Lifecycle::Persisted,
+            serde_json::to_value(&datum).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let value_on_two = || async {
+        two.engine
+            .get(vec![
+                PathSegment::Key("plugin_data".into()),
+                PathSegment::Id(id),
+                PathSegment::Key("value".into()),
+            ])
+            .await
+            .ok()
+    };
+    eventually("the plugin's data to replicate", || async {
+        value_on_two().await == Some(serde_json::json!("what the operator saved"))
+    })
+    .await;
+}
+
+/// Two stations writing one key write one row.
+///
+/// The id is a UUIDv5 over `(plugin_id, store, key)`, so both sides create the
+/// *same* entity and the existing per-path conflict resolution applies. With a
+/// fresh id each, this would be two rows holding one key — not a conflict the
+/// vector clock resolves, but a duplicate it has no reason to notice, and a
+/// plugin reading back two values for one key.
+#[tokio::test]
+async fn two_stations_writing_one_key_converge_on_one_row() {
+    use pult_schema::types::PluginDatum;
+
+    let one = a_node().await;
+    let two = a_node().await;
+
+    // Each writes the same key before they have ever spoken, which is the
+    // split-brain the derived id exists to survive.
+    let id = PluginDatum::id_for("macros", "saved", "opening");
+    for (node, what) in [(&one, "one's answer"), (&two, "two's answer")] {
+        let datum = PluginDatum {
+            id,
+            plugin_id: "macros".into(),
+            store: "saved".into(),
+            key: "opening".into(),
+            value: serde_json::json!(what),
+        };
+        node.engine
+            .set(
+                vec![
+                    PathSegment::Key("plugin_data".into()),
+                    PathSegment::Key("__create".into()),
+                ],
+                Lifecycle::Persisted,
+                serde_json::to_value(&datum).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    async fn row_count(node: &Node) -> Option<usize> {
+        node.engine
+            .get(vec![PathSegment::Key("plugin_data".into())])
+            .await
+            .ok()
+            .and_then(|v| v.as_array().map(|rows| rows.len()))
+    }
+    async fn value_at(node: &Node, id: Uuid) -> Option<serde_json::Value> {
+        node.engine
+            .get(vec![
+                PathSegment::Key("plugin_data".into()),
+                PathSegment::Id(id),
+                PathSegment::Key("value".into()),
+            ])
+            .await
+            .ok()
+    }
+
+    eventually("both sides to settle on one row", || async {
+        row_count(&one).await == Some(1) && row_count(&two).await == Some(1)
+    })
+    .await;
+
+    // And on the same value, whichever it is: the point is one key, one answer.
+    eventually("the two to agree", || async {
+        value_at(&one, id).await == value_at(&two, id).await
+    })
+    .await;
+}

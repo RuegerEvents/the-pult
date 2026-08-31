@@ -11,6 +11,7 @@ use pult_schema::{
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
+    types::PluginDatum,
 };
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
@@ -24,8 +25,9 @@ use wasmtime_wasi_http::{
 use crate::{
     api::rpcs::{self, LocalRpcDeps},
     engine::{EngineHandle, UpdateBroadcast},
-    infra::plugins::manifest::{DataPermission, Permissions},
-    infra::plugins::runtime::pult::plugin::{data, introspection, logging, peers, types},
+    infra::plugins::manifest::{DataPermission, Permissions, StoreScope, StoreSection},
+    infra::plugins::station_store::StationStore,
+    infra::plugins::runtime::pult::plugin::{data, introspection, logging, peers, store, types},
     infra::plugins::{InstanceMsg, PluginCommand},
 };
 
@@ -39,6 +41,17 @@ pub struct PluginCtx {
     pub permissions: Permissions,
     /// Plugins this one may `call-plugin` into, from the manifest.
     pub deps: Vec<String>,
+    /// The stores this plugin declared, as the manifest spelled them.
+    ///
+    /// Held here rather than looked up per call so that the answer to "may this
+    /// guest touch this store, and where does it live" comes from the manifest
+    /// the instance was started with — never from the call. A guest can spell
+    /// no name that reaches another plugin's data, because the plugin id in the
+    /// key is this one's and is not a parameter.
+    pub stores: Vec<StoreSection>,
+    /// This machine's half of that: persistent, never replicated, never in a
+    /// showfile.
+    pub station_store: StationStore,
     pub engine: EngineHandle,
     pub broadcast: UpdateBroadcast,
     pub rpc_deps: LocalRpcDeps,
@@ -360,6 +373,293 @@ impl peers::Host for PluginCtx {
     }
 }
 
+impl PluginCtx {
+    /// The store this call names, if the manifest declared it.
+    ///
+    /// Every store call starts here, before anything is read or written, so an
+    /// undeclared name never reaches storage of either kind.
+    fn declared(&self, store: &str) -> Result<StoreSection, String> {
+        self.stores
+            .iter()
+            .find(|s| s.id == store)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "this plugin's manifest declares no store {store:?} \
+                     (declare it with a [[stores]] block)"
+                )
+            })
+    }
+
+    /// The `value` field of the row a key lives at. Worked out by the host from
+    /// its own plugin id, so a guest cannot spell a path into anyone else's data.
+    fn datum_path(&self, store: &str, key: &str) -> Path {
+        vec![
+            PathSegment::Key("plugin_data".into()),
+            PathSegment::Id(PluginDatum::id_for(&self.plugin_id, store, key)),
+            PathSegment::Key("value".into()),
+        ]
+    }
+
+    /// Every row of one of this plugin's show-scoped stores.
+    async fn show_store_rows(&mut self, store: &str) -> Vec<PluginDatum> {
+        let all = self
+            .engine
+            .get(vec![PathSegment::Key("plugin_data".into())])
+            .await
+            .unwrap_or(Value::Null);
+        serde_json::from_value::<Vec<PluginDatum>>(all)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| d.plugin_id == self.plugin_id && d.store == store)
+            .collect()
+    }
+
+    async fn show_store_get(&mut self, store: &str, key: &str) -> Result<Value, String> {
+        // Null for a key that holds nothing, the way `data.get` answers for a
+        // path that holds nothing: a cache's first run is not a failure.
+        Ok(self.engine.get(self.datum_path(store, key)).await.unwrap_or(Value::Null))
+    }
+
+    /// Write one key of a show-scoped store, through the engine's ordinary
+    /// write path so replication, persistence and catch-up all follow.
+    ///
+    /// **Whether the write is attributed is the whole of the undo behaviour.**
+    /// `Operation::is_undoable` already requires a user, and the History panel
+    /// reads `WHERE user_id IS NOT NULL`, so an unattributed write is
+    /// non-undoable and invisible to the history with nothing taught about
+    /// plugins. A store the manifest declared `undoable` is attributed to
+    /// whoever is behind the call instead, and undoes like any other edit.
+    ///
+    /// The gesture is kept either way: coalescing keys on it, not on the user,
+    /// so a plugin writing one key repeatedly inside one call still collapses.
+    async fn show_store_set(
+        &mut self,
+        store: &StoreSection,
+        key: &str,
+        value: Value,
+    ) -> Result<(), String> {
+        let rows = self.show_store_rows(&store.id).await;
+        if let Err(reason) = within_quota(store, &rows, key, &value) {
+            return Err(reason);
+        }
+
+        let id = PluginDatum::id_for(&self.plugin_id, &store.id, key);
+        let existing = rows.iter().any(|d| d.id == id);
+        // An operator only exists behind a call they made. A timer, `init` or a
+        // chain nobody started has none, so those stay unattributed however the
+        // store is declared — attributing them would put a stranger's act at the
+        // top of somebody's undo stack.
+        let user = if store.undoable { self.user } else { None };
+
+        let (path, value) = if existing {
+            (self.datum_path(&store.id, key), value)
+        } else {
+            // A new key is a create, which carries the whole entity — and the
+            // id with it, which is what makes the row the same on every station.
+            let datum = PluginDatum {
+                id,
+                plugin_id: self.plugin_id.clone(),
+                store: store.id.clone(),
+                key: key.to_string(),
+                value,
+            };
+            (
+                vec![
+                    PathSegment::Key("plugin_data".into()),
+                    PathSegment::Key("__create".into()),
+                ],
+                serde_json::to_value(datum).unwrap_or(Value::Null),
+            )
+        };
+
+        let result = match user {
+            Some(user) => {
+                self.engine.set_as(user, self.gesture, path, Lifecycle::Persisted, value).await
+            }
+            None => self.engine.set(path, Lifecycle::Persisted, value).await,
+        };
+        result.map_err(|e| e.to_string())
+    }
+
+    async fn show_store_delete(&mut self, store: &StoreSection, key: &str) -> Result<(), String> {
+        let id = PluginDatum::id_for(&self.plugin_id, &store.id, key);
+        if !self.show_store_rows(&store.id).await.iter().any(|d| d.id == id) {
+            // Forgetting what was never there is not an error.
+            return Ok(());
+        }
+        let path = vec![
+            PathSegment::Key("plugin_data".into()),
+            PathSegment::Id(id),
+            PathSegment::Key("__delete".into()),
+        ];
+        let user = if store.undoable { self.user } else { None };
+        let result = match user {
+            Some(user) => {
+                self.engine
+                    .set_as(user, self.gesture, path, Lifecycle::Persisted, Value::Null)
+                    .await
+            }
+            None => self.engine.set(path, Lifecycle::Persisted, Value::Null).await,
+        };
+        result.map_err(|e| e.to_string())
+    }
+
+    async fn show_store_keys(&mut self, store: &str, prefix: &str) -> Result<Vec<String>, String> {
+        let mut keys: Vec<String> = self
+            .show_store_rows(store)
+            .await
+            .into_iter()
+            .map(|d| d.key)
+            .filter(|k| k.starts_with(prefix))
+            .collect();
+        keys.sort();
+        Ok(keys)
+    }
+}
+
+impl PluginCtx {
+    async fn station_store_get(&mut self, store: &str, key: &str) -> Result<Value, String> {
+        Ok(self.station_store.get(&self.plugin_id, store, key).await)
+    }
+
+    async fn station_store_set(
+        &mut self,
+        store: &StoreSection,
+        key: &str,
+        value: Value,
+    ) -> Result<(), String> {
+        let rows = self.station_store.rows(&self.plugin_id, &store.id).await;
+        // The quota reads the same rows either way, so it is one function over
+        // `(key, value)` pairs rather than two that could drift apart.
+        let as_data: Vec<PluginDatum> = rows
+            .into_iter()
+            .map(|(key, value)| PluginDatum {
+                id: PluginDatum::id_for(&self.plugin_id, &store.id, &key),
+                plugin_id: self.plugin_id.clone(),
+                store: store.id.clone(),
+                key,
+                value,
+            })
+            .collect();
+        within_quota(store, &as_data, key, &value)?;
+        self.station_store.set(&self.plugin_id, &store.id, key, &value).await
+    }
+
+    async fn station_store_delete(&mut self, store: &str, key: &str) -> Result<(), String> {
+        self.station_store.delete(&self.plugin_id, store, key).await
+    }
+
+    async fn station_store_keys(&mut self, store: &str, prefix: &str) -> Result<Vec<String>, String> {
+        Ok(self
+            .station_store
+            .rows(&self.plugin_id, store)
+            .await
+            .into_iter()
+            .map(|(key, _)| key)
+            .filter(|k| k.starts_with(prefix))
+            .collect())
+    }
+}
+
+/// Would this write take the store past what it may hold?
+///
+/// Checked before the write, so a refused one leaves the store exactly as it
+/// was. Replacing a key's value spends only the difference, which is why the
+/// key being replaced is subtracted rather than the whole store being summed.
+fn within_quota(
+    store: &StoreSection,
+    rows: &[PluginDatum],
+    key: &str,
+    value: &Value,
+) -> Result<(), String> {
+    let replacing = rows.iter().find(|d| d.key == key);
+    if replacing.is_none() && rows.len() as u64 >= store.max_keys {
+        return Err(format!(
+            "store {:?} already holds its {} keys",
+            store.id, store.max_keys
+        ));
+    }
+    let size_of = |v: &Value| serde_json::to_string(v).map(|s| s.len() as u64).unwrap_or(0);
+    let used: u64 = rows.iter().map(|d| size_of(&d.value)).sum();
+    let after = used - replacing.map(|d| size_of(&d.value)).unwrap_or(0) + size_of(value);
+    if after > store.max_bytes {
+        return Err(format!(
+            "store {:?} holds {} bytes and may hold {}; this write would make it {after}",
+            store.id, used, store.max_bytes
+        ));
+    }
+    Ok(())
+}
+
+impl store::Host for PluginCtx {
+    async fn get(
+        &mut self,
+        store: String,
+        key: String,
+    ) -> wasmtime::Result<Result<String, String>> {
+        let declared = match self.declared(&store) {
+            Ok(d) => d,
+            Err(e) => return Ok(Err(e)),
+        };
+        let value = match declared.scope {
+            StoreScope::Show => self.show_store_get(&store, &key).await,
+            StoreScope::Station => self.station_store_get(&store, &key).await,
+        };
+        Ok(value.map(|v| to_json_text(&v)))
+    }
+
+    async fn set(
+        &mut self,
+        store: String,
+        key: String,
+        value: String,
+    ) -> wasmtime::Result<Result<(), String>> {
+        let declared = match self.declared(&store) {
+            Ok(d) => d,
+            Err(e) => return Ok(Err(e)),
+        };
+        let value: Value = match serde_json::from_str(&value) {
+            Ok(v) => v,
+            Err(e) => return Ok(Err(format!("value is not JSON: {e}"))),
+        };
+        Ok(match declared.scope {
+            StoreScope::Show => self.show_store_set(&declared, &key, value).await,
+            StoreScope::Station => self.station_store_set(&declared, &key, value).await,
+        })
+    }
+
+    async fn delete(
+        &mut self,
+        store: String,
+        key: String,
+    ) -> wasmtime::Result<Result<(), String>> {
+        let declared = match self.declared(&store) {
+            Ok(d) => d,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(match declared.scope {
+            StoreScope::Show => self.show_store_delete(&declared, &key).await,
+            StoreScope::Station => self.station_store_delete(&store, &key).await,
+        })
+    }
+
+    async fn keys(
+        &mut self,
+        store: String,
+        prefix: String,
+    ) -> wasmtime::Result<Result<Vec<String>, String>> {
+        let declared = match self.declared(&store) {
+            Ok(d) => d,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(match declared.scope {
+            StoreScope::Show => self.show_store_keys(&store, &prefix).await,
+            StoreScope::Station => self.station_store_keys(&store, &prefix).await,
+        })
+    }
+}
+
 impl logging::Host for PluginCtx {
     async fn log(&mut self, level: types::LogLevel, message: String) -> wasmtime::Result<()> {
         let id = &self.plugin_id;
@@ -392,6 +692,67 @@ mod tests {
         assert_eq!(parse_segment(id), PathSegment::Id(id.parse().unwrap()));
         assert_eq!(parse_segment("5"), PathSegment::Index(5));
         assert_eq!(parse_segment("fade_time"), PathSegment::Key("fade_time".into()));
+    }
+
+    fn a_store(max_keys: u64, max_bytes: u64) -> StoreSection {
+        StoreSection {
+            id: "s".into(),
+            scope: StoreScope::Show,
+            max_keys,
+            max_bytes,
+            undoable: false,
+        }
+    }
+
+    fn rows(pairs: &[(&str, Value)]) -> Vec<PluginDatum> {
+        pairs
+            .iter()
+            .map(|(key, value)| PluginDatum {
+                id: PluginDatum::id_for("p", "s", key),
+                plugin_id: "p".into(),
+                store: "s".into(),
+                key: (*key).to_string(),
+                value: value.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_key_count_is_a_ceiling_on_new_keys_only() {
+        let store = a_store(2, 1_000);
+        let full = rows(&[("a", json!(1)), ("b", json!(2))]);
+
+        let err = within_quota(&store, &full, "c", &json!(3)).unwrap_err();
+        assert!(err.contains("its 2 keys"), "names the limit: {err}");
+
+        // Replacing a key that is already there adds no key, so a full store is
+        // still writable — otherwise a cache at its limit could never be updated,
+        // only cleared.
+        assert!(within_quota(&store, &full, "a", &json!(99)).is_ok());
+    }
+
+    #[test]
+    fn the_byte_ceiling_counts_what_the_write_would_leave_behind() {
+        let store = a_store(100, 40);
+        let existing = rows(&[("a", json!("aaaaaaaaaa"))]);
+
+        // A second key has to fit beside the first.
+        assert!(within_quota(&store, &existing, "b", &json!("bb")).is_ok());
+        let err = within_quota(&store, &existing, "b", &json!("b".repeat(60))).unwrap_err();
+        assert!(err.contains("may hold"), "names the limit: {err}");
+
+        // Replacing spends only the difference, so a value that would not fit
+        // *beside* the old one still fits *instead* of it.
+        assert!(
+            within_quota(&store, &existing, "a", &json!("a".repeat(30))).is_ok(),
+            "replacing a key does not pay for it twice"
+        );
+    }
+
+    #[test]
+    fn an_empty_store_takes_the_first_thing_written_to_it() {
+        let store = a_store(1, 16);
+        assert!(within_quota(&store, &[], "first", &json!("x")).is_ok());
     }
 
     #[test]

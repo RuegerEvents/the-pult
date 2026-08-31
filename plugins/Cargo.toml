@@ -15,6 +15,7 @@ members = [
     "command-line",
     "command-line/core",
     "natural-language-control",
+    "store-probe",
 ]
 # A plain `cargo test` here runs the pure crates on the host target; the
 # guests only link as wasm and are built by scripts/build-plugins.sh with

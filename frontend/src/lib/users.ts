@@ -6,7 +6,7 @@
  * ask what colour they should be would be a round trip to learn a constant.
  */
 
-import type { HistoryEntry, User } from './generated/index.js';
+import type { HistoryEntry, PluginDatum, User } from './generated/index.js';
 
 /** The colours a new user is given, in order. Matches `pult-schema`'s list. */
 export const USER_COLOURS = ['#4a9eff', '#f59e0b', '#22c55e', '#e879f9', '#f87171', '#2dd4bf'];
@@ -48,6 +48,19 @@ function tidy(segment: string): string {
 }
 
 const short = (id: string): string => id.slice(0, 6);
+
+/**
+ * What to call a plugin's stored value in the history.
+ *
+ * A store row's id is a hash of what it names rather than something an operator
+ * ever sees, so without this a saved macro reads `plugin data → a1b2c3 → value`
+ * — the one entry in the list nobody can act on. Only a store that declared its
+ * writes undoable reaches the history at all, and by then somebody has asked the
+ * plugin to save something and deserves to be told what.
+ */
+export function pluginDatumName(row: Pick<PluginDatum, 'plugin_id' | 'store' | 'key'>): string {
+	return `${row.plugin_id} · ${row.store} · ${row.key}`;
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (text: string): boolean => UUID.test(text);

@@ -318,6 +318,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "store-probe"
+version = "0.1.0"
+dependencies = [
+ "pult-plugin-sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"

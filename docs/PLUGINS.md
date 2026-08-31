@@ -26,7 +26,7 @@ my-plugin/
 id = "my-plugin"           # lowercase letters, digits, hyphens
 name = "My Plugin"
 version = "0.1.0"
-api = "0.1"                # the WIT version you built against
+api = "1.0"                # the WIT version you built against
 wasm = "my_plugin.wasm"    # beside this file
 ```
 
@@ -108,6 +108,7 @@ All bindings are on `pult_plugin_sdk`; JSON crosses as `serde_json::Value`.
 | `host::subscribe(pattern)` | slash-joined pattern; updates arrive at `on_update` |
 | `host::call_plugin(id, method, args)` | another plugin's `handle` — see dependencies |
 | `host::entities()` / `commands()` / `rpcs()` | the schema, at runtime |
+| `store::get` / `set` / `delete` / `keys` | what your plugin remembers — see below |
 | `sdk::log_info!` (`_warn`, `_error`, `_debug`) | the station log, prefixed with your id |
 
 Paths are spelled the way the WebSocket spells them: `["sequences",
@@ -127,6 +128,102 @@ When a call arrives with an operator's context, everything the plugin writes
 during that call is attributed to that operator and gathered into one
 gesture — so a command that fans out over a selection is one Ctrl-Z, exactly
 like a drag.
+
+## What a plugin remembers
+
+`lifecycle::init` runs on every start and every hot reload, and nothing else
+survives one. A store is where anything that should outlive that goes.
+
+There are two kinds, and the difference is not a detail:
+
+```toml
+# Belongs to the show: in the showfile, on every console in the session,
+# in the backup.
+[[stores]]
+id = "macros"
+scope = "show"
+
+# Belongs to this machine: never replicated, never written into a showfile.
+[[stores]]
+id = "prefs"
+scope = "station"
+```
+
+```rust
+sdk::store::set("prefs", "provider", &"ollama")?;
+let provider: Option<String> = sdk::store::get("prefs", "provider")?;
+let saved: Vec<String> = sdk::store::keys("macros", "opening/")?;
+sdk::store::delete("macros", "opening/old")?;
+```
+
+**Declaring the store is the permission.** There is no key under
+`[permissions]`: you can address no store you did not declare and no other
+plugin's, because the host works out where the data lives from your plugin id
+and the store's, never from anything you pass. What an operator wants to know
+is whether a plugin keeps data and whether that data goes into their showfile,
+and the `[[stores]]` block answers exactly that where the rest of the
+permissions are read.
+
+**Never put a credential in a store.** A show-scoped store replicates to every
+station and lands in every backup. Keys belong in the environment passthrough
+your manifest declares by name, or in the station's `preferences.toml` — the
+two homes that do not travel with the show. The host cannot tell a token from
+a string, so this one is on you.
+
+**Choose the scope by asking who the data is true of.** A macro an operator
+wrote is true of the show and should be on the second console. A cached
+grammar, a last-used tab, the model that happens to be installed here is true
+of this machine — put it in a showfile and it replicates to a console it is
+wrong for. `natural-language-control` is the worked example: it remembers
+which model this console talks to, station-scoped, and deliberately not a
+cache of anything derived (derived data is cheap to rebuild and a stale copy
+is worse than none).
+
+### Stores are bounded
+
+1,000 keys and 1 MB each. A manifest may ask for less and not for more:
+
+```toml
+[[stores]]
+id = "prefs"
+scope = "station"
+max_keys = 8
+```
+
+A write past either limit fails naming the limit and leaves the store exactly
+as it was. Lowering a ceiling is worth doing — it tells the operator reading
+your manifest that your cache is small on purpose.
+
+### Your data outlives you
+
+Removing a plugin does **not** delete its stores, so one removed by mistake
+and put back finds its work where it left it. Data belonging to no installed
+plugin shows up in the Plugins panel under *Left behind*, grouped by the
+plugin id that wrote it, where an operator can clear it out deliberately.
+
+### Undo, and when a write is the operator's
+
+By default a store write is *yours*, not the operator's: it is not undoable
+and does not appear in the History panel. That is what you want for
+bookkeeping — an operator who presses Ctrl-Z after running your command means
+their own last edit, not your cache.
+
+When the operator *asked* you to save something — a macro, a snippet — say so:
+
+```toml
+[[stores]]
+id = "macros"
+scope = "show"
+undoable = true
+```
+
+Then the write is attributed to whoever asked, undoes like any other edit, and
+appears in the history named by your plugin, the store and the key. A write
+with no operator behind it — from a timer, or from `init` — is never undoable
+whatever the store says, because there is nobody to attribute it to.
+
+Station-scoped stores cannot be `undoable`: that data never reaches the show's
+history, so a manifest saying otherwise is refused rather than ignored.
 
 ## Permissions
 
@@ -285,10 +382,24 @@ it, so what a show is asking for is readable without unzipping anything.
 
 ## Versions
 
-The WIT package version (`pult:plugin@0.1.0`) is the API version; the
-manifest's `api` says what you built against, and a station that speaks a
-different version reports the mismatch instead of loading wrongly. The host
-currently links wasmtime 48 (WASI 0.2); guests are ordinary
+The WIT package version (`pult:plugin@1.0.0`) is the API version, and the
+manifest's `api` says what you built against.
+
+**It is a floor, not a match.** A station runs your plugin when its major
+matches yours and its minor is at least yours — so a plugin built against
+`1.0` keeps running on a `1.4` station that has since added interfaces you
+never import. The other direction cannot work: a station has nothing to
+satisfy an import that did not exist when it was built, and says so by name.
+
+This is why the package is `1.x` and not `0.x`. A component's imports are
+stamped with the package version (`pult:plugin/data@1.0.0`) and link only
+because wasmtime resolves them semver-compatibly — and under semver a `0.x`
+minor bump is a *breaking* change, so `0.1` and `0.2` are unrelated and every
+import fails to resolve. At `0.x` the contract could never have grown without
+stranding every plugin already in a showfile.
+`scripts/check-api-compat.sh` checks the claim rather than trusting it.
+
+The host currently links wasmtime 48 (WASI 0.2); guests are ordinary
 `wasm32-wasip2` cdylibs — Rust ≥ 1.82 emits a component directly.
 
 ## Checking your work

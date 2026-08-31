@@ -1449,6 +1449,83 @@ back; nothing prunes an unreferenced bundle from the asset store, the same way
 nothing prunes a replaced stage plan; and the `stage` hint groups the panel and
 gates nothing.
 
+### 35. A plugin can remember things (done)
+
+`lifecycle.init` ran on every start and every reload and nothing survived one,
+so no plugin could offer a saved macro, a remembered provider or a snippet
+library. Now a manifest declares `[[stores]]`, each `scope = "show"` or
+`scope = "station"`, and four calls — `get`, `set`, `delete`, `keys` — reach
+them. Declaring the store is the permission: a plugin can address no store it
+did not declare and no other plugin's, because the host derives where the data
+lives from the plugin id and the store id rather than from anything the guest
+passes.
+
+Three decisions worth keeping, and one thing that turned out to be false.
+
+**`scope`, not `lifecycle`.** In this codebase LOCAL means *not persisted* —
+state a station holds and shares with its frontends and which does not survive
+a reload. A station-scoped store is the opposite: persistent and not
+replicated, a fourth combination the enum has no name for and which `identity`
+and `preferences` already are two instances of. Naming the axis `scope` says
+the true thing — whose data is this — and leaves `Lifecycle` alone.
+
+**Attribution is the switch, so nothing learned what a plugin is.** The design
+was going to teach `Operation::is_undoable` to exclude `plugin_data` and add a
+matching filter to the History panel. Neither was needed: `is_undoable` already
+requires a user and the history reads `WHERE user_id IS NOT NULL`, so a write
+made with `user_id: None` is non-undoable and invisible with nothing edited in
+`pult-schema`, in the oplog's SQL, or in the frontend. That made the *opt-in*
+nearly free as well — a store declaring `undoable = true` gets its writes
+attributed to the operator instead, so a macro the operator asked to save
+undoes like any other edit while a cache does not. The gesture is kept either
+way, because coalescing keys on the gesture rather than on the user. And a
+write with no operator behind it stays unattributed however the store is
+declared, because `ctx.userId` is absent — the rule falls out of the mechanism
+instead of being a second one.
+
+**A key's identity is its row's identity.** `PluginDatum`'s id is a UUIDv5 over
+`(plugin_id, store, key)`, not a fresh v4. `create_entity` takes the id from
+the value the caller supplies, so a random one would have meant two stations
+each writing `macros/opening` created two rows holding the same key — not a
+conflict the vector clock resolves, but a duplicate it has no reason to notice,
+and a plugin reading back two values for one key. The spec said "last writer
+wins by vector clock", which is only true if both stations write the same
+entity.
+
+**The WIT version bump could not work as designed, and the package moved to
+1.0.** Adding an interface was supposed to take the package from `0.1` to
+`0.2`, with `API_VERSION` becoming a supported-versions list. It fails, and not
+because of the new import: a component's imports are stamped with the package
+version, so a `0.1` guest asks for `pult:plugin/data@0.1.0` and a `0.2` host
+offers `@0.2.0` — nothing resolves, and wasmtime's semver-compatible linking
+cannot help because under semver a `0.x` minor bump *is* breaking. At `0.x` the
+contract could never have grown without stranding every plugin already in a
+showfile. So the package is `1.0.0` and the manifest's `api` is a **floor**:
+same major, station's minor at least the plugin's. Verified rather than
+assumed — a `1.0` component does run on a `1.1` host — and
+`scripts/check-api-compat.sh` reproduces the check, because a wasmtime upgrade
+could quietly change the answer.
+
+Two smaller things the tests pinned down. Within-gesture coalescing leaves
+**two** oplog rows for ten writes to one new key, not one: the first write is a
+create, and `fold_into_the_gesture` refuses creates because every create in a
+collection shares the `__create` path and folding two would lose a row. And
+`describeChange` names ids from fixtures, cues and sequences, so an undoable
+store write would have rendered `plugin data → a1b2c3 → value` until the panel
+learned to call a row by its plugin, store and key.
+
+Also settled: an earlier draft worried that every browser would receive every
+plugin's store, since `frontend_paths()` is derived and has no opt-out. That
+was wrong. Subscriptions are demand-driven and per collection, reference-counted
+by `stores/show.ts`, so a browser gets a store only if a panel asks for it. The
+real cost of choosing an entity is the showfile, the backups and the snapshot a
+joining station swallows — which is what the quotas are sized against.
+
+Left open: nothing prunes the oplog, which store writes add to and telemetry
+already dominates at twice a second; there is no change notification, so a
+plugin holding an undone value in memory learns about it on its next read; and
+a plugin that changes its own data's shape is on its own, as any application is.
+
 ## Further out
 
 Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.

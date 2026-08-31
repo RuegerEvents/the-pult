@@ -9,7 +9,7 @@
 id = "natural-language-control"
 name = "Natural Language"
 version = "0.1.0"
-api = "0.1"
+api = "1.0"
 wasm = "natural_language_control.wasm"
 
 # A one-line input with a transcript flyout.
@@ -30,6 +30,15 @@ env = ["PULT_LLM_API_KEY"]
 
 [dependencies]
 plugins = ["command-line"]
+
+# Which model this console talks to, once the operator has said. On this
+# machine only: the model installed here is not a fact about the show, and a
+# show-scoped store would replicate it to a console that has no such model and
+# write it into every backup.
+[[stores]]
+id = "prefs"
+scope = "station"
+max_keys = 8
 
 # Defaults; put overrides in a config.toml beside this file (see
 # config.toml.example). provider picks the base_url and model defaults:

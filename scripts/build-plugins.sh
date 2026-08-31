@@ -72,6 +72,10 @@ bundle() {
     mkdir -p dist
     for dir in */; do
         [ "$dir" = "dist/" ] && continue
+        # store-probe exists to be tested against, not to be installed into
+        # anybody's show. It is built like any other plugin — the tests load it
+        # off the disk — but it is never packaged.
+        [ "$dir" = "store-probe/" ] && continue
         manifest="$dir/pult-plugin.toml"
         [ -f "$manifest" ] || continue
         id=$(sed -n 's/^id *= *"\(.*\)"/\1/p' "$manifest" | head -1)

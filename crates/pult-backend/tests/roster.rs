@@ -80,7 +80,7 @@ impl Station {
                     "plugin_id": plugin_id,
                     "name": plugin_id,
                     "version": "0.1.0",
-                    "api": "0.1",
+                    "api": "1.0",
                     "sha256": sha256,
                     "enabled": true,
                     "stage": "Both",
@@ -173,7 +173,7 @@ async fn a_roster_row_reaches_the_runtime_without_a_restart() {
     let station = Station::start().await;
     assert!(station.plugins().await.is_empty(), "nothing to begin with");
 
-    let (_, digest) = a_bundle("carried", "0.1");
+    let (_, digest) = a_bundle("carried", "1.0");
     station.install("carried", &digest).await;
 
     // The manager subscribes to the collection, so writing a row is the whole
@@ -190,7 +190,7 @@ async fn a_bundle_nobody_has_reads_as_fetching_and_then_says_so() {
 
     // A digest whose bytes exist nowhere: what a station sees when it opens a
     // show authored on a console it cannot reach.
-    let (_, digest) = a_bundle("absent", "0.1");
+    let (_, digest) = a_bundle("absent", "1.0");
     station.install("absent", &digest).await;
 
     // It is *working*, not broken — saying "failed" while a station downloads
@@ -267,7 +267,7 @@ async fn a_bundle_whose_manifest_names_another_plugin_is_refused() {
 
     // The roster promises `promised`; the bundle at that digest is `actual`.
     // Taking the row's word for it would let one row start a different plugin.
-    let (bytes, _) = a_bundle("actual", "0.1");
+    let (bytes, _) = a_bundle("actual", "1.0");
     let digest = upload(&station, bytes).await;
     station.install("promised", &digest).await;
 
@@ -400,7 +400,7 @@ async fn the_runtime_keeps_answering_while_a_bundle_is_being_fetched() {
         .await
         .expect("a peer to ask");
 
-    let (_, digest) = a_bundle("slow-arrival", "0.1");
+    let (_, digest) = a_bundle("slow-arrival", "1.0");
     station.install("slow-arrival", &digest).await;
     station
         .eventually("slow-arrival", "fetching", |r| r["status"]["state"] == "Fetching")
@@ -420,7 +420,7 @@ async fn the_runtime_keeps_answering_while_a_bundle_is_being_fetched() {
     assert!(answered.unwrap().is_err(), "and the answer is that there is no such plugin");
 
     // And a second roster change is still handled while the first is in flight.
-    let (_, other) = a_bundle("meanwhile", "0.1");
+    let (_, other) = a_bundle("meanwhile", "1.0");
     station.install("meanwhile", &other).await;
     station.eventually("meanwhile", "considered", |_| true).await;
 
@@ -434,7 +434,7 @@ async fn a_digest_already_unpacked_is_not_fetched_again() {
     // the network — which is the whole reason the key is the content and not
     // the plugin id.
     let first = Station::start().await;
-    let (bytes, _) = a_bundle("shared", "0.1");
+    let (bytes, _) = a_bundle("shared", "1.0");
     let digest = upload(&first, bytes).await;
     first.install("shared", &digest).await;
     // Wait for it to get past fetching and unpacking, to wherever it ends up.
@@ -478,7 +478,7 @@ fn a_plugin_directory(plugin_id: &str) -> PathBuf {
         dir.join(plugin_id).join("pult-plugin.toml"),
         format!(
             "[plugin]\nid = \"{plugin_id}\"\nname = \"From Disk\"\nversion = \"9.9.9\"\n\
-             api = \"0.1\"\nwasm = \"example.wasm\"\n"
+             api = \"1.0\"\nwasm = \"example.wasm\"\n"
         ),
     )
     .unwrap();
@@ -495,7 +495,7 @@ async fn a_copy_on_disk_beats_the_one_the_show_carries() {
     // The show carries a different build of the same plugin. On a station
     // where somebody is editing it, running the show's copy instead would be
     // the most confusing thing the runtime could do.
-    let (bytes, _) = a_bundle(plugin_id, "0.1");
+    let (bytes, _) = a_bundle(plugin_id, "1.0");
     let digest = upload(&station, bytes).await;
     station.install(plugin_id, &digest).await;
 
@@ -519,7 +519,7 @@ async fn a_copy_on_disk_beats_the_one_the_show_carries() {
     // coin toss rather than a statement about the console.
     let edited = format!(
         "[plugin]\nid = \"{plugin_id}\"\nname = \"Edited\"\nversion = \"9.9.10\"\n\
-         api = \"0.1\"\nwasm = \"example.wasm\"\n"
+         api = \"1.0\"\nwasm = \"example.wasm\"\n"
     );
     let mut reloaded = Value::Null;
     for _ in 0..20 {
@@ -546,7 +546,7 @@ async fn a_copy_on_disk_beats_the_one_the_show_carries() {
 async fn changing_the_shows_configuration_restarts_the_plugin_everywhere() {
     let station = Station::start().await;
 
-    let (bytes, _) = a_bundle("configured", "0.1");
+    let (bytes, _) = a_bundle("configured", "1.0");
     let digest = upload(&station, bytes).await;
     let id = station.install("configured", &digest).await;
     station
@@ -612,7 +612,7 @@ async fn install_over_http(station: &Station, bytes: Vec<u8>) -> (reqwest::Statu
 async fn installing_a_bundle_puts_it_in_the_show() {
     let station = Station::start().await;
 
-    let (bytes, digest) = a_bundle("installed", "0.1");
+    let (bytes, digest) = a_bundle("installed", "1.0");
     let (status, body) = install_over_http(&station, bytes).await;
 
     assert_eq!(status, 200, "{body}");
@@ -660,7 +660,7 @@ async fn a_bundle_that_is_not_a_plugin_leaves_nothing_behind() {
 async fn installing_a_plugin_id_already_present_upgrades_it() {
     let station = Station::start().await;
 
-    let (first, _) = a_bundle("upgraded", "0.1");
+    let (first, _) = a_bundle("upgraded", "1.0");
     let (_, body) = install_over_http(&station, first).await;
     let row_id = body["installed"]["id"].clone();
 
@@ -685,7 +685,7 @@ async fn installing_a_plugin_id_already_present_upgrades_it() {
 
     // A different build of the same plugin: one entry per plugin id, so this
     // is an upgrade rather than a second row taking turns with the first.
-    let (bytes, new_digest) = a_bundle_versioned("upgraded", "0.1", "0.2.0");
+    let (bytes, new_digest) = a_bundle_versioned("upgraded", "1.0", "0.2.0");
     let (status, body) = install_over_http(&station, bytes).await;
 
     assert_eq!(status, 200, "{body}");
@@ -727,7 +727,7 @@ async fn removing_a_plugin_is_an_ordinary_edit_and_takes_back_like_one() {
         .await
         .expect("a user");
 
-    let (bytes, digest) = a_bundle("removable", "0.1");
+    let (bytes, digest) = a_bundle("removable", "1.0");
     let sha = upload(&station, bytes).await;
     let id = uuid::Uuid::new_v4();
     station
@@ -743,7 +743,7 @@ async fn removing_a_plugin_is_an_ordinary_edit_and_takes_back_like_one() {
             Lifecycle::Persisted,
             json!({
                 "id": id, "plugin_id": "removable", "name": "Removable",
-                "version": "0.1.0", "api": "0.1", "sha256": sha,
+                "version": "0.1.0", "api": "1.0", "sha256": sha,
                 "enabled": true, "stage": "Both", "config": null,
             }),
         )
@@ -838,7 +838,7 @@ async fn a_station_fetches_a_bundle_from_the_one_that_has_it() {
     let seeker = Station::start().await;
     tell_about(&seeker, holder.running.http_addr.to_string()).await;
 
-    let (bytes, _) = a_bundle("shared-over-the-wire", "0.1");
+    let (bytes, _) = a_bundle("shared-over-the-wire", "1.0");
     let digest = upload(&holder, bytes).await;
     // The cache is shared by both stations in this process, so clear the entry
     // or the seeker would pass by having it unpacked already rather than by
@@ -916,7 +916,7 @@ async fn a_peer_answering_with_the_wrong_bytes_gets_nowhere() {
     });
     tell_about(&seeker, addr.to_string()).await;
 
-    let (_, digest) = a_bundle("substituted", "0.1");
+    let (_, digest) = a_bundle("substituted", "1.0");
     std::fs::remove_dir_all(own_cache().join(&digest)).ok();
     seeker.install("substituted", &digest).await;
 

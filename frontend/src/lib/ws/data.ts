@@ -12,6 +12,7 @@ import type { FlowEdge } from '../generated/FlowEdge.js';
 import type { FlowNode } from '../generated/FlowNode.js';
 import type { Layout } from '../generated/Layout.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
+import type { PluginDatum } from '../generated/PluginDatum.js';
 import type { PluginPackage } from '../generated/PluginPackage.js';
 import type { ProgrammerValue } from '../generated/ProgrammerValue.js';
 import type { Sequence } from '../generated/Sequence.js';
@@ -53,6 +54,10 @@ export type LayoutEntity = PathProxy<Layout> & {
 };
 
 export type OutputConfigEntity = PathProxy<OutputConfig> & {
+  delete(): Promise<void>;
+};
+
+export type PluginDatumEntity = PathProxy<PluginDatum> & {
   delete(): Promise<void>;
 };
 
@@ -176,6 +181,17 @@ export type OutputConfigCollection = {
   [n: number]: OutputConfigEntity;
 };
 
+export type PluginDatumCollection = {
+  get(): Promise<PluginDatum[]>;
+  set(value: PluginDatum[]): Promise<void>;
+  subscribe(cb: (value: PluginDatum[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: PluginDatum[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): PluginDatumEntity;
+  nth(n: number): PluginDatumEntity;
+  create(entity: PluginDatum): Promise<void>;
+  [n: number]: PluginDatumEntity;
+};
+
 export type PluginPackageCollection = {
   get(): Promise<PluginPackage[]>;
   set(value: PluginPackage[]): Promise<void>;
@@ -265,6 +281,7 @@ export type DataRoot = {
   flow_nodes: FlowNodeCollection;
   layouts: LayoutCollection;
   outputs: OutputConfigCollection;
+  plugin_data: PluginDatumCollection;
   plugin_packages: PluginPackageCollection;
   programmer_values: ProgrammerValueCollection;
   sequences: SequenceCollection;

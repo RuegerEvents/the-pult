@@ -8,7 +8,7 @@
 id = "command-line"
 name = "Command Line"
 version = "0.1.0"
-api = "0.1"
+api = "1.0"
 wasm = "command_line.wasm"
 
 # A built-in frontend surface this plugin drives. The console renders the

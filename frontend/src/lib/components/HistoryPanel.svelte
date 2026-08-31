@@ -14,7 +14,7 @@
 	 */
 
 	import type { HistoryEntry } from '$lib/generated/index.js';
-	import { ago, colourOf, describeChange } from '$lib/users.js';
+	import { ago, colourOf, describeChange, pluginDatumName } from '$lib/users.js';
 	import { historyVersion, readHistory, undo } from '$lib/stores/undo.js';
 	import { collection } from '$lib/stores/show.js';
 	import { users, userId } from '$lib/stores/user.js';
@@ -22,6 +22,7 @@
 	const fixtures = collection('fixtures');
 	const cues = collection('cues');
 	const sequences = collection('sequences');
+	const pluginData = collection('plugin_data');
 
 	let entries = $state<HistoryEntry[]>([]);
 	/** Redrawn on a timer so "2m ago" does not sit there saying "just now". */
@@ -39,6 +40,9 @@
 		for (const f of $fixtures) map.set(f.id, f.name);
 		for (const c of $cues) map.set(c.id, c.name);
 		for (const s of $sequences) map.set(s.id, s.name);
+		// A store row's id is a hash of what it names, so it has no name of its
+		// own to fall back on — it gets one made of the three things it is.
+		for (const d of $pluginData) map.set(d.id, pluginDatumName(d));
 		return map;
 	});
 

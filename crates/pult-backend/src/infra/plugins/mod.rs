@@ -50,6 +50,7 @@ mod host_impls;
 mod instance;
 mod roster;
 mod runtime;
+mod station_store;
 mod watcher;
 
 pub use assets::routes as asset_routes;
@@ -199,6 +200,10 @@ impl PluginManager {
         let (tx, rx) = mpsc::channel(64);
         let deps = InstanceDeps {
             engine: engine.clone(),
+            // Opened in `run`, which is async and is where the station actually
+            // starts. Until then every store reads empty, which is also the
+            // answer for a station whose file will not open at all.
+            station_store: station_store::StationStore::none(),
             broadcast: broadcast.clone(),
             rpc_deps,
             manager: tx.clone(),
@@ -220,6 +225,11 @@ impl PluginManager {
     }
 
     pub async fn run(mut self) {
+        // What the plugins on this machine remember. Opened before any of them
+        // runs, and never a reason to fail: a station that cannot open it logs
+        // once and carries on with the stores reading empty.
+        self.deps.station_store = station_store::StationStore::open().await;
+
         // The roster is watched whether or not any directory is configured: a
         // station with no `--plugins` at all still runs what the show carries,
         // which is the ordinary case for everything that is not a dev checkout.
@@ -387,13 +397,14 @@ impl PluginManager {
                 id: id.clone(),
                 name: id.clone(),
                 version: String::new(),
-                api: manifest::API_VERSION.into(),
+                api: manifest::API_VERSION.to_string(),
                 wasm: String::new(),
             },
             surfaces: Vec::new(),
             panels: Vec::new(),
             permissions: Default::default(),
             dependencies: Default::default(),
+            stores: Vec::new(),
             config: Default::default(),
         };
         let info = info_for(&manifest_stub, PluginStatus::Failed(reason));
@@ -916,6 +927,7 @@ fn stub_manifest(id: &str) -> PluginManifest {
         panels: Vec::new(),
         permissions: Default::default(),
         dependencies: Default::default(),
+        stores: Vec::new(),
         config: Default::default(),
     }
 }
@@ -1003,7 +1015,7 @@ mod tests {
         std::fs::create_dir_all(root.join("one")).unwrap();
         std::fs::write(
             root.join("one/pult-plugin.toml"),
-            "[plugin]\nid = \"one\"\nname = \"One\"\nversion = \"0\"\napi = \"0.1\"\nwasm = \"one.wasm\"\n",
+            "[plugin]\nid = \"one\"\nname = \"One\"\nversion = \"0\"\napi = \"1.0\"\nwasm = \"one.wasm\"\n",
         )
         .unwrap();
         std::fs::create_dir_all(root.join("not-a-plugin")).unwrap();

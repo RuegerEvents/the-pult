@@ -117,6 +117,73 @@ pub mod host {
     }
 }
 
+/// What this plugin remembers between runs.
+///
+/// Two homes, and the manifest decides which is which. A `scope = "show"` store
+/// is in the showfile and on every console in the session; a
+/// `scope = "station"` store is on this machine only and never travels in a
+/// showfile. The calls are identical either way — a plugin should not have to
+/// write the difference twice — so the only place the distinction appears is
+/// the `[[stores]]` block an operator can read.
+///
+/// A store must be declared to be addressable, and a plugin can address no
+/// other plugin's:
+///
+/// ```toml
+/// [[stores]]
+/// id = "prefs"
+/// scope = "station"
+/// ```
+///
+/// ```ignore
+/// sdk::store::set("prefs", "provider", &"ollama")?;
+/// let provider: Option<String> = sdk::store::get("prefs", "provider")?;
+/// ```
+///
+/// **Never a credential.** A show-scoped store replicates and lands in every
+/// backup. Keys belong in the environment passthrough a manifest declares by
+/// name, or in this station's `preferences.toml`.
+pub mod store {
+    use super::Value;
+    use super::pult::plugin::store as raw;
+    use serde::de::DeserializeOwned;
+    use serde::Serialize;
+
+    /// Read a key and deserialize it. `None` where nothing is stored — which is
+    /// an answer rather than an error, since a cache's first run has none.
+    pub fn get<T: DeserializeOwned>(store: &str, key: &str) -> Result<Option<T>, String> {
+        let text = raw::get(store, key)?;
+        let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        if value.is_null() {
+            return Ok(None);
+        }
+        serde_json::from_value(value).map(Some).map_err(|e| e.to_string())
+    }
+
+    /// Read a key without deserializing, for data whose shape is not known
+    /// ahead of time.
+    pub fn get_value(store: &str, key: &str) -> Result<Value, String> {
+        raw::get(store, key).map(|text| serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+
+    /// Write a key. Refused, leaving the store as it was, if the store is not
+    /// declared or the write would take it past its quota.
+    pub fn set<T: Serialize>(store: &str, key: &str, value: &T) -> Result<(), String> {
+        let text = serde_json::to_string(value).map_err(|e| e.to_string())?;
+        raw::set(store, key, &text)
+    }
+
+    /// Forget a key. Forgetting one that was never there is not an error.
+    pub fn delete(store: &str, key: &str) -> Result<(), String> {
+        raw::delete(store, key)
+    }
+
+    /// The keys beginning with `prefix`, in order. `""` lists the store.
+    pub fn keys(store: &str, prefix: &str) -> Result<Vec<String>, String> {
+        raw::keys(store, prefix)
+    }
+}
+
 pub use pult::plugin::logging::{log, LogLevel};
 
 #[macro_export]

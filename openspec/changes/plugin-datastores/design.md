@@ -68,11 +68,38 @@ the host, outside the entity machinery. Rejected: it would need its own
 replication, and a plugin's macros not reaching the second console would be a
 bug reported as "the plugin is broken".
 
-**Consequence accepted:** `ShowState::frontend_paths()` is derived from the
-`EntityMeta` registry, so show-scoped plugin data is visible to frontends like
-every other collection. That is mostly a feature — a plugin's web panel can
-subscribe to its own store instead of round-tripping through `rpc.handle` — and
-partly a cost, noted under Risks.
+**Consequence, and it is smaller than it looks:** show-scoped plugin data is
+*reachable* from a frontend like every other collection, but reachable is not
+sent. Subscription is demand-driven and per collection — `subscribeDeep` asks for
+`plugin_data/**` and `broadcast_update` sends only to sessions whose patterns
+match — and `stores/show.ts` reference-counts, so a collection nobody has on
+screen costs nothing. `frontend_paths()` is used in one place, rebroadcasting
+after a peer snapshot, and that goes through the same filter. No browser receives
+a plugin's store unless something asks for it.
+
+So this is a feature with no matching cost on the wire: a plugin's web panel can
+subscribe to its own store instead of round-tripping through `rpc.handle`, and a
+tablet with no plugin panel open never sees a byte of it. The real cost of
+choosing an entity is elsewhere — the showfile, every backup of it, and the
+whole-state snapshot a joining station has to swallow — and that is what the
+quotas are sized against.
+
+### A key's identity is its row's identity
+
+The entity id of a `PluginDatum` is a UUIDv5 over `(plugin_id, store, key)`, not
+a fresh v4.
+
+This is what makes the store correct on more than one station rather than merely
+persistent. `create_entity` takes the id from the value the caller supplies, so a
+random id would mean two stations each writing `macros/opening` create two rows
+holding the same key — not a conflict the vector clock resolves, but a duplicate
+it has no reason to notice, and a plugin reading back two values for one key. A
+derived id makes both stations write the *same* entity, at which point the
+existing per-path conflict resolution is exactly right and no new merge rule is
+needed.
+
+It also makes `set` cheaper: the host knows the path without searching the
+collection for a matching key.
 
 ### Station-scoped data is one SQLite file beside the preferences
 
@@ -88,24 +115,41 @@ reason to keep an operator from their show.
 `PULT_PLUGIN_DATA` names the file outright, the way `PULT_PREFERENCES` does, so
 tests get their own and two stations on one machine can be separated.
 
-### The API version check becomes a supported set
+### The contract moves to 1.0, and `api` becomes a floor
 
-Adding an interface to the `plugin` world is backward-compatible in the direction
-that matters: a component may import **less** than the host offers, so a plugin
-built against `0.1` instantiates against a `0.2` host untouched. But
-`PluginManifest::validate` compares `api` against a single `API_VERSION` string
-and would refuse every existing plugin the moment the contract moves.
+The original plan — take the package to `0.2.0` and turn `API_VERSION` into a
+supported-versions list — **does not work**, and the reason is worth writing
+down because it is invisible until you try it.
 
-So `API_VERSION` becomes `SUPPORTED_API_VERSIONS: &[&str] = &["0.1", "0.2"]`,
-the WIT package goes to `0.2.0`, and a manifest naming any supported version
-loads. The error message keeps naming what the station speaks — now a list.
+A component may indeed import *less* than the host offers: a guest that never
+calls `store` does not import it, and that half of the premise held. But a
+component's imports are stamped with the **package version** they were built
+against. A `0.1` guest asks for `pult:plugin/data@0.1.0`; a `0.2` host offers
+`pult:plugin/data@0.2.0`; nothing resolves, and the plugin fails to instantiate
+with `a matching implementation was not found in the linker`. Wasmtime does
+resolve component imports semver-compatibly — but under semver a `0.x` minor
+bump *is* a breaking change, so `0.1` and `0.2` are unrelated. **At `0.x` the
+contract can never grow additively, however the check is spelled.** A
+supported-versions list would have passed validation and then failed to link,
+which is worse than refusing honestly.
 
-**This is a rule with an expiry date**, and the design says so rather than
-letting a future author discover it: a version stays in the list only while the
-host can still satisfy a guest built against it. The day an interface is
-*removed* or a signature changes, that version leaves the list and the plugins
-naming it are refused with a clear reason. Additive changes extend the list;
-breaking ones truncate it.
+So the package is **`1.0.0`**, where a minor bump is additive and wasmtime's
+matching applies, and the manifest's `api` is a **floor**: the station's major
+must equal the plugin's and its minor must be at least the plugin's. That is
+exactly the rule wasmtime enforces underneath, asked early enough to answer an
+operator rather than a linker — and a pre-flight check that disagreed with the
+linker would be worse than none.
+
+Verified rather than argued: a component built against `1.0.0` runs unchanged on
+a `1.1.0` host, extra import and all. `scripts/check-api-compat.sh` reproduces
+the check — it builds a component, bumps the contract, and runs a station
+against it — because a wasmtime upgrade could quietly change the answer and
+nothing else in the tree would notice.
+
+**The cost, paid once:** every bundle built against `0.1` must be rebuilt. It is
+refused by name, as a major mismatch, with a message saying to rebuild it. Taken
+now, while the ecosystem is two reference plugins and any bundles in showfiles
+are freshly built; the alternative is a contract that can never grow.
 
 ### Declaring the store is the permission
 
@@ -130,34 +174,74 @@ A ceiling that a plugin could raise would not be a ceiling. The reason to let it
 *lower* one is that a plugin author who knows their cache should never exceed
 sixteen keys is saying something useful to the operator reading the manifest.
 
-### Plugin writes are not undoable
+### Attribution is the switch, so nothing has to learn about plugins
 
-`Operation::is_undoable` already excludes commands — the mechanism and the
-argument both exist (task 31: a new command is non-undoable by default, which is
-the safe direction). Writes whose path names `plugin_data` join them, and the
-History panel filter follows.
+A plugin's write is non-undoable and absent from the History panel by writing it
+with **no user**. `Operation::is_undoable` already requires `user_id.is_some()`,
+and the History panel reads `recent_by_people`, whose filter is
+`WHERE user_id IS NOT NULL`. An unattributed write therefore satisfies both
+conditions with no edit to `pult-schema`, no edit to the oplog's SQL, and no edit
+to the frontend — where the design previously proposed teaching `is_undoable`
+about `plugin_data`, which would have put plugin knowledge into the schema crate
+for a property the schema crate already expresses.
+
+`Authorship` carries `user_id` and `gesture` independently, so the write keeps
+its gesture. That matters: `fold_into_the_gesture` keys on the gesture, not on
+the user, so coalescing is unaffected by dropping the attribution.
+
+**And because attribution is a switch, a store may ask for it.** A store
+declaring `undoable = true` gets its writes attributed to the operator in
+`PluginCtx`, and is then undoable and visible in the history by the same two
+rules, still with nothing edited. Default false, which is the safe direction and
+the one task 31 already chose for commands. The argument for offering it at all:
+an operator who clicks *Save macro* and presses Ctrl-Z means the macro, and a
+console that instead took back their previous edit would be silently doing the
+wrong thing. The argument for the default: a plugin caching a derived value while
+handling an operator's command would otherwise put an invisible entry at the top
+of that operator's undo stack.
+
+`ctx.userId` is absent for a write nobody asked for — a timer, `lifecycle.init`,
+a `call-plugin` chain with no person at its head — so those stay unattributed
+whatever the store declares. The rule falls out of the existing mechanism rather
+than being a second one.
+
+**One consequence to build rather than discover**: an undoable store write shows
+in the History panel, and `describeChange` names ids from the fixtures, cues and
+sequences it holds. A `plugin_data` row would render as
+`plugin data → a1b2c3 → value`. It has to be named by its plugin, store and key,
+or the feature produces an entry nobody can read.
 
 **One property to preserve rather than assume**: task 32's within-gesture
 coalescing replaces an earlier write to the same path inside one gesture, and
 `PluginCtx` gives each inbound call one gesture. So a plugin writing the same key
-repeatedly while handling one call should collapse to one oplog row. That is the
-main thing standing between this feature and a plugin filling the oplog, so the
-task list verifies it explicitly instead of trusting that undo-exclusion and
-coalescing are independent.
+repeatedly while handling one call collapses in the log. But **not to one row**:
+the first write to a key that does not exist yet is a create, and
+`fold_into_the_gesture` refuses creates on purpose, because every create in a
+collection shares the `<table>/__create` path and folding them would lose a row.
+Ten writes to one new key inside one call therefore leave two rows — the create,
+and one folded value write — and ten writes to an existing key leave one. That is
+the property that keeps a plugin from filling the log, so the task list asserts
+the actual number rather than a plausible one.
 
 ## Risks / Trade-offs
 
-- **A plugin writing show-scoped data in a tight loop floods the oplog**, which
-  nothing prunes. → Quotas bound the *size*, not the rate. Within-gesture
-  coalescing bounds the common case. Beyond that: the documentation says a store
-  is for what an operator would miss, and a station-scoped store is the right
-  home for anything written often. A rate limit is a follow-up if a real plugin
-  provokes one.
-- **All show-scoped plugin data reaches every frontend**, because
-  `frontend_paths()` is derived and has no opt-out. → Accepted; adding an opt-out
-  would be the first exception to a rule that has held since task 2, and the
-  quotas cap what any one plugin can put on the wire. Worth revisiting if a
-  plugin's store turns out to be large and of no interest to any panel.
+- **A plugin writing show-scoped data in a tight loop appends to the oplog**,
+  which nothing prunes — and *nothing* is meant literally: `history_depth` bounds
+  what is read back, not what is kept, and there is no DELETE anywhere in
+  `oplog.rs`. → Not this change's problem to solve, and the scale says why: the
+  `stations` table is SYNCED, so telemetry is already logging twice a second
+  forever, which no plugin is going to beat. Quotas bound the size, coalescing
+  bounds the common case, and the documentation says anything written often
+  belongs in a station-scoped store, which never reaches the log at all. A rate
+  limit here would invent a failure mode to prevent a problem that pruning is the
+  real answer to.
+- **Show-scoped plugin data lands in the showfile and in every backup**, and in
+  the whole-state snapshot a joining station is handed. → This, not frontend
+  bandwidth, is what the quotas are for. An earlier draft of this design worried
+  that every browser would receive every plugin's store; that was wrong —
+  subscriptions are demand-driven and per collection, so a browser gets a store
+  only if a panel asks for it. The station-side cost is real and bounded at
+  1 MB per store.
 - **Nothing stops an author putting a credential in a show-scoped store**, from
   where it replicates and lands in every backup. → Documented, not enforced; a
   host cannot tell a token from a string. `docs/PLUGINS.md` states the two
@@ -188,8 +272,16 @@ that check, not a failure.
   belongs here or in the general oplog-pruning work the roadmap has deferred
   since task 6. Deferrable: it changes no requirement in the spec.
 - **Whether a store should be readable by a plugin's web panel directly**
-  through the frontend proxy, or only through `rpc.handle`. The data is on the
-  wire either way; this is a documentation and SDK question, not a schema one.
+  through the frontend proxy, or only through `rpc.handle`. Now that
+  subscription is known to be demand-driven, the panel subscribing to its own
+  store is the cheap path and `rpc.handle` the expensive one, so this is a
+  documentation and SDK question with an obvious answer waiting for a plugin to
+  confirm it.
 - **Whether `openspec`-style store versioning** (a plugin declaring a schema
   version for its own data) is worth offering, or is properly the author's
   problem. Currently the author's problem, per the proposal's non-goals.
+- **Whether an undoable store wants a change notification.** Undo writes the
+  previous value back into `plugin_data`; a plugin holding the value in memory
+  will not learn about it until it next reads. Same property peer replication
+  already has, so no new mechanism is proposed — but a macro plugin is the first
+  thing likely to notice.

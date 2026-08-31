@@ -1,0 +1,42 @@
+# A plugin that exists to be tested against.
+#
+# The store interface is a host interface, so the only honest way to test it is
+# from a guest — one that calls it on demand and reports what happened. This
+# plugin is that and nothing else: it has no UI, drives nothing, and is not
+# built into a bundle for anybody's show.
+#
+# It declares one store of each kind, plus a show-scoped store that says its
+# writes are the operator's, so the two sides of the undo rule can be tested
+# against the same station.
+
+[plugin]
+id = "store-probe"
+name = "Store Probe"
+version = "0.1.0"
+api = "1.0"
+wasm = "store_probe.wasm"
+
+[permissions]
+# None. A store is not gated on the data permission: declaring the store is the
+# permission, and this plugin proves that by having no other access at all.
+data = "none"
+commands = false
+
+[[stores]]
+id = "carried"
+scope = "show"
+
+[[stores]]
+id = "deliberate"
+scope = "show"
+undoable = true
+
+[[stores]]
+id = "local"
+scope = "station"
+
+[[stores]]
+id = "small"
+scope = "show"
+max_keys = 2
+max_bytes = 64

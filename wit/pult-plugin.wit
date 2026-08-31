@@ -6,7 +6,7 @@
 /// serde_json all the way down, and no entity type appears in this file on
 /// purpose: a plugin learns the schema by asking `introspection` at runtime, so
 /// the data model can grow without this contract — or any plugin — changing.
-package pult:plugin@0.1.0;
+package pult:plugin@1.0.0;
 
 interface types {
     /// A JSON value, as text. `"null"` where nothing is meant.
@@ -79,6 +79,36 @@ interface peers {
     call-plugin: func(plugin: string, method: string, args: json) -> result<json, string>;
 }
 
+/// What a plugin remembers between runs.
+///
+/// A plugin addresses only the stores its manifest declares, and only its own:
+/// the host derives where the data lives from the plugin's id and the store's,
+/// never from anything passed here, so there is no name a guest can spell to
+/// reach another plugin's data. Which store is show-scoped and which is
+/// station-scoped is the manifest's business too — the calls are the same
+/// either way, because a plugin should not have to write the difference twice.
+interface store {
+    use types.{json};
+
+    /// Read a key. `"null"` where nothing is stored, which is an answer rather
+    /// than an error: a cache's first run is not a failure.
+    get: func(store: string, key: string) -> result<json, string>;
+
+    /// Write a key. Refused, leaving the store as it was, if the store is not
+    /// declared or the write would take it past its quota.
+    set: func(store: string, key: string, value: json) -> result<_, string>;
+
+    /// Forget a key. Forgetting one that was never there is not an error.
+    delete: func(store: string, key: string) -> result<_, string>;
+
+    /// The keys in a store that begin with `prefix`, in order. An empty prefix
+    /// lists the store. There is no query beyond this: a plugin that wants an
+    /// index builds one out of keys.
+    ///
+    /// Named `keys` rather than `list` because `list` is a WIT keyword.
+    keys: func(store: string, prefix: string) -> result<list<string>, string>;
+}
+
 interface logging {
     use types.{log-level};
 
@@ -117,6 +147,7 @@ world plugin {
     import data;
     import introspection;
     import peers;
+    import store;
     import logging;
 
     export lifecycle;

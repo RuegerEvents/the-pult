@@ -52,6 +52,39 @@ restarts has nowhere to put it.
 - Could reuse the entity machinery: a plugin declaring a schema at load time
   vs. opaque JSON blobs.
 
+### typed-plugin-sdk
+Introspection is the right *wire*, and a poor thing to program against. A plugin
+learns the schema from `introspection::entities()` as JSON and navigates it by
+hand, with no types, no compile-time field names, and stringly-typed paths
+(`&["cues", id, "fade_time"]`). Every plugin author pays for that.
+
+The fix is codegen — but into the **SDK**, not the WIT. `pult-codegen` already
+generates `frontend/src/lib/ws/data.ts` from the `EntityMeta` inventory, giving
+the frontend `data.sequences[5].cues[3].fadeTime.set(4)` while the WebSocket wire
+stays generic path-plus-JSON. `plugins/sdk` can have exactly that split, from the
+same inventory and the same tool: `sdk::data::cues().nth(3).fade_time().set(4.0)`
+over an unchanged `data.set(path, json)`.
+
+- **Codegen'ing the WIT itself is ruled out, and the reason is recorded** in
+  roadmap task 35: a component's imports are stamped with the package version,
+  and a record type's fields are part of every signature using it — so `Cue`
+  gaining a field would be a breaking ABI change. The schema changes constantly,
+  and a show now carries its plugins between machines, so a bundle built against
+  schema-of-Tuesday would refuse to load on a station from schema-of-Wednesday.
+  Today the schema grows daily and no plugin notices; that property is worth
+  keeping.
+- **Introspection stays.** It answers the runtime question — what does *this*
+  station have, including collections this plugin's SDK never heard of — which a
+  command-line plugin building its grammar and a sync plugin walking unknown
+  tables both need. Typed codegen is for what is known at build time.
+- How does the SDK version relate to the station's? A plugin built against a
+  newer SDK writing a field an older station lacks gets a per-path runtime error,
+  which is the same graceful failure the frontend already has. Worth confirming
+  the message is good.
+- Where does the generated code live — checked in beside `sdk/src/lib.rs`, or
+  generated into `OUT_DIR` by a build script? Checked in matches how the frontend
+  does it and keeps the plugins workspace buildable without the console's.
+
 ### plugin-language-hosts
 A plugin that hosts other plugins in another language — e.g. a TypeScript
 host plugin embedding a JS runtime, so plugins can be written in TS on top

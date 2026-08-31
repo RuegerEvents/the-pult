@@ -13,12 +13,18 @@
 	import { editing } from '$lib/stores/editing.js';
 	import { pluginsState } from '$lib/stores/plugins.js';
 	import { getDataContext } from '$lib/ws/context.js';
-	import type { PluginInfo, PluginPackage, PluginStage } from '$lib/generated/index.js';
+	import type {
+		PluginDatum,
+		PluginInfo,
+		PluginPackage,
+		PluginStage
+	} from '$lib/generated/index.js';
 
 	const data = getDataContext();
 	const unlocked = editing('plugins');
 
 	let packages = $state<PluginPackage[]>([]);
+	let stored = $state<PluginDatum[]>([]);
 	let installing = $state(false);
 	let installError = $state<string | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
@@ -32,6 +38,43 @@
 	const strays = $derived(
 		runtime.filter((p) => !packages.some((pkg) => pkg.plugin_id === p.id))
 	);
+
+	/**
+	 * Data in the show belonging to no plugin anybody here has.
+	 *
+	 * Removing a plugin deliberately does not delete what it remembered, so that
+	 * a plugin removed by mistake and put back finds its macros where it left
+	 * them. The cost of that is data nobody owns, which would accumulate unseen
+	 * — so it is shown, grouped by the plugin id that wrote it, and can be
+	 * cleared out on purpose.
+	 */
+	const orphaned = $derived.by(() => {
+		const known = new Set([
+			...packages.map((pkg) => pkg.plugin_id),
+			...runtime.map((p) => p.id)
+		]);
+		const groups = new Map<string, PluginDatum[]>();
+		for (const row of stored) {
+			if (known.has(row.plugin_id)) continue;
+			const rows = groups.get(row.plugin_id) ?? [];
+			rows.push(row);
+			groups.set(row.plugin_id, rows);
+		}
+		return [...groups.entries()]
+			.map(([pluginId, rows]) => ({
+				pluginId,
+				rows: rows.toSorted((a, b) => `${a.store}${a.key}`.localeCompare(`${b.store}${b.key}`))
+			}))
+			.toSorted((a, b) => a.pluginId.localeCompare(b.pluginId));
+	});
+
+	/** Forget everything one absent plugin left behind. */
+	async function forget(pluginId: string) {
+		const rows = orphaned.find((group) => group.pluginId === pluginId)?.rows ?? [];
+		for (const row of rows) {
+			await data.plugin_data.byId(row.id).delete();
+		}
+	}
 
 	const STAGES: { value: PluginStage; label: string; hint: string }[] = [
 		{ value: 'Both', label: 'Always', hint: 'relevant while building and while running' },
@@ -97,6 +140,7 @@
 	}
 
 	onMount(() => data.plugin_packages.subscribeDeep((v) => { packages = v; }));
+	onMount(() => data.plugin_data.subscribeDeep((v) => { stored = v; }));
 </script>
 
 <div class="plugins">
@@ -195,6 +239,35 @@
 			{/each}
 		{/if}
 	</section>
+
+	{#if orphaned.length > 0}
+		<section class="block">
+			<header class="block-head"><h2>Left behind</h2></header>
+			<p class="hint">
+				Data in this show belonging to plugins nothing here has. Removing a plugin does
+				not delete what it remembered, so putting it back finds its work where it left
+				it — but nothing else will ever read this.
+			</p>
+			<ul class="strays">
+				{#each orphaned as group (group.pluginId)}
+					<li>
+						<span class="name">{group.pluginId}</span>
+						<span class="id">
+							{group.rows.length}
+							{group.rows.length === 1 ? 'value' : 'values'} in
+							{new Set(group.rows.map((r) => r.store)).size}
+							{new Set(group.rows.map((r) => r.store)).size === 1 ? 'store' : 'stores'}
+						</span>
+						{#if $unlocked}
+							<button class="ghost danger" onclick={() => forget(group.pluginId)}>
+								Forget
+							</button>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
 
 	{#if strays.length > 0}
 		<section class="block">

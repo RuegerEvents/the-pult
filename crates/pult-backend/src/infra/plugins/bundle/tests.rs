@@ -15,7 +15,7 @@ const MANIFEST: &str = r#"
 id = "example"
 name = "Example"
 version = "0.1.0"
-api = "0.1"
+api = "1.0"
 wasm = "example.wasm"
 "#;
 
@@ -200,7 +200,7 @@ fn a_manifest_can_be_read_without_unpacking_anything() {
     let info = read_manifest(&a_good_bundle(), &dir).expect("the manifest reads");
 
     assert_eq!(info.manifest.plugin.id, "example");
-    assert_eq!(info.manifest.plugin.api, "0.1");
+    assert_eq!(info.manifest.plugin.api, "1.0");
     assert!(!dir.exists(), "reading a manifest writes nothing");
 
     std::fs::remove_dir_all(&root).ok();

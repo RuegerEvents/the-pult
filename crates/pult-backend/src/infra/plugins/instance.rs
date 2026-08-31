@@ -59,6 +59,9 @@ impl InstanceHandle {
 #[derive(Clone)]
 pub struct InstanceDeps {
     pub engine: EngineHandle,
+    /// This machine's plugin data, opened once for the station and shared by
+    /// every instance — it is one file, and one pool is enough for all of them.
+    pub station_store: super::station_store::StationStore,
     pub broadcast: UpdateBroadcast,
     pub rpc_deps: LocalRpcDeps,
     pub manager: mpsc::Sender<PluginCommand>,
@@ -132,6 +135,8 @@ async fn set_up(
         plugin_id: id.clone(),
         permissions: manifest.permissions.clone(),
         deps: manifest.dependencies.plugins.clone(),
+        stores: manifest.stores.clone(),
+        station_store: deps.station_store.clone(),
         engine: deps.engine,
         broadcast: deps.broadcast,
         rpc_deps: deps.rpc_deps,
