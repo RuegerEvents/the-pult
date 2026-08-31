@@ -11,6 +11,19 @@ import type { HistoryEntry, PluginDatum, User } from './generated/index.js';
 /** The colours a new user is given, in order. Matches `pult-schema`'s list. */
 export const USER_COLOURS = ['#4a9eff', '#f59e0b', '#22c55e', '#e879f9', '#f87171', '#2dd4bf'];
 
+/**
+ * The user a show has before anybody has said who they are. Matches
+ * `User::DEFAULT_ID` in `pult-schema`, and a Rust test asserts that it still does.
+ *
+ * Written here rather than fetched, for the same reason as the colours above and
+ * one better: this browser has to be working as *somebody* before its first write,
+ * because a change attributed to nobody can never be taken back — not later, not
+ * once the operator says who they are. Waiting on a round trip, or on the `users`
+ * collection arriving, would leave a window where that is the outcome. A constant
+ * has no window.
+ */
+export const DEFAULT_USER_ID = '00000000-0000-4000-8000-000000000001';
+
 export const colourFor = (index: number): string => USER_COLOURS[index % USER_COLOURS.length];
 
 /** The colour to draw a user's changes in, falling back for one nobody knows. */

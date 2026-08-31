@@ -55,6 +55,21 @@ impl SubscriptionRegistry {
         self.0.lock().unwrap().users.get(&id).copied()
     }
 
+    /// Who this socket's writes belong to.
+    ///
+    /// A client that has not said falls back to the show's default operator rather
+    /// than to nobody, because a write carrying no author can never be taken back —
+    /// not later, and not once the operator finally says who they are. Every show has
+    /// that user: the engine seeds it when it loads one.
+    ///
+    /// The fallback is here rather than only in the browser so that the guarantee does
+    /// not depend on a well-behaved client. The engine's *own* writes — a fade
+    /// advancing, a station publishing its memory use — never come through here, and
+    /// stay nobody's.
+    pub fn user_for_writes(&self, id: SessionId) -> Uuid {
+        self.user_of(id).unwrap_or(pult_schema::types::user::User::DEFAULT_ID)
+    }
+
     pub fn remove_session(&self, id: SessionId) {
         let mut inner = self.0.lock().unwrap();
         inner.sessions.remove(&id);
@@ -190,20 +205,17 @@ async fn handle_client_message(
         }
 
         ClientMessage::Undo { redo, request_id } => {
-            let msg = match state.ws_registry.user_of(session_id) {
-                Some(user_id) => {
-                    let moved = state.engine.undo(user_id, redo).await;
-                    // Named by the first path written, which is the newest thing the
-                    // gesture touched and so the one the operator last saw move.
-                    ServerMessage::UndoResult {
-                        request_id,
-                        changed: moved.len() as u32,
-                        undone: moved.into_iter().next(),
-                    }
-                }
-                // A client that has not said who it is has no history of its own, and
-                // guessing at one would take back somebody else's work.
-                None => ServerMessage::UndoResult { request_id, undone: None, changed: 0 },
+            // The same user its writes are attributed to, so a client takes back its
+            // own work — including a client that never said who it is, whose work is
+            // the default operator's.
+            let user_id = state.ws_registry.user_for_writes(session_id);
+            let moved = state.engine.undo(user_id, redo).await;
+            // Named by the first path written, which is the newest thing the gesture
+            // touched and so the one the operator last saw move.
+            let msg = ServerMessage::UndoResult {
+                request_id,
+                changed: moved.len() as u32,
+                undone: moved.into_iter().next(),
             };
             send_to_session(state, session_id, msg);
         }
@@ -228,18 +240,13 @@ async fn handle_client_message(
             // Determine lifecycle from path — all top-level sets default to Persisted
             // unless the path corresponds to a known SYNCED field.
             let lifecycle = infer_lifecycle(&path);
-            // Attributed where the client has said who it is, so it can be taken
-            // back; anonymous otherwise, which is a write nobody can undo rather
-            // than one attributed to a guess.
-            let result = match state.ws_registry.user_of(session_id) {
-                Some(user_id) => {
-                    state
-                        .engine
-                        .set_as(user_id, gesture, path.clone(), lifecycle, value.clone())
-                        .await
-                }
-                None => state.engine.set(path.clone(), lifecycle, value.clone()).await,
-            };
+            // Always attributed, so it can always be taken back. A client that has
+            // not said who it is writes as the show's default operator rather than as
+            // nobody — an unattributed write is one that can never be undone, which is
+            // a worse answer than a shared one.
+            let user_id = state.ws_registry.user_for_writes(session_id);
+            let result =
+                state.engine.set_as(user_id, gesture, path.clone(), lifecycle, value.clone()).await;
             let msg = match result {
                 Ok(()) => ServerMessage::SetAck { request_id, ok: true, error: None },
                 Err(e) => ServerMessage::SetAck {
@@ -309,4 +316,51 @@ fn send_to_session(state: &AppState, id: SessionId, msg: ServerMessage) {
 
 fn infer_lifecycle(path: &pult_schema::path::Path) -> pult_schema::lifecycle::Lifecycle {
     pult_schema::registry::path_lifecycle(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pult_schema::types::user::User;
+
+    /// The property the default user exists for, at the seam that decides it: a
+    /// socket's writes always belong to somebody, so they can always be taken back.
+    #[test]
+    fn a_socket_that_never_said_writes_as_the_operator() {
+        let registry = SubscriptionRegistry::default();
+        let session = Uuid::new_v4();
+
+        assert_eq!(registry.user_of(session), None, "it has not said");
+        assert_eq!(
+            registry.user_for_writes(session),
+            User::DEFAULT_ID,
+            "but its writes are the operator's rather than nobody's"
+        );
+    }
+
+    #[test]
+    fn a_socket_that_said_writes_as_who_it_said() {
+        let registry = SubscriptionRegistry::default();
+        let session = Uuid::new_v4();
+        let sam = Uuid::new_v4();
+
+        registry.identify(session, Some(sam));
+
+        assert_eq!(registry.user_for_writes(session), sam);
+    }
+
+    /// `Identify { user_id: None }` is what a client built before this change sends
+    /// when somebody signs out. It forgets who they were, and the socket falls back
+    /// to the operator — not to a state where nothing can be undone.
+    #[test]
+    fn signing_out_lands_on_the_operator_rather_than_on_nobody() {
+        let registry = SubscriptionRegistry::default();
+        let session = Uuid::new_v4();
+        registry.identify(session, Some(Uuid::new_v4()));
+
+        registry.identify(session, None);
+
+        assert_eq!(registry.user_of(session), None, "it has forgotten who they were");
+        assert_eq!(registry.user_for_writes(session), User::DEFAULT_ID, "and is not nobody");
+    }
 }

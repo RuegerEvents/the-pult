@@ -8,7 +8,7 @@
 	 * change first.
 	 */
 
-	import { addUser, beUser, currentUser, users, userId } from '$lib/stores/user.js';
+	import { addUser, beUser, currentUser, hasChosen, signOut, users, userId } from '$lib/stores/user.js';
 	import { redo, undo } from '$lib/stores/undo.js';
 	import { focusOnMount } from '$lib/actions.js';
 
@@ -25,30 +25,37 @@
 </script>
 
 <div class="userbar">
+	<!-- Never disabled: a show always has an operator, so there is always somebody
+	     whose last change this takes back. -->
 	<button
 		class="chip undo"
 		title="Take back your last change (Ctrl-Z)"
 		aria-label="Undo"
-		disabled={!$userId}
 		onclick={undo}
 	>↶</button>
 	<button
 		class="chip undo"
 		title="Put back your last undo (Ctrl-Shift-Z)"
 		aria-label="Redo"
-		disabled={!$userId}
 		onclick={redo}
 	>↷</button>
 
+	<!-- Marked while nobody has said who they are. Not because anything is broken —
+	     changes are attributed and undoable either way — but because until somebody
+	     says, every unsaid console is sharing one operator's undo history, and that
+	     is worth finding out before two people discover it by pressing Ctrl-Z. -->
 	<button
 		class="chip who"
-		class:unknown={!$currentUser}
-		title={$currentUser ? 'Working as ' + $currentUser.name : 'Nobody is signed in — changes cannot be taken back'}
+		class:unsaid={!$hasChosen}
+		title={$hasChosen
+			? 'Working as ' + (($currentUser && $currentUser.name) || 'somebody who is no longer in the show')
+			: 'Working as the shared operator — say who you are to get your own undo history'}
 		onclick={() => (open = !open)}
 	>
 		{#if $currentUser}
 			<span class="dot" style:background={$currentUser.colour}></span>
 			{$currentUser.name}
+			{#if !$hasChosen}<span class="ask">— who are you?</span>{/if}
 		{:else}
 			Who are you?
 		{/if}
@@ -72,10 +79,11 @@
 				<button class="add" onclick={() => (adding = true)}>+ Somebody else</button>
 			{/if}
 
-			{#if $userId}
+			{#if $hasChosen}
 				<!-- Signing out is a real thing to want on a shared desk at the end of a
-				     session, and it is not the same as being nobody by accident. -->
-				<button class="out" onclick={() => { beUser(null); open = false; }}>Sign out</button>
+				     session. It lands on the show's operator rather than on nobody:
+				     nobody is a state in which nothing can be taken back. -->
+				<button class="out" onclick={() => { signOut(); open = false; }}>Sign out</button>
 			{/if}
 		</div>
 	{/if}
@@ -119,11 +127,16 @@
 		align-items: center;
 		gap: 6px;
 	}
-	/* Nobody signed in is not an error, but it does mean nothing can be taken back,
-	   and that is worth saying before somebody finds out by pressing Ctrl-Z. */
-	.who.unknown {
+	/* Nobody having said is not an error — changes are attributed and undoable
+	   either way — but it does mean this console shares an undo history with every
+	   other one that has not said, which is worth noticing before two operators
+	   find out by pressing Ctrl-Z. */
+	.who.unsaid {
 		border-color: var(--live);
 		color: var(--live);
+	}
+	.ask {
+		opacity: 0.75;
 	}
 
 	.dot {

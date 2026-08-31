@@ -2516,3 +2516,273 @@ async fn a_show_saved_before_the_setting_existed_opens_at_the_default() {
         "and keeps the default number of changes"
     );
 }
+
+// ── The show always has somebody ──────────────────────────────────────────────
+//
+// Undo is per person and an unattributed write can never be taken back, so a show
+// with no users at all is a show where the first thing anybody does is permanent.
+// These pin down that a show always has an operator, that seeding it twice is not a
+// thing that happens, and that the seed itself is nobody's.
+
+/// The users in the show, as the engine reports them.
+async fn users_of(h: &Harness) -> Vec<serde_json::Value> {
+    h.engine.get(key("users")).await.unwrap().as_array().cloned().unwrap_or_default()
+}
+
+#[tokio::test]
+async fn an_empty_showfile_gains_an_operator() {
+    let mut h = harness().await;
+    h.reload().await;
+
+    let users = users_of(&h).await;
+    assert_eq!(users.len(), 1, "exactly one user, not none and not two");
+    assert_eq!(users[0]["id"], json(&User::DEFAULT_ID));
+    assert_eq!(users[0]["name"], "Operator");
+
+    // PERSISTED, so it is in the file rather than only in memory.
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        .fetch_one(h.pool.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(rows, 1, "and written to the showfile");
+}
+
+/// `create_entity` does not check whether the id is already there, so this is the
+/// guard rather than an optimisation: without it every load would rewrite the row,
+/// and on a second station replicate "Operator" over a name somebody chose.
+#[tokio::test]
+async fn loading_a_show_that_has_one_writes_nothing() {
+    let mut h = harness().await;
+    h.reload().await;
+    let before = oplog::len(&h.pool).await.unwrap();
+
+    h.reload().await;
+    h.reload().await;
+
+    assert_eq!(users_of(&h).await.len(), 1, "still one user after three loads");
+    assert_eq!(
+        oplog::len(&h.pool).await.unwrap(),
+        before,
+        "and not one operation was written by the loads that found it"
+    );
+}
+
+/// The rename is the case this actually protects. A second station loading a show
+/// whose operator has been renamed must not put the default name back.
+#[tokio::test]
+async fn a_renamed_operator_survives_being_loaded_again() {
+    let mut h = harness().await;
+    h.reload().await;
+
+    h.engine
+        .set(
+            field_path("users", User::DEFAULT_ID, "name"),
+            Lifecycle::Persisted,
+            serde_json::json!("Sam"),
+        )
+        .await
+        .unwrap();
+    h.reload().await;
+
+    let users = users_of(&h).await;
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0]["name"], "Sam", "the name somebody chose, not the one nobody did");
+}
+
+/// Nobody asked for the seed, so it is nobody's. An operator pressing Ctrl-Z on a
+/// fresh show should reach their own first change, not the console inventing them.
+#[tokio::test]
+async fn the_seed_is_nobodys_and_cannot_be_taken_back() {
+    let mut h = harness().await;
+    h.reload().await;
+
+    let all = oplog::since(&h.pool, &VectorClock::default()).await.unwrap();
+    let seed: Vec<_> = all
+        .iter()
+        .filter(|op| matches!(op.path.first(), Some(PathSegment::Key(k)) if k == "users"))
+        .collect();
+    assert_eq!(seed.len(), 1, "the seed is logged, so a peer catching up learns of it");
+    assert!(seed[0].user_id.is_none(), "and carries no author");
+    assert!(!seed[0].is_undoable(), "so it cannot be undone");
+
+    assert!(
+        h.engine.history(100).await.is_empty(),
+        "and it is not in the history of what people did"
+    );
+}
+
+/// A showfile written before this change: no users, and operations already in the
+/// log. It gains an operator on open, and its own history is left alone.
+#[tokio::test]
+async fn a_showfile_written_before_this_change_gains_one_on_open() {
+    let mut h = harness().await;
+    // Something somebody did, back when there was nobody to attribute it to.
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&a_show())).await.unwrap();
+    let before: Vec<_> = oplog::since(&h.pool, &VectorClock::default())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|op| (op.id, op.user_id))
+        .collect();
+    assert!(!before.is_empty(), "the show was written before anybody existed");
+    assert!(before.iter().all(|(_, user)| user.is_none()), "and nobody was attributed");
+
+    h.reload().await;
+
+    assert_eq!(users_of(&h).await.len(), 1, "opening it gives it an operator");
+    let after = oplog::since(&h.pool, &VectorClock::default()).await.unwrap();
+    for (id, user) in &before {
+        let still = after.iter().find(|op| &op.id == id).expect("the old row is still there");
+        assert_eq!(&still.user_id, user, "and is not attributed to anybody now");
+        assert!(!still.is_undoable(), "so it stays un-undoable, as it always was");
+    }
+}
+
+/// Deleting the operator is allowed — it is an ordinary row. The show would then
+/// have nobody, so the next load gives it somebody again.
+#[tokio::test]
+async fn deleting_the_operator_and_loading_again_brings_one_back() {
+    let mut h = harness().await;
+    h.reload().await;
+
+    let delete = vec![
+        PathSegment::Key("users".into()),
+        PathSegment::Id(User::DEFAULT_ID),
+        PathSegment::Key("__delete".into()),
+    ];
+    h.engine.set(delete, Lifecycle::Persisted, serde_json::Value::Null).await.unwrap();
+    assert!(users_of(&h).await.is_empty(), "gone, like any other user");
+
+    h.reload().await;
+    assert_eq!(users_of(&h).await.len(), 1, "and the show is not left with nobody");
+}
+
+/// Two stations, one operator. The id is a constant rather than something each
+/// station invents, so both write the same row and the show ends with one user
+/// however many consoles opened it.
+#[tokio::test]
+async fn two_stations_loading_one_show_end_with_one_operator() {
+    let mut a = harness().await;
+    let mut b = harness().await;
+    a.reload().await;
+    b.reload().await;
+
+    let (users_a, users_b) = (users_of(&a).await, users_of(&b).await);
+    assert_eq!(users_a.len(), 1, "one on this station");
+    assert_eq!(users_b.len(), 1, "one on that station");
+    assert_eq!(users_a[0]["id"], users_b[0]["id"], "and they agree which one it is");
+    assert_eq!(users_a[0]["id"], json(&User::DEFAULT_ID));
+}
+
+/// A station joining a session takes the leader's state. It must not then seed a
+/// second time — and because both stations compute the same id, the leader's
+/// operator lands on the id the follower already had rather than beside it.
+#[tokio::test]
+async fn a_station_joining_a_session_keeps_the_leaders_operator() {
+    let mut leader = harness().await;
+    leader.reload().await;
+    leader
+        .engine
+        .set(
+            field_path("users", User::DEFAULT_ID, "name"),
+            Lifecycle::Persisted,
+            serde_json::json!("Sam"),
+        )
+        .await
+        .unwrap();
+    let snapshot = leader.engine.get_snapshot().await;
+
+    let mut follower = harness().await;
+    follower.reload().await;
+    assert_eq!(users_of(&follower).await[0]["name"], "Operator", "its own, before joining");
+
+    follower.engine.apply_state_snapshot(snapshot).await;
+    let _ = follower.engine.get(key("users")).await;
+
+    let users = users_of(&follower).await;
+    assert_eq!(users.len(), 1, "not one each");
+    assert_eq!(users[0]["name"], "Sam", "the leader's, not the one it made itself");
+}
+
+/// The end-to-end version of what 1.3's guard protects: a rename on one station is
+/// not undone by another station opening the same showfile afterwards.
+#[tokio::test]
+async fn a_rename_on_one_station_survives_another_opening_the_show() {
+    let mut first = harness().await;
+    first.reload().await;
+    first
+        .engine
+        .set(
+            field_path("users", User::DEFAULT_ID, "name"),
+            Lifecycle::Persisted,
+            serde_json::json!("Sam"),
+        )
+        .await
+        .unwrap();
+
+    // A second station on the same showfile — the case where an unconditional seed
+    // would write "Operator" back over the name somebody chose.
+    let (engine, handle, _broadcast) =
+        ShowEngine::new(NodeId(Uuid::new_v4()), first.pool.clone(), None);
+    tokio::spawn(engine.run());
+    let _ = handle.0.send(EngineCommand::LoadFromShowfile).await;
+    let users = handle.get(key("users")).await.unwrap();
+    let users = users.as_array().cloned().unwrap_or_default();
+
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0]["name"], "Sam", "the second station left the chosen name alone");
+}
+
+/// The whole change, end to end: nobody has been asked anything, and the first
+/// change is still one that can be taken back.
+#[tokio::test]
+async fn the_first_change_on_a_fresh_show_can_be_taken_back() {
+    let mut h = harness().await;
+    h.reload().await;
+
+    let fixture = a_fixture("Spot 3", 1);
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    let name = field_path("fixtures", fixture.id, "name");
+
+    // Written the way the WebSocket writes for a client that never said who it is:
+    // as the show's operator, which the load above seeded.
+    h.engine
+        .set_as(User::DEFAULT_ID, None, name.clone(), Lifecycle::Persisted, json(&"Warmer"))
+        .await
+        .unwrap();
+    assert_eq!(h.engine.get(name.clone()).await.unwrap(), json(&"Warmer"));
+
+    let moved = h.engine.undo(User::DEFAULT_ID, false).await;
+
+    assert_eq!(moved.len(), 1, "one change taken back");
+    assert_eq!(
+        h.engine.get(name).await.unwrap(),
+        json(&"Spot 3"),
+        "and the name is what it was before"
+    );
+}
+
+/// And it is in the history, so the panel can show it and offer to take it back.
+#[tokio::test]
+async fn a_change_by_the_operator_is_in_the_history() {
+    let mut h = harness().await;
+    h.reload().await;
+
+    let fixture = a_fixture("Spot 3", 1);
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    h.engine
+        .set_as(
+            User::DEFAULT_ID,
+            None,
+            field_path("fixtures", fixture.id, "name"),
+            Lifecycle::Persisted,
+            json(&"Warmer"),
+        )
+        .await
+        .unwrap();
+
+    let history = h.engine.history(100).await;
+    assert_eq!(history.len(), 1, "the operator's change, and not the engine's seed");
+    assert_eq!(history[0].user_id, Some(User::DEFAULT_ID));
+    assert!(history[0].is_undoable());
+}

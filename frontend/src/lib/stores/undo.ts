@@ -10,12 +10,11 @@
  * the history.
  */
 
-import { get, writable } from 'svelte/store';
+import { writable } from 'svelte/store';
 
 import type { HistoryEntry } from '$lib/generated/index.js';
 import { addToast } from '$lib/toasts.js';
 import { showClient } from './show.js';
-import { userId } from './user.js';
 
 /**
  * Bumped whenever the history changes, so a panel showing it knows to re-read.
@@ -35,10 +34,10 @@ export const undo = () => take(false);
 export const redo = () => take(true);
 
 async function take(redoing: boolean): Promise<void> {
-	if (!get(userId)) {
-		addToast('Say who you are first — undo is per person.');
-		return;
-	}
+	// No check that anybody is signed in: there is always somebody. A show is given
+	// a default user when it is loaded, so the first change on a fresh console is
+	// attributed and can be taken back.
+	//
 	// A held Ctrl-Z repeats faster than the round trip, and two undos in flight
 	// would both read the log before either had written to it and take back the same
 	// change twice.

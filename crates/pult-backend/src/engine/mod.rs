@@ -11,7 +11,7 @@ use pult_schema::{
     registry::EntityMeta,
     types::{
         devices::DevicesState, output::{OutputCoverage, OutputStatuses},
-        plugin::PluginsState, session::SessionState, station::PeerLinks,
+        plugin::PluginsState, session::SessionState, station::PeerLinks, user::User,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -1599,6 +1599,42 @@ impl ShowEngine {
                 self.flows_dirty = true;
             }
             Err(e) => warn!("[engine] load_from_showfile: ShowState deserialization failed: {e}"),
+        }
+        self.seed_default_user().await;
+    }
+
+    /// Give the show an operator, if it does not have one already.
+    ///
+    /// Undo is per person and an unattributed write can never be taken back, so a show
+    /// with no users at all is a show where the first thing anybody does is permanent.
+    /// Seeding here rather than in the first browser to connect is what covers a
+    /// station running headless: plugins and station RPCs write too, and they are
+    /// somebody.
+    ///
+    /// **Only when absent.** `create_entity` does not check whether the id is already
+    /// there, so an unconditional create at every load would rewrite the row on every
+    /// start — and on a second station, replicate "Operator" over a name somebody
+    /// chose. The check is the guard, not an optimisation.
+    ///
+    /// Unattributed, like the engine's other writes: nobody asked for it. An operator
+    /// pressing Ctrl-Z on a fresh show should reach their own first change, not the
+    /// console's act of inventing them.
+    async fn seed_default_user(&mut self) {
+        if self.state.entity("users", User::DEFAULT_ID).is_some() {
+            return;
+        }
+        let Ok(value) = serde_json::to_value(User::default_user()) else { return };
+        let path: Path =
+            vec![PathSegment::Key("users".into()), PathSegment::Key("__create".into())];
+        if let Err(e) = self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await {
+            warn!("[engine] could not seed the default user: {e}");
+            return;
+        }
+        self.record_write(&path, Lifecycle::Persisted);
+        self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none()).await;
+        self.broadcast_after_set(&path, value.clone());
+        if let Some(sync) = &self.sync {
+            sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
         }
     }
 

@@ -191,38 +191,26 @@ evaluator beside the frontend's (the comment in selection.ts says so).
 
 ## Users and undo
 
-### default-user
-A show must always have a user, so undo works without anybody being asked to set
-it up first. There is no no-user. Today there is: `users` is a PERSISTED
-collection (`crates/pult-schema/src/types/user.rs`) that nothing ever seeds — a
-fresh show has none, and `scripts/demo-seed.mjs` makes none either. The
-frontend's `userId` starts null, "before anybody has said"
-(`frontend/src/lib/stores/user.ts`), and `beUser(null)` is wired to a *Sign out*
-button, so it is also a state you can go back to on purpose. A write made in that
-state carries `Authorship { user_id: None }`, and `Operation::is_undoable()`
-requires `user_id.is_some()` (`crates/pult-schema/src/events/operation.rs:196`),
-so it can never be taken back — not even once the operator says who they are.
-Both surfaces already admit the hole rather than fix it: the undo store refuses
-with "Say who you are first", and the UserBar's tooltip reads "Nobody is signed
-in — changes cannot be taken back".
-- Who creates the default and when: at show creation in the backend, or lazily by
-  the first client to connect. Only the backend holds for a station with no
-  browser attached — plugins and station RPCs write too, and they are somebody.
-- What it is called. The station name, the OS user, a plain "Operator"? A name
-  nobody chose beats no attribution, but it has to be renameable, and two
-  stations opening the same show must not each make one.
-- Does a browser with no stored `pult.user` adopt the default silently or still
-  get asked? Adopting means two people at two browsers share one undo history
-  until they say otherwise — wrong in the other direction, but only for the
-  second person.
-- `Authorship::user_id` stays `Option` either way: the engine's own writes — a
-  fade advancing, a station publishing its memory use — are genuinely nobody's.
-  This is about the client path never sending `None`, not about the type.
-- What becomes of *Sign out*: remove it, or make it switch-user with no null
-  state to land in.
-- Showfiles already written with an empty `users` table: create the default on
-  open, or only apply this to new shows? Their existing oplog entries carry
-  `user_id: None` and stay un-undoable regardless.
+### default-user — done, see `changes/archive/2026-08-31-default-user/`
+Shipped as roadmap task 36. Every show gets one user, named "Operator", seeded by
+the engine at the end of `load_from_showfile` so a headless station is covered.
+The answers to the questions below: the backend creates it, not the first client;
+one per *show* rather than per station, because `user.rs` argues identity is
+chosen rather than taken from the machine; a browser with nothing stored adopts it
+and says so, since two people sharing one undo history is a real cost and belongs
+on screen; and *Sign out* stays but falls back to the default instead of to
+nobody. Old showfiles gain one on open — their existing `user_id: None` rows stay
+un-undoable, which is history rather than a defect.
+
+The id is a fixed constant rather than a v5 over the show, because the frontend
+has to work as the default *before* the `users` collection arrives or the window
+reopens; `frontend/src/lib/users.ts` holds the same constant and a Rust test
+asserts they agree. The trap was `create_entity`, which inserts with no existence
+check — an unconditional seed would replicate "Operator" over a rename.
+
+Left open: a station seeding offline can race a rename on another station, and
+the sync layer breaks that tie rather than intent. Self-healing, since the ids
+match.
 
 ### history-pruning
 The oplog is never pruned. Nothing deletes a row —

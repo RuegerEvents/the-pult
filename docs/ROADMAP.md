@@ -1526,6 +1526,63 @@ already dominates at twice a second; there is no change notification, so a
 plugin holding an undone value in memory learns about it on its next read; and
 a plugin that changes its own data's shape is on its own, as any application is.
 
+### 36. A show always has somebody (done)
+
+Undo shipped in task 31 and did not work on a new show. `users` was a PERSISTED
+collection that nothing ever seeded, so a fresh showfile had none; the frontend's
+`userId` started `null`, "before anybody has said"; and `Operation::is_undoable()`
+requires `user_id.is_some()`. The first change an operator made therefore carried
+`Authorship { user_id: None }` and could never be taken back — not later, and not
+once they finally said who they were. Three pieces of UI existed to describe that
+hole rather than fix it: a toast reading "Say who you are first", a history panel
+empty state saying the same, and a chip bordered in `--live` whose tooltip was
+"Nobody is signed in — changes cannot be taken back". All three are gone.
+
+**There is no no-user now.** The engine seeds a default user at the end of
+`load_from_showfile`, so it happens with no browser attached — a station runs
+headless, and plugins and station RPCs write too. And the WebSocket write path
+falls back to that user for a socket that never identified, so the guarantee does
+not rest on a well-behaved client.
+
+**The id is a fixed constant, and that is the load-bearing decision.** A UUIDv5
+over the show's id would have matched how a `PluginDatum` derives its own, but a
+v5 needs the `Show` row to exist at seed time and the load path promises no such
+thing for an empty showfile. The stronger reason is the frontend: it has to be
+working as *somebody* before its first write, and anything it had to fetch — or
+wait for the `users` collection to deliver — would leave a window in which a
+change is attributed to nobody, which is the exact bug. A constant has no window.
+So `frontend/src/lib/users.ts` holds it too, as it already held `USER_COLOURS`
+for a weaker version of the same argument, and a Rust test reads that file and
+asserts the two agree. Duplication with a guard rather than duplication with a
+comment; the guard was checked by breaking it.
+
+**One per show, not per station.** `user.rs` opens by arguing that identity is
+*chosen* rather than derived from the machine, because a person's desk and tablet
+are both them — deriving the default from `node_id` would have contradicted the
+reason the type exists, and put a login-shaped fact into a file that travels. So
+two stations opening one show converge on one row.
+
+The trap was `create_entity`: it validates, persists and inserts with **no
+existence check**. An unconditional seed at every load would rewrite the row every
+start, and on a second station replicate "Operator" over a name somebody chose.
+The seed is conditional, and two tests hold it down — one that three loads write
+no oplog rows at all, one end to end across two stations.
+
+Left open, and accepted rather than solved: a station whose copy of the show
+predates the default user, loading while disconnected, creates it concurrently
+with another station's rename, and the sync layer breaks that tie rather than
+intent. Bounded and self-healing — the ids match, so the worst case is a name
+reverting to "Operator" and somebody renaming it again. There is no duplicate
+user and no lost operation. Engineering around it would mean making the seed wait
+for a session that may never come, which breaks the headless case it exists for.
+
+Two smaller things. The seed is unattributed, like the engine's other writes, so
+an operator pressing Ctrl-Z on a fresh show reaches their own first change rather
+than the console's act of inventing them. And *Sign out* survives — it was a real
+gesture for the end of a session — but lands on the default rather than on
+nobody, and forgets the stored identity so the next visit does not resume as
+whoever left.
+
 ## Further out
 
 Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.

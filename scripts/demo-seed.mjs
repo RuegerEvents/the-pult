@@ -22,6 +22,16 @@ try {
 		process.exit(0);
 	}
 
+	// The station gives every show it loads an operator, so undo works on the demo
+	// without anybody being asked who they are. Nothing is created here — this
+	// checks the assumption rather than making it true, and says so if it stops
+	// holding, which for a script that is also documentation is the useful half.
+	const users = await get(['users']);
+	if (!users?.length) {
+		console.error('  no operator on a fresh show — undo would not work here');
+		process.exit(1);
+	}
+
 	await set(['show'], {
 		id: id(),
 		name: 'Demo',
