@@ -66,13 +66,13 @@ Each group is meant to end in its own commit with `cargo test`,
 
 ## 5. Layered configuration
 
-- [ ] 5.1 Add `plugins: BTreeMap<String, toml::Table>` to `Preferences` and
+- [x] 5.1 Add `plugins: BTreeMap<String, toml::Table>` to `Preferences` and
       verify a preferences file without the key still loads (the "never fails"
       contract) and that a round trip preserves it.
-- [ ] 5.2 Compose manifest → show → station with the existing `deep_merge` and
+- [x] 5.2 Compose manifest → show → station with the existing `deep_merge` and
       verify with a test that a station overriding one key keeps the show's
       value for its siblings.
-- [ ] 5.3 Restart a plugin when its composed configuration changes, on the
+- [x] 5.3 Restart a plugin when its composed configuration changes, on the
       stations the changed layer affects only. Verify a show-level edit restarts
       it everywhere, a station-level edit restarts it on that station alone, and
       neither disturbs another plugin.

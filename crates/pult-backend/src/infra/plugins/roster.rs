@@ -21,6 +21,9 @@ use pult_schema::types::plugin::PluginPackage;
 pub struct Running {
     /// The digest it was started from, or `None` for a plugin loaded off disk.
     pub sha256: Option<String>,
+    /// The composed configuration it was started with. A plugin gets its
+    /// config once, in `init`, so changing it means starting a new instance.
+    pub config: serde_json::Value,
 }
 
 /// One thing to do about one plugin id.
@@ -32,6 +35,9 @@ pub enum Action {
     Replace { plugin_id: String, sha256: String },
     /// Running and no longer wanted, or disabled.
     Stop { plugin_id: String },
+    /// The same bundle, configured differently. A plugin is handed its config
+    /// in `init` and never again, so this is a stop and a start.
+    Restart { plugin_id: String, sha256: String },
     /// Nothing about what runs changed — only what is displayed. Refresh the
     /// published state and leave the instance alone.
     Publish { plugin_id: String },
@@ -42,10 +48,16 @@ pub enum Action {
 /// `overridden` are plugin ids this station loads from a directory. They are
 /// removed from consideration entirely: the disk copy wins here, and the roster
 /// has no say about a plugin somebody is editing.
+///
+/// `desired_config` is what each plugin's configuration composes to now. It is
+/// passed in rather than worked out here because composing it needs the
+/// unpacked manifest and this station's own preferences, neither of which
+/// belongs in a function about what the show says.
 pub fn plan(
     roster: &[PluginPackage],
     running: &BTreeMap<String, Running>,
     overridden: &[String],
+    desired_config: &BTreeMap<String, serde_json::Value>,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
     let mut wanted: BTreeMap<&str, &PluginPackage> = BTreeMap::new();
@@ -71,8 +83,18 @@ pub fn plan(
                 plugin_id: plugin_id.to_string(),
                 sha256: package.sha256.clone(),
             }),
-            (true, Some(Running { sha256: Some(have) })) if have == &package.sha256 => {
-                actions.push(Action::Publish { plugin_id: plugin_id.to_string() })
+            (true, Some(Running { sha256: Some(have), config })) if have == &package.sha256 => {
+                // Same bytes. The only thing left that can have moved is the
+                // configuration, and that is handed over in `init`.
+                let wanted = desired_config.get(*plugin_id);
+                if wanted.is_some_and(|wanted| wanted != config) {
+                    actions.push(Action::Restart {
+                        plugin_id: plugin_id.to_string(),
+                        sha256: package.sha256.clone(),
+                    });
+                } else {
+                    actions.push(Action::Publish { plugin_id: plugin_id.to_string() });
+                }
             }
             (true, Some(_)) => actions.push(Action::Replace {
                 plugin_id: plugin_id.to_string(),
@@ -98,6 +120,7 @@ pub fn plan(
 mod tests {
     use super::*;
     use pult_schema::types::plugin::PluginStage;
+    use serde_json::Value;
     use uuid::Uuid;
 
     fn package(plugin_id: &str, sha: &str) -> PluginPackage {
@@ -117,13 +140,23 @@ mod tests {
     fn running(pairs: &[(&str, Option<&str>)]) -> BTreeMap<String, Running> {
         pairs
             .iter()
-            .map(|(id, sha)| (id.to_string(), Running { sha256: sha.map(|s| s.to_string()) }))
+            .map(|(id, sha)| {
+                (
+                    id.to_string(),
+                    Running { sha256: sha.map(|s| s.to_string()), config: Value::Null },
+                )
+            })
             .collect()
+    }
+
+    /// No layer has an opinion about anything, which is the ordinary case.
+    fn no_config() -> BTreeMap<String, Value> {
+        BTreeMap::new()
     }
 
     #[test]
     fn a_package_nothing_is_running_is_started() {
-        let actions = plan(&[package("command-line", "aaa")], &running(&[]), &[]);
+        let actions = plan(&[package("command-line", "aaa")], &running(&[]), &[], &no_config());
         assert_eq!(actions, vec![Action::Start { plugin_id: "command-line".into(), sha256: "aaa".into() }]);
     }
 
@@ -135,7 +168,7 @@ mod tests {
         renamed.name = "The Command Line".into();
         renamed.stage = PluginStage::Setup;
 
-        let actions = plan(&[renamed], &running(&[("command-line", Some("aaa"))]), &[]);
+        let actions = plan(&[renamed], &running(&[("command-line", Some("aaa"))]), &[], &no_config());
 
         assert_eq!(actions, vec![Action::Publish { plugin_id: "command-line".into() }]);
     }
@@ -146,6 +179,7 @@ mod tests {
             &[package("command-line", "bbb")],
             &running(&[("command-line", Some("aaa"))]),
             &[],
+            &no_config(),
         );
         assert_eq!(
             actions,
@@ -155,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_package_removed_from_the_roster_is_stopped() {
-        let actions = plan(&[], &running(&[("command-line", Some("aaa"))]), &[]);
+        let actions = plan(&[], &running(&[("command-line", Some("aaa"))]), &[], &no_config());
         assert_eq!(actions, vec![Action::Stop { plugin_id: "command-line".into() }]);
     }
 
@@ -164,12 +198,43 @@ mod tests {
         let mut off = package("command-line", "aaa");
         off.enabled = false;
 
-        let actions = plan(&[off.clone()], &running(&[("command-line", Some("aaa"))]), &[]);
+        let actions = plan(&[off.clone()], &running(&[("command-line", Some("aaa"))]), &[], &no_config());
         assert_eq!(actions, vec![Action::Stop { plugin_id: "command-line".into() }]);
 
         // And re-enabling starts it again from the same digest.
-        let actions = plan(&[package("command-line", "aaa")], &running(&[]), &[]);
+        let actions = plan(&[package("command-line", "aaa")], &running(&[]), &[], &no_config());
         assert_eq!(actions, vec![Action::Start { plugin_id: "command-line".into(), sha256: "aaa".into() }]);
+    }
+
+    #[test]
+    fn the_same_bundle_configured_differently_is_restarted() {
+        // A plugin is handed its config in `init` and never again, so there is
+        // no way to change it without a new instance.
+        let mut desired = BTreeMap::new();
+        desired.insert("command-line".to_string(), serde_json::json!({ "prompt": "$" }));
+
+        let actions = plan(
+            &[package("command-line", "aaa")],
+            &running(&[("command-line", Some("aaa"))]),
+            &[],
+            &desired,
+        );
+        assert_eq!(
+            actions,
+            vec![Action::Restart { plugin_id: "command-line".into(), sha256: "aaa".into() }]
+        );
+
+        // And when it composes to what the instance already has, it stands.
+        let mut same: BTreeMap<String, Running> = BTreeMap::new();
+        same.insert(
+            "command-line".to_string(),
+            Running {
+                sha256: Some("aaa".into()),
+                config: serde_json::json!({ "prompt": "$" }),
+            },
+        );
+        let actions = plan(&[package("command-line", "aaa")], &same, &[], &desired);
+        assert_eq!(actions, vec![Action::Publish { plugin_id: "command-line".into() }]);
     }
 
     #[test]
@@ -182,11 +247,12 @@ mod tests {
             &[package("command-line", "bbb")],
             &running(&[("command-line", None)]),
             &overridden,
+            &no_config(),
         );
         assert!(actions.is_empty(), "{actions:?}");
 
         // And removing the row does not stop the disk copy either.
-        let actions = plan(&[], &running(&[("command-line", None)]), &overridden);
+        let actions = plan(&[], &running(&[("command-line", None)]), &overridden, &no_config());
         assert!(actions.is_empty(), "{actions:?}");
     }
 
@@ -194,7 +260,7 @@ mod tests {
     fn a_directory_plugin_the_roster_never_mentioned_is_left_alone() {
         // Its `sha256` is None, so it is not something the roster stopped
         // asking for — it was never the roster's.
-        let actions = plan(&[], &running(&[("scratch", None)]), &["scratch".to_string()]);
+        let actions = plan(&[], &running(&[("scratch", None)]), &["scratch".to_string()], &no_config());
         assert!(actions.is_empty(), "{actions:?}");
     }
 
@@ -204,6 +270,7 @@ mod tests {
             &[package("a", "1"), package("b", "2"), package("c", "3")],
             &running(&[("a", Some("1")), ("b", Some("old")), ("d", Some("4"))]),
             &[],
+            &no_config(),
         );
 
         assert!(actions.contains(&Action::Publish { plugin_id: "a".into() }));

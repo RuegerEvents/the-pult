@@ -27,11 +27,31 @@ use tracing::{info, warn};
 pub struct Preferences {
     /// What a newly created show starts its `history_depth` at.
     pub history_depth: u32,
+    /// Per-plugin overrides, keyed by plugin id: `[plugins.natural-language-control]`.
+    ///
+    /// The most specific layer of a plugin's configuration, and the only one
+    /// that does not travel with the show — which is what makes it the right
+    /// home for a credential, or for anything true of this machine and no
+    /// other. A show cannot know which console has the local model on it.
+    pub plugins: std::collections::BTreeMap<String, toml::Table>,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Preferences { history_depth: HISTORY_DEPTH_DEFAULT }
+        Preferences {
+            history_depth: HISTORY_DEPTH_DEFAULT,
+            plugins: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl Preferences {
+    /// This machine's overrides for one plugin, as JSON.
+    pub fn plugin_config(&self, plugin_id: &str) -> serde_json::Value {
+        self.plugins
+            .get(plugin_id)
+            .and_then(|table| serde_json::to_value(table).ok())
+            .unwrap_or(serde_json::Value::Null)
     }
 }
 

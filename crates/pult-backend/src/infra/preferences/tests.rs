@@ -10,7 +10,7 @@ fn a_console_that_has_never_been_told_uses_the_defaults() {
 #[test]
 fn what_is_written_is_what_comes_back() {
     let _own = own_file();
-    save(&Preferences { history_depth: 2000 }).unwrap();
+    save(&Preferences { history_depth: 2000, ..Default::default() }).unwrap();
     assert_eq!(load().history_depth, 2000);
 }
 
@@ -20,7 +20,7 @@ fn what_is_written_is_what_comes_back() {
 fn saving_makes_the_place_to_save_into() {
     let own = own_file();
     assert!(!own.0.exists());
-    save(&Preferences { history_depth: 750 }).unwrap();
+    save(&Preferences { history_depth: 750, ..Default::default() }).unwrap();
     assert!(own.0.exists());
 }
 
@@ -54,4 +54,37 @@ fn a_setting_this_build_does_not_recognise_is_ignored() {
     std::fs::write(&own.0, "history_depth = 300\nfavourite_colour = \"amber\"").unwrap();
 
     assert_eq!(load().history_depth, 300);
+}
+
+#[test]
+fn a_preferences_file_written_before_plugins_existed_still_loads() {
+    let own = testing::own_file();
+    std::fs::create_dir_all(own.0.parent().unwrap()).unwrap();
+    // What an older console wrote. A missing key must not be a parse failure,
+    // or upgrading would lose every setting in the file rather than one.
+    std::fs::write(&own.0, "history_depth = 300\n").unwrap();
+
+    let prefs = load();
+    assert_eq!(prefs.history_depth, 300);
+    assert!(prefs.plugins.is_empty());
+    assert!(prefs.plugin_config("anything").is_null(), "and nothing is configured");
+}
+
+#[test]
+fn per_plugin_settings_survive_a_round_trip() {
+    let _own = testing::own_file();
+    let mut prefs = Preferences::default();
+    prefs.plugins.insert(
+        "natural-language-control".into(),
+        toml::from_str(r#"model = "llama3""#).unwrap(),
+    );
+    save(&prefs).unwrap();
+
+    let back = load();
+    assert_eq!(
+        back.plugin_config("natural-language-control")["model"],
+        "llama3",
+        "this machine's answer, which never travels with the show",
+    );
+    assert!(back.plugin_config("command-line").is_null());
 }

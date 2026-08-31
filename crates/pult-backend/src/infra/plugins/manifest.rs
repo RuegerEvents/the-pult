@@ -215,6 +215,54 @@ fn contained_relative_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A plugin's configuration, composed of every layer that has an opinion.
+///
+/// In increasing order of precedence:
+///
+/// 1. the manifest's own `[config]`, and a `config.toml` beside it,
+/// 2. the show-level configuration on the plugin's roster row,
+/// 3. this station's overrides from `preferences.toml`.
+///
+/// Merged key by key rather than replaced wholesale, so a station overriding
+/// one value keeps the show's for its siblings — a station that had to restate
+/// a whole table to change one line would get them out of step the first time
+/// the show's copy changed.
+///
+/// **Station last, not show last.** The most specific layer wins, and the
+/// things a station legitimately overrides — a credential, a local model URL, a
+/// machine with different hardware — are exactly the things that must not be
+/// written into a showfile. A show-last order would leave a station unable to
+/// correct a value the show got wrong for it.
+pub fn compose_config(
+    manifest: &PluginManifest,
+    show: &serde_json::Value,
+    station: &serde_json::Value,
+) -> serde_json::Value {
+    let mut composed = manifest.effective_config();
+    deep_merge_json(&mut composed, show);
+    deep_merge_json(&mut composed, station);
+    composed
+}
+
+fn deep_merge_json(base: &mut serde_json::Value, overlay: &serde_json::Value) {
+    match (base, overlay) {
+        // Null is "said nothing", not "said empty" — a layer that does not
+        // mention a plugin must not blank out the layer beneath it.
+        (_, serde_json::Value::Null) => {}
+        (serde_json::Value::Object(base), serde_json::Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                match base.get_mut(key) {
+                    Some(existing) => deep_merge_json(existing, value),
+                    None => {
+                        base.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (base, overlay) => *base = overlay.clone(),
+    }
+}
+
 fn deep_merge(base: &mut toml::Table, overlay: toml::Table) {
     for (key, value) in overlay {
         match (base.get_mut(&key), value) {
@@ -395,6 +443,93 @@ mod tests {
             api = "9.9"
             wasm = "x.wasm""#);
         assert!(err.contains("this station speaks"), "{err}");
+    }
+
+    #[test]
+    fn configuration_layers_merge_key_by_key_with_the_station_last() {
+        let manifest = PluginManifest::parse(
+            Path::new("/nowhere"),
+            r#"
+            [plugin]
+            id = "nl"
+            name = "NL"
+            version = "0.1.0"
+            api = "0.1"
+            wasm = "nl.wasm"
+
+            [config]
+            provider = "ollama"
+            model = "llama3"
+            temperature = 0.2
+            "#,
+        )
+        .expect("parses");
+
+        let show = serde_json::json!({ "provider": "openrouter", "model": "sonnet" });
+        let station = serde_json::json!({ "model": "the-one-on-this-machine" });
+
+        let composed = compose_config(&manifest, &show, &station);
+
+        // The station said one thing, so it changed one thing. Replacing the
+        // table wholesale would have lost the show's provider, and a station
+        // that had to restate everything to change a line would drift out of
+        // step the first time the show's copy moved.
+        assert_eq!(composed["model"], "the-one-on-this-machine", "the station wins");
+        assert_eq!(composed["provider"], "openrouter", "and the show still beats the manifest");
+        assert_eq!(composed["temperature"], 0.2, "and untouched keys survive from the manifest");
+    }
+
+    #[test]
+    fn a_layer_with_nothing_to_say_says_nothing() {
+        let manifest = PluginManifest::parse(
+            Path::new("/nowhere"),
+            r#"
+            [plugin]
+            id = "nl"
+            name = "NL"
+            version = "0.1.0"
+            api = "0.1"
+            wasm = "nl.wasm"
+
+            [config]
+            provider = "ollama"
+            "#,
+        )
+        .expect("parses");
+
+        // Null is "did not mention it", not "set it to empty" — otherwise a
+        // show with no plugin configuration would blank out the defaults every
+        // plugin ships with.
+        let composed = compose_config(&manifest, &serde_json::Value::Null, &serde_json::Value::Null);
+        assert_eq!(composed["provider"], "ollama");
+    }
+
+    #[test]
+    fn nested_tables_merge_rather_than_replace() {
+        let manifest = PluginManifest::parse(
+            Path::new("/nowhere"),
+            r#"
+            [plugin]
+            id = "nested"
+            name = "Nested"
+            version = "0.1.0"
+            api = "0.1"
+            wasm = "n.wasm"
+
+            [config.limits]
+            requests = 10
+            seconds = 30
+            "#,
+        )
+        .expect("parses");
+
+        let composed = compose_config(
+            &manifest,
+            &serde_json::json!({ "limits": { "requests": 100 } }),
+            &serde_json::Value::Null,
+        );
+        assert_eq!(composed["limits"]["requests"], 100);
+        assert_eq!(composed["limits"]["seconds"], 30, "the sibling key is not collateral damage");
     }
 
     #[test]

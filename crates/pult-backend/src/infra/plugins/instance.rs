@@ -72,7 +72,7 @@ pub struct InstanceDeps {
 /// deadlock with one dependency edge. Readiness travels back as
 /// [`PluginCommand::Ready`] or [`PluginCommand::Failed`]; calls sent before
 /// then simply queue in the mailbox and run after `init`.
-pub fn start(manifest: &PluginManifest, deps: InstanceDeps) -> InstanceHandle {
+pub fn start(manifest: &PluginManifest, config: serde_json::Value, deps: InstanceDeps) -> InstanceHandle {
     let id = manifest.plugin.id.clone();
     let manifest = manifest.clone();
     let (tx, rx) = mpsc::unbounded_channel::<InstanceMsg>();
@@ -80,7 +80,7 @@ pub fn start(manifest: &PluginManifest, deps: InstanceDeps) -> InstanceHandle {
     let manager = deps.manager.clone();
 
     tokio::spawn(async move {
-        match set_up(&manifest, deps, self_tx).await {
+        match set_up(&manifest, config, deps, self_tx).await {
             Ok((store, plugin)) => {
                 let _ = manager.send(PluginCommand::Ready { id: id.clone() }).await;
                 run(id, store, plugin, rx, manager).await;
@@ -99,6 +99,9 @@ pub fn start(manifest: &PluginManifest, deps: InstanceDeps) -> InstanceHandle {
 
 async fn set_up(
     manifest: &PluginManifest,
+    // Already composed from every layer that has an opinion: the manifest's
+    // own defaults, the show's roster row, and this station's preferences.
+    config: serde_json::Value,
     deps: InstanceDeps,
     self_tx: mpsc::UnboundedSender<InstanceMsg>,
 ) -> Result<(Store<PluginCtx>, Plugin), String> {
@@ -155,7 +158,6 @@ async fn set_up(
         .await
         .map_err(|e| format!("instantiating: {e}"))?;
 
-    let config = manifest.effective_config();
     let config_text = serde_json::to_string(&config).unwrap_or_else(|_| "null".into());
     store.set_epoch_deadline(CALL_DEADLINE_TICKS);
     plugin

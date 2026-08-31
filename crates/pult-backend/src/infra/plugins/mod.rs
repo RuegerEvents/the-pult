@@ -161,6 +161,9 @@ struct Loaded {
     /// The digest it came from, or `None` for one loaded off a plugin
     /// directory. This is what the roster diff keys on.
     sha256: Option<String>,
+    /// The composed configuration this instance was handed in `init`. Kept so
+    /// the reconcile can notice when it no longer matches what the layers say.
+    config: Value,
 }
 
 pub struct PluginManager {
@@ -360,7 +363,8 @@ impl PluginManager {
             self.insert_failed(id.clone(), PathBuf::new(), reason);
         }
         for m in ordered {
-            self.start_plugin(m);
+            let config = self.config_for(&m, &Value::Null);
+            self.start_plugin(m, config);
         }
         self.publish().await;
     }
@@ -384,7 +388,7 @@ impl PluginManager {
         let info = info_for(&manifest_stub, PluginStatus::Failed(reason));
         self.plugins.insert(
             id,
-            Loaded { manifest: manifest_stub, info, instance: None, started_at: Instant::now(), sha256: None },
+            Loaded { manifest: manifest_stub, info, instance: None, started_at: Instant::now(), sha256: None, config: Value::Null },
         );
     }
 
@@ -393,7 +397,7 @@ impl PluginManager {
     /// message. A dependency merely has to be *loading* — calls to it queue in
     /// its mailbox until its `init` is done, so the order the mailboxes were
     /// created in is the only sequencing anybody needs.
-    fn start_plugin(&mut self, manifest: PluginManifest) {
+    fn start_plugin(&mut self, manifest: PluginManifest, config: Value) {
         let id = manifest.plugin.id.clone();
         // Where this one came from survives a restart. Without it, reviving a
         // crashed carried plugin would leave the row looking like a directory
@@ -417,17 +421,17 @@ impl PluginManager {
             warn!("[plugin:{id}] {reason}");
             self.plugins.insert(
                 id,
-                Loaded { manifest, info, instance: None, started_at: Instant::now(), sha256: carried },
+                Loaded { manifest, info, instance: None, started_at: Instant::now(), sha256: carried, config: config.clone() },
             );
             return;
         }
 
         info!("[plugin:{id}] loading {}", manifest.wasm_path().display());
-        let handle = instance::start(&manifest, self.deps.clone());
+        let handle = instance::start(&manifest, config.clone(), self.deps.clone());
         let info = info_for(&manifest, PluginStatus::Loading);
         self.plugins.insert(
             id,
-            Loaded { manifest, info, instance: Some(handle), started_at: Instant::now(), sha256: carried },
+            Loaded { manifest, info, instance: Some(handle), started_at: Instant::now(), sha256: carried, config: config.clone() },
         );
     }
 
@@ -449,9 +453,14 @@ impl PluginManager {
                 && !loaded.manifest.plugin.wasm.is_empty()
         });
         if needs_revival {
-            let manifest = self.plugins.get(&plugin).map(|l| l.manifest.clone());
-            if let Some(manifest) = manifest {
-                self.start_plugin(manifest);
+            let held = self
+                .plugins
+                .get(&plugin)
+                .map(|l| (l.manifest.clone(), l.config.clone()));
+            if let Some((manifest, config)) = held {
+                // The same configuration it had. Recomposing here would let a
+                // crash quietly pick up an edit nobody asked to apply yet.
+                self.start_plugin(manifest, config);
                 self.publish().await;
             }
         }
@@ -517,7 +526,8 @@ impl PluginManager {
                         self.plugins.remove(&id);
                     }
                 }
-                self.start_plugin(manifest);
+                let config = self.config_for(&manifest, &Value::Null);
+                self.start_plugin(manifest, config);
             }
             Err(reason) => {
                 warn!("[plugin] {}: {reason}", dir.display());
@@ -560,7 +570,13 @@ impl PluginManager {
             .plugins
             .iter()
             .map(|(id, loaded)| {
-                (id.clone(), roster::Running { sha256: loaded.sha256.clone() })
+                (
+                    id.clone(),
+                    roster::Running {
+                        sha256: loaded.sha256.clone(),
+                        config: loaded.config.clone(),
+                    },
+                )
             })
             .collect();
 
@@ -582,7 +598,30 @@ impl PluginManager {
             }
         }
 
-        let actions = roster::plan(&roster, &running, &overridden);
+        // What each carried plugin's configuration composes to now. Only a
+        // plugin whose manifest this station has read can be composed for; one
+        // still being fetched has no defaults to merge under yet, and it will
+        // be composed when it starts.
+        let station_prefs = crate::infra::preferences::load();
+        let desired_config: BTreeMap<String, Value> = roster
+            .iter()
+            .filter_map(|package| {
+                let loaded = self.plugins.get(&package.plugin_id)?;
+                if loaded.manifest.plugin.wasm.is_empty() {
+                    return None;
+                }
+                Some((
+                    package.plugin_id.clone(),
+                    manifest::compose_config(
+                        &loaded.manifest,
+                        &package.config,
+                        &station_prefs.plugin_config(&package.plugin_id),
+                    ),
+                ))
+            })
+            .collect();
+
+        let actions = roster::plan(&roster, &running, &overridden, &desired_config);
         if actions.is_empty() {
             if changed {
                 self.publish().await;
@@ -610,6 +649,16 @@ impl PluginManager {
                     self.plugins.remove(&plugin_id);
                     changed = true;
                 }
+                roster::Action::Restart { plugin_id, sha256 } => {
+                    // Same bytes, different configuration. A plugin is handed
+                    // its config in `init` and never again, so the only way to
+                    // change it is a fresh instance.
+                    info!("[plugin:{plugin_id}] restarting: its configuration changed");
+                    self.stop(&plugin_id).await;
+                    self.plugins.remove(&plugin_id);
+                    self.start_carried(&roster, &plugin_id, &sha256).await;
+                    changed = true;
+                }
                 roster::Action::Replace { plugin_id, sha256 } => {
                     self.stop(&plugin_id).await;
                     self.plugins.remove(&plugin_id);
@@ -626,6 +675,19 @@ impl PluginManager {
         if changed {
             self.publish().await;
         }
+    }
+
+    /// One plugin's configuration, composed from every layer that has an
+    /// opinion about it.
+    ///
+    /// `show` is the roster row's configuration, or null for a plugin loaded
+    /// from a directory — that one is deliberately not the show's, so the
+    /// show's settings for an id it happens to share are not its business
+    /// either. This station's preferences apply to both, since they are about
+    /// this machine rather than about where the plugin came from.
+    fn config_for(&self, manifest: &PluginManifest, show: &Value) -> Value {
+        let station = crate::infra::preferences::load().plugin_config(&manifest.plugin.id);
+        manifest::compose_config(manifest, show, &station)
     }
 
     /// The show's plugin roster, or nothing if it cannot be read.
@@ -688,7 +750,8 @@ impl PluginManager {
                     );
                     return;
                 }
-                self.start_plugin(manifest);
+                let config = self.config_for(&manifest, &package.config);
+                self.start_plugin(manifest, config);
                 if let Some(loaded) = self.plugins.get_mut(plugin_id) {
                     loaded.sha256 = Some(sha256.to_string());
                 }
@@ -773,6 +836,7 @@ impl PluginManager {
                 instance: None,
                 started_at: Instant::now(),
                 sha256: Some(package.sha256.clone()),
+                config: Value::Null,
             },
         );
     }

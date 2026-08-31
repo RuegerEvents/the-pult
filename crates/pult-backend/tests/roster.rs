@@ -532,3 +532,55 @@ async fn a_copy_on_disk_beats_the_one_the_show_carries() {
     station.stop();
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[tokio::test]
+async fn changing_the_shows_configuration_restarts_the_plugin_everywhere() {
+    let station = Station::start().await;
+
+    let (bytes, _) = a_bundle("configured", "0.1");
+    let digest = upload(&station, bytes).await;
+    let id = station.install("configured", &digest).await;
+    station
+        .eventually("configured", "started once", |r| r["status"]["state"] != "Fetching")
+        .await;
+
+    // A plugin is handed its configuration in `init` and never again, so there
+    // is no way to change it that is not a new instance. What this asserts is
+    // that the reconcile notices at all: without the config in the diff, the
+    // digest still matches and the change would be silently ignored.
+    let before = station.eventually("configured", "settled", |_| true).await;
+    station
+        .running
+        .engine
+        .set(
+            vec![
+                PathSegment::Key("plugin_packages".into()),
+                PathSegment::Id(id),
+                PathSegment::Key("config".into()),
+            ],
+            Lifecycle::Persisted,
+            json!({ "prompt": "$" }),
+        )
+        .await
+        .expect("the configuration changes");
+
+    // The bundle did not move, so it must still be the same digest afterwards
+    // — a restart, not a replacement.
+    let after = station
+        .eventually("configured", "restarted", |r| r["sha256"] == before["sha256"])
+        .await;
+    assert_eq!(after["id"], "configured", "{after}");
+
+    let roster = station
+        .running
+        .engine
+        .get(vec![PathSegment::Key("plugin_packages".into())])
+        .await
+        .unwrap();
+    assert_eq!(
+        roster[0]["config"]["prompt"], "$",
+        "and the show carries the setting, so every station composes the same answer",
+    );
+
+    station.stop();
+}

@@ -118,14 +118,16 @@ async fn preferences() -> Json<serde_json::Value> {
 /// asked for: a depth outside what the console will do comes back at the nearest
 /// value that is.
 async fn set_preferences(Json(body): Json<serde_json::Value>) -> Result<Json<serde_json::Value>, Response> {
-    let asked = infra::preferences::Preferences {
-        history_depth: body
-            .get("historyDepth")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok())
-            .ok_or_else(|| bad_request("historyDepth has to be a number"))?,
-    }
-    .sane();
+    // Read, change, write. Building a fresh `Preferences` from the body would
+    // quietly drop every setting this route does not mention — the per-plugin
+    // configuration among them, which is where an operator's API keys live.
+    let mut asked = infra::preferences::load();
+    asked.history_depth = body
+        .get("historyDepth")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or_else(|| bad_request("historyDepth has to be a number"))?;
+    let asked = asked.sane();
 
     infra::preferences::save(&asked).map_err(|e| {
         // Worth an error rather than a silent success: an operator who set something
