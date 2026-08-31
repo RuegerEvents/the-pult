@@ -31,6 +31,7 @@ use crate::{
     infra::connectors::OutputManager,
     infra::devices::{spawn_mdns_browser, DeviceManager},
     infra::identity,
+    infra::plugins::PluginManager,
     infra::session::SessionManager,
     infra::showfile,
     infra::stations::{prune_stale, StationReporter, REPORT_INTERVAL},
@@ -53,6 +54,7 @@ pub struct Running {
     pub sync_addr: SocketAddr,
     pub node_id: NodeId,
     pub engine: EngineHandle,
+    pub plugins: crate::infra::plugins::PluginsHandle,
     pub serve: JoinHandle<Result<()>>,
 }
 
@@ -151,12 +153,29 @@ pub async fn start(config: Config) -> Result<Running> {
     tokio::spawn(sync_mgr.run());
     tokio::spawn(session_mgr.run());
 
+    // Plugins come up last of the managers: they see a station that already
+    // plays back and syncs, which is also the state a hot reload lands in.
+    let (plugin_mgr, plugin_handle) = PluginManager::new(
+        engine_handle.clone(),
+        broadcast.clone(),
+        crate::api::rpcs::LocalRpcDeps {
+            session: session_handle.clone(),
+            devices: device_handle.clone(),
+        },
+        config.plugin_dirs.clone(),
+        // The asset store a carried bundle lives in.
+        Some(pool.clone()),
+    );
+    tokio::spawn(plugin_mgr.run());
+    let plugin_handle_for_running = plugin_handle.clone();
+
     let state = AppState {
         engine: engine_handle.clone(),
         pool,
         sync: sync_handle,
         session: session_handle,
         devices: device_handle,
+        plugins: plugin_handle,
         node_id,
         ws_registry: SubscriptionRegistry::default(),
         broadcast: broadcast.clone(),
@@ -168,6 +187,7 @@ pub async fn start(config: Config) -> Result<Running> {
         .route("/ws", get(ws_handler))
         .merge(crate::api::rest::routes())
         .merge(crate::api::rest::config_routes())
+        .merge(crate::infra::plugins::asset_routes())
         // The console itself, last, so `/ws` and `/assets` are matched first and
         // every other path falls through to the single-page app.
         .fallback(crate::api::spa::handler)
@@ -188,6 +208,7 @@ pub async fn start(config: Config) -> Result<Running> {
         sync_addr,
         node_id,
         engine: engine_handle,
+        plugins: plugin_handle_for_running,
         serve,
     })
 }

@@ -94,6 +94,45 @@ async fn a_type_the_console_will_not_serve_is_refused_with_a_reason() {
 }
 
 #[tokio::test]
+async fn a_bundle_is_handed_back_as_an_attachment_and_a_plan_is_not() {
+    let (addr, _pool) = a_console().await;
+    let client = reqwest::Client::new();
+
+    // A zip does not execute in a browser, so serving one is inert — but it is
+    // not a document either, and a link to one should only ever download it.
+    let posted = client
+        .post(format!("http://{addr}/assets"))
+        .header("content-type", crate::infra::assets::BUNDLE_MIME)
+        .body(b"PK\x03\x04 not really a zip, but bytes are bytes".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), 200);
+    let sha = posted.json::<serde_json::Value>().await.unwrap()["sha256"].as_str().unwrap().to_string();
+
+    let got = client.get(format!("http://{addr}/assets/{sha}")).send().await.unwrap();
+    assert_eq!(
+        got.headers().get("content-disposition").and_then(|v| v.to_str().ok()),
+        Some("attachment"),
+    );
+
+    let posted = client
+        .post(format!("http://{addr}/assets"))
+        .header("content-type", "image/png")
+        .body(PNG)
+        .send()
+        .await
+        .unwrap();
+    let sha = posted.json::<serde_json::Value>().await.unwrap()["sha256"].as_str().unwrap().to_string();
+
+    let got = client.get(format!("http://{addr}/assets/{sha}")).send().await.unwrap();
+    assert!(
+        got.headers().get("content-disposition").is_none(),
+        "a plan is displayed, not downloaded",
+    );
+}
+
+#[tokio::test]
 async fn an_asset_nobody_has_is_a_not_found_rather_than_a_hang() {
     let (addr, _pool) = a_console().await;
 

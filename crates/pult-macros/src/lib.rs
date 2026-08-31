@@ -805,6 +805,11 @@ fn pult_commands_impl(impl_block: &mut syn::ItemImpl) -> syn::Result<TokenStream
 
             method.attrs.retain(|a| !a.path().is_ident("pult_command"));
 
+            // args_ts stays the single source: the structured form is derived
+            // from it here, or left empty where it is too clever to parse.
+            let args_schema_str = args_schema_from_ts(&args_ts_str).unwrap_or_default();
+            let doc_str = doc_comment_of(&method.attrs);
+
             let method_name = &method.sig.ident;
             let cmd_name_str = to_camel_case(&method_name.to_string());
             let has_args = method.sig.inputs.len() > 1;
@@ -841,6 +846,8 @@ fn pult_commands_impl(impl_block: &mut syn::ItemImpl) -> syn::Result<TokenStream
                     command_name: #cmd_name_str,
                     is_public: true,
                     args_ts: #args_ts_str,
+                    args_schema: #args_schema_str,
+                    doc: #doc_str,
                     handler: #handler_fn_name,
                 });
             });
@@ -856,6 +863,78 @@ fn extract_impl_self_ident(ty: &Type) -> Option<&syn::Ident> {
     } else {
         None
     }
+}
+
+/// Derive the structured argument list from an `args = "{ ... }"` TypeScript
+/// literal: `"{ cueId: string, at?: number }"` becomes
+/// `[{"name":"cueId","type":"string","optional":false},{"name":"at","type":"number","optional":true}]`.
+///
+/// Only the flat object shape every command so far uses. Anything nested or
+/// otherwise clever gets `None` — the TS literal is still pasted verbatim into
+/// the frontend types, it just carries no structure for a command line.
+fn args_schema_from_ts(args_ts: &str) -> Option<String> {
+    let trimmed = args_ts.trim();
+    if trimmed.is_empty() {
+        return Some("[]".to_string());
+    }
+    let body = trimmed.strip_prefix('{')?.strip_suffix('}')?;
+    if body.contains(['{', '}', '<', '(', '"', '\'']) {
+        return None;
+    }
+    let mut entries = Vec::new();
+    for field in body.split(',') {
+        let field = field.trim();
+        if field.is_empty() {
+            continue;
+        }
+        let (name, ty) = field.split_once(':')?;
+        let (name, optional) = match name.trim().strip_suffix('?') {
+            Some(bare) => (bare.trim(), true),
+            None => (name.trim(), false),
+        };
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        // The type is not validated: it is TypeScript's word, kept as text.
+        entries.push(format!(
+            r#"{{"name":{},"type":{},"optional":{}}}"#,
+            serde_json_string(name),
+            serde_json_string(ty.trim()),
+            optional
+        ));
+    }
+    Some(format!("[{}]", entries.join(",")))
+}
+
+/// A JSON string literal, by hand: this crate has syn and quote, not serde.
+fn serde_json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The `///` lines of a method, joined the way rustdoc reads them.
+fn doc_comment_of(attrs: &[syn::Attribute]) -> String {
+    let mut lines = Vec::new();
+    for attr in attrs {
+        if attr.path().is_ident("doc") {
+            if let syn::Meta::NameValue(nv) = &attr.meta {
+                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value {
+                    lines.push(s.value().trim().to_string());
+                }
+            }
+        }
+    }
+    lines.join("\n")
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────
@@ -874,4 +953,33 @@ fn to_camel_case(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::args_schema_from_ts;
+
+    #[test]
+    fn args_schema_covers_every_registered_shape() {
+        // The three commands that exist today.
+        assert_eq!(args_schema_from_ts(""), Some("[]".to_string()));
+        assert_eq!(
+            args_schema_from_ts("{ at?: number }"),
+            Some(r#"[{"name":"at","type":"number","optional":true}]"#.to_string())
+        );
+        assert_eq!(
+            args_schema_from_ts("{ cueId: string, at?: number }"),
+            Some(
+                r#"[{"name":"cueId","type":"string","optional":false},{"name":"at","type":"number","optional":true}]"#
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_clever_literal_yields_no_schema_rather_than_a_wrong_one() {
+        assert_eq!(args_schema_from_ts("{ nested: { a: string } }"), None);
+        assert_eq!(args_schema_from_ts("{ list: Array<string> }"), None);
+        assert_eq!(args_schema_from_ts("string"), None);
+    }
 }

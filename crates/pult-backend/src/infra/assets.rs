@@ -24,16 +24,53 @@ pub struct Asset {
     pub bytes: Vec<u8>,
 }
 
-/// The image types a stage plan can be.
+/// A plugin bundle: the zip holding a manifest, a component and any web assets.
+///
+/// It is stored here rather than in a store of its own because everything that
+/// makes this one right for a stage plan is right for a bundle too — the digest is
+/// the check, the same bundle carried by two shows is stored once, and a station
+/// that has never seen it can fetch it from a peer and verify what came back.
+pub const BUNDLE_MIME: &str = "application/vnd.pult.plugin+zip";
+
+/// What may be stored, and how big each kind may be.
 ///
 /// No SVG: it is a document with scripts in it, and serving one from the console's
 /// own origin would let an uploaded file run as the console. A PDF never reaches
 /// here either — the frontend rasterises page one and uploads that, so the backend
 /// and both stage views only ever handle an image.
-pub const ACCEPTED: &[&str] = &["image/png", "image/jpeg", "image/webp"];
+///
+/// A zip does not execute in a browser, so serving one is inert — but it is served
+/// as an attachment all the same (see the REST layer), so a bundle can never be
+/// navigated to as a document.
+pub const ACCEPTED: &[(&str, usize)] = &[
+    // 32 MB. A ground plan is a drawing, not a photograph of one.
+    ("image/png", 32 * 1024 * 1024),
+    ("image/jpeg", 32 * 1024 * 1024),
+    ("image/webp", 32 * 1024 * 1024),
+    // 64 MB. A component with a JavaScript panel beside it, not a media library —
+    // but wasm is bulkier than a drawing, so it gets more room than one.
+    (BUNDLE_MIME, 64 * 1024 * 1024),
+];
 
-/// 32 MB. A ground plan is a drawing, not a photograph of one.
-pub const MAX_BYTES: usize = 32 * 1024 * 1024;
+/// The largest anything may be, which is what the HTTP body limit has to be set to.
+/// One route takes every kind, so the limit is the widest of them and `put` is what
+/// enforces the per-kind ceiling.
+pub const MAX_BYTES: usize = {
+    let mut max = 0;
+    let mut i = 0;
+    while i < ACCEPTED.len() {
+        if ACCEPTED[i].1 > max {
+            max = ACCEPTED[i].1;
+        }
+        i += 1;
+    }
+    max
+};
+
+/// How big this kind of asset may be, or `None` if it may not be stored at all.
+pub fn ceiling_for(mime: &str) -> Option<usize> {
+    ACCEPTED.iter().find(|(kind, _)| *kind == mime).map(|(_, max)| *max)
+}
 
 pub fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -41,14 +78,14 @@ pub fn digest(bytes: &[u8]) -> String {
 
 /// Store one asset and return its hash. Storing the same bytes twice is a no-op.
 pub async fn put(pool: &SqlitePool, mime: &str, bytes: &[u8]) -> Result<String> {
-    if !ACCEPTED.contains(&mime) {
-        bail!("{mime} is not an image this console will serve");
-    }
+    let Some(ceiling) = ceiling_for(mime) else {
+        bail!("{mime} is not something this console will store");
+    };
     if bytes.is_empty() {
         bail!("an asset with no bytes in it");
     }
-    if bytes.len() > MAX_BYTES {
-        bail!("{} bytes is more than the {MAX_BYTES} an asset may be", bytes.len());
+    if bytes.len() > ceiling {
+        bail!("{} bytes is more than the {ceiling} a {mime} may be", bytes.len());
     }
 
     let sha = digest(bytes);

@@ -1,0 +1,19 @@
+# Copy to config.toml and edit; the plugin reloads when it changes.
+# config.toml is merged over the manifest's [config] table.
+
+# A local model via Ollama (default — no key, nothing leaves the machine):
+provider = "ollama"
+model = "qwen3:4b"
+
+# Or OpenRouter:
+# provider = "openrouter"
+# model = "anthropic/claude-haiku-4.5"
+# api_key_env = "PULT_LLM_API_KEY"   # export PULT_LLM_API_KEY=sk-or-...
+
+# Or any OpenAI-compatible endpoint:
+# provider = "openai"
+# base_url = "https://api.openai.com/v1"
+# model = "gpt-4.1-mini"
+
+# Remember: the console only allows hosts named in pult-plugin.toml's
+# [permissions] http list. A provider elsewhere needs its host added there.

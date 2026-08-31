@@ -12,6 +12,9 @@
 #   scripts/demo.sh --no-seed    a fresh show, empty
 #   scripts/demo.sh --no-sims    no simulated devices
 #   scripts/demo.sh --two        a second station, joined to the first's session
+#   scripts/demo.sh --plugins    build the reference WASM plugins and load them:
+#                                a Command Line panel, a Natural Language bar,
+#                                and a plugin-shipped Programmer Monitor
 #
 # Ports can be overridden: PORT, SYNC_PORT, BROKER_PORT — and PORT_2, SYNC_PORT_2,
 # BROKER_PORT_2 for the second station.
@@ -38,12 +41,14 @@ KEEP=0
 SEED=1
 SIMS=1
 TWO=0
+PLUGINS=0
 for arg in "$@"; do
   case "$arg" in
     --keep) KEEP=1 ;;
     --no-seed) SEED=0 ;;
     --no-sims) SIMS=0 ;;
     --two) TWO=1 ;;
+    --plugins) PLUGINS=1 ;;
     # The comment block at the top of this file is the help text, so the two
     # cannot drift apart. Printed up to the first line that is not a comment.
     -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
@@ -129,6 +134,17 @@ if ! cargo build --quiet > "$DEMO_DIR/build.log" 2>&1; then
   exit 1
 fi
 
+PLUGIN_FLAGS=()
+if [ "$PLUGINS" = 1 ]; then
+  echo "building the plugins"
+  if ! "$ROOT/scripts/build-plugins.sh" > "$DEMO_DIR/plugins-build.log" 2>&1; then
+    echo "the plugin build failed:" >&2
+    cat "$DEMO_DIR/plugins-build.log" >&2
+    exit 1
+  fi
+  PLUGIN_FLAGS=(--plugins "$ROOT/plugins")
+fi
+
 if [ ! -d "$ROOT/frontend/node_modules" ]; then
   echo "installing frontend dependencies"
   if ! npm --prefix "$ROOT/frontend" install --silent > "$DEMO_DIR/npm-install.log" 2>&1; then
@@ -151,6 +167,7 @@ start_station() {
     --port "$port" \
     --sync-port "$sync_port" \
     --openhaunt-broker-port "$broker_port" \
+    ${PLUGIN_FLAGS[@]+"${PLUGIN_FLAGS[@]}"} \
     > "$log" 2>&1 &
   PIDS+=($!)
 
@@ -313,6 +330,23 @@ if [ "$SIMS" = 1 ]; then
        the room.
    12. Outputs — add an Art-Net output and watch its frame rate appear.
    13. Stations — this console, its cpu and memory, and what it is sending.
+EOF
+fi
+
+if [ "$PLUGINS" = 1 ]; then
+  cat <<'EOF'
+
+  Plugins are loaded. Add the panels with the + in any tile:
+
+    Command Line        fixture 1 thru 2 @ 80 · sequence 1 go · help
+                        (Ctrl/Cmd+K focuses it; Tab completes)
+    Programmer Monitor  a panel the plugin ships as its own JavaScript
+    Natural Language    needs a model: an Ollama on localhost works out of
+                        the box, or copy config.toml.example beside the
+                        plugin's manifest and point it at a provider
+
+  Edit anything under plugins/ and rebuild (scripts/build-plugins.sh) — the
+  station reloads the plugin while it runs.
 EOF
 fi
 

@@ -1,0 +1,42 @@
+# Natural language in, command lines out.
+#
+# The second worked example: a plugin that depends on another plugin and talks
+# to the network. It holds no schema knowledge of its own — the command-line
+# plugin's grammar is fetched at startup and handed to the model, and whatever
+# comes back runs through that same plugin, selection and all.
+
+[plugin]
+id = "natural-language-control"
+name = "Natural Language"
+version = "0.1.0"
+api = "0.1"
+wasm = "natural_language_control.wasm"
+
+# A one-line input with a transcript flyout.
+[[surfaces]]
+id = "bar"
+kind = "bar"
+title = "Natural Language"
+
+[permissions]
+# No data access of its own: everything it does to the show goes through the
+# command line, which is the point — one grammar, one audit trail.
+commands = false
+# The hosts an LLM might live at. Add your provider here if it is elsewhere;
+# anything not listed is refused by the console, not by this plugin.
+http = ["openrouter.ai", "api.openai.com", "localhost", "127.0.0.1"]
+# The key is the operator's, passed through by name, never written in a config.
+env = ["PULT_LLM_API_KEY"]
+
+[dependencies]
+plugins = ["command-line"]
+
+# Defaults; put overrides in a config.toml beside this file (see
+# config.toml.example). provider picks the base_url and model defaults:
+# "ollama" (local, no key), "openrouter", or "openai" — anything speaking
+# the /v1/chat/completions shape works via explicit base_url.
+[config]
+provider = "ollama"
+model = ""
+base_url = ""
+api_key_env = "PULT_LLM_API_KEY"

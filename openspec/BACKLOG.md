@@ -1,0 +1,219 @@
+# Backlog of candidate changes
+
+Each entry is a candidate for `/opsx:propose <name>`. The entry records what
+exists today (verified against the code, 2026-08-31) and the questions a
+proposal has to answer — the point of moving this out of a todo list is that
+the open questions travel with the item instead of being re-discovered.
+
+Ordering within a section is rough priority; sections are themes, not order.
+
+## Plugins (builds on the WIP WASM runtime)
+
+**All four are proposed.** `plugin-installation`, `plugin-showfile-binding` and
+`plugin-sync` became one change, `openspec/changes/plugin-distribution/`, because
+they share the authority decision; `plugin-datastores` is its own change. The
+entries below are kept as the record of what was asked; the proposals are where
+the answers are.
+
+### plugin-installation — see `changes/plugin-distribution/`
+How a plugin gets onto a console that is not a dev checkout. Today plugins are
+loaded from a directory passed as `--plugins`; they are not release artifacts
+(ROADMAP task 8 left this open).
+- Install from a file? A URL? A registry? Drag-drop into the web UI?
+- Who verifies what a plugin is allowed to do — the permission grant UX at
+  install time vs. first run.
+- Are plugins per-station or per-show (see plugin-showfile-binding)?
+
+### plugin-showfile-binding — see `changes/plugin-distribution/`
+Which plugins a show *needs* vs. which a station *has*. A show authored with
+the command-line plugin's panels in its layout degrades on a station without
+it (panel ids already survive missing plugins).
+- Distinguish setup-relevant vs. runtime-relevant plugins?
+- Does the showfile record required plugins + versions? Warn or refuse on
+  open when one is missing?
+- Plugin *config* (e.g. NL provider/model) — showfile, station preferences,
+  or the plugin's own directory as today?
+
+### plugin-sync — see `changes/plugin-distribution/`
+Do plugins replicate between stations the way show data does? Today each
+station loads its own directory; a session can have stations with different
+plugin sets.
+- Sync the wasm bytes (they are content-addressable like assets) or only
+  agree on the manifest?
+- A plugin holding an API key must NOT replicate its secrets.
+- Interaction with hot reload: an edit on one station — does it propagate?
+
+### plugin-datastores — see `changes/plugin-datastores/`
+Plugins have no persistence. A plugin wanting to remember anything across
+restarts has nowhere to put it.
+- A per-plugin key-value store in the showfile (PERSISTED, replicated) vs. a
+  station-local one vs. both — the lifecycle question again, per key.
+- Quotas; what happens to a store whose plugin is gone.
+- Could reuse the entity machinery: a plugin declaring a schema at load time
+  vs. opaque JSON blobs.
+
+### plugin-language-hosts
+A plugin that hosts other plugins in another language — e.g. a TypeScript
+host plugin embedding a JS runtime, so plugins can be written in TS on top
+of it.
+- Does the host API (permissions, introspection, surfaces) pass through
+  cleanly, or does the host become a second, drifting plugin API?
+- Alternative: componentize JS directly (jco/StarlingMonkey) so a TS plugin
+  is just a component and no host plugin exists.
+- Defer until a real TS plugin wants to exist?
+
+### openhaunt-as-plugin
+Should the OpenHaunt output path (and Art-Net/sACN) be WASM plugins instead
+of built-in connectors? The spec calls output "a plugin layer" already;
+today `OutputPlugin` is a Rust trait inside the backend.
+- The 40 Hz output path through a WASM boundary — measure before deciding
+  (task 29 has the tick-cost numbers to compare against).
+- Discovery (mDNS) and the embedded MQTT broker are harder to host in a
+  guest than frame emission is.
+- Middle ground: keep connectors native, expose the same registration to
+  plugins so a *new* protocol can be a plugin without moving the built-ins.
+
+## Natural language and voice
+
+### voice-input
+Voice as an input path to the command line. Open question that shapes it:
+an utterance may already be valid command-line syntax — with the NL plugin
+it could go to the LLM anyway (waste, latency), without the NL plugin it
+should parse directly.
+- Route: try the grammar first, fall back to NL only on parse failure?
+- Where speech-to-text runs: browser (Web Speech API), station, or plugin.
+- Push-to-talk vs. wake word; confirmation before destructive commands.
+
+### nl-show-context
+"A bit darker" needs the current value; the NL plugin has none. Verified:
+`plugins/natural-language-control/pult-plugin.toml` grants no data access
+(`commands = false`), by design — everything goes through the command line.
+- Options: (a) give the plugin read access and put state in the prompt,
+  (b) add relative syntax to the command line (see relative-values) so the
+  model never needs the value, (c) both.
+- (b) keeps the "one grammar, one audit trail" property; (a) weakens the
+  safety story and grows the prompt with the rig.
+
+### llm-cost-overview
+Token/cost accounting for the NL plugin, visible over the REST API.
+- Where measured: the plugin sees the responses (usage fields); host sees
+  only bytes. Plugin reports → LOCAL state? Then a `GET /api/...` beside
+  `/api/config` and a panel reading the same numbers.
+- Per session, per show, per station? Cost tables per provider/model live
+  where, and who updates them?
+
+## Programming model
+
+### relative-values
+Not supported today — every write is absolute. Wanted by NL ("darker"), by
+the command line (`dim +10`), and by fan/encoders eventually.
+- Where does relative resolve to absolute? The engine (needs the authoritative
+  current value, works from any client) vs. the client (racy).
+- Relative to what: programmer value if held, else playback value — the
+  priority rule (task 14) already defines the stack to read.
+- Undo of a relative write records the absolute before/after (oplog already
+  carries `previous`).
+
+### fixture-groups
+Task 30 left this open explicitly: a selection is a query, queries cannot be
+saved. The moment groups are show data, the query types move from
+`frontend/src/lib/selection.ts` to pult-schema and the backend gets an
+evaluator beside the frontend's (the comment in selection.ts says so).
+- PERSISTED `groups` collection holding the query, not the id list.
+- Command-line addressing (`group 3 at 50`) comes free via introspection.
+
+## Showfiles
+
+### showfile-management
+Versioning, backup, automated backup to an external drive. Today: one SQLite
+file, saved in place; the oplog grows forever (pruning belongs here).
+- Save-as / snapshots / autosave cadence; what a "version" is when the show
+  is also replicated live to peers.
+- Backup target configuration is a station preference (task 33's
+  preferences.toml is the home).
+- Restore UX: open a backup read-only vs. roll the working file back.
+- Oplog pruning on save/backup: history_depth already bounds what undo needs.
+
+### showfile-assets-folder
+Assets are a blob table inside the SQLite file (task 13), addressed by
+sha256. Question: a showfile *folder* with an assets directory instead, and
+zip on export — plus dedup across versions.
+- Content addressing already gives dedup; versioned backups of a folder
+  share unchanged assets naturally (hardlinks / store-once).
+- A single file is robust against half-copies; a folder is friendlier to
+  rsync and inspection. Export-as-zip can exist either way.
+- Decide together with showfile-management, not separately.
+
+## Interop
+
+### mvr-import
+MVR (My Virtual Rig) import — native or plugin. Task 13 noted `StagePlan` +
+the asset store are what an import needs and nothing is in its way.
+- Brings fixtures, positions, and 3D geometry; maps to `Fixture::position`
+  and plans. GDTF references inside MVR need gdtf-import first or stubs.
+
+### gdtf-import
+GDTF fixture definitions — native or plugin. `FixtureType` is derived data
+today (OpenHaunt nodes describe themselves); GDTF is the same idea as a
+file: the description becomes a fixture type.
+- Real pan/tilt ranges fix the 540°/270° constants task 14 complains about.
+- Channel-mode selection, wheels, and physical data: how much of GDTF maps
+  onto `ParameterDefinition` before it needs to grow.
+
+### paperwork-export
+Patch lists, cue sheets, rider paperwork — native or plugin.
+- A read-only report is an ideal plugin (introspection already exposes all
+  the data); print CSS vs. PDF generation.
+
+## Observability
+
+### outputs-viewer
+A live view of what leaves the console: DMX sheet per universe, OpenHaunt
+messages per node. The dedup caches in `connectors::dmx` already hold the
+current universe images; OH sends are discrete messages worth a ring buffer.
+- LOCAL state on the owning station; the viewer subscribes cross-station
+  (latency numbers set precedent: a link property is published by whoever
+  measured it).
+- 40 Hz × 512 bytes should not hit the WebSocket unthrottled — snapshot on
+  demand or diffed at panel rate.
+
+### system-stats-panel
+Stations panel (task 10) has cpu/mem/uptime. Missing: network throughput,
+sync backlog, tick cost, WS client counts, broker stats.
+- Extend `Station` rows vs. a new LOCAL stats collection; sample rates.
+
+## Performance
+
+### multithreading
+The engine is one actor; task 29 measured 2000 fixtures at ~137% of one core
+with the tick itself the small half (apply/broadcast/output per moved
+fixture is the cost). Named cheaper wins first: per-key writes instead of
+cloning whole `live_values` maps.
+- Parallelize the render (rayon over fixtures) vs. partition computation
+  across stations (task 10's open question — which also answers redundancy).
+- Do the cheap win, then measure again before adding threads.
+
+### demo-shows
+Small / big / huge seeded shows to find bottlenecks (task 29's numbers came
+from ad-hoc rigs). Extend `scripts/demo-seed.mjs` with size presets; huge =
+thousands of fixtures, hundreds of cues, effects running, several plans.
+- Doubles as regression material: record tick cost per preset in CI?
+
+## Media and time
+
+### video-mapping-ndi
+NDI output for video mapping. Almost certainly a plugin (first real test of
+whether the plugin API can carry a heavy output), or a sibling connector.
+- Frames come from where — a pixel-mapped fixture array rendered by the
+  engine, or media playback? Scope carefully; this hides a media server.
+
+### timecode-workflow
+The big one, and the spec is opinionated: waveform/beat-grid timecode, plus
+"timecode without timecode" (timed cue playback), audio import and playback.
+`FollowMode::Timecode` has existed unimplemented since task 3, deliberately
+waiting for this design.
+- Audio import lands in the asset store; playback on which station, and what
+  do the others chase? (The OpenHaunt clock topic and `went_at` anchoring
+  are prior art for shared time.)
+- Beat grids relate to SpeedMasters (tap tempo is a degenerate beat grid).
+- External SMPTE/MTC in scope or explicitly out?

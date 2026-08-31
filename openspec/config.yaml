@@ -1,0 +1,38 @@
+schema: spec-driven
+
+context: |
+  the-pult is a distributed lighting console: Rust backend (axum, SQLite
+  showfiles, mDNS+TCP peer sync, wasmtime WASM plugin runtime), SvelteKit
+  frontend embedded in the binary, Tauri desktop wrappers, and a simulated
+  OpenHaunt I/O node. Read CLAUDE.md first; docs/SPEC.md is the product
+  spec, docs/ROADMAP.md the build history (33 tasks, each with the
+  decisions and traps recorded), docs/PLUGINS.md the plugin author guide.
+
+  Non-negotiable principles every proposal must respect:
+  - pult-schema is the single source of truth. Adding an entity collection
+    must need no edit outside pult-schema; nothing enumerates entity types
+    in sync, snapshots, codecs, the WIT contract, or plugins (they use
+    runtime introspection). Run `cargo run -p pult-codegen -- generate`
+    after schema changes; never hand-edit generated files.
+  - Every field has a lifecycle: LOCAL (this station + its frontends),
+    SYNCED (all peers + frontends, not persisted), PERSISTED (SQLite +
+    replicated). Frontend-only UI state lives in Svelte stores.
+  - Stations converge from replicated facts, not messages: commands carry
+    their anchor time, rendering is a pure function of replicated state
+    plus the wall clock, and each station is the sole authority on its own
+    LOCAL rows.
+  - Devices describe themselves; the console carries no catalogue.
+  - Zero warnings in both `cargo build` and `svelte-check`.
+
+  The backlog of candidate changes and their open questions is
+  openspec/BACKLOG.md — pick items from there into `/opsx:propose`.
+
+rules:
+  proposal:
+    - State which lifecycle (LOCAL/SYNCED/PERSISTED) any new state uses and why
+    - Say whether the capability is native or a plugin, and why
+    - Include a Non-goals section
+  specs:
+    - Requirements must hold on a multi-station session, not just one console
+  design:
+    - Note any impact on pult-schema, the WIT contract, or the sync protocol

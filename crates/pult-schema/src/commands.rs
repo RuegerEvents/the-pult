@@ -11,6 +11,13 @@ pub struct CommandRegistration {
     /// TypeScript argument type literal for codegen (empty string = no args → `(): Promise<void>`).
     /// Example: `"{ cueId: string }"` → `(args: { cueId: string }): Promise<void>`.
     pub args_ts: &'static str,
+    /// The same arguments as data: a JSON array of `{ "name", "type", "optional" }`,
+    /// derived from `args_ts` at compile time. What a command line completes and
+    /// validates against. Empty string where `args_ts` was too clever to parse —
+    /// never hand-written, so `args_ts` stays the single source.
+    pub args_schema: &'static str,
+    /// The method's `///` comment, for help text. Empty where there is none.
+    pub doc: &'static str,
     pub handler: fn(serde_json::Value, serde_json::Value) -> anyhow::Result<serde_json::Value>,
 }
 

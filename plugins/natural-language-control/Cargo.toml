@@ -1,0 +1,16 @@
+[package]
+name = "natural-language-control"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pult-plugin-sdk = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The one crate that talks wasi:http from the guest side. Isolated behind
+# src/http.rs, so if it ever lags the WASI minor the fallback is raw bindings
+# in that one file.
+waki = { version = "0.5", features = ["json"] }

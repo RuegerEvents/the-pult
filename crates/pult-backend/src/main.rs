@@ -39,6 +39,11 @@ struct Args {
     /// moving a station's identity to different hardware, and for tests.
     #[arg(long, value_name = "UUID")]
     node_id: Option<uuid::Uuid>,
+    /// Load WASM plugins from this directory — either one plugin's directory or
+    /// a directory of them. Repeat the flag for several. Changed files reload
+    /// the plugin while the console runs.
+    #[arg(long = "plugins", value_name = "DIR")]
+    plugin_dirs: Vec<std::path::PathBuf>,
 }
 
 /// Accept either `host:port` or a bare address, defaulting to the Art-Net port.
@@ -80,6 +85,7 @@ async fn main() -> Result<()> {
         sacn: args.sacn,
         openhaunt_broker_port: args.openhaunt_broker_port,
         node_id: args.node_id,
+        plugin_dirs: args.plugin_dirs,
         ..Config::default()
     })
     .await?;

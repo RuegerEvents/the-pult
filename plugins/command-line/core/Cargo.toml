@@ -1,0 +1,14 @@
+# The command line as maths: tokenizer, parser, completion, help.
+#
+# No wasm, no host calls, no I/O — everything that needs the show happens in
+# the plugin crate around this. That is what lets `cargo test` cover the whole
+# grammar on the host target.
+
+[package]
+name = "command-line-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

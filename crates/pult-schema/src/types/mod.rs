@@ -14,6 +14,7 @@ pub mod programmer;
 pub mod speedmaster;
 pub mod user;
 pub mod layout;
+pub mod plugin;
 
 pub use fixture::{Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
@@ -36,6 +37,10 @@ pub use station::{PeerLink, PeerLinks, Station, StationCreate, StationPatch};
 pub use stage::{StagePlan, StagePlanCreate, StagePlanPatch};
 pub use programmer::{ProgrammerValue, ProgrammerValueCreate, ProgrammerValuePatch};
 pub use layout::{Layout, LayoutCreate, LayoutNode, LayoutPatch, SplitDirection};
+pub use plugin::{
+    PluginInfo, PluginPackage, PluginPackageCreate, PluginPackagePatch, PluginPermissions,
+    PluginStage, PluginStatus, PluginsState, SurfaceInfo, WebPanelInfo,
+};
 pub use flow::{
     Flow, FlowCreate, FlowEdge, FlowEdgeCreate, FlowEdgePatch, FlowNode, FlowNodeCreate,
     FlowNodeKind, FlowNodePatch, FlowPatch, PortKind, TriggerAction, TriggerCondition,

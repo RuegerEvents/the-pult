@@ -79,6 +79,19 @@ describe('entry ids', () => {
 		// "ab" + "/" + "c" and "a" + "/" + "bc" are different parameters.
 		expect(entryId('ab', 'c')).not.toBe(entryId('a', 'bc'));
 	});
+
+	it('agrees with the command-line plugin by pinned example', () => {
+		// These exact pairs are asserted to these exact ids in the Rust
+		// reimplementation too (plugins/command-line/core/src/ids.rs). The two
+		// derivations must agree or two writers of one fader get two rows —
+		// a change that moves either side breaks one suite or the other.
+		expect(entryId('2f6b535b-9a71-4c39-9d95-6d6ab2f0f639', 'Intensity')).toBe(
+			'5f13b718-4585-810f-9f90-15d7509267f4'
+		);
+		expect(entryId('00000000-0000-0000-0000-000000000000', 'ColorRgb')).toBe(
+			'3ad6b4b5-4891-8a54-ae06-93999b3641bd'
+		);
+	});
 });
 
 describe('what a selection can be given', () => {

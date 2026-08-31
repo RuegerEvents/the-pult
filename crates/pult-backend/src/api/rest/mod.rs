@@ -70,9 +70,81 @@ where
     Router::new()
         .route("/assets", post(upload))
         .route("/assets/{sha}", get(download))
+        // Installing a plugin is the same shape of request as uploading a plan:
+        // bytes in a body, too large for the WebSocket, and the answer is what
+        // the show now says about it.
+        .route("/api/plugins", post(install_plugin))
         // Raw bytes rather than multipart: there is one file and its type is in the
         // header, so a form encoding would only be something else to get wrong.
         .layer(axum::extract::DefaultBodyLimit::max(assets::MAX_BYTES))
+}
+
+/// Install a plugin from its bundle.
+///
+/// The order matters and is the whole of why this is a route rather than two.
+/// The manifest is read and validated **before** anything is stored, so a
+/// rejected upload leaves neither an asset nor a roster row behind — a console
+/// that accumulated the bundles it had refused would be a console nobody could
+/// explain.
+async fn install_plugin(
+    State(state): State<AssetState>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, Response> {
+    use pult_schema::{lifecycle::Lifecycle, path::PathSegment, types::plugin::PluginPackage};
+
+    // Validated against where it *would* be unpacked, so the relative paths in
+    // it are checked the same way they will be when it is.
+    let would_be = infra::plugins::cache::root()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(assets::digest(&body));
+    let info = infra::plugins::bundle::read_manifest(&body, &would_be)
+        .map_err(|e| bad_request(&format!("{e:#}")))?;
+    let manifest = info.manifest;
+
+    let sha256 = assets::put(&state.pool, assets::BUNDLE_MIME, &body)
+        .await
+        .map_err(|e| bad_request(&e.to_string()))?;
+
+    // One row per plugin id. Replacing rather than adding is what makes
+    // installing a new build of something an upgrade instead of a conflict.
+    let roster: Vec<PluginPackage> = state
+        .engine
+        .get(vec![PathSegment::Key("plugin_packages".into())])
+        .await
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let existing = roster.iter().find(|p| p.plugin_id == manifest.plugin.id);
+
+    let package = PluginPackage {
+        id: existing.map(|p| p.id).unwrap_or_else(uuid::Uuid::new_v4),
+        plugin_id: manifest.plugin.id.clone(),
+        name: manifest.plugin.name.clone(),
+        version: manifest.plugin.version.clone(),
+        api: manifest.plugin.api.clone(),
+        sha256: sha256.clone(),
+        // An upgrade keeps whatever the operator had chosen: switching a plugin
+        // off and installing a new build of it should not switch it back on.
+        enabled: existing.map(|p| p.enabled).unwrap_or(true),
+        stage: existing.map(|p| p.stage).unwrap_or_default(),
+        config: existing.map(|p| p.config.clone()).unwrap_or(serde_json::Value::Null),
+    };
+    let value = serde_json::to_value(&package).map_err(|e| bad_request(&e.to_string()))?;
+
+    let path = match existing {
+        Some(p) => vec![PathSegment::Key("plugin_packages".into()), PathSegment::Id(p.id)],
+        None => vec![
+            PathSegment::Key("plugin_packages".into()),
+            PathSegment::Key("__create".into()),
+        ],
+    };
+    state
+        .engine
+        .set(path, Lifecycle::Persisted, value.clone())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?;
+
+    Ok(Json(json!({ "installed": value, "replaced": existing.is_some() })))
 }
 
 /// Kept apart from [`routes`] because the body limit those two carry is for the
@@ -118,14 +190,16 @@ async fn preferences() -> Json<serde_json::Value> {
 /// asked for: a depth outside what the console will do comes back at the nearest
 /// value that is.
 async fn set_preferences(Json(body): Json<serde_json::Value>) -> Result<Json<serde_json::Value>, Response> {
-    let asked = infra::preferences::Preferences {
-        history_depth: body
-            .get("historyDepth")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok())
-            .ok_or_else(|| bad_request("historyDepth has to be a number"))?,
-    }
-    .sane();
+    // Read, change, write. Building a fresh `Preferences` from the body would
+    // quietly drop every setting this route does not mention — the per-plugin
+    // configuration among them, which is where an operator's API keys live.
+    let mut asked = infra::preferences::load();
+    asked.history_depth = body
+        .get("historyDepth")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or_else(|| bad_request("historyDepth has to be a number"))?;
+    let asked = asked.sane();
 
     infra::preferences::save(&asked).map_err(|e| {
         // Worth an error rather than a silent success: an operator who set something
@@ -199,15 +273,21 @@ async fn download(
 }
 
 fn serve(asset: assets::Asset) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, asset.mime),
-            // The name is the contents, so this response can never go stale.
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
-        ],
-        asset.bytes,
-    )
-        .into_response()
+    let mut headers = HeaderMap::new();
+    if let Ok(mime) = asset.mime.parse() {
+        headers.insert(header::CONTENT_TYPE, mime);
+    }
+    // The name is the contents, so this response can never go stale.
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    // A bundle is inert in a browser, but it is never a document either. Handing it
+    // back as an attachment means a link to one can only ever download it.
+    if asset.mime == assets::BUNDLE_MIME {
+        headers.insert(header::CONTENT_DISPOSITION, header::HeaderValue::from_static("attachment"));
+    }
+    (headers, asset.bytes).into_response()
 }
 
 /// Where the other stations serve HTTP.

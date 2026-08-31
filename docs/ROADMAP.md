@@ -20,7 +20,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. |
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
 | Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. A port that says it can trace a shape is handed one descriptor instead of forty messages a second. Tested end to end against `tools/openhaunt-node-sim` and, since task 22, against real firmware on an ESP32. |
-| WASM plugins | Not started. `infra/plugins/mod.rs` is a stub. |
+| WASM plugins | Working. wasmtime component runtime with a WIT contract, permissions, hot reload, plugin-to-plugin calls and runtime introspection of the schema registries. Two reference plugins in `plugins/`: a command line (grammar built from introspection, console panel with completion and spans) and natural-language control (an LLM over the plugin's own gated HTTP, executing through the command line). Plugin UI is built-in surfaces or plugin-shipped web components. `docs/PLUGINS.md` is the author guide. |
 | 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects are in, and a selection is a question about the rig rather than a list. |
 | Selection | Working as a query over the rig: by type, name, sphere, box or the spec's radial cone, built up by adding, narrowing and removing, and ordered along an axis or outwards from a point. Re-evaluated as the rig changes, so a fixture patched under a live selection joins it. Queries cannot be saved as groups yet. |
 | Effects | Working. One primitive covers a shape and a step list, running from the programmer or a cue, at its own rate or a speed master's. Rendered identically on every station from replicated state, and handed to a node that can trace it for itself. No amplitude fade into one yet. |
@@ -114,9 +114,19 @@ What this does not do:
 
 The one exception is ts-rs printing `failed to parse serde attribute` for the generated Patch structs' `skip_serializing_if`. That is inside ts-rs.
 
-### 8. WASM plugins
+### 8. WASM plugins (done)
 
 Nothing else depends on it, and the plugin API should be designed against a system that already plays back cues and drives output.
+
+That deferral paid for itself. The API landed as one WIT package (`wit/pult-plugin.wit`, wasmtime 48 + wasm32-wasip2 components) with JSON on every edge, so no entity type appears in the contract — a plugin learns the schema from introspection host functions that serve the `EntityMeta` and `CommandRegistration` inventories at runtime, plus a station-RPC table that `handle_local_call` was refactored into (`api/rpcs.rs`) so those six calls stopped being invisible. `PluginManager` mirrors `OutputManager`: an actor, per-plugin instance actors under it, LOCAL `plugins` state telling every frontend what runs. Manifest permissions gate everything — data access, commands, an outbound-HTTP host allowlist enforced in the host's `send_request`, env passthrough by name. Epoch interruption traps a guest that runs five seconds; a changed file reloads its plugin while the show is up, which is the node-sim's stop-and-start-fresh applied to plugins.
+
+Two rules fell out of debugging rather than design. The manager never awaits guest code — a dependency's `init` calling back through the manager deadlocked the first version; now instances init on their own tasks, readiness is a message, and calls to a still-loading dependency queue in its mailbox, which makes mailbox creation order the whole of load sequencing. And plugin writes carry the caller's identity: the surface context's user attributes every write of a call, gathered under one gesture, so a CLI command that fans over a selection is one Ctrl-Z.
+
+Plugin UI is both ways at once: *surfaces* the console draws (a command-line panel, a one-line bar — the plugin implements `surface.exec`/`complete`/`help`, pure Rust, spans and completions included) and *web components* the plugin ships as JavaScript served from its directory. Panel ids are `plugin:<id>:<panel>`, so saved layouts survive a missing plugin the way they survive an unknown panel.
+
+The reference plugins double as the examples: `plugins/command-line` derives its entire grammar from introspection (and reimplements the frontend's derived programmer-entry id, pinned in both test suites so the two FNV implementations can only drift loudly); `plugins/natural-language-control` depends on it, fetches its grammar for the prompt, and runs whatever the model answers back through it — the command line is the safety boundary, and the model gets no other hands. `scripts/build-plugins.sh` builds the separate `plugins/` workspace; `scripts/demo.sh --plugins` loads everything; `docs/PLUGINS.md` teaches it.
+
+Left open: no resource limits beyond the epoch deadline (memory is unbounded), plugins are not release artifacts, and the `is_public` flag on commands still has no reader.
 
 ### 9. Output configuration in the web UI (done)
 
@@ -1361,7 +1371,87 @@ configuration, which is right while each is a page of its own and will stop bein
 right when the second console-level preference arrives. The preferences file has no
 version field.
 
+### 34. A show carries its plugins (done)
+
+The first change planned in OpenSpec rather than here:
+`openspec/changes/plugin-distribution/`. A plugin was a directory on one
+station's disk named by `--plugins`, which is right for developing one and
+wrong for everything else — a show authored with the command line's panels in
+its layout degraded on every other console in the session, and installing on a
+ten-station rig was ten copies.
+
+**A `plugin_packages` roster is PERSISTED, and the bundle is an asset.** The row
+names its bundle by the sha256 of the zip; the bytes go in the same
+content-addressed store task 13 built for stage plans, so `fetch_from_peers`,
+the digest check and the dedup were all already written. Adding the collection
+needed no edit outside `pult-schema`, which is task 2's promise still holding
+thirty-two tasks later.
+
+**The digest covers the archive, not the component.** A plugin is a manifest
+*plus* a component *plus* the scripts a panel loads; hashing the wasm alone
+would leave two thirds of it unversioned, and a changed panel script would be
+indistinguishable from no change at all.
+
+**Stations reconcile, keyed by `(plugin_id, sha256)`.** The diff is a pure
+function in `roster.rs`, so the interesting cases are tested without a station,
+a showfile or a wasm engine. The action worth having a name for is `Publish`: a
+row carries a display name and a stage hint as well as a digest, and editing
+those must not restart the plugin. That is task 9's lesson about outputs
+arriving from another direction — rebuilding a live thing for a label edit put a
+redundant frame on the wire, and here it would be a plugin restarting mid-show.
+
+**A fetch never happens inside the event loop**, for the reason task 8 recorded:
+the manager awaiting something that can call back into it is how the first
+version deadlocked. It runs on its own task and reports back as a message, and
+the test stands up a peer that accepts the request and then says nothing.
+
+**`Fetching` is a state, not a failure.** A station that has just joined and is
+downloading is working; saying "failed" would send an operator looking for a
+fault that is not there.
+
+**A `--plugins` directory beats the show**, on that station only. Otherwise
+somebody editing a plugin on a console joined to a session would silently be
+running the show's build — the most confusing thing the runtime could do to the
+person least able to explain it.
+
+**Configuration is three layers**, most specific winning: the manifest, the
+show's row, then `[plugins.<id>]` in the station's `preferences.toml`. Station
+last because what a station overrides is what is true of that machine and no
+other, and a show cannot know which console holds the key. A plugin is handed
+its configuration in `init` and never again, so a change is a restart.
+
+**The trust assumption, stated rather than left implicit.** Opening a showfile
+runs the plugins it carries: no approval step, and the manifest's permissions
+are granted by opening the file. The sandbox, the epoch deadline and every
+permission gate still bound it; what they do not bound is a plugin that
+legitimately has `data = "read-write"` and an HTTP allowlist. So the Plugins
+panel prints each plugin's permissions in words, and an approval gate is a
+recorded open question with the schema laid out so adding one is a field and a
+status rather than a redesign.
+
+Three bugs the tests found, in ascending order of how much they mattered:
+
+- The disk-override flag was set after an early return that fires when the plan
+  is empty — which is exactly when the only roster row is the overridden one.
+  The flag was never set in the one case it exists for.
+- `PUT /api/preferences` built a fresh `Preferences` from the request body,
+  which would have erased every plugin's station configuration — an operator's
+  API keys among them — on the next change to the history depth.
+- **A station that successfully fetched a bundle never ran it.** The
+  placeholder row saying "fetching" already carried the digest, so the next diff
+  saw a match and decided there was nothing to do. Every earlier test either had
+  the cache already warm or had the fetch fail, so none of them went down the
+  path the whole change exists for. Found by writing the two-station test last
+  rather than first, which is the wrong order and is why it survived that long.
+
+Left open: install over HTTP carries no user, so it is a change nobody can take
+back; nothing prunes an unreferenced bundle from the asset store, the same way
+nothing prunes a replaced stage plan; and the `stage` hint groups the panel and
+gates nothing.
+
 ## Further out
+
+Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.
 
