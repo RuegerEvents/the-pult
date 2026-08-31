@@ -104,6 +104,37 @@ Token/cost accounting for the NL plugin, visible over the REST API.
 
 ## Programming model
 
+### parameter-defaults
+What a fixture does when nothing is controlling it. Today: nothing puts a
+parameter back. `live_values` only ever grows — `emit()` in
+`crates/pult-backend/src/model/playback.rs` merges a tick's changes onto the map
+the fixture already has, and no path removes a key. Running off the end of a
+sequence holds the last values on purpose (the comment at playback.rs:283 says a
+light should not go dark because the operator ran out of cues), and a cue going
+down drops its effects but leaves what it faded to. Clearing the programmer
+restores `Overlay::beneath`, which is `zero_like` — a hardcoded zero of the same
+variant — when nothing was live before the key was grabbed, so the first clear on
+an untouched fixture lands on zero rather than on the fixture's default.
+`ParameterDefinition::default_value` already exists
+(`crates/pult-schema/src/types/fixture.rs`), derived from what an OpenHaunt node
+says about its ports, but only the connectors read it, and only as a fallback for
+a key absent from `live_values`.
+- Where "nothing is controlling this" is decided: a bottom layer of the priority
+  stack (task 14's stack), or the absence of the key — connectors already fall
+  back to `default_value`, so removing the key is the cheaper spelling. But
+  panels read `live_values` to show what a fixture is doing, and an absent key
+  reads as unknown rather than as at-default.
+- `zero_like` at programmer release should presumably be the default instead.
+  Same question for a captured parameter with no prior value (playback.rs:353).
+- Per fixture type as today, or overridable per fixture and per show? A house
+  light that defaults to on is the case that forces this, and `default_value` is
+  derived data — making it editable needs somewhere PERSISTED for the override.
+- Snap to the default or fade to it, and on whose time — a release time is a
+  station preference, a cue-out time is show data.
+- Tracking: this needs "not controlled" to be distinguishable from "tracked from
+  an earlier cue". Does the change define release only at the sequence-off and
+  programmer-clear boundaries, or does it want a tracking model first?
+
 ### relative-values
 Not supported today — every write is absolute. Wanted by NL ("darker"), by
 the command line (`dim +10`), and by fan/encoders eventually.
@@ -122,17 +153,86 @@ evaluator beside the frontend's (the comment in selection.ts says so).
 - PERSISTED `groups` collection holding the query, not the id list.
 - Command-line addressing (`group 3 at 50`) comes free via introspection.
 
+## Users and undo
+
+### default-user
+A show must always have a user, so undo works without anybody being asked to set
+it up first. There is no no-user. Today there is: `users` is a PERSISTED
+collection (`crates/pult-schema/src/types/user.rs`) that nothing ever seeds — a
+fresh show has none, and `scripts/demo-seed.mjs` makes none either. The
+frontend's `userId` starts null, "before anybody has said"
+(`frontend/src/lib/stores/user.ts`), and `beUser(null)` is wired to a *Sign out*
+button, so it is also a state you can go back to on purpose. A write made in that
+state carries `Authorship { user_id: None }`, and `Operation::is_undoable()`
+requires `user_id.is_some()` (`crates/pult-schema/src/events/operation.rs:196`),
+so it can never be taken back — not even once the operator says who they are.
+Both surfaces already admit the hole rather than fix it: the undo store refuses
+with "Say who you are first", and the UserBar's tooltip reads "Nobody is signed
+in — changes cannot be taken back".
+- Who creates the default and when: at show creation in the backend, or lazily by
+  the first client to connect. Only the backend holds for a station with no
+  browser attached — plugins and station RPCs write too, and they are somebody.
+- What it is called. The station name, the OS user, a plain "Operator"? A name
+  nobody chose beats no attribution, but it has to be renameable, and two
+  stations opening the same show must not each make one.
+- Does a browser with no stored `pult.user` adopt the default silently or still
+  get asked? Adopting means two people at two browsers share one undo history
+  until they say otherwise — wrong in the other direction, but only for the
+  second person.
+- `Authorship::user_id` stays `Option` either way: the engine's own writes — a
+  fade advancing, a station publishing its memory use — are genuinely nobody's.
+  This is about the client path never sending `None`, not about the type.
+- What becomes of *Sign out*: remove it, or make it switch-user with no null
+  state to land in.
+- Showfiles already written with an empty `users` table: create the default on
+  open, or only apply this to new shows? Their existing oplog entries carry
+  `user_id: None` and stay un-undoable regardless.
+
+### history-pruning
+The oplog is never pruned. Nothing deletes a row —
+`crates/pult-backend/src/infra/showfile/oplog.rs` has `append`, `since`, `len`
+and `recent_by_people`, and no `DELETE` exists anywhere in the backend. So a
+showfile grows for as long as it is used, and a long tech week is paid for in
+disk and in the cost of every catch-up query over that table.
+
+`history_depth` already exists as the number that should bound it — show data,
+clamped, settable over REST, defaulting from the station's `preferences.toml`
+(`crates/pult-schema/src/types/show.rs`) — but it bounds *reads* only: the
+`History` command clamps its limit to it (`engine/mod.rs:664`) and
+`recent_by_people` takes it as a SQL `LIMIT`. Everything past it is still on
+disk, invisible and unreachable. Pruning to that same number is the missing
+half.
+- When: on save, on open, on a timer, or every n appends. Deleting inside a show
+  that is running has to not stall the tick.
+- `history_depth` counts operations *by people* — `recent_by_people` filters
+  `user_id IS NOT NULL` on purpose, because a station writing telemetry twice a
+  second would otherwise make the window about a quarter of an hour. Pruning has
+  to keep that distinction: the engine's own rows are the bulk of the table and
+  the first thing to drop, but they are not what the number counts.
+- Sync is served from the same table. `since()` answers catch-up from it and
+  `len()` decides catch-up versus a snapshot, so pruning a row a peer has not
+  seen has to fall back to the snapshot path rather than lose the write. Does the
+  prune floor rise only to what every known peer has acknowledged, or does it cut
+  freely and let the snapshot cover it?
+- A peer that has been away longer than the retention, and a station rejoining a
+  session after a week, are the same case as a fresh station — worth stating so.
+- Undo across a prune: the boundary is where Ctrl-Z stops, which is what
+  `history_depth` promises, so the history panel should show the end of the log
+  as an end rather than as an empty scroll.
+
 ## Showfiles
 
 ### showfile-management
 Versioning, backup, automated backup to an external drive. Today: one SQLite
-file, saved in place; the oplog grows forever (pruning belongs here).
+file, saved in place; the oplog grows forever (pruning is history-pruning).
 - Save-as / snapshots / autosave cadence; what a "version" is when the show
   is also replicated live to peers.
 - Backup target configuration is a station preference (task 33's
   preferences.toml is the home).
 - Restore UX: open a backup read-only vs. roll the working file back.
-- Oplog pruning on save/backup: history_depth already bounds what undo needs.
+- Oplog pruning on save/backup: see history-pruning, which is that question on
+  its own; showfile-management only has to say whether a backup is also a prune
+  point.
 
 ### showfile-assets-folder
 Assets are a blob table inside the SQLite file (task 13), addressed by
