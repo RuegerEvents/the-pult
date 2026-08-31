@@ -56,7 +56,7 @@ pub fn path() -> Option<PathBuf> {
 }
 
 /// The platform's configuration directory, without a crate to ask.
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     if cfg!(target_os = "windows") {
         return std::env::var_os("APPDATA").map(PathBuf::from);
     }

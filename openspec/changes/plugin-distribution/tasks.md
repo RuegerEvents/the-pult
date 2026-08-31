@@ -21,14 +21,14 @@ Each group is meant to end in its own commit with `cargo test`,
 
 ## 2. Bundles in the asset store
 
-- [ ] 2.1 Turn `ACCEPTED` in `infra/assets.rs` into a per-mime table of
+- [x] 2.1 Turn `ACCEPTED` in `infra/assets.rs` into a per-mime table of
       `(mime, max_bytes)` and add `application/vnd.pult.plugin+zip`. Verify the
       existing image tests still pass unchanged and a new test rejects a bundle
       over its own ceiling.
-- [ ] 2.2 Serve bundle-mime assets with `Content-Disposition: attachment` and
+- [x] 2.2 Serve bundle-mime assets with `Content-Disposition: attachment` and
       verify by asserting the header on a bundle response and its absence on an
       image response.
-- [ ] 2.3 Write `bundle.rs`: read a zip from bytes, validate and extract to a
+- [x] 2.3 Write `bundle.rs`: read a zip from bytes, validate and extract to a
       target directory. Verify with hostile archives as well as good ones — an
       absolute entry path, a `..` traversal, a symlink entry, an entry count
       over the cap, and an uncompressed total over the cap must each be refused
@@ -37,23 +37,23 @@ Each group is meant to end in its own commit with `cargo test`,
 
 ## 3. Reconciling what runs against what the show says
 
-- [ ] 3.1 Give `PluginManager` a subscription to `plugin_packages/**` and a
+- [x] 3.1 Give `PluginManager` a subscription to `plugin_packages/**` and a
       `RosterChanged` message, and verify with a test that a write to the
       collection reaches the manager without it awaiting guest code.
-- [ ] 3.2 Implement the diff keyed by `(plugin_id, sha256)` — start, stop,
+- [x] 3.2 Implement the diff keyed by `(plugin_id, sha256)` — start, stop,
       replace on digest change, and **publish only** when just `name` or
       `stage` changed. Verify with a test that renaming a package does not
       restart the running plugin (task 9's lesson, asserted rather than hoped).
-- [ ] 3.3 Unpack into `<config-dir>/the-pult/plugin-cache/<sha256>/` on demand,
+- [x] 3.3 Unpack into `<config-dir>/the-pult/plugin-cache/<sha256>/` on demand,
       reusing a directory that already exists. Verify a second show carrying the
       same digest unpacks nothing and starts from the cache.
-- [ ] 3.4 Exclude the cache directory from the watcher and verify a started
+- [x] 3.4 Exclude the cache directory from the watcher and verify a started
       carried plugin does not immediately reload itself.
-- [ ] 3.5 Add `PluginStatus::Fetching` and fetch missing bytes from peers on a
+- [x] 3.5 Add `PluginStatus::Fetching` and fetch missing bytes from peers on a
       separate task via `assets::fetch_from_peers`, messaging the manager when
       they land. Verify the event loop stays responsive during a fetch by
       answering a call to another plugin while one is in flight.
-- [ ] 3.6 Report a bundle no peer has, an unreadable archive, an invalid
+- [x] 3.6 Report a bundle no peer has, an unreadable archive, an invalid
       manifest and an API-version mismatch as that plugin's failure with the
       reason, and verify the show still opens and other roster entries still run.
 

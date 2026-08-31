@@ -84,6 +84,11 @@ pub struct PluginPackage {
 #[ts(export)]
 #[serde(tag = "state", content = "reason")]
 pub enum PluginStatus {
+    /// The show asks for this plugin and this station does not have its bytes
+    /// yet. A state of its own rather than a kind of failure: a station that
+    /// has just joined a session is *working*, and saying "failed" while it
+    /// downloads would send an operator looking for a fault that is not there.
+    Fetching,
     Loading,
     Running,
     Failed(String),
@@ -129,6 +134,34 @@ pub struct PluginInfo {
     pub status: PluginStatus,
     pub surfaces: Vec<SurfaceInfo>,
     pub panels: Vec<WebPanelInfo>,
+    /// The digest this station started it from, or `None` for one loaded from a
+    /// plugin directory. It is what tells the panel apart a plugin the show
+    /// carries from one somebody is editing.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    /// This station is running a copy from disk in place of the one the show
+    /// carries. Published because the alternative is an operator on the next
+    /// console wondering why the two of them behave differently.
+    #[serde(default)]
+    pub overridden_by_disk: bool,
+    /// What the manifest says this plugin may do, so what a show is asking for
+    /// is readable without opening the bundle.
+    #[serde(default)]
+    pub permissions: PluginPermissions,
+}
+
+/// A plugin's declared permissions, as text for an operator rather than as the
+/// enforcement itself — that lives in the host, where the guest cannot reach it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginPermissions {
+    /// `"none"`, `"read"` or `"read-write"`.
+    pub data: String,
+    pub commands: bool,
+    /// Hosts it may reach over outbound HTTP.
+    pub http: Vec<String>,
+    /// Environment variable *names* passed through to it. Never the values.
+    pub env: Vec<String>,
 }
 
 /// This station's view of its plugin runtime.

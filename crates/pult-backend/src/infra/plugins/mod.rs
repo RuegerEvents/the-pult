@@ -1,31 +1,54 @@
 //! The WASM plugin runtime.
 //!
-//! Which plugins exist is a fact about this station's disk: directories named
-//! by `--plugins`, each holding a `pult-plugin.toml` and a component. The
-//! manager loads them in dependency order, keeps the LOCAL `plugins` state
+//! Plugins reach a station two ways, and the difference matters.
+//!
+//! **From the show.** The `plugin_packages` roster is PERSISTED, so it
+//! replicates and reloads; each row names a bundle by its sha256, and the bytes
+//! live in the asset store beside the stage plans. A station reconciles what it
+//! runs against that roster whenever it changes, fetching a bundle it lacks from
+//! a peer and unpacking it into a cache keyed by digest. This is how one install
+//! equips a whole rig.
+//!
+//! **From the disk.** Directories named by `--plugins`, watched and hot
+//! reloaded. A plugin found on disk *overrides* a roster row with the same id,
+//! on that station only — otherwise a developer editing a plugin on a station
+//! joined to a session would silently be running the show's copy instead.
+//!
+//! The manager loads them in dependency order, keeps the LOCAL `plugins` state
 //! telling every frontend what is running, routes calls to them, and reloads
 //! one when its files change — a reload is a fresh instance, the way the
 //! node-sim applies a config by stopping the node and starting a new one.
+//!
+//! Two rules from the runtime's first version still hold and shape everything
+//! added here: **the manager never awaits guest code**, and it never awaits
+//! anything slow inside its event loop. A bundle fetch is an HTTP request to
+//! another station, so it runs on its own task and reports back as a message.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pult_schema::{
     lifecycle::Lifecycle,
     path::PathSegment,
-    types::plugin::{PluginInfo, PluginStatus, PluginsState, SurfaceInfo, WebPanelInfo},
+    types::plugin::{
+        PluginInfo, PluginPermissions, PluginStatus, PluginsState, SurfaceInfo, WebPanelInfo,
+    },
 };
 use serde_json::Value;
+use sqlx::SqlitePool;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 pub mod bundle;
+pub mod cache;
 pub mod manifest;
 
 mod assets;
 mod host_impls;
 mod instance;
+mod roster;
 mod runtime;
 mod watcher;
 
@@ -64,6 +87,18 @@ pub enum PluginCommand {
     AssetRoot {
         id: String,
         reply: oneshot::Sender<Option<PathBuf>>,
+    },
+    /// The show's plugin roster changed. Carries nothing: the roster is read
+    /// fresh from the engine, so two changes arriving close together settle on
+    /// the same answer rather than racing to apply their own snapshots.
+    RosterChanged,
+    /// A bundle fetch finished. Reported by the task that ran it, because
+    /// fetching is an HTTP request to another station and the event loop must
+    /// not be inside one.
+    Fetched {
+        sha256: String,
+        /// `Err` names why, for the status the operator reads.
+        result: Result<(), String>,
     },
     Shutdown,
 }
@@ -123,13 +158,22 @@ struct Loaded {
     instance: Option<InstanceHandle>,
     /// When the last (re)start happened, for the crash cooldown.
     started_at: Instant,
+    /// The digest it came from, or `None` for one loaded off a plugin
+    /// directory. This is what the roster diff keys on.
+    sha256: Option<String>,
 }
 
 pub struct PluginManager {
     dirs: Vec<PathBuf>,
     engine: EngineHandle,
+    /// The showfile, for reaching the asset store a bundle lives in.
+    pool: Option<Arc<SqlitePool>>,
+    broadcast: UpdateBroadcast,
     deps: InstanceDeps,
     plugins: BTreeMap<String, Loaded>,
+    /// Digests currently being fetched, so two roster changes arriving during
+    /// one download do not start a second one for the same bytes.
+    fetching: BTreeSet<String>,
     rx: mpsc::Receiver<PluginCommand>,
     tx: mpsc::Sender<PluginCommand>,
 }
@@ -140,6 +184,7 @@ impl PluginManager {
         broadcast: UpdateBroadcast,
         rpc_deps: LocalRpcDeps,
         dirs: Vec<PathBuf>,
+        pool: Option<Arc<SqlitePool>>,
     ) -> (Self, PluginsHandle) {
         // Canonical from the start: `--plugins plugins` is a fine thing to
         // type, but the watcher reports absolute paths, and matching a change
@@ -151,7 +196,7 @@ impl PluginManager {
         let (tx, rx) = mpsc::channel(64);
         let deps = InstanceDeps {
             engine: engine.clone(),
-            broadcast,
+            broadcast: broadcast.clone(),
             rpc_deps,
             manager: tx.clone(),
         };
@@ -159,8 +204,11 @@ impl PluginManager {
             Self {
                 dirs,
                 engine,
+                pool,
+                broadcast,
                 deps,
                 plugins: BTreeMap::new(),
+                fetching: BTreeSet::new(),
                 rx,
                 tx: tx.clone(),
             },
@@ -169,18 +217,45 @@ impl PluginManager {
     }
 
     pub async fn run(mut self) {
-        if self.dirs.is_empty() {
-            // Nothing to do, but stay alive: the handle is in AppState and a
-            // call should answer "no such plugin", not "runtime gone".
+        // The roster is watched whether or not any directory is configured: a
+        // station with no `--plugins` at all still runs what the show carries,
+        // which is the ordinary case for everything that is not a dev checkout.
+        let _roster_watch = self.watch_roster();
+
+        let _watcher = if self.dirs.is_empty() {
             info!("[plugin] no plugin directories configured");
+            None
         } else {
-            let _watcher = watcher::spawn(self.dirs.clone(), self.tx.clone());
-            self.load_all().await;
-            // The watcher thread lives as long as the manager loop below.
-            self.event_loop().await;
-            return;
-        }
+            Some(watcher::spawn(self.dirs.clone(), self.tx.clone()))
+        };
+
+        self.load_all().await;
+        // What the show already asks for, before anything has changed.
+        self.reconcile().await;
         self.event_loop().await;
+    }
+
+    /// Turn writes under `plugin_packages` into one message to ourselves.
+    ///
+    /// A create or a delete broadcasts the collection and a field write
+    /// broadcasts the field, so matching the first segment catches both. The
+    /// message carries nothing: the roster is read fresh when it is handled, so
+    /// a burst of writes settles on one answer instead of racing.
+    fn watch_roster(&self) -> tokio::task::JoinHandle<()> {
+        let mut stream = self.broadcast.subscribe_all();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            while let Some((path, _)) = stream.next().await {
+                let is_roster = matches!(
+                    path.first(),
+                    Some(PathSegment::Key(key)) if key == "plugin_packages"
+                );
+                if is_roster && tx.send(PluginCommand::RosterChanged).await.is_err() {
+                    break;
+                }
+            }
+        })
     }
 
     async fn event_loop(&mut self) {
@@ -214,6 +289,31 @@ impl PluginManager {
                         .get(&id)
                         .map(|loaded| loaded.manifest.dir.join("assets"));
                     let _ = reply.send(root);
+                }
+                PluginCommand::RosterChanged => {
+                    self.reconcile().await;
+                }
+                PluginCommand::Fetched { sha256, result } => {
+                    self.fetching.remove(&sha256);
+                    match result {
+                        // The bytes are in the store now, so the same diff that
+                        // asked for them will find them this time.
+                        Ok(()) => self.reconcile().await,
+                        Err(reason) => {
+                            // Name the failure against every plugin that was
+                            // waiting on these bytes, since that is what the
+                            // operator is looking at.
+                            for loaded in self.plugins.values_mut() {
+                                if loaded.sha256.as_deref() == Some(sha256.as_str())
+                                    && matches!(loaded.info.status, PluginStatus::Fetching)
+                                {
+                                    warn!("[plugin:{}] {reason}", loaded.info.id);
+                                    loaded.info.status = PluginStatus::Failed(reason.clone());
+                                }
+                            }
+                            self.publish().await;
+                        }
+                    }
                 }
                 PluginCommand::Shutdown => break,
             }
@@ -279,7 +379,7 @@ impl PluginManager {
         let info = info_for(&manifest_stub, PluginStatus::Failed(reason));
         self.plugins.insert(
             id,
-            Loaded { manifest: manifest_stub, info, instance: None, started_at: Instant::now() },
+            Loaded { manifest: manifest_stub, info, instance: None, started_at: Instant::now(), sha256: None },
         );
     }
 
@@ -290,6 +390,10 @@ impl PluginManager {
     /// created in is the only sequencing anybody needs.
     fn start_plugin(&mut self, manifest: PluginManifest) {
         let id = manifest.plugin.id.clone();
+        // Where this one came from survives a restart. Without it, reviving a
+        // crashed carried plugin would leave the row looking like a directory
+        // plugin, and the next reconcile would take that as an override.
+        let carried = self.plugins.get(&id).and_then(|loaded| loaded.sha256.clone());
 
         let unmet: Vec<&String> = manifest
             .dependencies
@@ -308,7 +412,7 @@ impl PluginManager {
             warn!("[plugin:{id}] {reason}");
             self.plugins.insert(
                 id,
-                Loaded { manifest, info, instance: None, started_at: Instant::now() },
+                Loaded { manifest, info, instance: None, started_at: Instant::now(), sha256: carried },
             );
             return;
         }
@@ -318,7 +422,7 @@ impl PluginManager {
         let info = info_for(&manifest, PluginStatus::Loading);
         self.plugins.insert(
             id,
-            Loaded { manifest, info, instance: Some(handle), started_at: Instant::now() },
+            Loaded { manifest, info, instance: Some(handle), started_at: Instant::now(), sha256: carried },
         );
     }
 
@@ -430,6 +534,250 @@ impl PluginManager {
         }
     }
 
+    /// Make what runs match what the show asks for.
+    ///
+    /// Read the roster, diff it against what is running, and apply. Idempotent
+    /// on purpose: a burst of writes produces a burst of messages, and each one
+    /// simply arrives at the same answer as the last.
+    async fn reconcile(&mut self) {
+        let roster = self.roster().await;
+
+        // Ids this station loads from a directory. They are the developer's,
+        // and the roster has no say about them.
+        let overridden: Vec<String> = self
+            .plugins
+            .values()
+            .filter(|loaded| loaded.sha256.is_none() && !loaded.manifest.plugin.wasm.is_empty())
+            .map(|loaded| loaded.info.id.clone())
+            .collect();
+
+        let running: BTreeMap<String, roster::Running> = self
+            .plugins
+            .iter()
+            .map(|(id, loaded)| {
+                (id.clone(), roster::Running { sha256: loaded.sha256.clone() })
+            })
+            .collect();
+
+        let actions = roster::plan(&roster, &running, &overridden);
+        if actions.is_empty() {
+            return;
+        }
+
+        // Say so once, where an operator can see it, rather than leaving a
+        // console that has quietly overridden the show looking like the others.
+        for id in &overridden {
+            if roster.iter().any(|p| &p.plugin_id == id) {
+                if let Some(loaded) = self.plugins.get_mut(id) {
+                    if !loaded.info.overridden_by_disk {
+                        info!("[plugin:{id}] running the copy on disk, not the one the show carries");
+                        loaded.info.overridden_by_disk = true;
+                    }
+                }
+            }
+        }
+
+        let mut changed = false;
+        for action in actions {
+            match action {
+                roster::Action::Publish { plugin_id } => {
+                    // Only the label moved. Whatever is running keeps running —
+                    // restarting a plugin because somebody fixed a typo in its
+                    // name is exactly what task 9 taught outputs not to do.
+                    if let (Some(package), Some(loaded)) =
+                        (find(&roster, &plugin_id), self.plugins.get_mut(&plugin_id))
+                    {
+                        if loaded.info.name != package.name {
+                            loaded.info.name = package.name.clone();
+                            changed = true;
+                        }
+                    }
+                }
+                roster::Action::Stop { plugin_id } => {
+                    self.stop(&plugin_id).await;
+                    self.plugins.remove(&plugin_id);
+                    changed = true;
+                }
+                roster::Action::Replace { plugin_id, sha256 } => {
+                    self.stop(&plugin_id).await;
+                    self.plugins.remove(&plugin_id);
+                    self.start_carried(&roster, &plugin_id, &sha256).await;
+                    changed = true;
+                }
+                roster::Action::Start { plugin_id, sha256 } => {
+                    self.start_carried(&roster, &plugin_id, &sha256).await;
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            self.publish().await;
+        }
+    }
+
+    /// The show's plugin roster, or nothing if it cannot be read.
+    async fn roster(&self) -> Vec<pult_schema::types::plugin::PluginPackage> {
+        let path = vec![PathSegment::Key("plugin_packages".into())];
+        let Ok(value) = self.engine.get(path).await else { return Vec::new() };
+        serde_json::from_value(value).unwrap_or_default()
+    }
+
+    /// Start a plugin the show carries, fetching its bundle if this station has
+    /// never seen it.
+    async fn start_carried(
+        &mut self,
+        roster: &[pult_schema::types::plugin::PluginPackage],
+        plugin_id: &str,
+        sha256: &str,
+    ) {
+        let Some(package) = find(roster, plugin_id) else { return };
+
+        let Some(dir) = cache::dir_for(sha256) else {
+            self.insert_carried_failure(
+                package,
+                format!("{sha256:?} is not a digest, so there is nowhere to unpack it"),
+            );
+            return;
+        };
+
+        if !cache::holds(sha256) {
+            // Two ways to not have it: the bytes are not in the store yet, or
+            // they are and nothing has unpacked them. Only the first is a fetch.
+            match self.bundle_bytes(sha256).await {
+                Some(bytes) => {
+                    if let Err(e) = bundle::extract(&bytes, &dir) {
+                        self.insert_carried_failure(package, format!("{e:#}"));
+                        return;
+                    }
+                }
+                None => {
+                    self.begin_fetch(package, sha256);
+                    return;
+                }
+            }
+        }
+
+        let manifest_path = dir.join(bundle::MANIFEST_NAME);
+        let parsed = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("reading the unpacked manifest: {e}"))
+            .and_then(|text| PluginManifest::parse(&dir, &text));
+        match parsed {
+            Ok(manifest) => {
+                // The bundle's own id has to be the one the roster promised, or
+                // a row could start a plugin that is not the plugin it names.
+                if manifest.plugin.id != package.plugin_id {
+                    self.insert_carried_failure(
+                        package,
+                        format!(
+                            "the bundle at this digest is {:?}, not {:?}",
+                            manifest.plugin.id, package.plugin_id
+                        ),
+                    );
+                    return;
+                }
+                self.start_plugin(manifest);
+                if let Some(loaded) = self.plugins.get_mut(plugin_id) {
+                    loaded.sha256 = Some(sha256.to_string());
+                }
+            }
+            Err(reason) => self.insert_carried_failure(package, reason),
+        }
+    }
+
+    /// The bundle's bytes from the local store, without going to the network.
+    async fn bundle_bytes(&self, sha256: &str) -> Option<Vec<u8>> {
+        let pool = self.pool.as_ref()?;
+        crate::infra::assets::get(pool, sha256).await.ok().flatten().map(|asset| asset.bytes)
+    }
+
+    /// Ask the other stations for a bundle, on a task of its own.
+    ///
+    /// Never in the event loop. This is an HTTP request with a ten-second
+    /// timeout to a machine that may not answer, and the loop it would block is
+    /// the one that routes every plugin call in the station.
+    fn begin_fetch(&mut self, package: &pult_schema::types::plugin::PluginPackage, sha256: &str) {
+        self.insert_carried_status(package, PluginStatus::Fetching);
+
+        if !self.fetching.insert(sha256.to_string()) {
+            return; // already on its way
+        }
+        let (Some(pool), sha) = (self.pool.clone(), sha256.to_string()) else {
+            return;
+        };
+        let engine = self.engine.clone();
+        let tx = self.tx.clone();
+        info!("[plugin:{}] fetching its bundle from a peer", package.plugin_id);
+        tokio::spawn(async move {
+            let peers = peer_addresses(&engine).await;
+            let result = match crate::infra::assets::fetch_from_peers(&pool, &sha, &peers).await {
+                // What comes back is hashed before it is stored, in the asset
+                // store itself — so nothing here has to trust a peer's answer.
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => Err(format!(
+                    "no station in this session has the bundle {}",
+                    &sha[..sha.len().min(12)]
+                )),
+                Err(e) => Err(format!("fetching the bundle failed: {e}")),
+            };
+            let _ = tx.send(PluginCommand::Fetched { sha256: sha, result }).await;
+        });
+    }
+
+    fn insert_carried_failure(
+        &mut self,
+        package: &pult_schema::types::plugin::PluginPackage,
+        reason: String,
+    ) {
+        warn!("[plugin:{}] {reason}", package.plugin_id);
+        self.insert_carried_status(package, PluginStatus::Failed(reason));
+    }
+
+    /// A row for a carried plugin that is not running, so the panel has
+    /// something to show while it is fetched — or something to explain if it
+    /// never will be.
+    fn insert_carried_status(
+        &mut self,
+        package: &pult_schema::types::plugin::PluginPackage,
+        status: PluginStatus,
+    ) {
+        let info = PluginInfo {
+            id: package.plugin_id.clone(),
+            name: package.name.clone(),
+            version: package.version.clone(),
+            status,
+            surfaces: Vec::new(),
+            panels: Vec::new(),
+            sha256: Some(package.sha256.clone()),
+            overridden_by_disk: false,
+            permissions: Default::default(),
+        };
+        let manifest = stub_manifest(&package.plugin_id);
+        self.plugins.insert(
+            package.plugin_id.clone(),
+            Loaded {
+                manifest,
+                info,
+                instance: None,
+                started_at: Instant::now(),
+                sha256: Some(package.sha256.clone()),
+            },
+        );
+    }
+
+    /// Give a plugin's guest its `shutdown` and drop the instance.
+    async fn stop(&mut self, plugin_id: &str) {
+        if let Some(loaded) = self.plugins.get_mut(plugin_id) {
+            if let Some(instance) = loaded.instance.take() {
+                info!("[plugin:{plugin_id}] stopping");
+                let (tx, rx) = oneshot::channel();
+                if instance.send(Msg::Shutdown { reply: tx }) {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), rx).await;
+                }
+            }
+        }
+    }
+
     /// Tell every frontend what this station is running.
     async fn publish(&self) {
         let state = PluginsState {
@@ -440,6 +788,45 @@ impl PluginManager {
         if let Err(e) = self.engine.set(path, Lifecycle::Local, value).await {
             warn!("[plugin] could not publish state: {e}");
         }
+    }
+}
+
+/// The roster row for one plugin id.
+fn find<'a>(
+    roster: &'a [pult_schema::types::plugin::PluginPackage],
+    plugin_id: &str,
+) -> Option<&'a pult_schema::types::plugin::PluginPackage> {
+    roster.iter().find(|p| p.plugin_id == plugin_id)
+}
+
+/// Where the other stations serve HTTP, which is where a bundle can be had.
+async fn peer_addresses(engine: &EngineHandle) -> Vec<String> {
+    let path = vec![PathSegment::Key("stations".into())];
+    let Ok(value) = engine.get(path).await else { return Vec::new() };
+    let Ok(stations) = serde_json::from_value::<Vec<pult_schema::types::station::Station>>(value)
+    else {
+        return Vec::new();
+    };
+    stations.into_iter().map(|station| station.http_addr).collect()
+}
+
+/// Enough of a manifest to carry a name and a failure, for a plugin whose real
+/// one this station cannot read yet.
+fn stub_manifest(id: &str) -> PluginManifest {
+    PluginManifest {
+        dir: PathBuf::new(),
+        plugin: manifest::PluginSection {
+            id: id.to_string(),
+            name: id.to_string(),
+            version: String::new(),
+            api: String::new(),
+            wasm: String::new(),
+        },
+        surfaces: Vec::new(),
+        panels: Vec::new(),
+        permissions: Default::default(),
+        dependencies: Default::default(),
+        config: Default::default(),
     }
 }
 
@@ -469,6 +856,20 @@ fn info_for(manifest: &PluginManifest, status: PluginStatus) -> PluginInfo {
                 fills: p.fills,
             })
             .collect(),
+        // Filled in by the reconcile once it knows where this one came from.
+        sha256: None,
+        overridden_by_disk: false,
+        permissions: PluginPermissions {
+            data: match manifest.permissions.data {
+                manifest::DataPermission::None => "none",
+                manifest::DataPermission::Read => "read",
+                manifest::DataPermission::ReadWrite => "read-write",
+            }
+            .to_string(),
+            commands: manifest.permissions.commands,
+            http: manifest.permissions.http.clone(),
+            env: manifest.permissions.env.clone(),
+        },
     }
 }
 

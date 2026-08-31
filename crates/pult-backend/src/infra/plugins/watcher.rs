@@ -40,6 +40,20 @@ fn watch(roots: Vec<PathBuf>, tx: mpsc::Sender<PluginCommand>) {
         }
     };
     for root in &roots {
+        // The unpack cache is written by the manager itself, so watching it
+        // would make every carried plugin reload the instant it started — and
+        // then again, for ever. It normally sits in the config directory and is
+        // nowhere near a plugin root; this is here for when somebody points the
+        // two at each other, which is otherwise an infinite loop with no
+        // message to explain it.
+        if watches_the_cache(root) {
+            warn!(
+                "[plugin] not watching {}: it holds the unpack cache, and watching that \
+                 would reload every carried plugin as soon as it started",
+                root.display()
+            );
+            continue;
+        }
         if let Err(e) = watcher.watch(root, RecursiveMode::Recursive) {
             warn!("[plugin] not watching {}: {e}", root.display());
         }
@@ -80,6 +94,21 @@ fn watch(roots: Vec<PathBuf>, tx: mpsc::Sender<PluginCommand>) {
     }
 }
 
+/// Would watching this root mean watching the unpack cache?
+///
+/// True when the root *is* the cache or holds it. The other direction — a
+/// plugin root that happens to live inside the cache — cannot happen: the cache
+/// holds only directories named after digests, and one of those is replaced
+/// wholesale rather than edited.
+fn watches_the_cache(root: &Path) -> bool {
+    let Some(cache) = super::cache::root() else { return false };
+    // Compared canonically where possible, so `./plugins` and an absolute path
+    // to the same directory are not two different answers.
+    let cache = cache.canonicalize().unwrap_or(cache);
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    cache.starts_with(&root)
+}
+
 /// The plugin directory a changed path belongs to: the root itself when the
 /// root is a plugin, otherwise the root's child the path is under.
 fn plugin_dir_of(roots: &[PathBuf], path: &Path) -> Option<PathBuf> {
@@ -92,4 +121,34 @@ fn plugin_dir_of(roots: &[PathBuf], path: &Path) -> Option<PathBuf> {
         return Some(root.join(first));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `PULT_PLUGIN_CACHE` is process-wide, so these run one at a time.
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_root_holding_the_unpack_cache_is_not_watched() {
+        let _guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("pult-watch-{}", uuid::Uuid::new_v4()));
+        let cache = base.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        // SAFETY: the lock above is what keeps this single-threaded.
+        unsafe { std::env::set_var("PULT_PLUGIN_CACHE", &cache) };
+
+        // Watching this would reload every carried plugin the moment it was
+        // unpacked, and then again after each reload.
+        assert!(watches_the_cache(&base));
+        assert!(watches_the_cache(&cache));
+
+        let elsewhere = base.join("plugins");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        assert!(!watches_the_cache(&elsewhere), "an ordinary plugin root is watched");
+
+        unsafe { std::env::remove_var("PULT_PLUGIN_CACHE") };
+        std::fs::remove_dir_all(&base).ok();
+    }
 }
