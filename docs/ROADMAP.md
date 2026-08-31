@@ -1371,6 +1371,84 @@ configuration, which is right while each is a page of its own and will stop bein
 right when the second console-level preference arrives. The preferences file has no
 version field.
 
+### 34. A show carries its plugins (done)
+
+The first change planned in OpenSpec rather than here:
+`openspec/changes/plugin-distribution/`. A plugin was a directory on one
+station's disk named by `--plugins`, which is right for developing one and
+wrong for everything else — a show authored with the command line's panels in
+its layout degraded on every other console in the session, and installing on a
+ten-station rig was ten copies.
+
+**A `plugin_packages` roster is PERSISTED, and the bundle is an asset.** The row
+names its bundle by the sha256 of the zip; the bytes go in the same
+content-addressed store task 13 built for stage plans, so `fetch_from_peers`,
+the digest check and the dedup were all already written. Adding the collection
+needed no edit outside `pult-schema`, which is task 2's promise still holding
+thirty-two tasks later.
+
+**The digest covers the archive, not the component.** A plugin is a manifest
+*plus* a component *plus* the scripts a panel loads; hashing the wasm alone
+would leave two thirds of it unversioned, and a changed panel script would be
+indistinguishable from no change at all.
+
+**Stations reconcile, keyed by `(plugin_id, sha256)`.** The diff is a pure
+function in `roster.rs`, so the interesting cases are tested without a station,
+a showfile or a wasm engine. The action worth having a name for is `Publish`: a
+row carries a display name and a stage hint as well as a digest, and editing
+those must not restart the plugin. That is task 9's lesson about outputs
+arriving from another direction — rebuilding a live thing for a label edit put a
+redundant frame on the wire, and here it would be a plugin restarting mid-show.
+
+**A fetch never happens inside the event loop**, for the reason task 8 recorded:
+the manager awaiting something that can call back into it is how the first
+version deadlocked. It runs on its own task and reports back as a message, and
+the test stands up a peer that accepts the request and then says nothing.
+
+**`Fetching` is a state, not a failure.** A station that has just joined and is
+downloading is working; saying "failed" would send an operator looking for a
+fault that is not there.
+
+**A `--plugins` directory beats the show**, on that station only. Otherwise
+somebody editing a plugin on a console joined to a session would silently be
+running the show's build — the most confusing thing the runtime could do to the
+person least able to explain it.
+
+**Configuration is three layers**, most specific winning: the manifest, the
+show's row, then `[plugins.<id>]` in the station's `preferences.toml`. Station
+last because what a station overrides is what is true of that machine and no
+other, and a show cannot know which console holds the key. A plugin is handed
+its configuration in `init` and never again, so a change is a restart.
+
+**The trust assumption, stated rather than left implicit.** Opening a showfile
+runs the plugins it carries: no approval step, and the manifest's permissions
+are granted by opening the file. The sandbox, the epoch deadline and every
+permission gate still bound it; what they do not bound is a plugin that
+legitimately has `data = "read-write"` and an HTTP allowlist. So the Plugins
+panel prints each plugin's permissions in words, and an approval gate is a
+recorded open question with the schema laid out so adding one is a field and a
+status rather than a redesign.
+
+Three bugs the tests found, in ascending order of how much they mattered:
+
+- The disk-override flag was set after an early return that fires when the plan
+  is empty — which is exactly when the only roster row is the overridden one.
+  The flag was never set in the one case it exists for.
+- `PUT /api/preferences` built a fresh `Preferences` from the request body,
+  which would have erased every plugin's station configuration — an operator's
+  API keys among them — on the next change to the history depth.
+- **A station that successfully fetched a bundle never ran it.** The
+  placeholder row saying "fetching" already carried the digest, so the next diff
+  saw a match and decided there was nothing to do. Every earlier test either had
+  the cache already warm or had the fetch fail, so none of them went down the
+  path the whole change exists for. Found by writing the two-station test last
+  rather than first, which is the wrong order and is why it survived that long.
+
+Left open: install over HTTP carries no user, so it is a change nobody can take
+back; nothing prunes an unreferenced bundle from the asset store, the same way
+nothing prunes a replaced stage plan; and the `stage` hint groups the panel and
+gates nothing.
+
 ## Further out
 
 Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.

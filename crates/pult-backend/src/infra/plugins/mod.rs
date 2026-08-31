@@ -304,9 +304,20 @@ impl PluginManager {
                 PluginCommand::Fetched { sha256, result } => {
                     self.fetching.remove(&sha256);
                     match result {
-                        // The bytes are in the store now, so the same diff that
-                        // asked for them will find them this time.
-                        Ok(()) => self.reconcile().await,
+                        Ok(()) => {
+                            // The bytes are here, but the placeholder row that
+                            // said "fetching" already carries this digest — so
+                            // the diff would see a match and decide there was
+                            // nothing to do. Drop the placeholders first; the
+                            // reconcile then finds the plugin missing, and
+                            // starts it from a store that now has the bundle.
+                            self.plugins.retain(|_, loaded| {
+                                !(loaded.sha256.as_deref() == Some(sha256.as_str())
+                                    && loaded.instance.is_none()
+                                    && matches!(loaded.info.status, PluginStatus::Fetching))
+                            });
+                            self.reconcile().await;
+                        }
                         Err(reason) => {
                             // Name the failure against every plugin that was
                             // waiting on these bytes, since that is what the
@@ -754,6 +765,9 @@ impl PluginManager {
                 self.start_plugin(manifest, config);
                 if let Some(loaded) = self.plugins.get_mut(plugin_id) {
                     loaded.sha256 = Some(sha256.to_string());
+                    // Published as well as held: the digest is how a panel tells
+                    // a plugin the show carries from one somebody is editing.
+                    loaded.info.sha256 = Some(sha256.to_string());
                 }
             }
             Err(reason) => self.insert_carried_failure(package, reason),

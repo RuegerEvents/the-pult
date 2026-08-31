@@ -104,15 +104,15 @@ Each group is meant to end in its own commit with `cargo test`,
 
 ## 8. End to end, and the documentation
 
-- [ ] 8.1 Extend `crates/pult-backend/tests/plugins.rs` with a two-station test:
+- [x] 8.1 Extend `crates/pult-backend/tests/plugins.rs` with a two-station test:
       install a bundle on one station, assert the other fetches it by digest and
       runs it, then remove it and assert both stop.
-- [ ] 8.2 Add a test that a peer answering with the wrong bytes is refused and
+- [x] 8.2 Add a test that a peer answering with the wrong bytes is refused and
       the plugin is not run.
 - [x] 8.3 Teach `scripts/build-plugins.sh` to emit bundles beside the
       components, and verify the reference plugins install from the bundles it
       produces.
-- [ ] 8.4 Update `docs/PLUGINS.md`: packaging, installing, where configuration
+- [x] 8.4 Update `docs/PLUGINS.md`: packaging, installing, where configuration
       lives and which layer wins, and the trust assumption stated plainly.
-- [ ] 8.5 Update `CLAUDE.md`'s WASM plugins section and add a roadmap entry
+- [x] 8.5 Update `CLAUDE.md`'s WASM plugins section and add a roadmap entry
       recording what was decided and what it cost.

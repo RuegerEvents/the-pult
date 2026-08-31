@@ -48,6 +48,11 @@ impl Station {
             .to_string_lossy()
             .into_owned();
         let running = pult_backend::start(Config {
+            // Loopback, not the default 0.0.0.0. A station's published
+            // http_addr is what a peer fetches a bundle from, and "0.0.0.0" is
+            // an address to listen on rather than one to connect to — asking it
+            // for a bundle times out rather than failing.
+            bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             port: 0,
             sync_port: 0,
             showfile: showfile.clone(),
@@ -788,4 +793,144 @@ async fn removing_a_plugin_is_an_ordinary_edit_and_takes_back_like_one() {
     assert_eq!(roster[0]["sha256"], sha, "with the bundle it named");
 
     station.stop();
+}
+
+/// Tell `station` that `peer` exists and where its HTTP API is.
+///
+/// The two stations here are not in an mDNS session — that machinery has its
+/// own tests over real TCP. What is under test is narrower and is exactly the
+/// path a joined station takes: the `stations` rows say who to ask, and a
+/// bundle is fetched from one of them over ordinary HTTP.
+async fn tell_about(station: &Station, http_addr: String) {
+    station
+        .running
+        .engine
+        .set(
+            vec![PathSegment::Key("stations".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Synced,
+            json!({
+                "id": uuid::Uuid::new_v4(),
+                "hostname": "peer",
+                "is_leader": false,
+                "sync_addr": "127.0.0.1:1",
+                "http_addr": http_addr,
+                "cpu_percent": 0.0, "mem_used": 0, "mem_total": 0, "uptime_s": 0,
+                "output_plugins": [], "computes_fixtures": 0, "total_fixtures": 0,
+                "last_seen": chrono::Utc::now().to_rfc3339(),
+            }),
+        )
+        .await
+        .expect("a peer to ask");
+}
+
+/// The real reference bundle, when the plugins workspace has been built.
+fn a_real_bundle() -> Option<Vec<u8>> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/dist/command-line.pult-plugin.zip");
+    std::fs::read(path).ok()
+}
+
+#[tokio::test]
+async fn a_station_fetches_a_bundle_from_the_one_that_has_it() {
+    // Two shows, so two asset stores: the bundle genuinely exists on one
+    // station and genuinely does not exist on the other.
+    let holder = Station::start().await;
+    let seeker = Station::start().await;
+    tell_about(&seeker, holder.running.http_addr.to_string()).await;
+
+    let (bytes, _) = a_bundle("shared-over-the-wire", "0.1");
+    let digest = upload(&holder, bytes).await;
+    // The cache is shared by both stations in this process, so clear the entry
+    // or the seeker would pass by having it unpacked already rather than by
+    // fetching it — which is the one thing this test is about.
+    std::fs::remove_dir_all(own_cache().join(&digest)).ok();
+
+    seeker.install("shared-over-the-wire", &digest).await;
+
+    seeker
+        .eventually("shared-over-the-wire", "past fetching", |r| {
+            r["status"]["state"] != "Fetching"
+        })
+        .await;
+
+    let row = seeker.eventually("shared-over-the-wire", "settled", |_| true).await;
+    let reason = row["status"]["reason"].as_str().unwrap_or_default();
+    assert!(
+        !reason.contains("no station"),
+        "it should have got the bundle from the station that had it: {row}",
+    );
+    assert!(
+        own_cache().join(&digest).join("pult-plugin.toml").is_file(),
+        "and unpacked what it fetched",
+    );
+
+    holder.stop();
+    seeker.stop();
+}
+
+#[tokio::test]
+async fn a_fetched_bundle_is_run_once_it_arrives() {
+    let Some(bundle) = a_real_bundle() else {
+        eprintln!("skipping: no bundle built (scripts/build-plugins.sh --bundle)");
+        return;
+    };
+
+    let holder = Station::start().await;
+    let seeker = Station::start().await;
+    tell_about(&seeker, holder.running.http_addr.to_string()).await;
+
+    let digest = upload(&holder, bundle).await;
+    std::fs::remove_dir_all(own_cache().join(&digest)).ok();
+    seeker.install("command-line", &digest).await;
+
+    // The whole point of the change, in one assertion: a station that has never
+    // seen this plugin ends up running it, with nobody touching that machine.
+    let row = seeker
+        .eventually("command-line", "running", |r| r["status"]["state"] == "Running")
+        .await;
+    assert_eq!(row["sha256"], digest, "{row}");
+
+    holder.stop();
+    seeker.stop();
+}
+
+#[tokio::test]
+async fn a_peer_answering_with_the_wrong_bytes_gets_nowhere() {
+    let seeker = Station::start().await;
+
+    // A station that answers every asset request with the same rubbish. The
+    // digest is the check, so what it says its name is does not matter.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let app = axum::Router::new().route(
+            "/assets/{sha}",
+            axum::routing::get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/vnd.pult.plugin+zip")],
+                    b"not the bundle you asked for".to_vec(),
+                )
+            }),
+        );
+        let _ = axum::serve(listener, app).await;
+    });
+    tell_about(&seeker, addr.to_string()).await;
+
+    let (_, digest) = a_bundle("substituted", "0.1");
+    std::fs::remove_dir_all(own_cache().join(&digest)).ok();
+    seeker.install("substituted", &digest).await;
+
+    let row = seeker
+        .eventually("substituted", "refused", |r| r["status"]["state"] == "Failed")
+        .await;
+    assert!(
+        row["status"]["reason"].as_str().unwrap_or_default().contains("no station"),
+        "a wrong answer is no answer: {row}",
+    );
+    assert!(
+        !own_cache().join(&digest).exists(),
+        "and nothing was unpacked from bytes that were not the bundle",
+    );
+
+    seeker.stop();
 }

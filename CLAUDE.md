@@ -90,12 +90,37 @@ once.
 scripts/build-plugins.sh                     # plugins/ workspace → components
 cargo run -p pult-backend -- --plugins plugins   # load them; edits hot-reload
 cargo test -p pult-backend --test plugins    # a real station loading them
+cargo test -p pult-backend --test roster     # a show carrying them
 ```
 
 `docs/PLUGINS.md` is the author guide. Plugin panels reach the frontend as
 LOCAL `plugins` state; the workspace reads the merged `allPanels` store
 (`frontend/src/lib/stores/plugins.ts`), so no frontend file lists plugin
 panels either.
+
+**A show carries its plugins.** `plugin_packages` is a PERSISTED collection
+naming each bundle by the sha256 of its zip; the bytes live in the same
+content-addressed asset store as stage plans, so a station that lacks one
+fetches it from a peer and verifies it. Every station reconciles what it runs
+against that roster while the show is up — one install equips the rig.
+
+```
+scripts/build-plugins.sh --bundle    # → plugins/dist/<id>.pult-plugin.zip
+curl -X POST http://localhost:7700/api/plugins \
+     -H 'content-type: application/vnd.pult.plugin+zip' \
+     --data-binary @plugins/dist/command-line.pult-plugin.zip
+```
+
+Two consequences worth holding on to. **Opening a showfile runs its plugins**
+— a deliberate choice, bounded by the sandbox and the manifest permissions
+and nothing else; the Plugins panel prints those permissions in words.
+And **a `--plugins` directory beats the show** for that id on that station,
+so the dev loop is unchanged and a console editing a plugin says so.
+
+Plugin configuration is three layers, most specific winning: the manifest's
+`[config]`, the show's roster row, then `[plugins.<id>]` in the station's
+`preferences.toml`. Credentials belong in the last one or in env passthrough,
+never in the first two — those travel with the showfile.
 
 ## Running
 

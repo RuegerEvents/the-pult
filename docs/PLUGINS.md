@@ -160,9 +160,26 @@ held reference.
 
 ## Configuration
 
-The manifest's `[config]` table is the defaults; a `config.toml` beside it
-(gitignored territory — it is the operator's) deep-merges over them, and the
-merged result reaches `init` as JSON. Editing either reloads the plugin.
+Three layers, merged key by key, each beating the one before it:
+
+1. the manifest's `[config]` table — your defaults, and a `config.toml`
+   beside it while you are developing (that one is the operator's, and it is
+   never put into a bundle),
+2. the **show's** configuration for your plugin, on its roster row,
+3. **this station's** configuration, under `[plugins.<your-id>]` in the
+   console's `preferences.toml`.
+
+The composed result reaches `init` as JSON, and changing any layer restarts
+the plugin — you are handed your configuration once and never again.
+
+Station last is deliberate. What a station legitimately overrides is what is
+true of that machine and no other, and a show cannot know which console has
+the local model on it or which one holds a key.
+
+**A credential does not go in a store or in show-level configuration.** Both
+travel with the showfile, into every backup and onto every peer. The two
+right homes are the station's own `preferences.toml` and the environment
+passthrough your manifest declares by name.
 
 ## UI: two ways to have a panel
 
@@ -212,6 +229,60 @@ the element with a `pult` property: `call(method, args)` to your plugin,
 Either way the panel appears in every browser's `+` menu as soon as the
 plugin loads, and layouts saved with it open fine on consoles without it.
 
+## Shipping it: bundles
+
+A plugin directory is how you develop. A **bundle** is how a plugin reaches
+anybody else: one zip holding your `pult-plugin.toml` at its root, your
+component, and any `assets/` a panel loads.
+
+```
+scripts/build-plugins.sh --bundle     # → plugins/dist/<id>.pult-plugin.zip
+```
+
+Install it from the console's **Plugins** panel, or with a request:
+
+```
+curl -X POST http://<station>:7700/api/plugins \
+     -H 'content-type: application/vnd.pult.plugin+zip' \
+     --data-binary @plugins/dist/my-plugin.pult-plugin.zip
+```
+
+**A show carries its plugins.** Installing writes a row naming the bundle by
+the sha256 of the whole archive; the bytes go in the same content-addressed
+store stage plans use. Every other station in the session sees the row,
+fetches the bundle from whoever has it, verifies the digest, unpacks it into
+a cache keyed by that digest, and runs it. One install equips the rig.
+
+The digest covers the whole archive rather than the component, so a changed
+panel script is a different bundle — half a plugin cannot be versioned while
+the other half is not.
+
+Installing a plugin id the show already carries is an **upgrade**: same row,
+new bundle, and whatever the operator had chosen — switched off, configured
+— is kept.
+
+**A plugin directory still wins.** On a station started with `--plugins`, a
+plugin found on disk overrides the show's copy of the same id, on that
+station only, and still hot reloads. Otherwise editing a plugin on a console
+joined to a session would silently run the show's build instead. The Plugins
+panel says when this is happening.
+
+### What installing means
+
+Opening a showfile runs the plugins it carries. That makes a showfile
+trusted input in the way a binary somebody hands you is trusted input: there
+is no approval step, and the manifest's permissions are granted by opening
+the file.
+
+What still bounds a plugin is everything in **Permissions** above — the
+wasmtime sandbox, the five-second epoch deadline, data access, the outbound
+HTTP allowlist, and env passthrough by name. What it does not bound is a
+plugin that legitimately has `data = "read-write"` and a host allowlist:
+that one can move show data off the network wherever it opens.
+
+The Plugins panel therefore prints each plugin's permissions in words beside
+it, so what a show is asking for is readable without unzipping anything.
+
 ## Versions
 
 The WIT package version (`pult:plugin@0.1.0`) is the API version; the
@@ -225,7 +296,9 @@ currently links wasmtime 48 (WASI 0.2); guests are ordinary
 ```
 cd plugins && cargo test          # the pure crates, on the host target
 scripts/build-plugins.sh          # the components
+scripts/build-plugins.sh --bundle # and the zips to install
 cargo test -p pult-backend --test plugins   # a real station loading them
+cargo test -p pult-backend --test roster    # the show carrying them
 ```
 
 The backend test skips itself when the components are not built, so it never
