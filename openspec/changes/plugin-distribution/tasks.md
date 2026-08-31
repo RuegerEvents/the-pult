@@ -91,15 +91,15 @@ Each group is meant to end in its own commit with `cargo test`,
 
 ## 7. The Plugins panel
 
-- [ ] 7.1 Read the roster and the LOCAL `plugins` state together: a row per
+- [x] 7.1 Read the roster and the LOCAL `plugins` state together: a row per
       package with its state on this station, its version, its digest, and the
       disk-override note. Verify in the running app with `scripts/demo.sh`.
-- [ ] 7.2 Show each package's declared permissions — data access, commands,
+- [x] 7.2 Show each package's declared permissions — data access, commands,
       HTTP hosts, env names — as plain text on the row.
-- [ ] 7.3 Put install, remove, enable/disable and show-level configuration
+- [x] 7.3 Put install, remove, enable/disable and show-level configuration
       behind the panel's Edit lock, per task 23's rule; station-level
       configuration sits beside them and is marked as this machine's.
-- [ ] 7.4 Group rows by `stage` and verify a setup-only plugin is grouped but
+- [x] 7.4 Group rows by `stage` and verify a setup-only plugin is grouped but
       still runs.
 
 ## 8. End to end, and the documentation
@@ -109,7 +109,7 @@ Each group is meant to end in its own commit with `cargo test`,
       runs it, then remove it and assert both stop.
 - [ ] 8.2 Add a test that a peer answering with the wrong bytes is refused and
       the plugin is not run.
-- [ ] 8.3 Teach `scripts/build-plugins.sh` to emit bundles beside the
+- [x] 8.3 Teach `scripts/build-plugins.sh` to emit bundles beside the
       components, and verify the reference plugins install from the bundles it
       produces.
 - [ ] 8.4 Update `docs/PLUGINS.md`: packaging, installing, where configuration

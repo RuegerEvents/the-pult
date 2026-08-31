@@ -7,6 +7,11 @@
 #   scripts/build-plugins.sh --watch      rebuild on change; with a backend
 #                                         started with --plugins plugins/, that
 #                                         is hot reload end to end
+#   scripts/build-plugins.sh --bundle     also zip each plugin into
+#                                         plugins/dist/<id>.pult-plugin.zip,
+#                                         which is what gets installed into a
+#                                         show rather than pointed at with
+#                                         --plugins
 #
 # Rust ≥1.82's wasm32-wasip2 target emits a proper component directly —
 # there is no separate componentize step.
@@ -18,12 +23,14 @@ TARGET=wasm32-wasip2
 PROFILE=release
 PROFILE_FLAG=--release
 WATCH=no
+BUNDLE=no
 
 for arg in "$@"; do
     case "$arg" in
         --debug) PROFILE=debug; PROFILE_FLAG="" ;;
         --watch) WATCH=yes ;;
-        *) echo "unknown flag: $arg (try --debug, --watch)"; exit 2 ;;
+        --bundle) BUNDLE=yes ;;
+        *) echo "unknown flag: $arg (try --debug, --watch, --bundle)"; exit 2 ;;
     esac
 done
 
@@ -51,6 +58,35 @@ build() {
         else
             echo "  ! $built not found (expected by $manifest)" >&2
         fi
+    done
+
+    [ "$BUNDLE" = yes ] && bundle
+    return 0
+}
+
+# One zip per plugin: the manifest, the component, and the assets a panel
+# loads. The digest is taken over the whole archive rather than over the
+# component, so a changed panel script is a different bundle — otherwise half
+# a plugin could be versioned and the other half not.
+bundle() {
+    mkdir -p dist
+    for dir in */; do
+        [ "$dir" = "dist/" ] && continue
+        manifest="$dir/pult-plugin.toml"
+        [ -f "$manifest" ] || continue
+        id=$(sed -n 's/^id *= *"\(.*\)"/\1/p' "$manifest" | head -1)
+        wasm=$(sed -n 's/^wasm *= *"\(.*\)"/\1/p' "$manifest" | head -1)
+        [ -f "$dir/$wasm" ] || continue
+
+        zipfile="$PWD/dist/$id.pult-plugin.zip"
+        rm -f "$zipfile"
+        # Zipped from inside the plugin's directory so the manifest is at the
+        # root of the archive, which is where the station looks for it. A
+        # config.toml is deliberately left out: it is one machine's answer, and
+        # a bundle goes to every station in the session.
+        ( cd "$dir" && zip -q -r "$zipfile" pult-plugin.toml "$wasm" \
+            $([ -d assets ] && echo assets) -x 'config.toml' )
+        echo "  dist/$id.pult-plugin.zip"
     done
 }
 

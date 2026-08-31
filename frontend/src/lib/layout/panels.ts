@@ -21,6 +21,7 @@ import FlowEditor from '$lib/components/flow/FlowEditor.svelte';
 import HistoryPanel from '$lib/components/HistoryPanel.svelte';
 import OutputsPanel from '$lib/components/OutputsPanel.svelte';
 import PatchPanel from '$lib/components/PatchPanel.svelte';
+import PluginsPanel from '$lib/components/PluginsPanel.svelte';
 import SelectionPanel from '$lib/components/SelectionPanel.svelte';
 import SequenceRunner from '$lib/components/SequenceRunner.svelte';
 import SessionPanel from '$lib/components/SessionPanel.svelte';
@@ -71,6 +72,7 @@ export const PANELS = {
 	flows: { title: 'Flows', component: FlowEditor, fills: true, editable: true },
 	outputs: { title: 'Outputs', component: OutputsPanel, fills: false },
 	stations: { title: 'Stations', component: StationsPanel, fills: false },
+	plugins: { title: 'Plugins', component: PluginsPanel, fills: false, editable: true },
 	show: { title: 'Show', component: ShowPanel, fills: false },
 	session: { title: 'Session', component: SessionPanel, fills: false },
 	devices: { title: 'Devices', component: DevicesPanel, fills: false, editable: true },
