@@ -266,6 +266,11 @@ impl PluginManager {
                 }
                 PluginCommand::Reload { dir } => {
                     self.reload_dir(dir).await;
+                    // A directory plugin appearing, changing id, or going away
+                    // changes which roster rows this station overrides — and a
+                    // reload rebuilds the row from its manifest, so the flag
+                    // has to be worked out again rather than carried over.
+                    self.reconcile().await;
                     self.publish().await;
                 }
                 PluginCommand::Ready { id } => {
@@ -559,25 +564,32 @@ impl PluginManager {
             })
             .collect();
 
-        let actions = roster::plan(&roster, &running, &overridden);
-        if actions.is_empty() {
-            return;
-        }
-
-        // Say so once, where an operator can see it, rather than leaving a
-        // console that has quietly overridden the show looking like the others.
-        for id in &overridden {
-            if roster.iter().any(|p| &p.plugin_id == id) {
-                if let Some(loaded) = self.plugins.get_mut(id) {
-                    if !loaded.info.overridden_by_disk {
-                        info!("[plugin:{id}] running the copy on disk, not the one the show carries");
-                        loaded.info.overridden_by_disk = true;
-                    }
+        // Mark the overrides *before* anything short-circuits. When the only
+        // roster row is one this station overrides there is nothing to do and
+        // no plan to make — which is exactly the case an operator most needs
+        // told about, since otherwise a console quietly running something else
+        // looks identical to the ones running what the show carries.
+        let mut changed = false;
+        for (id, loaded) in self.plugins.iter_mut() {
+            let overridden_now =
+                overridden.contains(id) && roster.iter().any(|p| &p.plugin_id == id);
+            if loaded.info.overridden_by_disk != overridden_now {
+                if overridden_now {
+                    info!("[plugin:{id}] running the copy on disk, not the one the show carries");
                 }
+                loaded.info.overridden_by_disk = overridden_now;
+                changed = true;
             }
         }
 
-        let mut changed = false;
+        let actions = roster::plan(&roster, &running, &overridden);
+        if actions.is_empty() {
+            if changed {
+                self.publish().await;
+            }
+            return;
+        }
+
         for action in actions {
             match action {
                 roster::Action::Publish { plugin_id } => {

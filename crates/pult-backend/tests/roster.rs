@@ -38,6 +38,10 @@ struct Station {
 
 impl Station {
     async fn start() -> Station {
+        Station::start_with_dirs(vec![]).await
+    }
+
+    async fn start_with_dirs(plugin_dirs: Vec<PathBuf>) -> Station {
         own_cache();
         let showfile = std::env::temp_dir()
             .join(format!("pult-roster-{}.db", uuid::Uuid::new_v4()))
@@ -47,9 +51,7 @@ impl Station {
             port: 0,
             sync_port: 0,
             showfile: showfile.clone(),
-            // No `--plugins`: what the show carries is the only source here,
-            // which is the ordinary case for anything but a dev checkout.
-            plugin_dirs: vec![],
+            plugin_dirs,
             ..Config::default()
         })
         .await
@@ -99,8 +101,11 @@ impl Station {
     /// Wait for one plugin's published row to satisfy `f`, or give up and show
     /// what it actually said.
     async fn eventually(&self, plugin_id: &str, what: &str, f: impl Fn(&Value) -> bool) -> Value {
+        // Patient: several stations come up in this binary at once, and a
+        // fetch that has to time out against a peer is seconds rather than
+        // milliseconds. A test that is merely slow must not read as a failure.
         let mut last = Value::Null;
-        for _ in 0..100 {
+        for _ in 0..400 {
             tokio::time::sleep(Duration::from_millis(50)).await;
             let plugins = self.plugins().await;
             if let Some(row) = plugins.iter().find(|p| p["id"] == plugin_id) {
@@ -454,4 +459,76 @@ async fn a_digest_already_unpacked_is_not_fetched_again() {
 
     first.stop();
     second.stop();
+}
+
+/// A plugin directory on disk, the way a developer's checkout has one.
+fn a_plugin_directory(plugin_id: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("pult-dir-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join(plugin_id)).unwrap();
+    std::fs::write(
+        dir.join(plugin_id).join("pult-plugin.toml"),
+        format!(
+            "[plugin]\nid = \"{plugin_id}\"\nname = \"From Disk\"\nversion = \"9.9.9\"\n\
+             api = \"0.1\"\nwasm = \"example.wasm\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join(plugin_id).join("example.wasm"), b"\0asm\x01\0\0\0").unwrap();
+    dir
+}
+
+#[tokio::test]
+async fn a_copy_on_disk_beats_the_one_the_show_carries() {
+    let plugin_id = "under-development";
+    let dir = a_plugin_directory(plugin_id);
+    let station = Station::start_with_dirs(vec![dir.clone()]).await;
+
+    // The show carries a different build of the same plugin. On a station
+    // where somebody is editing it, running the show's copy instead would be
+    // the most confusing thing the runtime could do.
+    let (bytes, _) = a_bundle(plugin_id, "0.1");
+    let digest = upload(&station, bytes).await;
+    station.install(plugin_id, &digest).await;
+
+    let row = station
+        .eventually(plugin_id, "marked as overridden", |r| r["overridden_by_disk"] == true)
+        .await;
+
+    // It is the disk copy that is running: its own version, and no digest,
+    // because it did not come from a bundle.
+    assert_eq!(row["version"], "9.9.9", "the version on disk, not the show's: {row}");
+    assert!(row["sha256"].is_null(), "a directory plugin has no digest: {row}");
+    assert!(
+        !station.plugins().await.iter().any(|p| p["sha256"] == digest.as_str()),
+        "and the carried bundle was never started alongside it",
+    );
+
+    // Editing it still reloads it, which is the entire reason for the rule.
+    // The write is repeated because a filesystem watcher is not a promise: on
+    // macOS the first change to a directory that has only just appeared is
+    // sometimes not reported at all, and this test would otherwise be a
+    // coin toss rather than a statement about the console.
+    let edited = format!(
+        "[plugin]\nid = \"{plugin_id}\"\nname = \"Edited\"\nversion = \"9.9.10\"\n\
+         api = \"0.1\"\nwasm = \"example.wasm\"\n"
+    );
+    let mut reloaded = Value::Null;
+    for _ in 0..20 {
+        std::fs::write(dir.join(plugin_id).join("pult-plugin.toml"), &edited).unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Some(row) = station.plugins().await.into_iter().find(|p| p["id"] == plugin_id) {
+            if row["version"] == "9.9.10" {
+                reloaded = row;
+                break;
+            }
+        }
+    }
+    assert_eq!(reloaded["name"], "Edited", "it never reloaded: {reloaded}");
+    assert_eq!(
+        reloaded["overridden_by_disk"], true,
+        "and a reload does not lose the override: {reloaded}",
+    );
+
+    station.stop();
+    std::fs::remove_dir_all(&dir).ok();
 }

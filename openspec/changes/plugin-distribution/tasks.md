@@ -59,7 +59,7 @@ Each group is meant to end in its own commit with `cargo test`,
 
 ## 4. Directory plugins keep winning
 
-- [ ] 4.1 Remove ids found by `discover()` from the reconcile set and add an
+- [x] 4.1 Remove ids found by `discover()` from the reconcile set and add an
       `overridden_by_disk` flag to `PluginInfo`. Verify with a test where the
       roster and a plugin directory carry the same id: the directory copy runs,
       the flag is set, and editing the file on disk still reloads it.
