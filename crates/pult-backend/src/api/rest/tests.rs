@@ -121,3 +121,96 @@ async fn a_relayed_request_is_not_relayed_again() {
 
     assert_eq!(fetched.status(), 404);
 }
+
+// ── Preferences ───────────────────────────────────────────────────────────────
+
+/// A console serving the config and preferences routes.
+async fn a_console_with_preferences() -> String {
+    let state = ConfigState {
+        node_id: NodeId(Uuid::new_v4()),
+        http_port: 7700,
+        sync_port: 7701,
+    };
+    let app: Router = config_routes().with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    addr.to_string()
+}
+
+/// The console's own settings, over HTTP rather than the socket: they are not show
+/// data and do not replicate.
+#[tokio::test]
+async fn preferences_come_back_and_can_be_changed() {
+    let _own = crate::infra::preferences::testing::own_file();
+    let addr = a_console_with_preferences().await;
+    let client = reqwest::Client::new();
+
+    let before: serde_json::Value = client
+        .get(format!("http://{addr}/api/preferences"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(before["historyDepth"], 500, "the default, before anybody says otherwise");
+
+    let answered: serde_json::Value = client
+        .put(format!("http://{addr}/api/preferences"))
+        .json(&serde_json::json!({ "historyDepth": 1200 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(answered["historyDepth"], 1200);
+
+    let again: serde_json::Value = client
+        .get(format!("http://{addr}/api/preferences"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(again["historyDepth"], 1200, "and it stuck");
+}
+
+/// A number outside what the console will do comes back at the nearest one that is,
+/// rather than being refused or stored as asked. The answer is what was stored, so a
+/// panel showing it is showing the truth.
+#[tokio::test]
+async fn a_depth_out_of_range_answers_with_what_was_stored() {
+    let _own = crate::infra::preferences::testing::own_file();
+    let addr = a_console_with_preferences().await;
+
+    let answered: serde_json::Value = reqwest::Client::new()
+        .put(format!("http://{addr}/api/preferences"))
+        .json(&serde_json::json!({ "historyDepth": 1 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(answered["historyDepth"], answered["historyDepthMin"]);
+}
+
+#[tokio::test]
+async fn a_preference_that_is_not_a_number_is_refused() {
+    let _own = crate::infra::preferences::testing::own_file();
+    let addr = a_console_with_preferences().await;
+
+    let status = reqwest::Client::new()
+        .put(format!("http://{addr}/api/preferences"))
+        .json(&serde_json::json!({ "historyDepth": "lots" }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+}

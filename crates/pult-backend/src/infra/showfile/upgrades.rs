@@ -27,6 +27,11 @@ struct Upgrade {
     statements: &'static [&'static str],
 }
 
+/// The number written into the upgrade above, kept honest against the one the rest
+/// of the console uses. A statement list has to be literal; this makes changing the
+/// default without changing the statement a build error rather than a surprise.
+const _: () = assert!(pult_schema::types::show::HISTORY_DEPTH_DEFAULT == 500);
+
 const UPGRADES: &[Upgrade] = &[
     Upgrade {
         // `add_missing_columns` walks the entity registry, and the oplog is not an
@@ -49,6 +54,20 @@ const UPGRADES: &[Upgrade] = &[
         table: "oplog",
         applies: |columns| !columns.iter().any(|c| c == "gesture"),
         statements: &["ALTER TABLE oplog ADD COLUMN gesture TEXT"],
+    },
+    Upgrade {
+        // The additive pass adds a new column nullable, because SQLite cannot add a
+        // NOT NULL one without a default and most fields have no honest default. A
+        // number does: an existing show kept five hundred changes before anybody
+        // could say otherwise, and reading NULL as zero would quietly leave it with
+        // no history at all.
+        name: "show: how far back its history goes",
+        table: "show",
+        // Whenever the column is there, because what marks an old file is a row with
+        // nothing in it rather than a missing column. The statement is idempotent, so
+        // running it on every open costs one indexed no-op.
+        applies: |columns| columns.iter().any(|c| c == "history_depth"),
+        statements: &["UPDATE show SET history_depth = 500 WHERE history_depth IS NULL"],
     },
     Upgrade {
     name: "fixtures: universe/dmx_address folded into address",

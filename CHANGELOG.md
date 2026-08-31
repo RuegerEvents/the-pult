@@ -12,6 +12,13 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **Settings, in the two flavours a console needs.** A new Settings panel, and the
+  first thing in it: how many changes a show keeps for undo and the history panel.
+  The show's own number travels in the showfile, so two consoles working one show
+  agree about how far back Ctrl-Z goes. The console's number lives on the machine and
+  decides what a *new* show starts with, which is what keeps them from disagreeing.
+  Changes rather than presses — an undo is a change too and shares the room with the
+  ones it takes back, so the panel says roughly how many presses that is.
 - **One drag is one Ctrl-Z.** A fader dragged across its travel is a few hundred
   writes and, across a selection of twenty, a few thousand. It is one act, and undo
   now treats it as one: the client marks everything written between a pointer going

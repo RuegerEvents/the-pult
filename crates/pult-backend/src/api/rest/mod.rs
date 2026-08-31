@@ -22,7 +22,7 @@ use serde_json::json;
 use sqlx::SqlitePool;
 use tracing::debug;
 
-use crate::{engine::EngineHandle, infra::assets, state::AppState};
+use crate::{engine::EngineHandle, infra, infra::assets, state::AppState};
 
 /// What a freshly loaded page needs to know about the station that served it.
 #[derive(Clone)]
@@ -82,7 +82,12 @@ where
     S: Clone + Send + Sync + 'static,
     ConfigState: FromRef<S>,
 {
-    Router::new().route("/api/config", get(config))
+    Router::new()
+        .route("/api/config", get(config))
+        // Stateless on purpose: the preferences live in a file, not in `AppState`,
+        // so a second console on the same machine sees a change without either of
+        // them being restarted, and there is no copy in memory to go stale.
+        .route("/api/preferences", get(preferences).put(set_preferences))
 }
 
 /// Where the socket is, and what this station is.
@@ -99,6 +104,47 @@ async fn config(State(state): State<ConfigState>) -> Json<serde_json::Value> {
         "nodeId": state.node_id.0,
         "version": crate::VERSION,
     }))
+}
+
+/// What this console prefers, whichever show it has open.
+///
+/// Not part of `/api/config`, which answers "what did I just load from" and is read
+/// once at start-up. These change while the console is running.
+async fn preferences() -> Json<serde_json::Value> {
+    Json(as_json(&infra::preferences::load()))
+}
+
+/// Change them. Answers with what was actually stored, which is not always what was
+/// asked for: a depth outside what the console will do comes back at the nearest
+/// value that is.
+async fn set_preferences(Json(body): Json<serde_json::Value>) -> Result<Json<serde_json::Value>, Response> {
+    let asked = infra::preferences::Preferences {
+        history_depth: body
+            .get("historyDepth")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| bad_request("historyDepth has to be a number"))?,
+    }
+    .sane();
+
+    infra::preferences::save(&asked).map_err(|e| {
+        // Worth an error rather than a silent success: an operator who set something
+        // and was told it took wants to know when it did not.
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("could not write preferences: {e}")).into_response()
+    })?;
+    Ok(Json(as_json(&asked)))
+}
+
+fn as_json(prefs: &infra::preferences::Preferences) -> serde_json::Value {
+    json!({
+        "historyDepth": prefs.history_depth,
+        "historyDepthMin": pult_schema::types::show::HISTORY_DEPTH_MIN,
+        "historyDepthMax": pult_schema::types::show::HISTORY_DEPTH_MAX,
+    })
+}
+
+fn bad_request(why: &str) -> Response {
+    (StatusCode::BAD_REQUEST, why.to_owned()).into_response()
 }
 
 async fn upload(

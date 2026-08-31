@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS sequences (
 CREATE TABLE IF NOT EXISTS show (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    history_depth INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS speed_masters (

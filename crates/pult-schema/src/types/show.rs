@@ -25,4 +25,45 @@ pub struct Show {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub editing_cue: Option<Uuid>,
+    /// How many of an operator's own changes stay reachable, for undo and for the
+    /// history panel.
+    ///
+    /// Changes, not presses. An undo is a change too and shares the window with the
+    /// ones it reverses, so a run of them meets itself somewhere around half way:
+    /// five hundred is on the order of two hundred and fifty pressings of Ctrl-Z in
+    /// a row, and every one of them a long way past where anybody is still sure what
+    /// they are undoing.
+    ///
+    /// Show data rather than a station setting, so that two consoles working one
+    /// show agree about how far back Ctrl-Z goes. A station's own preference decides
+    /// what a *new* show starts with and then stops mattering — a default that kept
+    /// applying would let two stations give different answers about the same show,
+    /// which for undo is not a preference but a disagreement.
+    #[serde(default = "default_history_depth")]
+    #[pult(lifecycle = PERSISTED)]
+    pub history_depth: u32,
+}
+
+/// What a show keeps unless somebody says otherwise: five hundred changes, which is
+/// far more than anybody steps back through and small enough that a Ctrl-Z stays one
+/// indexed query rather than a scan of the evening.
+pub const HISTORY_DEPTH_DEFAULT: u32 = 500;
+/// Below this, undo stops being useful faster than an operator notices it has.
+pub const HISTORY_DEPTH_MIN: u32 = 10;
+/// Above this, the window stops being a window. Nothing prunes the log yet, so this
+/// is the only thing keeping a long show's history from being read in full.
+pub const HISTORY_DEPTH_MAX: u32 = 10_000;
+
+fn default_history_depth() -> u32 {
+    HISTORY_DEPTH_DEFAULT
+}
+
+/// A depth somebody asked for, brought inside what the console will actually do.
+///
+/// Applied where the value is *used* rather than where it is written, because a
+/// showfile can be edited by hand and a peer can be running a build with different
+/// bounds — and a nonsense number should mean the nearest sensible one rather than
+/// no undo at all.
+pub fn clamp_history_depth(depth: u32) -> u32 {
+    depth.clamp(HISTORY_DEPTH_MIN, HISTORY_DEPTH_MAX)
 }

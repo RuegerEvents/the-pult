@@ -1319,6 +1319,48 @@ write, not before the pair started. Nothing prunes the log. And nothing outside 
 pointer controls opens a gesture — a panel that writes several fields from one button
 could, and none does yet.
 
+### 33. Two kinds of setting (done)
+
+The console had no settings. A show had a name; everything else about how a station
+behaved was a flag decided before it started and unchangeable from the desk. The
+first thing that actually needed one was how far back Ctrl-Z reaches, and it turned
+out to need both kinds at once.
+
+**A show setting travels with the show.** `Show.history_depth` is PERSISTED and
+replicates, because two consoles working one show have to agree about how far back
+undo goes — a station-local number would not be a preference, it would be a
+disagreement, and the two desks would give different answers about the same press.
+
+**A console setting belongs to the machine somebody is sitting at.** A
+`preferences.toml` in the platform's config directory, read and written over
+`GET`/`PUT /api/preferences`. It decides what a *new* show starts with and then stops
+mattering, which is exactly what keeps the first rule true. Machine-wide rather than
+beside the showfile, which is the opposite of task 17's identity file and for the
+opposite reason: an identity must not travel with a copied showfile, and a preference
+about new shows has no showfile to sit beside. It is stateless in the router, so a
+second console on the same machine sees a change without either being restarted and
+there is no copy in memory to go stale.
+
+**The number is changes, not presses.** An undo is a change too and shares the window
+with the ones it reverses, so a run of them meets itself around half way: five hundred
+changes is on the order of two hundred and fifty consecutive presses. Found by writing
+a test that expected ten presses from a window of ten and got five. The panel says so,
+because a number whose meaning has to be derived is a number people will get wrong.
+
+**`#[serde(default)]` does not reach the showfile.** A SQL read does not go through
+serde, so the new column — added nullable, as the additive pass must — came back as
+zero on every existing show, and the clamp would have quietly left them with a depth
+of ten. Fixed with a backfill in `upgrades.rs`, which is what that module is for, plus
+a `const _: () = assert!(...)` tying the literal in the SQL to the constant the rest
+of the console uses, so changing one without the other is a build error rather than a
+surprise a year later.
+
+Left open: this is one setting, and the panel is shaped for more. Nothing else has
+moved into it yet — the output, session and device panels still own their own
+configuration, which is right while each is a page of its own and will stop being
+right when the second console-level preference arrives. The preferences file has no
+version field.
+
 ## Further out
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.

@@ -89,6 +89,7 @@ fn a_show() -> Show {
         name: "Hamlet".into(),
         created_at: Utc::now(),
         editing_cue: None,
+        history_depth: pult_schema::types::show::HISTORY_DEPTH_DEFAULT,
     }
 }
 
@@ -2364,5 +2365,101 @@ async fn a_drag_costs_the_log_one_row_per_fixture() {
     assert!(
         after.iter().all(|f| f.name.starts_with("Spot ")),
         "every fixture back to its own name, not to a frame of the drag"
+    );
+}
+
+/// How far back Ctrl-Z reaches is the show's setting, not a constant. Two consoles
+/// working one show read the same number because it is show data.
+#[tokio::test]
+async fn a_show_decides_how_far_back_undo_reaches() {
+    let h = harness().await;
+    let sam = Uuid::new_v4();
+    let mut show = a_show();
+    show.history_depth = pult_schema::types::show::HISTORY_DEPTH_MIN;
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&show)).await.unwrap();
+
+    let fixture = a_fixture("Spot L", 1);
+    h.engine
+        .set(
+            vec![PathSegment::Key("fixtures".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Persisted,
+            json(&fixture),
+        )
+        .await
+        .unwrap();
+    let name = vec![
+        PathSegment::Key("fixtures".into()),
+        PathSegment::Id(fixture.id),
+        PathSegment::Key("name".into()),
+    ];
+
+    // Comfortably more changes than the show keeps, each its own act.
+    for i in 0..30 {
+        h.engine
+            .set_as(sam, None, name.clone(), Lifecycle::Persisted, json(&format!("v{i}")))
+            .await
+            .unwrap();
+    }
+
+    // Half the window's worth of presses, not a whole one. Every undo writes a row
+    // of its own into the same window, so a run of them meets itself in the middle:
+    // after five, the window holds five reversals and the five changes they reversed,
+    // and there is nothing left in it that is still in effect.
+    for press in 0..5 {
+        assert_eq!(h.engine.undo(sam, false).await.len(), 1, "press {press}");
+    }
+    assert!(h.engine.undo(sam, false).await.is_empty(), "and no further back than the show keeps");
+}
+
+/// The history panel never offers to take back something undo can no longer reach.
+#[tokio::test]
+async fn the_history_is_never_longer_than_the_show_keeps() {
+    let h = harness().await;
+    let sam = Uuid::new_v4();
+    let mut show = a_show();
+    show.history_depth = pult_schema::types::show::HISTORY_DEPTH_MIN;
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&show)).await.unwrap();
+
+    for i in 0..40 {
+        h.engine
+            .set_as(
+                sam,
+                None,
+                field_path_on_singleton("show", "name"),
+                Lifecycle::Persisted,
+                json(&format!("Act {i}")),
+            )
+            .await
+            .unwrap();
+    }
+
+    // Asked for a hundred, given what the show keeps.
+    let entries = h.engine.history(100).await;
+    assert_eq!(entries.len() as u32, pult_schema::types::show::HISTORY_DEPTH_MIN);
+}
+
+/// A show saved before the setting existed opens at the default rather than
+/// refusing. The column is added back nullable, so the value on an existing row is
+/// absent — which for a field with a default is a question serde already answers.
+#[tokio::test]
+async fn a_show_saved_before_the_setting_existed_opens_at_the_default() {
+    let mut h = harness().await;
+    let mut show = a_show();
+    show.history_depth = 1234;
+    h.engine.set(key("show"), Lifecycle::Persisted, json(&show)).await.unwrap();
+
+    sqlx::query("ALTER TABLE show DROP COLUMN history_depth")
+        .execute(h.pool.as_ref())
+        .await
+        .unwrap();
+    crate::infra::showfile::migrate_for_test(&h.pool).await.unwrap();
+    h.reload().await;
+
+    let after = h.engine.get(key("show")).await.unwrap();
+    assert_eq!(after["name"], show.name, "the show still opens");
+    assert_eq!(
+        after["history_depth"],
+        json(&pult_schema::types::show::HISTORY_DEPTH_DEFAULT),
+        "and keeps the default number of changes"
     );
 }

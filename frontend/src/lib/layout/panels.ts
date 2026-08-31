@@ -6,8 +6,11 @@
  * a layout saved by a newer build should open on an older one with the panel it does
  * not recognise simply missing rather than breaking the tree.
  *
- * This is the one place that turns an id into a component. Adding a panel is a line
- * here and nothing anywhere else.
+ * This is the one place that turns a *built-in* id into a component. Adding a
+ * panel is a line here and nothing anywhere else. Panels contributed by the
+ * station's plugins merge in beside these at runtime — `$lib/stores/plugins.ts`
+ * derives them from the LOCAL `plugins` state under `plugin:*` ids, and the
+ * workspace reads the merged `allPanels` store rather than this table.
  */
 
 import type { Component } from 'svelte';
@@ -21,6 +24,7 @@ import PatchPanel from '$lib/components/PatchPanel.svelte';
 import SelectionPanel from '$lib/components/SelectionPanel.svelte';
 import SequenceRunner from '$lib/components/SequenceRunner.svelte';
 import SessionPanel from '$lib/components/SessionPanel.svelte';
+import SettingsPanel from '$lib/components/SettingsPanel.svelte';
 import SpeedMastersPanel from '$lib/components/SpeedMastersPanel.svelte';
 import ShowPanel from '$lib/components/ShowPanel.svelte';
 import StationsPanel from '$lib/components/StationsPanel.svelte';
@@ -49,6 +53,12 @@ export type PanelMeta = {
 	 * fixture, forgetting a device, renaming a flow mid-show.
 	 */
 	editable?: boolean;
+	/**
+	 * Handed to the component when the tile renders it. Built-in panels take no
+	 * props; a plugin panel needs to know which plugin it fronts, and this is
+	 * how the registry entry carries that without the tile knowing either way.
+	 */
+	props?: Record<string, unknown>;
 };
 
 export const PANELS = {
@@ -68,7 +78,8 @@ export const PANELS = {
 	// No edit toggle: this panel is an editor, and it writes to the programmer
 	// rather than to the show.
 	effects: { title: 'Effects', component: EffectsPanel, fills: false },
-	history: { title: 'History', component: HistoryPanel, fills: false }
+	history: { title: 'History', component: HistoryPanel, fills: false },
+	settings: { title: 'Settings', component: SettingsPanel, fills: false, editable: true }
 } as const satisfies Record<string, PanelMeta>;
 
 export const isPanel = (id: string): id is PanelId => id in PANELS;

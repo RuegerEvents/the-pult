@@ -5,12 +5,13 @@ use futures::stream::BoxStream;
 use pult_schema::{
     commands::CommandRegistration,
     events::operation::{Authorship, NodeId, Operation, VectorClock},
+    types::show::{clamp_history_depth, HISTORY_DEPTH_DEFAULT},
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
     types::{
-        devices::DevicesState, output::{OutputCoverage, OutputStatuses}, session::SessionState,
-        station::PeerLinks,
+        devices::DevicesState, output::{OutputCoverage, OutputStatuses},
+        session::SessionState, station::PeerLinks,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -656,6 +657,10 @@ impl ShowEngine {
                     let _ = reply.send(done);
                 }
                 EngineCommand::History { limit, reply } => {
+                    // Never further back than the show keeps, whatever was asked for:
+                    // a history panel showing changes that Ctrl-Z can no longer reach
+                    // is offering to undo things it cannot.
+                    let limit = limit.min(self.history_depth());
                     let log = oplog::recent_by_people(&self.pool, limit).await.unwrap_or_default();
                     let _ = reply.send(log);
                 }
@@ -1046,6 +1051,23 @@ impl ShowEngine {
         self.log_operation(&op).await;
     }
 
+    /// How far back this show keeps its history, in changes.
+    ///
+    /// Read from the show on every press rather than cached, because it is ordinary
+    /// replicated show data: a second console changing it should take effect here
+    /// without this one being restarted.
+    fn history_depth(&self) -> u32 {
+        let depth = self
+            .state
+            .get_by_path(&vec![
+                PathSegment::Key("show".into()),
+                PathSegment::Key("history_depth".into()),
+            ])
+            .and_then(|v| v.as_u64())
+            .unwrap_or(HISTORY_DEPTH_DEFAULT as u64);
+        clamp_history_depth(depth.try_into().unwrap_or(u32::MAX))
+    }
+
     /// What is at a path right now, for the oplog to remember.
     ///
     /// A create has nothing before it and a delete has the whole entity, and both
@@ -1073,7 +1095,7 @@ impl ShowEngine {
     /// reversed, so it replicates to peers, reaches the same user's other client,
     /// and turns up in the history as itself.
     async fn take_back(&mut self, user_id: Uuid, redo: bool) -> Vec<Path> {
-        let Ok(log) = oplog::recent_by_people(&self.pool, UNDO_DEPTH).await else {
+        let Ok(log) = oplog::recent_by_people(&self.pool, self.history_depth()).await else {
             return Vec::new();
         };
         let run = if redo {
@@ -1688,13 +1710,7 @@ fn entity_id(
 
 pub mod undo;
 
-/// How far back undo looks.
-///
-/// The oplog is a replication log first and grows for the length of a show, so undo
-/// reads a window rather than the lot. Five hundred operations is far more than
-/// anybody steps back through and small enough that a Ctrl-Z is a single indexed
-/// query rather than a scan of the evening.
-const UNDO_DEPTH: u32 = 500;
+
 
 #[cfg(test)]
 mod tests;

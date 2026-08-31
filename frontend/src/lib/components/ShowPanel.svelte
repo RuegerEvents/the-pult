@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Show } from '$lib/generated/index.js';
+	import { readPreferences } from '$lib/preferences.js';
 
 	const data = getDataContext();
 
@@ -12,11 +13,16 @@
 	let saving = $state(false);
 
 	async function initShow() {
+		// The one moment this console's own preference matters. After it is written
+		// into the show it is show data like anything else, so a second station
+		// working the same show reads the same number rather than its own.
+		const prefs = await readPreferences();
 		await data.show.set({
 			id: crypto.randomUUID(),
 			name: 'My Show',
 			created_at: new Date().toISOString(),
-			editing_cue: null
+			editing_cue: null,
+			history_depth: prefs?.historyDepth ?? 500
 		});
 	}
 

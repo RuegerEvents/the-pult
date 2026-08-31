@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod identity;
+pub mod preferences;
 pub mod showfile;
 pub mod sync;
 pub mod session;
