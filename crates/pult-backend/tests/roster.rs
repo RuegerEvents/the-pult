@@ -126,8 +126,12 @@ impl Station {
 
 /// A zip that is a valid plugin bundle, and its digest.
 fn a_bundle(plugin_id: &str, api: &str) -> (Vec<u8>, String) {
+    a_bundle_versioned(plugin_id, api, "0.1.0")
+}
+
+fn a_bundle_versioned(plugin_id: &str, api: &str, version: &str) -> (Vec<u8>, String) {
     let manifest = format!(
-        "[plugin]\nid = \"{plugin_id}\"\nname = \"Example\"\nversion = \"0.1.0\"\n\
+        "[plugin]\nid = \"{plugin_id}\"\nname = \"Example\"\nversion = \"{version}\"\n\
          api = \"{api}\"\nwasm = \"example.wasm\"\n"
     );
     let mut buf = Vec::new();
@@ -581,6 +585,207 @@ async fn changing_the_shows_configuration_restarts_the_plugin_everywhere() {
         roster[0]["config"]["prompt"], "$",
         "and the show carries the setting, so every station composes the same answer",
     );
+
+    station.stop();
+}
+
+/// Install a bundle the way an operator's console does: one request with the
+/// bytes in it.
+async fn install_over_http(station: &Station, bytes: Vec<u8>) -> (reqwest::StatusCode, Value) {
+    let response = reqwest::Client::new()
+        .post(format!("http://{}/api/plugins", station.running.http_addr))
+        .body(bytes)
+        .send()
+        .await
+        .expect("the install is answered");
+    let status = response.status();
+    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+    (status, body)
+}
+
+#[tokio::test]
+async fn installing_a_bundle_puts_it_in_the_show() {
+    let station = Station::start().await;
+
+    let (bytes, digest) = a_bundle("installed", "0.1");
+    let (status, body) = install_over_http(&station, bytes).await;
+
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["installed"]["plugin_id"], "installed");
+    assert_eq!(body["installed"]["sha256"], digest, "the row names the bytes: {body}");
+    assert_eq!(body["replaced"], false);
+
+    // And the roster is what the runtime then reconciles against, so the
+    // station picks it up with nothing else asked of it.
+    station.eventually("installed", "known to the station", |_| true).await;
+
+    station.stop();
+}
+
+#[tokio::test]
+async fn a_bundle_that_is_not_a_plugin_leaves_nothing_behind() {
+    let station = Station::start().await;
+
+    let (status, body) = install_over_http(&station, b"PK definitely not a zip".to_vec()).await;
+    assert_eq!(status, 400, "{body}");
+
+    // The manifest is read before anything is stored, so a console does not
+    // accumulate the bundles it has refused.
+    let roster = station
+        .running
+        .engine
+        .get(vec![PathSegment::Key("plugin_packages".into())])
+        .await
+        .unwrap();
+    assert_eq!(roster.as_array().map(|r| r.len()), Some(0), "no row: {roster}");
+
+    let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"PK definitely not a zip"));
+    let stored = reqwest::Client::new()
+        .get(format!("http://{}/assets/{digest}", station.running.http_addr))
+        .header("x-pult-asset-relay", "1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stored.status(), 404, "and no asset either");
+
+    station.stop();
+}
+
+#[tokio::test]
+async fn installing_a_plugin_id_already_present_upgrades_it() {
+    let station = Station::start().await;
+
+    let (first, _) = a_bundle("upgraded", "0.1");
+    let (_, body) = install_over_http(&station, first).await;
+    let row_id = body["installed"]["id"].clone();
+
+    // Switch it off and configure it, the way an operator would have.
+    let id: uuid::Uuid = serde_json::from_value(row_id.clone()).unwrap();
+    for (field, value) in [("enabled", json!(false)), ("config", json!({ "prompt": "$" }))] {
+        station
+            .running
+            .engine
+            .set(
+                vec![
+                    PathSegment::Key("plugin_packages".into()),
+                    PathSegment::Id(id),
+                    PathSegment::Key(field.into()),
+                ],
+                Lifecycle::Persisted,
+                value,
+            )
+            .await
+            .unwrap();
+    }
+
+    // A different build of the same plugin: one entry per plugin id, so this
+    // is an upgrade rather than a second row taking turns with the first.
+    let (bytes, new_digest) = a_bundle_versioned("upgraded", "0.1", "0.2.0");
+    let (status, body) = install_over_http(&station, bytes).await;
+
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["replaced"], true, "{body}");
+    assert_eq!(body["installed"]["id"], row_id, "the same row, not a second one");
+    assert_eq!(body["installed"]["version"], "0.2.0");
+    assert_eq!(body["installed"]["sha256"], new_digest);
+
+    // The operator's choices survive the upgrade. Installing a new build of
+    // something switched off must not switch it back on.
+    assert_eq!(body["installed"]["enabled"], false, "{body}");
+    assert_eq!(body["installed"]["config"]["prompt"], "$", "{body}");
+
+    let roster = station
+        .running
+        .engine
+        .get(vec![PathSegment::Key("plugin_packages".into())])
+        .await
+        .unwrap();
+    assert_eq!(roster.as_array().map(|r| r.len()), Some(1), "one row per plugin id: {roster}");
+
+    station.stop();
+}
+
+#[tokio::test]
+async fn removing_a_plugin_is_an_ordinary_edit_and_takes_back_like_one() {
+    let station = Station::start().await;
+
+    // A person, because undo is per person rather than per browser.
+    let user = uuid::Uuid::new_v4();
+    station
+        .running
+        .engine
+        .set(
+            vec![PathSegment::Key("users".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Persisted,
+            json!({ "id": user, "name": "Operator", "colour": "#ff0000" }),
+        )
+        .await
+        .expect("a user");
+
+    let (bytes, digest) = a_bundle("removable", "0.1");
+    let sha = upload(&station, bytes).await;
+    let id = uuid::Uuid::new_v4();
+    station
+        .running
+        .engine
+        .set_as(
+            user,
+            None,
+            vec![
+                PathSegment::Key("plugin_packages".into()),
+                PathSegment::Key("__create".into()),
+            ],
+            Lifecycle::Persisted,
+            json!({
+                "id": id, "plugin_id": "removable", "name": "Removable",
+                "version": "0.1.0", "api": "0.1", "sha256": sha,
+                "enabled": true, "stage": "Both", "config": null,
+            }),
+        )
+        .await
+        .expect("installed by somebody");
+    assert_eq!(digest, sha);
+
+    // Removal goes through the ordinary entity delete, which is the entire
+    // reason it is not a bespoke route: it replicates, it is attributed, and
+    // the Oops key covers it like any other mistake.
+    station
+        .running
+        .engine
+        .set_as(
+            user,
+            None,
+            vec![
+                PathSegment::Key("plugin_packages".into()),
+                PathSegment::Id(id),
+                PathSegment::Key("__delete".into()),
+            ],
+            Lifecycle::Persisted,
+            json!({}),
+        )
+        .await
+        .expect("removed");
+
+    let roster = station
+        .running
+        .engine
+        .get(vec![PathSegment::Key("plugin_packages".into())])
+        .await
+        .unwrap();
+    assert_eq!(roster.as_array().map(|r| r.len()), Some(0), "gone: {roster}");
+
+    let moved = station.running.engine.undo(user, false).await;
+    assert!(!moved.is_empty(), "undo found the removal");
+
+    let roster = station
+        .running
+        .engine
+        .get(vec![PathSegment::Key("plugin_packages".into())])
+        .await
+        .unwrap();
+    assert_eq!(roster.as_array().map(|r| r.len()), Some(1), "and put it back: {roster}");
+    assert_eq!(roster[0]["plugin_id"], "removable");
+    assert_eq!(roster[0]["sha256"], sha, "with the bundle it named");
 
     station.stop();
 }

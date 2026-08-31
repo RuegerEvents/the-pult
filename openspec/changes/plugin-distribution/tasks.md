@@ -79,12 +79,13 @@ Each group is meant to end in its own commit with `cargo test`,
 
 ## 6. Installing and removing
 
-- [ ] 6.1 Add `POST /api/plugins` taking a multipart bundle: validate the
+- [x] 6.1 Add `POST /api/plugins` taking the bundle as the request body:
+      validate the
       manifest before storing anything, store the asset, then write or replace
       the roster row for that `plugin_id`. Verify a bad bundle is rejected with
       its reason and leaves neither an asset nor a row, and that installing an
       id already present replaces rather than duplicates.
-- [ ] 6.2 Verify removal through the ordinary entity delete path is undoable,
+- [x] 6.2 Verify removal through the ordinary entity delete path is undoable,
       attributed and replicated, by asserting a removed package comes back on
       Ctrl-Z.
 
