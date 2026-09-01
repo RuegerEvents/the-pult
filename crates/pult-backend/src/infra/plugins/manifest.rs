@@ -24,7 +24,7 @@ use serde::Deserialize;
 /// wasmtime treats `0.1` and `0.2` as unrelated and every import fails to
 /// resolve — which makes an additive change impossible to ship at `0.x` no matter
 /// how it is spelled. Verified rather than assumed: `scripts/check-api-compat.sh`.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 1, minor: 0 };
+pub const API_VERSION: ApiVersion = ApiVersion { major: 1, minor: 1 };
 
 /// A `major.minor` the manifest named. A trailing patch is accepted and ignored:
 /// the WIT package carries one and an author copying it across should not be

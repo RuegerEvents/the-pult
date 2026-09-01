@@ -12,6 +12,19 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **A cue can fade two ways.** The *out* time beside the *in* time, on the cue and on
+  each captured value: a parameter takes the out time when the cue asks it to come
+  down and the in time when it asks it to go up, which is the split fade every
+  theatre desk has. A cue with no out time set fades one way in both directions, so
+  nothing an existing show does has changed. Only levels and whole numbers can be
+  said to be going down — a colour has no agreed ranking and a relay has no in
+  between, so those take the in time rather than have the console guess at one.
+- **Keep a light where you have aimed it.** A *take* button in the patch panel's Home
+  column stores what a fixture is putting out right now as where it rests. Which is
+  how a house light's resting place actually gets set: aim it, look at it, keep it,
+  rather than working out the number and typing it in about a light that is already
+  right in front of you. The station reads its own output, so anything that can ask —
+  the command line, a plugin — can do this without being able to read the rig.
 - **Somewhere for a parameter to rest.** Every fixture parameter now has a *home
   value*: what it goes to when nothing is driving it. Its type says where that is —
   derived from what the device said about its own ports — and a fixture can override
@@ -121,6 +134,14 @@ bracketed form — so every release needs one and it has to be spelled that way.
   one, shift-click to add — so a fixture can be programmed before it has been
   placed anywhere. Chips in the plan's *Not placed* tray can be dragged onto
   the plan to place them where they land.
+- **A plugin can be told when what it remembered changed.** `store.subscribe` for
+  plugin authors: a show-scoped store is show data, so an operator's undo can take a
+  write back and the same plugin on the console next door can write the same key.
+  Neither reaches a value a plugin is holding in memory, and one that never reads the
+  key again never found out. Changes now arrive on the existing update callback as
+  the store, the key and the new value. The plugin contract moves to 1.1 for it;
+  plugins built against 1.0 are unaffected and keep running, which is what the
+  version floor exists to guarantee.
 
 ### Changed
 
@@ -144,6 +165,13 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Fixed
 
+- **A console that gave up fetching a plugin asks again when one arrives.** A station
+  that could find nobody with a plugin's bundle stayed that way until somebody edited
+  the show — so the console holding it walking in five minutes late changed nothing,
+  and the operator's only move was to poke the roster until the console tried again.
+  A station joining the session now re-drives exactly the fetches that failed. Only
+  somewhere genuinely new to ask counts: a console leaving, or one already known
+  saying hello, asks for nothing again.
 - **An undo reaching a peer arrived as a fresh change.** A station sent the author of
   a write and the value it replaced, but not which operation it reversed, so an undo
   landed in the other station's log looking like an edit — and the next Ctrl-Z there

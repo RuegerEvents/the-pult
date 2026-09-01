@@ -1278,12 +1278,13 @@ impl ShowEngine {
     /// Turn a write that says how far, or where something rests, into ordinary
     /// absolute writes — or hand back what came in.
     ///
-    /// Three shapes carry a verb:
+    /// Four shapes carry a verb:
     ///
     /// ```text
-    /// [table, ref, field, "__by"]     <delta>
-    /// ["programmer_values", "__by"]   { "fixtureId", "parameterKind", "by" }
-    /// ["programmer_values", "__home"] { "fixtureId", "parameterKind"? }
+    /// [table, ref, field, "__by"]      <delta>
+    /// ["programmer_values", "__by"]    { "fixtureId", "parameterKind", "by" }
+    /// ["programmer_values", "__home"]  { "fixtureId", "parameterKind"? }
+    /// ["fixtures", "__set_home"]       { "fixtureId", "parameterKind"? }
     /// ```
     ///
     /// The first is the primitive: relative to what that field says now. The second
@@ -1292,10 +1293,11 @@ impl ShowEngine {
     /// what it has to be relative to is then what playback is showing rather than a
     /// row that does not exist. The third is the same act with a destination the
     /// station knows and the caller does not have to: what that parameter rests at.
+    /// The fourth is that one backwards — where it rests becomes where it is now.
     ///
-    /// Those two shapes are the one place the engine names a collection for a reason
-    /// of its own; it costs nothing that matters, since adding a collection still
-    /// needs no edit here.
+    /// Those three shapes are the only places the engine names a collection for a
+    /// reason of its own; it costs nothing that matters, since adding a collection
+    /// still needs no edit here.
     ///
     /// A verb can be several writes: `__home` without a `parameterKind` is every
     /// output parameter of the fixture, which is what lets a caller ask for home
@@ -1331,6 +1333,12 @@ impl ShowEngine {
             {
                 self.home_programmer(&path, &value)
             }
+            // The other direction: where it rests becomes wherever it is now.
+            [PathSegment::Key(table), PathSegment::Key(verb)]
+                if table == "fixtures" && verb == "__set_home" =>
+            {
+                self.set_home_from_output(&path, &value)
+            }
             // Any field of any row: relative to what it says now.
             [table @ PathSegment::Key(_), seg, field @ PathSegment::Key(_), PathSegment::Key(verb)]
                 if verb == "__by" =>
@@ -1344,6 +1352,15 @@ impl ShowEngine {
                     BackendError::InvalidValue { path: path.clone(), reason }
                 })?;
                 Ok(vec![(target, next)])
+            }
+            // Only a fixture has an output to take a resting place from.
+            [.., PathSegment::Key(verb)] if verb == "__set_home" => {
+                Err(BackendError::InvalidValue {
+                    path: path.clone(),
+                    reason: "only a fixture's parameters rest anywhere; \
+                             write to [\"fixtures\", \"__set_home\"]"
+                        .into(),
+                })
             }
             // `__by` on a create, or on a whole row, means nothing — and doing
             // something almost-right with it would be worse than saying so.
@@ -1627,6 +1644,103 @@ impl ShowEngine {
         }
 
         Ok(writes)
+    }
+
+    /// `["fixtures", "__set_home"]` with `{ fixtureId, parameterKind? }`.
+    ///
+    /// The opposite act to `__home`, and the one an operator actually performs on a
+    /// house light: rather than sending a parameter to where it rests, it makes where
+    /// it rests be wherever the parameter is now. Aim the light, look at it, keep it.
+    ///
+    /// A verb rather than an ordinary write to `home_values` because the value being
+    /// stored is one only the station holds. A browser could read `live_values` and
+    /// write the map itself; the command line and a plugin with no data access could
+    /// not, and the whole argument `__by` and `__home` made was that a caller able to
+    /// act should not have to be a caller able to read the rig.
+    ///
+    /// One write, of the whole map. `home_values` is a single JSON column, so that is
+    /// the shape of the field — and it means taking a fixture's whole output is one
+    /// thing to undo rather than one per parameter.
+    fn set_home_from_output(
+        &self,
+        path: &Path,
+        args: &serde_json::Value,
+    ) -> Result<Vec<(Path, serde_json::Value)>, BackendError> {
+        let bad = |reason: &str| BackendError::InvalidValue {
+            path: path.clone(),
+            reason: reason.to_string(),
+        };
+
+        let fixture_id = args
+            .get("fixtureId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| bad("taking a home value needs a fixtureId"))?;
+        let fixture_uuid: Uuid =
+            fixture_id.parse().map_err(|_| bad("that fixtureId is not a uuid"))?;
+        let (fixture, fixture_type) = self
+            .fixture_and_type(fixture_uuid)
+            .ok_or_else(|| bad("no fixture of that id is patched here"))?;
+
+        // One parameter when named, and everything an operator can set when not — the
+        // same two shapes `__home` takes, so that the pair reads as a pair.
+        let named = match args.get("parameterKind") {
+            Some(k) if !k.is_null() => Some(
+                serde_json::from_value::<ParameterKind>(k.clone())
+                    .map_err(|e| bad(&format!("that is not a parameter kind: {e}")))?,
+            ),
+            _ => None,
+        };
+        let kinds: Vec<ParameterKind> = match &named {
+            Some(kind) => {
+                let definition = fixture_type
+                    .parameters
+                    .iter()
+                    .find(|p| p.kind == *kind)
+                    .ok_or_else(|| bad("that fixture has no such parameter"))?;
+                if definition.direction != ParameterDirection::Output {
+                    return Err(bad(
+                        "that parameter is one the device writes and the show reads; \
+                         it does not rest anywhere",
+                    ));
+                }
+                vec![kind.clone()]
+            }
+            None => output_parameters(&fixture_type).map(|p| p.kind.clone()).collect(),
+        };
+
+        let mut home = fixture.home_values.clone();
+        let mut took = false;
+        for kind in kinds {
+            let key = parameter_key(&kind);
+            let Some(value) = fixture.live_values.get(&key) else {
+                // Named on its own, being told is better than being ignored — an
+                // operator who asked for one parameter is looking at that parameter.
+                if named.is_some() {
+                    return Err(bad(
+                        "that parameter is not putting anything out, so there is \
+                         nothing to take",
+                    ));
+                }
+                continue;
+            };
+            home.insert(key, value.clone());
+            took = true;
+        }
+        // Nothing on stage to take. Not an error: a fixture that has never been driven
+        // is an ordinary state, and writing the map back unchanged would put a change
+        // that changed nothing into the history panel.
+        if !took {
+            return Ok(Vec::new());
+        }
+
+        Ok(vec![(
+            vec![
+                PathSegment::Key("fixtures".into()),
+                PathSegment::Id(fixture_uuid),
+                PathSegment::Key("home_values".into()),
+            ],
+            serde_json::to_value(home)?,
+        )])
     }
 
     /// Route a write to the right entity, generically.

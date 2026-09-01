@@ -65,6 +65,40 @@ return that parameter to what the type declares.
 - **WHEN** an operator clears a fixture's override for a parameter
 - **THEN** that parameter's home value is what the fixture's type declares
 
+### Requirement: An override can be taken from what the fixture is putting out
+
+An operator SHALL be able to set a fixture's home override from what that fixture
+is currently outputting, for one named parameter or for every parameter an
+operator can set. The value stored SHALL be read by the station from its own
+output, so that a caller able to make the request need not be able to read the
+rig — the same property as asking for a parameter's home value.
+
+Taking the whole fixture SHALL be a single change for the purposes of history and
+undo.
+
+A parameter that is putting nothing out SHALL NOT be taken. Where the request
+named that parameter, it SHALL be refused with the reason; where the request was
+for the whole fixture, that parameter SHALL be left as it was and the rest taken.
+
+A parameter the device writes and the show reads SHALL be refused: it does not
+rest anywhere.
+
+#### Scenario: Keeping a house light where it has been aimed
+
+- **WHEN** an operator takes a fixture's home values from its output
+- **THEN** that fixture's overrides are what it was putting out at that moment
+- **AND** sending it home afterwards puts it back exactly there
+
+#### Scenario: Taking one parameter
+
+- **WHEN** an operator takes the home value of one named parameter
+- **THEN** only that parameter's override changes and the others stand
+
+#### Scenario: One act, one undo
+
+- **WHEN** an operator takes the home values of a fixture with several parameters
+- **THEN** one undo takes back the whole fixture
+
 ### Requirement: A sequence can be taken off
 
 A sequence SHALL have an act that takes it off, leaving no cue of it active.

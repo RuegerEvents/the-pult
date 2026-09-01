@@ -138,7 +138,16 @@ A store write is **not** undoable and not in the History panel unless the store
 says `undoable = true`. Both come from whether the host attributes the write, so
 neither `Operation::is_undoable` nor the oplog's SQL knows what a plugin is.
 
-The WIT package is `pult:plugin@1.0.0` and a manifest's `api` is a **floor**:
+And a plugin can be **told** when a show-scoped store changed under it —
+`store.subscribe(store)`, delivered through the existing `lifecycle.on-update`
+as `[store, key]`. Built on the engine's broadcast rather than a hook in the
+store's own write path, deliberately: a hook sees only this station's guest
+writing, where the broadcast also sees an undo and a peer's copy of the same
+plugin, which are what a plugin holding a value in memory cannot otherwise
+learn about. A station-scoped store hands back a dead token, having nothing to
+report.
+
+The WIT package is `pult:plugin@1.1.0` and a manifest's `api` is a **floor**:
 same major, station's minor at least the plugin's. It cannot be `0.x` — a
 component's imports carry the package version, and under semver a `0.x` minor
 bump is breaking, so every import would fail to resolve. `scripts/check-api-compat.sh`
@@ -229,6 +238,20 @@ any other. `Show::home_fade_ms` says how long either takes, seeded from a statio
 preference the way `history_depth` is. Consequence worth knowing: **Go at the last cue
 stays there** rather than wrapping to no active cue, because "off" has to be a state
 playback can tell apart from "ran out of cues".
+
+And the verb backwards: `["fixtures", "__set_home"]` with the same
+`{fixtureId, parameterKind?}` makes where a parameter rests be wherever it is now,
+read from the station's own output. Which is how a house light's actually gets set —
+aim it, look at it, keep it — and a verb rather than a write to `home_values` for the
+reason `__home` is one: a caller able to act should not have to be a caller able to
+read the rig. One write of the whole map, so a fixture is one Ctrl-Z.
+
+**A cue fades two ways.** `fade_in_ms` is what a parameter takes going up and
+`fade_out_ms` what it takes coming down, on the cue and per capture, the capture
+winning. Zero out means "this cue does not split its fade" rather than "snap", so a
+show that never sets one runs exactly as it did. Only values with an order to be on
+can be going down — a colour has three and a relay none, and those take the in time
+rather than have the console guess a ranking.
 
 **A selection is a question about the rig**, not a list of ids — "every mover on the
 downstage truss" stays true after somebody patches a fifth one. What is selected

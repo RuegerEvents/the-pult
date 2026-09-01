@@ -644,6 +644,141 @@ impl store::Host for PluginCtx {
         })
     }
 
+    /// Watch one show-scoped store for changes this plugin did not make.
+    ///
+    /// The work is done off the event loop, in a task per subscription, exactly
+    /// like `data.subscribe` — and it is deliberately built on the same
+    /// broadcast rather than on a hook in `show_store_set`. A hook would see
+    /// only this station's plugin writing; the broadcast sees an undo, a peer's
+    /// copy of the same plugin, and a showfile catching up, which are the three
+    /// ways a value actually moves out from under a plugin that is holding it.
+    ///
+    /// The task keeps `id -> key` for the store's rows, because a row is
+    /// addressed by a UUIDv5 over `(plugin, store, key)` and that is one-way: a
+    /// field write broadcasts `plugin_data/<id>/value` and nothing in the path
+    /// says which key it is. Seeded at subscribe and kept up as rows arrive, so
+    /// a key being *deleted* — where the row is gone before anyone could read
+    /// it — still reports the key it was.
+    async fn subscribe(&mut self, store: String) -> wasmtime::Result<u64> {
+        let Ok(declared) = self.declared(&store) else {
+            tracing::warn!(
+                "[plugin:{}] subscribed to store {store:?}, which its manifest does not declare",
+                self.plugin_id
+            );
+            return Ok(0);
+        };
+        if declared.scope == StoreScope::Station {
+            // Nothing to say. This machine's file, and this plugin is the only
+            // writer, so every change to it is one the guest just made.
+            return Ok(0);
+        }
+
+        self.next_token += 1;
+        let token = self.next_token;
+        let mut known: HashMap<Uuid, String> = self
+            .show_store_rows(&store)
+            .await
+            .into_iter()
+            .map(|d| (d.id, d.key))
+            .collect();
+
+        let mut stream = self.broadcast.subscribe_all();
+        let tx = self.self_tx.clone();
+        let plugin_id = self.plugin_id.clone();
+        let engine = self.engine.clone();
+        let task = tokio::spawn(async move {
+            use futures::StreamExt;
+            while let Some((path, value)) = stream.next().await {
+                let [PathSegment::Key(table), rest @ ..] = path.as_slice() else { continue };
+                if table != "plugin_data" {
+                    continue;
+                }
+                // A create or a delete broadcasts the whole collection, so the
+                // rows in hand are the answer and the diff against what was
+                // known names both what arrived and what went.
+                let changed: Vec<(String, Value)> = match rest {
+                    [] => {
+                        let rows: Vec<PluginDatum> =
+                            serde_json::from_value(value).unwrap_or_default();
+                        let mut now: HashMap<Uuid, String> = HashMap::new();
+                        let mut changed = Vec::new();
+                        for row in rows {
+                            if row.plugin_id != plugin_id || row.store != store {
+                                continue;
+                            }
+                            if !known.contains_key(&row.id) {
+                                changed.push((row.key.clone(), row.value.clone()));
+                            }
+                            now.insert(row.id, row.key);
+                        }
+                        for (id, key) in &known {
+                            if !now.contains_key(id) {
+                                changed.push((key.clone(), Value::Null));
+                            }
+                        }
+                        known = now;
+                        changed
+                    }
+                    // A field write on a row. Only `value` moves a stored key;
+                    // nothing else on the row is the plugin's business.
+                    [PathSegment::Id(id), PathSegment::Key(field)] if field == "value" => {
+                        match known.get(id) {
+                            Some(key) => vec![(key.clone(), value)],
+                            // A row this task has not seen, which happens when a
+                            // create arrived as a snapshot rather than as a
+                            // broadcast. Ask once, and remember it.
+                            None => {
+                                let row = engine
+                                    .get(vec![
+                                        PathSegment::Key("plugin_data".into()),
+                                        PathSegment::Id(*id),
+                                    ])
+                                    .await
+                                    .ok()
+                                    .and_then(|v| {
+                                        serde_json::from_value::<PluginDatum>(v).ok()
+                                    });
+                                match row {
+                                    Some(row)
+                                        if row.plugin_id == plugin_id && row.store == store =>
+                                    {
+                                        known.insert(row.id, row.key.clone());
+                                        vec![(row.key, value)]
+                                    }
+                                    _ => continue,
+                                }
+                            }
+                        }
+                    }
+                    _ => continue,
+                };
+
+                for (key, value) in changed {
+                    let update = InstanceMsg::Update {
+                        token,
+                        path: vec![
+                            PathSegment::Key(store.clone()),
+                            PathSegment::Key(key),
+                        ],
+                        value,
+                    };
+                    if tx.send(update).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        self.subs.insert(token, task.abort_handle());
+        Ok(token)
+    }
+
+    async fn unsubscribe(&mut self, token: u64) -> wasmtime::Result<()> {
+        if let Some(task) = self.subs.remove(&token) {
+            task.abort();
+        }
+        Ok(())
+    }
+
     async fn keys(
         &mut self,
         store: String,

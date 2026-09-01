@@ -32,6 +32,15 @@ type LeafProxy<T> = {
 	 * declares — so nothing here works it out for itself.
 	 */
 	home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+	/**
+	 * The same verb backwards: where this rests becomes wherever it is now.
+	 *
+	 * The rig's, not the programmer's — `data.fixtures.takeHome({ fixtureId })`
+	 * stores what the station is putting out as that fixture's home value, and
+	 * naming a `parameterKind` stores just the one. The output the station reads is
+	 * its own, so a browser that is a frame behind still stores what is on stage.
+	 */
+	takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
 	get(): Promise<T>;
 	subscribe(cb: (value: T) => void, opts?: SubscribeOptions): () => void;
 };
@@ -80,6 +89,9 @@ export function createDataProxy<T>(
 			}
 			if (prop === 'home') {
 				return (args: unknown) => client.set([...path, '__home'], args);
+			}
+			if (prop === 'takeHome') {
+				return (args: unknown) => client.set([...path, '__set_home'], args);
 			}
 			if (prop === 'get') {
 				return () => client.get(path);

@@ -108,6 +108,7 @@ export type CueCollection = {
   nth(n: number): CueEntity;
   create(entity: Cue): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: CueEntity;
 };
 
@@ -120,6 +121,7 @@ export type FixtureCollection = {
   nth(n: number): FixtureEntity;
   create(entity: Fixture): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: FixtureEntity;
 };
 
@@ -132,6 +134,7 @@ export type FixtureTypeCollection = {
   nth(n: number): FixtureTypeEntity;
   create(entity: FixtureType): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: FixtureTypeEntity;
 };
 
@@ -144,6 +147,7 @@ export type FlowCollection = {
   nth(n: number): FlowEntity;
   create(entity: Flow): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: FlowEntity;
 };
 
@@ -156,6 +160,7 @@ export type FlowEdgeCollection = {
   nth(n: number): FlowEdgeEntity;
   create(entity: FlowEdge): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: FlowEdgeEntity;
 };
 
@@ -168,6 +173,7 @@ export type FlowNodeCollection = {
   nth(n: number): FlowNodeEntity;
   create(entity: FlowNode): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: FlowNodeEntity;
 };
 
@@ -180,6 +186,7 @@ export type GroupCollection = {
   nth(n: number): GroupEntity;
   create(entity: Group): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: GroupEntity;
 };
 
@@ -192,6 +199,7 @@ export type LayoutCollection = {
   nth(n: number): LayoutEntity;
   create(entity: Layout): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: LayoutEntity;
 };
 
@@ -204,6 +212,7 @@ export type OutputConfigCollection = {
   nth(n: number): OutputConfigEntity;
   create(entity: OutputConfig): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: OutputConfigEntity;
 };
 
@@ -216,6 +225,7 @@ export type PluginDatumCollection = {
   nth(n: number): PluginDatumEntity;
   create(entity: PluginDatum): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: PluginDatumEntity;
 };
 
@@ -228,6 +238,7 @@ export type PluginPackageCollection = {
   nth(n: number): PluginPackageEntity;
   create(entity: PluginPackage): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: PluginPackageEntity;
 };
 
@@ -240,6 +251,7 @@ export type ProgrammerValueCollection = {
   nth(n: number): ProgrammerValueEntity;
   create(entity: ProgrammerValue): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: ProgrammerValueEntity;
 };
 
@@ -252,6 +264,7 @@ export type SequenceCollection = {
   nth(n: number): SequenceEntity;
   create(entity: Sequence): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: SequenceEntity;
 };
 
@@ -264,6 +277,7 @@ export type SpeedMasterCollection = {
   nth(n: number): SpeedMasterEntity;
   create(entity: SpeedMaster): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: SpeedMasterEntity;
 };
 
@@ -276,6 +290,7 @@ export type StagePlanCollection = {
   nth(n: number): StagePlanEntity;
   create(entity: StagePlan): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: StagePlanEntity;
 };
 
@@ -288,6 +303,7 @@ export type StationCollection = {
   nth(n: number): StationEntity;
   create(entity: Station): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: StationEntity;
 };
 
@@ -300,6 +316,7 @@ export type UserCollection = {
   nth(n: number): UserEntity;
   create(entity: User): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: UserEntity;
 };
 

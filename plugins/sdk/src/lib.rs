@@ -182,6 +182,27 @@ pub mod store {
     pub fn keys(store: &str, prefix: &str) -> Result<Vec<String>, String> {
         raw::keys(store, prefix)
     }
+
+    /// Be told when a key of this store changes without this plugin doing it.
+    ///
+    /// Updates arrive at [`super::PultPlugin::on_update`] carrying the returned
+    /// token, with `path` as `[store, key]` and `value` the new one —
+    /// `Value::Null` where the key was forgotten.
+    ///
+    /// Worth doing whenever a plugin *caches* what it stored. A show-scoped
+    /// store is show data: an operator's Ctrl-Z can take a write back, and
+    /// another station's copy of this plugin can write the same key. Neither
+    /// reaches a value being held in a struct field, and a plugin that never
+    /// reads the key again would never find out.
+    ///
+    /// A station-scoped store returns 0: nothing but this plugin writes it.
+    pub fn subscribe(store: &str) -> u64 {
+        raw::subscribe(store)
+    }
+
+    pub fn unsubscribe(token: u64) {
+        raw::unsubscribe(token);
+    }
 }
 
 pub use pult::plugin::logging::{log, LogLevel};

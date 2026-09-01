@@ -237,11 +237,13 @@ fn generate_frontend_proxy(workspace: &PathBuf) -> Result<()> {
         out.push_str(&format!("  nth(n: number): {n}Entity;\n"));
         out.push_str(&format!("  create(entity: {n}): Promise<void>;\n"));
         // The collection verbs the runtime proxy answers everywhere. Only
-        // `programmer_values` does anything with `home`; the station refuses it
-        // elsewhere, naming the path, the same way `by` refuses a field that is not a
-        // number. Written for every collection rather than for one, because this file
-        // is generated from the registry and must not know a table by name.
+        // `programmer_values` does anything with `home`, and only `fixtures` with
+        // `takeHome`; the station refuses each elsewhere, naming the path, the same
+        // way `by` refuses a field that is not a number. Written for every collection
+        // rather than for one, because this file is generated from the registry and
+        // must not know a table by name.
         out.push_str("  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;\n");
+        out.push_str("  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;\n");
         out.push_str(&format!("  [n: number]: {n}Entity;\n"));
         out.push_str("};\n\n");
     }

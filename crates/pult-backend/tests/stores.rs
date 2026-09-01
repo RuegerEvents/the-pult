@@ -535,6 +535,130 @@ async fn data_outlives_the_plugin_that_wrote_it() {
     let _ = std::fs::remove_file(&showfile);
 }
 
+// ── Being told ────────────────────────────────────────────────────────────────
+
+/// Everything the probe has been handed on `token`, once there are at least `n`.
+async fn changes_on(running: &Running, token: u64, n: usize) -> Vec<Value> {
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let all = probe(running, "changes", json!({})).await.unwrap_or(Value::Null);
+        let mine: Vec<Value> = all
+            .as_array()
+            .map(|rows| rows.iter().filter(|r| r["token"] == token).cloned().collect())
+            .unwrap_or_default();
+        if mine.len() >= n {
+            return mine;
+        }
+    }
+    panic!("waited for {n} change(s) on token {token} and they did not arrive");
+}
+
+/// The gap this closes. A show-scoped store is show data, so an operator can take
+/// a write back — and until now the plugin that made it found out on its next
+/// read, which for a value it is holding in memory is never.
+#[tokio::test]
+async fn an_undo_reaches_the_plugin_whose_store_it_took_back() {
+    let (running, showfile) = station_or_skip!();
+    let user = uuid::Uuid::new_v4();
+
+    let token = probe(&running, "watch", json!({ "store": "deliberate" }))
+        .await
+        .expect("watching is allowed")
+        .as_u64()
+        .expect("a token");
+    assert!(token > 0, "a show-scoped store is watchable");
+
+    probe_as(
+        &running,
+        user,
+        "set",
+        json!({ "store": "deliberate", "key": "opening", "value": "the macro" }),
+    )
+    .await
+    .expect("the write is taken");
+
+    // Its own write comes back too. The subscription is on the show rather than
+    // on the guest's calls, and a plugin that wants to ignore its own echo knows
+    // what it just wrote — where one that needs to hear an undo cannot ask.
+    let after_write = changes_on(&running, token, 1).await;
+    assert_eq!(after_write[0]["path"], json!(["deliberate", "opening"]));
+    assert_eq!(after_write[0]["value"], json!("the macro"));
+
+    running.engine.undo(user, false).await;
+
+    let after_undo = changes_on(&running, token, 2).await;
+    let last = after_undo.last().expect("something arrived");
+    assert_eq!(last["path"], json!(["deliberate", "opening"]));
+    assert_eq!(
+        last["value"],
+        Value::Null,
+        "the key was created by that write, so taking it back forgets it: {last}"
+    );
+    assert_eq!(
+        get(&running, "deliberate", "opening").await,
+        Value::Null,
+        "and what the plugin was told matches what it would now read",
+    );
+
+    running.serve.abort();
+    let _ = std::fs::remove_file(&showfile);
+}
+
+/// A station store is this machine's file and this plugin is its only writer, so
+/// there is nothing anybody could tell it. Saying so with a dead token rather than
+/// an error, the way `data.subscribe` answers a plugin with no data permission.
+#[tokio::test]
+async fn a_station_store_has_nothing_to_report() {
+    let (running, showfile) = station_or_skip!();
+
+    let token = probe(&running, "watch", json!({ "store": "local" }))
+        .await
+        .expect("asking is not an error")
+        .as_u64()
+        .expect("a token");
+    assert_eq!(token, 0, "nothing but this plugin writes it");
+
+    let undeclared = probe(&running, "watch", json!({ "store": "not-declared" }))
+        .await
+        .expect("asking is not an error")
+        .as_u64()
+        .expect("a token");
+    assert_eq!(undeclared, 0, "and a store this plugin has no business in is the same");
+
+    running.serve.abort();
+    let _ = std::fs::remove_file(&showfile);
+}
+
+/// Unsubscribing stops it, which is what makes a subscription something a plugin
+/// can put down rather than something it acquires for the life of the station.
+#[tokio::test]
+async fn a_watch_that_was_put_down_says_nothing_more() {
+    let (running, showfile) = station_or_skip!();
+
+    let token = probe(&running, "watch", json!({ "store": "carried" }))
+        .await
+        .expect("watching is allowed")
+        .as_u64()
+        .expect("a token");
+
+    set(&running, "carried", "before", json!(1)).await.expect("written");
+    changes_on(&running, token, 1).await;
+
+    probe(&running, "unwatch", json!({ "token": token })).await.expect("put down");
+    set(&running, "carried", "after", json!(2)).await.expect("written");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let all = probe(&running, "changes", json!({})).await.unwrap_or(Value::Null);
+    let mine = all
+        .as_array()
+        .map(|rows| rows.iter().filter(|r| r["token"] == token).count())
+        .unwrap_or(0);
+    assert_eq!(mine, 1, "only the write from before it was put down: {all}");
+
+    running.serve.abort();
+    let _ = std::fs::remove_file(&showfile);
+}
+
 async fn start_with(showfile: &PathBuf, plugin_dirs: Vec<PathBuf>) -> Running {
     pult_backend::start(Config {
         port: 0,

@@ -468,10 +468,6 @@ impl Playback {
                 continue;
             }
 
-            // A capture's own fade time wins; zero means "use the cue's".
-            let duration = Duration::from_millis(
-                if capture.fade_in_ms > 0 { capture.fade_in_ms } else { cue.fade_in_ms } as u64,
-            );
             let delay = Duration::from_millis(capture.delay_in_ms as u64);
 
             // Fade from wherever the parameter is now, so re-cueing mid-fade is
@@ -487,6 +483,19 @@ impl Playback {
                 // A fixture whose type has gone: nothing can say where it rests, so
                 // the cue lands rather than fading from a zero nobody vouched for.
                 .unwrap_or_else(|| capture.value.clone());
+
+            // A capture's own time wins; zero means "use the cue's". Which of the two
+            // the parameter takes is decided by where it is going — a split fade is
+            // the whole reason a cue has an out time as well as an in time.
+            let up = if capture.fade_in_ms > 0 { capture.fade_in_ms } else { cue.fade_in_ms };
+            let down = match (capture.fade_out_ms, cue.fade_out_ms) {
+                (0, 0) => up,
+                (0, cue_out) => cue_out,
+                (own, _) => own,
+            };
+            let duration = Duration::from_millis(
+                if descending(&from, &capture.value) { down } else { up } as u64,
+            );
 
             let fade = Fade {
                 fixture_id: capture.fixture_id,
@@ -694,6 +703,23 @@ fn shift(now: Instant, by_ms: i64) -> Instant {
 }
 
 // ── Parameter helpers ─────────────────────────────────────────────────────────
+
+/// Is this capture asking the parameter to come down rather than to go up?
+///
+/// Which decides whether it takes the out time or the in time. Only values with an
+/// order to be on can answer: a colour has three of them and no agreed way to rank
+/// them, a relay has none at all, and a fixture whose parameter changes kind
+/// mid-show is a mistake rather than a direction. All of those take the in time,
+/// which is the one time they have always taken — so a show that never sets an out
+/// time runs exactly as it did.
+fn descending(from: &ParameterValue, to: &ParameterValue) -> bool {
+    use ParameterValue::*;
+    match (from, to) {
+        (Float(a), Float(b)) => b < a,
+        (Int(a), Int(b)) => b < a,
+        _ => false,
+    }
+}
 
 /// Blend two parameter values. Values that cannot be blended, and values of
 /// different kinds, snap to the target when the fade completes.

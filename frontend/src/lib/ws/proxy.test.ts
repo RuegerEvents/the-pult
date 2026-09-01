@@ -181,3 +181,27 @@ describe('relative writes', () => {
 		expect(sets).toEqual([[['cues', 'c1', 'fade_in_ms'], 4500]]);
 	});
 });
+
+describe('home', () => {
+	/**
+	 * Both directions are the station's answer, not this browser's: what a parameter
+	 * rests at, and what it is putting out. Neither value appears in what is sent.
+	 */
+	it('asks for a resting place without naming one', async () => {
+		const { client, sets } = fakeClient({});
+		const proxy = createDataProxy<unknown>(client, ['programmer_values']);
+
+		await proxy.home({ fixtureId: 'f1' });
+
+		expect(sets).toEqual([[['programmer_values', '__home'], { fixtureId: 'f1' }]]);
+	});
+
+	it('takes one from the output without reading the output', async () => {
+		const { client, sets } = fakeClient({});
+		const proxy = createDataProxy<unknown>(client, ['fixtures']);
+
+		await proxy.takeHome({ fixtureId: 'f1' });
+
+		expect(sets).toEqual([[['fixtures', '__set_home'], { fixtureId: 'f1' }]]);
+	});
+});

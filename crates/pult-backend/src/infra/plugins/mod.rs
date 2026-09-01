@@ -94,6 +94,10 @@ pub enum PluginCommand {
     /// fresh from the engine, so two changes arriving close together settle on
     /// the same answer rather than racing to apply their own snapshots.
     RosterChanged,
+    /// A station joined the session, or said where it serves. Carries nothing
+    /// for the same reason `RosterChanged` does: who is out there is read fresh
+    /// when it is handled.
+    StationsChanged,
     /// A bundle fetch finished. Reported by the task that ran it, because
     /// fetching is an HTTP request to another station and the event loop must
     /// not be inside one.
@@ -184,6 +188,15 @@ pub struct PluginManager {
     /// Digests currently being fetched, so two roster changes arriving during
     /// one download do not start a second one for the same bytes.
     fetching: BTreeSet<String>,
+    /// Digests this station asked for and did not get. Kept so that a station
+    /// appearing can re-drive exactly those, and nothing else: a plugin that
+    /// failed to *parse* is not waiting on anybody, and asking the network about
+    /// it again would be a console retrying its own bug.
+    fetch_failed: BTreeSet<String>,
+    /// Where the other stations said they serve, as of the last time it was
+    /// worth looking. Compared rather than counted: what re-drives a fetch is a
+    /// place to ask that was not there before, and a station leaving is not one.
+    peers_seen: BTreeSet<String>,
     rx: mpsc::Receiver<PluginCommand>,
     tx: mpsc::Sender<PluginCommand>,
 }
@@ -236,6 +249,8 @@ impl PluginManager {
                 deps,
                 plugins: BTreeMap::new(),
                 fetching: BTreeSet::new(),
+                fetch_failed: BTreeSet::new(),
+                peers_seen: BTreeSet::new(),
                 rx,
                 tx: tx.clone(),
             },
@@ -253,7 +268,7 @@ impl PluginManager {
         // The roster is watched whether or not any directory is configured: a
         // station with no `--plugins` at all still runs what the show carries,
         // which is the ordinary case for everything that is not a dev checkout.
-        let _roster_watch = self.watch_roster();
+        let _show_watch = self.watch_show();
 
         let _watcher = if self.dirs.is_empty() {
             info!("[plugin] no plugin directories configured");
@@ -268,23 +283,40 @@ impl PluginManager {
         self.event_loop().await;
     }
 
-    /// Turn writes under `plugin_packages` into one message to ourselves.
+    /// Turn writes that could change what this station should be running into
+    /// one message to ourselves.
     ///
-    /// A create or a delete broadcasts the collection and a field write
-    /// broadcasts the field, so matching the first segment catches both. The
-    /// message carries nothing: the roster is read fresh when it is handled, so
-    /// a burst of writes settles on one answer instead of racing.
-    fn watch_roster(&self) -> tokio::task::JoinHandle<()> {
+    /// Two of them. **The roster** is what the show asks for: a create or a
+    /// delete broadcasts the collection and a field write broadcasts the field,
+    /// so matching the first segment catches both. The message carries nothing —
+    /// the roster is read fresh when it is handled, so a burst of writes settles
+    /// on one answer instead of racing.
+    ///
+    /// **The stations** are who could answer for a bundle. Only the two writes
+    /// that can change that set are forwarded: a row arriving or leaving, which
+    /// broadcasts the whole collection, and a station publishing where it serves.
+    /// Everything else on a station row is cpu, memory and a heartbeat, and
+    /// waking the manager forty times a minute per console to learn nothing is
+    /// the reason this is filtered here rather than in the handler.
+    fn watch_show(&self) -> tokio::task::JoinHandle<()> {
         let mut stream = self.broadcast.subscribe_all();
         let tx = self.tx.clone();
         tokio::spawn(async move {
             use futures::StreamExt;
             while let Some((path, _)) = stream.next().await {
-                let is_roster = matches!(
-                    path.first(),
-                    Some(PathSegment::Key(key)) if key == "plugin_packages"
-                );
-                if is_roster && tx.send(PluginCommand::RosterChanged).await.is_err() {
+                let message = match path.as_slice() {
+                    [PathSegment::Key(key), ..] if key == "plugin_packages" => {
+                        PluginCommand::RosterChanged
+                    }
+                    [PathSegment::Key(key)] if key == "stations" => PluginCommand::StationsChanged,
+                    [PathSegment::Key(key), _, PathSegment::Key(field)]
+                        if key == "stations" && field == "http_addr" =>
+                    {
+                        PluginCommand::StationsChanged
+                    }
+                    _ => continue,
+                };
+                if tx.send(message).await.is_err() {
                     break;
                 }
             }
@@ -331,10 +363,14 @@ impl PluginManager {
                 PluginCommand::RosterChanged => {
                     self.reconcile().await;
                 }
+                PluginCommand::StationsChanged => {
+                    self.stations_changed().await;
+                }
                 PluginCommand::Fetched { sha256, result } => {
                     self.fetching.remove(&sha256);
                     match result {
                         Ok(()) => {
+                            self.fetch_failed.remove(&sha256);
                             // The bytes are here, but the placeholder row that
                             // said "fetching" already carries this digest — so
                             // the diff would see a match and decide there was
@@ -349,6 +385,11 @@ impl PluginManager {
                             self.reconcile().await;
                         }
                         Err(reason) => {
+                            // Worth asking again, but only once somewhere new
+                            // has appeared to ask. Which is the whole of the
+                            // re-drive: no timer, because a station that is not
+                            // there will not be there in thirty seconds either.
+                            self.fetch_failed.insert(sha256.clone());
                             // Name the failure against every plugin that was
                             // waiting on these bytes, since that is what the
                             // operator is looking at.
@@ -811,6 +852,58 @@ impl PluginManager {
         crate::infra::assets::get(pool, sha256).await.ok().flatten().map(|asset| asset.bytes)
     }
 
+    /// A station appeared, or published where it serves. Ask it for whatever
+    /// this station gave up on.
+    ///
+    /// The gap this closes: a fetch that ran out of attempts stayed failed until
+    /// somebody touched the show. The console that has the bundle walking in
+    /// five minutes late — a second rig arriving at a get-in, a laptop coming
+    /// off standby — changed nothing, and an operator's only move was to edit
+    /// the roster so that the reconcile would run again. Which is a workaround
+    /// wearing a feature's clothes: nothing about the *show* was wrong.
+    ///
+    /// Only somewhere new to ask counts. A station leaving is not new
+    /// information, and neither is the heartbeat on a row that was already
+    /// there — so this compares the addresses rather than reacting to the write.
+    /// That is also what bounds it: a session has as many re-drives in it as it
+    /// has stations arriving, and no timer anywhere.
+    ///
+    /// "Nobody has it" is re-driven along with "could not reach anybody",
+    /// deliberately, and it does not contradict [`ASK_PEERS_TIMES`]. That rule
+    /// is about asking *the same stations* twice inside one attempt, where an
+    /// answer is an answer. A station that was not asked has not answered.
+    async fn stations_changed(&mut self) {
+        let peers: BTreeSet<String> =
+            crate::infra::assets::peer_addresses(&self.engine, self.node_id.0)
+                .await
+                .into_iter()
+                .collect();
+        let arrived: Vec<&String> = peers.difference(&self.peers_seen).collect();
+        if arrived.is_empty() {
+            return;
+        }
+        info!("[plugin] {} station(s) arrived", arrived.len());
+        self.peers_seen = peers;
+
+        if self.fetch_failed.is_empty() {
+            return;
+        }
+        // The rows saying "failed" carry the digest the roster asked for, so the
+        // diff would see a match and decide there was nothing to do. Dropping
+        // them is what makes the reconcile find the plugin missing and start it
+        // again — the same move the arrival of the bytes makes, for the same
+        // reason.
+        let retrying = std::mem::take(&mut self.fetch_failed);
+        self.plugins.retain(|_, loaded| {
+            !(loaded
+                .sha256
+                .as_deref()
+                .is_some_and(|sha| retrying.contains(sha))
+                && loaded.instance.is_none())
+        });
+        self.reconcile().await;
+    }
+
     /// Ask the other stations for a bundle, on a task of its own.
     ///
     /// Never in the event loop. This is an HTTP request with a ten-second
@@ -834,8 +927,9 @@ impl PluginManager {
             // Asked more than once, because a peer that did not answer has not said
             // it lacks the bundle. A station coming up at a get-in is busy loading
             // its own show, and giving up on the first refused connection would
-            // leave a plugin permanently failed over a second of bad timing —
-            // nothing re-drives a fetch until the roster changes again.
+            // leave a plugin failed over a second of bad timing until something
+            // else re-drove it — and the only things that do are the roster
+            // changing and a station arriving, neither of which is owed.
             //
             // Only an unreachable peer is worth asking twice. Peers that all
             // answered "no" will go on answering no, and retrying that would be

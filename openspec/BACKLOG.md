@@ -41,9 +41,13 @@ that it could not reach one. The change is the spec delta those commits should h
 carried — three outcomes instead of two, a bounded retry for the unreachable case
 only, and one `peer_addresses` that excludes the asking station.
 
-Left open, and the natural next question: nothing re-drives a failed fetch except a
-roster change, so a station that gives up stays given up until somebody touches the
-show.
+**Since closed.** A station arriving re-drives a failed fetch: the manager watches
+`stations` for a row appearing or an `http_addr` being published, compares the peer
+*addresses* against what it last saw, and re-drives only where somewhere new turned
+up. Which does not contradict "an answer is an answer" — that rule is about asking
+the same stations twice inside one fetch, and a station that was not there has not
+answered. No timer: a station that is not there will not be there in thirty seconds
+either, and a session has as many re-drives in it as it has consoles arriving.
 
 ### plugin-sync — see `changes/plugin-distribution/`
 Do plugins replicate between stations the way show data does? Today each
@@ -62,10 +66,15 @@ plugin and orphaned data is shown in the Plugins panel. The entity machinery was
 reused rather than a per-plugin schema — values stay opaque JSON, which the
 non-goals argue for.
 
-Two things it left open. The oplog is now pruned — `history-pruning`, roadmap task
-37, which retains a plugin's writes by the same two rules as anything else and
-knows nothing about plugins to do it. Still open: there is no change notification,
-so a plugin holding a value in memory learns about an undo on its next read.
+Two things it left open, and both are closed. The oplog is now pruned —
+`history-pruning`, roadmap task 37, which retains a plugin's writes by the same two
+rules as anything else and knows nothing about plugins to do it. And there is now a
+change notification: `store.subscribe(store)`, delivered through the existing
+`lifecycle.on-update` as `[store, key]`, built on the engine's broadcast rather than
+a hook in the store's write path — a hook would see only this station's guest
+writing, where the broadcast also sees an undo and a peer's copy of the same plugin.
+The contract went to `pult:plugin@1.1.0` for it, which is the first exercise of the
+floor rule the 1.0 move was made for.
 
 ### typed-plugin-sdk
 Introspection is the right *wire*, and a poor thing to program against. A plugin
@@ -184,9 +193,18 @@ The cost taken knowingly: **Go at the last cue now stays there** instead of wrap
 to no active cue, because "off" has to be a state playback can tell apart from "ran
 out of cues" and a second field encoding the same thing would be worse.
 
-Left open: no cue-out fades — `Cue::fade_out_ms` is still declared and still unread —
-and no way to take a fixture's current output as its home value, which is how an
-operator would actually set a house light's.
+**Both of the things it left open are closed.** `fade_out_ms` is read: a cue fades two
+ways, the out time going down and the in time going up, on the cue and per capture
+with the capture winning. Zero out means "this cue does not split its fade" rather
+than "snap", so nothing an existing show does changed. Only values with an order can
+be going down — a colour has three and no agreed ranking, a relay none — and those
+take the in time rather than have the console guess. What a cue *out* time is not:
+the outgoing cue's parameters leaving, which is tracking and still out of scope.
+
+And `["fixtures", "__set_home"]` takes a fixture's current output as its home value,
+one parameter or all of them. A verb rather than a write to `home_values` for the
+reason `__home` is one — a caller able to act should not have to be able to read the
+rig — and one write of the whole map, so a fixture is one Ctrl-Z.
 
 ### relative-values — done, see `changes/archive/2026-08-31-relative-values/`
 Shipped as roadmap task 39. A path verb, `__by`, beside `__create` and `__delete`,

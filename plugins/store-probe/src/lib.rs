@@ -15,7 +15,12 @@
 use pult_plugin_sdk::{self as sdk, PultPlugin};
 use serde_json::{json, Value};
 
-struct StoreProbe;
+struct StoreProbe {
+    /// Everything `on_update` has been handed, oldest first. Kept rather than
+    /// counted: what a subscription is *for* is learning the key and the value,
+    /// so a test that only knew one had arrived would not be testing much.
+    seen: Vec<Value>,
+}
 
 /// `args.store` and `args.key`, which every method here takes.
 fn store_and_key(args: &Value) -> (String, String) {
@@ -27,7 +32,11 @@ fn store_and_key(args: &Value) -> (String, String) {
 
 impl PultPlugin for StoreProbe {
     fn init(_config: Value) -> Result<Self, String> {
-        Ok(StoreProbe)
+        Ok(StoreProbe { seen: Vec::new() })
+    }
+
+    fn on_update(&mut self, token: u64, path: &[String], value: Value) {
+        self.seen.push(json!({ "token": token, "path": path, "value": value }));
     }
 
     fn handle(&mut self, method: &str, args: Value, _ctx: Value) -> Result<Value, String> {
@@ -61,6 +70,18 @@ impl PultPlugin for StoreProbe {
                 }
                 Ok(json!({ "wrote": times }))
             }
+            // Watch a store, and report what has been heard about it. The two
+            // halves are separate calls because a notification arrives between
+            // calls, which is the whole point of it.
+            "watch" => {
+                let store = args["store"].as_str().unwrap_or_default();
+                Ok(json!(sdk::store::subscribe(store)))
+            }
+            "unwatch" => {
+                sdk::store::unsubscribe(args["token"].as_u64().unwrap_or(0));
+                Ok(json!("ok"))
+            }
+            "changes" => Ok(Value::Array(self.seen.clone())),
             other => Err(format!("no method called {other:?}")),
         }
     }

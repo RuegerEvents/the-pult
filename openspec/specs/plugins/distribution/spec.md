@@ -212,3 +212,27 @@ report a failure once it has stopped.
 - **WHEN** a station fetches a bundle it does not have
 - **THEN** it does not make a request to its own HTTP API
 - **AND** a station that has not published where it serves is not asked either
+
+### Requirement: A station that gave up asks again when somewhere new appears
+
+Where a station has stopped fetching a bundle and reported the failure, the
+arrival of a station it has not yet asked SHALL re-drive that fetch without an
+operator touching the show. Only fetches that failed SHALL be re-driven, and only
+by a station that is new to this one: a station leaving, or one already known
+reporting itself again, SHALL NOT cause anything to be asked for again.
+
+This does not weaken the rule that an answer is an answer. That rule governs
+asking the same stations twice within one fetch; a station that was not there has
+not answered.
+
+#### Scenario: The console with the bundle arrives late
+
+- **WHEN** a station has reported that no station in the session has a bundle
+- **AND** a station holding that bundle then joins the session
+- **THEN** the bundle is fetched and the plugin runs
+- **AND** no operator action on either station is required
+
+#### Scenario: A station already known says hello again
+
+- **WHEN** a station that was asked, and answered, reports itself again
+- **THEN** nothing is asked for again

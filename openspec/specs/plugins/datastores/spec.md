@@ -191,6 +191,40 @@ plugin, and SHALL be able to delete it deliberately.
 - **WHEN** an operator inspects stored data belonging to no installed plugin
 - **THEN** it is shown with the plugin id that wrote it and can be deleted
 
+### Requirement: A plugin can be told when a show-scoped store changed under it
+
+A plugin SHALL be able to subscribe to one of its declared show-scoped stores and
+be told when a key of it changes, receiving the key and the new value — with the
+absence of a value distinguishing a key that was forgotten. It SHALL be able to
+stop such a subscription.
+
+The change SHALL be reported however it was made: by this plugin, by an operator
+undoing an attributed write, by another station's copy of the plugin, and by the
+station catching up with a peer. Reporting only the changes this station's plugin
+made would leave exactly the cases a plugin cannot otherwise learn about
+unreported.
+
+Subscribing to a station-scoped store SHALL be accepted and SHALL report nothing:
+that data is one machine's and the plugin is its only writer.
+
+A plugin that does not subscribe SHALL behave exactly as before.
+
+#### Scenario: An operator takes back what a plugin stored
+
+- **WHEN** an operator undoes a write to an undoable show-scoped store
+- **THEN** the plugin watching that store is told the key and that it now holds nothing
+- **AND** what it was told matches what it would read
+
+#### Scenario: A subscription is put down
+
+- **WHEN** a plugin stops watching a store and a key of it then changes
+- **THEN** the plugin is told nothing
+
+#### Scenario: Watching a store that keeps nothing from anyone
+
+- **WHEN** a plugin subscribes to a station-scoped store
+- **THEN** the subscription is accepted and never reports anything
+
 ### Requirement: A plugin need not use a store, and one built against an earlier contract keeps working
 
 A plugin SHALL NOT be required to declare any store, and one that declares none

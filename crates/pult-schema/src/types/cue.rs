@@ -23,7 +23,12 @@ pub struct ParameterCapture {
     pub fixture_id: Uuid,
     pub parameter_kind: ParameterKind,
     pub value: ParameterValue,
+    /// How long this capture takes when the parameter is going *up*, and when it is
+    /// going nowhere a console can rank — a colour, a relay. Zero means the cue's.
     pub fade_in_ms: u32,
+    /// The same, for a parameter coming *down*. Zero means the cue's out time, and a
+    /// cue with no out time either means the in time: a show that never says
+    /// otherwise fades one way in both directions, as it always has.
     pub fade_out_ms: u32,
     pub delay_in_ms: u32,
     /// A periodic instruction instead of a destination. When this is set the capture
@@ -56,8 +61,11 @@ pub struct Cue {
     pub captures: Vec<ParameterCapture>,
     #[pult(lifecycle = PERSISTED)]
     pub follow_mode: FollowMode,
+    /// What every capture of this cue takes on the way up, unless it says its own.
     #[pult(lifecycle = PERSISTED)]
     pub fade_in_ms: u32,
+    /// And on the way down. Zero is not "snap": it means this cue does not split its
+    /// fade, and everything takes the in time in both directions.
     #[pult(lifecycle = PERSISTED)]
     pub fade_out_ms: u32,
     /// True when this cue is currently being executed (output is active).

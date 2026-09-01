@@ -8,12 +8,16 @@
 # It declares one store of each kind, plus a show-scoped store that says its
 # writes are the operator's, so the two sides of the undo rule can be tested
 # against the same station.
+#
+# Its `api` floor is 1.1 rather than 1.0, unlike the reference plugins: it calls
+# `store.subscribe`, which a 1.0 station does not offer. That is what the floor
+# is for.
 
 [plugin]
 id = "store-probe"
 name = "Store Probe"
 version = "0.1.0"
-api = "1.0"
+api = "1.1"
 wasm = "store_probe.wasm"
 
 [permissions]

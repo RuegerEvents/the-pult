@@ -387,6 +387,125 @@ fn an_unchanged_fixture_is_not_written_again() {
     );
 }
 
+// ── Split fades ───────────────────────────────────────────────────────────────
+
+/// Two fixtures under one cue, one coming up and one going down, so a single tick
+/// shows both times at once — which is the whole of what an out time is for.
+#[test]
+fn a_cue_with_an_out_time_takes_it_only_where_the_parameter_comes_down() {
+    let rising = a_fixture();
+    let mut falling = a_fixture();
+    falling.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+
+    let mut cue = a_cue(1000, vec![intensity(rising.id, 1.0), intensity(falling.id, 0.0)]);
+    cue.fade_out_ms = 4000;
+
+    let fixtures = [rising.clone(), falling.clone()];
+    let cues = [cue.clone()];
+    let sequences = [a_sequence(&[&cue], Some(0))];
+
+    let mut playback = Playback::default();
+    let start = Instant::now();
+    let view = view(&sequences, &cues, &fixtures, &[], &[]);
+    playback.tick_at(start, &view);
+    let effects = playback.tick_at(start + Duration::from_millis(500), &view);
+
+    // Halfway through a one-second in time.
+    assert!((as_float(live(&effects, rising.id, "Intensity")) - 0.5).abs() < 0.001);
+    // An eighth of the way through a four-second out time, from full.
+    assert!((as_float(live(&effects, falling.id, "Intensity")) - 0.875).abs() < 0.001);
+}
+
+/// The property every show written before this change relies on: an unset out time
+/// is not a snap, it is "this cue does not split its fade".
+#[test]
+fn a_cue_with_no_out_time_fades_one_way_in_both_directions() {
+    let mut fixture = a_fixture();
+    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+    let cue = a_cue(1000, vec![intensity(fixture.id, 0.0)]);
+
+    let fixtures = [fixture.clone()];
+    let cues = [cue.clone()];
+    let sequences = [a_sequence(&[&cue], Some(0))];
+
+    let mut playback = Playback::default();
+    let start = Instant::now();
+    let view = view(&sequences, &cues, &fixtures, &[], &[]);
+    playback.tick_at(start, &view);
+    let effects = playback.tick_at(start + Duration::from_millis(500), &view);
+
+    assert!(
+        (as_float(live(&effects, fixture.id, "Intensity")) - 0.5).abs() < 0.001,
+        "the in time, taken downwards",
+    );
+}
+
+#[test]
+fn a_captures_own_out_time_wins_over_the_cues() {
+    let mut fixture = a_fixture();
+    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+
+    let mut capture = intensity(fixture.id, 0.0);
+    capture.fade_out_ms = 2000;
+    let mut cue = a_cue(1000, vec![capture]);
+    cue.fade_out_ms = 8000;
+
+    let fixtures = [fixture.clone()];
+    let cues = [cue.clone()];
+    let sequences = [a_sequence(&[&cue], Some(0))];
+
+    let mut playback = Playback::default();
+    let start = Instant::now();
+    let view = view(&sequences, &cues, &fixtures, &[], &[]);
+    playback.tick_at(start, &view);
+    let effects = playback.tick_at(start + Duration::from_millis(500), &view);
+
+    assert!(
+        (as_float(live(&effects, fixture.id, "Intensity")) - 0.75).abs() < 0.001,
+        "a quarter of the way through two seconds, not a sixteenth of eight",
+    );
+}
+
+/// A colour going to black *looks* like a fade out and is not treated as one. There
+/// is no agreed way to rank two colours, and a console that guessed at one would be
+/// giving some cues a time nobody asked for.
+#[test]
+fn a_parameter_with_no_order_takes_the_in_time() {
+    let mut fixture = a_fixture();
+    fixture
+        .live_values
+        .insert("ColorRgb".into(), ParameterValue::Color { r: 1.0, g: 1.0, b: 1.0 });
+    let capture = ParameterCapture {
+        fixture_id: fixture.id,
+        parameter_kind: ParameterKind::ColorRgb,
+        value: ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 },
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        delay_in_ms: 0,
+        effect: None,
+        easing: Easing::Linear,
+    };
+    let mut cue = a_cue(1000, vec![capture]);
+    cue.fade_out_ms = 8000;
+
+    let fixtures = [fixture.clone()];
+    let cues = [cue.clone()];
+    let sequences = [a_sequence(&[&cue], Some(0))];
+
+    let mut playback = Playback::default();
+    let start = Instant::now();
+    let view = view(&sequences, &cues, &fixtures, &[], &[]);
+    playback.tick_at(start, &view);
+    let effects = playback.tick_at(start + Duration::from_millis(500), &view);
+
+    match live(&effects, fixture.id, "ColorRgb") {
+        Some(ParameterValue::Color { r, .. }) => {
+            assert!((r - 0.5).abs() < 0.001, "half of one second, not of eight");
+        }
+        other => panic!("expected a colour, got {other:?}"),
+    }
+}
+
 // ── Colour and other parameter kinds ──────────────────────────────────────────
 
 #[test]

@@ -991,6 +991,112 @@ async fn a_peer_that_did_not_answer_is_asked_again() {
     seeker.stop();
 }
 
+/// A station that gave up is asked again when somewhere new turns up to ask.
+///
+/// The gap this closes: "no station in this session has it" was a final answer, and
+/// the only thing that re-drove it was the roster changing. So a console arriving
+/// late with the bundle in its show — the second rig at a get-in, a laptop coming
+/// off standby — changed nothing, and the operator's move was to edit the roster
+/// until the reconcile ran, which is a workaround for a show that was never wrong.
+///
+/// It does not contradict the "an answer is an answer" rule inside one fetch: that
+/// is about asking the same stations twice. A station that was not there has not
+/// answered.
+#[tokio::test]
+async fn a_station_arriving_re_drives_a_fetch_that_gave_up() {
+    let holder = Station::start().await;
+    let seeker = Station::start().await;
+
+    let (bytes, _) = a_bundle("late-arrival", "1.0");
+    let digest = upload(&holder, bytes).await;
+    // Or the seeker would pass by finding it unpacked already, which is not what
+    // is under test — the same care the other fetch tests take.
+    std::fs::remove_dir_all(own_cache().join(&digest)).ok();
+
+    // Nobody has been named yet, so there is nowhere to ask and the fetch gives up.
+    seeker.install("late-arrival", &digest).await;
+    let row = seeker
+        .eventually("late-arrival", "given up", |r| {
+            r["status"]["state"] == "Failed"
+                && r["status"]["reason"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("no station")
+        })
+        .await;
+    assert!(
+        !own_cache().join(&digest).join("pult-plugin.toml").is_file(),
+        "nothing was fetched, which is the state this test starts from: {row}",
+    );
+
+    // The console that has it walks in. Nobody touches the show.
+    tell_about(&seeker, holder.running.http_addr.to_string()).await;
+
+    seeker
+        .eventually("late-arrival", "asked again", |r| {
+            !r["status"]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no station")
+        })
+        .await;
+    assert!(
+        own_cache().join(&digest).join("pult-plugin.toml").is_file(),
+        "and this time it got the bundle",
+    );
+
+    holder.stop();
+    seeker.stop();
+}
+
+/// The other half of the same rule: what re-drives a fetch is somewhere *new* to
+/// ask. A station that was already known going on saying so — which it does with
+/// every heartbeat — is not new information, and a console that treated it as such
+/// would re-ask a peer that has already said no, for as long as the show was up.
+#[tokio::test]
+async fn a_station_already_known_does_not_re_drive_anything() {
+    let seeker = Station::start().await;
+    let (_, digest) = a_bundle("stays-given-up", "1.0");
+
+    // A peer that answers, and answers no.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = asked.clone();
+    tokio::spawn(async move {
+        let app = axum::Router::new().route(
+            "/assets/{sha}",
+            axum::routing::get(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { axum::http::StatusCode::NOT_FOUND }
+            }),
+        );
+        let _ = axum::serve(listener, app).await;
+    });
+    tell_about(&seeker, addr.to_string()).await;
+
+    std::fs::remove_dir_all(own_cache().join(&digest)).ok();
+    seeker.install("stays-given-up", &digest).await;
+    seeker
+        .eventually("stays-given-up", "given up", |r| r["status"]["state"] == "Failed")
+        .await;
+    let after_giving_up = asked.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(after_giving_up >= 1, "it did ask once");
+
+    // Another station row, serving the same address. A place to ask that this
+    // console has already asked is not a place to ask.
+    tell_about(&seeker, addr.to_string()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::SeqCst),
+        after_giving_up,
+        "a peer that answered is not asked again for saying hello",
+    );
+
+    seeker.stop();
+}
+
 #[tokio::test]
 async fn a_peer_answering_with_the_wrong_bytes_gets_nowhere() {
     let seeker = Station::start().await;

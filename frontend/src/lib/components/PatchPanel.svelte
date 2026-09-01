@@ -237,6 +237,17 @@
 								     type's answer is what the node said about its own port; an
 								     override is this unit's, and is the only place a house light
 								     can say that it comes up rather than going dark. -->
+								{#if type && $unlocked}
+									<!-- How an operator actually sets a house light's: aim it, look
+									     at it, keep it. The station reads its own output, so nothing
+									     here has to know what is on stage. -->
+									<button
+										class="take-home"
+										title="Keep what {fixture.name} is putting out now"
+										aria-label="Take {fixture.name}'s home values from its output"
+										onclick={() => data.fixtures.takeHome({ fixtureId: fixture.id })}
+									>take</button>
+								{/if}
 								{#if type}
 									{#each type.parameters as param (parameterKey(param.kind))}
 										{@const key = parameterKey(param.kind)}
@@ -293,6 +304,20 @@
 	.home-cell.overridden, .chip.overridden { outline: 1px solid var(--accent, #c90); border-radius: 3px; }
 	.clear-home { background: none; border: 0; color: inherit; cursor: pointer; opacity: 0.6; padding: 0 2px; }
 	.clear-home:hover { opacity: 1; }
+	/* Before the values rather than beside one of them: it takes the whole fixture,
+	   and a button sitting next to Intensity would read as Intensity's. */
+	.take-home {
+		font: inherit;
+		font-size: 11px;
+		margin-right: 6px;
+		padding: 1px 6px;
+		border: 1px solid var(--border, #444);
+		border-radius: 3px;
+		background: transparent;
+		color: #999;
+		cursor: pointer;
+	}
+	.take-home:hover { color: inherit; border-color: #666; }
 	.block { margin-bottom: 24px; }
 	.block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }

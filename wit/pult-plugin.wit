@@ -6,7 +6,7 @@
 /// serde_json all the way down, and no entity type appears in this file on
 /// purpose: a plugin learns the schema by asking `introspection` at runtime, so
 /// the data model can grow without this contract — or any plugin — changing.
-package pult:plugin@1.0.0;
+package pult:plugin@1.1.0;
 
 interface types {
     /// A JSON value, as text. `"null"` where nothing is meant.
@@ -107,6 +107,27 @@ interface store {
     ///
     /// Named `keys` rather than `list` because `list` is a WIT keyword.
     keys: func(store: string, prefix: string) -> result<list<string>, string>;
+
+    /// Be told when a key of this store changes without this plugin doing it.
+    ///
+    /// A show-scoped store is ordinary show data: it replicates, it is in the
+    /// showfile, and — where the store said `undoable` — it is in the history.
+    /// So an operator pressing Ctrl-Z, or another station's copy of this plugin
+    /// writing the same key, moves a value out from under a plugin that is
+    /// holding it in memory. Without this the plugin finds out on its next read,
+    /// which for anything cached is never.
+    ///
+    /// Updates arrive as `lifecycle.on-update` calls carrying the returned
+    /// token, with the path `[store, key]` and the new value — `"null"` where
+    /// the key was forgotten. One token space with `data.subscribe`, so a plugin
+    /// that uses both tells them apart the way it already does.
+    ///
+    /// A station-scoped store returns a dead token: it is this machine's file
+    /// and this plugin is the only thing that writes it, so there is nothing it
+    /// could be told that it does not already know.
+    subscribe: func(store: string) -> u64;
+
+    unsubscribe: func(token: u64);
 }
 
 interface logging {

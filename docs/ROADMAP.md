@@ -1949,6 +1949,103 @@ already one too many. And `home_values` needed a showfile upgrade of the same sh
 as `history_depth`'s: the additive pass adds a column nullable, and a JSON column read
 as NULL is a parse failure rather than an empty map.
 
+### 42. Four things left open (done)
+
+Not a feature but a sweep: the four "left open" notes the last three changes wrote
+down, closed together because each was one decision that had already been argued and
+deferred rather than a design nobody had started.
+
+**A cue fades two ways.** `Cue::fade_out_ms` and `ParameterCapture::fade_out_ms` had
+been declared since cues existed and read by nothing; task 41 explicitly declined to
+say what a cue *out* time meant. It means the classic split: a capture takes the out
+time where its destination is below where it starts, and the in time otherwise, with
+a capture's own time beating the cue's on each axis independently.
+
+Two decisions inside that. **Zero out means "this cue does not split its fade"**,
+not "snap" — an unset field cannot become an instruction, or every show ever written
+would start slamming its levels down. And **only a value with an order can be coming
+down**: `Float` and `Int`. A colour has three orders and no agreed way to rank them,
+a relay has none, and a fixture whose parameter changed kind mid-show is a mistake
+rather than a direction — all of those take the in time. A colour fading to black
+*looks* like a fade out, and treating it as one would be the console inventing a
+ranking to give some cues a time nobody asked for.
+
+The cost, found by a test rather than by reading: `a_cue` in the engine tests carried
+`fade_out_ms: 3000` from before the field was inert, so `an_intensity_cue(_, _, 0)` —
+a cue asking to snap — began taking three seconds to come down. Data written when a
+field meant nothing is data that means something now, and the fixture was the thing
+that was wrong.
+
+**Where it rests, from where it is.** `["fixtures", "__set_home"]` with
+`{fixtureId, parameterKind?}`, the fourth path verb and the exact inverse of the
+third: `__home` sends a parameter to where it rests, this makes where it rests be
+wherever it is now. Which is how an operator actually sets a house light's — aim it,
+look at it, keep it — where the Home column in the patch panel wants a number typed
+in about a light that is already right in front of them.
+
+A verb rather than a plain write to `home_values`, for the reason `__home` is one: a
+browser could read `live_values` and write the map itself, and the command line and a
+plugin with no data access could not. The whole argument of `__by` and `__home` is
+that a caller able to *act* should not have to be a caller able to *read the rig*.
+One write of the whole map, because `home_values` is one JSON column and taking a
+fixture should be one Ctrl-Z. A parameter putting nothing out is not taken — refused
+by name when it was the one asked for, quietly skipped when the whole fixture was.
+
+**A station that gave up asks again.** `plugin-fetch-retry` left a fetch failing
+permanently until somebody touched the show, which meant the console holding the
+bundle walking in five minutes late changed nothing and the operator's move was to
+edit the roster until the reconcile ran — a workaround for a show that was never
+wrong.
+
+What re-drives it is **somewhere new to ask**, and nothing else. The manager watches
+`stations` beside `plugin_packages`, compares the peer *addresses* against what it
+last saw, and re-drives only failed fetches and only on growth. A station leaving is
+not new information; neither is a heartbeat, which is why the filter is in the
+watcher rather than the handler — a station row carries cpu, memory and a timestamp,
+and waking the manager for each of those per console per second to learn nothing is
+the version of this that would have been worse than the bug. No timer, because a
+station that is not there will not be there in thirty seconds either, and a session
+has as many re-drives in it as it has consoles arriving.
+
+It does not contradict `ASK_PEERS_TIMES`' "an answer is an answer". That rule is
+about asking *the same stations* twice inside one fetch. A station that was not there
+has not answered.
+
+**A plugin can be told.** `plugin-datastores` left a plugin holding a value in memory
+learning about an undo on its next read, which for anything cached is never.
+`store.subscribe(store)` closes it, delivered through the **existing**
+`lifecycle.on-update` as `[store, key]` with a null value for a key that was
+forgotten — one token space with `data.subscribe`, so a plugin that uses both tells
+them apart the way it already does.
+
+Built on the engine's broadcast rather than a hook in `show_store_set`, which is the
+decision that matters. A hook would see only this station's guest writing — exactly
+the case a plugin does not need telling about — where the broadcast also sees an
+operator's undo, another station's copy of the same plugin, and a showfile catching
+up. So a plugin hears its own echo, which is easy to ignore because it knows what it
+just wrote, and hears the three things it could not otherwise learn at all.
+
+The mechanical wrinkle: a `plugin_data` row is a UUIDv5 over `(plugin, store, key)`
+and that is one-way, so a field write broadcasting `plugin_data/<id>/value` says
+nothing about which key it is. The subscription task keeps `id -> key`, seeded at
+subscribe and kept up as rows arrive — which is also what lets a *delete* report the
+key it was, since by then the row is gone. A create or delete broadcasts the whole
+collection, so those are a diff rather than a lookup.
+
+A station-scoped store hands back a dead token: this machine's file, this plugin its
+only writer, nothing to report. Said with a token rather than an error, the way
+`data.subscribe` answers a plugin with no data permission.
+
+**And the contract moved to `pult:plugin@1.1.0`** — the first exercise of the floor
+rule task 35 went to 1.0 for. Adding a function to an imported interface is
+additive; a plugin built against 1.0 never calls it. That claim was checked rather
+than trusted, and not with the synthetic bump `check-api-compat.sh` performs: the
+reference plugin was built from the previous commit in a throwaway worktree, its
+imports confirmed as `pult:plugin/data@1.0.0`, and run against this station. It comes
+up Running. `store-probe` is the one manifest that moved its floor to `1.1`, because
+it calls the new function and a 1.0 station could not serve it — which is what a
+floor is for.
+
 ## Further out
 
 Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.

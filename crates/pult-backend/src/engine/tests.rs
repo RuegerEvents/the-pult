@@ -106,7 +106,11 @@ fn a_cue(name: &str, number: f64) -> Cue {
         captures: vec![],
         follow_mode: FollowMode::Manual,
         fade_in_ms: 3000,
-        fade_out_ms: 3000,
+        // Zero means "this cue does not split its fade", so everything takes the in
+        // time in both directions. Which is what these tests have always assumed:
+        // this said 3000 while nothing read it, and `an_intensity_cue(_, _, 0)` — a
+        // cue asking to snap — would otherwise take three seconds to come down.
+        fade_out_ms: 0,
         is_active: false,
     }
 }
@@ -4066,6 +4070,198 @@ mod home {
         let pan = h.engine.get(held(fixture.id, &ParameterKind::Pan)).await.unwrap();
         assert_eq!(intensity["value"], json(&ParameterValue::Float(0.9)));
         assert_eq!(pan["value"], json(&ParameterValue::Float(0.1)), "both, from one undo");
+    }
+
+    // ── …and the other way ────────────────────────────────────────────────────
+
+    fn set_home_path() -> Path {
+        vec![
+            PathSegment::Key("fixtures".into()),
+            PathSegment::Key("__set_home".into()),
+        ]
+    }
+
+    async fn put_out(h: &Harness, fixture: &Fixture, values: &[(&str, f32)]) {
+        let live: std::collections::HashMap<String, ParameterValue> = values
+            .iter()
+            .map(|(key, v)| (key.to_string(), ParameterValue::Float(*v)))
+            .collect();
+        h.engine
+            .set(field_path("fixtures", fixture.id, "live_values"), Lifecycle::Local, json(&live))
+            .await
+            .unwrap();
+    }
+
+    /// The act a house light exists for: aim it, look at it, keep it. What is stored
+    /// is what the station is putting out, which the caller never had to read.
+    #[tokio::test]
+    async fn taking_the_output_makes_it_the_resting_place() {
+        let h = harness().await;
+        let fixture = a_patched_fixture(
+            &h,
+            vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0))],
+        )
+        .await;
+        put_out(&h, &fixture, &[("Intensity", 0.65)]).await;
+
+        h.engine
+            .set(set_home_path(), Lifecycle::Persisted, json!({ "fixtureId": fixture.id }))
+            .await
+            .unwrap();
+
+        let home = h.engine.get(field_path("fixtures", fixture.id, "home_values")).await.unwrap();
+        assert_eq!(home["Intensity"], json(&ParameterValue::Float(0.65)));
+
+        // And it is now what home resolves to, which is the whole point of storing it.
+        h.engine
+            .set(home_path(), Lifecycle::Synced, json!({ "fixtureId": fixture.id }))
+            .await
+            .unwrap();
+        let row = h.engine.get(held(fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert_eq!(row["value"], json(&ParameterValue::Float(0.65)));
+    }
+
+    /// Only what was named, and everything else left as it was — an operator fixing
+    /// one parameter must not have the rest of the fixture written underneath them.
+    #[tokio::test]
+    async fn naming_a_parameter_takes_only_that_one() {
+        let h = harness().await;
+        let mut fixture = a_patched_fixture(
+            &h,
+            vec![
+                a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0)),
+                a_parameter(ParameterKind::Pan, ParameterValue::Float(0.5)),
+            ],
+        )
+        .await;
+        fixture.home_values.insert("Pan".into(), ParameterValue::Float(0.25));
+        h.engine
+            .set(
+                field_path("fixtures", fixture.id, "home_values"),
+                Lifecycle::Persisted,
+                json(&fixture.home_values),
+            )
+            .await
+            .unwrap();
+        put_out(&h, &fixture, &[("Intensity", 0.8), ("Pan", 0.9)]).await;
+
+        h.engine
+            .set(
+                set_home_path(),
+                Lifecycle::Persisted,
+                json!({ "fixtureId": fixture.id, "parameterKind": ParameterKind::Intensity }),
+            )
+            .await
+            .unwrap();
+
+        let home = h.engine.get(field_path("fixtures", fixture.id, "home_values")).await.unwrap();
+        assert_eq!(home["Intensity"], json(&ParameterValue::Float(0.8)));
+        assert_eq!(home["Pan"], json(&ParameterValue::Float(0.25)), "not the output, untouched");
+    }
+
+    /// The same property `__by` and `__home` have, and for the same reason: what the
+    /// log and every peer see is the map, never the verb. A peer resolving "whatever
+    /// it is putting out" against its own copy could resolve it to something else.
+    #[tokio::test]
+    async fn what_is_recorded_is_the_map_and_not_the_verb() {
+        let h = harness().await;
+        let user = Uuid::new_v4();
+        let fixture = a_patched_fixture(
+            &h,
+            vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0))],
+        )
+        .await;
+        put_out(&h, &fixture, &[("Intensity", 0.3)]).await;
+
+        h.engine
+            .set_as(
+                user,
+                None,
+                set_home_path(),
+                Lifecycle::Persisted,
+                json!({ "fixtureId": fixture.id }),
+            )
+            .await
+            .unwrap();
+
+        let log = oplog::recent_by_people(&h.pool, 10).await.unwrap();
+        let op = log.first().expect("somebody's change was written down");
+        assert!(
+            !op.path.iter().any(|s| matches!(s, PathSegment::Key(k) if k == "__set_home")),
+            "the verb stops at the front door: {:?}",
+            op.path
+        );
+        assert_eq!(op.value["Intensity"], json(&ParameterValue::Float(0.3)));
+    }
+
+    /// A fixture nothing has ever driven has nothing to take. Not an error when it
+    /// was the whole fixture that was asked for — but a named parameter is one an
+    /// operator is looking at, and silence there reads as "done".
+    #[tokio::test]
+    async fn a_parameter_putting_nothing_out_is_not_taken() {
+        let h = harness().await;
+        let fixture = a_patched_fixture(
+            &h,
+            vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0))],
+        )
+        .await;
+
+        h.engine
+            .set(set_home_path(), Lifecycle::Persisted, json!({ "fixtureId": fixture.id }))
+            .await
+            .expect("nothing on stage is an ordinary state, not a failure");
+        let home = h.engine.get(field_path("fixtures", fixture.id, "home_values")).await.unwrap();
+        assert_eq!(home, json!({}), "and nothing was written");
+
+        let named = h
+            .engine
+            .set(
+                set_home_path(),
+                Lifecycle::Persisted,
+                json!({ "fixtureId": fixture.id, "parameterKind": ParameterKind::Intensity }),
+            )
+            .await;
+        assert!(named.is_err(), "asked about one parameter, told about that parameter");
+    }
+
+    /// An input is a parameter the device writes and the show reads. There is nothing
+    /// to send home and nothing to take from, and both refusals say so.
+    #[tokio::test]
+    async fn an_input_has_no_resting_place_to_take() {
+        let h = harness().await;
+        let mut input = a_parameter(ParameterKind::Contact(1), ParameterValue::Bool(false));
+        input.direction = ParameterDirection::Input;
+        let fixture = a_patched_fixture(&h, vec![input]).await;
+        put_out(&h, &fixture, &[("Contact:1", 1.0)]).await;
+
+        let refused = h
+            .engine
+            .set(
+                set_home_path(),
+                Lifecycle::Persisted,
+                json!({ "fixtureId": fixture.id, "parameterKind": ParameterKind::Contact(1) }),
+            )
+            .await;
+        assert!(refused.is_err(), "{refused:?}");
+    }
+
+    /// The verb means something on a fixture and nowhere else, and says so rather
+    /// than doing something almost-right — the same answer `__home` gives.
+    #[tokio::test]
+    async fn the_verb_is_refused_where_nothing_rests() {
+        let h = harness().await;
+        let refused = h
+            .engine
+            .set(
+                vec![
+                    PathSegment::Key("cues".into()),
+                    PathSegment::Key("__set_home".into()),
+                ],
+                Lifecycle::Persisted,
+                json!({}),
+            )
+            .await;
+        assert!(refused.is_err(), "{refused:?}");
     }
 }
 

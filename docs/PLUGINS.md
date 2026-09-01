@@ -108,7 +108,7 @@ All bindings are on `pult_plugin_sdk`; JSON crosses as `serde_json::Value`.
 | `host::subscribe(pattern)` | slash-joined pattern; updates arrive at `on_update` |
 | `host::call_plugin(id, method, args)` | another plugin's `handle` — see dependencies |
 | `host::entities()` / `commands()` / `rpcs()` | the schema, at runtime |
-| `store::get` / `set` / `delete` / `keys` | what your plugin remembers — see below |
+| `store::get` / `set` / `delete` / `keys` / `subscribe` | what your plugin remembers — see below |
 | `sdk::log_info!` (`_warn`, `_error`, `_debug`) | the station log, prefixed with your id |
 
 Paths are spelled the way the WebSocket spells them: `["sequences",
@@ -249,6 +249,37 @@ whatever the store says, because there is nobody to attribute it to.
 
 Station-scoped stores cannot be `undoable`: that data never reaches the show's
 history, so a manifest saying otherwise is refused rather than ignored.
+
+### If you cache it, watch it
+
+A show-scoped store is show data, and show data moves without you. An operator
+presses Ctrl-Z on an `undoable` store and the key you wrote is gone; the same
+plugin on the console next to yours writes that key and your copy is stale.
+Neither reaches a value you are holding in a struct field, and if you never
+read the key again you never find out.
+
+```rust
+fn init(_config: Value) -> Result<Self, String> {
+    Ok(Self { token: sdk::store::subscribe("macros"), macros: HashMap::new() })
+}
+
+fn on_update(&mut self, token: u64, path: &[String], value: Value) {
+    if token == self.token {
+        // path is [store, key]; a null value means the key was forgotten.
+        let key = path[1].clone();
+        if value.is_null() { self.macros.remove(&key); } else { self.macros.insert(key, value); }
+    }
+}
+```
+
+Your own writes come back too — the subscription is on the show, not on your
+calls. Ignoring your own echo is easy (you know what you just wrote); hearing
+an undo any other way is not possible at all, which is why it works this way
+round. Tokens share one space with `host::subscribe`, so compare the token
+rather than guessing from the path.
+
+Subscribing to a station-scoped store returns `0` and never fires: it is this
+machine's file and you are the only writer, so there is nothing to be told.
 
 ## Permissions
 
@@ -410,7 +441,7 @@ it, so what a show is asking for is readable without unzipping anything.
 
 ## Versions
 
-The WIT package version (`pult:plugin@1.0.0`) is the API version, and the
+The WIT package version (`pult:plugin@1.1.0`) is the API version, and the
 manifest's `api` says what you built against.
 
 **It is a floor, not a match.** A station runs your plugin when its major
