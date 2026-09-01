@@ -281,6 +281,36 @@ scripts/demo.sh --help       # the other options
 It works in `.demo/`, which is gitignored, so it never touches a real showfile.
 Logs for each component land there too.
 
+**A show can be a size instead of a scene.** `--size small` is the hand-made demo
+and the default; `big` and `huge` add a generated rig on top — 500 or 2000 fixtures
+across as many universes as they need, a cue stack over several sequences each
+capturing a slice of the rig, and effects left running so the station is actually
+ticking. They exist to be measured rather than looked at, and `--measure` is how:
+it seeds, drives every sequence to a cue with an effect on it, and prints what a
+tick cost, then stops — no sims and no dev server, because both would be taking
+the CPU being measured.
+
+```
+scripts/demo.sh --size huge              # 2000 fixtures, 300 cues, three plans
+scripts/demo.sh --measure --size big     # seed it, read it, print it, stop
+```
+
+**A station knows what its own tick costs** and publishes it in the `stations` row
+beside `cpu_percent`, so the figure `--measure` prints is the one the Stations panel
+shows and the one a peer sees. Two numbers rather than one, because the tick has two
+halves that scale differently — computing what playback wants, and applying it, one
+write and one broadcast and one output push per fixture that moved. On a 2000-fixture
+rig the computing half is under 1% of the tick, so a single figure would have credited
+all of it to playback and sent the next optimisation to the wrong code.
+
+What it is *not*: what the process costs. Flows and the output-config push are
+outside it, which is deliberate — they run whether or not playback had work, so
+including them would make every timer firing a tick and leave a settled station
+unable to say it is settled. A window with no ticks in it reports **nothing rather
+than zero**, since zero would read as "instant" when the truth is "nothing happened".
+What the process costs is `cpu_percent`, in the same row, which is why anything
+printing one prints the other.
+
 ## Releases
 
 Tagging `v*` builds all four products for Linux x86_64 and aarch64, macOS arm64

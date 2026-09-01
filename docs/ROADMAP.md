@@ -2046,6 +2046,115 @@ up Running. `store-probe` is the one manifest that moved its floor to `1.1`, bec
 it calls the new function and a 1.0 station could not serve it — which is what a
 floor is for.
 
+### 43. A show with a size, and a tick that says what it cost (done)
+
+Task 29 measured what a tick costs and found a real bug doing it. Three years of
+that work survived as a table in this document and nothing else: the rig was ad-hoc,
+the instrumentation was added to get the number and taken out again, and the only
+show anybody could start in one command had five fixtures in it. `multithreading` is
+judged entirely on numbers, so it needed both back before it could begin.
+
+**The demo has sizes.** `scripts/demo.sh --size small|big|huge`. `small` is the
+hand-made show and the default, so every existing invocation seeds exactly what it
+did before; `big` and `huge` add a generated rig on top — 500 or 2000 six-channel
+heads addressed across as many universes as they need, a stack of cues over several
+sequences, and effects left running so the station does not settle.
+
+Two shaping decisions. **A cue captures a slice, not the rig**: 300 cues times 2000
+fixtures is 600,000 captures, which measures JSON rather than lighting, and a real
+cue stack does not touch everything in every cue either. And **the fixtures are
+placed**, because half of a tick is what leaves the console once something has moved,
+and because a rig with no positions draws nothing in the panel most likely to be the
+reason somebody wanted a big rig.
+
+**Seeding stayed on the WebSocket API.** `demo-seed.mjs` says in its own header that
+nothing in it is privileged and that this is the point, and a 2000-fixture seed is
+the largest exercise of the write path anything in this repo performs — worth more
+than the time it costs. What changed is that writes go in flight together through a
+bounded window of 64 rather than one awaited round trip at a time. Bounded, because
+the engine is one actor behind a channel 256 deep: firing two thousand writes at once
+does not go faster, it fills the channel, and the backpressure then arrives as a
+per-request timeout on writes that were only ever waiting their turn. A `huge` seed
+takes 43 s in release, 119 s in debug. `--keep` exists so nobody pays it twice.
+
+**A station publishes what its own tick costs**, in the `stations` row beside
+`cpu_percent` — which answers `system-stats-panel`'s open question (extend the row,
+or a new LOCAL stats collection?) in favour of the row, on the grounds that a station
+is already the sole authority on its own numbers there. Accumulated into relaxed
+atomics by the engine and drained by the reporter every couple of seconds, so a
+figure always describes the window just gone. Six nanoseconds a tick, measured, which
+is what "measuring does not change what it measures" had to mean.
+
+**Two figures, not one, and this is the finding.** The tick has two halves that scale
+differently: computing what playback wants, and everything else — reading the show it
+needs, then applying the result as one write, one broadcast and one output push per
+fixture that moved. Task 29 put the split at roughly one to three. It is far past
+that:
+
+| Rig | Tick | Worst | Playback | Share of tick | CPU | Ticks/2 s |
+|---|---|---|---|---|---|---|
+| small — 5 fixtures | 0.42 ms | 1.00 ms | 0.03 ms | 7% | 3% | 52 |
+| big — 505 fixtures, 4 stacks up | 10.6 ms | 12.2 ms | 0.20 ms | 1.9% | 55% | 80 |
+| huge — 2005 fixtures, 12 stacks up | 65.2 ms | 70.0 ms | 0.73 ms | 1.1% | 115% | 30 |
+
+Release build, this laptop, every sequence driven to a cue carrying an effect. At two
+thousand fixtures **playback is one percent of the tick** and the other ninety-nine is
+the engine around it. A single figure would have credited all of it to playback and
+sent the next optimisation to the wrong code.
+
+**And a third counter, added afterwards for one run, says where that ninety-nine
+actually goes.** Not where this entry first assumed:
+
+| Rig | Whole tick | Reading the show | Computing | Applying |
+|---|---|---|---|---|
+| huge — 2005 fixtures | 35.2 ms | **33.8 ms (93%)** | 0.07 ms (0.2%) | 2.2 ms (6%) |
+
+`playback_tick` calls `read_collection` six times — fixtures, cues, sequences, fixture
+types, programmer values, speed masters — and each one clones the collection out of
+`ShowState` as `serde_json::Value` and then deserialises it whole into a `Vec<T>`. Two
+thousand fixtures go through that forty times a second. **Applying the effects is six
+percent of the tick; reading the show to compute them is ninety-three.**
+
+That is the correction worth having before `multithreading` starts, because it says
+the work is not threads: parallelising a render that costs 0.07 ms would win nothing,
+and the cheap win task 29 named — `emit` cloning a fixture's whole `live_values` map —
+is in the six percent. The engine re-deserialising the show at 40 Hz is the cost, and
+it is not a concurrency problem at all.
+
+**Mean and worst, because the tick has a budget.** An average over a couple of seconds
+answers a different question and hides an overrun happening several times a second.
+The `huge` row is ten times over its 25 ms budget and the failure is still the graceful
+one task 29 described: 30 ticks in a two-second window instead of 80, so the picture
+loses smoothness, and nothing loses correctness, because a value is computed from the
+wall clock rather than accumulated from the last one.
+
+**"The tick" is `playback_tick`, and the definition is load-bearing.**
+`push_output_config` and `flows_tick` share the timer arm and are outside the number.
+Not because they do not cost anything, but because they run *whether or not playback
+had work* — so a number including them would make every timer firing a tick, and "this
+station is not ticking" would stop being a state anything could report. Which matters,
+because a settled show stops ticking and a window with no ticks in it publishes
+**nothing rather than zero**: zero reads as "instant" when what happened is that
+nothing happened. That distinction is why the field is an `Option<TickCost>` rather
+than a struct of zeroes, and it is what a station taken off has to be able to say
+instead of republishing the last figure it managed to measure.
+
+The trap, found by a test that was wrong before the code was: "settled" means no
+playback work *and* nothing written since the last tick. A write bumps `state_version`,
+so exactly one tick runs after it to reconcile. A console being programmed therefore
+reports a cost; only one left alone reports nothing.
+
+What this number is not, said here because it is the way it will be misread: it is
+what *playback* costs, not what the process costs. That is `cpu_percent`, in the same
+row, which is why `--measure` prints both and says so underneath.
+
+**No CI budget.** The backlog asked; the answer is not yet. A threshold needs a number
+that holds still, shared runners do not give one, and a gate that flaps gets disabled,
+which is worse than no gate. The A/B above is the shape of the problem: two *identical*
+runs of `huge` varied by more than a percentage point of CPU and fifteen milliseconds
+of tick. Revisit once `multithreading` has moved the numbers and we know how stable
+they are.
+
 ## Further out
 
 Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.

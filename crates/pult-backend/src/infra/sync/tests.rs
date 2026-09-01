@@ -865,6 +865,7 @@ async fn a_station_row_reaches_the_other_console() {
         output_plugins: vec!["House".into()],
         computes_fixtures: 0,
         total_fixtures: 0,
+        tick_cost: None,
         last_seen: Utc::now(),
     };
     one.engine
@@ -882,6 +883,131 @@ async fn a_station_row_reaches_the_other_console() {
             .await
             .map(|s| s["hostname"] == serde_json::json!("booth"))
             .unwrap_or(false)
+    })
+    .await;
+}
+
+/// Playback runs on every station, so two consoles are doing the same work on
+/// different hardware. Their tick figures differing is a fact about the session, not
+/// a disagreement to be settled — each row is its author's, and a console reading the
+/// session sees both as they were measured.
+#[tokio::test]
+async fn each_station_reports_its_own_tick_cost_and_not_the_others() {
+    use pult_schema::types::station::{Station, TickCost};
+
+    let one = a_node().await;
+    let two = a_node().await;
+
+    let a_row = |id: Uuid, host: &str, cost: TickCost| Station {
+        id,
+        hostname: host.into(),
+        is_leader: false,
+        sync_addr: String::new(),
+        http_addr: String::new(),
+        cpu_percent: 0.0,
+        mem_used: 0,
+        mem_total: 0,
+        uptime_s: 0,
+        output_plugins: vec![],
+        computes_fixtures: 0,
+        total_fixtures: 0,
+        tick_cost: Some(cost),
+        last_seen: Utc::now(),
+    };
+
+    // One console is working hard and the other is nearly idle.
+    let busy =
+        TickCost { mean_ms: 7.9, max_ms: 31.0, playback_mean_ms: 2.4, playback_max_ms: 9.0, ticks: 80 };
+    let idle =
+        TickCost { mean_ms: 0.4, max_ms: 0.9, playback_mean_ms: 0.1, playback_max_ms: 0.2, ticks: 80 };
+    let create = vec![PathSegment::Key("stations".into()), PathSegment::Key("__create".into())];
+
+    one.engine
+        .set(create.clone(), Lifecycle::Synced, serde_json::to_value(a_row(one.id.0, "booth", busy)).unwrap())
+        .await
+        .unwrap();
+
+    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    eventually("the joining console to have taken the session's rows", || async {
+        two.engine
+            .get(vec![PathSegment::Key("stations".into()), PathSegment::Id(one.id.0)])
+            .await
+            .is_ok()
+    })
+    .await;
+
+    // Then it says what its own tick cost. After the join rather than before, because
+    // `stations` is SYNCED and a joining console takes the session's rows over its
+    // own — which in a running system is a non-event: the reporter publishes again a
+    // couple of seconds later, which is this line.
+    two.engine
+        .set(create, Lifecycle::Synced, serde_json::to_value(a_row(two.id.0, "roof", idle)).unwrap())
+        .await
+        .unwrap();
+
+    // Both rows on the console reading the session, each still carrying the numbers
+    // its own author measured. Nothing averaged them into a figure for the session.
+    eventually("both stations' own figures to be readable together", || async {
+        let Ok(rows) = two.engine.get(vec![PathSegment::Key("stations".into())]).await else {
+            return false;
+        };
+        let Ok(rows): Result<Vec<Station>, _> = serde_json::from_value(rows) else { return false };
+        let booth = rows.iter().find(|r| r.hostname == "booth");
+        let roof = rows.iter().find(|r| r.hostname == "roof");
+        match (booth, roof) {
+            (Some(booth), Some(roof)) => booth.tick_cost == Some(busy) && roof.tick_cost == Some(idle),
+            _ => false,
+        }
+    })
+    .await;
+}
+
+/// A session can mix builds. A peer that cannot report a tick cost is a station like
+/// any other, and the rest of what it says has to arrive intact.
+#[tokio::test]
+async fn a_peer_that_reports_no_tick_cost_is_still_a_station() {
+    use pult_schema::types::station::Station;
+
+    let one = a_node().await;
+    let two = a_node().await;
+    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    // The row an older build sends: no `tick_cost` key at all, not a null one.
+    let row = serde_json::json!({
+        "id": one.id.0,
+        "hostname": "roof",
+        "is_leader": false,
+        "sync_addr": one.addr.to_string(),
+        "http_addr": "10.0.0.6:7700",
+        "cpu_percent": 8.0,
+        "mem_used": 100,
+        "mem_total": 1000,
+        "uptime_s": 30,
+        "output_plugins": ["Art-Net"],
+        "computes_fixtures": 7,
+        "total_fixtures": 7,
+        "last_seen": Utc::now(),
+    });
+    one.engine
+        .set(
+            vec![PathSegment::Key("stations".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Synced,
+            row,
+        )
+        .await
+        .unwrap();
+
+    eventually("the older peer's row to arrive whole", || async {
+        let Ok(value) =
+            two.engine.get(vec![PathSegment::Key("stations".into()), PathSegment::Id(one.id.0)]).await
+        else {
+            return false;
+        };
+        let Ok(station): Result<Station, _> = serde_json::from_value(value) else { return false };
+        station.tick_cost.is_none()
+            && station.hostname == "roof"
+            && station.total_fixtures == 7
+            && station.output_plugins == vec!["Art-Net".to_string()]
     })
     .await;
 }

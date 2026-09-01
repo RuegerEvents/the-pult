@@ -15,6 +15,13 @@
 #   scripts/demo.sh --plugins    build the reference WASM plugins and load them:
 #                                a Command Line panel, a Natural Language bar,
 #                                and a plugin-shipped Programmer Monitor
+#   scripts/demo.sh --size big   a bigger rig: small (the default) is the
+#                                hand-made show, big adds 500 fixtures and a
+#                                stack of cues, huge adds 2000 and three plans
+#   scripts/demo.sh --measure    seed, run the show, print what a tick costs on
+#                                this machine, and stop. No sims, no frontend —
+#                                they would be competing for the CPU being
+#                                measured. Combine with --size.
 #
 # Ports can be overridden: PORT, SYNC_PORT, BROKER_PORT — and PORT_2, SYNC_PORT_2,
 # BROKER_PORT_2 for the second station.
@@ -42,19 +49,34 @@ SEED=1
 SIMS=1
 TWO=0
 PLUGINS=0
-for arg in "$@"; do
-  case "$arg" in
+SIZE=small
+MEASURE=0
+# A while loop rather than `for arg`, because --size takes a value.
+while [ $# -gt 0 ]; do
+  case "$1" in
     --keep) KEEP=1 ;;
     --no-seed) SEED=0 ;;
     --no-sims) SIMS=0 ;;
     --two) TWO=1 ;;
     --plugins) PLUGINS=1 ;;
+    --size) shift; SIZE=${1:-}; [ -n "$SIZE" ] || { echo "--size needs one of small, big, huge" >&2; exit 2; } ;;
+    --measure) MEASURE=1 ;;
     # The comment block at the top of this file is the help text, so the two
     # cannot drift apart. Printed up to the first line that is not a comment.
     -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
-    *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
+    *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
+  shift
 done
+
+# Measuring is a different job from demonstrating. The simulated nodes and the Vite
+# dev server would both be taking CPU from the thing being measured, and the answer
+# wanted is a number rather than a window, so this mode starts one station, seeds it,
+# reads it and stops.
+if [ "$MEASURE" = 1 ]; then
+  SIMS=0
+  TWO=0
+fi
 
 # ── Stopping cleanly ──────────────────────────────────────────────────────────
 #
@@ -210,9 +232,21 @@ fi
 
 if [ "$SEED" = 1 ] && [ "$KEEP" = 0 ]; then
   echo "seeding a show"
-  if ! node "$ROOT/scripts/demo-seed.mjs" "$PORT"; then
+  if ! node "$ROOT/scripts/demo-seed.mjs" "$PORT" --size "$SIZE"; then
     echo "  (seeding failed — the demo still runs, just empty)" >&2
   fi
+fi
+
+# ── What it costs ─────────────────────────────────────────────────────────────
+#
+# Read off the station's own row, over the same API a browser uses, so the number
+# printed is the number the Stations panel shows. Then stop: everything below this
+# is a demo to look at, and looking at it costs the CPU being measured.
+
+if [ "$MEASURE" = 1 ]; then
+  echo "measuring the ${SIZE} show"
+  node "$ROOT/scripts/demo-measure.mjs" "$PORT" --label "$SIZE" --build debug
+  exit 0
 fi
 
 # ── The second station ────────────────────────────────────────────────────────

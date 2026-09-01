@@ -34,7 +34,7 @@ use crate::{
     infra::plugins::PluginManager,
     infra::session::SessionManager,
     infra::showfile,
-    infra::stations::{prune_stale, StationReporter, REPORT_INTERVAL},
+    infra::stations::{prune_stale, StationReporter, TickStats, REPORT_INTERVAL},
     infra::sync::SyncManager,
     state::AppState,
 };
@@ -106,6 +106,11 @@ pub async fn start(config: Config) -> Result<Running> {
     tokio::spawn(output_mgr.run());
     engine.set_output(output);
 
+    // What the ticks cost, measured by the engine and published by the reporter. One
+    // accumulator shared between them: the engine only adds, the reporter drains.
+    let tick_stats = Arc::new(TickStats::default());
+    engine.set_tick_stats(tick_stats.clone());
+
     engine_handle.0.send(EngineCommand::LoadFromShowfile).await?;
     tokio::spawn(engine.run());
 
@@ -124,6 +129,7 @@ pub async fn start(config: Config) -> Result<Running> {
         sync_addr,
         peer_http_addr,
         sync_mgr.peer_links(),
+        tick_stats,
     );
     tokio::spawn(reporter.run());
 

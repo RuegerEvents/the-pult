@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use crate::{
     error::BackendError,
-    infra::{connectors::OutputHandle, showfile::{oplog, order}, sync::SyncHandle},
+    infra::{connectors::OutputHandle, showfile::{oplog, order}, stations::TickStats, sync::SyncHandle},
     model::playback::{parameter_key, Playback, PlaybackEffect, ShowView, TICK},
     model::flows::{FlowEffect, FlowGraph, Flows, InputEvent},
 };
@@ -593,6 +593,13 @@ pub struct ShowEngine {
     /// wrong, and at a threshold of a thousand appends against a delete that takes
     /// seconds, an overlap is reachable rather than theoretical.
     pruning: Arc<std::sync::atomic::AtomicBool>,
+    /// What the ticks have cost since the station last published.
+    ///
+    /// Shared with `StationReporter`, which drains it every couple of seconds. The
+    /// engine only ever adds to it, and only on a tick it actually performed — a
+    /// settled show records nothing, which is what makes "not ticking" a state the
+    /// row can report rather than a very fast tick.
+    tick_stats: Arc<TickStats>,
 }
 
 /// How many appends between prunes.
@@ -646,6 +653,7 @@ impl ShowEngine {
             watched: Default::default(),
             appends_since_prune: Default::default(),
             pruning: Default::default(),
+            tick_stats: Default::default(),
         };
         (engine, broadcast)
     }
@@ -653,6 +661,14 @@ impl ShowEngine {
     /// Attach an output plugin manager. Call before `run`.
     pub fn set_output(&mut self, output: OutputHandle) {
         self.output = Some(output);
+    }
+
+    /// Share the tick accumulator with whoever publishes it. Call before `run`.
+    ///
+    /// A station that is never given one still measures — into an accumulator nobody
+    /// drains, which is what an engine in a test wants and costs the same either way.
+    pub fn set_tick_stats(&mut self, stats: Arc<TickStats>) {
+        self.tick_stats = stats;
     }
 
     pub async fn run(mut self) {
@@ -805,6 +821,16 @@ impl ShowEngine {
         }
         self.playback_seen = self.state_version;
 
+        // Timed from here rather than from the top of the timer arm, and that is the
+        // load-bearing choice. `push_output_config` and `flows_tick` fire whether or
+        // not playback had anything to do, so a number that included them would make
+        // every timer firing a tick and "this station is not ticking" would be a state
+        // nothing could report. What is measured is what playback costs — reading the
+        // show, computing what it wants, and applying it — which is also the only part
+        // that grows with the rig. What the *process* costs is `cpu_percent`, in the
+        // same row.
+        let tick_began = std::time::Instant::now();
+
         let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
         let cues: Vec<pult_schema::types::cue::Cue> = self.read_collection("cues");
         let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
@@ -822,6 +848,7 @@ impl ShowEngine {
         // fixtures on the same cue a fraction of a cycle apart.
         let wall_ms = pult_schema::types::sequence::now_ms();
 
+        let playback_began = std::time::Instant::now();
         let effects = {
             let view = ShowView::new(
                 &sequences,
@@ -834,6 +861,11 @@ impl ShowEngine {
             );
             self.playback.tick(tokio::time::Instant::now().into_std(), wall_ms, &view)
         };
+        // The computing half on its own. Task 29 measured it as roughly a third of
+        // the whole, the rest being one write, one broadcast and one output push per
+        // fixture that moved — so publishing one figure would credit all of it to
+        // playback and send the next optimisation to the wrong half.
+        let playback_took = playback_began.elapsed();
 
         // A follower takes its cue positions from the leader, so only the leader
         // fires follow cues. Both ends still run their own fades.
@@ -877,6 +909,8 @@ impl ShowEngine {
         }
 
         self.push_output(moved).await;
+
+        self.tick_stats.record(tick_began.elapsed(), playback_took);
     }
 
     /// Run a registered command and replicate the result.

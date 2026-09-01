@@ -4319,3 +4319,112 @@ mod peers {
         assert!(crate::infra::assets::peer_addresses(&h.engine, Uuid::new_v4()).await.is_empty());
     }
 }
+
+// ── What a tick costs ─────────────────────────────────────────────────────────
+
+mod tick_cost {
+    use super::*;
+    use crate::infra::stations::TickStats;
+
+    /// A harness whose engine shares its tick accumulator, the way `start` wires one
+    /// up for the station reporter.
+    async fn harness_measuring() -> (Harness, Arc<TickStats>) {
+        let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
+        let (mut engine, handle, broadcast) =
+            ShowEngine::new(NodeId(Uuid::new_v4()), pool.clone(), None);
+        let stats = Arc::new(TickStats::default());
+        engine.set_tick_stats(stats.clone());
+        tokio::spawn(engine.run());
+        (Harness { engine: handle, broadcast, pool }, stats)
+    }
+
+    /// A show with nothing running settles: `playback_tick` returns before it does
+    /// any work, so there is nothing to record and the station has nothing to say —
+    /// which has to stay different from saying its ticks took no time.
+    ///
+    /// "Settled" means no playback work *and* nothing written since the last tick.
+    /// A write bumps `state_version`, so one tick runs after it to reconcile, and
+    /// that tick is real work and is counted. A station being programmed therefore
+    /// reports a cost; only one left alone reports nothing.
+    #[tokio::test]
+    async fn a_settled_show_records_no_ticks_at_all() {
+        let (h, stats) = harness_measuring().await;
+        h.engine.set(key("show"), Lifecycle::Persisted, json(&a_show())).await.unwrap();
+
+        tokio::time::pause();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // The one tick that write earned, and then nothing more is coming.
+        let reconciling = stats.drain().expect("a write is reconciled by one tick");
+        assert_eq!(reconciling.ticks, 1);
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        assert_eq!(stats.drain(), None, "the timer fired, but no tick did any work");
+    }
+
+    #[tokio::test]
+    async fn a_station_running_a_fade_records_what_its_ticks_cost() {
+        let (h, stats) = harness_measuring().await;
+        let mut fixture = a_fixture("Spot L", 1);
+        fixture.fixture_type_id = a_dimmer_type(&h).await;
+        let cue = an_intensity_cue(fixture.id, 1.0, 4000);
+        let seq = a_sequence("Act 1", vec![cue.id]);
+
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+        // Whatever the setup writes cost, this is about the fade.
+        let _ = stats.drain();
+
+        tokio::time::pause();
+        h.engine
+            .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let cost = stats.drain().expect("a fade ticks, and a tick is recorded");
+        assert!(cost.ticks > 0, "a running fade recorded no ticks");
+        // The computing half is inside the whole tick. The point of the pair is that
+        // the difference — applying the effects — can be read off.
+        assert!(
+            cost.playback_mean_ms <= cost.mean_ms,
+            "playback {} claimed more than the whole tick {}",
+            cost.playback_mean_ms,
+            cost.mean_ms
+        );
+        assert!(cost.playback_max_ms <= cost.max_ms);
+        assert!(cost.max_ms >= cost.mean_ms, "the worst tick cannot beat the mean");
+    }
+
+    /// The one the reporter depends on: a station that was ticking and is then taken
+    /// off must go quiet rather than keep republishing its last measurement.
+    #[tokio::test]
+    async fn a_station_that_stops_ticking_stops_reporting_a_cost() {
+        let (h, stats) = harness_measuring().await;
+        let mut fixture = a_fixture("Spot L", 1);
+        fixture.fixture_type_id = a_dimmer_type(&h).await;
+        // A snap, so the fade is over almost as soon as it starts and playback runs
+        // out of work while the engine keeps ticking.
+        let cue = an_intensity_cue(fixture.id, 1.0, 0);
+        let seq = a_sequence("Act 1", vec![cue.id]);
+
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+        let _ = stats.drain();
+
+        tokio::time::pause();
+        h.engine
+            .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(stats.drain().is_some(), "taking the cue should have ticked something");
+
+        // Nothing is moving any more. The next window is empty, and the one after it.
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        assert_eq!(stats.drain(), None, "a settled station repeated its last figure");
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        assert_eq!(stats.drain(), None);
+    }
+}
