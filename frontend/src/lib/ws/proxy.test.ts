@@ -10,13 +10,15 @@ function fakeClient(initial: unknown) {
 	let stored = initial;
 	const handlers: { pattern: string; handler: Handler }[] = [];
 	const gets: (string | number)[][] = [];
+	const sets: [(string | number)[], unknown][] = [];
 
 	const client = {
 		get(path: (string | number)[]) {
 			gets.push(path);
 			return Promise.resolve(stored);
 		},
-		set() {
+		set(path: (string | number)[], value: unknown) {
+			sets.push([path, value]);
 			return Promise.resolve();
 		},
 		subscribe(pattern: string, handler: Handler) {
@@ -31,6 +33,7 @@ function fakeClient(initial: unknown) {
 	return {
 		client,
 		gets,
+		sets,
 		/** Deliver an update the way the backend would. */
 		push(path: PathSegment[], value: unknown) {
 			for (const { handler } of handlers) handler(value, path);
@@ -150,5 +153,31 @@ describe('subscribeDeep', () => {
 		await flush();
 
 		expect(fake.gets).toHaveLength(1);
+	});
+});
+
+
+describe('relative writes', () => {
+	/**
+	 * The delta goes to the station, not the answer. Two people nudging one fader
+	 * both get their nudge; two people computing 60 from the 50 they each read leave
+	 * only one of them heard.
+	 */
+	it('sends the delta under __by rather than a destination', async () => {
+		const { client, sets } = fakeClient({ fade_in_ms: 3000 });
+		const proxy = createDataProxy<{ fade_in_ms: number }>(client, ['cues', 'c1']);
+
+		await proxy.fade_in_ms.by(1500);
+
+		expect(sets).toEqual([[['cues', 'c1', 'fade_in_ms', '__by'], 1500]]);
+	});
+
+	it('leaves set alone', async () => {
+		const { client, sets } = fakeClient({ fade_in_ms: 3000 });
+		const proxy = createDataProxy<{ fade_in_ms: number }>(client, ['cues', 'c1']);
+
+		await proxy.fade_in_ms.set(4500);
+
+		expect(sets).toEqual([[['cues', 'c1', 'fade_in_ms'], 4500]]);
 	});
 });

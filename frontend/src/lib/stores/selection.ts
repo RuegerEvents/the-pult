@@ -55,7 +55,11 @@ const handOrder = writable<string[]>([]);
 /** The fixtures the query picks out, in the order it asks for. */
 export const selection: Readable<string[]> = derived(
 	[query, fixtures, handOrder],
-	([$query, $fixtures, $handOrder]) => evaluate($query, $fixtures, $handOrder)
+	// An empty hand order means this browser is not holding one, so the query's own
+	// order gets to speak — which is how a recalled group keeps the order it was
+	// saved in until somebody drags it into a different one.
+	([$query, $fixtures, $handOrder]) =>
+		evaluate($query, $fixtures, $handOrder.length ? $handOrder : null)
 );
 
 /** Membership, for a component that only needs to ask about one fixture. */
@@ -129,6 +133,56 @@ export function setQuery(next: SelectionQuery) {
 	query.set(next);
 }
 
+/**
+ * Take on somebody else's question — a saved group, or a command line that named
+ * one.
+ *
+ * The hand order goes with it. A query arriving from outside carries its own order,
+ * and leaving this browser's drag in place would quietly overrule it: a group saved
+ * left-to-right would come back in whatever order the last drag left behind.
+ */
+export function recall(next: SelectionQuery) {
+	handOrder.set([]);
+	query.set(next);
+}
+
+/**
+ * The current query as somebody who never saw this browser will read it.
+ *
+ * A hand order lives in a store beside the query, and a station resolving a saved
+ * group has no such store — so it goes into the query on the way out. Without this
+ * a group saved in a dragged order would come back in patch order everywhere else,
+ * which is the quiet cross-station disagreement this whole design exists to avoid.
+ */
+export function asSavedQuery(): SelectionQuery {
+	const current = get(query);
+	if (current.order.kind !== 'Manual') return current;
+	return { ...current, order: { kind: 'Manual', order: get(selection) } };
+}
+
+/**
+ * Apply what a plugin surface asked for. Answers whether anything was asked.
+ *
+ * A query wins over a list of ids where a surface is handed both: a question that
+ * keeps following the rig is strictly more than the answer it gives today, and a
+ * surface that took the ids would be throwing that away. Both surfaces route through
+ * here so neither can learn a new effect without the other.
+ */
+export function applySelectionEffect(
+	effects: { selection?: { query?: SelectionQuery; fixtureIds?: string[] } } | null | undefined
+): boolean {
+	const asked = effects?.selection;
+	if (asked?.query) {
+		recall(asked.query);
+		return true;
+	}
+	if (asked?.fixtureIds) {
+		setQuery(idsQuery(asked.fixtureIds));
+		return true;
+	}
+	return false;
+}
+
 /** Add a clause to whatever is already selected. */
 export function addClause(combine: 'Add' | 'Keep' | 'Drop', term: Term) {
 	query.update((q) => ({ ...q, clauses: [...q.clauses, { combine, term }] }));
@@ -152,7 +206,10 @@ export function setOrder(order: Order) {
 export function freeze() {
 	const ids = get(selection);
 	handOrder.set(ids);
-	query.set(idsQuery(ids));
+	// The order goes into the query as well as into the store, so a frozen selection
+	// says what it means on its own — which is what makes saving one as a group, and
+	// resolving it on a station that never saw the drag, come out the same.
+	query.set(idsQuery(ids, { kind: 'Manual', order: ids }));
 }
 
 /**
@@ -178,5 +235,5 @@ export function reorder(from: number, to: number) {
 	next.splice(to, 0, moved);
 
 	handOrder.set(next);
-	query.update((q) => ({ ...q, order: { kind: 'Manual' } }));
+	query.update((q) => ({ ...q, order: { kind: 'Manual', order: next } }));
 }

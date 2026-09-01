@@ -10,7 +10,9 @@
 //! uses: `exec` with a `{ "line": ... }` — that is the whole inter-plugin API.
 
 use command_line_core as core;
-use core::{Catalog, Command, Completions, Expectation, ParseError, SelOp, Target};
+use core::{
+    Catalog, Command, Completions, Expectation, Level, ParseError, SelOp, SelectTarget, Target,
+};
 use pult_plugin_sdk::{self as sdk, host, output_line, surface, PultPlugin};
 use serde_json::{json, Value};
 
@@ -90,7 +92,7 @@ impl CommandLine {
             }
             Command::Select { ops, at } => self.select(ops, at, ctx),
             Command::Clear { also_selection } => self.clear(also_selection),
-            Command::Intensity { percent } => self.intensity(percent, ctx),
+            Command::Intensity { level } => self.intensity(level, ctx),
             Command::EntityCommand { table, target, command, args } => {
                 self.entity_command(&table, target, &command, args)
             }
@@ -116,25 +118,55 @@ impl CommandLine {
 
     fn select(
         &self,
-        ops: Vec<(SelOp, core::Range)>,
-        at: Option<f64>,
+        ops: Vec<(SelOp, SelectTarget)>,
+        at: Option<Level>,
         ctx: &Value,
     ) -> Result<surface::ExecResponse, String> {
+        // `group 3` on its own hands the browser the group's *question*, so what it
+        // leaves selected is what recalling the group in the panel leaves: a
+        // selection that goes on following the rig. Anything mixed — a group plus a
+        // range, or a group taken away from one — cannot be said as one query,
+        // because a group's own clauses may narrow or subtract and appending them
+        // would narrow the whole line rather than the group. So that resolves to a
+        // list, and says as much by being one.
+        let live_query = match ops.as_slice() {
+            [(SelOp::Replace, SelectTarget::Group(target))] => {
+                let (_, _, query) = self.group(target)?;
+                Some(query)
+            }
+            _ => None,
+        };
+
         let fixtures = collection("fixtures")?;
         let mut selected: Vec<String> = selection_of(ctx);
-        for (op, range) in ops {
-            if range.to > fixtures.len() {
-                return Err(format!(
-                    "there are {} fixtures; {} is past the end",
-                    fixtures.len(),
-                    range.to
-                ));
-            }
-            let ids = fixtures[range.from - 1..range.to]
-                .iter()
-                .filter_map(|f| f.get("id").and_then(Value::as_str).map(String::from));
+        let mut only_group: Option<String> = None;
+        for (op, target) in ops {
+            let ids: Vec<String> = match target {
+                SelectTarget::Fixtures(range) => {
+                    if range.to > fixtures.len() {
+                        return Err(format!(
+                            "there are {} fixtures; {} is past the end",
+                            fixtures.len(),
+                            range.to
+                        ));
+                    }
+                    fixtures[range.from - 1..range.to]
+                        .iter()
+                        .filter_map(|f| f.get("id").and_then(Value::as_str).map(String::from))
+                        .collect()
+                }
+                SelectTarget::Group(ref target) => {
+                    let (id, name, _) = self.group(target)?;
+                    only_group = Some(name);
+                    // The station evaluates it, not this plugin: one evaluator per
+                    // side of the wire, and the browser's is the other one.
+                    let answer = host::call("selection.resolve", &json!({ "groupId": id }))?;
+                    serde_json::from_value(answer)
+                        .map_err(|e| format!("the station's answer did not parse: {e}"))?
+                }
+            };
             match op {
-                SelOp::Replace => selected = ids.collect(),
+                SelOp::Replace => selected = ids,
                 SelOp::Add => {
                     for id in ids {
                         if !selected.contains(&id) {
@@ -142,30 +174,40 @@ impl CommandLine {
                         }
                     }
                 }
-                SelOp::Remove => {
-                    let drop: Vec<String> = ids.collect();
-                    selected.retain(|id| !drop.contains(id));
-                }
+                SelOp::Remove => selected.retain(|id| !ids.contains(id)),
             }
         }
         let count = selected.len();
-        let mut text = match count {
-            0 => "nothing selected".to_string(),
-            1 => "1 fixture selected".to_string(),
-            n => format!("{n} fixtures selected"),
+        let mut text = match (count, live_query.is_some().then_some(only_group).flatten()) {
+            (0, Some(name)) => format!("{name} is empty"),
+            (0, None) => "nothing selected".to_string(),
+            (1, Some(name)) => format!("{name}: 1 fixture"),
+            (n, Some(name)) => format!("{name}: {n} fixtures"),
+            (1, None) => "1 fixture selected".to_string(),
+            (n, None) => format!("{n} fixtures selected"),
         };
         // The combined form: `fixture 1 thru 3 @ 80` sets the level on what it
         // just selected, not on whatever was selected before.
-        if let Some(percent) = at {
+        if let Some(level) = at {
             if selected.is_empty() {
                 return Err("that selects nothing, so there is nothing to set".into());
             }
-            self.hold_intensity(&selected, percent)?;
-            text.push_str(&format!(", at {}%", percent.round()));
+            self.apply_level(&selected, level)?;
+            text.push_str(&format!(", {}", said(level)));
         }
         let mut response = lines_response(vec![output_line("result", text)]);
-        response.effects = Some(json!({ "selection": { "fixtureIds": selected } }));
+        response.effects = Some(match live_query {
+            Some(query) => json!({ "selection": { "query": query } }),
+            None => json!({ "selection": { "fixtureIds": selected } }),
+        });
         Ok(response)
+    }
+
+    /// `group 3` / `group "Movers"` → its id, its name, and the question it asks.
+    fn group(&self, target: &Target) -> Result<(String, String, Value), String> {
+        let (id, name) = resolve("groups", target)?;
+        let query = host::get(&["groups", &id, "query"])?;
+        Ok((id, name, query))
     }
 
     fn clear(&self, also_selection: bool) -> Result<surface::ExecResponse, String> {
@@ -194,21 +236,51 @@ impl CommandLine {
         Ok(response)
     }
 
-    fn intensity(&self, percent: f64, ctx: &Value) -> Result<surface::ExecResponse, String> {
+    fn intensity(&self, level: Level, ctx: &Value) -> Result<surface::ExecResponse, String> {
         let selected = selection_of(ctx);
         if selected.is_empty() {
             return Err("nothing is selected — `fixture 1 thru 5` first".into());
         }
-        self.hold_intensity(&selected, percent)?;
+        self.apply_level(&selected, level)?;
         Ok(lines_response(vec![output_line(
             "result",
             format!(
-                "{} fixture{} at {}%",
+                "{} fixture{} {}",
                 selected.len(),
                 if selected.len() == 1 { "" } else { "s" },
-                percent.round()
+                said(level)
             ),
         )]))
+    }
+
+    /// Set the level, or move it — whichever the operator wrote.
+    fn apply_level(&self, fixtures: &[String], level: Level) -> Result<(), String> {
+        match level {
+            Level::To(percent) => self.hold_intensity(fixtures, percent),
+            Level::By(points) => self.nudge_intensity(fixtures, points),
+        }
+    }
+
+    /// Move these fixtures' Intensity by so many percentage points.
+    ///
+    /// The station does the arithmetic, from what it is showing at the moment it
+    /// applies the write. This plugin deliberately does not read a level and compute
+    /// a destination: two operators nudging the same light would then read the same
+    /// number and write the same answer, and one of the two nudges would be lost.
+    /// It also does not need the fixture to be in the programmer already — the
+    /// station takes the key, starting from what playback has it at.
+    fn nudge_intensity(&self, fixtures: &[String], points: f64) -> Result<(), String> {
+        for fixture_id in fixtures {
+            host::set(
+                &["programmer_values", "__by"],
+                &json!({
+                    "fixtureId": fixture_id,
+                    "parameterKind": "Intensity",
+                    "by": points / 100.0,
+                }),
+            )?;
+        }
+        Ok(())
     }
 
     /// Put these fixtures' Intensity into the programmer at a percentage.
@@ -482,6 +554,15 @@ impl CommandLine {
 }
 
 // ── Small pieces ──────────────────────────────────────────────────────────────
+
+/// How a level reads back: a destination arrived at, or a distance moved.
+fn said(level: Level) -> String {
+    match level {
+        Level::To(percent) => format!("at {}%", percent.round()),
+        Level::By(points) if points >= 0.0 => format!("{}% brighter", points.round()),
+        Level::By(points) => format!("{}% darker", points.abs().round()),
+    }
+}
 
 /// A collection as the ordered array the engine serves.
 fn collection(table: &str) -> Result<Vec<Value>, String> {

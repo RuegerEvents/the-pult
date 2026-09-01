@@ -276,6 +276,7 @@ async fn handle_client_message(
                 let deps = crate::api::rpcs::LocalRpcDeps {
                     session: state.session.clone(),
                     devices: state.devices.clone(),
+                    engine: state.engine.clone(),
                 };
                 crate::api::rpcs::dispatch(&method, args, &deps).await
                     .map(|v| ServerMessage::CallResult { request_id: request_id.clone(), result: Some(v), error: None })

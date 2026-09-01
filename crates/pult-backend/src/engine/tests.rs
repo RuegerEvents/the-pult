@@ -2935,3 +2935,713 @@ async fn output_keeps_running_while_the_log_is_pruned() {
     // actor had waited on a 2,000-row delete this would be seconds.
     assert!(elapsed.as_secs() < 10, "the loop was blocked by the prune: {elapsed:?}");
 }
+
+// ── Saved groups ──────────────────────────────────────────────────────────────
+
+/// A station's answer to "what is in this group" is worked out from the rig as it is
+/// now, which is what makes a group survive somebody re-patching the show.
+mod groups {
+    use pult_schema::types::{
+        fixture::{FixturePosition, Vec3},
+        Group, SelectionClause, SelectionCombine, SelectionOrder, SelectionQuery, SelectionTerm,
+    };
+    use serde_json::json;
+
+    use super::*;
+    use crate::api::rpcs::{self, LocalRpcDeps};
+    use crate::infra::{devices::DeviceHandle, session::SessionHandle};
+
+    fn deps(engine: &EngineHandle) -> LocalRpcDeps {
+        // The session and device channels go nowhere: `group.resolve` reads the show,
+        // and a test that reached either of them would be testing something else.
+        let (session_tx, _session_rx) = tokio::sync::mpsc::channel(1);
+        let (device_tx, _device_rx) = tokio::sync::mpsc::channel(1);
+        LocalRpcDeps {
+            session: SessionHandle(session_tx),
+            devices: DeviceHandle(device_tx),
+            engine: engine.clone(),
+        }
+    }
+
+    fn at(name: &str, x: f32, type_id: Uuid) -> Fixture {
+        let mut fixture = a_fixture(name, 1);
+        fixture.fixture_type_id = type_id;
+        fixture.position = Some(FixturePosition::Point(Vec3 { x, y: 5.0, z: 2.0 }));
+        fixture
+    }
+
+    fn of_type(type_id: Uuid) -> SelectionQuery {
+        SelectionQuery {
+            clauses: vec![SelectionClause {
+                combine: SelectionCombine::Add,
+                term: SelectionTerm::OfType { type_id },
+            }],
+            order: SelectionOrder::ByName,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_group_resolves_against_the_rig_as_it_is_now() {
+        let h = harness().await;
+        let movers = Uuid::new_v4();
+        let pars = Uuid::new_v4();
+        for fixture in [at("Mover B", 1.0, movers), at("Mover A", -1.0, movers), at("Par", 0.0, pars)]
+        {
+            h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+        }
+
+        let group = Group { id: Uuid::new_v4(), name: "Movers".into(), query: of_type(movers) };
+        h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
+
+        let resolved = rpcs::dispatch(
+            "selection.resolve",
+            json!({ "groupId": group.id }),
+            &deps(&h.engine),
+        )
+        .await
+        .expect("the group resolves");
+        let names = |v: &serde_json::Value| -> Vec<String> {
+            serde_json::from_value::<Vec<Uuid>>(v.clone()).unwrap().iter().map(|i| i.to_string()).collect()
+        };
+        assert_eq!(names(&resolved).len(), 2, "two movers, not the par");
+
+        // And a mover hung after the group was saved is in it, with nothing re-saved.
+        let late = at("Mover C", 3.0, movers);
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&late)).await.unwrap();
+        let again = rpcs::dispatch(
+            "selection.resolve",
+            json!({ "groupId": group.id }),
+            &deps(&h.engine),
+        )
+        .await
+        .unwrap();
+        let ids: Vec<Uuid> = serde_json::from_value(again).unwrap();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains(&late.id), "a fixture patched afterwards joins the group");
+    }
+
+    /// A group that is not there is an error, not an empty answer — a command line has
+    /// to be able to say "you have no such group" rather than "that group is empty".
+    #[tokio::test]
+    async fn resolving_a_group_that_is_not_there_says_so() {
+        let h = harness().await;
+        let missing = Uuid::new_v4();
+        let err = rpcs::dispatch("selection.resolve", json!({ "groupId": missing }), &deps(&h.engine))
+            .await
+            .expect_err("no such group");
+        assert!(err.contains(&missing.to_string()), "the message names the group: {err}");
+
+        // Whereas a group whose query currently matches nothing resolves to nothing.
+        let empty =
+            Group { id: Uuid::new_v4(), name: "Nothing".into(), query: of_type(Uuid::new_v4()) };
+        h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&empty)).await.unwrap();
+        let resolved =
+            rpcs::dispatch("selection.resolve", json!({ "groupId": empty.id }), &deps(&h.engine))
+                .await
+                .expect("an empty group is still a group");
+        assert_eq!(resolved, json!([]));
+    }
+
+    /// Resolving is a read. It must not appear in anybody's history or undo stack,
+    /// which is why it is a station RPC rather than a command on the entity.
+    #[tokio::test]
+    async fn resolving_writes_no_operation() {
+        let h = harness().await;
+        let type_id = Uuid::new_v4();
+        h.engine
+            .set(create_path("fixtures"), Lifecycle::Persisted, json(&at("Spot", 0.0, type_id)))
+            .await
+            .unwrap();
+        let group = Group { id: Uuid::new_v4(), name: "Spots".into(), query: of_type(type_id) };
+        h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
+
+        let before = showfile::oplog::len(&h.pool).await.unwrap();
+        for _ in 0..5 {
+            rpcs::dispatch("selection.resolve", json!({ "groupId": group.id }), &deps(&h.engine))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            showfile::oplog::len(&h.pool).await.unwrap(),
+            before,
+            "a read must not write history"
+        );
+    }
+
+    /// A group written on one station reaches the other and means the same there.
+    ///
+    /// The point of storing the *query* rather than the ids: both stations run the
+    /// same evaluator over their own copy of the rig, so the answer agrees because
+    /// the question does, not because anybody replicated an answer.
+    #[tokio::test]
+    async fn two_stations_resolve_a_group_the_same_way() {
+        use pult_schema::events::operation::{Operation, VectorClock};
+
+        let here = harness().await;
+        let there = harness().await;
+        let type_id = Uuid::new_v4();
+
+        // The same rig on both, in the same order — which is what the engine's
+        // per-collection display order guarantees for replicated shows.
+        let rig = [at("Mover B", 1.0, type_id), at("Mover A", -1.0, type_id)];
+        for station in [&here, &there] {
+            for f in &rig {
+                station
+                    .engine
+                    .set(create_path("fixtures"), Lifecycle::Persisted, json(f))
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let group = Group {
+            id: Uuid::new_v4(),
+            name: "Movers".into(),
+            query: SelectionQuery {
+                clauses: vec![SelectionClause {
+                    combine: SelectionCombine::Add,
+                    term: SelectionTerm::OfType { type_id },
+                }],
+                // A hand order, which is exactly the one that used to live in a
+                // browser store and could not travel.
+                order: SelectionOrder::Manual { order: vec![rig[1].id, rig[0].id] },
+            },
+        };
+        here.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
+
+        // The other station learns of it the way it learns of anything: an operation.
+        there
+            .engine
+            .0
+            .send(EngineCommand::ApplyPeerOperation(Operation {
+                id: Uuid::new_v4(),
+                node_id: NodeId(Uuid::new_v4()),
+                seq: 1,
+                clock: VectorClock::default(),
+                path: create_path("groups"),
+                value: json(&group),
+                lifecycle: Lifecycle::Persisted,
+                timestamp: Utc::now(),
+                user_id: None,
+                previous: None,
+                undoes: None,
+                gesture: None,
+            }))
+            .await
+            .unwrap();
+
+        let ask = |h: &Harness| {
+            let deps = deps(&h.engine);
+            async move {
+                rpcs::dispatch("selection.resolve", json!({ "groupId": group.id }), &deps)
+                    .await
+                    .expect("both stations resolve it")
+            }
+        };
+        let mine = ask(&here).await;
+        let theirs = ask(&there).await;
+        assert_eq!(mine, theirs, "the same question, the same answer");
+        assert_eq!(
+            serde_json::from_value::<Vec<Uuid>>(mine).unwrap(),
+            vec![rig[1].id, rig[0].id],
+            "and in the order somebody dragged, which travelled inside the query"
+        );
+    }
+
+    /// Nothing here is special: a group is a PERSISTED row, so it is attributed,
+    /// it is in the history of what people did, and it comes back on undo.
+    #[tokio::test]
+    async fn a_group_is_an_ordinary_show_edit() {
+        use crate::infra::showfile::oplog;
+
+        let h = harness().await;
+        let user = Uuid::new_v4();
+        let group = Group {
+            id: Uuid::new_v4(),
+            name: "Specials".into(),
+            query: of_type(Uuid::new_v4()),
+        };
+        h.engine
+            .set_as(user, None, create_path("groups"), Lifecycle::Persisted, json(&group))
+            .await
+            .unwrap();
+        h.engine
+            .set_as(
+                user,
+                None,
+                vec![
+                    PathSegment::Key("groups".into()),
+                    PathSegment::Id(group.id),
+                    PathSegment::Key("name".into()),
+                ],
+                Lifecycle::Persisted,
+                json(&"The specials"),
+            )
+            .await
+            .unwrap();
+
+        let log = oplog::recent_by_people(&h.pool, 100).await.unwrap();
+        assert!(
+            log.iter().any(|op| op.user_id == Some(user)
+                && op.path.iter().any(|s| matches!(s, PathSegment::Key(k) if k == "groups"))),
+            "the rename shows up as that user's"
+        );
+
+        // Deleted, then taken back — with its name and its query.
+        h.engine
+            .set_as(
+                user,
+                None,
+                delete_path("groups", group.id),
+                Lifecycle::Persisted,
+                serde_json::Value::Null,
+            )
+            .await
+            .unwrap();
+        assert!(h.engine.get(entity_path("groups", group.id)).await.is_err(), "it went");
+
+        h.engine.undo(user, false).await;
+        let back = h.engine.get(entity_path("groups", group.id)).await.expect("it came back");
+        assert_eq!(back["name"], "The specials");
+        assert_eq!(back["query"], json(&group.query));
+    }
+
+    /// The showfile carries the query, so a station that opens the show later — or a
+    /// peer catching up — resolves the same fixtures in the same order.
+    #[tokio::test]
+    async fn a_group_survives_the_showfile() {
+        let mut h = harness().await;
+        let type_id = Uuid::new_v4();
+        for f in [at("B", 1.0, type_id), at("A", -1.0, type_id)] {
+            h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&f)).await.unwrap();
+        }
+        let group = Group { id: Uuid::new_v4(), name: "All".into(), query: of_type(type_id) };
+        h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
+
+        let before =
+            rpcs::dispatch("selection.resolve", json!({ "groupId": group.id }), &deps(&h.engine))
+                .await
+                .unwrap();
+
+        h.reload().await;
+
+        let after =
+            rpcs::dispatch("selection.resolve", json!({ "groupId": group.id }), &deps(&h.engine))
+                .await
+                .unwrap();
+        assert_eq!(before, after, "the same question, the same answer, after a reopen");
+        assert_eq!(
+            serde_json::from_value::<Vec<Uuid>>(after).unwrap().len(),
+            2,
+            "and it is not empty, which would make the comparison meaningless"
+        );
+    }
+}
+
+
+// ── Relative writes ───────────────────────────────────────────────────────────
+
+/// "Ten percent brighter" rather than "at 62%".
+///
+/// The property every one of these is really about: the delta stops existing at the
+/// front door. What the log holds, what a peer receives and what undo reverses are
+/// all absolute, because two stations each adding ten percent to whatever they
+/// happened to be showing would not end up holding the same number.
+mod relative {
+    use pult_schema::types::{
+        fixture::{ParameterKind, ParameterValue},
+        programmer::{programmer_entry_id, ProgrammerValue},
+    };
+    use serde_json::json;
+
+    use super::*;
+    use crate::infra::showfile::oplog;
+
+    fn by_path(mut path: Path) -> Path {
+        path.push(PathSegment::Key("__by".into()));
+        path
+    }
+
+    fn programmer_by(fixture_id: Uuid, kind: ParameterKind, by: f64) -> (Path, serde_json::Value) {
+        (
+            vec![
+                PathSegment::Key("programmer_values".into()),
+                PathSegment::Key("__by".into()),
+            ],
+            json!({ "fixtureId": fixture_id, "parameterKind": kind, "by": by }),
+        )
+    }
+
+    fn held(h: &Harness, fixture_id: Uuid, kind: &ParameterKind) -> Path {
+        let key = crate::model::playback::parameter_key(kind);
+        let _ = h;
+        vec![
+            PathSegment::Key("programmer_values".into()),
+            PathSegment::Id(programmer_entry_id(&fixture_id.to_string(), &key).parse().unwrap()),
+        ]
+    }
+
+    fn a_programmer_value(fixture_id: Uuid, kind: ParameterKind, value: f32) -> ProgrammerValue {
+        let key = crate::model::playback::parameter_key(&kind);
+        ProgrammerValue {
+            id: programmer_entry_id(&fixture_id.to_string(), &key).parse().unwrap(),
+            fixture_id,
+            parameter_kind: kind,
+            value: ParameterValue::Float(value),
+            effect: None,
+            locked: false,
+        }
+    }
+
+    fn level(row: &serde_json::Value) -> f32 {
+        row["value"]["value"].as_f64().unwrap_or(f64::NAN) as f32
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_field_moves_by_the_delta() {
+        let h = harness().await;
+        let cue = a_cue("Act 1", 1.0);
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+
+        h.engine
+            .set(
+                by_path(field_path("cues", cue.id, "fade_in_ms")),
+                Lifecycle::Persisted,
+                json!(1500),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            h.engine.get(field_path("cues", cue.id, "fade_in_ms")).await.unwrap(),
+            json!(4500),
+            "3000 and 1500 more"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_parameter_moves_from_where_it_is_held() {
+        let h = harness().await;
+        let fixture = a_fixture("Spot", 1);
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+        let entry = a_programmer_value(fixture.id, ParameterKind::Intensity, 0.5);
+        h.engine
+            .set(create_path("programmer_values"), Lifecycle::Synced, json(&entry))
+            .await
+            .unwrap();
+
+        let (path, args) = programmer_by(fixture.id, ParameterKind::Intensity, 0.1);
+        h.engine.set(path, Lifecycle::Synced, args).await.unwrap();
+
+        let row = h.engine.get(held(&h, fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert!((level(&row) - 0.6).abs() < 1e-5, "{row}");
+    }
+
+    /// The ordinary case: nobody is holding the fader yet, so the nudge has to take
+    /// the key and start from whatever playback has it at.
+    #[tokio::test]
+    async fn an_unheld_parameter_is_taken_from_where_playback_has_it() {
+        let h = harness().await;
+        let fixture = a_fixture("Spot", 1);
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+        h.engine
+            .set_live_value(fixture.id, "Intensity".into(), json(&ParameterValue::Float(0.4)))
+            .await
+            .unwrap();
+
+        let (path, args) = programmer_by(fixture.id, ParameterKind::Intensity, 0.1);
+        h.engine.set(path, Lifecycle::Synced, args).await.unwrap();
+
+        let row = h.engine.get(held(&h, fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert!((level(&row) - 0.5).abs() < 1e-5, "{row}");
+        assert_eq!(row["fixture_id"], json(&fixture.id), "and it names the fixture it took");
+    }
+
+    #[tokio::test]
+    async fn two_nudges_both_land() {
+        let h = harness().await;
+        let fixture = a_fixture("Spot", 1);
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+        let entry = a_programmer_value(fixture.id, ParameterKind::Intensity, 0.5);
+        h.engine
+            .set(create_path("programmer_values"), Lifecycle::Synced, json(&entry))
+            .await
+            .unwrap();
+
+        for _ in 0..2 {
+            let (path, args) = programmer_by(fixture.id, ParameterKind::Intensity, 0.1);
+            h.engine.set(path, Lifecycle::Synced, args).await.unwrap();
+        }
+
+        let row = h.engine.get(held(&h, fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert!((level(&row) - 0.7).abs() < 1e-5, "neither nudge was lost: {row}");
+    }
+
+    #[tokio::test]
+    async fn a_nudge_past_the_top_comes_to_rest_there() {
+        let h = harness().await;
+        let fixture = a_fixture("Spot", 1);
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+        let entry = a_programmer_value(fixture.id, ParameterKind::Intensity, 0.95);
+        h.engine
+            .set(create_path("programmer_values"), Lifecycle::Synced, json(&entry))
+            .await
+            .unwrap();
+
+        let (path, args) = programmer_by(fixture.id, ParameterKind::Intensity, 0.2);
+        h.engine.set(path, Lifecycle::Synced, args).await.unwrap();
+
+        let row = h.engine.get(held(&h, fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert_eq!(level(&row), 1.0);
+    }
+
+    /// Nudging a shape would have to mean moving its offset, which is a different
+    /// feature wearing the same word.
+    #[tokio::test]
+    async fn a_running_shape_refuses_and_goes_on_running() {
+        use pult_schema::types::effect::{Curve, Direction, EffectSpec, Rate, Shape, Spread};
+
+        let h = harness().await;
+        let fixture = a_fixture("Spot", 1);
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+        let mut entry = a_programmer_value(fixture.id, ParameterKind::Intensity, 0.5);
+        entry.effect = Some(EffectSpec {
+            effect_id: Uuid::new_v4(),
+            curve: Curve::Shape(Shape::Sine),
+            rate: Rate::Hz(1.0),
+            low: ParameterValue::Float(0.0),
+            high: ParameterValue::Float(1.0),
+            width: 0.5,
+            direction: Direction::Forward,
+            phase: 0.0,
+            spread: Spread::Even,
+            t0: None,
+        });
+        h.engine
+            .set(create_path("programmer_values"), Lifecycle::Synced, json(&entry))
+            .await
+            .unwrap();
+
+        let (path, args) = programmer_by(fixture.id, ParameterKind::Intensity, 0.1);
+        let err = h.engine.set(path, Lifecycle::Synced, args).await.expect_err("refused");
+        assert!(format!("{err}").contains("shape"), "{err}");
+
+        let row = h.engine.get(held(&h, fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert!(!row["effect"].is_null(), "the effect is still running: {row}");
+    }
+
+    #[tokio::test]
+    async fn the_shapes_that_mean_nothing_say_so() {
+        let h = harness().await;
+        let cue = a_cue("Act 1", 1.0);
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+        let before = oplog::len(&h.pool).await.unwrap();
+
+        // A whole row.
+        let err = h
+            .engine
+            .set(by_path(entity_path("cues", cue.id)), Lifecycle::Persisted, json!(1))
+            .await
+            .expect_err("a row is not a number");
+        assert!(format!("{err}").contains("one field"), "{err}");
+
+        // A create.
+        let err = h
+            .engine
+            .set(by_path(create_path("cues")), Lifecycle::Persisted, json!(1))
+            .await
+            .expect_err("there is nothing to be relative to");
+        assert!(format!("{err}").contains("one field"), "{err}");
+
+        // A field that is not there.
+        let err = h
+            .engine
+            .set(by_path(field_path("cues", cue.id, "nonesuch")), Lifecycle::Persisted, json!(1))
+            .await
+            .expect_err("no such field");
+        assert!(format!("{err}").contains("path not found"), "{err}");
+
+        // A field that is not a number.
+        let err = h
+            .engine
+            .set(by_path(field_path("cues", cue.id, "name")), Lifecycle::Persisted, json!(1))
+            .await
+            .expect_err("a name cannot be nudged");
+        assert!(format!("{err}").contains("not a number"), "{err}");
+
+        assert_eq!(oplog::len(&h.pool).await.unwrap(), before, "and none of it was written");
+    }
+
+    /// The property the whole design rests on: past the front door there is no such
+    /// thing as a relative write.
+    #[tokio::test]
+    async fn what_is_logged_is_absolute() {
+        let h = harness().await;
+        let user = Uuid::new_v4();
+        let cue = a_cue("Act 1", 1.0);
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+
+        h.engine
+            .set_as(
+                user,
+                None,
+                by_path(field_path("cues", cue.id, "fade_in_ms")),
+                Lifecycle::Persisted,
+                json!(1500),
+            )
+            .await
+            .unwrap();
+
+        let log = oplog::recent_by_people(&h.pool, 100).await.unwrap();
+        let op = log
+            .iter()
+            .find(|op| op.user_id == Some(user))
+            .expect("the nudge is in the history");
+        assert!(
+            !op.path.iter().any(|s| matches!(s, PathSegment::Key(k) if k == "__by")),
+            "the log holds a destination, not a delta: {:?}",
+            op.path
+        );
+        assert_eq!(op.value, json!(4500), "and the destination is the resolved number");
+        assert_eq!(op.previous, Some(json!(3000)), "with where it came from");
+    }
+
+    #[tokio::test]
+    async fn undo_puts_back_what_was_there() {
+        let h = harness().await;
+        let user = Uuid::new_v4();
+        let cue = a_cue("Act 1", 1.0);
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+
+        h.engine
+            .set_as(
+                user,
+                None,
+                by_path(field_path("cues", cue.id, "fade_in_ms")),
+                Lifecycle::Persisted,
+                json!(1500),
+            )
+            .await
+            .unwrap();
+
+        h.engine.undo(user, false).await;
+        assert_eq!(
+            h.engine.get(field_path("cues", cue.id, "fade_in_ms")).await.unwrap(),
+            json!(3000),
+            "back where it started, not 1500 less than it ended"
+        );
+
+        h.engine.undo(user, true).await;
+        assert_eq!(
+            h.engine.get(field_path("cues", cue.id, "fade_in_ms")).await.unwrap(),
+            json!(4500),
+            "and redo does not apply the delta a second time"
+        );
+    }
+
+    /// The resolution step names one collection, `programmer_values`, and this is the
+    /// property that must not cost: a collection it has never heard of — this one was
+    /// added a task ago — is nudged by the same verb with no edit to it.
+    #[tokio::test]
+    async fn a_collection_the_resolver_has_never_heard_of() {
+        use pult_schema::types::SpeedMaster;
+
+        let h = harness().await;
+        let master = SpeedMaster {
+            id: Uuid::new_v4(),
+            name: "Chases".into(),
+            bpm: 120.0,
+            multiplier: 1.0,
+            running: true,
+            t0: 0,
+        };
+        h.engine
+            .set(create_path("speed_masters"), Lifecycle::Persisted, json(&master))
+            .await
+            .unwrap();
+
+        h.engine
+            .set(
+                by_path(field_path("speed_masters", master.id, "bpm")),
+                Lifecycle::Persisted,
+                json!(8),
+            )
+            .await
+            .unwrap();
+
+        let bpm = h.engine.get(field_path("speed_masters", master.id, "bpm")).await.unwrap();
+        assert_eq!(bpm.as_f64().unwrap(), 128.0);
+    }
+
+    /// Two stations, one of them showing something else entirely. The one that made
+    /// the nudge decided the number; the other takes it. If the delta travelled, they
+    /// would part company on the first press.
+    #[tokio::test]
+    async fn a_peer_showing_something_else_still_lands_on_the_same_number() {
+        use pult_schema::events::operation::{Operation, VectorClock};
+
+        let here = harness().await;
+        let there = harness().await;
+        let cue = a_cue("Act 1", 1.0);
+        here.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+
+        // The other station has the cue with a different fade — mid-edit, or behind.
+        let mut theirs = cue.clone();
+        theirs.fade_in_ms = 500;
+        there.engine.set(create_path("cues"), Lifecycle::Persisted, json(&theirs)).await.unwrap();
+
+        here.engine
+            .set(
+                by_path(field_path("cues", cue.id, "fade_in_ms")),
+                Lifecycle::Persisted,
+                json!(1500),
+            )
+            .await
+            .unwrap();
+
+        // What a peer gets is the operation the log holds.
+        let ops = oplog::since(&here.pool, &VectorClock::default()).await.unwrap();
+        let op: &Operation = ops
+            .iter()
+            .find(|op| {
+                op.path.iter().any(|s| matches!(s, PathSegment::Key(k) if k == "fade_in_ms"))
+            })
+            .expect("the nudge is in the log");
+        there.engine.0.send(EngineCommand::ApplyPeerOperation(op.clone())).await.unwrap();
+
+        assert_eq!(
+            there.engine.get(field_path("cues", cue.id, "fade_in_ms")).await.unwrap(),
+            json!(4500),
+            "the peer takes the number, not 1500 more than its own 500"
+        );
+    }
+
+    /// A peer receives the number. It has to: it may be showing something else, and
+    /// two stations each adding ten percent to their own value diverge on the first
+    /// nudge.
+    #[tokio::test]
+    async fn a_peer_receives_the_number_rather_than_the_delta() {
+        let h = harness().await;
+        let cue = a_cue("Act 1", 1.0);
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+
+        let mut updates = h
+            .engine
+            .subscribe_pattern(PathPattern::new(&format!("cues/{}/fade_in_ms", cue.id)))
+            .await;
+        h.engine
+            .set(
+                by_path(field_path("cues", cue.id, "fade_in_ms")),
+                Lifecycle::Persisted,
+                json!(1500),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            updates.next().await.unwrap(),
+            json!(4500),
+            "what goes out on the wire is the resolved value"
+        );
+    }
+}

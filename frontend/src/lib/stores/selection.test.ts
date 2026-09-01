@@ -4,11 +4,15 @@ import { get, writable } from 'svelte/store';
 import type { DataRoot } from '$lib/ws/data.js';
 import type { Fixture } from '$lib/generated/index.js';
 import { initShowStores } from './show.js';
+import { evaluate, idsQuery } from '$lib/selection.js';
 import {
 	addClause,
+	applySelectionEffect,
+	asSavedQuery,
 	clearSelection,
 	freeze,
 	query,
+	recall,
 	remove,
 	reorder,
 	select,
@@ -180,6 +184,117 @@ describe('freezing a question into a list', () => {
 		setOrder({ kind: 'ByAxis', axis: 'x' });
 		reorder(3, 0);
 		expect(get(selection)).toEqual(['d', 'a', 'b', 'c']);
-		expect(get(query).order).toEqual({ kind: 'Manual' });
+		// The dragged order goes into the query, not only into the store beside it, so
+		// that saving this selection as a group carries the order to a station that
+		// never saw the drag.
+		expect(get(query).order).toEqual({ kind: 'Manual', order: ['d', 'a', 'b', 'c'] });
+	});
+});
+
+describe('what a plugin surface can ask for', () => {
+	beforeEach(() => {
+		clearSelection();
+	});
+
+	it('takes a list of fixtures', () => {
+		expect(applySelectionEffect({ selection: { fixtureIds: ['b', 'a'] } })).toBe(true);
+		expect(get(selection)).toEqual(['a', 'b']);
+	});
+
+	/**
+	 * The point of a query effect: `group 1` typed into the command line leaves the
+	 * same live selection that recalling the group in the panel does, so a fixture
+	 * patched a moment later joins it.
+	 */
+	it('takes a question, and the question keeps up with the rig', () => {
+		applySelectionEffect({
+			selection: {
+				query: {
+					clauses: [{ combine: 'Add', term: { kind: 'OfType', typeId: 'par' } }],
+					order: { kind: 'ByName' }
+				}
+			}
+		});
+		const before = get(selection);
+		rig.update((f) => [...f, fixture('e', 4)]);
+		expect(get(selection).length).toBe(before.length + 1);
+	});
+
+	it('prefers the question when handed both', () => {
+		applySelectionEffect({
+			selection: {
+				query: idsQuery(['a']),
+				fixtureIds: ['a', 'b', 'c']
+			}
+		});
+		expect(get(selection)).toEqual(['a']);
+	});
+
+	/**
+	 * A recalled group carries its own order, and this browser's last drag must not
+	 * quietly overrule it.
+	 */
+	it('drops the hand order, so a recalled group keeps the order it was saved in', () => {
+		addClause('Add', { kind: 'Everything' });
+		reorder(3, 0);
+		expect(get(selection)[0]).toBe('d');
+
+		applySelectionEffect({
+			selection: {
+				query: {
+					clauses: [{ combine: 'Add', term: { kind: 'Everything' } }],
+					order: { kind: 'Manual', order: ['c', 'b'] }
+				}
+			}
+		});
+		expect(get(selection)).toEqual(['c', 'b', 'a', 'd']);
+	});
+
+	it('says when it was asked for nothing', () => {
+		expect(applySelectionEffect(null)).toBe(false);
+		expect(applySelectionEffect({})).toBe(false);
+	});
+});
+
+/**
+ * What a group carries when it leaves this browser.
+ *
+ * The hand order is a store, and a station resolving the group has no store — so a
+ * group saved in a dragged order has to carry that order in its query, or it comes
+ * back in patch order everywhere but here.
+ */
+describe('saving the selection as a group', () => {
+	beforeEach(() => {
+		clearSelection();
+	});
+
+	it('bakes the dragged order into the query', () => {
+		addClause('Add', { kind: 'Everything' });
+		reorder(3, 0);
+		expect(get(selection)).toEqual(['d', 'a', 'b', 'c']);
+
+		const saved = asSavedQuery();
+		expect(saved.order).toEqual({ kind: 'Manual', order: ['d', 'a', 'b', 'c'] });
+
+		// And it resolves that way with nothing but the query — which is what a
+		// station, and every other console, will have.
+		expect(evaluate(saved, get(rig))).toEqual(['d', 'a', 'b', 'c']);
+	});
+
+	it('leaves a geometric order alone, which already means the same everywhere', () => {
+		addClause('Add', { kind: 'Everything' });
+		setOrder({ kind: 'ByName' });
+		expect(asSavedQuery().order).toEqual({ kind: 'ByName' });
+	});
+
+	/** A group saved and then recalled is the same selection, not a rearranged one. */
+	it('round-trips through recall', () => {
+		addClause('Add', { kind: 'Everything' });
+		reorder(3, 0);
+		const saved = asSavedQuery();
+
+		clearSelection();
+		recall(saved);
+		expect(get(selection)).toEqual(['d', 'a', 'b', 'c']);
 	});
 });

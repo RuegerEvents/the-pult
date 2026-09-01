@@ -1668,13 +1668,147 @@ short-change a peer from a pruned showfile**, since it serves catch-up without
 consulting a floor it does not know about; a session should not mix builds across
 it.
 
+### 38. A question worth keeping (done)
+
+Task 30 made a selection a *question* about the rig — "every mover on the downstage
+truss" — and then had nowhere to keep one. The types lived in
+`frontend/src/lib/selection.ts`, which said so: if saved groups ever became show
+data, they would move to `pult-schema` and the backend would get an evaluator beside
+this one. Both have happened. `groups` is a PERSISTED collection whose row is a name
+and a `SelectionQuery`, and nothing outside `pult-schema` was edited to make it
+replicate, persist, appear in `data.ts`, or reach a plugin.
+
+**A group stores the question, not the answer.** Resolving it reads the rig as it is
+at that moment, so a fixture patched this afternoon is in this morning's group with
+nothing re-saved, and a deleted one leaves it without anything having to prune. That
+is the whole reason task 30 made a selection a query in the first place, and storing
+the ids would have thrown it away at the moment it finally mattered.
+
+**The evaluator is written twice, and the price is a checked-in corpus.** The
+frontend re-evaluates on every change to the query, and a box or a cone dragged
+across the rig changes it per frame — evaluation is on the interaction path, and a
+round trip per frame is not available. So `evaluate` exists in `pult-schema` and in
+`selection.ts`, and `testdata/selection-queries.json` holds one rig and 21 cases that
+both test suites read. A case that disagrees fails on the side that is wrong, at the
+commit that made it wrong. It is the arrangement `model/effects.rs` and
+`frontend/src/lib/effects.ts` already had for the same reason.
+
+**The trap was `Manual` order.** "Whatever order the operator dragged into" lived in
+a Svelte store *beside* the query — deliberately, since an in-flight drag is not a
+fact about the show. A group has no store behind it: it is read on a station that
+never saw that drag, so a group saved left-to-right would have come back in patch
+order everywhere else. `SelectionOrder::Manual` now carries the ids, `asSavedQuery()`
+bakes the hand order in on the way out, and the evaluator takes `previous:
+Option<&[Uuid]>` — `None` means "use what the query carries", and an *empty* hand
+order is not the same as no hand order. That distinction is a corpus case, because it
+is exactly the kind of thing that is right for a month and then quietly wrong.
+
+**Resolving is a read, so it is a station RPC and not a command.** A
+`#[pult_command]` mutates an entity and writes an operation; asking what is in a
+group must not appear in anybody's history or undo stack, and a test asserts the
+oplog length is unchanged across five resolves. That put a read in `api/rpcs.rs`,
+whose header said these were "calls against LOCAL state" — the honest reframe, now
+written there, is that these are the calls that *answer* rather than *change*.
+`LocalRpcDeps` gained an engine handle to do it.
+
+**And it is called `selection.resolve`, not `group.resolve`.** The command line's
+parser checks RPC prefixes before collection names, so an RPC named `group.*` takes
+the word `group` out of the grammar: `group 1` parsed as an unknown command on the
+`group` RPC. **An RPC's prefix is a reserved word in the command line**, and naming
+one after a collection deletes that collection's spelling. Worth remembering the next
+time an RPC is added.
+
+The backlog guessed that `group 3 at 50` came free from introspection. It did not:
+`fixture` is a keyword in `parse.rs` and `group` had to become one too.
+`Command::Select` now carries a `SelectTarget` — a range of the rig or one group —
+and either word switches what a bare number counts, so `fixture 1 thru 5 + group 2`
+composes with no second code path. Generic entity addressing did give
+`rename group 1 "Movers"` for nothing.
+
+**A selection effect can carry a query.** `group 3` on its own hands the browser the
+group's *question*, so what the command line leaves is exactly what clicking the
+group in the panel leaves — a live selection rather than a photograph of one. Mixed
+lines (`fixture 1 + group 2`) resolve to ids instead, because a group's own clauses
+may narrow or subtract and appending them would narrow the whole line. `at` needs the
+ids either way, which is the one thing `selection.resolve` is called for.
+
+Left open: a group cannot appear *inside* a query (`Term::InGroup`), which would give
+live composition and needs cycle detection and an answer for deleting a referenced
+group. Recall-then-refine covers the workflow; nothing here forecloses the term.
+
+### 39. How much, rather than what to (done)
+
+Every write was absolute. There was no way to say "ten percent brighter", only "at
+62%", and the thing that had kept it that way was not the arithmetic but the
+question of *where* a relative write becomes an absolute one. On the client it is
+racy in exactly the case that matters: two operators reaching for one fader read
+the same number, compute the same destination, and one of the two nudges is lost.
+
+**Resolution happens at the front door and nowhere else.** `resolve_relative` runs
+at the top of the `EngineCommand::Set` arm, before `authorship.previous` is read.
+Everything below it — the apply, the oplog, the broadcast, `sync.broadcast_synced`
+— is code that has never heard of the verb. That one placement is what buys the
+whole property list: `previous` is the absolute before, the log holds a
+destination, undo reverses it by writing `previous` back, and **a peer receives the
+number rather than the delta**. It has to: a peer adding ten percent to whatever it
+was showing would part company with the station that sent it on the first press.
+
+The verb is `__by`, beside `__create` and `__delete`, so it arrives over the
+existing `Set` message and needed no new protocol, no new host function and no new
+permission. `data.set(path + "__by", delta)` is a relative write from a plugin, and
+`.by()` on both accessors is the same thing from Rust or the browser.
+
+**Two shapes, and the second one names a collection.**
+`[table, ref, field, "__by"]` is the primitive: relative to what that field says.
+`["programmer_values", "__by"]` with `{fixtureId, parameterKind, by}` exists
+because the programmer's ordinary case is *not already holding the key* — `at +10`
+on a light nobody has touched has no row to name, and what it has to be relative to
+is then what playback is showing rather than a row that does not exist. So the
+engine names one collection for a reason of its own. That is a real cost and it was
+taken deliberately: the rule it looks like it breaks is "adding a collection needs
+no edit outside pult-schema", and it does not break that — a test nudges a
+`speed_masters` field, which the resolver has never heard of, to keep it honest.
+
+What it resolves against is task 14's stack **read rather than re-implemented**:
+the programmer's own value where it holds the key, `Fixture::live_values` where it
+does not, and the fixture type's `default_value` where nothing has ever driven the
+parameter. There is no second priority rule anywhere in this.
+
+**A shape refuses.** `Overlay` holds a key as either a value or an effect, never
+both, and nudging a shape would have to mean moving its offset — a different
+feature wearing the same word. So does a switch and so does a line of text:
+`ParameterValue::nudged` lives in the schema and says no by name, because quietly
+doing nothing is worse than an error an operator can read.
+
+**The trap was integers.** `nudge_json` first tried to answer `4500.0` for a
+`fade_in_ms` of 3000 plus 1500, and `u64` will not take a float — a nudge on a
+timing field failed at the patch rather than at the arithmetic. An integer field
+stays one.
+
+`programmer_entry_id` moved into `pult-schema`, where `ProgrammerValue`'s doc
+comment already explained why the id is derived. There are now three
+implementations of it — the frontend cannot run Rust and the plugins workspace
+builds guests for `wasm32-wasip2`, which the console's schema does not belong in —
+and all three are pinned to the same two literal examples, so any change to one
+fails two suites.
+
+The command line gained a sign rather than a word: `at 10` and `at +10` are
+different commands, and `Level::To` / `Level::By` keeps them apart from the parser
+down. `+10` is one token — the tokenizer only splits a *lone* sign off — so the
+sign is read off the number's text, which is the sort of thing that is right for a
+month and then quietly wrong. And the natural-language plugin needed no change at
+all: it speaks by emitting command-line text, so "a bit darker" is now `at -10` and
+the audit trail stays one grammar deep. That is `nl-show-context`'s option (b),
+answered without giving the model any show data.
+
+Left open: no fan, no multiplying sibling, and no relative value stored in a cue —
+that last is tracking, which is its own design.
+
 ## Further out
 
 Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.
 
 Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.
-
-**Saved groups.** Task 30 made a selection a query; nothing can store one yet. The moment a group is show data the query types move to `pult-schema` and the backend gets an evaluator beside the frontend's.
 
 **3D programmer.** The rig *view* is task 13 and programming in it is task 14 — the camera frames a picked fixture, pan and tilt are grabbed by ring and arc, and the quicksheet opens at the light. Effects over a selection are task 25. What that leaves of the spec's §Programming is blind, highlight and fan, and modifiers that are themselves dynamic — an effect whose rate is an effect.
 

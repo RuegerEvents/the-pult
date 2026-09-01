@@ -116,6 +116,31 @@ Paths are spelled the way the WebSocket spells them: `["sequences",
 Lifecycle is derived from the path by the host, same as for every other
 writer.
 
+**Say how far, not where, when that is what you mean.** A third sentinel,
+`__by`, writes a *change* instead of a destination: `["cues", id,
+"fade_in_ms", "__by"]` with `1500` is a second and a half more than
+whatever that is now. The station resolves it against what it holds at the
+moment it applies the write — so two plugins nudging one value both get
+their nudge, where two that each read a value and computed a destination
+would leave only one of them heard.
+
+The programmer has its own form, because the ordinary case is that nobody
+is holding the key yet:
+
+```rust
+host::set(&["programmer_values", "__by"], &json!({
+    "fixtureId": id, "parameterKind": "Intensity", "by": 0.1,
+}))?;
+```
+
+That takes the key if the programmer does not have it, starting from what
+playback is showing. Numeric fields and parameter values only; a switch or
+a line of text refuses by name, as does a parameter running a shape.
+
+Resolution happens before anything is recorded, so the history, the
+showfile and every peer see the number. Nothing downstream of your call
+knows a relative write happened.
+
 **Never enumerate the schema in a plugin.** `host::entities()` and
 `host::commands()` serve the live registries — entity tables, field
 lifecycles, command argument schemas, doc strings. A plugin that drives
@@ -296,8 +321,11 @@ with a transcript. Both drive your plugin over three methods arriving at
 
 - `surface.exec` — `{ "line": "…" }` → `ExecResponse`: output lines, an
   optional error with a byte span into the line (the surface draws the
-  caret), and optional effects (`{"selection": {"fixtureIds": […]}}`
-  changes the caller's selection).
+  caret), and optional effects. `{"selection": {"fixtureIds": […]}}`
+  changes the caller's selection to those fixtures;
+  `{"selection": {"query": …}}` changes it to a `SelectionQuery`, which
+  keeps following the rig — that is what selecting a saved group hands
+  back, and why it stays live rather than freezing into a list.
 - `surface.complete` — `{ "line", "cursor" }` → items plus `replaceFrom`.
   An item with empty `text` is a hint, shown but never inserted.
 - `surface.help` — `{ "topic"? }` → `{ "text" }`.

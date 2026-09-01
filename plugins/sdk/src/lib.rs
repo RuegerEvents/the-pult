@@ -238,6 +238,20 @@ pub mod surface {
         pub error: Option<ExecError>,
         /// Things the surface should do in the browser, e.g. change the
         /// selection. Absent means none.
+        ///
+        /// The selection effect takes either shape, and `query` wins where a
+        /// surface understands both:
+        ///
+        /// - `{"selection": {"fixtureIds": […]}}` — these fixtures, as a list.
+        /// - `{"selection": {"query": <SelectionQuery>}}` — this *question*, so
+        ///   the browser's selection goes on following the rig. That is what
+        ///   recalling a saved group leaves, and it is why a surface that
+        ///   selects a group should hand back the group's query rather than
+        ///   what the query happens to pick out today.
+        ///
+        /// Deliberately untyped JSON: a surface ignores an effect it does not
+        /// understand, which is what lets a new one arrive without every plugin
+        /// and every surface being rebuilt together.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub effects: Option<serde_json::Value>,
     }

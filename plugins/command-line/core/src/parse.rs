@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::catalog::Catalog;
 use crate::token::{tokenize, Token, TokenKind};
-use crate::{Command, ParseError, Range, SelOp, Span, Target};
+use crate::{Command, Level, ParseError, Range, SelOp, SelectTarget, Span, Target};
 
 pub fn parse(catalog: &Catalog, line: &str) -> Result<Command, ParseError> {
     let tokens = tokenize(line);
@@ -67,11 +67,11 @@ impl<'a> Parser<'a> {
                 Ok(Command::Clear { also_selection })
             }
             "at" => {
-                let percent = self.number("a level, 0 to 100")?;
-                Ok(Command::Intensity { percent })
+                let level = self.level()?;
+                Ok(Command::Intensity { level })
             }
-            "full" => Ok(Command::Intensity { percent: 100.0 }),
-            "out" => Ok(Command::Intensity { percent: 0.0 }),
+            "full" => Ok(Command::Intensity { level: Level::To(100.0) }),
+            "out" => Ok(Command::Intensity { level: Level::To(0.0) }),
             "create" => {
                 let table = self.table(first.span)?;
                 let name = match self.peek() {
@@ -116,8 +116,12 @@ impl<'a> Parser<'a> {
                 }
                 if let Some(entity) = self.catalog.table_for(&word) {
                     let table = entity.table.clone();
-                    if table == "fixtures" {
-                        return self.selection(first.span);
+                    // `fixture` and `group` both begin a selection; everything
+                    // else beginning with a collection name is a command on a row
+                    // of it. A group is not addressed as a row because what an
+                    // operator means by "group 3" is its fixtures, not the group.
+                    if table == "fixtures" || table == "groups" {
+                        return self.selection(first.span, &table);
                     }
                     return self.entity_command(table);
                 }
@@ -206,6 +210,35 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A level after `at`: `80` is where to go, `+10` and `-10` are how far to move.
+    ///
+    /// A written sign is the whole difference, so it is read here rather than in the
+    /// tokenizer's number: `10` and `+10` tokenize the same way apart from the sign
+    /// sitting in front, and losing it would make "ten percent brighter" mean "at ten
+    /// percent" — which on a dark stage is a blackout and on a bright one is nearly
+    /// one.
+    fn level(&mut self) -> Result<Level, ParseError> {
+        // `+10` is one token — the tokenizer only splits a *lone* sign off, and
+        // `"+10".parse::<f64>()` succeeds — so the sign is read off the text rather
+        // than from a token of its own. `at + 10` with a space is the same thing
+        // written differently, and both have to work.
+        match self.peek() {
+            Some(t)
+                if t.kind == TokenKind::Number
+                    && (t.text.starts_with('+') || t.text.starts_with('-')) =>
+            {
+                let t = self.next().unwrap();
+                Ok(Level::By(t.text.parse().unwrap_or(0.0)))
+            }
+            Some(t) if t.kind == TokenKind::Plus || t.kind == TokenKind::Minus => {
+                let sign = if t.kind == TokenKind::Plus { 1.0 } else { -1.0 };
+                self.next();
+                Ok(Level::By(sign * self.number("how much to move by")?))
+            }
+            _ => Ok(Level::To(self.number("a level, 0 to 100")?)),
+        }
+    }
+
     fn number(&mut self, what: &str) -> Result<f64, ParseError> {
         match self.next() {
             Some(t) if t.kind == TokenKind::Number => Ok(t.text.parse().unwrap_or(0.0)),
@@ -256,32 +289,51 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `1 thru 5 + 7 - 2 thru 3`, after the word `fixture`.
-    fn selection(&mut self, word_span: Span) -> Result<Command, ParseError> {
-        let mut ops: Vec<(SelOp, Range)> = Vec::new();
-        // The first bare range replaces; every one after it adds, the way
+    /// `1 thru 5 + 7 - 2 thru 3`, after the word `fixture` — or `3 + group 2`
+    /// after `group`.
+    ///
+    /// `mode` is what a bare number currently means, and either word switches it
+    /// mid-line, so `fixture 1 thru 5 + group 2` composes without a second code
+    /// path and without a rule about which may come first.
+    fn selection(&mut self, word_span: Span, mode: &str) -> Result<Command, ParseError> {
+        let mut ops: Vec<(SelOp, SelectTarget)> = Vec::new();
+        // The first bare target replaces; every one after it adds, the way
         // `fixture 1 3 5` reads aloud.
         let mut bare_op = SelOp::Replace;
+        let mut mode = mode.to_string();
         loop {
             match self.peek() {
                 None => break,
                 Some(t) if t.kind == TokenKind::Plus => {
                     self.next();
-                    ops.push((SelOp::Add, self.required_range()?));
+                    self.selection_mode(&mut mode);
+                    ops.push((SelOp::Add, self.required_target(&mode)?));
                     bare_op = SelOp::Add;
                 }
                 Some(t) if t.kind == TokenKind::Minus => {
                     self.next();
-                    ops.push((SelOp::Remove, self.required_range()?));
-                    bare_op = SelOp::Add;
-                }
-                Some(t) if t.kind == TokenKind::Number => {
-                    ops.push((bare_op, self.range()?));
+                    self.selection_mode(&mut mode);
+                    ops.push((SelOp::Remove, self.required_target(&mode)?));
                     bare_op = SelOp::Add;
                 }
                 // `fixture 1 thru 3 @ 80` is one line on every console; the
-                // selection ends where the level begins.
+                // selection ends where the level begins. Checked before the
+                // words below so `out` never reads as a collection.
                 Some(t) if is_level_word(&t.text) => break,
+                Some(t) if t.kind == TokenKind::Number => {
+                    ops.push((bare_op, self.selection_target(&mode)?));
+                    bare_op = SelOp::Add;
+                }
+                // A quoted name only names a group; the rig is addressed by number.
+                Some(t) if t.kind == TokenKind::Str && mode == "groups" => {
+                    ops.push((bare_op, self.selection_target(&mode)?));
+                    bare_op = SelOp::Add;
+                }
+                Some(t) if self.is_selection_word(&t.text) => {
+                    self.selection_mode(&mut mode);
+                    ops.push((bare_op, self.required_target(&mode)?));
+                    bare_op = SelOp::Add;
+                }
                 Some(t) => {
                     return Err(ParseError::new(
                         format!("{:?} is not part of a selection", t.text),
@@ -290,6 +342,7 @@ impl<'a> Parser<'a> {
                     .expecting(vec![
                         "a number".into(),
                         "thru".into(),
+                        "group".into(),
                         "+".into(),
                         "-".into(),
                         "at".into(),
@@ -300,36 +353,66 @@ impl<'a> Parser<'a> {
             }
         }
         if ops.is_empty() {
-            return Err(ParseError::new(
-                "which fixtures?",
-                (word_span.1, word_span.1),
-            )
-            .expecting(vec!["a number".into(), "1 thru 5".into()]));
+            let (what, example) = if mode == "groups" {
+                ("which group?", "3")
+            } else {
+                ("which fixtures?", "1 thru 5")
+            };
+            return Err(ParseError::new(what, (word_span.1, word_span.1))
+                .expecting(vec!["a number".into(), example.into()]));
         }
         let at = match self.peek() {
             Some(t) if t.text.eq_ignore_ascii_case("at") => {
                 self.next();
-                Some(self.number("a level, 0 to 100")?)
+                Some(self.level()?)
             }
             Some(t) if t.text.eq_ignore_ascii_case("full") => {
                 self.next();
-                Some(100.0)
+                Some(Level::To(100.0))
             }
             Some(t) if t.text.eq_ignore_ascii_case("out") => {
                 self.next();
-                Some(0.0)
+                Some(Level::To(0.0))
             }
             _ => None,
         };
         Ok(Command::Select { ops, at })
     }
 
-    /// A range that has to be there: after a `+` or `-`.
-    fn required_range(&mut self) -> Result<Range, ParseError> {
+    /// Is this word one that switches what a selection is counting?
+    fn is_selection_word(&self, word: &str) -> bool {
+        matches!(self.catalog.table_for(word), Some(e) if e.table == "fixtures" || e.table == "groups")
+    }
+
+    /// Consume a leading `fixture` or `group`, if that is what is next.
+    fn selection_mode(&mut self, mode: &mut String) {
+        let Some(t) = self.peek() else { return };
+        if let Some(entity) = self.catalog.table_for(&t.text) {
+            if entity.table == "fixtures" || entity.table == "groups" {
+                *mode = entity.table.clone();
+                self.next();
+            }
+        }
+    }
+
+    /// One part of a selection: a range of the rig, or one saved group.
+    fn selection_target(&mut self, mode: &str) -> Result<SelectTarget, ParseError> {
+        if mode == "groups" {
+            Ok(SelectTarget::Group(self.target()?))
+        } else {
+            Ok(SelectTarget::Fixtures(self.range()?))
+        }
+    }
+
+    /// A part that has to be there: after a `+` or `-`, or after `group`.
+    fn required_target(&mut self, mode: &str) -> Result<SelectTarget, ParseError> {
+        let wanted =
+            if mode == "groups" { "a group number or name has to follow" } else { "a number has to follow" };
         match self.peek() {
-            Some(t) if t.kind == TokenKind::Number => self.range(),
-            Some(t) => Err(ParseError::new("a number has to follow", t.span)),
-            None => Err(ParseError::new("a number has to follow", self.end_span())),
+            Some(t) if t.kind == TokenKind::Number => self.selection_target(mode),
+            Some(t) if t.kind == TokenKind::Str && mode == "groups" => self.selection_target(mode),
+            Some(t) => Err(ParseError::new(wanted, t.span)),
+            None => Err(ParseError::new(wanted, self.end_span())),
         }
     }
 
@@ -451,6 +534,10 @@ mod tests {
     use super::*;
     use crate::catalog::test_catalog;
 
+    fn fixtures(from: usize, to: usize) -> SelectTarget {
+        SelectTarget::Fixtures(Range { from, to })
+    }
+
     fn parse_ok(line: &str) -> Command {
         parse(&test_catalog(), line).unwrap_or_else(|e| panic!("{line:?} failed: {e:?}"))
     }
@@ -459,22 +546,22 @@ mod tests {
     fn the_opening_example_of_every_console_manual() {
         assert_eq!(
             parse_ok("fixture 1 thru 5"),
-            Command::Select { ops: vec![(SelOp::Replace, Range { from: 1, to: 5 })], at: None }
+            Command::Select { ops: vec![(SelOp::Replace, fixtures(1, 5))], at: None }
         );
-        assert_eq!(parse_ok("at 80"), Command::Intensity { percent: 80.0 });
-        assert_eq!(parse_ok("@ 80"), Command::Intensity { percent: 80.0 });
-        assert_eq!(parse_ok("full"), Command::Intensity { percent: 100.0 });
+        assert_eq!(parse_ok("at 80"), Command::Intensity { level: Level::To(80.0) });
+        assert_eq!(parse_ok("@ 80"), Command::Intensity { level: Level::To(80.0) });
+        assert_eq!(parse_ok("full"), Command::Intensity { level: Level::To(100.0) });
         // And the combined form, which is how the line is actually typed.
         assert_eq!(
             parse_ok("fixture 1 thru 3 @ 80"),
             Command::Select {
-                ops: vec![(SelOp::Replace, Range { from: 1, to: 3 })],
-                at: Some(80.0)
+                ops: vec![(SelOp::Replace, fixtures(1, 3))],
+                at: Some(Level::To(80.0))
             }
         );
         assert_eq!(
             parse_ok("fixture 2 full"),
-            Command::Select { ops: vec![(SelOp::Replace, Range { from: 2, to: 2 })], at: Some(100.0) }
+            Command::Select { ops: vec![(SelOp::Replace, fixtures(2, 2))], at: Some(Level::To(100.0)) }
         );
     }
 
@@ -484,9 +571,9 @@ mod tests {
             parse_ok("fixture 1 thru 5 + 7 - 2"),
             Command::Select {
                 ops: vec![
-                    (SelOp::Replace, Range { from: 1, to: 5 }),
-                    (SelOp::Add, Range { from: 7, to: 7 }),
-                    (SelOp::Remove, Range { from: 2, to: 2 }),
+                    (SelOp::Replace, fixtures(1, 5)),
+                    (SelOp::Add, fixtures(7, 7)),
+                    (SelOp::Remove, fixtures(2, 2)),
                 ],
                 at: None
             }
@@ -494,7 +581,132 @@ mod tests {
         // Starting with + keeps what is already selected.
         assert_eq!(
             parse_ok("fixture + 9"),
-            Command::Select { ops: vec![(SelOp::Add, Range { from: 9, to: 9 })], at: None }
+            Command::Select { ops: vec![(SelOp::Add, fixtures(9, 9))], at: None }
+        );
+    }
+
+    /// `at 10` is a destination and `at +10` is a distance. Confusing the two on a
+    /// dark stage is a blackout, so the sign has to survive parsing.
+    #[test]
+    fn a_level_is_a_destination_or_a_distance() {
+        assert_eq!(parse_ok("at 10"), Command::Intensity { level: Level::To(10.0) });
+        assert_eq!(parse_ok("at +10"), Command::Intensity { level: Level::By(10.0) });
+        assert_eq!(parse_ok("@ -10"), Command::Intensity { level: Level::By(-10.0) });
+        assert_ne!(parse_ok("at 10"), parse_ok("at +10"), "and they are not the same command");
+
+        // The words are destinations; nobody means "ten percent more full".
+        assert_eq!(parse_ok("full"), Command::Intensity { level: Level::To(100.0) });
+        assert_eq!(parse_ok("out"), Command::Intensity { level: Level::To(0.0) });
+    }
+
+    #[test]
+    fn a_selection_can_be_nudged_in_the_same_line() {
+        assert_eq!(
+            parse_ok("fixture 1 thru 5 at +10"),
+            Command::Select {
+                ops: vec![(SelOp::Replace, fixtures(1, 5))],
+                at: Some(Level::By(10.0))
+            }
+        );
+        // The minus inside the selection still takes fixtures out of it; only the one
+        // after `at` is a level.
+        assert_eq!(
+            parse_ok("fixture 1 thru 5 - 2 at -10"),
+            Command::Select {
+                ops: vec![(SelOp::Replace, fixtures(1, 5)), (SelOp::Remove, fixtures(2, 2))],
+                at: Some(Level::By(-10.0))
+            }
+        );
+        assert_eq!(
+            parse_ok("group 2 at +5"),
+            Command::Select {
+                ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(2)))],
+                at: Some(Level::By(5.0))
+            }
+        );
+    }
+
+    #[test]
+    fn a_sign_with_nothing_after_it_says_what_it_wanted() {
+        let err = parse(&test_catalog(), "at +").expect_err("how much?");
+        assert!(err.message.contains("move by"), "{}", err.message);
+    }
+
+    /// A saved group is addressed like a fixture range, not like a row of a
+    /// collection: `group 3` means its fixtures, and nobody types `group 3 go`.
+    #[test]
+    fn a_group_is_a_selection_rather_than_a_row() {
+        assert_eq!(
+            parse_ok("group 3"),
+            Command::Select {
+                ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(3)))],
+                at: None
+            }
+        );
+        assert_eq!(
+            parse_ok("group \"movers\""),
+            Command::Select {
+                ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Name("movers".into())))],
+                at: None
+            }
+        );
+        assert_eq!(
+            parse_ok("group 1 at 50"),
+            Command::Select {
+                ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(1)))],
+                at: Some(Level::To(50.0))
+            }
+        );
+    }
+
+    /// Either word switches what a bare number counts, so the two compose in
+    /// whichever order they are typed and neither has to come first.
+    #[test]
+    fn fixtures_and_groups_compose_in_one_line() {
+        assert_eq!(
+            parse_ok("fixture 1 thru 5 + group 2"),
+            Command::Select {
+                ops: vec![
+                    (SelOp::Replace, fixtures(1, 5)),
+                    (SelOp::Add, SelectTarget::Group(Target::Index(2))),
+                ],
+                at: None
+            }
+        );
+        assert_eq!(
+            parse_ok("group 2 - fixture 3"),
+            Command::Select {
+                ops: vec![
+                    (SelOp::Replace, SelectTarget::Group(Target::Index(2))),
+                    (SelOp::Remove, fixtures(3, 3)),
+                ],
+                at: None
+            }
+        );
+        // And without a `+`, the way `fixture 1 3 5` already reads aloud.
+        assert_eq!(
+            parse_ok("group 1 group 2"),
+            Command::Select {
+                ops: vec![
+                    (SelOp::Replace, SelectTarget::Group(Target::Index(1))),
+                    (SelOp::Add, SelectTarget::Group(Target::Index(2))),
+                ],
+                at: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_group_with_nothing_after_it_asks_which_one() {
+        let err = parse(&test_catalog(), "group").expect_err("which group?");
+        assert!(err.message.contains("group"), "{}", err.message);
+        // And `out` is a level, not a collection, even directly after `group`.
+        assert_eq!(
+            parse_ok("group 2 out"),
+            Command::Select {
+                ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(2)))],
+                at: Some(Level::To(0.0))
+            }
         );
     }
 

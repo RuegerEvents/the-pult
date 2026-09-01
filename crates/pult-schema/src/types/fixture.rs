@@ -114,6 +114,43 @@ pub enum ParameterValue {
     Text(String),
 }
 
+impl ParameterValue {
+    /// This value, moved by `delta` — what "ten percent brighter" comes to.
+    ///
+    /// Here rather than in the backend because it is a fact about the type: a
+    /// browser nudging a fader, a plugin doing its own arithmetic and the engine
+    /// resolving a relative write should all agree on what a delta does, and the
+    /// only way to be sure of that is for there to be one of it.
+    ///
+    /// Floats are normalised 0..1 everywhere in the console, so that is the range a
+    /// nudge comes to rest inside: past the top is the top, not beyond it. A colour
+    /// moves on every channel, which is what makes a nudge on one mean "brighter"
+    /// rather than "redder". `Bool` and `Text` refuse — addition means nothing to a
+    /// relay or to a line of text, and quietly doing nothing would be worse than
+    /// saying so.
+    pub fn nudged(&self, delta: f32) -> Result<ParameterValue, String> {
+        Ok(match self {
+            ParameterValue::Float(v) => ParameterValue::Float((v + delta).clamp(0.0, 1.0)),
+            // Rounded rather than truncated, so a nudge of +1 on a gobo wheel is one
+            // gobo along however the float arrived.
+            ParameterValue::Int(v) => {
+                ParameterValue::Int(v.saturating_add(delta.round() as i32))
+            }
+            ParameterValue::Color { r, g, b } => ParameterValue::Color {
+                r: (r + delta).clamp(0.0, 1.0),
+                g: (g + delta).clamp(0.0, 1.0),
+                b: (b + delta).clamp(0.0, 1.0),
+            },
+            ParameterValue::Bool(_) => {
+                return Err("that parameter is on or off; there is no halfway to move it".into())
+            }
+            ParameterValue::Text(_) => {
+                return Err("that parameter is a line of text, which cannot be nudged".into())
+            }
+        })
+    }
+}
+
 /// Which way a parameter flows.
 ///
 /// Everything the console has driven so far is an output. A sensor node reverses
@@ -297,5 +334,47 @@ mod tests {
         let node = FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(5) };
         assert_eq!(node.dmx(), None, "a node fixture has no slot in a universe");
         assert_eq!(node.serial(), Some("1a2b3c"));
+    }
+
+    #[test]
+    fn a_nudge_moves_what_arithmetic_means_something_for() {
+        assert_eq!(
+            ParameterValue::Float(0.5).nudged(0.1).unwrap(),
+            ParameterValue::Float(0.6)
+        );
+        assert_eq!(ParameterValue::Int(3).nudged(2.0).unwrap(), ParameterValue::Int(5));
+        assert_eq!(
+            ParameterValue::Color { r: 0.2, g: 0.5, b: 0.9 }.nudged(0.1).unwrap(),
+            ParameterValue::Color { r: 0.3, g: 0.6, b: 1.0 },
+            "every channel moves, so a nudge means brighter rather than redder"
+        );
+    }
+
+    /// Past the top is the top. An operator holding a fader at full and asking for
+    /// more should get full, not a value the output has to clamp behind their back.
+    #[test]
+    fn a_nudge_comes_to_rest_inside_the_range() {
+        assert_eq!(ParameterValue::Float(0.95).nudged(0.2).unwrap(), ParameterValue::Float(1.0));
+        assert_eq!(ParameterValue::Float(0.05).nudged(-0.2).unwrap(), ParameterValue::Float(0.0));
+
+        // Approximately, because f32 subtraction is: what is being asserted is that
+        // the channel already at the bottom stops there while the others carry on.
+        let ParameterValue::Color { r, g, b } =
+            ParameterValue::Color { r: 0.9, g: 0.1, b: 0.5 }.nudged(-0.3).unwrap()
+        else {
+            panic!("a nudged colour is a colour")
+        };
+        assert!((r - 0.6).abs() < 1e-5, "{r}");
+        assert_eq!(g, 0.0, "the channel that would have gone under stops at the bottom");
+        assert!((b - 0.2).abs() < 1e-5, "{b}");
+    }
+
+    #[test]
+    fn a_nudge_says_so_where_there_is_no_halfway() {
+        let switch = ParameterValue::Bool(true).nudged(0.1).expect_err("a relay has no halfway");
+        assert!(switch.contains("on or off"), "{switch}");
+        let text =
+            ParameterValue::Text("HELLO".into()).nudged(1.0).expect_err("text cannot be nudged");
+        assert!(text.contains("text"), "{text}");
     }
 }

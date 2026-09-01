@@ -161,6 +161,7 @@ pub async fn start(config: Config) -> Result<Running> {
         crate::api::rpcs::LocalRpcDeps {
             session: session_handle.clone(),
             devices: device_handle.clone(),
+            engine: engine_handle.clone(),
         },
         config.plugin_dirs.clone(),
         // The asset store a carried bundle lives in.

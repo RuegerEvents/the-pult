@@ -145,6 +145,205 @@ async fn a_station_runs_the_reference_plugins() {
         "offers the sequence just created: {complete}"
     );
 
+    // ── Saved groups ──────────────────────────────────────────────────────────
+    //
+    // `group 3` is a selection, not a command on a row, and what it hands back is
+    // the group's *question* — so the browser's selection goes on following the
+    // rig exactly as recalling the group in the panel does.
+    let fixture_type = uuid::Uuid::new_v4();
+    let mut fixture_ids = Vec::new();
+    for name in ["Movement 1", "Movement 2"] {
+        let id = uuid::Uuid::new_v4();
+        fixture_ids.push(id);
+        running
+            .engine
+            .set(
+                vec![
+                    pult_schema::path::PathSegment::Key("fixtures".into()),
+                    pult_schema::path::PathSegment::Key("__create".into()),
+                ],
+                pult_schema::lifecycle::Lifecycle::Persisted,
+                json!({
+                    "id": id,
+                    "name": name,
+                    "fixture_type_id": fixture_type,
+                    "address": { "Dmx": { "universe": 1, "address": 1 } },
+                    "position": null,
+                    "live_values": {}
+                }),
+            )
+            .await
+            .expect("a fixture to group");
+    }
+    let group_id = uuid::Uuid::new_v4();
+    running
+        .engine
+        .set(
+            vec![
+                pult_schema::path::PathSegment::Key("groups".into()),
+                pult_schema::path::PathSegment::Key("__create".into()),
+            ],
+            pult_schema::lifecycle::Lifecycle::Persisted,
+            json!({
+                "id": group_id,
+                "name": "Movers",
+                "query": {
+                    "clauses": [{ "combine": "Add", "term": { "kind": "OfType", "typeId": fixture_type } }],
+                    "order": { "kind": "ByName" }
+                }
+            }),
+        )
+        .await
+        .expect("a group to select");
+
+    let result = exec("group 1").await.expect("exec answers");
+    assert!(result["error"].is_null(), "`group 1` parses and runs: {result}");
+    assert!(
+        result["effects"]["selection"]["query"].is_object(),
+        "a group hands back the question, not the answer: {result}"
+    );
+    assert!(
+        result["effects"]["selection"]["fixtureIds"].is_null(),
+        "and not both, which would leave the surface to choose: {result}"
+    );
+
+    // By name, and with a level in the same line — which does need the ids, so
+    // this is also the station's `group.resolve` being called through the host.
+    let result = exec(r#"group "Movers" at 50"#).await.expect("exec answers");
+    assert!(result["error"].is_null(), "`group \"Movers\" at 50` runs: {result}");
+    let held = running
+        .engine
+        .get(vec![pult_schema::path::PathSegment::Key("programmer_values".into())])
+        .await
+        .expect("programmer readable");
+    let held = held.as_array().cloned().unwrap_or_default();
+    assert_eq!(held.len(), 2, "both of the group's fixtures are held: {held:?}");
+
+    // A group nobody has says so, and changes nothing.
+    let result = exec(r#"group "Nope""#).await.expect("exec answers");
+    assert!(
+        result["error"]["message"].as_str().unwrap_or("").contains("Nope"),
+        "names the group that is not there: {result}"
+    );
+    assert!(result["effects"].is_null(), "and touches neither selection nor programmer: {result}");
+    let still = running
+        .engine
+        .get(vec![pult_schema::path::PathSegment::Key("programmer_values".into())])
+        .await
+        .expect("programmer readable");
+    assert_eq!(still.as_array().map(Vec::len), Some(2), "the programmer is untouched: {still}");
+
+    // ── Relative levels ───────────────────────────────────────────────────────
+    //
+    // `at +10` sends the *delta* to the station, which resolves it against what it
+    // is showing. This plugin never reads a level and computes a destination, so two
+    // operators nudging one light both get their nudge.
+    let spot = uuid::Uuid::new_v4();
+    running
+        .engine
+        .set(
+            vec![
+                pult_schema::path::PathSegment::Key("fixtures".into()),
+                pult_schema::path::PathSegment::Key("__create".into()),
+            ],
+            pult_schema::lifecycle::Lifecycle::Persisted,
+            json!({
+                "id": spot, "name": "Nudged", "fixture_type_id": uuid::Uuid::new_v4(),
+                "address": { "Dmx": { "universe": 1, "address": 100 } },
+                "position": null, "live_values": {}
+            }),
+        )
+        .await
+        .expect("a fixture to nudge");
+
+    let held_level = || {
+        let engine = running.engine.clone();
+        async move {
+            let rows = engine
+                .get(vec![pult_schema::path::PathSegment::Key("programmer_values".into())])
+                .await
+                .expect("programmer readable");
+            rows.as_array()
+                .and_then(|rows| {
+                    rows.iter()
+                        .find(|r| r["fixture_id"] == json!(spot))
+                        .and_then(|r| r["value"]["value"].as_f64())
+                })
+                .expect("the fixture is held")
+        }
+    };
+
+    let position = running
+        .engine
+        .get(vec![pult_schema::path::PathSegment::Key("fixtures".into())])
+        .await
+        .expect("fixtures readable")
+        .as_array()
+        .map(|f| f.iter().position(|x| x["id"] == json!(spot)).expect("it is in the rig") + 1)
+        .expect("a rig");
+
+    let result = exec(&format!("fixture {position} at 50")).await.expect("exec answers");
+    assert!(result["error"].is_null(), "an absolute level still works: {result}");
+    assert!((held_level().await - 0.5).abs() < 1e-5);
+
+    // The selection lives in the browser and comes to the plugin per call, so a
+    // second exec that carries one is how `at +10` is asked for from here.
+    let exec_selecting = |line: &str, selection: Vec<uuid::Uuid>| {
+        let payload =
+            json!({ "payload": { "line": line }, "ctx": { "selection": selection } });
+        running.plugins.call("command-line".into(), "surface.exec".into(), payload)
+    };
+
+    let result = exec_selecting("at +10", vec![spot]).await.expect("exec answers");
+    assert!(result["error"].is_null(), "`at +10` runs: {result}");
+    assert!(
+        result["lines"][0]["text"].as_str().unwrap_or("").contains("brighter"),
+        "and says what it did: {result}"
+    );
+    assert!((held_level().await - 0.6).abs() < 1e-5, "50% and ten points more");
+
+    let _ = exec_selecting("at -20", vec![spot]).await.expect("exec answers");
+    assert!((held_level().await - 0.4).abs() < 1e-5, "and down again");
+
+    // And the ordinary case: nothing held yet, so the nudge takes the key and starts
+    // from what playback has the fixture at.
+    let untouched = uuid::Uuid::new_v4();
+    running
+        .engine
+        .set(
+            vec![
+                pult_schema::path::PathSegment::Key("fixtures".into()),
+                pult_schema::path::PathSegment::Key("__create".into()),
+            ],
+            pult_schema::lifecycle::Lifecycle::Persisted,
+            json!({
+                "id": untouched, "name": "Untouched", "fixture_type_id": uuid::Uuid::new_v4(),
+                "address": { "Dmx": { "universe": 1, "address": 110 } },
+                "position": null, "live_values": {}
+            }),
+        )
+        .await
+        .expect("a fixture nobody has touched");
+    running
+        .engine
+        .set_live_value(untouched, "Intensity".into(), json!({ "type": "Float", "value": 0.3 }))
+        .await
+        .expect("playback is showing something");
+
+    let result = exec_selecting("at +10", vec![untouched]).await.expect("exec answers");
+    assert!(result["error"].is_null(), "a nudge takes an unheld key: {result}");
+    let rows = running
+        .engine
+        .get(vec![pult_schema::path::PathSegment::Key("programmer_values".into())])
+        .await
+        .expect("programmer readable");
+    let taken = rows
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| r["fixture_id"] == json!(untouched)))
+        .expect("the programmer took the key");
+    let level = taken["value"]["value"].as_f64().expect("a float");
+    assert!((level - 0.4).abs() < 1e-5, "from what playback was showing, not from zero: {taken}");
+
     // An unknown plugin is an answer, not a hang.
     let missing = running
         .plugins

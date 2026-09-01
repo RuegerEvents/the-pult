@@ -58,3 +58,75 @@ pub struct ProgrammerValue {
     #[pult(lifecycle = SYNCED)]
     pub locked: bool,
 }
+
+// ── The derived id ────────────────────────────────────────────────────────────
+
+const FNV_PRIME: u64 = 1099511628211;
+const FNV_OFFSET: u64 = 14695981039346656037;
+
+fn fnv1a(text: &str, seed: u64) -> u64 {
+    let mut hash = seed;
+    // `charCodeAt` on the JS side: UTF-16 code units. Everything hashed here is
+    // ASCII (a uuid, a slash, a parameter key), where code units are bytes.
+    for unit in text.encode_utf16() {
+        hash ^= unit as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// The id of the programmer entry for one parameter of one fixture: two FNV-1a
+/// passes over `"<fixture_id>/<key>"`, dressed as a version-8 UUID.
+///
+/// Here because it is the schema's rule — [`ProgrammerValue`] above says the id is
+/// derived and why, and this is the derivation it means. Anything that writes the
+/// programmer has to agree on it or two rows fight over one fader.
+///
+/// It is implemented twice more, and neither copy can be deleted:
+/// `frontend/src/lib/programmer.ts` because a browser cannot run this, and
+/// `plugins/command-line/core/src/ids.rs` because the plugins workspace builds
+/// guests for `wasm32-wasip2` and this crate does not belong in that graph. All
+/// three are pinned to the same literal examples, so a change to any one of them
+/// fails two suites rather than going quiet.
+pub fn programmer_entry_id(fixture_id: &str, key: &str) -> String {
+    let source = format!("{fixture_id}/{key}");
+    let hi = fnv1a(&source, FNV_OFFSET);
+    let lo = fnv1a(&source, FNV_OFFSET ^ u64::MAX);
+    let mut hex: Vec<char> = format!("{hi:016x}{lo:016x}").chars().collect();
+    // Version 8 (custom) and the RFC 4122 variant, so what comes out is a UUID and
+    // says truthfully how it was made.
+    hex[12] = '8';
+    let variant = hex[16].to_digit(16).unwrap_or(0) & 0x3 | 0x8;
+    hex[16] = char::from_digit(variant, 16).unwrap_or('8');
+    let s: String = hex.into_iter().collect();
+    format!("{}-{}-{}-{}-{}", &s[0..8], &s[8..12], &s[12..16], &s[16..20], &s[20..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The same pairs appear verbatim in `plugins/command-line/core/src/ids.rs`
+    /// and `frontend/src/lib/programmer.test.ts`. Three implementations of one
+    /// naming scheme can only drift loudly.
+    #[test]
+    fn the_three_derivations_agree_by_pinned_example() {
+        assert_eq!(
+            programmer_entry_id("2f6b535b-9a71-4c39-9d95-6d6ab2f0f639", "Intensity"),
+            "5f13b718-4585-810f-9f90-15d7509267f4"
+        );
+        assert_eq!(
+            programmer_entry_id("00000000-0000-0000-0000-000000000000", "ColorRgb"),
+            "3ad6b4b5-4891-8a54-ae06-93999b3641bd"
+        );
+    }
+
+    #[test]
+    fn the_result_is_a_wellformed_v8_uuid() {
+        let id = programmer_entry_id("2f6b535b-9a71-4c39-9d95-6d6ab2f0f639", "Pan");
+        assert!(id.parse::<Uuid>().is_ok(), "{id} is not a uuid");
+        assert_eq!(&id[14..15], "8", "version nibble");
+        let variant = id.as_bytes()[19] as char;
+        assert!(matches!(variant, '8' | '9' | 'a' | 'b'), "variant nibble was {variant}");
+    }
+}

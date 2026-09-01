@@ -7,7 +7,7 @@ pub fn help(catalog: &Catalog, topic: Option<&str>) -> String {
         None => overview(catalog),
         Some(word) => {
             let normal = word.to_lowercase();
-            if normal == "selection" || normal == "fixture" {
+            if normal == "selection" || normal == "fixture" || normal == "group" {
                 return SELECTION_HELP.trim().to_string();
             }
             if let Some(entity) = catalog.table_for(&normal) {
@@ -30,7 +30,11 @@ Selecting fixtures
   fixture 1 thru 5        select a range
   fixture 1 thru 5 + 8    ranges combine with + and -
   fixture - 2             take one out of the current selection
+  group 3                 select a saved group, by its place or its name
+  group "movers"          — and it keeps following the rig, as the group does
+  fixture 1 thru 5 + group 2   groups and ranges combine
   @ 80  /  at 80          the selection to 80% intensity
+  at +10  /  at -10       ten percent brighter or darker than it is now
   full  /  out            the selection to 100% / 0%
   clear                   empty the programmer (locked values stay)
   clear clear             also drop the selection

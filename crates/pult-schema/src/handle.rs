@@ -65,6 +65,21 @@ impl<T: Serialize + DeserializeOwned + Send + 'static, H: DataHandle> FieldAcces
         self.handle.set(self.path.clone(), self.lifecycle, json).await
     }
 
+    /// Move this field by `delta` rather than saying what it should become.
+    ///
+    /// Relative to what the field says at the moment the station applies it, not to
+    /// what this caller last read — which is the point: two people nudging one value
+    /// at once both get their nudge, where two people computing a destination from
+    /// the same reading would leave only one.
+    ///
+    /// It is resolved to an absolute write before anything records or replicates it,
+    /// so the history, the showfile and every peer see a destination. Only numeric
+    /// fields and parameter values accept one.
+    pub async fn by(&self, delta: f64) -> Result<(), HandleError> {
+        let path = path_key(self.path.clone(), "__by");
+        self.handle.set(path, self.lifecycle, serde_json::json!(delta)).await
+    }
+
     pub async fn get(&self) -> Result<T, HandleError> {
         let json = self.handle.get(self.path.clone()).await?;
         serde_json::from_value(json).map_err(HandleError::Serialize)

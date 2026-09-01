@@ -10,6 +10,7 @@ import type { FixtureType } from '../generated/FixtureType.js';
 import type { Flow } from '../generated/Flow.js';
 import type { FlowEdge } from '../generated/FlowEdge.js';
 import type { FlowNode } from '../generated/FlowNode.js';
+import type { Group } from '../generated/Group.js';
 import type { Layout } from '../generated/Layout.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { PluginDatum } from '../generated/PluginDatum.js';
@@ -47,6 +48,10 @@ export type FlowEdgeEntity = PathProxy<FlowEdge> & {
 export type FlowNodeEntity = PathProxy<FlowNode> & {
   delete(): Promise<void>;
   press(): Promise<void>;
+};
+
+export type GroupEntity = PathProxy<Group> & {
+  delete(): Promise<void>;
 };
 
 export type LayoutEntity = PathProxy<Layout> & {
@@ -157,6 +162,17 @@ export type FlowNodeCollection = {
   nth(n: number): FlowNodeEntity;
   create(entity: FlowNode): Promise<void>;
   [n: number]: FlowNodeEntity;
+};
+
+export type GroupCollection = {
+  get(): Promise<Group[]>;
+  set(value: Group[]): Promise<void>;
+  subscribe(cb: (value: Group[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Group[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): GroupEntity;
+  nth(n: number): GroupEntity;
+  create(entity: Group): Promise<void>;
+  [n: number]: GroupEntity;
 };
 
 export type LayoutCollection = {
@@ -279,6 +295,7 @@ export type DataRoot = {
   flows: FlowCollection;
   flow_edges: FlowEdgeCollection;
   flow_nodes: FlowNodeCollection;
+  groups: GroupCollection;
   layouts: LayoutCollection;
   outputs: OutputConfigCollection;
   plugin_data: PluginDatumCollection;

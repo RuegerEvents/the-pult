@@ -18,20 +18,29 @@
 
 	import {
 		addClause,
+		asSavedQuery,
 		clearSelection,
 		freeze,
 		isQuery,
 		query,
+		recall,
 		remove,
 		removeClause,
 		reorder,
 		selection,
 		setOrder
 	} from '$lib/stores/selection.js';
-	import { describe as describeQuery, type Order, type Term } from '$lib/selection.js';
+	import { getDataContext } from '$lib/ws/context.js';
+	import {
+		describe as describeQuery,
+		NO_ORDER,
+		type Order,
+		type Term
+	} from '$lib/selection.js';
 	import { collection } from '$lib/stores/show.js';
 	import { fixtureTint } from '$lib/stage.js';
 
+	const data = getDataContext();
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
 
@@ -98,8 +107,27 @@
 		building = false;
 	}
 
+	// ── Saved groups ──────────────────────────────────────────────────────────
+	//
+	// A group is the *question*, kept in the show: "every mover downstage" is a fact
+	// about the rig, not about whoever is looking at it, so it replicates and it
+	// survives a re-patch. Recalling one takes on its query rather than its answer,
+	// which is why a fixture patched afterwards joins it.
+
+	const groups = collection('groups');
+	let naming = $state(false);
+	let groupName = $state('');
+
+	async function saveGroup() {
+		const name = groupName.trim();
+		if (!name) return;
+		await data.groups.create({ id: crypto.randomUUID(), name, query: asSavedQuery() });
+		groupName = '';
+		naming = false;
+	}
+
 	const ORDERS: { label: string; order: Order }[] = [
-		{ label: 'As picked', order: { kind: 'Manual' } },
+		{ label: 'As picked', order: NO_ORDER },
 		{ label: 'Left to right', order: { kind: 'ByAxis', axis: 'x' } },
 		{ label: 'Right to left', order: { kind: 'ByAxis', axis: 'x', descending: true } },
 		{ label: 'Upstage to down', order: { kind: 'ByAxis', axis: 'z' } },
@@ -138,8 +166,55 @@
 				Freeze
 			</button>
 		{/if}
+		<button
+			class="ghost"
+			disabled={$query.clauses.length === 0}
+			title="Keep this question in the show, under a name"
+			onclick={() => (naming = !naming)}
+		>
+			{naming ? 'Cancel' : 'Save…'}
+		</button>
 		<button class="ghost" disabled={$selection.length === 0} onclick={clearSelection}>Clear</button>
 	</header>
+
+	{#if naming}
+		<div class="builder">
+			<input
+				class="input"
+				placeholder="a name for this group"
+				bind:value={groupName}
+				onkeydown={(e) => e.key === 'Enter' && saveGroup()}
+			/>
+			<button class="btn btn-primary" disabled={!groupName.trim()} onclick={saveGroup}>
+				Save group
+			</button>
+		</div>
+	{/if}
+
+	{#if $groups.length > 0}
+		<!-- The show's groups. Clicking one takes on its *question*, so the selection
+		     goes on following the rig — a fixture patched afterwards joins it. -->
+		<div class="groups">
+			{#each $groups as group (group.id)}
+				<span class="group">
+					<button
+						class="group-name"
+						title={describeQuery(group.query, $types)}
+						onclick={() => recall(group.query)}
+					>
+						{group.name}
+					</button>
+					<button
+						class="rule-x"
+						aria-label="Delete the group {group.name}"
+						onclick={() => data.groups.byId(group.id).delete()}
+					>
+						×
+					</button>
+				</span>
+			{/each}
+		</div>
+	{/if}
 
 	{#if $query.clauses.length > 0}
 		<!-- What the selection is *asking*, as opposed to what it currently answers.
@@ -380,6 +455,38 @@
 		flex-wrap: wrap;
 		gap: 4px;
 		padding: 0 10px 8px;
+	}
+
+	/* The show's groups, not this browser's rules — so they read as something to
+	   pick up rather than as part of the current question. */
+	.groups {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		padding: 0 10px 8px;
+		border-bottom: 1px solid var(--line);
+		margin-bottom: 8px;
+	}
+	.group {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+		border-radius: 999px;
+		border: 1px solid var(--line);
+		padding: 1px 3px 1px 2px;
+	}
+	.group-name {
+		background: none;
+		border: none;
+		cursor: pointer;
+		font: inherit;
+		font-size: var(--font-xs);
+		color: var(--text);
+		padding: 1px 6px;
+		border-radius: 999px;
+	}
+	.group-name:hover {
+		color: var(--accent);
 	}
 	.rule {
 		display: inline-flex;

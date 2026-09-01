@@ -11,6 +11,18 @@ export type SubscribeOptions = {
 
 type LeafProxy<T> = {
 	set(value: T): Promise<void>;
+	/**
+	 * Move this by `delta` rather than saying what it should become.
+	 *
+	 * Relative to what the station has when it applies the write, not to what this
+	 * browser last read — which is the point: two people nudging one value at once
+	 * both get their nudge, where two computing a destination from the same reading
+	 * would leave only one. The station resolves it before anything records or
+	 * replicates it, so the history and every peer see a destination.
+	 *
+	 * Numeric fields and parameter values only.
+	 */
+	by(delta: number): Promise<void>;
 	get(): Promise<T>;
 	subscribe(cb: (value: T) => void, opts?: SubscribeOptions): () => void;
 };
@@ -53,6 +65,9 @@ export function createDataProxy<T>(
 		get(_target, prop) {
 			if (prop === 'set') {
 				return (value: unknown) => client.set(path, value);
+			}
+			if (prop === 'by') {
+				return (delta: number) => client.set([...path, '__by'], delta);
 			}
 			if (prop === 'get') {
 				return () => client.get(path);

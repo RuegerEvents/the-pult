@@ -13,8 +13,8 @@
 	import { get } from 'svelte/store';
 
 	import type { PluginStatus } from '$lib/generated/index.js';
-	import { idsQuery } from '$lib/selection.js';
-	import { selection, setQuery } from '$lib/stores/selection.js';
+	import type { SelectionQuery } from '$lib/selection.js';
+	import { applySelectionEffect, selection } from '$lib/stores/selection.js';
 	import { showClient } from '$lib/stores/show.js';
 	import { userId } from '$lib/stores/user.js';
 
@@ -82,15 +82,14 @@
 			})) as {
 				lines?: Entry[];
 				error?: { message: string };
-				effects?: { selection?: { fixtureIds?: string[] } };
+				effects?: { selection?: { query?: SelectionQuery; fixtureIds?: string[] } };
 			} | null;
 			transcript = [
 				{ kind: 'input', text: asked },
 				...(result?.lines ?? []),
 				...(result?.error ? [{ kind: 'error', text: result.error.message }] : [])
 			];
-			const ids = result?.effects?.selection?.fixtureIds;
-			if (ids) setQuery(idsQuery(ids));
+			applySelectionEffect(result?.effects);
 			if (!result?.error) text = '';
 		} catch (e) {
 			transcript = [

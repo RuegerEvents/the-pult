@@ -26,9 +26,9 @@
 	import { get } from 'svelte/store';
 
 	import type { PluginStatus } from '$lib/generated/index.js';
-	import { idsQuery } from '$lib/selection.js';
+	import type { SelectionQuery } from '$lib/selection.js';
 	import { registerConsoleFocus } from '$lib/stores/plugins.js';
-	import { selection, setQuery } from '$lib/stores/selection.js';
+	import { applySelectionEffect, selection } from '$lib/stores/selection.js';
 	import { showClient } from '$lib/stores/show.js';
 	import { userId } from '$lib/stores/user.js';
 
@@ -116,7 +116,7 @@
 			const result = (await call('exec', { line: typed })) as {
 				lines?: Entry[];
 				error?: { message: string; span?: { start: number; end: number }; expected?: string[] };
-				effects?: { selection?: { fixtureIds?: string[] } };
+				effects?: { selection?: { query?: SelectionQuery; fixtureIds?: string[] } };
 			} | null;
 			for (const out of result?.lines ?? []) entries.push({ kind: out.kind, text: out.text });
 			if (result?.error) {
@@ -138,8 +138,7 @@
 					entries.push({ kind: 'info', text: `expected: ${expected.join(', ')}` });
 				}
 			}
-			const ids = result?.effects?.selection?.fixtureIds;
-			if (ids) setQuery(idsQuery(ids));
+			applySelectionEffect(result?.effects);
 		} catch (e) {
 			entries.push({ kind: 'error', text: e instanceof Error ? e.message : String(e) });
 		} finally {

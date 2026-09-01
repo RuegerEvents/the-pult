@@ -216,6 +216,8 @@ pub(crate) fn test_catalog() -> Catalog {
     let entities = serde_json::json!([
         { "entityName": "Fixture", "tableName": "fixtures", "isSingleton": false,
           "fields": [{"name": "id"}, {"name": "name"}, {"name": "live_values"}] },
+        { "entityName": "Group", "tableName": "groups", "isSingleton": false,
+          "fields": [{"name": "id"}, {"name": "name"}, {"name": "query"}] },
         { "entityName": "Sequence", "tableName": "sequences", "isSingleton": false,
           "fields": [{"name": "id"}, {"name": "name"}, {"name": "cue_ids"}] },
         { "entityName": "Cue", "tableName": "cues", "isSingleton": false,

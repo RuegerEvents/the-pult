@@ -31,14 +31,15 @@ pub type Span = (usize, usize);
 /// show, which is the executor's job.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// `fixture 1 thru 5 + 7 - 2` — change the selection. With `at`, the
-    /// combined form every console manual opens with: `fixture 1 thru 5 @ 80`
-    /// selects *and* sets intensity on what it selected, in one line.
-    Select { ops: Vec<(SelOp, Range)>, at: Option<f64> },
+    /// `fixture 1 thru 5 + 7 - 2`, `group 3`, `fixture 1 thru 5 + group 2` —
+    /// change the selection. With `at`, the combined form every console manual
+    /// opens with: `fixture 1 thru 5 @ 80` selects *and* sets intensity on what
+    /// it selected, in one line.
+    Select { ops: Vec<(SelOp, SelectTarget)>, at: Option<Level> },
     /// `clear` empties the programmer; `clear clear` also drops the selection.
     Clear { also_selection: bool },
-    /// `at 80`, `full`, `out` — intensity on the current selection, in percent.
-    Intensity { percent: f64 },
+    /// `at 80`, `at +10`, `full`, `out` — intensity on the current selection.
+    Intensity { level: Level },
     /// `sequence 2 go` — a registered entity command.
     EntityCommand {
         table: String,
@@ -78,11 +79,39 @@ pub enum Target {
     Name(String),
 }
 
+/// A level, said as a destination or as a change.
+///
+/// `at 10` and `at +10` must not be the same command: one is "these lights at ten
+/// percent" and the other is "ten percent brighter than they are". The sign is the
+/// whole difference, so the parser keeps it rather than folding both into a number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Level {
+    /// `at 80`, `full`, `out` — a destination, in percent.
+    To(f64),
+    /// `at +10`, `at -10` — a change, in percentage points. The station works out
+    /// what that comes to; this side never reads a value to compute it from.
+    By(f64),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SelOp {
     Replace,
     Add,
     Remove,
+}
+
+/// What one part of a selection names.
+///
+/// A saved group is a *question* about the rig, so selecting one is not the same
+/// as selecting the fixtures it happens to pick out today — the executor hands the
+/// group's query back to the browser rather than a list, and the selection goes on
+/// following the rig. Which is why this is not simply resolved to a `Range` here.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelectTarget {
+    /// `1 thru 5` — positions in the rig's display order.
+    Fixtures(Range),
+    /// `group 3`, `group "movers"`.
+    Group(Target),
 }
 
 /// A 1-based inclusive range; a single number is `n thru n`.

@@ -130,6 +130,11 @@ should parse directly.
   model never needs the value, (c) both.
 - (b) keeps the "one grammar, one audit trail" property; (a) weakens the
   safety story and grows the prompt with the rig.
+- **(b) is done**, as of `relative-values`: `at +10` and `at -10` are command-line
+  syntax, so "a bit darker" is an utterance the plugin can answer with no show data
+  and no new permission. What is left of this entry is the part relative syntax
+  cannot reach — "make it look like the second verse", which needs the show — and
+  whether that is worth the safety story it costs.
 
 ### llm-cost-overview
 Token/cost accounting for the NL plugin, visible over the REST API.
@@ -172,23 +177,50 @@ a key absent from `live_values`.
   an earlier cue". Does the change define release only at the sequence-off and
   programmer-clear boundaries, or does it want a tracking model first?
 
-### relative-values
-Not supported today — every write is absolute. Wanted by NL ("darker"), by
-the command line (`dim +10`), and by fan/encoders eventually.
-- Where does relative resolve to absolute? The engine (needs the authoritative
-  current value, works from any client) vs. the client (racy).
-- Relative to what: programmer value if held, else playback value — the
-  priority rule (task 14) already defines the stack to read.
-- Undo of a relative write records the absolute before/after (oplog already
-  carries `previous`).
+### relative-values — done, see `changes/archive/2026-08-31-relative-values/`
+Shipped as roadmap task 39. A path verb, `__by`, beside `__create` and `__delete`,
+so a relative write arrives over the existing `Set` message with no new protocol,
+host function or permission.
 
-### fixture-groups
-Task 30 left this open explicitly: a selection is a query, queries cannot be
-saved. The moment groups are show data, the query types move from
-`frontend/src/lib/selection.ts` to pult-schema and the backend gets an
-evaluator beside the frontend's (the comment in selection.ts says so).
-- PERSISTED `groups` collection holding the query, not the id list.
-- Command-line addressing (`group 3 at 50`) comes free via introspection.
+The answers to the questions below: **the engine**, and specifically at the *front
+door* — resolution runs at the top of the `Set` arm, before `previous` is read, so
+the oplog, the broadcast and the sync layer all see an absolute and a peer receives
+the number rather than the delta. Relative to task 14's stack read rather than
+re-implemented: the programmer's value where it holds the key, `live_values` where
+it does not, the type's `default_value` where nothing ever drove it. Undo came free
+for exactly the reason guessed.
+
+The cost taken knowingly: the engine names one collection.
+`["programmer_values", "__by"]` exists because the ordinary case is *not already
+holding the key*, and a test nudging a `speed_masters` field keeps "a new collection
+needs no edit here" honest.
+
+Left open: no fan, no multiplying sibling ("half as bright"), and no relative value
+*stored in a cue* — that last is tracking, which is its own design.
+
+### fixture-groups — done, see `changes/archive/2026-08-31-fixture-groups/`
+Shipped as roadmap task 38. A PERSISTED `groups` row is a name and a
+`SelectionQuery`; the query types moved to `pult-schema` and the frontend re-exports
+them under the names its panels already used.
+
+The answers to the questions below: the query, never the id list — a group is the
+question, and resolving it reads the rig as it is now. Command-line addressing did
+**not** come free: `fixture` is a keyword in `parse.rs` and `group` had to become one
+too, though generic entity addressing did give `rename group 1 "Movers"`.
+
+Two things it turned up. `Order::Manual` kept the dragged order in a *browser store*,
+which a station resolving the group has never seen — so the order moved into the
+query, and the evaluator distinguishes "no hand order" from "an empty one". And an
+RPC's prefix is a reserved word in the command line: `group.resolve` silently ate the
+`group` keyword, so it is `selection.resolve`.
+
+Two evaluators is the standing cost — Rust for the station and plugins, TypeScript
+for a cone being dragged at frame rate — paid by `testdata/selection-queries.json`,
+which both suites read. A new term or order needs a case there.
+
+Left open: no `Term::InGroup`, so a group cannot appear inside another group's query.
+Recall-then-refine covers the workflow; the term needs cycle detection and an answer
+for deleting a referenced group.
 
 ## Users and undo
 

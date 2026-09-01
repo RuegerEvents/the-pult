@@ -22,76 +22,56 @@
  * carries how to sort, and `Manual` is the escape hatch for an operator who has
  * dragged the panel into the order they want.
  *
- * # Why this is not in the schema
+ * # Where the types are now
  *
- * Selection is the operator's, not the show's — `CLAUDE.md` puts frontend-only state
- * in a store, and two people at two consoles plainly hold different fixtures. If
- * saved groups ever become show data, the types move to `pult-schema` then and the
- * backend gets an evaluator beside this one. Until something needs that, one
- * implementation is better than two that can disagree.
+ * In `pult-schema`, since saved groups made a query show data. This file used to
+ * declare them and said that if that ever happened they would move and the backend
+ * would get an evaluator beside this one. Both have.
+ *
+ * The evaluator here stayed, because a box or a cone dragged across the rig changes
+ * the query every frame and cannot afford a round trip to the station. The two are
+ * held to each other by `testdata/selection-queries.json`, which this file's test and
+ * `crates/pult-schema/tests/selection_corpus.rs` both read.
+ *
+ * The *live* selection is still nobody's but this browser's, and still lives in a
+ * store. What moved into the show is the saved kind.
  */
 
-import type { Fixture, FixtureType, Vec3 } from './generated/index.js';
+import type {
+	Fixture,
+	FixtureType,
+	SelectionClause,
+	SelectionCombine,
+	SelectionOrder,
+	SelectionQuery,
+	SelectionTerm,
+	Vec3
+} from './generated/index.js';
 import { splitPosition } from './stage.js';
 
 // ── What a query is ───────────────────────────────────────────────────────────
 
 /**
- * One test a fixture either passes or fails.
+ * The query types, under the names this side of the house has always called them.
  *
- * Every geometric term reads a position, so a fixture that has never been placed
- * fails all of them. That is the honest answer — a light nobody has told the console
- * about cannot be "downstage" — and it is why `Everything` and `OfType` exist: they
- * are how you reach an unplaced rig at all.
+ * `Term` and `Order` are fine names in a file about selection and bad ones in a
+ * directory of a hundred generated types, so the schema spells them out and the
+ * panels go on saying `Term`.
  */
-export type Term =
-	| { kind: 'Everything' }
-	/** A literal list. What a click and a shift-click build, and how a manual pick lives in the same shape as everything else. */
-	| { kind: 'Ids'; ids: string[] }
-	| { kind: 'OfType'; typeId: string }
-	/** Case-insensitive substring of the fixture's name. */
-	| { kind: 'Named'; text: string }
-	/** Within `radius` metres of a point. */
-	| { kind: 'Sphere'; centre: Vec3; radius: number }
-	/** Inside an axis-aligned region. The two corners may be given either way round. */
-	| { kind: 'Box'; from: Vec3; to: Vec3 }
-	/**
-	 * The spec's radial selection: a cone from a point, opening along a direction.
-	 *
-	 * `angleDeg` is the half-angle — the angle from the axis to the edge — because
-	 * that is the number a beam angle is quoted as and the one an operator has in
-	 * their head. `reach` caps how far it goes, so a narrow cone does not select the
-	 * whole stage behind the fixtures you meant.
-	 */
-	| { kind: 'Cone'; from: Vec3; direction: Vec3; angleDeg: number; reach: number };
+export type Term = SelectionTerm;
+export type Combine = SelectionCombine;
+export type Clause = SelectionClause;
+export type Order = SelectionOrder;
+export type { SelectionQuery };
 
-/** What a clause does to the running set. Read left to right. */
-export type Combine = 'Add' | 'Keep' | 'Drop';
-
-export type Clause = { combine: Combine; term: Term };
-
-/**
- * How the result is ordered.
- *
- * `Manual` keeps whatever order the ids were already in, for an operator who has
- * dragged the panel into the order they want; anything the query then adds goes on
- * the end. The rest are the orders a chase is usually asked to run in.
- */
-export type Order =
-	| { kind: 'Manual' }
-	| { kind: 'ByName' }
-	/** Along an axis. `x` is stage left to right, `z` is upstage to down. */
-	| { kind: 'ByAxis'; axis: 'x' | 'y' | 'z'; descending?: boolean }
-	/** Outwards from a point, which is what makes a centre-out chase possible. */
-	| { kind: 'ByDistance'; from: Vec3 };
-
-export type SelectionQuery = { clauses: Clause[]; order: Order };
+/** The order a query has when nobody has put the fixtures in one. */
+export const NO_ORDER: SelectionOrder = { kind: 'Manual', order: [] };
 
 /** The query a fresh console has: nothing selected, in the order it was picked. */
-export const EMPTY_QUERY: SelectionQuery = { clauses: [], order: { kind: 'Manual' } };
+export const EMPTY_QUERY: SelectionQuery = { clauses: [], order: NO_ORDER };
 
 /** The query a plain click builds. Manual picking is a query like any other. */
-export function idsQuery(ids: string[], order: Order = { kind: 'Manual' }): SelectionQuery {
+export function idsQuery(ids: string[], order: Order = NO_ORDER): SelectionQuery {
 	return { clauses: [{ combine: 'Add', term: { kind: 'Ids', ids } }], order };
 }
 
@@ -187,11 +167,16 @@ function matches(term: Term, fixture: Fixture): boolean {
  * Pure, and given the whole rig every time: that is what "re-evaluated as the rig
  * changes" means in practice — nothing is cached, so a fixture patched a moment ago
  * is in the answer without anything having to invalidate anything.
+ *
+ * `previous` is the hand order this browser is holding outside the query. A live
+ * selection has one; a saved group, resolved on a station that never saw the drag,
+ * does not — so `null` means "use the order the query itself carries", and an empty
+ * array means "there is a hand order and it is empty", which is not the same thing.
  */
 export function evaluate(
 	query: SelectionQuery,
 	fixtures: Fixture[],
-	previous: string[] = []
+	previous: string[] | null = null
 ): string[] {
 	let picked: string[] = [];
 
@@ -219,14 +204,17 @@ export function sortSelection(
 	ids: string[],
 	order: Order,
 	fixtures: Fixture[],
-	previous: string[] = []
+	previous: string[] | null = null
 ): string[] {
 	const byId = new Map(fixtures.map((f) => [f.id, f]));
 
 	if (order.kind === 'Manual') {
-		// Whatever the operator dragged into place, with anything new on the end.
-		const known = previous.filter((id) => ids.includes(id));
-		const rest = ids.filter((id) => !previous.includes(id));
+		// Whatever somebody dragged into place, with anything new on the end. The hand
+		// order this browser is holding wins over the one the query carries, which is
+		// what lets a group be recalled and then rearranged without saving.
+		const hand = previous ?? order.order;
+		const known = hand.filter((id) => ids.includes(id));
+		const rest = ids.filter((id) => !hand.includes(id));
 		return [...known, ...rest];
 	}
 

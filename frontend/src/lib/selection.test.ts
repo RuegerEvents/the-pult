@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, it, expect } from 'vitest';
 
 import type { Fixture, Vec3 } from './generated/index.js';
@@ -9,6 +11,7 @@ import {
 	inBox,
 	inCone,
 	isManualList,
+	NO_ORDER,
 	normalise,
 	sortSelection,
 	type SelectionQuery
@@ -315,12 +318,12 @@ describe('the order the selection comes out in', () => {
 	 */
 	it('keeps a hand-made order and appends what is new', () => {
 		const dragged = ['Front 3', 'Front 1'];
-		const out = sortSelection(['Front 1', 'Front 2', 'Front 3'], { kind: 'Manual' }, rig, dragged);
+		const out = sortSelection(['Front 1', 'Front 2', 'Front 3'], NO_ORDER, rig, dragged);
 		expect(out).toEqual(['Front 3', 'Front 1', 'Front 2']);
 	});
 
 	it('drops a hand-ordered fixture that the query no longer picks', () => {
-		const out = sortSelection(['Front 1'], { kind: 'Manual' }, rig, ['Front 3', 'Front 1']);
+		const out = sortSelection(['Front 1'], NO_ORDER, rig, ['Front 3', 'Front 1']);
 		expect(out).toEqual(['Front 1']);
 	});
 });
@@ -340,5 +343,47 @@ describe('saying what a query selects', () => {
 
 	it('says so when there is nothing', () => {
 		expect(describeQuery(EMPTY_QUERY)).toBe('nothing');
+	});
+});
+
+/**
+ * The corpus, from this side.
+ *
+ * `testdata/selection-queries.json` is read here and by
+ * `crates/pult-schema/tests/selection_corpus.rs`. A query has to pick the same
+ * fixtures in the same order in a browser as on a station — a group saved on one
+ * console and resolved on another is the whole feature — and two evaluators is the
+ * price of not putting a round trip inside a drag. This is how the price is paid.
+ *
+ * A case with no `previous` is a saved group: nothing outside the query holds an
+ * order. A case whose `previous` is a list — an empty one included — is a live
+ * selection handing over the order somebody dragged the panel into.
+ */
+describe('the corpus the station agrees with', () => {
+	type Case = {
+		name: string;
+		query: SelectionQuery;
+		previous?: string[];
+		expected: string[];
+	};
+	const corpus: { rig: Fixture[]; cases: Case[] } = JSON.parse(
+		readFileSync(new URL('../../../testdata/selection-queries.json', import.meta.url), 'utf8')
+	);
+
+	const named = (ids: string[]) =>
+		ids.map((id) => corpus.rig.find((f) => f.id === id)?.name ?? id);
+
+	for (const c of corpus.cases) {
+		it(c.name, () => {
+			const got = evaluate(c.query, corpus.rig, c.previous ?? null);
+			expect(named(got)).toEqual(named(c.expected));
+		});
+	}
+
+	it('is still worth reading', () => {
+		// A corpus that quietly emptied itself would pass every test above.
+		expect(corpus.rig.length).toBeGreaterThanOrEqual(5);
+		expect(corpus.cases.length).toBeGreaterThanOrEqual(15);
+		expect(corpus.rig.some((f) => f.position === null)).toBe(true);
 	});
 });

@@ -10,8 +10,9 @@ use pult_schema::{
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
     types::{
-        devices::DevicesState, output::{OutputCoverage, OutputStatuses},
-        plugin::PluginsState, session::SessionState, station::PeerLinks, user::User,
+        devices::DevicesState, fixture::ParameterValue, output::{OutputCoverage, OutputStatuses},
+        plugin::PluginsState, programmer::programmer_entry_id, session::SessionState,
+        station::PeerLinks, user::User,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ use uuid::Uuid;
 use crate::{
     error::BackendError,
     infra::{connectors::OutputHandle, showfile::{oplog, order}, sync::SyncHandle},
-    model::playback::{Playback, PlaybackEffect, ShowView, TICK},
+    model::playback::{parameter_key, Playback, PlaybackEffect, ShowView, TICK},
     model::flows::{FlowEffect, FlowGraph, Flows, InputEvent},
 };
 
@@ -215,6 +216,29 @@ impl ShowState {
                 descend(self.entity(head, id)?, tail)
             }
         }
+    }
+}
+
+/// A JSON value moved by a delta: a `ParameterValue` if that is what it is, and a
+/// plain number otherwise.
+///
+/// Both, because `__by` is a field verb and a field is as likely to be a cue's fade
+/// time as a fixture's intensity. Anything else refuses by name rather than being
+/// quietly left alone.
+fn nudge_json(current: &serde_json::Value, by: f32) -> Result<serde_json::Value, String> {
+    if let Ok(value) = serde_json::from_value::<ParameterValue>(current.clone()) {
+        let next = value.nudged(by)?;
+        return serde_json::to_value(next).map_err(|e| e.to_string());
+    }
+    match current.as_f64() {
+        // An integer field stays one: `fade_in_ms` is milliseconds, and a write of
+        // 4500.0 where a whole number is expected is a failed patch rather than a
+        // slightly imprecise one.
+        Some(n) if current.is_i64() || current.is_u64() => {
+            Ok(serde_json::json!((n + by as f64).round() as i64))
+        }
+        Some(n) => Ok(serde_json::json!(n + by as f64)),
+        None => Err("that field is not a number, so there is nothing to move".into()),
     }
 }
 
@@ -655,6 +679,20 @@ impl ShowEngine {
                     let _ = reply.send(result);
                 }
                 EngineCommand::Set { path, value, lifecycle, mut authorship, reply } => {
+                    // A relative write becomes an absolute one *here*, before
+                    // anything below has seen it. Everything after this line — the
+                    // read of `previous`, the apply, the oplog, the broadcast, the
+                    // sync — is code that has never heard of `__by`, and a peer
+                    // receives the number rather than the delta. Which is the whole
+                    // point: two stations each adding ten percent to whatever they
+                    // happened to be showing would not end up holding the same value.
+                    let (path, value) = match self.resolve_relative(path, value) {
+                        Ok(resolved) => resolved,
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                            continue;
+                        }
+                    };
                     // Read before writing: the oplog is otherwise a list of
                     // destinations with no record of where anything came from, and
                     // replaying that forwards works while running it backwards does
@@ -1187,6 +1225,198 @@ impl ShowEngine {
             Ok(()) => self.broadcast_after_set(&path, value),
             Err(e) => debug!("[playback] {path:?}: {e}"),
         }
+    }
+
+    /// Turn a relative write into an absolute one, or hand back what came in.
+    ///
+    /// Two shapes carry the `__by` verb:
+    ///
+    /// ```text
+    /// [table, ref, field, "__by"]   <delta>
+    /// ["programmer_values", "__by"] { "fixtureId", "parameterKind", "by" }
+    /// ```
+    ///
+    /// The first is the primitive: relative to what that field says now. The second
+    /// exists because the programmer's ordinary case is *not* already holding the
+    /// key — `at +10` on a light nobody has touched has no row to name — and because
+    /// what it has to be relative to is then what playback is showing rather than a
+    /// row that does not exist. That second shape is the one place the engine names
+    /// a collection for a reason of its own; it costs nothing that matters, since
+    /// adding a collection still needs no edit here.
+    ///
+    /// Pure with respect to the show: this only reads. The write it describes
+    /// happens in `apply_set` like any other.
+    fn resolve_relative(
+        &self,
+        path: Path,
+        value: serde_json::Value,
+    ) -> Result<(Path, serde_json::Value), BackendError> {
+        let by = || -> Result<f32, BackendError> {
+            value
+                .as_f64()
+                .map(|n| n as f32)
+                .ok_or_else(|| BackendError::InvalidValue {
+                    path: path.clone(),
+                    reason: "a relative write takes a number to move by".into(),
+                })
+        };
+
+        match path.as_slice() {
+            // The programmer, which may have to take the key to nudge it.
+            [PathSegment::Key(table), PathSegment::Key(verb)]
+                if table == "programmer_values" && verb == "__by" =>
+            {
+                self.nudge_programmer(&path, &value)
+            }
+            // Any field of any row: relative to what it says now.
+            [table @ PathSegment::Key(_), seg, field @ PathSegment::Key(_), PathSegment::Key(verb)]
+                if verb == "__by" =>
+            {
+                let target = vec![table.clone(), seg.clone(), field.clone()];
+                let current = self
+                    .state
+                    .get_by_path(&target)
+                    .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
+                let next = nudge_json(&current, by()?).map_err(|reason| {
+                    BackendError::InvalidValue { path: path.clone(), reason }
+                })?;
+                Ok((target, next))
+            }
+            // `__by` on a create, or on a whole row, means nothing — and doing
+            // something almost-right with it would be worse than saying so.
+            [.., PathSegment::Key(verb)] if verb == "__by" => Err(BackendError::InvalidValue {
+                path: path.clone(),
+                reason: "a relative write names one field, or the programmer".into(),
+            }),
+            _ => Ok((path, value)),
+        }
+    }
+
+    /// `["programmer_values", "__by"]` with `{ fixtureId, parameterKind, by }`.
+    ///
+    /// Relative to what is showing, which is task 14's stack read rather than
+    /// re-implemented: the programmer's own value where it holds the key, and the
+    /// fixture's live value where it does not. A key held as a running shape refuses
+    /// — nudging a shape means moving its offset, which is a different thing wearing
+    /// the same word.
+    fn nudge_programmer(
+        &self,
+        path: &Path,
+        args: &serde_json::Value,
+    ) -> Result<(Path, serde_json::Value), BackendError> {
+        let bad = |reason: &str| BackendError::InvalidValue {
+            path: path.clone(),
+            reason: reason.to_string(),
+        };
+
+        let fixture_id = args
+            .get("fixtureId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| bad("a relative programmer write needs a fixtureId"))?
+            .to_string();
+        let kind: pult_schema::types::fixture::ParameterKind = args
+            .get("parameterKind")
+            .cloned()
+            .and_then(|k| serde_json::from_value(k).ok())
+            .ok_or_else(|| bad("a relative programmer write needs a parameterKind"))?;
+        let by = args
+            .get("by")
+            .and_then(serde_json::Value::as_f64)
+            .ok_or_else(|| bad("a relative programmer write needs a number to move by"))?
+            as f32;
+
+        let key = parameter_key(&kind);
+        let entry_id: Uuid = programmer_entry_id(&fixture_id, &key)
+            .parse()
+            .map_err(|_| bad("the derived programmer id is not a uuid"))?;
+        let row = self
+            .state
+            .get_by_path(&vec![
+                PathSegment::Key("programmer_values".into()),
+                PathSegment::Id(entry_id),
+            ])
+            .filter(|v| !v.is_null());
+
+        if let Some(row) = row {
+            if row.get("effect").is_some_and(|e| !e.is_null()) {
+                return Err(bad("that parameter is running a shape; clear it before nudging it"));
+            }
+            let current: ParameterValue = serde_json::from_value(
+                row.get("value").cloned().unwrap_or(serde_json::Value::Null),
+            )
+            .map_err(|e| bad(&format!("the held value does not parse: {e}")))?;
+            let next = current.nudged(by).map_err(|reason| bad(&reason))?;
+            return Ok((
+                vec![
+                    PathSegment::Key("programmer_values".into()),
+                    PathSegment::Id(entry_id),
+                    PathSegment::Key("value".into()),
+                ],
+                serde_json::to_value(next)?,
+            ));
+        }
+
+        // Nothing held, so the programmer takes the key — starting from what
+        // playback is showing, or from what the fixture type says the parameter
+        // rests at when nothing has ever driven it.
+        let fixture_uuid: Uuid =
+            fixture_id.parse().map_err(|_| bad("that fixtureId is not a uuid"))?;
+        let showing = self
+            .state
+            .get_by_path(&vec![
+                PathSegment::Key("fixtures".into()),
+                PathSegment::Id(fixture_uuid),
+                PathSegment::Key("live_values".into()),
+                PathSegment::Key(key.clone()),
+            ])
+            .filter(|v| !v.is_null())
+            .or_else(|| self.default_value_of(fixture_uuid, &kind))
+            .ok_or_else(|| bad("that fixture has no such parameter"))?;
+        let current: ParameterValue = serde_json::from_value(showing)
+            .map_err(|e| bad(&format!("the live value does not parse: {e}")))?;
+        let next = current.nudged(by).map_err(|reason| bad(&reason))?;
+
+        Ok((
+            vec![
+                PathSegment::Key("programmer_values".into()),
+                PathSegment::Key("__create".into()),
+            ],
+            serde_json::json!({
+                "id": entry_id,
+                "fixture_id": fixture_id,
+                "parameter_kind": kind,
+                "value": next,
+                "locked": false,
+            }),
+        ))
+    }
+
+    /// What a fixture's type says this parameter rests at, for a key nothing has
+    /// ever driven. `default_value` is derived from what the device said about its
+    /// own ports, so this is the node's answer rather than the console's guess.
+    fn default_value_of(
+        &self,
+        fixture_id: Uuid,
+        kind: &pult_schema::types::fixture::ParameterKind,
+    ) -> Option<serde_json::Value> {
+        let fixture = self.state.get_by_path(&vec![
+            PathSegment::Key("fixtures".into()),
+            PathSegment::Id(fixture_id),
+        ])?;
+        let type_id: Uuid = fixture.get("fixture_type_id")?.as_str()?.parse().ok()?;
+        let fixture_type = self.state.get_by_path(&vec![
+            PathSegment::Key("fixture_types".into()),
+            PathSegment::Id(type_id),
+        ])?;
+        fixture_type
+            .get("parameters")?
+            .as_array()?
+            .iter()
+            .find(|p| p.get("kind").is_some_and(|k| serde_json::from_value::<
+                pult_schema::types::fixture::ParameterKind,
+            >(k.clone())
+            .is_ok_and(|k| k == *kind)))
+            .and_then(|p| p.get("default_value").cloned())
     }
 
     /// Route a write to the right entity, generically.

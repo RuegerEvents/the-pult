@@ -199,6 +199,31 @@ SYNCED `programmer_values` buffer that takes priority over playback until the va
 are cleared or stored into a cue. Programming also happens in the `plan` and `rig`
 panels, where a selected head can be aimed by dragging where its beam lands.
 
+**A write can say how far instead of where.** A `__by` sentinel on a path — beside
+`__create` and `__delete` — is a change rather than a destination, and the station
+resolves it against what it holds at the moment it applies it. That happens at the
+top of the engine's `Set` arm, above the oplog and the sync layer, so history, the
+showfile and every peer only ever see the absolute; a peer adding a delta to its own
+copy would diverge. `["programmer_values", "__by"]` with
+`{fixtureId, parameterKind, by}` is the programmer's form, and takes the key if
+nothing is holding it. `at +10` in the command line is this, and it is why the
+natural-language plugin can answer "a bit darker" with no access to the show.
+
+**A selection is a question about the rig**, not a list of ids — "every mover on the
+downstage truss" stays true after somebody patches a fifth one. What is selected
+*right now* is one operator's and lives in a Svelte store; a **saved group** is the
+show's, a PERSISTED `groups` row holding the query itself. Recalling one takes on the
+question, so a fixture patched afterwards joins it, and `group 3` in the command line
+leaves exactly what clicking the group leaves.
+
+Which means `SelectionQuery` is evaluated twice — `crates/pult-schema/src/types/group.rs`
+for the station and plugins, `frontend/src/lib/selection.ts` for the browser, because
+a cone being dragged re-evaluates per frame and cannot be a round trip. The two are
+held together by `testdata/selection-queries.json`, which both test suites read; a new
+term or order needs a case there or it is only half implemented. A station resolves a
+group through the `selection.resolve` RPC — a read, so deliberately not a command:
+asking what is in a group must not write history.
+
 Or all of it at once — backend, two simulated OpenHaunt nodes, and the frontend —
 with a seeded show and Ctrl-C to stop everything:
 
