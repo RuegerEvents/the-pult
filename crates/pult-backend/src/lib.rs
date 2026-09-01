@@ -166,6 +166,7 @@ pub async fn start(config: Config) -> Result<Running> {
         config.plugin_dirs.clone(),
         // The asset store a carried bundle lives in.
         Some(pool.clone()),
+        config.plugin_data.clone(),
     );
     tokio::spawn(plugin_mgr.run());
     let plugin_handle_for_running = plugin_handle.clone();

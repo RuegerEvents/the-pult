@@ -124,8 +124,10 @@ never in the first two — those travel with the showfile.
 
 **A plugin can remember things.** A manifest declares `[[stores]]`, each
 `scope = "show"` (a PERSISTED `plugin_data` entity, so replication and the
-showfile come free) or `scope = "station"` (SQLite beside `preferences.toml`,
-`PULT_PLUGIN_DATA` to move it). Declaring the store is the permission — the
+showfile come free) or `scope = "station"` (SQLite beside `preferences.toml`;
+`Config::plugin_data` moves it, and `PULT_PLUGIN_DATA` is the fallback for a
+station started from a shell — an env var is one per *process*, so two stations
+inside one program have to be told separately). Declaring the store is the permission — the
 host derives the location from `(plugin_id, store)`, so no guest can spell a
 name that reaches another plugin's data. A row's id is a UUIDv5 over
 `(plugin_id, store, key)`, which is what makes two stations writing one key

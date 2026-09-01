@@ -39,11 +39,15 @@ async fn a_station_runs_the_reference_plugins() {
     }
 
     let showfile = std::env::temp_dir().join(format!("pult-plugin-test-{}.db", uuid::Uuid::new_v4()));
+    // Its own store as well: without one this station opens the *developer's*
+    // `plugin-data.db` and writes whatever the reference plugins remember into it.
+    let store = std::env::temp_dir().join(format!("pult-plugin-store-{}.db", uuid::Uuid::new_v4()));
     let running = pult_backend::start(Config {
         port: 0,
         sync_port: 0,
         showfile: showfile.to_string_lossy().into_owned(),
         plugin_dirs: vec![dir],
+        plugin_data: Some(store.clone()),
         ..Config::default()
     })
     .await
@@ -353,6 +357,7 @@ async fn a_station_runs_the_reference_plugins() {
 
     running.serve.abort();
     let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_file(&store);
 }
 
 /// A plugin built against an *earlier* minor of the contract still runs here.
@@ -436,9 +441,12 @@ async fn the_language_plugin_remembers_which_model_this_console_uses() {
         return;
     }
     // A station store of this test's own, so it is not reading a real console's.
+    // Named in the config rather than exported: `PULT_PLUGIN_DATA` is one variable
+    // per process, and the other test in this binary starts its own station at the
+    // same time — setting it here would decide where *that* station's plugins
+    // remember things too.
     let store =
         std::env::temp_dir().join(format!("pult-nl-prefs-{}.db", uuid::Uuid::new_v4()));
-    std::env::set_var("PULT_PLUGIN_DATA", &store);
 
     let showfile = std::env::temp_dir().join(format!("pult-nl-{}.db", uuid::Uuid::new_v4()));
     let start = || async {
@@ -447,6 +455,7 @@ async fn the_language_plugin_remembers_which_model_this_console_uses() {
             sync_port: 0,
             showfile: showfile.to_string_lossy().into_owned(),
             plugin_dirs: vec![dir.clone()],
+            plugin_data: Some(store.clone()),
             ..Config::default()
         })
         .await

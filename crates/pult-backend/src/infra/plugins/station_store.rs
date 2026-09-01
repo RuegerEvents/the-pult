@@ -27,10 +27,16 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 use tracing::{info, warn};
 
-/// Where the file lives.
+/// Where the file lives when nobody has said.
 ///
-/// `PULT_PLUGIN_DATA` names it outright, the way `PULT_PREFERENCES` does, so
-/// tests get their own and two stations on one machine can be kept apart.
+/// `PULT_PLUGIN_DATA` names it outright, the way `PULT_PREFERENCES` does, so two
+/// stations on one machine can be kept apart from the shell that starts them.
+///
+/// Only consulted when [`Config::plugin_data`](crate::Config::plugin_data) is
+/// `None`. A caller that knows which file it wants says so rather than exporting an
+/// environment variable at it: an env var is one per *process*, so two stations in
+/// one process — which is what a test binary is — cannot each have their own, and
+/// whichever set it last decides for both.
 pub fn path() -> Option<PathBuf> {
     if let Some(named) = std::env::var_os("PULT_PLUGIN_DATA") {
         return Some(PathBuf::from(named));
@@ -44,9 +50,10 @@ pub fn path() -> Option<PathBuf> {
 pub struct StationStore(Option<SqlitePool>);
 
 impl StationStore {
-    /// Open it, or log why not and carry on without it.
-    pub async fn open() -> StationStore {
-        match Self::try_open().await {
+    /// Open the one this station is configured for, or log why not and carry on
+    /// without it.
+    pub async fn open(at: Option<PathBuf>) -> StationStore {
+        match Self::try_open(at).await {
             Ok(store) => store,
             Err(e) => {
                 warn!("[plugins] station store unavailable, plugin stores will read empty: {e}");
@@ -55,8 +62,8 @@ impl StationStore {
         }
     }
 
-    async fn try_open() -> Result<StationStore, String> {
-        let Some(path) = path() else {
+    async fn try_open(at: Option<PathBuf>) -> Result<StationStore, String> {
+        let Some(path) = at.or_else(path) else {
             return Err("no configuration directory on this platform".into());
         };
         if let Some(parent) = path.parent() {
@@ -185,11 +192,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A store of this test's own.
+    ///
+    /// Named outright rather than through `PULT_PLUGIN_DATA`: an environment
+    /// variable is one per process, and these tests run at the same time in one, so
+    /// setting it here would have each of them opening whichever file the other
+    /// happened to name last.
     async fn a_store() -> (StationStore, PathBuf) {
         let path =
             std::env::temp_dir().join(format!("pult-station-store-{}.db", uuid::Uuid::new_v4()));
-        std::env::set_var("PULT_PLUGIN_DATA", &path);
-        let store = StationStore::open().await;
+        let store = StationStore::open(Some(path.clone())).await;
         (store, path)
     }
 
@@ -212,6 +224,30 @@ mod tests {
         store.delete("nl", "prefs", "provider").await.unwrap();
 
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Two stores at once, each its own file.
+    ///
+    /// This is the property `PULT_PLUGIN_DATA` could not give: an environment
+    /// variable is one per process, so two stations in one program — two tests, or a
+    /// desktop app opening a second console — could not each have their own, and
+    /// whichever set it last decided for both. It failed intermittently rather than
+    /// obviously, and when it lost it did not fall back to nothing: a test would open
+    /// the *developer's* real plugin data and write to it.
+    #[tokio::test]
+    async fn two_stores_at_once_do_not_see_each_other() {
+        let (mine, my_path) = a_store().await;
+        let (yours, your_path) = a_store().await;
+        assert_ne!(my_path, your_path);
+
+        mine.set("nl", "prefs", "provider", &json!("ollama")).await.unwrap();
+        yours.set("nl", "prefs", "provider", &json!("openrouter")).await.unwrap();
+
+        assert_eq!(mine.get("nl", "prefs", "provider").await, json!("ollama"));
+        assert_eq!(yours.get("nl", "prefs", "provider").await, json!("openrouter"));
+
+        let _ = std::fs::remove_file(my_path);
+        let _ = std::fs::remove_file(your_path);
     }
 
     #[tokio::test]

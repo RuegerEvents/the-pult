@@ -26,19 +26,19 @@ fn probe_dir() -> Option<PathBuf> {
 
 /// One station store for the whole test binary.
 ///
-/// `PULT_PLUGIN_DATA` is read from the process environment when a station opens
-/// its store, and these tests run in one process at the same time — so a file
-/// per test would be a race over one variable rather than the isolation it
-/// looks like. Set once, and the tests stay out of each other's way by using
-/// different keys, which is also closer to the truth: the station store *is*
-/// one file shared by everything on the machine.
+/// Deliberately shared rather than one per test: the station store *is* one file
+/// shared by everything on the machine, and a test that restarts its station has
+/// to find what it wrote still there. The tests stay out of each other's way by
+/// using different keys.
+///
+/// Named through `Config::plugin_data` rather than `PULT_PLUGIN_DATA`, because an
+/// environment variable is one per process and these tests run at the same time in
+/// one — pointing it somewhere would be pointing it there for every other station
+/// in the binary too.
 fn station_store_file() -> &'static PathBuf {
     static FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     FILE.get_or_init(|| {
-        let path = std::env::temp_dir()
-            .join(format!("pult-probe-store-{}.db", uuid::Uuid::new_v4()));
-        std::env::set_var("PULT_PLUGIN_DATA", &path);
-        path
+        std::env::temp_dir().join(format!("pult-probe-store-{}.db", uuid::Uuid::new_v4()))
     })
 }
 
@@ -51,6 +51,7 @@ async fn a_station() -> Option<(Running, PathBuf)> {
     let running = pult_backend::start(Config {
         port: 0,
         sync_port: 0,
+        plugin_data: Some(station_store_file().clone()),
         showfile: showfile.to_string_lossy().into_owned(),
         plugin_dirs: vec![dir],
         ..Config::default()
@@ -381,6 +382,7 @@ async fn station_scoped_data_outlives_the_show_it_was_written_under() {
     let running = pult_backend::start(Config {
         port: 0,
         sync_port: 0,
+        plugin_data: Some(station_store_file().clone()),
         showfile: other.to_string_lossy().into_owned(),
         plugin_dirs: vec![dir],
         ..Config::default()
@@ -537,6 +539,7 @@ async fn start_with(showfile: &PathBuf, plugin_dirs: Vec<PathBuf>) -> Running {
     pult_backend::start(Config {
         port: 0,
         sync_port: 0,
+        plugin_data: Some(station_store_file().clone()),
         showfile: showfile.to_string_lossy().into_owned(),
         plugin_dirs,
         ..Config::default()

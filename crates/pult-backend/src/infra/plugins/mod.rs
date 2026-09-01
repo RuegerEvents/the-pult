@@ -172,6 +172,9 @@ pub struct PluginManager {
     engine: EngineHandle,
     /// The showfile, for reaching the asset store a bundle lives in.
     pool: Option<Arc<SqlitePool>>,
+    /// Where this station's plugin data lives, when it was told; `None` falls back
+    /// to `PULT_PLUGIN_DATA` and then to the config directory.
+    station_data: Option<PathBuf>,
     broadcast: UpdateBroadcast,
     deps: InstanceDeps,
     plugins: BTreeMap<String, Loaded>,
@@ -189,6 +192,7 @@ impl PluginManager {
         rpc_deps: LocalRpcDeps,
         dirs: Vec<PathBuf>,
         pool: Option<Arc<SqlitePool>>,
+        station_data: Option<PathBuf>,
     ) -> (Self, PluginsHandle) {
         // Canonical from the start: `--plugins plugins` is a fine thing to
         // type, but the watcher reports absolute paths, and matching a change
@@ -213,6 +217,7 @@ impl PluginManager {
                 dirs,
                 engine,
                 pool,
+                station_data,
                 broadcast,
                 deps,
                 plugins: BTreeMap::new(),
@@ -228,7 +233,8 @@ impl PluginManager {
         // What the plugins on this machine remember. Opened before any of them
         // runs, and never a reason to fail: a station that cannot open it logs
         // once and carries on with the stores reading empty.
-        self.deps.station_store = station_store::StationStore::open().await;
+        self.deps.station_store =
+            station_store::StationStore::open(self.station_data.clone()).await;
 
         // The roster is watched whether or not any directory is configured: a
         // station with no `--plugins` at all still runs what the show carries,

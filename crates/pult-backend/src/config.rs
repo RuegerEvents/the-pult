@@ -37,6 +37,15 @@ pub struct Config {
     /// all, same philosophy as the output flags.
     #[serde(default)]
     pub plugin_dirs: Vec<std::path::PathBuf>,
+    /// Where this station keeps what its plugins remember about *this machine*.
+    ///
+    /// `None` falls back to `PULT_PLUGIN_DATA` and then to the config directory,
+    /// which is what an operator's console does. It is here as well as in the
+    /// environment because an environment variable is one per process: two stations
+    /// started inside one program — a test binary, or a desktop app opening a second
+    /// — cannot each have their own that way.
+    #[serde(default)]
+    pub plugin_data: Option<std::path::PathBuf>,
 }
 
 fn default_bind() -> IpAddr { IpAddr::V4(Ipv4Addr::UNSPECIFIED) }
@@ -57,6 +66,7 @@ impl Default for Config {
             openhaunt_broker_port: default_broker_port(),
             node_id: None,
             plugin_dirs: Vec::new(),
+            plugin_data: None,
         }
     }
 }
