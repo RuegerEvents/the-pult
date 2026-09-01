@@ -34,6 +34,17 @@ it (panel ids already survive missing plugins).
 - Plugin *config* (e.g. NL provider/model) — showfile, station preferences,
   or the plugin's own directory as today?
 
+### plugin-fetch-retry — done, see `changes/archive/2026-09-01-plugin-fetch-retry/`
+Not proposed from here: it came out of roadmap task 40, where a flaky test turned out
+to be the console reporting "no station has the bundle" when what had happened was
+that it could not reach one. The change is the spec delta those commits should have
+carried — three outcomes instead of two, a bounded retry for the unreachable case
+only, and one `peer_addresses` that excludes the asking station.
+
+Left open, and the natural next question: nothing re-drives a failed fetch except a
+roster change, so a station that gives up stays given up until somebody touches the
+show.
+
 ### plugin-sync — see `changes/plugin-distribution/`
 Do plugins replicate between stations the way show data does? Today each
 station loads its own directory; a session can have stations with different
