@@ -4082,6 +4082,7 @@ dependencies = [
  "notify",
  "openhaunt-node-sim",
  "paste",
+ "pult-render",
  "pult-schema",
  "reqwest 0.12.28",
  "rumqttc",
@@ -4144,6 +4145,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pult-render"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
 name = "pult-schema"
 version = "0.1.0"
 dependencies = [
@@ -4153,6 +4163,7 @@ dependencies = [
  "futures",
  "inventory",
  "pult-macros",
+ "pult-render",
  "serde",
  "serde_json",
  "sqlx",

@@ -110,12 +110,49 @@ fn went_at(args: &serde_json::Value) -> u64 {
     args.get("at").and_then(|v| v.as_u64()).unwrap_or_else(now_ms)
 }
 
-/// Console unix ms.
+/// Console unix ms: the show clock.
+///
+/// A unix millisecond, so it replicates and anchors a cue the way it always has — but
+/// **advanced monotonically** from a wall time read once, rather than read fresh from
+/// the system clock each time.
+///
+/// The difference matters because everything the console is doing is anchored to this
+/// number and evaluated against it. A fade and an effect are both "where am I between
+/// `t0` and now"; if `now` can step, every running fade and every effect in the rig
+/// steps with it. `SystemTime::now()` can step — NTP corrects a drifting clock during
+/// the show, and a laptop waking up corrects a much larger one — and the result would
+/// be the whole rig jumping mid-cue. That hazard was always there for effects, which
+/// have measured against this since they existed; it is not one to inherit for fades
+/// as well now that they do too.
+///
+/// Monotonic *within one run of one station*, which is what it needs to be. Two
+/// stations still agree because they agree on the anchors they replicate, not on
+/// their clocks, and a restart re-reads the wall clock as it always did.
+///
+/// The base is taken lazily on first use rather than at startup, so nothing has to
+/// remember to initialise it, and it is the standard library's `Instant` rather than
+/// tokio's on purpose: tokio's is per-runtime, so one process running several
+/// runtimes — which is what a test binary is — would read one base against several
+/// unrelated clocks. The consequence to know is that pausing tokio's clock does not
+/// fast-forward the show; a test that wants a fade to advance has to let real time
+/// pass, or drive `Playback` directly.
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    use std::sync::OnceLock;
+
+    struct Base {
+        wall_ms: u64,
+        at: std::time::Instant,
+    }
+    static BASE: OnceLock<Base> = OnceLock::new();
+
+    let base = BASE.get_or_init(|| Base {
+        wall_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+        at: std::time::Instant::now(),
+    });
+    base.wall_ms.saturating_add(base.at.elapsed().as_millis() as u64)
 }
 
 #[cfg(test)]

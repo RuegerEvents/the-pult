@@ -193,24 +193,19 @@ struct Fade {
 }
 
 impl Fade {
-    /// Position through the fade at `now`, 0.0 before it starts and 1.0 once done.
-    fn progress(&self, now: Instant) -> f32 {
-        if now < self.start {
-            return 0.0;
-        }
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-        let elapsed = now.duration_since(self.start).as_secs_f32();
-        (elapsed / self.duration.as_secs_f32()).min(1.0)
+    /// Whether this fade has arrived, and what it is asserting, both measured on the
+    /// wall clock rather than the monotonic one.
+    ///
+    /// The browser has to work the same numbers out and has only the wall clock to do
+    /// it with, so the station goes through the same evaluator rather than keeping a
+    /// second copy of the arithmetic. `t0_ms` and `start` are the same instant
+    /// expressed twice, so this is what it always computed.
+    fn is_done(&self, now_ms: u64) -> bool {
+        pult_render::fade_is_done(&self.running(), now_ms)
     }
 
-    fn is_done(&self, now: Instant) -> bool {
-        self.progress(now) >= 1.0
-    }
-
-    fn value_at(&self, now: Instant) -> ParameterValue {
-        interpolate(&self.from, &self.to, effects::ease(self.easing, self.progress(now)))
+    fn value_at(&self, now_ms: u64) -> ParameterValue {
+        pult_render::fade_value_at(&self.running(), now_ms)
     }
 
     /// This fade, described well enough for somebody else to run it.
@@ -288,7 +283,7 @@ impl Playback {
         self.track_cue_changes(now, wall_ms, view, &mut effects);
 
         let mut changes = Changes::new();
-        self.advance_fades(now, wall_ms, &mut changes);
+        self.advance_fades(wall_ms, &mut changes);
         // After the fades, so a cue asserting an effect on a key wins over a fade the
         // same cue started on it; before the overlay, so the programmer still covers
         // both.
@@ -477,7 +472,7 @@ impl Playback {
                 .fades
                 .iter()
                 .find(|f| f.fixture_id == capture.fixture_id && f.key == key)
-                .map(|f| f.value_at(now))
+                .map(|f| f.value_at(wall_ms))
                 .or_else(|| view.live_value(capture.fixture_id, &key))
                 .or_else(|| view.home_value(capture.fixture_id, &key))
                 // A fixture whose type has gone: nothing can say where it rests, so
@@ -525,7 +520,7 @@ impl Playback {
     /// A fade under a key the programmer holds keeps running: it does not reach the
     /// output, but it does say where that key would land if the value were released,
     /// so it is recorded rather than dropped.
-    fn advance_fades(&mut self, now: Instant, wall_ms: u64, changes: &mut Changes) {
+    fn advance_fades(&mut self, wall_ms: u64, changes: &mut Changes) {
         if self.fades.is_empty() {
             return;
         }
@@ -533,8 +528,8 @@ impl Playback {
         let advanced: Vec<(Uuid, String, ParameterValue)> = self
             .fades
             .iter()
-            .filter(|fade| now >= fade.start) // anything else is still inside its delay
-            .map(|fade| (fade.fixture_id, fade.key.clone(), fade.value_at(now)))
+            .filter(|fade| wall_ms >= fade.t0_ms) // anything else is still inside its delay
+            .map(|fade| (fade.fixture_id, fade.key.clone(), fade.value_at(wall_ms)))
             .collect();
 
         for (fixture_id, key, value) in advanced {
@@ -549,7 +544,7 @@ impl Playback {
             }
         }
 
-        self.fades.retain(|f| !f.is_done(now));
+        self.fades.retain(|f| !f.is_done(wall_ms));
     }
 
     /// Render every effect a cue is asserting.
@@ -718,31 +713,6 @@ fn descending(from: &ParameterValue, to: &ParameterValue) -> bool {
         (Float(a), Float(b)) => b < a,
         (Int(a), Int(b)) => b < a,
         _ => false,
-    }
-}
-
-/// Blend two parameter values. Values that cannot be blended, and values of
-/// different kinds, snap to the target when the fade completes.
-pub(crate) fn interpolate(from: &ParameterValue, to: &ParameterValue, t: f32) -> ParameterValue {
-    use ParameterValue::*;
-    match (from, to) {
-        (Float(a), Float(b)) => Float(a + (b - a) * t),
-        (Int(a), Int(b)) => Int((*a as f32 + (*b as f32 - *a as f32) * t).round() as i32),
-        (Color { r: r0, g: g0, b: b0 }, Color { r: r1, g: g1, b: b1 }) => Color {
-            r: r0 + (r1 - r0) * t,
-            g: g0 + (g1 - g0) * t,
-            b: b0 + (b1 - b0) * t,
-        },
-        // A boolean has nothing between its two states, so it switches at the start
-        // of the fade rather than at the end, where it would look like a late cue.
-        (Bool(a), Bool(b)) => Bool(if t > 0.0 { *b } else { *a }),
-        (a, b) => {
-            if t >= 1.0 {
-                b.clone()
-            } else {
-                a.clone()
-            }
-        }
     }
 }
 

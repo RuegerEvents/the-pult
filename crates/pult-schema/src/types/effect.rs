@@ -37,62 +37,20 @@ use uuid::Uuid;
 
 use super::fixture::ParameterValue;
 
-/// The five shapes, evaluated over one cycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub enum Shape {
-    Sine,
-    Triangle,
-    Square,
-    SawUp,
-    SawDown,
-}
-
-/// How one value gives way to the next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub enum Easing {
-    /// No transition: hold, then jump.
-    Step,
-    #[default]
-    Linear,
-    EaseIn,
-    EaseOut,
-    EaseInOut,
-}
-
-/// One keyframe of a step list.
-///
-/// The value is a real [`ParameterValue`] rather than a level, so a chase can be red,
-/// green, blue rather than three brightnesses of one colour. `easing` describes the
-/// transition into the *next* step, which is why a hard chase is a list of steps that
-/// all say [`Easing::Step`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct Step {
-    /// Where in the cycle this step begins, 0..1.
-    pub at: f32,
-    pub value: ParameterValue,
-    pub easing: Easing,
-}
-
-/// What the cycle position is turned into.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub enum Curve {
-    Shape(Shape),
-    Steps(Vec<Step>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub enum Direction {
-    #[default]
-    Forward,
-    Backward,
-}
+// The shapes, the curves and what is actually running live in `pult-render`, because
+// the browser has to evaluate them too and cannot depend on this crate. Re-exported
+// here under the paths they have always had, so nothing else in the workspace moves.
+pub use pult_render::effect::{
+    blend, curve_level, cycle_position, ease, effect_value_at, fade_is_done, fade_progress,
+    fade_value_at, step_value, Curve, Direction, Easing, EffectSource, RunningEffect, RunningFade,
+    Shape, Step,
+};
 
 /// How fast, either said outright or borrowed from a speed master.
+///
+/// Stays here rather than moving to the evaluator: resolving a master into a rate
+/// needs the `speed_masters` collection, which is show data. What the evaluator is
+/// given is a [`RunningEffect`], whose rate is already a number.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum Rate {
@@ -111,7 +69,8 @@ impl Default for Rate {
 /// How per-fixture phases were derived from the selection order.
 ///
 /// Kept so the GUI can re-apply the same arrangement to a new selection. The engine
-/// never reads it: by the time an effect is running, the phase is already a number.
+/// never reads it: by the time an effect is running, the phase is already a number —
+/// which is also why it stays here and not in the evaluator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum Spread {
@@ -157,53 +116,6 @@ pub struct EffectSpec {
     /// every Go. A [`Rate::Master`] ignores this either way: the master's own anchor
     /// is what keeps every effect on one master in step.
     pub t0: Option<u64>,
-}
-
-/// Where a running effect came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub enum EffectSource {
-    Programmer,
-    Cue(Uuid),
-}
-
-/// What is actually running on one fixture parameter: rate resolved to Hz, anchor
-/// decided, nothing left to look up.
-///
-/// This is the value a capable node is sent, and the value the GUI reads to draw a
-/// dot on a waveform. It is LOCAL on the fixture, because it is a description of what
-/// this station is currently rendering rather than a fact about the show.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct RunningEffect {
-    pub effect_id: Uuid,
-    pub curve: Curve,
-    pub rate_hz: f32,
-    pub low: ParameterValue,
-    pub high: ParameterValue,
-    pub width: f32,
-    pub direction: Direction,
-    pub phase: f32,
-    pub t0: u64,
-    pub source: EffectSource,
-}
-
-/// A fade the engine is part way through, described well enough that a node could do
-/// it instead.
-///
-/// The engine interpolates this itself for everything that cannot be told about time.
-/// A node that advertises `transitions` is handed the description and left to it, and
-/// the console stops sending samples for that port until the fade is over.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct RunningFade {
-    pub from: ParameterValue,
-    pub to: ParameterValue,
-    /// Console unix ms the movement starts, with any delay already added.
-    pub t0: u64,
-    pub duration_ms: u32,
-    pub easing: Easing,
-    pub cue_id: Uuid,
 }
 
 #[cfg(test)]

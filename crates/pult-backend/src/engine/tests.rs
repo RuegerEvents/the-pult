@@ -1392,27 +1392,29 @@ async fn taking_a_cue_fades_the_fixture_up() {
     // Patched as something, so the console knows the parameter rests dark and the
     // fade has a beginning. Without a type nothing can say, and the cue lands.
     fixture.fixture_type_id = a_dimmer_type(&h).await;
-    let cue = an_intensity_cue(fixture.id, 1.0, 4000);
+    // Short, and run in real time. This used to be a four-second fade fast-forwarded
+    // with `tokio::time::pause()`, which worked while a fade was measured against the
+    // monotonic clock. A fade is measured against the show clock now — the same
+    // console milliseconds an effect always used, and the only clock a browser can
+    // share — and that one does not fast-forward, so the fade has to be short enough
+    // to sit through. Twelve ticks at 25 ms is plenty of resolution to catch a middle.
+    let cue = an_intensity_cue(fixture.id, 1.0, 1000);
     let seq = a_sequence("Act 1", vec![cue.id]);
 
     h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
     h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
     h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
 
-    // Setup is done, so the clock can go virtual: tokio now jumps to the next
-    // timer and a multi-second fade finishes in microseconds.
-    tokio::time::pause();
-
     h.engine
         .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
         .await
         .unwrap();
 
-    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     let midway = intensity_of(&h, fixture.id).await;
     assert!(midway > 0.1 && midway < 0.9, "expected a partial level midway, got {midway}");
 
-    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
     assert_eq!(intensity_of(&h, fixture.id).await, 1.0);
 }
 

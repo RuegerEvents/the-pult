@@ -5,6 +5,9 @@ edition.workspace = true
 
 [dependencies]
 pult-macros = { path = "../pult-macros" }
+# The evaluator. Its types live there so a browser can have them; `ts` is on here
+# because this is the build that generates TypeScript.
+pult-render = { workspace = true, features = ["ts"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

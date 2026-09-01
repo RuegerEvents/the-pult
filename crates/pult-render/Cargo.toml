@@ -1,0 +1,22 @@
+[package]
+name = "pult-render"
+version.workspace = true
+edition.workspace = true
+
+# What a parameter is doing, worked out from what is driving it and a moment in time.
+#
+# This crate exists to be compiled twice: natively for the station, its connectors and
+# its plugins, and to `wasm32-unknown-unknown` for the browser. That is the whole
+# reason it is separate from `pult-schema`, whose dependencies (sqlx, tokio,
+# inventory) rule out a browser target. Nothing here may touch an OS, a clock, or a
+# filesystem: a moment is an argument, never something looked up.
+[dependencies]
+serde = { workspace = true }
+uuid = { workspace = true }
+# Only so the moved types keep their TypeScript bindings. Off by default, and off for
+# the wasm build, where nothing generates TypeScript and the weight is not wanted.
+ts-rs = { workspace = true, optional = true }
+
+[features]
+default = []
+ts = ["dep:ts-rs"]

@@ -14,18 +14,39 @@ use pult_schema::types::{
 use pult_schema::types::effect::Easing;
 use super::*;
 
-/// The wall clock the value-and-fade tests tick at.
-///
-/// Fixed, and any constant would do: none of those sequences carries a `went_at`, so
-/// the anchor falls back to whatever wall clock the tick was given and every fade
-/// measures from `now` exactly as it did before there was a wall clock at all. The
-/// effect tests below call `tick` directly, because for them the wall clock is the
-/// thing under test.
+/// Where the wall clock starts for the value-and-fade tests. Any constant would do:
+/// none of those sequences carries a `went_at`, so the anchor falls back to whatever
+/// wall clock the tick was given.
 const WALL: u64 = 1_700_000_000_000;
 
+thread_local! {
+    /// The monotonic instant this test first ticked at, so the wall clock can be
+    /// advanced from it.
+    static BASE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
 impl Playback {
+    /// Tick at `now`, with a wall clock that has advanced by the same amount.
+    ///
+    /// The two used to be allowed to disagree — the wall clock was a fixed constant
+    /// and every fade measured from the monotonic `now` — because a fade was the one
+    /// thing evaluated against the monotonic clock. It is not any more: a fade is
+    /// evaluated the way an effect always was, against console milliseconds, so that
+    /// a browser can work out the same number from the same object. Which means a
+    /// test that advances one clock and not the other is no longer describing a
+    /// console that could exist.
     fn tick_at(&mut self, now: Instant, view: &ShowView<'_>) -> Vec<PlaybackEffect> {
-        self.tick(now, WALL, view)
+        // Re-based when `now` runs backwards, which is a second test on a reused
+        // thread rather than time travel.
+        let base = BASE.with(|b| match b.get() {
+            Some(previous) if now >= previous => previous,
+            _ => {
+                b.set(Some(now));
+                now
+            }
+        });
+        let wall = WALL + now.saturating_duration_since(base).as_millis() as u64;
+        self.tick(now, wall, view)
     }
 }
 
@@ -598,14 +619,16 @@ fn a_follow_cue_fires_after_the_fade_plus_its_delay() {
     let start = Instant::now();
     playback.tick_at(start, &view);
 
+    // A follow's `at` is the moment it came due, on the same clock a fade is measured
+    // against — so it advances with the tick rather than staying at the base.
     let effects = playback.tick_at(start + Duration::from_millis(2500), &view);
     assert!(
-        !effects.contains(&PlaybackEffect::GoNext { sequence_id: seq_id, at: WALL }),
+        !effects.iter().any(|e| matches!(e, PlaybackEffect::GoNext { sequence_id, .. } if *sequence_id == seq_id)),
         "the delay is measured from the end of the fade, not the start",
     );
 
     let effects = playback.tick_at(start + Duration::from_millis(3100), &view);
-    assert!(effects.contains(&PlaybackEffect::GoNext { sequence_id: seq_id, at: WALL }));
+    assert!(effects.contains(&PlaybackEffect::GoNext { sequence_id: seq_id, at: WALL + 3100 }));
 }
 
 #[test]
