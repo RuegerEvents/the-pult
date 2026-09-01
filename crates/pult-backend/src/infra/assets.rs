@@ -119,11 +119,32 @@ pub async fn get(pool: &SqlitePool, sha: &str) -> Result<Option<Asset>> {
 ///
 /// What comes back is hashed before it is stored: a peer cannot answer a request for
 /// one asset with a different one, whether by mistake or otherwise.
-pub async fn fetch_from_peers(
-    pool: &SqlitePool,
-    sha: &str,
-    peers: &[String],
-) -> Result<Option<Asset>> {
+/// What came of asking the other stations for an asset.
+///
+/// The two ways of not getting it are worth telling apart. "Nobody has it" is
+/// something an operator can act on — install the bundle somewhere. "I could not
+/// reach two of them" is a network to look at, and it is also a reason to ask again
+/// in a moment rather than give up, because a station that is busy coming up is not
+/// a station without the bundle.
+pub enum Fetched {
+    Got(Asset),
+    /// Every peer answered, and none of them had it.
+    NobodyHasIt,
+    /// This many peers could not be asked at all.
+    Unreachable(usize),
+}
+
+impl Fetched {
+    pub fn asset(self) -> Option<Asset> {
+        match self {
+            Fetched::Got(asset) => Some(asset),
+            _ => None,
+        }
+    }
+}
+
+pub async fn fetch_from_peers(pool: &SqlitePool, sha: &str, peers: &[String]) -> Result<Fetched> {
+    let mut unreachable = 0usize;
     for addr in peers {
         let url = format!("http://{addr}/assets/{sha}");
         let response = match reqwest::Client::new()
@@ -136,9 +157,15 @@ pub async fn fetch_from_peers(
             .await
         {
             Ok(response) if response.status().is_success() => response,
+            // An answer, and the answer is no.
             Ok(_) => continue,
+            // Not an answer at all. Counted rather than folded in with the above,
+            // because a station that could not be reached has not said it lacks the
+            // asset — and reporting that it did would send an operator looking in
+            // the wrong place.
             Err(e) => {
                 debug!("[assets] {addr} could not be asked for {sha}: {e}");
+                unreachable += 1;
                 continue;
             }
         };
@@ -156,9 +183,9 @@ pub async fn fetch_from_peers(
             continue;
         }
         put(pool, &mime, &bytes).await?;
-        return Ok(Some(Asset { mime, bytes: bytes.to_vec() }));
+        return Ok(Fetched::Got(Asset { mime, bytes: bytes.to_vec() }));
     }
-    Ok(None)
+    Ok(if unreachable > 0 { Fetched::Unreachable(unreachable) } else { Fetched::NobodyHasIt })
 }
 
 #[cfg(test)]

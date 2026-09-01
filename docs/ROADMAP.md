@@ -1804,6 +1804,55 @@ answered without giving the model any show data.
 Left open: no fan, no multiplying sibling, and no relative value stored in a cue —
 that last is tracking, which is its own design.
 
+### 40. Four flaky tests, and one of them was the console (done)
+
+`cargo test` failed about one run in three, in a different place each time. None of
+it was flaky code in the usual sense; three were tests lying about their isolation,
+and the fourth was the console giving a wrong answer that only a busy machine made
+visible.
+
+**A process has one environment.** `StationStore::open` read `PULT_PLUGIN_DATA` at
+open time, and two stations inside one program cannot each have their own that way —
+whichever set it last decided for both. `stores.rs` had already met this and worked
+around it with a `OnceLock`, complete with a comment that a file per test would be
+"a race over one variable rather than the isolation it looks like". Worse than the
+flake: `plugins.rs` starts two stations and only one set the variable, so the other
+opened the **developer's real `plugin-data.db`** and wrote to it. `Config::plugin_data`
+now names the file, the way `showfile` and `plugin_dirs` already do, and the
+environment variable is the fallback for a station started from a shell.
+
+**A test that samples a fade has to sample it early.** The node sim's timed-set test
+started a 400 ms fade, slept 200 ms and asserted the level was between the ends. A
+saturated machine spends longer than that between the sleep and the read, so the
+fade had finished and the assertion read "it jumped" when it had done nothing of the
+kind. Three seconds, sampled a sixth of the way in: two and a half seconds of
+overrun would now be needed to fool it. The test's own doc comment had said "a three
+second fade" all along.
+
+**Connecting is not free on a loaded machine.** Eighteen stations come up in
+`roster.rs`, and a connect to a listener whose accept queue has backed up times out
+rather than being refused — `ETIMEDOUT` on `127.0.0.1`, arriving as a panic in
+whichever test was unlucky. The HTTP helpers are now as patient about connecting as
+`eventually` already was about state, with a two-second connect timeout so a dropped
+SYN is retried in a moment rather than after the operating system's minute.
+
+**And the one that was not a test problem at all.** The same load made a station
+fail to fetch a plugin bundle from a peer, and what it told the operator was *"no
+station in this session has the bundle"* — because `fetch_from_peers` folded a
+transport error into the same `continue` as a peer answering 404. Those are opposite
+diagnoses: one sends you to install the bundle somewhere, the other sends you to the
+network. `Fetched` now says which, and `begin_fetch` **asks again** when somebody
+could not be reached, four times backing off from a quarter second.
+
+That retry is a real behaviour change and worth stating plainly: nothing re-drove a
+fetch, so a station that came up while a peer was still loading its own show had a
+permanently failed plugin until the roster changed again. Only an unreachable peer
+is worth asking twice — peers that all answered "no" will go on answering no.
+
+The trap in writing it was that `break` left the *previous* attempt's message in
+place, so a fetch that ended in "nobody has it" reported "could not reach one
+station". Every arm sets the answer before deciding whether to go round again.
+
 ## Further out
 
 Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.

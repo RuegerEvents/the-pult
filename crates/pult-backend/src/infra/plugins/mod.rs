@@ -185,6 +185,14 @@ pub struct PluginManager {
     tx: mpsc::Sender<PluginCommand>,
 }
 
+/// How many times a station asks its peers for a bundle before it gives up.
+///
+/// Only counts attempts where somebody could not be reached. Four, backing off from
+/// a quarter of a second, is under two seconds in the worst case — enough to ride
+/// out a peer that is busy coming up, and short enough that a genuinely absent
+/// bundle is still reported while the operator is still looking at the screen.
+const ASK_PEERS_TIMES: u32 = 4;
+
 impl PluginManager {
     pub fn new(
         engine: EngineHandle,
@@ -815,17 +823,55 @@ impl PluginManager {
         let tx = self.tx.clone();
         info!("[plugin:{}] fetching its bundle from a peer", package.plugin_id);
         tokio::spawn(async move {
-            let peers = peer_addresses(&engine).await;
-            let result = match crate::infra::assets::fetch_from_peers(&pool, &sha, &peers).await {
-                // What comes back is hashed before it is stored, in the asset
-                // store itself — so nothing here has to trust a peer's answer.
-                Ok(Some(_)) => Ok(()),
-                Ok(None) => Err(format!(
-                    "no station in this session has the bundle {}",
-                    &sha[..sha.len().min(12)]
-                )),
-                Err(e) => Err(format!("fetching the bundle failed: {e}")),
-            };
+            let short = sha[..sha.len().min(12)].to_string();
+            // Asked more than once, because a peer that did not answer has not said
+            // it lacks the bundle. A station coming up at a get-in is busy loading
+            // its own show, and giving up on the first refused connection would
+            // leave a plugin permanently failed over a second of bad timing —
+            // nothing re-drives a fetch until the roster changes again.
+            //
+            // Only an unreachable peer is worth asking twice. Peers that all
+            // answered "no" will go on answering no, and retrying that would be
+            // a station talking to itself.
+            use crate::infra::assets::Fetched;
+
+            let mut result = Err(format!("no station in this session has the bundle {short}"));
+            for attempt in 0..ASK_PEERS_TIMES {
+                let peers = peer_addresses(&engine).await;
+                // Every arm sets the answer before it decides whether to go round
+                // again: the message has to be *this* attempt's, or a retry that
+                // ends in "nobody has it" would report the previous attempt's
+                // "could not reach", which is the wrong thing entirely.
+                let again = match crate::infra::assets::fetch_from_peers(&pool, &sha, &peers).await
+                {
+                    // What comes back is hashed before it is stored, in the asset
+                    // store itself — so nothing here has to trust a peer's answer.
+                    Ok(Fetched::Got(_)) => {
+                        result = Ok(());
+                        false
+                    }
+                    Ok(Fetched::NobodyHasIt) => {
+                        result =
+                            Err(format!("no station in this session has the bundle {short}"));
+                        false
+                    }
+                    Ok(Fetched::Unreachable(n)) => {
+                        result = Err(format!(
+                            "could not reach {n} station{} to ask for the bundle {short}",
+                            if n == 1 { "" } else { "s" }
+                        ));
+                        true
+                    }
+                    Err(e) => {
+                        result = Err(format!("fetching the bundle failed: {e}"));
+                        true
+                    }
+                };
+                if !again {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250 << attempt)).await;
+            }
             let _ = tx.send(PluginCommand::Fetched { sha256: sha, result }).await;
         });
     }

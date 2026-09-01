@@ -95,7 +95,10 @@ async fn a_peer_answering_with_the_wrong_bytes_is_ignored() {
 
     let got = fetch_from_peers(&pool, &wanted, &[addr]).await.unwrap();
 
-    assert!(got.is_none(), "a peer must not be able to answer with a different asset");
+    assert!(
+        got.asset().is_none(),
+        "a peer must not be able to answer with a different asset"
+    );
     assert!(get(&pool, &wanted).await.unwrap().is_none(), "and nothing should have been stored");
 }
 
@@ -109,6 +112,7 @@ async fn an_asset_is_pulled_from_the_station_that_has_it() {
     let got = fetch_from_peers(&pool, &sha, &["127.0.0.1:1".into(), addr])
         .await
         .unwrap()
+        .asset()
         .expect("the second station has it");
 
     assert_eq!(got.bytes, PNG);
@@ -121,7 +125,38 @@ async fn an_asset_is_pulled_from_the_station_that_has_it() {
 #[tokio::test]
 async fn a_station_with_no_peers_to_ask_says_so_rather_than_failing() {
     let pool = a_store().await;
-    assert!(fetch_from_peers(&pool, &digest(PNG), &[]).await.unwrap().is_none());
+    assert!(matches!(
+        fetch_from_peers(&pool, &digest(PNG), &[]).await.unwrap(),
+        Fetched::NobodyHasIt
+    ));
+}
+
+/// The two ways of not getting it, told apart.
+///
+/// "Nobody has it" sends an operator to install the bundle somewhere; "I could not
+/// reach that station" sends them to the network. Reporting the second as the first
+/// is worse than useless, and it is also what stopped a fetch being worth retrying:
+/// a peer that never answered has not said it lacks anything.
+#[tokio::test]
+async fn a_station_that_could_not_be_reached_is_not_a_station_without_it() {
+    let pool = a_store().await;
+
+    let answered_no = a_station_serving(b"something else entirely").await;
+    assert!(
+        matches!(
+            fetch_from_peers(&pool, &digest(PNG), &[answered_no]).await.unwrap(),
+            Fetched::NobodyHasIt
+        ),
+        "a peer that answered, wrongly, has still answered"
+    );
+
+    assert!(
+        matches!(
+            fetch_from_peers(&pool, &digest(PNG), &["127.0.0.1:1".into()]).await.unwrap(),
+            Fetched::Unreachable(1)
+        ),
+        "a peer that could not be asked is counted as such"
+    );
 }
 
 #[tokio::test]

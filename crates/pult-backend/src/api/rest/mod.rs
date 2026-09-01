@@ -263,8 +263,12 @@ async fn download(
     // HTTP API is, so the ones worth asking are the other rows in `stations`.
     let peers = peer_addresses(&state).await;
     match assets::fetch_from_peers(&state.pool, &sha, &peers).await {
-        Ok(Some(asset)) => serve(asset),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Ok(fetched) => match fetched.asset() {
+            Some(asset) => serve(asset),
+            // Whether nobody had it or nobody could be reached, this station does
+            // not have it to serve; a viewer asking again is the retry.
+            None => StatusCode::NOT_FOUND.into_response(),
+        },
         Err(e) => {
             debug!("[assets] fetching {sha} from peers failed: {e}");
             StatusCode::NOT_FOUND.into_response()

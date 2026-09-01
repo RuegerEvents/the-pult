@@ -1511,20 +1511,26 @@ mod tests {
         client
             .post(&node_url)
             .json(&json!({ "outputs": { "1": {
-                "value": 1.0, "fade_ms": 400, "curve": "linear", "t0": now_ms(),
+                "value": 1.0, "fade_ms": 3000, "curve": "linear", "t0": now_ms(),
             }}}))
             .send()
             .await
             .unwrap();
 
         // Part way through: somewhere between the ends, and at neither of them.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        //
+        // Sampled a sixth of the way into a fade rather than half way into a short
+        // one, because what is being asserted is that the node walks the fade at all
+        // — and a busy machine can spend longer between the sleep and the read than a
+        // short fade lasts, which reads as "it jumped" when it did nothing of the
+        // kind. Two and a half seconds of overrun would now be needed to fool this.
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let midway: Value = client.get(&node_url).send().await.unwrap().json().await.unwrap();
         let level = midway["outputs"]["1"]["value"].as_f64().unwrap();
         assert!(level > 0.05 && level < 0.95, "part way there, not jumped: {level}");
 
         // And it arrives, and stops being a transition once it has.
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        tokio::time::sleep(Duration::from_millis(3000)).await;
         let arrived: Value = client.get(&node_url).send().await.unwrap().json().await.unwrap();
         assert_eq!(arrived["outputs"]["1"]["value"].as_f64().unwrap(), 1.0, "there");
         assert!(arrived["effects"].get("1").is_none(), "and done");

@@ -155,15 +155,53 @@ fn a_bundle_versioned(plugin_id: &str, api: &str, version: &str) -> (Vec<u8>, St
     (buf, digest)
 }
 
+/// Ask a station something over HTTP, patiently about *connecting*.
+///
+/// The same patience `eventually` has, for the same reason: eighteen tests in this
+/// binary each bring a station up, and under that load a connect to a listener whose
+/// accept queue has backed up times out rather than being refused — `ETIMEDOUT` on
+/// `127.0.0.1`, which reads as a failed assertion in whichever test was unlucky. It
+/// is the machine being busy, not the console being wrong.
+///
+/// Retrying is safe because every request these tests make is idempotent: the asset
+/// store is content-addressed, and installing a bundle that is already installed
+/// upgrades it to itself. A retry only happens when no answer came back at all.
+///
+/// The connect timeout is short on purpose. Left to the operating system it is over
+/// a minute, so one dropped SYN would stall a test rather than be tried again.
+async fn ask(build: impl Fn() -> reqwest::RequestBuilder) -> reqwest::Response {
+    let mut last = String::new();
+    for attempt in 0..10u32 {
+        match build().send().await {
+            Ok(response) => return response,
+            Err(e) if e.is_connect() || e.is_timeout() => {
+                last = e.to_string();
+                tokio::time::sleep(Duration::from_millis(100 * u64::from(attempt + 1))).await;
+            }
+            Err(e) => panic!("the station answered with an error: {e}"),
+        }
+    }
+    panic!("the station never accepted a connection: {last}");
+}
+
+fn http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("a client")
+}
+
 /// Put bytes in this station's asset store, over its own HTTP API.
 async fn upload(station: &Station, bytes: Vec<u8>) -> String {
-    let response = reqwest::Client::new()
-        .post(format!("http://{}/assets", station.running.http_addr))
-        .header("content-type", "application/vnd.pult.plugin+zip")
-        .body(bytes)
-        .send()
-        .await
-        .expect("the upload is answered");
+    let addr = station.running.http_addr;
+    let response = ask(|| {
+        http()
+            .post(format!("http://{addr}/assets"))
+            .header("content-type", "application/vnd.pult.plugin+zip")
+            .body(bytes.clone())
+    })
+    .await;
     assert_eq!(response.status(), 200, "the store takes a bundle");
     response.json::<Value>().await.unwrap()["sha256"].as_str().unwrap().to_string()
 }
@@ -597,12 +635,9 @@ async fn changing_the_shows_configuration_restarts_the_plugin_everywhere() {
 /// Install a bundle the way an operator's console does: one request with the
 /// bytes in it.
 async fn install_over_http(station: &Station, bytes: Vec<u8>) -> (reqwest::StatusCode, Value) {
-    let response = reqwest::Client::new()
-        .post(format!("http://{}/api/plugins", station.running.http_addr))
-        .body(bytes)
-        .send()
-        .await
-        .expect("the install is answered");
+    let addr = station.running.http_addr;
+    let response =
+        ask(|| http().post(format!("http://{addr}/api/plugins")).body(bytes.clone())).await;
     let status = response.status();
     let body = response.json::<Value>().await.unwrap_or(Value::Null);
     (status, body)
@@ -645,12 +680,11 @@ async fn a_bundle_that_is_not_a_plugin_leaves_nothing_behind() {
     assert_eq!(roster.as_array().map(|r| r.len()), Some(0), "no row: {roster}");
 
     let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"PK definitely not a zip"));
-    let stored = reqwest::Client::new()
-        .get(format!("http://{}/assets/{digest}", station.running.http_addr))
-        .header("x-pult-asset-relay", "1")
-        .send()
-        .await
-        .unwrap();
+    let addr = station.running.http_addr;
+    let stored = ask(|| {
+        http().get(format!("http://{addr}/assets/{digest}")).header("x-pult-asset-relay", "1")
+    })
+    .await;
     assert_eq!(stored.status(), 404, "and no asset either");
 
     station.stop();
