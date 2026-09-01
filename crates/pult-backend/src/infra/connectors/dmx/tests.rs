@@ -28,6 +28,7 @@ fn a_fixture(fixture_type: &FixtureType, universe: u16, address: u16) -> Fixture
         live_values: HashMap::new(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        home_values: Default::default(),
     }
 }
 

@@ -36,6 +36,8 @@ Selecting fixtures
   @ 80  /  at 80          the selection to 80% intensity
   at +10  /  at -10       ten percent brighter or darker than it is now
   full  /  out            the selection to 100% / 0%
+  home                    every parameter back to where it rests — which for a
+                          house light is on, and for a mover is centred
   clear                   empty the programmer (locked values stay)
   clear clear             also drop the selection
 
@@ -153,12 +155,20 @@ mod tests {
     }
 
     #[test]
+    fn the_overview_explains_home() {
+        let text = help(&test_catalog(), None);
+        assert!(text.contains("home"), "{text}");
+        assert!(text.contains("where it rests"), "and says what it means: {text}");
+    }
+
+    #[test]
     fn entity_help_lists_commands_with_their_arguments_and_docs() {
         let text = help(&test_catalog(), Some("sequence"));
         assert!(text.contains("goNext [at]"), "{text}");
         assert!(text.contains("goToCue <cueId> [at]"), "{text}");
         assert!(text.contains("Take the next cue"), "the doc comment rode along");
         assert!(text.contains("`go` is goNext"));
+        assert!(text.contains("off"), "including the one that takes it off: {text}");
     }
 
     #[test]

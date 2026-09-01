@@ -87,7 +87,7 @@ fn expectations_after(catalog: &Catalog, tokens: &[Token]) -> Vec<Expectation> {
                 Vec::new()
             }
         }
-        "full" | "out" => Vec::new(),
+        "full" | "out" | "home" => Vec::new(),
         "create" => match rest.len() {
             0 => tables(catalog),
             1 => vec![Expectation::Value { hint: "\"a name\"".into() }],
@@ -166,6 +166,7 @@ fn first_words(catalog: &Catalog) -> Vec<Expectation> {
         keyword("at", "set the selection's intensity: at 80, or at +10"),
         keyword("full", "selection to 100%"),
         keyword("out", "selection to 0%"),
+        keyword("home", "selection back to where it rests"),
         keyword("clear", "empty the programmer"),
         keyword("create", "add an entry to a collection"),
         keyword("delete", "remove an entry"),
@@ -255,6 +256,7 @@ fn selection_expectations(mode: &str, rest: &[Token]) -> Vec<Expectation> {
                 keyword("at", "…and to a level: at 80, or at +10"),
                 keyword("full", "…and to 100%"),
                 keyword("out", "…and to 0%"),
+                keyword("home", "…and back to where they rest"),
             ]);
             next
         }
@@ -320,6 +322,16 @@ mod tests {
         for expected in ["fixture", "at", "clear", "sequence", "session", "help"] {
             assert!(words.contains(&expected.to_string()), "missing {expected} in {words:?}");
         }
+    }
+
+    /// `home` is offered where `full` and `out` are, in both places they appear:
+    /// as a way to open a line, and as the thing to do with a selection just made.
+    #[test]
+    fn home_is_offered_wherever_a_level_is() {
+        assert!(words_at("", 0).contains(&"home".to_string()), "{:?}", words_at("", 0));
+        let after = words_at("fixture 1 thru 5 ", 17);
+        assert!(after.contains(&"home".to_string()), "{after:?}");
+        assert!(after.contains(&"full".to_string()), "beside the ones it is like");
     }
 
     #[test]

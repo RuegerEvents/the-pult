@@ -610,6 +610,7 @@ impl DeviceManager {
             live_values: Default::default(),
             live_effects: Default::default(),
             live_fades: Default::default(),
+            home_values: Default::default(),
         };
         let value = serde_json::to_value(&fixture).map_err(|e| e.to_string())?;
         self.engine

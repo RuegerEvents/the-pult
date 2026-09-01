@@ -42,6 +42,19 @@ pub struct Show {
     #[serde(default = "default_history_depth")]
     #[pult(lifecycle = PERSISTED)]
     pub history_depth: u32,
+    /// How long a parameter takes to reach its home value when nothing is left
+    /// driving it — a sequence taken off, a selection sent home.
+    ///
+    /// Show data for the same reason `history_depth` is, and the reason is easier to
+    /// see here: two stations driving one rig and fading it home over different
+    /// times is not a preference but a disagreement the audience can watch. A
+    /// station's own preference decides what a *new* show starts with.
+    ///
+    /// Zero, so nothing an operator is used to changes until they ask for it: a
+    /// programmer clear has always snapped.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub home_fade_ms: u32,
 }
 
 /// What a show keeps unless somebody says otherwise: five hundred changes, which is
@@ -67,4 +80,42 @@ fn default_history_depth() -> u32 {
 /// no undo at all.
 pub fn clamp_history_depth(depth: u32) -> u32 {
     depth.clamp(HISTORY_DEPTH_MIN, HISTORY_DEPTH_MAX)
+}
+
+/// Above this, going home stops being a release and becomes a cue nobody wrote.
+/// Half a minute is already far longer than anybody waits for a rig to let go.
+pub const HOME_FADE_MS_MAX: u32 = 30_000;
+
+/// A home time somebody asked for, brought inside what the console will do. Applied
+/// where the value is used, for the same reason as [`clamp_history_depth`].
+pub fn clamp_home_fade_ms(ms: u32) -> u32 {
+    ms.min(HOME_FADE_MS_MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `home_fade_ms` is a column that did not exist. A show written before it has to
+    /// open snapping, which is what every show did before there was a choice.
+    #[test]
+    fn a_show_written_before_a_home_time_existed_snaps() {
+        let legacy = serde_json::json!({
+            "id": Uuid::nil(),
+            "name": "Act 1",
+            "created_at": "2026-08-31T20:00:00Z",
+        });
+
+        let parsed: Show = serde_json::from_value(legacy).unwrap();
+
+        assert_eq!(parsed.home_fade_ms, 0);
+        assert_eq!(parsed.history_depth, HISTORY_DEPTH_DEFAULT, "and the depth it always had");
+    }
+
+    #[test]
+    fn a_home_time_is_brought_inside_what_the_console_will_do() {
+        assert_eq!(clamp_home_fade_ms(0), 0, "snapping is allowed and is the default");
+        assert_eq!(clamp_home_fade_ms(3_000), 3_000);
+        assert_eq!(clamp_home_fade_ms(u32::MAX), HOME_FADE_MS_MAX);
+    }
 }

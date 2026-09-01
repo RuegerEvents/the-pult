@@ -93,6 +93,7 @@ fn a_dimmer_patch(level: f32) -> Patch {
         live_values: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        home_values: Default::default(),
     };
     fixture.live_values.insert("Intensity".into(), ParameterValue::Float(level));
     Patch {

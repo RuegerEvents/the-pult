@@ -157,36 +157,36 @@ Token/cost accounting for the NL plugin, visible over the REST API.
 
 ## Programming model
 
-### parameter-defaults
-What a fixture does when nothing is controlling it. Today: nothing puts a
-parameter back. `live_values` only ever grows — `emit()` in
-`crates/pult-backend/src/model/playback.rs` merges a tick's changes onto the map
-the fixture already has, and no path removes a key. Running off the end of a
-sequence holds the last values on purpose (the comment at playback.rs:283 says a
-light should not go dark because the operator ran out of cues), and a cue going
-down drops its effects but leaves what it faded to. Clearing the programmer
-restores `Overlay::beneath`, which is `zero_like` — a hardcoded zero of the same
-variant — when nothing was live before the key was grabbed, so the first clear on
-an untouched fixture lands on zero rather than on the fixture's default.
-`ParameterDefinition::default_value` already exists
-(`crates/pult-schema/src/types/fixture.rs`), derived from what an OpenHaunt node
-says about its ports, but only the connectors read it, and only as a fallback for
-a key absent from `live_values`.
-- Where "nothing is controlling this" is decided: a bottom layer of the priority
-  stack (task 14's stack), or the absence of the key — connectors already fall
-  back to `default_value`, so removing the key is the cheaper spelling. But
-  panels read `live_values` to show what a fixture is doing, and an absent key
-  reads as unknown rather than as at-default.
-- `zero_like` at programmer release should presumably be the default instead.
-  Same question for a captured parameter with no prior value (playback.rs:353).
-- Per fixture type as today, or overridable per fixture and per show? A house
-  light that defaults to on is the case that forces this, and `default_value` is
-  derived data — making it editable needs somewhere PERSISTED for the override.
-- Snap to the default or fade to it, and on whose time — a release time is a
-  station preference, a cue-out time is show data.
-- Tracking: this needs "not controlled" to be distinguishable from "tracked from
-  an earlier cue". Does the change define release only at the sequence-off and
-  programmer-clear boundaries, or does it want a tracking model first?
+### parameter-defaults — done, see `changes/archive/2026-09-01-parameter-defaults/`
+Shipped as roadmap task 41. A parameter has a **home value** — the fixture's own
+`home_values` override, else its type's `default_value` — resolved once in
+`pult-schema`, with no TypeScript twin because nothing here is on the per-frame path
+that made `fixture-groups` pay for two evaluators.
+
+The answers to the questions below. "Nothing is controlling this" is decided by
+**what the show says**, not by the absence of a key: `live_values` keeps its keys and
+the home value is written into them, because panels read that map and an absent key
+reads as unknown rather than as at-default. The override is per **fixture** and
+PERSISTED — a type is derived from the device and rebuilt whenever it describes
+itself again, so an override there would not survive. It **snaps** by default, over
+`Show::home_fade_ms` when a show asks for a fade; show data rather than a station
+preference, because `history_depth` had already written the argument — two stations
+answering differently about one show is a disagreement, not a preference — and the
+station preference decides what a new show starts with.
+
+And **no, it did not need a tracking model.** Release is defined at two boundaries:
+taking a sequence off, and the programmer letting go. What a sequence releases is
+read from its cues rather than remembered, which is coarser than tracking, needs none
+of it, and is the same answer on a station that joined at the interval as on one that
+ran the act.
+
+The cost taken knowingly: **Go at the last cue now stays there** instead of wrapping
+to no active cue, because "off" has to be a state playback can tell apart from "ran
+out of cues" and a second field encoding the same thing would be worse.
+
+Left open: no cue-out fades — `Cue::fade_out_ms` is still declared and still unread —
+and no way to take a fixture's current output as its home value, which is how an
+operator would actually set a house light's.
 
 ### relative-values — done, see `changes/archive/2026-08-31-relative-values/`
 Shipped as roadmap task 39. A path verb, `__by`, beside `__create` and `__delete`,

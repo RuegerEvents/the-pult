@@ -24,7 +24,7 @@ use pult_schema::types::{
 };
 use uuid::Uuid;
 
-use super::{effects, parameter_key, zero_like, Changes, ShowView};
+use super::{effects, parameter_key, Changes, ShowView};
 
 /// A fixture and one of its parameter keys: what the programmer holds one of.
 pub type Key = (Uuid, String);
@@ -113,11 +113,21 @@ impl Overlay {
         for (key, want) in wanted {
             let value = want.value_at(wall_ms);
             match self.held.get(&key) {
-                // Newly taken: remember what was showing, so releasing can put it back.
+                // Newly taken: remember what was showing, so releasing can put it
+                // back. Where nothing was showing, what is underneath is where the
+                // parameter rests — the fixture's own answer, which is the whole of
+                // what a release has to land on when nothing was ever driving it.
                 None => {
-                    let under = view
-                        .live_value(key.0, &key.1)
-                        .unwrap_or_else(|| zero_like(&value));
+                    let Some(under) =
+                        view.live_value(key.0, &key.1).or_else(|| view.home_value(key.0, &key.1))
+                    else {
+                        // A fixture whose type has gone. Nothing can say where it
+                        // rests, so releasing leaves it where the programmer left it
+                        // rather than putting it somewhere invented.
+                        self.held.insert(key.clone(), want);
+                        changes.entry(key.0).or_default().insert(key.1, value);
+                        continue;
+                    };
                     self.beneath.insert(key.clone(), under);
                 }
                 // Already held. If the live value is not what this overlay put there,

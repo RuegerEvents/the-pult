@@ -30,6 +30,7 @@ const fixture = (over: Partial<Fixture> = {}): Fixture => ({
 	live_values: {},
 	live_effects: {},
 	live_fades: {},
+	home_values: {},
 	...over
 });
 

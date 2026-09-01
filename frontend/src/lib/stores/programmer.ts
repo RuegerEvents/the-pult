@@ -112,6 +112,25 @@ async function flush(): Promise<void> {
 }
 
 /**
+ * Send fixtures back to where their parameters rest.
+ *
+ * Deliberately *not* worked out here. The station decides both what a fixture has
+ * and where each of its parameters rests — its own override, or what its type
+ * declares — so this browser sends one write per fixture naming no parameter and no
+ * value. Which keeps the resolution in one place: the values panel already carries a
+ * type's `default_value` per row for an empty readout, and that is a display
+ * fallback, not an answer about the rig.
+ *
+ * A parked value is left where it was parked, by the same rule as Clear.
+ */
+export async function home(fixtureIds: string[]): Promise<void> {
+	const data = showData();
+	for (const fixtureId of fixtureIds) {
+		await data.programmer_values.home({ fixtureId });
+	}
+}
+
+/**
  * Put an effect into the programmer, one spec per fixture.
  *
  * The specs differ only in phase — `specsFor` builds them, sharing one `effect_id`

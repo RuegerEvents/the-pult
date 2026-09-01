@@ -27,6 +27,7 @@ function aFixture(partial: Partial<Fixture> = {}): Fixture {
 		live_values: {},
 		live_effects: {},
 		live_fades: {},
+		home_values: {},
 		...partial
 	};
 }

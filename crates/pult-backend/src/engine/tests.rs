@@ -90,6 +90,7 @@ fn a_show() -> Show {
         created_at: Utc::now(),
         editing_cue: None,
         history_depth: pult_schema::types::show::HISTORY_DEPTH_DEFAULT,
+        home_fade_ms: 0,
     }
 }
 
@@ -120,6 +121,7 @@ fn a_fixture(name: &str, address: u16) -> Fixture {
         live_values: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        home_values: Default::default(),
     }
 }
 
@@ -295,8 +297,11 @@ async fn session_state_is_local_and_never_reaches_the_showfile() {
 
 // ── Command dispatch ──────────────────────────────────────────────────────────
 
+/// Go walks the list and then stops walking. Running out of cues is not turning the
+/// sequence off, and Off is the only thing that is — which is what makes "no cue
+/// active" mean something playback can release on.
 #[tokio::test]
-async fn go_next_walks_the_cue_list_and_falls_off_the_end() {
+async fn go_next_walks_the_cue_list_and_stays_on_the_last_one() {
     let h = harness().await;
     let cues = vec![Uuid::new_v4(), Uuid::new_v4()];
     let seq = a_sequence("Act 1", cues.clone());
@@ -316,7 +321,13 @@ async fn go_next_walks_the_cue_list_and_falls_off_the_end() {
     assert_eq!(active(&h).await, 1);
 
     h.engine.set(go_next.clone(), Lifecycle::Synced, serde_json::json!({})).await.unwrap();
-    assert!(active(&h).await.is_null(), "past the last cue the sequence goes idle");
+    assert_eq!(active(&h).await, 1, "one Go too many holds what is showing");
+
+    h.engine
+        .set(field_path("sequences", seq.id, "off"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+    assert!(active(&h).await.is_null(), "and Off is what takes it off");
 }
 
 #[tokio::test]
@@ -1349,10 +1360,34 @@ async fn intensity_of(h: &Harness, fixture_id: Uuid) -> f32 {
     fixture["live_values"]["Intensity"]["value"].as_f64().unwrap_or(f64::NAN) as f32
 }
 
+/// A dimmer that says where it rests, so a fade from nothing has somewhere to start.
+async fn a_dimmer_type(h: &Harness) -> Uuid {
+    use pult_schema::types::fixture::{
+        FixtureType, ParameterBinding, ParameterDefinition, ParameterDirection, ParameterKind,
+    };
+    let ft = FixtureType {
+        id: Uuid::new_v4(),
+        name: "Source Four".into(),
+        manufacturer: "ETC".into(),
+        channel_count: 1,
+        parameters: vec![ParameterDefinition {
+            kind: ParameterKind::Intensity,
+            direction: ParameterDirection::Output,
+            binding: ParameterBinding::Dmx { channel: 1 },
+            default_value: ParameterValue::Float(0.0),
+        }],
+    };
+    h.engine.set(create_path("fixture_types"), Lifecycle::Persisted, json(&ft)).await.unwrap();
+    ft.id
+}
+
 #[tokio::test]
 async fn taking_a_cue_fades_the_fixture_up() {
     let h = harness().await;
-    let fixture = a_fixture("Spot L", 1);
+    let mut fixture = a_fixture("Spot L", 1);
+    // Patched as something, so the console knows the parameter rests dark and the
+    // fade has a beginning. Without a type nothing can say, and the cue lands.
+    fixture.fixture_type_id = a_dimmer_type(&h).await;
     let cue = an_intensity_cue(fixture.id, 1.0, 4000);
     let seq = a_sequence("Act 1", vec![cue.id]);
 
@@ -3646,6 +3681,393 @@ mod relative {
     }
 }
 
+
+// ── Going home ────────────────────────────────────────────────────────────────
+
+/// Where a parameter rests when nothing is driving it.
+///
+/// The same property as a relative write, for the same reason: `__home` stops
+/// existing at the front door. What the caller sends is a fixture; what the log and
+/// every peer see is a value, resolved here — because a peer resolving "home" against
+/// its own copy is a peer that could resolve it differently.
+mod home {
+    use pult_schema::types::fixture::{
+        FixtureType, ParameterBinding, ParameterDefinition, ParameterDirection, ParameterKind,
+        ParameterValue,
+    };
+    use pult_schema::types::programmer::{programmer_entry_id, ProgrammerValue};
+    use serde_json::json;
+
+    use super::*;
+    use crate::infra::showfile::oplog;
+
+    fn home_path() -> Path {
+        vec![
+            PathSegment::Key("programmer_values".into()),
+            PathSegment::Key("__home".into()),
+        ]
+    }
+
+    fn a_parameter(kind: ParameterKind, default: ParameterValue) -> ParameterDefinition {
+        ParameterDefinition {
+            kind,
+            direction: ParameterDirection::Output,
+            binding: ParameterBinding::Dmx { channel: 1 },
+            default_value: default,
+        }
+    }
+
+    /// A fixture of a type that actually exists, which is what home needs and what
+    /// `a_fixture` on its own does not give: its type id points at nothing.
+    async fn a_patched_fixture(h: &Harness, parameters: Vec<ParameterDefinition>) -> Fixture {
+        let ft = FixtureType {
+            id: Uuid::new_v4(),
+            name: "Source Four".into(),
+            manufacturer: "ETC".into(),
+            channel_count: 1,
+            parameters,
+        };
+        h.engine.set(create_path("fixture_types"), Lifecycle::Persisted, json(&ft)).await.unwrap();
+
+        let mut fixture = a_fixture("Spot", 1);
+        fixture.fixture_type_id = ft.id;
+        h.engine
+            .set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture))
+            .await
+            .unwrap();
+        fixture
+    }
+
+    fn held(fixture_id: Uuid, kind: &ParameterKind) -> Path {
+        let key = pult_schema::types::fixture::parameter_key(kind);
+        vec![
+            PathSegment::Key("programmer_values".into()),
+            PathSegment::Id(programmer_entry_id(&fixture_id.to_string(), &key).parse().unwrap()),
+        ]
+    }
+
+    fn a_programmer_value(fixture_id: Uuid, kind: ParameterKind, value: f32) -> ProgrammerValue {
+        let key = pult_schema::types::fixture::parameter_key(&kind);
+        ProgrammerValue {
+            id: programmer_entry_id(&fixture_id.to_string(), &key).parse().unwrap(),
+            fixture_id,
+            parameter_kind: kind,
+            value: ParameterValue::Float(value),
+            effect: None,
+            locked: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_named_parameter_is_held_at_what_its_type_declares() {
+        let h = harness().await;
+        let fixture =
+            a_patched_fixture(&h, vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.2))])
+                .await;
+
+        h.engine
+            .set(
+                home_path(),
+                Lifecycle::Synced,
+                json!({ "fixtureId": fixture.id, "parameterKind": ParameterKind::Intensity }),
+            )
+            .await
+            .unwrap();
+
+        let row = h.engine.get(held(fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert_eq!(row["value"], json(&ParameterValue::Float(0.2)));
+        assert_eq!(row["locked"], json!(false));
+    }
+
+    /// The case the override exists for: a house light is on when nothing is
+    /// controlling it, and the type — derived from what the node said — cannot know.
+    #[tokio::test]
+    async fn a_fixtures_own_override_wins_over_its_type() {
+        let h = harness().await;
+        let mut fixture =
+            a_patched_fixture(&h, vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0))])
+                .await;
+        fixture.home_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+        h.engine
+            .set(
+                field_path("fixtures", fixture.id, "home_values"),
+                Lifecycle::Persisted,
+                json(&fixture.home_values),
+            )
+            .await
+            .unwrap();
+
+        h.engine
+            .set(home_path(), Lifecycle::Synced, json!({ "fixtureId": fixture.id }))
+            .await
+            .unwrap();
+
+        let row = h.engine.get(held(fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert_eq!(row["value"], json(&ParameterValue::Float(1.0)), "on, not dark");
+    }
+
+    /// No `parameterKind`, so the station enumerates. Which is the point: a caller
+    /// that can ask for home does not have to be able to read what a fixture has.
+    #[tokio::test]
+    async fn a_whole_fixture_goes_home_without_the_caller_naming_anything() {
+        let h = harness().await;
+        let fixture = a_patched_fixture(
+            &h,
+            vec![
+                a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0)),
+                a_parameter(ParameterKind::Pan, ParameterValue::Float(0.5)),
+                ParameterDefinition {
+                    kind: ParameterKind::Contact(0),
+                    direction: ParameterDirection::Input,
+                    binding: ParameterBinding::Port { index: 0 },
+                    default_value: ParameterValue::Bool(false),
+                },
+            ],
+        )
+        .await;
+
+        h.engine
+            .set(home_path(), Lifecycle::Synced, json!({ "fixtureId": fixture.id }))
+            .await
+            .unwrap();
+
+        let rows = h.engine.get(key("programmer_values")).await.unwrap();
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 2, "the two outputs, and not the contact: {rows:?}");
+        let pan = h.engine.get(held(fixture.id, &ParameterKind::Pan)).await.unwrap();
+        assert_eq!(pan["value"], json(&ParameterValue::Float(0.5)));
+    }
+
+    #[tokio::test]
+    async fn a_parameter_already_held_is_moved_to_home_rather_than_doubled() {
+        let h = harness().await;
+        let fixture =
+            a_patched_fixture(&h, vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0))])
+                .await;
+        let entry = a_programmer_value(fixture.id, ParameterKind::Intensity, 0.9);
+        h.engine
+            .set(create_path("programmer_values"), Lifecycle::Synced, json(&entry))
+            .await
+            .unwrap();
+
+        h.engine
+            .set(home_path(), Lifecycle::Synced, json!({ "fixtureId": fixture.id }))
+            .await
+            .unwrap();
+
+        let rows = h.engine.get(key("programmer_values")).await.unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), 1, "one row, because the id is derived");
+        let row = h.engine.get(held(fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert_eq!(row["value"], json(&ParameterValue::Float(0.0)));
+    }
+
+    /// Parking is exactly the ask that a value survive being taken away, and home
+    /// takes values away. Swept up with a whole fixture it is left alone; asked for
+    /// by name it says so, because being ignored is worse than being refused.
+    #[tokio::test]
+    async fn a_parked_value_is_left_where_it_was_parked() {
+        let h = harness().await;
+        let fixture =
+            a_patched_fixture(&h, vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0))])
+                .await;
+        let mut entry = a_programmer_value(fixture.id, ParameterKind::Intensity, 0.9);
+        entry.locked = true;
+        h.engine
+            .set(create_path("programmer_values"), Lifecycle::Synced, json(&entry))
+            .await
+            .unwrap();
+
+        h.engine
+            .set(home_path(), Lifecycle::Synced, json!({ "fixtureId": fixture.id }))
+            .await
+            .unwrap();
+        let row = h.engine.get(held(fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert_eq!(row["value"], json(&ParameterValue::Float(0.9)), "still parked at 0.9");
+
+        let err = h
+            .engine
+            .set(
+                home_path(),
+                Lifecycle::Synced,
+                json!({ "fixtureId": fixture.id, "parameterKind": ParameterKind::Intensity }),
+            )
+            .await
+            .expect_err("named on its own, it is refused");
+        assert!(format!("{err}").contains("parked"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_input_has_nothing_to_send_home() {
+        let h = harness().await;
+        let fixture = a_patched_fixture(
+            &h,
+            vec![ParameterDefinition {
+                kind: ParameterKind::Contact(0),
+                direction: ParameterDirection::Input,
+                binding: ParameterBinding::Port { index: 0 },
+                default_value: ParameterValue::Bool(false),
+            }],
+        )
+        .await;
+
+        let err = h
+            .engine
+            .set(
+                home_path(),
+                Lifecycle::Synced,
+                json!({ "fixtureId": fixture.id, "parameterKind": ParameterKind::Contact(0) }),
+            )
+            .await
+            .expect_err("nothing to send home");
+        assert!(format!("{err}").contains("the device writes"), "{err}");
+        assert!(
+            h.engine.get(key("programmer_values")).await.unwrap().as_array().unwrap().is_empty(),
+            "and nothing was written"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_shapes_that_mean_nothing_say_so() {
+        let h = harness().await;
+        let cue = a_cue("Act 1", 1.0);
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+        let before = oplog::len(&h.pool).await.unwrap();
+
+        let err = h
+            .engine
+            .set(
+                vec![
+                    PathSegment::Key("cues".into()),
+                    PathSegment::Id(cue.id),
+                    PathSegment::Key("fade_in_ms".into()),
+                    PathSegment::Key("__home".into()),
+                ],
+                Lifecycle::Persisted,
+                json!({}),
+            )
+            .await
+            .expect_err("a cue does not rest anywhere");
+        assert!(format!("{err}").contains("rest"), "{err}");
+
+        let err = h
+            .engine
+            .set(home_path(), Lifecycle::Synced, json!({ "fixtureId": Uuid::new_v4() }))
+            .await
+            .expect_err("no such fixture");
+        assert!(format!("{err}").contains("patched"), "{err}");
+
+        assert_eq!(oplog::len(&h.pool).await.unwrap(), before, "and none of it was written");
+    }
+
+    /// The property the design rests on: past the front door there is no such thing
+    /// as a home write. A peer receives the value this station resolved.
+    #[tokio::test]
+    async fn what_is_logged_is_the_value() {
+        let h = harness().await;
+        let user = Uuid::new_v4();
+        let fixture =
+            a_patched_fixture(&h, vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.2))])
+                .await;
+
+        h.engine
+            .set_as(user, None, home_path(), Lifecycle::Synced, json!({ "fixtureId": fixture.id }))
+            .await
+            .unwrap();
+
+        let log = oplog::recent_by_people(&h.pool, 100).await.unwrap();
+        let op = log
+            .iter()
+            .find(|op| op.user_id == Some(user))
+            .expect("the home is in the history");
+        assert!(
+            !op.path.iter().any(|s| matches!(s, PathSegment::Key(k) if k == "__home")),
+            "the log holds a value, not a verb: {:?}",
+            op.path
+        );
+        assert!(
+            format!("{}", op.value).contains("0.2"),
+            "and the value is the one this station resolved: {}",
+            op.value
+        );
+    }
+
+    /// The other reader of the same resolution. A nudge on a parameter nothing has
+    /// ever driven starts from where it rests — which since this change means the
+    /// fixture's own override, not only what its type declares.
+    #[tokio::test]
+    async fn a_nudge_on_an_undriven_parameter_starts_from_the_override() {
+        let h = harness().await;
+        let mut fixture =
+            a_patched_fixture(&h, vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0))])
+                .await;
+        fixture.home_values.insert("Intensity".into(), ParameterValue::Float(0.4));
+        h.engine
+            .set(
+                field_path("fixtures", fixture.id, "home_values"),
+                Lifecycle::Persisted,
+                json(&fixture.home_values),
+            )
+            .await
+            .unwrap();
+
+        h.engine
+            .set(
+                vec![
+                    PathSegment::Key("programmer_values".into()),
+                    PathSegment::Key("__by".into()),
+                ],
+                Lifecycle::Synced,
+                json!({
+                    "fixtureId": fixture.id,
+                    "parameterKind": ParameterKind::Intensity,
+                    "by": 0.1,
+                }),
+            )
+            .await
+            .unwrap();
+
+        let row = h.engine.get(held(fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        let level = row["value"]["value"].as_f64().unwrap();
+        assert!((level - 0.5).abs() < 1e-5, "0.4 and a tenth more, not 0.1: {row}");
+    }
+
+    /// One act, one Ctrl-Z. A fixture with four parameters is four writes, and an
+    /// operator who asked for one thing should not press undo four times.
+    #[tokio::test]
+    async fn undoing_a_home_takes_back_the_whole_fixture() {
+        let h = harness().await;
+        let user = Uuid::new_v4();
+        let fixture = a_patched_fixture(
+            &h,
+            vec![
+                a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0)),
+                a_parameter(ParameterKind::Pan, ParameterValue::Float(0.5)),
+            ],
+        )
+        .await;
+        for (kind, value) in
+            [(ParameterKind::Intensity, 0.9f32), (ParameterKind::Pan, 0.1)]
+        {
+            let entry = a_programmer_value(fixture.id, kind, value);
+            h.engine
+                .set(create_path("programmer_values"), Lifecycle::Synced, json(&entry))
+                .await
+                .unwrap();
+        }
+
+        h.engine
+            .set_as(user, None, home_path(), Lifecycle::Synced, json!({ "fixtureId": fixture.id }))
+            .await
+            .unwrap();
+
+        h.engine.undo(user, false).await;
+
+        let intensity = h.engine.get(held(fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        let pan = h.engine.get(held(fixture.id, &ParameterKind::Pan)).await.unwrap();
+        assert_eq!(intensity["value"], json(&ParameterValue::Float(0.9)));
+        assert_eq!(pan["value"], json(&ParameterValue::Float(0.1)), "both, from one undo");
+    }
+}
 
 /// Who a station asks for an asset it does not have.
 mod peers {

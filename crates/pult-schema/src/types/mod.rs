@@ -17,7 +17,7 @@ pub mod layout;
 pub mod plugin;
 pub mod group;
 
-pub use fixture::{Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
+pub use fixture::{home_value, home_value_by_key, output_parameters, parameter_key, Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
 pub use cue::{Cue, CueCreate, CuePatch, FollowMode, ParameterCapture};
 pub use effect::{

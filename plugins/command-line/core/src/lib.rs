@@ -35,11 +35,17 @@ pub enum Command {
     /// change the selection. With `at`, the combined form every console manual
     /// opens with: `fixture 1 thru 5 @ 80` selects *and* sets intensity on what
     /// it selected, in one line.
-    Select { ops: Vec<(SelOp, SelectTarget)>, at: Option<Level> },
+    Select { ops: Vec<(SelOp, SelectTarget)>, at: Option<Then> },
     /// `clear` empties the programmer; `clear clear` also drops the selection.
     Clear { also_selection: bool },
     /// `at 80`, `at +10`, `full`, `out` — intensity on the current selection.
     Intensity { level: Level },
+    /// `home` — every parameter of the selection back to where it rests.
+    ///
+    /// Not an intensity, and not a level: the station decides what home *is* for each
+    /// parameter of each fixture, so this carries no value at all. Which is what lets
+    /// it be asked for by something that cannot read the rig.
+    Home,
     /// `sequence 2 go` — a registered entity command.
     EntityCommand {
         table: String,
@@ -77,6 +83,17 @@ pub enum Target {
     Index(usize),
     /// A quoted name, matched against the entity's `name` field.
     Name(String),
+}
+
+/// What a selection line asks for after it has said what it is selecting.
+///
+/// `fixture 1 thru 5 at 80` and `fixture 1 thru 5 home` are the same shape of line —
+/// select these, then do this to them — and the difference is only whether the
+/// operator named a number or asked for the one the station knows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Then {
+    At(Level),
+    Home,
 }
 
 /// A level, said as a destination or as a change.

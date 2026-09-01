@@ -211,6 +211,25 @@ copy would diverge. `["programmer_values", "__by"]` with
 nothing is holding it. `at +10` in the command line is this, and it is why the
 natural-language plugin can answer "a bit darker" with no access to the show.
 
+**A parameter rests somewhere when nothing is driving it.** Its **home value**: the
+fixture's own `home_values` override where it has one, and its type's `default_value`
+— derived from what the node said about its own ports — otherwise. Resolved in
+`crates/pult-schema/src/types/fixture.rs` and nowhere else; the browser never works
+one out for itself, and asks with a third path verb, `["programmer_values", "__home"]`
+with `{fixtureId, parameterKind?}` — no kind means every output parameter, enumerated
+by the station. So `home` in the command line, like `at +10`, is a destination a
+caller can ask for without being able to read the rig.
+
+Two acts reach it. **Taking a sequence off** (`Sequence::off`) puts back everything
+its cues capture that no other live sequence captures and the programmer is not
+holding — read from the show rather than remembered, so a station that joined at the
+interval releases exactly what one that ran the act releases. And **sending a
+selection home**, which is a programmer act and so replicates, undoes and clears like
+any other. `Show::home_fade_ms` says how long either takes, seeded from a station
+preference the way `history_depth` is. Consequence worth knowing: **Go at the last cue
+stays there** rather than wrapping to no active cue, because "off" has to be a state
+playback can tell apart from "ran out of cues".
+
 **A selection is a question about the rig**, not a list of ids — "every mover on the
 downstage truss" stays true after somebody patches a fifth one. What is selected
 *right now* is one operator's and lives in a Svelte store; a **saved group** is the

@@ -185,6 +185,21 @@ impl<A: EntityAccessor> EntityCollectionAccessor<A> {
         let delete_path = path_key(path_id(self.path.clone(), id), "__delete");
         self.handle.set(delete_path, Lifecycle::Persisted, serde_json::Value::Null).await
     }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// The programmer's verb: `{ "fixtureId": <uuid> }` sends every output parameter
+    /// of that fixture home, and naming a `parameterKind` as well sends just the one.
+    /// Like [`FieldAccessor::by`], the station resolves it to ordinary absolute
+    /// writes before anything records or replicates them, so a caller needs no way of
+    /// reading the rig to ask for this — which is what lets a client that can set a
+    /// level ask for home without being able to see one.
+    ///
+    /// A collection that has no such thing refuses it, naming the path.
+    pub async fn home(&self, args: serde_json::Value) -> Result<(), HandleError> {
+        let path = path_key(self.path.clone(), "__home");
+        self.handle.set(path, Lifecycle::Synced, args).await
+    }
 }
 
 // ── ShowDataRoot ──────────────────────────────────────────────────────────────

@@ -39,7 +39,8 @@ const fixture = (id: string, x: number, typeId = 'par'): Fixture => ({
 	position: { Point: { x, y: 5, z: 0 } },
 	live_values: {},
 	live_effects: {},
-	live_fades: {}
+	live_fades: {},
+	home_values: {}
 });
 
 initShowStores(

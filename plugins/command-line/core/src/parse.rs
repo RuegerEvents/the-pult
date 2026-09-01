@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::catalog::Catalog;
 use crate::token::{tokenize, Token, TokenKind};
-use crate::{Command, Level, ParseError, Range, SelOp, SelectTarget, Span, Target};
+use crate::{Command, Level, ParseError, Range, SelOp, SelectTarget, Span, Target, Then};
 
 pub fn parse(catalog: &Catalog, line: &str) -> Result<Command, ParseError> {
     let tokens = tokenize(line);
@@ -72,6 +72,10 @@ impl<'a> Parser<'a> {
             }
             "full" => Ok(Command::Intensity { level: Level::To(100.0) }),
             "out" => Ok(Command::Intensity { level: Level::To(0.0) }),
+            // Beside `full` and `out` because it is the same shape of word — one
+            // that says where the selection should be without taking a number. It is
+            // not `out`: a house light rests on, and a mover rests centred.
+            "home" => Ok(Command::Home),
             "create" => {
                 let table = self.table(first.span)?;
                 let name = match self.peek() {
@@ -136,8 +140,8 @@ impl<'a> Parser<'a> {
 
     /// What could begin a line, for the error under an unknown first word.
     fn first_words(&self) -> Vec<String> {
-        let mut words: Vec<String> = ["help", "clear", "at", "full", "out", "create", "delete",
-            "rename", "set", "store"]
+        let mut words: Vec<String> = ["help", "clear", "at", "full", "out", "home", "create",
+            "delete", "rename", "set", "store"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -348,6 +352,7 @@ impl<'a> Parser<'a> {
                         "at".into(),
                         "full".into(),
                         "out".into(),
+                        "home".into(),
                     ]));
                 }
             }
@@ -364,15 +369,19 @@ impl<'a> Parser<'a> {
         let at = match self.peek() {
             Some(t) if t.text.eq_ignore_ascii_case("at") => {
                 self.next();
-                Some(self.level()?)
+                Some(Then::At(self.level()?))
             }
             Some(t) if t.text.eq_ignore_ascii_case("full") => {
                 self.next();
-                Some(Level::To(100.0))
+                Some(Then::At(Level::To(100.0)))
             }
             Some(t) if t.text.eq_ignore_ascii_case("out") => {
                 self.next();
-                Some(Level::To(0.0))
+                Some(Then::At(Level::To(0.0)))
+            }
+            Some(t) if t.text.eq_ignore_ascii_case("home") => {
+                self.next();
+                Some(Then::Home)
             }
             _ => None,
         };
@@ -513,10 +522,12 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// A word that ends a selection and begins what to do with it.
 fn is_level_word(word: &str) -> bool {
     word.eq_ignore_ascii_case("at")
         || word.eq_ignore_ascii_case("full")
         || word.eq_ignore_ascii_case("out")
+        || word.eq_ignore_ascii_case("home")
 }
 
 fn number_value(n: f64) -> Value {
@@ -556,12 +567,12 @@ mod tests {
             parse_ok("fixture 1 thru 3 @ 80"),
             Command::Select {
                 ops: vec![(SelOp::Replace, fixtures(1, 3))],
-                at: Some(Level::To(80.0))
+                at: Some(Then::At(Level::To(80.0)))
             }
         );
         assert_eq!(
             parse_ok("fixture 2 full"),
-            Command::Select { ops: vec![(SelOp::Replace, fixtures(2, 2))], at: Some(Level::To(100.0)) }
+            Command::Select { ops: vec![(SelOp::Replace, fixtures(2, 2))], at: Some(Then::At(Level::To(100.0))) }
         );
     }
 
@@ -605,7 +616,7 @@ mod tests {
             parse_ok("fixture 1 thru 5 at +10"),
             Command::Select {
                 ops: vec![(SelOp::Replace, fixtures(1, 5))],
-                at: Some(Level::By(10.0))
+                at: Some(Then::At(Level::By(10.0)))
             }
         );
         // The minus inside the selection still takes fixtures out of it; only the one
@@ -614,14 +625,14 @@ mod tests {
             parse_ok("fixture 1 thru 5 - 2 at -10"),
             Command::Select {
                 ops: vec![(SelOp::Replace, fixtures(1, 5)), (SelOp::Remove, fixtures(2, 2))],
-                at: Some(Level::By(-10.0))
+                at: Some(Then::At(Level::By(-10.0)))
             }
         );
         assert_eq!(
             parse_ok("group 2 at +5"),
             Command::Select {
                 ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(2)))],
-                at: Some(Level::By(5.0))
+                at: Some(Then::At(Level::By(5.0)))
             }
         );
     }
@@ -654,7 +665,7 @@ mod tests {
             parse_ok("group 1 at 50"),
             Command::Select {
                 ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(1)))],
-                at: Some(Level::To(50.0))
+                at: Some(Then::At(Level::To(50.0)))
             }
         );
     }
@@ -705,7 +716,7 @@ mod tests {
             parse_ok("group 2 out"),
             Command::Select {
                 ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(2)))],
-                at: Some(Level::To(0.0))
+                at: Some(Then::At(Level::To(0.0)))
             }
         );
     }
@@ -730,6 +741,45 @@ mod tests {
                 args: vec![("cueId".into(), Value::from(3))],
             }
         );
+        // Taking a sequence off needed no grammar: it is a command on the entity, and
+        // the catalogue is where commands come from.
+        assert_eq!(
+            parse_ok("sequence 1 off"),
+            Command::EntityCommand {
+                table: "sequences".into(),
+                target: Target::Index(1),
+                command: "off".into(),
+                args: vec![],
+            }
+        );
+    }
+
+    /// `home` is a word like `full` and `out` — it says where the selection should be
+    /// without naming a number, because the station knows the number and the operator
+    /// does not have to.
+    #[test]
+    fn home_says_where_without_saying_how_much() {
+        assert_eq!(parse_ok("home"), Command::Home);
+        assert_eq!(parse_ok("HOME"), Command::Home, "case is not the point");
+        assert_eq!(
+            parse_ok("fixture 1 thru 5 home"),
+            Command::Select {
+                ops: vec![(SelOp::Replace, fixtures(1, 5))],
+                at: Some(Then::Home),
+            },
+            "and combines with a selection, the way full and out do"
+        );
+        assert!(
+            parse(&test_catalog(), "home 50").is_err(),
+            "home takes no level: there is nothing to say how far"
+        );
+    }
+
+    /// The error under an unknown first word lists what could have gone there.
+    #[test]
+    fn home_is_offered_when_the_first_word_is_not_a_command() {
+        let err = parse(&test_catalog(), "hoem").expect_err("not a command");
+        assert!(err.expected.iter().any(|w| w == "home"), "{:?}", err.expected);
     }
 
     #[test]

@@ -22,7 +22,8 @@ const hung = (over: Record<string, ParameterValue> = {}): Fixture => ({
 	position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } },
 	live_values: { Pan: { type: 'Float', value: 0.5 }, Tilt: { type: 'Float', value: 0.5 }, ...over },
 	live_effects: {},
-	live_fades: {}
+	live_fades: {},
+	home_values: {}
 });
 
 describe('a pointer meeting a plane', () => {

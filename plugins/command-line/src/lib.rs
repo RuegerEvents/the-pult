@@ -12,6 +12,7 @@
 use command_line_core as core;
 use core::{
     Catalog, Command, Completions, Expectation, Level, ParseError, SelOp, SelectTarget, Target,
+    Then,
 };
 use pult_plugin_sdk::{self as sdk, host, output_line, surface, PultPlugin};
 use serde_json::{json, Value};
@@ -93,6 +94,7 @@ impl CommandLine {
             Command::Select { ops, at } => self.select(ops, at, ctx),
             Command::Clear { also_selection } => self.clear(also_selection),
             Command::Intensity { level } => self.intensity(level, ctx),
+            Command::Home => self.home(&selection_of(ctx)),
             Command::EntityCommand { table, target, command, args } => {
                 self.entity_command(&table, target, &command, args)
             }
@@ -119,7 +121,7 @@ impl CommandLine {
     fn select(
         &self,
         ops: Vec<(SelOp, SelectTarget)>,
-        at: Option<Level>,
+        at: Option<Then>,
         ctx: &Value,
     ) -> Result<surface::ExecResponse, String> {
         // `group 3` on its own hands the browser the group's *question*, so what it
@@ -188,12 +190,19 @@ impl CommandLine {
         };
         // The combined form: `fixture 1 thru 3 @ 80` sets the level on what it
         // just selected, not on whatever was selected before.
-        if let Some(level) = at {
-            if selected.is_empty() {
+        match at {
+            Some(_) if selected.is_empty() => {
                 return Err("that selects nothing, so there is nothing to set".into());
             }
-            self.apply_level(&selected, level)?;
-            text.push_str(&format!(", {}", said(level)));
+            Some(Then::At(level)) => {
+                self.apply_level(&selected, level)?;
+                text.push_str(&format!(", {}", said(level)));
+            }
+            Some(Then::Home) => {
+                self.send_home(&selected)?;
+                text.push_str(", home");
+            }
+            None => {}
         }
         let mut response = lines_response(vec![output_line("result", text)]);
         response.effects = Some(match live_query {
@@ -251,6 +260,34 @@ impl CommandLine {
                 said(level)
             ),
         )]))
+    }
+
+    /// Put the selection back where it rests.
+    ///
+    /// One write per fixture and no parameter named, so the station decides both what
+    /// a fixture has and where each of its parameters rests. This plugin is granted
+    /// no access to fixture types and needs none: home is a destination it never has
+    /// to know, which is the same trick `at +10` plays with a level.
+    fn home(&self, selected: &[String]) -> Result<surface::ExecResponse, String> {
+        if selected.is_empty() {
+            return Err("nothing is selected — `fixture 1 thru 5` first".into());
+        }
+        self.send_home(selected)?;
+        Ok(lines_response(vec![output_line(
+            "result",
+            format!(
+                "{} fixture{} home",
+                selected.len(),
+                if selected.len() == 1 { "" } else { "s" }
+            ),
+        )]))
+    }
+
+    fn send_home(&self, fixtures: &[String]) -> Result<(), String> {
+        for fixture_id in fixtures {
+            host::set(&["programmer_values", "__home"], &json!({ "fixtureId": fixture_id }))?;
+        }
+        Ok(())
     }
 
     /// Set the level, or move it — whichever the operator wrote.

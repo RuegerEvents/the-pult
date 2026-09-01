@@ -23,6 +23,15 @@ type LeafProxy<T> = {
 	 * Numeric fields and parameter values only.
 	 */
 	by(delta: number): Promise<void>;
+	/**
+	 * Put something back where it rests when nothing is driving it.
+	 *
+	 * The programmer's verb: `{ fixtureId }` sends every output parameter of that
+	 * fixture home, and naming a `parameterKind` as well sends just the one. The
+	 * station resolves what home *is* — the fixture's own override, or what its type
+	 * declares — so nothing here works it out for itself.
+	 */
+	home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
 	get(): Promise<T>;
 	subscribe(cb: (value: T) => void, opts?: SubscribeOptions): () => void;
 };
@@ -68,6 +77,9 @@ export function createDataProxy<T>(
 			}
 			if (prop === 'by') {
 				return (delta: number) => client.set([...path, '__by'], delta);
+			}
+			if (prop === 'home') {
+				return (args: unknown) => client.set([...path, '__home'], args);
 			}
 			if (prop === 'get') {
 				return () => client.get(path);

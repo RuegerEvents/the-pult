@@ -16,11 +16,16 @@ use std::time::{Duration, Instant};
 use pult_schema::types::{
     cue::{Cue, FollowMode},
     effect::{EffectSource, Easing, RunningEffect, RunningFade},
-    fixture::{Fixture, ParameterKind, ParameterValue},
+    fixture::{home_value_by_key, Fixture, FixtureType, ParameterValue},
     programmer::ProgrammerValue,
     sequence::Sequence,
     speedmaster::SpeedMaster,
 };
+
+/// The `Fixture::live_values` map key for a parameter, re-exported from the schema
+/// where it lives now: the browser and the command-line plugin derive the same key,
+/// and one of them being right is the only version of this worth having.
+pub use pult_schema::types::fixture::parameter_key;
 use uuid::Uuid;
 
 use super::effects;
@@ -66,11 +71,20 @@ pub struct ShowView<'a> {
     /// quadratic in the size of the rig, which nothing noticed while a settled show
     /// stopped ticking — and an effect never lets it settle.
     by_id: HashMap<Uuid, &'a Fixture>,
+    /// The types those fixtures were patched as, by id.
+    ///
+    /// Here for one question: where does a parameter rest when nothing is driving it.
+    /// A handful of rows where `fixtures` is thousands, so this is not the per-tick
+    /// cost that a rig of movers is.
+    types_by_id: HashMap<Uuid, &'a FixtureType>,
     /// What the programmer is holding. Replicated show state like everything else
     /// here, so every node computes the same overridden output for itself.
     pub programmer: &'a [ProgrammerValue],
     /// The tempos effects can follow. Replicated for the same reason.
     pub speed_masters: &'a [SpeedMaster],
+    /// How long a parameter takes to reach its home value. Show data, so two stations
+    /// letting go of one rig let go of it together.
+    pub home_fade_ms: u32,
 }
 
 impl<'a> ShowView<'a> {
@@ -78,16 +92,20 @@ impl<'a> ShowView<'a> {
         sequences: &'a [Sequence],
         cues: &'a [Cue],
         fixtures: &'a [Fixture],
+        fixture_types: &'a [FixtureType],
         programmer: &'a [ProgrammerValue],
         speed_masters: &'a [SpeedMaster],
+        home_fade_ms: u32,
     ) -> Self {
         Self {
             sequences,
             cues: cues.iter().map(|c| (c.id, c)).collect(),
             fixtures,
             by_id: fixtures.iter().map(|f| (f.id, f)).collect(),
+            types_by_id: fixture_types.iter().map(|t| (t.id, t)).collect(),
             programmer,
             speed_masters,
+            home_fade_ms,
         }
     }
 
@@ -110,6 +128,49 @@ impl<'a> ShowView<'a> {
 
     pub(super) fn live_value(&self, fixture_id: Uuid, key: &str) -> Option<ParameterValue> {
         self.fixture(fixture_id)?.live_values.get(key).cloned()
+    }
+
+    /// Where a parameter rests when nothing is driving it: this fixture's own
+    /// override, or what its type declares.
+    ///
+    /// Looked up by key rather than by kind, because everything on this side of the
+    /// engine already holds the key — a fade, a held programmer entry — and going back
+    /// to a kind to come forward to the same string again would be a second place for
+    /// the two to disagree.
+    pub(super) fn home_value(&self, fixture_id: Uuid, key: &str) -> Option<ParameterValue> {
+        let fixture = self.fixture(fixture_id)?;
+        let fixture_type = self.types_by_id.get(&fixture.fixture_type_id).copied();
+        home_value_by_key(fixture, fixture_type, key)
+    }
+
+    /// Every parameter any cue of this sequence captures: what it could drive.
+    ///
+    /// Read from the show rather than remembered, so that two stations answer it the
+    /// same however much of the sequence each of them has watched run.
+    fn captured_by(&self, sequence: &Sequence) -> Vec<Key> {
+        let mut keys: Vec<Key> = sequence
+            .cue_ids
+            .iter()
+            .filter_map(|id| self.cues.get(id))
+            .flat_map(|cue| cue.captures.iter())
+            .map(|c| (c.fixture_id, parameter_key(&c.parameter_kind)))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    /// The same, for every sequence that is on — optionally leaving one out, which is
+    /// how a sequence being taken off asks what the others still want.
+    fn captured_by_the_sequences_that_are_on(
+        &self,
+        except: Option<Uuid>,
+    ) -> std::collections::HashSet<Key> {
+        self.sequences
+            .iter()
+            .filter(|s| s.active_cue_index.is_some() && Some(s.id) != except)
+            .flat_map(|s| self.captured_by(s))
+            .collect()
     }
 }
 
@@ -280,9 +341,11 @@ impl Playback {
             self.follows.remove(&sequence.id);
 
             let Some(cue_id) = next else {
-                // Off the end of the sequence. Live values hold where they are;
-                // a light does not go dark because the operator ran out of cues.
+                // No cue active means the sequence was taken off — the only way to
+                // reach it, now that Go at the last cue stays there. So everything it
+                // was driving and nothing else is still driving goes home.
                 self.playing.remove(&sequence.id);
+                self.release_sequence(now, wall_ms, sequence, view);
                 continue;
             };
             self.playing.insert(sequence.id, cue_id);
@@ -292,6 +355,74 @@ impl Playback {
                 let anchor = view.anchor_for(sequence, wall_ms);
                 self.start_cue(now, wall_ms, anchor, cue, view, sequence.id);
             }
+        }
+    }
+
+    /// Put back everything a sequence that has just been taken off was driving.
+    ///
+    /// **What it could drive, read from the show** — the parameters captured by any of
+    /// its cues — rather than what this station has watched it write. The obvious
+    /// alternative is to remember, per sequence, the keys it has actually touched
+    /// since it went on, and that memory is per station: a console that joined at the
+    /// interval never ran act one and would take fewer parameters home than the
+    /// console that did, which is two rigs looking different with no way back. Reading
+    /// the cues is stateless and identical everywhere, and it is right for the same
+    /// reason — a parameter no cue of any live sequence captures is a parameter
+    /// nothing is driving.
+    ///
+    /// Two exceptions, both of which err towards leaving a value alone. A parameter
+    /// another sequence that is still on *could* drive is not touched, even if that
+    /// sequence has not reached the cue that drives it. And a parameter the programmer
+    /// holds is the operator's; the overlay puts it back on release, and what it puts
+    /// back is by then the home value, since nothing else is asserting it.
+    fn release_sequence(
+        &mut self,
+        now: Instant,
+        wall_ms: u64,
+        sequence: &Sequence,
+        view: &ShowView<'_>,
+    ) {
+        let mine = view.captured_by(sequence);
+        if mine.is_empty() {
+            return;
+        }
+        let still_driven = view.captured_by_the_sequences_that_are_on(Some(sequence.id));
+
+        let duration = Duration::from_millis(view.home_fade_ms as u64);
+        for (fixture_id, key) in mine {
+            if still_driven.contains(&(fixture_id, key.clone())) {
+                continue;
+            }
+            // Its own fades and effects stop: they were this sequence asserting
+            // something, and it has been told to stop asserting. A cue *changing*
+            // leaves a fade to finish because it has somewhere to arrive; a sequence
+            // going off does not.
+            self.fades.retain(|f| !(f.fixture_id == fixture_id && f.key == key));
+            self.effects.remove(&(fixture_id, key.clone()));
+
+            let Some(to) = view.home_value(fixture_id, &key) else {
+                continue;
+            };
+            let from = view.live_value(fixture_id, &key).unwrap_or_else(|| to.clone());
+            if from == to {
+                continue;
+            }
+
+            self.fades.push(Fade {
+                fixture_id,
+                key,
+                from,
+                to,
+                start: now,
+                duration,
+                t0_ms: wall_ms,
+                easing: Easing::Linear,
+                // No cue is doing this. A node told about the movement is told about a
+                // movement, and the panel that asks "is this my cue's fade" gets no.
+                cue_id: Uuid::nil(),
+                // A zero duration lands on the next tick, which is what a show that
+                // has not asked for a home time wants: releasing has always snapped.
+            });
         }
     }
 
@@ -343,14 +474,19 @@ impl Playback {
             );
             let delay = Duration::from_millis(capture.delay_in_ms as u64);
 
-            // Fade from wherever the parameter is now, so re-cueing mid-fade is smooth.
+            // Fade from wherever the parameter is now, so re-cueing mid-fade is
+            // smooth — and from where it rests when nothing has ever driven it, which
+            // is the fixture's answer rather than a zero of the right shape.
             let from = self
                 .fades
                 .iter()
                 .find(|f| f.fixture_id == capture.fixture_id && f.key == key)
                 .map(|f| f.value_at(now))
                 .or_else(|| view.live_value(capture.fixture_id, &key))
-                .unwrap_or_else(|| zero_like(&capture.value));
+                .or_else(|| view.home_value(capture.fixture_id, &key))
+                // A fixture whose type has gone: nothing can say where it rests, so
+                // the cue lands rather than fading from a zero nobody vouched for.
+                .unwrap_or_else(|| capture.value.clone());
 
             let fade = Fade {
                 fixture_id: capture.fixture_id,
@@ -558,37 +694,6 @@ fn shift(now: Instant, by_ms: i64) -> Instant {
 }
 
 // ── Parameter helpers ─────────────────────────────────────────────────────────
-
-/// The dark, home, or off value of the same kind as `like`. Where a fade starts when
-/// the fixture has no recorded value for that parameter yet.
-pub(crate) fn zero_like(like: &ParameterValue) -> ParameterValue {
-    match like {
-        ParameterValue::Float(_) => ParameterValue::Float(0.0),
-        ParameterValue::Int(_) => ParameterValue::Int(0),
-        ParameterValue::Color { .. } => ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 },
-        ParameterValue::Bool(_) => ParameterValue::Bool(false),
-        ParameterValue::Text(_) => ParameterValue::Text(String::new()),
-    }
-}
-
-/// The `Fixture::live_values` map key for a parameter.
-pub fn parameter_key(kind: &ParameterKind) -> String {
-    match kind {
-        ParameterKind::Intensity => "Intensity".into(),
-        ParameterKind::ColorRgb => "ColorRgb".into(),
-        ParameterKind::Pan => "Pan".into(),
-        ParameterKind::Tilt => "Tilt".into(),
-        ParameterKind::GoboIndex => "GoboIndex".into(),
-        ParameterKind::Raw(channel) => format!("Raw:{channel}"),
-        ParameterKind::Switch(n) => format!("Switch:{n}"),
-        ParameterKind::Contact(n) => format!("Contact:{n}"),
-        ParameterKind::Temperature => "Temperature".into(),
-        ParameterKind::Humidity => "Humidity".into(),
-        ParameterKind::AirQuality => "AirQuality".into(),
-        ParameterKind::Text => "Text".into(),
-        ParameterKind::Named(name) => format!("Named:{name}"),
-    }
-}
 
 /// Blend two parameter values. Values that cannot be blended, and values of
 /// different kinds, snap to the target when the fade completes.

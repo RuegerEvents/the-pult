@@ -22,7 +22,8 @@
 			name: 'My Show',
 			created_at: new Date().toISOString(),
 			editing_cue: null,
-			history_depth: prefs?.historyDepth ?? 500
+			history_depth: prefs?.historyDepth ?? 500,
+			home_fade_ms: prefs?.homeFadeMs ?? 0
 		});
 	}
 

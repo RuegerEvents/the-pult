@@ -25,6 +25,7 @@
 		clear,
 		editingCue,
 		entries,
+		home,
 		lockAll,
 		remove,
 		removeEffect,
@@ -98,6 +99,14 @@
 			{$selection.length === 0 ? 'nothing selected' : `${$selection.length} selected`}
 		</span>
 		<span class="spacer"></span>
+		<button
+			class="ghost"
+			disabled={$selection.length === 0}
+			onclick={() => home($selection)}
+			title="Every parameter of the selection back to where it rests"
+		>
+			Home
+		</button>
 		<button class="ghost" disabled={!anyUnlocked} onclick={() => clear()}>Clear</button>
 		<button
 			class="ghost"

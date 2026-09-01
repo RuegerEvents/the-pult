@@ -17,7 +17,7 @@
 
 use std::path::PathBuf;
 
-use pult_schema::types::show::{clamp_history_depth, HISTORY_DEPTH_DEFAULT};
+use pult_schema::types::show::{clamp_history_depth, clamp_home_fade_ms, HISTORY_DEPTH_DEFAULT};
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -65,12 +65,21 @@ pub struct Preferences {
     /// home for a credential, or for anything true of this machine and no
     /// other. A show cannot know which console has the local model on it.
     pub plugins: std::collections::BTreeMap<String, toml::Table>,
+    /// What a newly created show starts its `home_fade_ms` at.
+    ///
+    /// Like `history_depth` and for the same reason: how long the rig takes to let go
+    /// is show data, because two stations driving one rig over different times is not
+    /// a preference but a disagreement the audience can watch. This is what *this*
+    /// desk starts a new show with, and after that it stops mattering.
+    pub home_fade_ms: u32,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         Preferences {
             history_depth: HISTORY_DEPTH_DEFAULT,
+            // Snapping, which is what a programmer clear has always done.
+            home_fade_ms: 0,
             oplog_retention_minutes: OPLOG_RETENTION_MINUTES_DEFAULT,
             plugins: std::collections::BTreeMap::new(),
         }
@@ -94,6 +103,7 @@ impl Preferences {
         self.oplog_retention_minutes = self
             .oplog_retention_minutes
             .clamp(OPLOG_RETENTION_MINUTES_MIN, OPLOG_RETENTION_MINUTES_MAX);
+        self.home_fade_ms = clamp_home_fade_ms(self.home_fade_ms);
         self
     }
 }

@@ -5,14 +5,16 @@
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { select, selected, toggle } from '$lib/stores/selection.js';
-	import type { Fixture, FixtureType } from '$lib/generated/index.js';
+	import type { Fixture, FixtureType, ParameterValue } from '$lib/generated/index.js';
 	import FixtureTypeEditor from './FixtureTypeEditor.svelte';
+	import HomeValue from './HomeValue.svelte';
 	import {
 		addressLabel,
 		channelRange,
 		clashingFixtures,
 		dmxAddress,
 		formatValue,
+		kindLabel,
 		nextFreeAddress,
 		parameterKey
 	} from '$lib/patch.js';
@@ -43,7 +45,10 @@
 			position: null,
 			live_values: {},
 			live_effects: {},
-			live_fades: {}
+			live_fades: {},
+			// Nothing to say: it rests where its type says it does, until somebody
+			// decides this particular unit is different.
+			home_values: {}
 		});
 		newName = '';
 		creating = false;
@@ -58,6 +63,22 @@
 
 	/// Re-address a DMX fixture. Universe and address travel together in the schema,
 	/// so changing one has to carry the other along.
+	/// Set or clear one parameter's home value on one fixture.
+	///
+	/// The whole map is written rather than the one key, because that is the shape of
+	/// the field: a map is one JSON column and one undoable change. `null` clears the
+	/// override, which is not the same as an override of zero — one says "whatever the
+	/// type says" and the other says "dark".
+	async function setHome(fixture: Fixture, key: string, next: ParameterValue | null) {
+		const home = { ...fixture.home_values };
+		if (next === null) {
+			delete home[key];
+		} else {
+			home[key] = next;
+		}
+		await data.fixtures.byId(fixture.id).home_values.set(home);
+	}
+
 	async function setDmx(fixture: Fixture, next: { universe?: number; address?: number }) {
 		const current = dmxAddress(fixture.address);
 		if (!current) return;
@@ -110,7 +131,7 @@
 			<table class="rig">
 				<thead>
 					<tr>
-						<th></th><th>Name</th><th>Type</th><th>Uni</th><th>Address</th><th>Position</th><th>Live</th><th></th>
+						<th></th><th>Name</th><th>Type</th><th>Uni</th><th>Address</th><th>Position</th><th>Live</th><th>Home</th><th></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -211,6 +232,39 @@
 									{/each}
 								{/if}
 							</td>
+							<td class="home">
+								<!-- Where each parameter rests when nothing is driving it. The
+								     type's answer is what the node said about its own port; an
+								     override is this unit's, and is the only place a house light
+								     can say that it comes up rather than going dark. -->
+								{#if type}
+									{#each type.parameters as param (parameterKey(param.kind))}
+										{@const key = parameterKey(param.kind)}
+										{@const overridden = fixture.home_values[key]}
+										{#if $unlocked}
+											<span class="home-cell" class:overridden={overridden !== undefined}>
+												<HomeValue
+													label={kindLabel(param.kind)}
+													value={overridden ?? param.default_value}
+													onchange={(next) => setHome(fixture, key, next)}
+												/>
+												{#if overridden !== undefined}
+													<button
+														class="clear-home"
+														title="Back to what the type says"
+														aria-label="Clear the home value for {kindLabel(param.kind)}"
+														onclick={() => setHome(fixture, key, null)}
+													>×</button>
+												{/if}
+											</span>
+										{:else}
+											<span class="chip" class:overridden={overridden !== undefined}>
+												{formatValue(overridden ?? param.default_value)}
+											</span>
+										{/if}
+									{/each}
+								{/if}
+							</td>
 							<td>
 								{#if $unlocked}
 									<button
@@ -233,6 +287,12 @@
 
 <style>
 	.patch { padding: 16px 20px; }
+	/* An overridden home value is this rig's answer rather than the type's, and it
+	   should be possible to see which is which at a glance down the column. */
+	.home-cell { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
+	.home-cell.overridden, .chip.overridden { outline: 1px solid var(--accent, #c90); border-radius: 3px; }
+	.clear-home { background: none; border: 0; color: inherit; cursor: pointer; opacity: 0.6; padding: 0 2px; }
+	.clear-home:hover { opacity: 1; }
 	.block { margin-bottom: 24px; }
 	.block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }

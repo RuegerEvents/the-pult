@@ -5,12 +5,17 @@ use futures::stream::BoxStream;
 use pult_schema::{
     commands::CommandRegistration,
     events::operation::{Authorship, NodeId, Operation, VectorClock},
-    types::show::{clamp_history_depth, HISTORY_DEPTH_DEFAULT},
+    types::show::{clamp_history_depth, clamp_home_fade_ms, HISTORY_DEPTH_DEFAULT},
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
     types::{
-        devices::DevicesState, fixture::ParameterValue, output::{OutputCoverage, OutputStatuses},
+        devices::DevicesState,
+        fixture::{
+            home_value, output_parameters, Fixture, FixtureType, ParameterDirection,
+            ParameterKind, ParameterValue,
+        },
+        output::{OutputCoverage, OutputStatuses},
         plugin::PluginsState, programmer::programmer_entry_id, session::SessionState,
         station::PeerLinks, user::User,
     },
@@ -678,30 +683,44 @@ impl ShowEngine {
                         .ok_or_else(|| BackendError::PathNotFound(path));
                     let _ = reply.send(result);
                 }
-                EngineCommand::Set { path, value, lifecycle, mut authorship, reply } => {
-                    // A relative write becomes an absolute one *here*, before
-                    // anything below has seen it. Everything after this line — the
-                    // read of `previous`, the apply, the oplog, the broadcast, the
-                    // sync — is code that has never heard of `__by`, and a peer
-                    // receives the number rather than the delta. Which is the whole
-                    // point: two stations each adding ten percent to whatever they
-                    // happened to be showing would not end up holding the same value.
-                    let (path, value) = match self.resolve_relative(path, value) {
+                EngineCommand::Set { path, value, lifecycle, authorship, reply } => {
+                    // A write that says how far, or where something rests, becomes an
+                    // ordinary absolute write *here*, before anything below has seen
+                    // it. Everything after this line — the read of `previous`, the
+                    // apply, the oplog, the broadcast, the sync — is code that has
+                    // never heard of `__by` or `__home`, and a peer receives the
+                    // number rather than the verb. Which is the whole point: two
+                    // stations each adding ten percent to whatever they happened to be
+                    // showing would not end up holding the same value.
+                    let resolved = match self.resolve_verbs(path, value) {
                         Ok(resolved) => resolved,
                         Err(e) => {
                             let _ = reply.send(Err(e));
                             continue;
                         }
                     };
-                    // Read before writing: the oplog is otherwise a list of
-                    // destinations with no record of where anything came from, and
-                    // replaying that forwards works while running it backwards does
-                    // not. Only for a write somebody asked for — the engine's own,
-                    // at 40 Hz, would pay for a read nobody will ever undo.
-                    authorship.previous =
-                        authorship.user_id.map(|_| self.value_before(&path)).unwrap_or(None);
-                    let result = self.apply_set(path.clone(), value.clone(), lifecycle).await;
-                    if result.is_ok() {
+                    // One verb can be several writes — sending a fixture home is one
+                    // per parameter — and an operator who asked for one thing should
+                    // get one thing back from Ctrl-Z. So they share a gesture, which
+                    // is what undo already groups by.
+                    let authorship = match (resolved.len(), authorship.user_id, authorship.gesture) {
+                        (n, Some(_), None) if n > 1 => authorship.during(Some(Uuid::new_v4())),
+                        _ => authorship,
+                    };
+                    let mut result = Ok(());
+                    for (path, value) in resolved {
+                        let mut authorship = authorship.clone();
+                        // Read before writing: the oplog is otherwise a list of
+                        // destinations with no record of where anything came from, and
+                        // replaying that forwards works while running it backwards
+                        // does not. Only for a write somebody asked for — the engine's
+                        // own, at 40 Hz, would pay for a read nobody will ever undo.
+                        authorship.previous =
+                            authorship.user_id.map(|_| self.value_before(&path)).unwrap_or(None);
+                        result = self.apply_set(path.clone(), value.clone(), lifecycle).await;
+                        if result.is_err() {
+                            break;
+                        }
                         self.state_version += 1;
                         self.record_write(&path, lifecycle);
                         self.log_local_write(&path, &value, lifecycle, &authorship).await;
@@ -789,10 +808,14 @@ impl ShowEngine {
         let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
         let cues: Vec<pult_schema::types::cue::Cue> = self.read_collection("cues");
         let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
+        // For one question — where a parameter rests when nothing is driving it. A
+        // handful of rows beside thousands of fixtures.
+        let fixture_types: Vec<FixtureType> = self.read_collection("fixture_types");
         let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
             self.read_collection("programmer_values");
         let masters: Vec<pult_schema::types::speedmaster::SpeedMaster> =
             self.read_collection("speed_masters");
+        let home_fade_ms = self.home_fade_ms();
 
         // Read once per tick rather than per effect: every station has to place this
         // tick at one instant, and asking the clock twice inside a tick would put two
@@ -800,7 +823,15 @@ impl ShowEngine {
         let wall_ms = pult_schema::types::sequence::now_ms();
 
         let effects = {
-            let view = ShowView::new(&sequences, &cues, &fixtures, &programmer, &masters);
+            let view = ShowView::new(
+                &sequences,
+                &cues,
+                &fixtures,
+                &fixture_types,
+                &programmer,
+                &masters,
+                home_fade_ms,
+            );
             self.playback.tick(tokio::time::Instant::now().into_std(), wall_ms, &view)
         };
 
@@ -1131,6 +1162,23 @@ impl ShowEngine {
         clamp_history_depth(depth.try_into().unwrap_or(u32::MAX))
     }
 
+    /// How long this show takes to let a parameter go, in milliseconds.
+    ///
+    /// Read from the show on every tick for the same reason as the depth above: a
+    /// second console changing it should take effect here, and both stations then
+    /// fade home over the same time rather than each over its own.
+    fn home_fade_ms(&self) -> u32 {
+        let ms = self
+            .state
+            .get_by_path(&vec![
+                PathSegment::Key("show".into()),
+                PathSegment::Key("home_fade_ms".into()),
+            ])
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        clamp_home_fade_ms(ms.try_into().unwrap_or(u32::MAX))
+    }
+
     /// What is at a path right now, for the oplog to remember.
     ///
     /// A create has nothing before it and a delete has the whole entity, and both
@@ -1227,30 +1275,39 @@ impl ShowEngine {
         }
     }
 
-    /// Turn a relative write into an absolute one, or hand back what came in.
+    /// Turn a write that says how far, or where something rests, into ordinary
+    /// absolute writes — or hand back what came in.
     ///
-    /// Two shapes carry the `__by` verb:
+    /// Three shapes carry a verb:
     ///
     /// ```text
-    /// [table, ref, field, "__by"]   <delta>
-    /// ["programmer_values", "__by"] { "fixtureId", "parameterKind", "by" }
+    /// [table, ref, field, "__by"]     <delta>
+    /// ["programmer_values", "__by"]   { "fixtureId", "parameterKind", "by" }
+    /// ["programmer_values", "__home"] { "fixtureId", "parameterKind"? }
     /// ```
     ///
     /// The first is the primitive: relative to what that field says now. The second
     /// exists because the programmer's ordinary case is *not* already holding the
     /// key — `at +10` on a light nobody has touched has no row to name — and because
     /// what it has to be relative to is then what playback is showing rather than a
-    /// row that does not exist. That second shape is the one place the engine names
-    /// a collection for a reason of its own; it costs nothing that matters, since
-    /// adding a collection still needs no edit here.
+    /// row that does not exist. The third is the same act with a destination the
+    /// station knows and the caller does not have to: what that parameter rests at.
     ///
-    /// Pure with respect to the show: this only reads. The write it describes
-    /// happens in `apply_set` like any other.
-    fn resolve_relative(
+    /// Those two shapes are the one place the engine names a collection for a reason
+    /// of its own; it costs nothing that matters, since adding a collection still
+    /// needs no edit here.
+    ///
+    /// A verb can be several writes: `__home` without a `parameterKind` is every
+    /// output parameter of the fixture, which is what lets a caller ask for home
+    /// without first reading what the fixture has.
+    ///
+    /// Pure with respect to the show: this only reads. The writes it describes
+    /// happen in `apply_set` like any other.
+    fn resolve_verbs(
         &self,
         path: Path,
         value: serde_json::Value,
-    ) -> Result<(Path, serde_json::Value), BackendError> {
+    ) -> Result<Vec<(Path, serde_json::Value)>, BackendError> {
         let by = || -> Result<f32, BackendError> {
             value
                 .as_f64()
@@ -1266,7 +1323,13 @@ impl ShowEngine {
             [PathSegment::Key(table), PathSegment::Key(verb)]
                 if table == "programmer_values" && verb == "__by" =>
             {
-                self.nudge_programmer(&path, &value)
+                self.nudge_programmer(&path, &value).map(|write| vec![write])
+            }
+            // The programmer again, sent back to where the rig rests.
+            [PathSegment::Key(table), PathSegment::Key(verb)]
+                if table == "programmer_values" && verb == "__home" =>
+            {
+                self.home_programmer(&path, &value)
             }
             // Any field of any row: relative to what it says now.
             [table @ PathSegment::Key(_), seg, field @ PathSegment::Key(_), PathSegment::Key(verb)]
@@ -1280,7 +1343,7 @@ impl ShowEngine {
                 let next = nudge_json(&current, by()?).map_err(|reason| {
                     BackendError::InvalidValue { path: path.clone(), reason }
                 })?;
-                Ok((target, next))
+                Ok(vec![(target, next)])
             }
             // `__by` on a create, or on a whole row, means nothing — and doing
             // something almost-right with it would be worse than saying so.
@@ -1288,7 +1351,15 @@ impl ShowEngine {
                 path: path.clone(),
                 reason: "a relative write names one field, or the programmer".into(),
             }),
-            _ => Ok((path, value)),
+            // Home is a fact about a fixture's parameters, so there is nowhere else
+            // for it to mean anything. A cue does not rest anywhere.
+            [.., PathSegment::Key(verb)] if verb == "__home" => Err(BackendError::InvalidValue {
+                path: path.clone(),
+                reason: "only a fixture's parameters have somewhere to rest; \
+                         write to [\"programmer_values\", \"__home\"]"
+                    .into(),
+            }),
+            _ => Ok(vec![(path, value)]),
         }
     }
 
@@ -1370,10 +1441,14 @@ impl ShowEngine {
                 PathSegment::Key(key.clone()),
             ])
             .filter(|v| !v.is_null())
-            .or_else(|| self.default_value_of(fixture_uuid, &kind))
+            .map(|showing| {
+                serde_json::from_value::<ParameterValue>(showing)
+                    .map_err(|e| bad(&format!("the live value does not parse: {e}")))
+            })
+            .transpose()?
+            .or_else(|| self.home_value_of(fixture_uuid, &kind))
             .ok_or_else(|| bad("that fixture has no such parameter"))?;
-        let current: ParameterValue = serde_json::from_value(showing)
-            .map_err(|e| bad(&format!("the live value does not parse: {e}")))?;
+        let current = showing;
         let next = current.nudged(by).map_err(|reason| bad(&reason))?;
 
         Ok((
@@ -1391,32 +1466,167 @@ impl ShowEngine {
         ))
     }
 
-    /// What a fixture's type says this parameter rests at, for a key nothing has
-    /// ever driven. `default_value` is derived from what the device said about its
-    /// own ports, so this is the node's answer rather than the console's guess.
-    fn default_value_of(
+    /// Where a parameter rests when nothing is driving it, for a key nothing has
+    /// ever driven.
+    ///
+    /// The resolution is the schema's: this fixture's own override if it has one, and
+    /// what its type declares otherwise — where the type's answer is derived from
+    /// what the device said about its own ports, so it is the node's answer rather
+    /// than the console's guess.
+    fn home_value_of(&self, fixture_id: Uuid, kind: &ParameterKind) -> Option<ParameterValue> {
+        let (fixture, fixture_type) = self.fixture_and_type(fixture_id)?;
+        home_value(&fixture, &fixture_type, kind)
+    }
+
+    /// One fixture and the type it was patched as, as the schema's own structs.
+    ///
+    /// Read out of the state tree and parsed rather than picked at as JSON, because
+    /// everything asked of them here — an override, a parameter's direction, its
+    /// default — is a question the schema already answers.
+    fn fixture_and_type(&self, fixture_id: Uuid) -> Option<(Fixture, FixtureType)> {
+        let fixture = self
+            .state
+            .get_by_path(&vec![
+                PathSegment::Key("fixtures".into()),
+                PathSegment::Id(fixture_id),
+            ])
+            .filter(|v| !v.is_null())?;
+        let fixture: Fixture = serde_json::from_value(fixture).ok()?;
+        let fixture_type = self
+            .state
+            .get_by_path(&vec![
+                PathSegment::Key("fixture_types".into()),
+                PathSegment::Id(fixture.fixture_type_id),
+            ])
+            .filter(|v| !v.is_null())?;
+        let fixture_type: FixtureType = serde_json::from_value(fixture_type).ok()?;
+        Some((fixture, fixture_type))
+    }
+
+    /// `["programmer_values", "__home"]` with `{ fixtureId, parameterKind? }`.
+    ///
+    /// The programmer takes each parameter at the value it rests at. A destination
+    /// like any other by the time anything records it — which is what lets a client
+    /// that can set a level ask for home without being able to read the rig, and is
+    /// the same argument `__by` made for "a bit darker".
+    ///
+    /// Without a `parameterKind` this is every parameter an operator can set on that
+    /// fixture: enumerating them is the station's job, so that no client has to hold
+    /// a copy of what a fixture has.
+    ///
+    /// A parked value is left where it was parked. Parking is exactly the ask that a
+    /// value survive being taken away, and home takes values away.
+    fn home_programmer(
         &self,
-        fixture_id: Uuid,
-        kind: &pult_schema::types::fixture::ParameterKind,
-    ) -> Option<serde_json::Value> {
-        let fixture = self.state.get_by_path(&vec![
-            PathSegment::Key("fixtures".into()),
-            PathSegment::Id(fixture_id),
-        ])?;
-        let type_id: Uuid = fixture.get("fixture_type_id")?.as_str()?.parse().ok()?;
-        let fixture_type = self.state.get_by_path(&vec![
-            PathSegment::Key("fixture_types".into()),
-            PathSegment::Id(type_id),
-        ])?;
-        fixture_type
-            .get("parameters")?
-            .as_array()?
-            .iter()
-            .find(|p| p.get("kind").is_some_and(|k| serde_json::from_value::<
-                pult_schema::types::fixture::ParameterKind,
-            >(k.clone())
-            .is_ok_and(|k| k == *kind)))
-            .and_then(|p| p.get("default_value").cloned())
+        path: &Path,
+        args: &serde_json::Value,
+    ) -> Result<Vec<(Path, serde_json::Value)>, BackendError> {
+        let bad = |reason: &str| BackendError::InvalidValue {
+            path: path.clone(),
+            reason: reason.to_string(),
+        };
+
+        let fixture_id = args
+            .get("fixtureId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| bad("sending something home needs a fixtureId"))?
+            .to_string();
+        let fixture_uuid: Uuid =
+            fixture_id.parse().map_err(|_| bad("that fixtureId is not a uuid"))?;
+        let (fixture, fixture_type) = self
+            .fixture_and_type(fixture_uuid)
+            .ok_or_else(|| bad("no fixture of that id is patched here"))?;
+
+        // One parameter when named, and everything an operator can set when not.
+        let named = match args.get("parameterKind") {
+            Some(k) if !k.is_null() => Some(
+                serde_json::from_value::<ParameterKind>(k.clone())
+                    .map_err(|e| bad(&format!("that is not a parameter kind: {e}")))?,
+            ),
+            _ => None,
+        };
+        let kinds: Vec<ParameterKind> = match &named {
+            Some(kind) => {
+                let definition = fixture_type
+                    .parameters
+                    .iter()
+                    .find(|p| p.kind == *kind)
+                    .ok_or_else(|| bad("that fixture has no such parameter"))?;
+                if definition.direction != ParameterDirection::Output {
+                    return Err(bad(
+                        "that parameter is one the device writes and the show reads; \
+                         there is nothing to send home",
+                    ));
+                }
+                vec![kind.clone()]
+            }
+            None => output_parameters(&fixture_type).map(|p| p.kind.clone()).collect(),
+        };
+
+        let mut writes = Vec::new();
+        for kind in kinds {
+            let key = parameter_key(&kind);
+            let Some(value) = home_value(&fixture, &fixture_type, &kind) else {
+                continue;
+            };
+            let entry_id: Uuid = programmer_entry_id(&fixture_id, &key)
+                .parse()
+                .map_err(|_| bad("the derived programmer id is not a uuid"))?;
+            let row = self
+                .state
+                .get_by_path(&vec![
+                    PathSegment::Key("programmer_values".into()),
+                    PathSegment::Id(entry_id),
+                ])
+                .filter(|v| !v.is_null());
+
+            if let Some(row) = row {
+                if row.get("locked").is_some_and(|l| l == &serde_json::Value::Bool(true)) {
+                    // Named on its own, being told is better than being ignored.
+                    // Swept up with the rest of a fixture, it is the parking working.
+                    if named.is_some() {
+                        return Err(bad("that value is parked; unpark it before sending it home"));
+                    }
+                    continue;
+                }
+                writes.push((
+                    vec![
+                        PathSegment::Key("programmer_values".into()),
+                        PathSegment::Id(entry_id),
+                        PathSegment::Key("value".into()),
+                    ],
+                    serde_json::to_value(&value)?,
+                ));
+                // A key held as a running shape stops being one: it was asked to rest.
+                if row.get("effect").is_some_and(|e| !e.is_null()) {
+                    writes.push((
+                        vec![
+                            PathSegment::Key("programmer_values".into()),
+                            PathSegment::Id(entry_id),
+                            PathSegment::Key("effect".into()),
+                        ],
+                        serde_json::Value::Null,
+                    ));
+                }
+                continue;
+            }
+
+            writes.push((
+                vec![
+                    PathSegment::Key("programmer_values".into()),
+                    PathSegment::Key("__create".into()),
+                ],
+                serde_json::json!({
+                    "id": entry_id,
+                    "fixture_id": fixture_id,
+                    "parameter_kind": kind,
+                    "value": value,
+                    "locked": false,
+                }),
+            ));
+        }
+
+        Ok(writes)
     }
 
     /// Route a write to the right entity, generically.

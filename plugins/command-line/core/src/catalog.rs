@@ -232,7 +232,9 @@ pub(crate) fn test_catalog() -> Catalog {
           "argsSchema": [{"name": "at", "type": "number", "optional": true}] },
         { "table": "sequences", "name": "goToCue", "doc": "Jump to a cue.",
           "argsSchema": [{"name": "cueId", "type": "string", "optional": false},
-                          {"name": "at", "type": "number", "optional": true}] }
+                          {"name": "at", "type": "number", "optional": true}] },
+        { "table": "sequences", "name": "off", "doc": "Take the sequence off.",
+          "argsSchema": [{"name": "at", "type": "number", "optional": true}] }
     ]);
     let rpcs = serde_json::json!([
         { "method": "session.join", "doc": "Join a session.",

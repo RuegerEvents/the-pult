@@ -78,6 +78,7 @@ export type SequenceEntity = PathProxy<Sequence> & {
   delete(): Promise<void>;
   goNext(args: { at?: number }): Promise<void>;
   goToCue(args: { cueId: string, at?: number }): Promise<void>;
+  off(args: { at?: number }): Promise<void>;
 };
 
 export type SpeedMasterEntity = PathProxy<SpeedMaster> & {
@@ -106,6 +107,7 @@ export type CueCollection = {
   byId(id: string): CueEntity;
   nth(n: number): CueEntity;
   create(entity: Cue): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: CueEntity;
 };
 
@@ -117,6 +119,7 @@ export type FixtureCollection = {
   byId(id: string): FixtureEntity;
   nth(n: number): FixtureEntity;
   create(entity: Fixture): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: FixtureEntity;
 };
 
@@ -128,6 +131,7 @@ export type FixtureTypeCollection = {
   byId(id: string): FixtureTypeEntity;
   nth(n: number): FixtureTypeEntity;
   create(entity: FixtureType): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: FixtureTypeEntity;
 };
 
@@ -139,6 +143,7 @@ export type FlowCollection = {
   byId(id: string): FlowEntity;
   nth(n: number): FlowEntity;
   create(entity: Flow): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: FlowEntity;
 };
 
@@ -150,6 +155,7 @@ export type FlowEdgeCollection = {
   byId(id: string): FlowEdgeEntity;
   nth(n: number): FlowEdgeEntity;
   create(entity: FlowEdge): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: FlowEdgeEntity;
 };
 
@@ -161,6 +167,7 @@ export type FlowNodeCollection = {
   byId(id: string): FlowNodeEntity;
   nth(n: number): FlowNodeEntity;
   create(entity: FlowNode): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: FlowNodeEntity;
 };
 
@@ -172,6 +179,7 @@ export type GroupCollection = {
   byId(id: string): GroupEntity;
   nth(n: number): GroupEntity;
   create(entity: Group): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: GroupEntity;
 };
 
@@ -183,6 +191,7 @@ export type LayoutCollection = {
   byId(id: string): LayoutEntity;
   nth(n: number): LayoutEntity;
   create(entity: Layout): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: LayoutEntity;
 };
 
@@ -194,6 +203,7 @@ export type OutputConfigCollection = {
   byId(id: string): OutputConfigEntity;
   nth(n: number): OutputConfigEntity;
   create(entity: OutputConfig): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: OutputConfigEntity;
 };
 
@@ -205,6 +215,7 @@ export type PluginDatumCollection = {
   byId(id: string): PluginDatumEntity;
   nth(n: number): PluginDatumEntity;
   create(entity: PluginDatum): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: PluginDatumEntity;
 };
 
@@ -216,6 +227,7 @@ export type PluginPackageCollection = {
   byId(id: string): PluginPackageEntity;
   nth(n: number): PluginPackageEntity;
   create(entity: PluginPackage): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: PluginPackageEntity;
 };
 
@@ -227,6 +239,7 @@ export type ProgrammerValueCollection = {
   byId(id: string): ProgrammerValueEntity;
   nth(n: number): ProgrammerValueEntity;
   create(entity: ProgrammerValue): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: ProgrammerValueEntity;
 };
 
@@ -238,6 +251,7 @@ export type SequenceCollection = {
   byId(id: string): SequenceEntity;
   nth(n: number): SequenceEntity;
   create(entity: Sequence): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: SequenceEntity;
 };
 
@@ -249,6 +263,7 @@ export type SpeedMasterCollection = {
   byId(id: string): SpeedMasterEntity;
   nth(n: number): SpeedMasterEntity;
   create(entity: SpeedMaster): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: SpeedMasterEntity;
 };
 
@@ -260,6 +275,7 @@ export type StagePlanCollection = {
   byId(id: string): StagePlanEntity;
   nth(n: number): StagePlanEntity;
   create(entity: StagePlan): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: StagePlanEntity;
 };
 
@@ -271,6 +287,7 @@ export type StationCollection = {
   byId(id: string): StationEntity;
   nth(n: number): StationEntity;
   create(entity: Station): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: StationEntity;
 };
 
@@ -282,6 +299,7 @@ export type UserCollection = {
   byId(id: string): UserEntity;
   nth(n: number): UserEntity;
   create(entity: User): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: UserEntity;
 };
 

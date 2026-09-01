@@ -219,6 +219,57 @@ async fn preferences_come_back_and_can_be_changed() {
     assert_eq!(again["historyDepth"], 1200, "and it stuck");
 }
 
+/// Naming one setting must not reset the others: a panel that knows about the
+/// history depth and not about the home time would otherwise undo the second every
+/// time somebody changed the first.
+#[tokio::test]
+async fn a_setting_not_named_is_left_alone() {
+    let _own = crate::infra::preferences::testing::own_file();
+    let addr = a_console_with_preferences().await;
+    let client = reqwest::Client::new();
+
+    let with_fade: serde_json::Value = client
+        .put(format!("http://{addr}/api/preferences"))
+        .json(&serde_json::json!({ "homeFadeMs": 2000 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(with_fade["homeFadeMs"], 2000);
+    assert_eq!(with_fade["historyDepth"], 500, "untouched by a write that did not name it");
+
+    let then_depth: serde_json::Value = client
+        .put(format!("http://{addr}/api/preferences"))
+        .json(&serde_json::json!({ "historyDepth": 750 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(then_depth["historyDepth"], 750);
+    assert_eq!(then_depth["homeFadeMs"], 2000, "and the home time survived it");
+}
+
+#[tokio::test]
+async fn a_home_time_out_of_range_answers_with_what_was_stored() {
+    let _own = crate::infra::preferences::testing::own_file();
+    let addr = a_console_with_preferences().await;
+
+    let answered: serde_json::Value = reqwest::Client::new()
+        .put(format!("http://{addr}/api/preferences"))
+        .json(&serde_json::json!({ "homeFadeMs": 10_000_000 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(answered["homeFadeMs"], answered["homeFadeMsMax"]);
+}
+
 /// A number outside what the console will do comes back at the nearest one that is,
 /// rather than being refused or stored as asked. The answer is what was stored, so a
 /// panel showing it is showing the truth.

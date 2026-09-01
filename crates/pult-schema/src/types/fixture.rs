@@ -290,6 +290,92 @@ pub struct Fixture {
     #[serde(default)]
     #[pult(lifecycle = LOCAL)]
     pub live_fades: HashMap<String, RunningFade>,
+    /// What this fixture's parameters rest at when nothing is driving them, keyed
+    /// like `live_values`. Empty on nearly every fixture, and then the answer is
+    /// whatever its type declares.
+    ///
+    /// On the fixture rather than on the type because a house light that comes up
+    /// when nothing is controlling it is a fact about *this* rig, and because a type
+    /// is derived: the node describes its ports again and the console rebuilds it,
+    /// which would take an override with it. Defaulted on the wire so a show written
+    /// before this existed opens with every fixture saying nothing.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub home_values: HashMap<String, ParameterValue>,
+}
+
+/// The `live_values` and `home_values` map key for a parameter.
+///
+/// Here rather than in the backend because three places derive it — the engine, the
+/// browser, and the command-line plugin — and a fourth spelling of it would be a
+/// fixture whose values quietly land under a key nothing reads.
+pub fn parameter_key(kind: &ParameterKind) -> String {
+    match kind {
+        ParameterKind::Intensity => "Intensity".into(),
+        ParameterKind::ColorRgb => "ColorRgb".into(),
+        ParameterKind::Pan => "Pan".into(),
+        ParameterKind::Tilt => "Tilt".into(),
+        ParameterKind::GoboIndex => "GoboIndex".into(),
+        ParameterKind::Raw(channel) => format!("Raw:{channel}"),
+        ParameterKind::Switch(n) => format!("Switch:{n}"),
+        ParameterKind::Contact(n) => format!("Contact:{n}"),
+        ParameterKind::Temperature => "Temperature".into(),
+        ParameterKind::Humidity => "Humidity".into(),
+        ParameterKind::AirQuality => "AirQuality".into(),
+        ParameterKind::Text => "Text".into(),
+        ParameterKind::Named(name) => format!("Named:{name}"),
+    }
+}
+
+/// What a parameter rests at when nothing is driving it.
+///
+/// The fixture's own override where it has one, and what its type declares
+/// otherwise. `None` where the type has no such parameter, which is the only honest
+/// answer: a fixture that cannot pan has nowhere for a pan to rest.
+///
+/// One resolution, in the schema, because the engine resolving a relative write, the
+/// engine sending a selection home and playback letting go of a key all have to
+/// agree about it — and because `default_value` is what a *device* said, which is
+/// the answer only until somebody overrides it.
+pub fn home_value(
+    fixture: &Fixture,
+    fixture_type: &FixtureType,
+    kind: &ParameterKind,
+) -> Option<ParameterValue> {
+    home_value_by_key(fixture, Some(fixture_type), &parameter_key(kind))
+}
+
+/// The same question, asked with the key instead of the kind.
+///
+/// Everything downstream of the engine already holds the key — a running fade, a held
+/// programmer entry — and going back to a kind to come forward to the same string
+/// again would be a second place for the two to disagree. So this is the resolution
+/// and [`home_value`] is the spelling of it that starts from a kind.
+///
+/// The type is optional because an override does not need it: where a fixture is
+/// patched to a type this station has not received yet, its own answer is still its
+/// own answer, and a house light should not go dark waiting for a row to replicate.
+pub fn home_value_by_key(
+    fixture: &Fixture,
+    fixture_type: Option<&FixtureType>,
+    key: &str,
+) -> Option<ParameterValue> {
+    if let Some(overridden) = fixture.home_values.get(key) {
+        return Some(overridden.clone());
+    }
+    fixture_type?
+        .parameters
+        .iter()
+        .find(|p| parameter_key(&p.kind) == key)
+        .map(|p| p.default_value.clone())
+}
+
+/// The parameters of a type an operator can set, in the order it lists them.
+///
+/// Inputs are left out: a contact closure is a parameter a device writes and the
+/// show reads, and there is nothing to send home.
+pub fn output_parameters(fixture_type: &FixtureType) -> impl Iterator<Item = &ParameterDefinition> {
+    fixture_type.parameters.iter().filter(|p| p.direction == ParameterDirection::Output)
 }
 
 #[cfg(test)]
@@ -323,6 +409,126 @@ mod tests {
         let back: ParameterDefinition = serde_json::from_value(json).unwrap();
 
         assert_eq!(back, definition);
+    }
+
+    fn a_type(parameters: Vec<ParameterDefinition>) -> FixtureType {
+        FixtureType {
+            id: Uuid::nil(),
+            name: "Par".into(),
+            manufacturer: "Nobody".into(),
+            channel_count: 1,
+            parameters,
+        }
+    }
+
+    fn a_fixture(home_values: HashMap<String, ParameterValue>) -> Fixture {
+        Fixture {
+            id: Uuid::nil(),
+            name: "House left".into(),
+            fixture_type_id: Uuid::nil(),
+            address: FixtureAddress::default(),
+            position: None,
+            live_values: HashMap::new(),
+            live_effects: HashMap::new(),
+            live_fades: HashMap::new(),
+            home_values,
+        }
+    }
+
+    fn an_intensity(default_value: ParameterValue) -> ParameterDefinition {
+        ParameterDefinition {
+            kind: ParameterKind::Intensity,
+            direction: ParameterDirection::Output,
+            binding: ParameterBinding::Dmx { channel: 1 },
+            default_value,
+        }
+    }
+
+    /// `home_values` is a column that did not exist, so a fixture written before it
+    /// has to read back as one with nothing to say rather than as a parse failure.
+    #[test]
+    fn a_fixture_written_before_home_values_existed_still_loads() {
+        let legacy = serde_json::json!({
+            "id": Uuid::nil(),
+            "name": "House left",
+            "fixture_type_id": Uuid::nil(),
+            "address": { "Dmx": { "universe": 1, "address": 1 } },
+            "position": null,
+            "live_values": {},
+        });
+
+        let parsed: Fixture = serde_json::from_value(legacy).unwrap();
+
+        assert!(parsed.home_values.is_empty(), "nothing to say, rather than nothing at all");
+    }
+
+    #[test]
+    fn a_fixture_with_no_override_rests_where_its_type_says() {
+        let fixture_type = a_type(vec![an_intensity(ParameterValue::Float(0.0))]);
+        let fixture = a_fixture(HashMap::new());
+
+        assert_eq!(
+            home_value(&fixture, &fixture_type, &ParameterKind::Intensity),
+            Some(ParameterValue::Float(0.0))
+        );
+    }
+
+    /// The case that forces the override to exist: a house light is on when nothing
+    /// is controlling it, and its type — derived from what the node said about its
+    /// ports — has no way to know that.
+    #[test]
+    fn a_fixture_with_an_override_rests_there_instead() {
+        let fixture_type = a_type(vec![an_intensity(ParameterValue::Float(0.0))]);
+        let fixture = a_fixture(HashMap::from([(
+            "Intensity".to_string(),
+            ParameterValue::Float(1.0),
+        )]));
+
+        assert_eq!(
+            home_value(&fixture, &fixture_type, &ParameterKind::Intensity),
+            Some(ParameterValue::Float(1.0))
+        );
+    }
+
+    #[test]
+    fn a_parameter_the_type_does_not_have_rests_nowhere() {
+        let fixture_type = a_type(vec![an_intensity(ParameterValue::Float(0.0))]);
+        let fixture = a_fixture(HashMap::new());
+
+        assert_eq!(
+            home_value(&fixture, &fixture_type, &ParameterKind::Pan),
+            None,
+            "a fixture that cannot pan has nowhere for a pan to rest"
+        );
+    }
+
+    #[test]
+    fn an_input_is_not_something_to_send_home() {
+        let fixture_type = a_type(vec![
+            an_intensity(ParameterValue::Float(0.0)),
+            ParameterDefinition {
+                kind: ParameterKind::Contact(0),
+                direction: ParameterDirection::Input,
+                binding: ParameterBinding::Port { index: 0 },
+                default_value: ParameterValue::Bool(false),
+            },
+        ]);
+
+        let kinds: Vec<&ParameterKind> =
+            output_parameters(&fixture_type).map(|p| &p.kind).collect();
+
+        assert_eq!(kinds, vec![&ParameterKind::Intensity]);
+    }
+
+    #[test]
+    fn a_parameter_key_says_which_one_it_is() {
+        assert_eq!(parameter_key(&ParameterKind::Intensity), "Intensity");
+        assert_ne!(
+            parameter_key(&ParameterKind::Raw(5)),
+            parameter_key(&ParameterKind::Raw(6)),
+            "two raw channels are two keys"
+        );
+        assert_eq!(parameter_key(&ParameterKind::Named("Fog".into())), "Named:Fog");
     }
 
     #[test]

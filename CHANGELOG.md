@@ -12,6 +12,25 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **Somewhere for a parameter to rest.** Every fixture parameter now has a *home
+  value*: what it goes to when nothing is driving it. Its type says where that is —
+  derived from what the device said about its own ports — and a fixture can override
+  it, which is the only way a house light can say that it comes up rather than going
+  dark. A new **Home** column in the patch panel sets and clears the override.
+- **A sequence can be taken off.** The act the console did not have. OFF beside GO,
+  and `sequence 1 off` on the command line: everything that sequence was driving and
+  nothing else is still driving goes back to where it rests. A parameter another live
+  sequence could drive, or one the operator is holding, is left alone.
+- **Home, as a command.** `home` beside `full` and `out`, and a Home button in the
+  programmer: the selection's parameters at their home values. The station works out
+  what each one is, so a client that can set a level can ask for home without being
+  able to read the rig — the same trick `at +10` plays.
+- **How long letting go takes.** A show carries it, zero by default, so nothing
+  changes until somebody asks for a fade. Show data rather than a console setting,
+  because two stations fading one rig home over different times is not a preference
+  but a disagreement the audience can watch; the console's own number decides what a
+  *new* show starts with.
+
 - **Settings, in the two flavours a console needs.** A new Settings panel, and the
   first thing in it: how many changes a show keeps for undo and the history panel.
   The show's own number travels in the showfile, so two consoles working one show
@@ -102,6 +121,18 @@ bracketed form — so every release needs one and it has to be spelled that way.
   one, shift-click to add — so a fixture can be programmed before it has been
   placed anywhere. Chips in the plan's *Not placed* tray can be dragged onto
   the plan to place them where they land.
+
+### Changed
+
+- **BREAKING: Go at the last cue stays on the last cue.** It used to leave the
+  sequence with no active cue at all, which meant "the operator ran out of cues" and
+  "the operator turned it off" were the same state — and the console could not tell
+  them apart well enough to know what to put back. Running out of cues now holds what
+  is showing, and OFF is what takes a sequence off. A show that relied on Go emptying
+  a sequence needs an Off where that Go was.
+- **Clearing the programmer lands on where a parameter rests**, not on a hardcoded
+  zero. On a dimmer that is the same thing; on a house light that comes up, or a
+  mover whose tilt sits centred, it is not.
 
 ### Removed
 

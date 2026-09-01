@@ -44,6 +44,7 @@ const fixture = (over: Partial<Fixture> = {}): Fixture => ({
 	live_values: {},
 	live_effects: {},
 	live_fades: {},
+	home_values: {},
 	...over
 });
 
@@ -183,7 +184,8 @@ describe('what things are doing', () => {
 		const lit = fixture({
 			live_values: { ColorRgb: { type: 'Color', value: { r: 0, g: 1, b: 0 } } },
 			live_effects: {},
-			live_fades: {}
+			live_fades: {},
+			home_values: {}
 		});
 		expect(fixtureOutput(lit).level).toBe(1);
 		expect(fixtureTint(lit)).toBe('rgb(0, 255, 0)');
@@ -227,7 +229,8 @@ describe('pointing', () => {
 			position: { Axial: { position: { x: 0, y: 5, z: 0 }, direction: { x: 0, y: -1, z: 1 } } },
 			live_values: { Pan: { type: 'Float', value: 0.5 } },
 			live_effects: {},
-			live_fades: {}
+			live_fades: {},
+			home_values: {}
 		});
 		expect(panAngle(facing, mover)).toBeCloseTo(0, 6);
 	});
@@ -253,7 +256,8 @@ describe('pointing', () => {
 			position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } },
 			live_values: { Pan: { type: 'Float', value: 0.5 }, Tilt: { type: 'Float', value: 0.5 }, ...over },
 			live_effects: {},
-			live_fades: {}
+			live_fades: {},
+			home_values: {}
 		});
 
 	it('nods either side of the elevation it was hung at', () => {
@@ -297,7 +301,8 @@ describe('pointing', () => {
 			position: { Axial: { position: { x: 0, y: 5, z: 0 }, direction: { x: 0, y: -3, z: 4 } } },
 			live_values: { Pan: { type: 'Float', value: 0.5 } },
 			live_effects: {},
-			live_fades: {}
+			live_fades: {},
+			home_values: {}
 		});
 		const beam = beamDirection(rigged, mover);
 		expect(beam.y).toBeCloseTo(-0.6, 6);
@@ -321,7 +326,8 @@ describe('aiming a head', () => {
 			position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } },
 			live_values: { Pan: { type: 'Float', value: 0.5 }, Tilt: { type: 'Float', value: 0.5 }, ...over },
 			live_effects: {},
-			live_fades: {}
+			live_fades: {},
+			home_values: {}
 		});
 
 	it('lands the beam where it was asked to', () => {

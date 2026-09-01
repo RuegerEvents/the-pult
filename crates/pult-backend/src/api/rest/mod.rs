@@ -194,11 +194,24 @@ async fn set_preferences(Json(body): Json<serde_json::Value>) -> Result<Json<ser
     // quietly drop every setting this route does not mention — the per-plugin
     // configuration among them, which is where an operator's API keys live.
     let mut asked = infra::preferences::load();
-    asked.history_depth = body
-        .get("historyDepth")
-        .and_then(|v| v.as_u64())
-        .and_then(|v| u32::try_from(v).ok())
-        .ok_or_else(|| bad_request("historyDepth has to be a number"))?;
+    // Each setting is changed only if it is named, so a panel that knows about one
+    // of them does not reset the others by not mentioning them.
+    let number = |field: &str| -> Result<Option<u32>, Response> {
+        match body.get(field) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(v) => v
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .map(Some)
+                .ok_or_else(|| bad_request(&format!("{field} has to be a number"))),
+        }
+    };
+    if let Some(depth) = number("historyDepth")? {
+        asked.history_depth = depth;
+    }
+    if let Some(ms) = number("homeFadeMs")? {
+        asked.home_fade_ms = ms;
+    }
     let asked = asked.sane();
 
     infra::preferences::save(&asked).map_err(|e| {
@@ -214,6 +227,8 @@ fn as_json(prefs: &infra::preferences::Preferences) -> serde_json::Value {
         "historyDepth": prefs.history_depth,
         "historyDepthMin": pult_schema::types::show::HISTORY_DEPTH_MIN,
         "historyDepthMax": pult_schema::types::show::HISTORY_DEPTH_MAX,
+        "homeFadeMs": prefs.home_fade_ms,
+        "homeFadeMsMax": pult_schema::types::show::HOME_FADE_MS_MAX,
     })
 }
 

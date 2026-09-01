@@ -14,7 +14,14 @@ use super::cue::CueAccessor;
 // They are registered via inventory and dispatched by the engine through all protocols.
 #[pult_commands]
 impl Sequence {
-    /// Advance to the next cue, wrapping to None if already at the last.
+    /// Advance to the next cue, staying on the last one when there is no next.
+    ///
+    /// Running out of cues is not turning the sequence off. A light does not go dark
+    /// because the operator pressed Go once more than there were cues, and the way to
+    /// say that is to leave the last cue owning what it faded to — rather than to
+    /// leave the values behind under a cue marked inactive, which is what wrapping to
+    /// `None` used to do. Having only [`Sequence::off`] reach `None` is also what
+    /// makes "nothing is driving these parameters any more" a thing playback can see.
     ///
     /// Args: `{ "at": <console unix ms> }`, optional. Every station runs this command
     /// from the same arguments, so carrying the time is what makes all of them anchor
@@ -25,7 +32,32 @@ impl Sequence {
         args: serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let next = self.active_cue_index.map(|i| i + 1).unwrap_or(0);
-        self.active_cue_index = if next < self.cue_ids.len() { Some(next) } else { None };
+        if next >= self.cue_ids.len() {
+            // Already at the end, or there is nothing to go to at all. Whatever is
+            // showing goes on showing, and the anchor is left alone: re-anchoring
+            // here would restart the running cue's effects on every press.
+            return Ok(());
+        }
+        self.active_cue_index = Some(next);
+        self.went_at = Some(went_at(&args));
+        Ok(())
+    }
+
+    /// Take the sequence off: no cue of it is active any more.
+    ///
+    /// The act this console did not have. Everything it was driving and nothing else
+    /// is still driving goes to its home value, which playback works out for itself
+    /// from the cues — so this command writes one field and every station in the
+    /// session arrives at the same rig.
+    ///
+    /// Carries its time like a Go, so the release fades from the same millisecond
+    /// everywhere.
+    #[pult_command(args = "{ at?: number }")]
+    pub fn off(
+        &mut self,
+        args: serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.active_cue_index = None;
         self.went_at = Some(went_at(&args));
         Ok(())
     }
@@ -141,17 +173,43 @@ mod tests {
         assert_eq!(seq.went_at, Some(42));
     }
 
-    /// Running off the end is still a Go: the sequence stops asserting anything, and
-    /// the anchor moves so that a wrap back to the top starts a fresh cycle rather
-    /// than resuming an old one.
+    /// Go at the last cue does nothing at all — not even re-anchor, which would
+    /// restart that cue's effects under an operator leaning on the button.
+    ///
+    /// This is where `None` used to come from, and taking it away is what lets `None`
+    /// mean the sequence was turned off.
     #[test]
-    fn running_off_the_end_clears_the_cue_but_still_anchors() {
+    fn going_past_the_last_cue_stays_on_it() {
         let mut seq = a_sequence(vec![Uuid::new_v4()]);
         seq.active_cue_index = Some(0);
+        seq.went_at = Some(7);
 
-        seq.go_next(serde_json::json!({ "at": 7u64 })).unwrap();
+        seq.go_next(serde_json::json!({ "at": 9u64 })).unwrap();
+
+        assert_eq!(seq.active_cue_index, Some(0), "still on the last cue");
+        assert_eq!(seq.went_at, Some(7), "and still where it went");
+    }
+
+    #[test]
+    fn a_sequence_with_no_cues_has_nowhere_to_go() {
+        let mut seq = a_sequence(vec![]);
+
+        seq.go_next(serde_json::json!({ "at": 9u64 })).unwrap();
+
         assert_eq!(seq.active_cue_index, None);
-        assert_eq!(seq.went_at, Some(7));
+        assert_eq!(seq.went_at, None, "nothing went, so nothing is anchored");
+    }
+
+    /// The only way to no active cue, which is what makes it mean something.
+    #[test]
+    fn taking_a_sequence_off_leaves_no_cue_active() {
+        let mut seq = a_sequence(vec![Uuid::new_v4(), Uuid::new_v4()]);
+        seq.active_cue_index = Some(1);
+
+        seq.off(serde_json::json!({ "at": 11u64 })).unwrap();
+
+        assert_eq!(seq.active_cue_index, None);
+        assert_eq!(seq.went_at, Some(11), "carried, so every station releases from one instant");
     }
 
     /// SYNCED, and added after showfiles existed, so a sequence written before it

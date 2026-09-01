@@ -15,8 +15,9 @@ it, using the value currently in effect for that path.
 
 For a parameter of a fixture, "currently in effect" SHALL mean what the priority
 stack is showing: the programmer's value where the programmer holds that
-parameter, and the value playback is producing where it does not. For any other
-field, it SHALL mean the field's current value.
+parameter, the value playback is producing where it does not, and the parameter's
+home value where nothing has ever driven it. For any other field, it SHALL mean
+the field's current value.
 
 #### Scenario: Nudging a parameter the programmer already holds
 
@@ -28,6 +29,11 @@ field, it SHALL mean the field's current value.
 - **WHEN** playback is showing a parameter at 0.4, the programmer holds nothing for it, and a relative write of +0.1 arrives
 - **THEN** the programmer takes the parameter and holds it at 0.5
 - **AND** it is held, so it overrides playback from then on
+
+#### Scenario: Nudging a parameter nothing has ever driven
+
+- **WHEN** a parameter has never been driven, its home value is 0.4, and a relative write of +0.1 arrives
+- **THEN** the programmer takes the parameter and holds it at 0.5
 
 #### Scenario: Nudging an ordinary field
 

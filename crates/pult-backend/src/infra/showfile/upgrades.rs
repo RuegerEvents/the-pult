@@ -70,6 +70,24 @@ const UPGRADES: &[Upgrade] = &[
         statements: &["UPDATE show SET history_depth = 500 WHERE history_depth IS NULL"],
     },
     Upgrade {
+        // Same shape as the history depth above, and for the same reason: the
+        // additive pass adds the column nullable, and a JSON column read as NULL is
+        // not an empty map, it is a parse failure. Every fixture written before this
+        // existed has nothing to say about where its parameters rest.
+        name: "fixtures: where each parameter rests",
+        table: "fixtures",
+        applies: |columns| columns.iter().any(|c| c == "home_values"),
+        statements: &["UPDATE fixtures SET home_values = '{}' WHERE home_values IS NULL"],
+    },
+    Upgrade {
+        // Zero, which is what every show did before there was a choice: releasing
+        // snapped.
+        name: "show: how long it takes to let go",
+        table: "show",
+        applies: |columns| columns.iter().any(|c| c == "home_fade_ms"),
+        statements: &["UPDATE show SET home_fade_ms = 0 WHERE home_fade_ms IS NULL"],
+    },
+    Upgrade {
     name: "fixtures: universe/dmx_address folded into address",
     table: "fixtures",
     // Both old columns are dropped at the end, so their presence is the flag.

@@ -1875,6 +1875,80 @@ response is a transport error rather than an answer, which is the shape of the r
 thing and costs milliseconds rather than the ten-second timeout that black-holing
 the port would have.
 
+### 41. Where a parameter rests (done)
+
+Nothing in the console ever put a parameter back. `emit()` merged each tick's changes
+onto the map a fixture already had and no path ever wrote one back down, so a look
+built by a sequence outlived the sequence, and clearing the programmer on a fixture
+nothing had touched landed on a hardcoded zero of the right shape. `default_value`
+had been sitting on every parameter since the node protocol arrived — derived from
+what the device said about its own ports — read only by the connectors, and only as a
+fallback for a key that was absent.
+
+**The home value.** A parameter's own resting place: the fixture's `home_values`
+override if it has one, and its type's `default_value` otherwise. Resolved once, in
+`pult-schema`, because three callers wanted it — a relative write starting from
+nothing, sending a selection home, and the programmer letting go of a key nothing was
+under. No TypeScript twin: `fixture-groups` pays for two evaluators because a cone
+being dragged re-evaluates per frame, and nothing here is on that path. The values
+panel still carries a type's `default_value` per row, but that is a display fallback
+for an empty readout rather than an answer about the rig.
+
+The override is PERSISTED and on the *fixture*, not the type. A house light that
+comes up when nothing is controlling it is a fact about this rig, and a type is
+derived: the node describes its ports again, the console rebuilds it, and an override
+living there would go with it.
+
+**`__home`, a third path verb.** `["programmer_values", "__home"]` with
+`{fixtureId, parameterKind?}`, beside `__by` and resolved in the same place — the top
+of the `Set` arm, before `previous` is read — so the oplog, the broadcast and every
+peer see ordinary absolute programmer writes. Omitting the kind means every output
+parameter of that fixture, enumerated by the station, which is what lets the command
+line's `home` and the natural-language plugin ask for it without reading the rig. The
+same argument `relative-values` made for `at +10`.
+
+One verb is several writes, which the `Set` arm did not previously allow: it now
+resolves to a `Vec` and loops. And when a user's single request expands to more than
+one write, the engine mints a **gesture** so one Ctrl-Z takes back the whole fixture
+rather than one parameter of it.
+
+**Off, and the change underneath it.** `Sequence::off` was the easy half. The hard
+half was that `go_next` wrapped to `None` at the end of the list, so "the operator ran
+out of cues" and "the operator turned it off" were the same state and playback could
+not tell them apart. **Go at the last cue now stays on the last cue** — a breaking
+behaviour change, and the better one: the comment at `playback.rs:283` had always
+wanted a light not to go dark for want of cues, and leaving the last cue *active*
+does that honestly, where leaving the values behind under a cue marked inactive did
+not. A second SYNCED field saying "off" would have been two fields encoding one thing.
+
+**What a release releases** is read from the show, never remembered: the parameters
+any cue of that sequence captures, minus those a cue of another live sequence
+captures, minus those the programmer holds. The tempting alternative — remember what
+this sequence has actually written since it went on — is per station, and a console
+that joined at the interval would release less than the one that ran act one. That is
+two rigs with no way back. Reading the cues is stateless, identical everywhere, and
+right for the same reason: a parameter no cue of any live sequence captures is a
+parameter nothing is driving. It errs conservatively in both directions — a cue that
+never ran still contributes, and a parameter another sequence merely *could* drive is
+left alone.
+
+**How long it takes** is `Show::home_fade_ms`, PERSISTED, zero by default so nothing
+an operator was used to changed. Show data rather than a station preference, against
+the first instinct, because `types/show.rs` had already written the argument for
+`history_depth`: a station default that keeps applying lets two stations give
+different answers about one show. For undo that is a disagreement; for a rig two
+consoles are both driving, it is one the audience can watch. The station preference
+decides what a *new* show starts with and then stops mattering.
+
+Three things fell out of the reading. `zero_like` is gone, and with it the console's
+last guess about where a parameter belongs; where nothing can say — a fixture whose
+type has gone — a cue now lands rather than fading from a zero nobody vouched for.
+`parameter_key` moved into `pult-schema` beside `programmer_entry_id`, because the
+home resolution is the fourth thing that needed it and three spellings of one key was
+already one too many. And `home_values` needed a showfile upgrade of the same shape
+as `history_depth`'s: the additive pass adds a column nullable, and a JSON column read
+as NULL is a parse failure rather than an empty map.
+
 ## Further out
 
 Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.

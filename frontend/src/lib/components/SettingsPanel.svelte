@@ -45,8 +45,27 @@
 		prefs = stored;
 	}
 
+	async function setShowHomeFade(seconds: number) {
+		if (!show) return;
+		trouble = null;
+		await data.show.home_fade_ms.set(clampedFade(seconds * 1000));
+	}
+
+	async function setConsoleHomeFade(seconds: number) {
+		trouble = null;
+		const stored = await writePreferences({ homeFadeMs: clampedFade(seconds * 1000) });
+		if (!stored) {
+			trouble = 'This console could not write its settings down.';
+			return;
+		}
+		prefs = stored;
+	}
+
 	const clamped = (value: number) =>
 		Math.round(Math.min(prefs?.historyDepthMax ?? 10_000, Math.max(prefs?.historyDepthMin ?? 10, value)));
+
+	const clampedFade = (ms: number) =>
+		Math.round(Math.min(prefs?.homeFadeMsMax ?? 30_000, Math.max(0, ms || 0)));
 
 	/// Roughly how many times Ctrl-Z can be pressed in a row, which is not the same
 	/// number and is the one an operator actually cares about. An undo is a change
@@ -93,6 +112,31 @@
 				too and shares the room with the ones it takes back, so the two numbers are not the
 				same.
 			</p>
+
+			<div class="row">
+				<label for="show-home-fade">Letting go takes</label>
+				{#if $unlocked}
+					<input
+						id="show-home-fade"
+						class="input"
+						type="number"
+						min="0"
+						max={(prefs?.homeFadeMsMax ?? 30_000) / 1000}
+						step="0.5"
+						value={show.home_fade_ms / 1000}
+						onchange={(e) => setShowHomeFade(e.currentTarget.valueAsNumber)}
+					/>
+				{:else}
+					<span class="value">{show.home_fade_ms / 1000}</span>
+				{/if}
+				<span class="unit">seconds</span>
+			</div>
+			<p class="note">
+				How long a parameter takes to reach where it rests when nothing is left driving it —
+				a sequence taken off, a selection sent home. Zero snaps. Show data rather than a
+				console setting, because two stations fading one rig home over different times is
+				not a preference but a disagreement the audience can watch.
+			</p>
 		{/if}
 	</section>
 
@@ -126,6 +170,24 @@
 					<span class="value">{prefs.historyDepth}</span>
 				{/if}
 				<span class="unit">changes</span>
+			</div>
+			<div class="row">
+				<label for="new-home-fade">New shows let go in</label>
+				{#if $unlocked}
+					<input
+						id="new-home-fade"
+						class="input"
+						type="number"
+						min="0"
+						max={prefs.homeFadeMsMax / 1000}
+						step="0.5"
+						value={prefs.homeFadeMs / 1000}
+						onchange={(e) => setConsoleHomeFade(e.currentTarget.valueAsNumber)}
+					/>
+				{:else}
+					<span class="value">{prefs.homeFadeMs / 1000}</span>
+				{/if}
+				<span class="unit">seconds</span>
 			</div>
 		{/if}
 	</section>

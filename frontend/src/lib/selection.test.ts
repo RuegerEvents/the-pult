@@ -25,7 +25,8 @@ const at = (name: string, x: number, y: number, z: number, typeId = 'par'): Fixt
 	position: { Point: { x, y, z } },
 	live_values: {},
 	live_effects: {},
-	live_fades: {}
+	live_fades: {},
+	home_values: {}
 });
 
 const unplaced = (name: string, typeId = 'par'): Fixture => ({ ...at(name, 0, 0, 0, typeId), position: null });

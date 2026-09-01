@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS fixtures (
     name TEXT NOT NULL,
     fixture_type_id TEXT NOT NULL,
     address TEXT NOT NULL,
-    position TEXT
+    position TEXT,
+    home_values TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS fixture_types (
@@ -102,7 +103,8 @@ CREATE TABLE IF NOT EXISTS show (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    history_depth INTEGER NOT NULL
+    history_depth INTEGER NOT NULL,
+    home_fade_ms INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS speed_masters (

@@ -106,8 +106,11 @@
 		await data.sequences.byId(seqId).goToCue({ cueId, at: Date.now() });
 	}
 
-	async function resetSequence(seqId: string) {
-		await data.sequences.byId(seqId).active_cue_index.set(null);
+	// Off is a command rather than a write of `active_cue_index`, so it carries its
+	// time the way Go does: every station releases what the sequence was driving from
+	// the same millisecond, and a rig with a home fade time fades home together.
+	async function takeOff(seqId: string) {
+		await data.sequences.byId(seqId).off({ at: Date.now() });
 	}
 
 	async function deleteSequence(seqId: string) {
@@ -274,11 +277,11 @@
 					</button>
 					<button
 						class="reset-btn"
-						onclick={() => resetSequence(seq.id)}
+						onclick={() => takeOff(seq.id)}
 						disabled={seq.active_cue_index === null}
-						title="Reset to beginning"
+						title="Take it off: what it was driving goes back to where it rests"
 					>
-						↺
+						OFF
 					</button>
 					<button
 						class="expand-btn"

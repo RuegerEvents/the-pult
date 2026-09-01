@@ -18,6 +18,9 @@ export type Preferences = {
 	/** The range the console will actually accept, so a control can say so. */
 	historyDepthMin: number;
 	historyDepthMax: number;
+	/** What a newly created show starts its home fade time at, in milliseconds. */
+	homeFadeMs: number;
+	homeFadeMsMax: number;
 };
 
 const url = () => `${backendOrigin(window.location)}/api/preferences`;
@@ -36,12 +39,12 @@ export async function readPreferences(): Promise<Preferences | null> {
 /**
  * Change them, and answer with what was actually stored.
  *
- * Not always what was asked for — a depth outside what the console will do comes
+ * Not always what was asked for — a value outside what the console will do comes
  * back at the nearest one that is — which is why the caller takes the answer rather
- * than assuming.
+ * than assuming. Only what is named changes; the rest is left alone.
  */
 export async function writePreferences(
-	change: Partial<Pick<Preferences, 'historyDepth'>>
+	change: Partial<Pick<Preferences, 'historyDepth' | 'homeFadeMs'>>
 ): Promise<Preferences | null> {
 	try {
 		const response = await fetch(url(), {
