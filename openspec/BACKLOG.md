@@ -233,6 +233,90 @@ Left open: no `Term::InGroup`, so a group cannot appear inside another group's q
 Recall-then-refine covers the workflow; the term needs cycle detection and an answer
 for deleting a referenced group.
 
+## Visualisation
+
+### rig-viewer-fidelity
+The 3D rig viewer draws a beam as a `ConeGeometry` wearing a flat additive material
+(`frontend/src/lib/components/stage/Rig3D.svelte`). That is enough to say where a
+light is pointing and not enough to look like light. Prior art read in full on
+2026-09-01: ASLS Studio's visualizer (`src/plugins/visualizer/`, about 2.7k lines),
+which is this problem solved a level up. It is GPL-3.0 and we are MIT, so what
+travels is the technique, not the code.
+
+What they do, in the order it matters to us.
+
+- The beam is not geometry. One 100 m open-ended cylinder, instanced, and the beam
+  angle is vertex displacement: the far ring is scaled by `tan(angle)` in the vertex
+  shader. Zoom costs a float in an attribute and nothing is ever rebuilt.
+- Brightness depends on where you stand. Four terms multiply together: how side-on
+  the beam is seen, how near the camera is to looking down the barrel, an
+  inverse-square-ish falloff along its length, and a power term on the silhouette so
+  a cylinder stops reading as a tube.
+- Haze is four octaves of 3D simplex noise sampled in world space with *time as the
+  third axis*, so it drifts. Density and turbulence are the two knobs they expose.
+- The beam smoothsteps out over the last centimetre above the deck instead of
+  clipping through it.
+- Colour is scaled in HSV, value only, so a dim beam keeps its hue rather than
+  crushing towards grey the way scaling RGB does.
+- Base, yoke and head are three `InstancedMesh`es sharing one material, per-fixture
+  state carried in `InstancedBufferAttribute`s, and the model articulates: the yoke
+  swings on pan and the head nods on tilt.
+- Selection is one per-instance float that an `onBeforeCompile` patch turns into
+  emissive. No material swap and no extra draw call.
+
+Two things about them are worth not copying. Their README credits the
+`postprocessing` library and there is no `EffectComposer` anywhere in their `src/`;
+every bit of glow is additive blending in one fragment shader, which is the cheaper
+lesson. And their fixture bodies are pure black, so the render cannot tell you what
+is hanging up there. Our emissive body tinted by its own output is the better call
+and should survive whatever else changes.
+
+Two defects in ours turned up while comparing, both worth fixing whatever shape the
+change takes.
+
+- `<T.ConeGeometry args={[beam.length * 0.12, beam.length, ...]}>`. `args` is
+  reactive, so Threlte rebuilds the geometry whenever the throw changes. Dragging a
+  beam spot allocates a fresh cone per fixture per frame.
+- The `<T.SpotLight>` sits inside `{#if beam.output.level > 0.01}`. Crossing that
+  threshold changes the scene's light count, which changes three.js's program cache
+  key and recompiles every material in the scene. A blackout-to-full fade therefore
+  thrashes the shader compiler at exactly the moment the picture matters.
+
+Open questions.
+
+- Beam angle has nowhere to come from. `FixtureType` carries no beam angle and
+  `ParameterKind` has no `Zoom`, so everything is drawn at the hardcoded
+  `length * 0.12` (a 6.8° half-angle) and a wash looks like a beam. That is a
+  `pult-schema` change and it is the same one `gdtf-import` wants. Do they land
+  together, or does a `default_beam_angle` on `FixtureType` come first?
+- Where does haze live? A station preference seeded into the show the way
+  `home_fade_ms` is, or a per-browser view setting? How hazy the room is is a fact
+  about the room, which argues for the show, but two operators on two tablets may
+  reasonably want different pictures.
+- Instancing against the derived-per-tick `beams` array. Today every `live_values`
+  tick rebuilds a `Quaternion`, an `Euler` and a `Color` per fixture, forty times a
+  second through a fade. Instanced attributes are the fix, and they sit badly with
+  Threlte's declarative `#each` and with picking, which raycasts against per-fixture
+  objects. Does the viewer drop to imperative three.js inside one Threlte component,
+  and what happens to the gizmos if it does?
+- Their singletons do not survive the move. `SceneManager`, `Controls` and
+  `AnimationManager` are module-level globals over shared mutable buffers, which is
+  fine for one viewport and breaks in our tiled workspace, where two `rig` panels can
+  be open at once. Anything we take has to be per-panel.
+- Placement, as opposed to aiming. They have `TransformControls` with a 0.5 m
+  translate snap, keyboard modes, and multi-select through a bounding-box group so a
+  whole truss moves together. We have pan/tilt/spot gizmos for aiming a head and
+  nothing for rigging one in 3D. Same change or its own?
+- Strobe needs a `ParameterKind` before it can be rendered at all; theirs is a square
+  wave against the animation clock driving the intensity attribute. Out of scope
+  here, or the reason to do that schema work once?
+- Three cheap wins need no design and could go in ahead of the rest: `depthTest:
+  false` on our existing gizmo rings so they are never buried inside a fixture body,
+  cancelling a `follow` camera transition on any pointer or wheel input, and an
+  infinite grid shader (`fwidth` line antialiasing, two scales, distance fade) to
+  replace the fixed `GridHelper`, which aliases badly past about 40 m and stops at
+  the edge of the plan.
+
 ## Users and undo
 
 ### default-user — done, see `changes/archive/2026-08-31-default-user/`
