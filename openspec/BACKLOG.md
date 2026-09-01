@@ -5,7 +5,57 @@ exists today (verified against the code, 2026-08-31) and the questions a
 proposal has to answer — the point of moving this out of a todo list is that
 the open questions travel with the item instead of being re-discovered.
 
-Ordering within a section is rough priority; sections are themes, not order.
+Sections are themes, not order. The order is the list below, and it is the one
+thing here that is meant to be rearranged: an entry's own text records what was
+asked and what is true, the order records what we intend to do next. `→` names
+what has to exist first.
+
+## Order
+
+1. **demo-shows** — small/big/huge seeded shows as size presets, and the tick-cost
+   numbers the next item is judged by. → none
+2. **multithreading** — per-key `live_values` writes, then measure, then threads. High
+   because it is engine internals: every change after this one is more code sitting
+   on top of the thing being changed. → demo-shows
+3. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
+   frontend proxy comes from; the wire stays generic. → none
+4. **gdtf-import** — fixture definitions from a file; the physical data it brings is
+   where a beam angle and real pan/tilt ranges come from, which is why the two items
+   after it wait on it. → none
+5. **mvr-import** — fixtures, positions and geometry into `StagePlan` and the asset
+   store. → gdtf-import, for the definitions MVR references
+6. **rig-viewer-fidelity** — beams that read as light, and the two live defects (a
+   `ConeGeometry` rebuilt per fixture per frame, a `SpotLight` recompiling every
+   material mid-fade). → gdtf-import, for the beam angle it has nowhere else to get;
+   and better after mvr-import, which is what puts a rig in there worth drawing
+7. **paperwork-export** — patch lists, cue sheets, rider paperwork; a read-only
+   plugin over introspection, which is what introspection is for. → none
+8. **outputs-viewer** — what actually leaves the console, per universe and per node.
+   → none
+9. **system-stats-panel** — throughput, sync backlog, tick cost, client counts. Reads
+   better after 2, which is what makes tick cost worth watching. → none
+10. **showfile-management** — versioning, save-as, autosave, backup. → none
+11. **showfile-assets-folder** — a folder with an assets directory, or one file.
+    → decided with showfile-management, not separately
+12. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+    themselves dynamic. → rig-viewer-fidelity, for anything that happens in the 3D view
+13. **voice-input** — speech to the command line, grammar first and NL on parse
+    failure. → none
+14. **nl-show-context** — what relative syntax cannot reach, and whether it is worth
+    the permission it costs. → voice-input, which is what shows which utterances
+    actually arrive
+15. **open-control-interfaces** — OSC, MIDI, control surfaces. → none
+16. **timecode-workflow** — waveform and beat-grid timecode, timed playback, audio
+    import. The biggest item here and the one the spec is most opinionated about.
+    → none technically
+17. **llm-cost-overview** — token and cost accounting out of the NL plugin. → none
+18. **openhaunt-as-plugin** — output connectors as WASM, if 40 Hz survives the
+    boundary. → the benchmarks from demo-shows and multithreading, which are what
+    decides it
+19. **video-mapping-ndi** — NDI output; scope carefully, it hides a media server.
+    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
+20. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+    → a real TS plugin wanting to exist
 
 ## Plugins (builds on the WIP WASM runtime)
 
@@ -165,6 +215,22 @@ Token/cost accounting for the NL plugin, visible over the REST API.
   where, and who updates them?
 
 ## Programming model
+
+### 3d-programmer-remainder
+What is left of the spec's §Programming once the rig view (task 13), programming in
+it (task 14) and effects over a selection (task 25) are done: **blind**, **highlight**
+and **fan**, and modifiers that are themselves dynamic — an effect whose rate is an
+effect. Predates the move to OpenSpec; folded here from `docs/ROADMAP.md`.
+- Blind wants a second programmer buffer that does not reach the output. Is that a
+  second `programmer_values` collection, or a flag on the existing one? It is SYNCED
+  either way, so two operators can be blind separately or not at all — which?
+- Highlight is a temporary output override for the selection, which is the same
+  shape as home (`__home`) pointed the other way. Reuse that machinery or not?
+- Fan needs an order over the selection, and `SelectionQuery` now carries one
+  (`fixture-groups`). Does fan reuse it, and what does fanning an unordered
+  selection mean?
+- A dynamic modifier is a graph rather than a value; nothing in the schema is
+  recursive yet.
 
 ### parameter-defaults — done, see `changes/archive/2026-09-01-parameter-defaults/`
 Shipped as roadmap task 41. A parameter has a **home value** — the fixture's own
@@ -429,6 +495,19 @@ file: the description becomes a fixture type.
 Patch lists, cue sheets, rider paperwork — native or plugin.
 - A read-only report is an ideal plugin (introspection already exposes all
   the data); print CSS vs. PDF generation.
+
+### open-control-interfaces
+OSC, MIDI and control surfaces alongside the existing WebSocket API. Predates the
+move to OpenSpec; folded here from `docs/ROADMAP.md`.
+- Native connector or plugin? Argues with openhaunt-as-plugin: a control surface is
+  input rather than a 40 Hz output path, so the latency case against a WASM boundary
+  is much weaker here.
+- What does an OSC address map onto — the path API directly (`/pult/sequences/3/go`),
+  or the command line, which already has one grammar and one audit trail?
+- MIDI needs a device on a particular station, so a surface is LOCAL to whoever it is
+  plugged into while the thing it drives is SYNCED. Same shape as a fixture connector.
+- Learn mode (press a fader, bind it) is the UX that makes it usable, and it is a
+  write to the show — which collection?
 
 ## Observability
 
