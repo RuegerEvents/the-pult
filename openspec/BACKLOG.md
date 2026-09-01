@@ -12,11 +12,13 @@ what has to exist first.
 
 ## Order
 
-1. **demo-shows** — small/big/huge seeded shows as size presets, and the tick-cost
-   numbers the next item is judged by. → none
-2. **multithreading** — per-key `live_values` writes, then measure, then threads. High
-   because it is engine internals: every change after this one is more code sitting
-   on top of the thing being changed. → demo-shows
+1. ~~**demo-shows**~~ — done, see `changes/archive/`. The numbers item 2 is judged
+   by now exist, and `scripts/demo.sh --measure` reproduces them.
+2. **values-as-functions** — a live value stops being state and becomes something
+   each consumer evaluates from the objects that are already there. Absorbs most of
+   what `multithreading` was for: the render is 0.07 ms, so the cost was never
+   computation. High because it is engine internals — every change after it is more
+   code sitting on top of the thing being changed. → demo-shows, for the numbers
 3. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
    frontend proxy comes from; the wire stays generic. → none
 4. **gdtf-import** — fixture definitions from a file; the physical data it brings is
@@ -455,7 +457,25 @@ pruned showfile, so a session should not mix builds across this.
 
 ### showfile-management
 Versioning, backup, automated backup to an external drive. Today: one SQLite
-file, saved in place; the oplog grows forever (pruning is history-pruning).
+file, written on every PERSISTED write, with **no explicit save at all** — there
+is no `save` RPC and nothing defers a write.
+- **Save should mean checkpoint, not flush.** The want is committed intent — try
+  something in rehearsal and discard it, name a version, get back to the show as it
+  was at the end of yesterday. The want is *not* deferred durability: a show that
+  loses an evening's programming because nobody pressed Save is the worst failure
+  this console has, and it happens exactly where people forget — a long tech, late,
+  everyone tired. So keep writing continuously as the crash journal and let Save mark
+  a point, rather than making the write wait for a keypress.
+- There is no performance case for deferring either, and there will be even less
+  once `values-as-functions` takes the tick off the write path: operator edits
+  happen at human rate.
+- **Revert-to-last-save wants the oplog, not a second history.** The log is already
+  per-node sequenced and already bounded by `history-pruning`, so a checkpoint is a
+  marked seq and reverting is a rewind — the same machinery undo uses.
+- The hard part, and the reason this cannot be a small change: **the show is
+  replicated live.** If one console defers or reverts while another saves, what got
+  saved? A checkpoint is either session-wide agreed or explicitly per-station, and
+  that decision drives everything else here.
 - Save-as / snapshots / autosave cadence; what a "version" is when the show
   is also replicated live to peers.
 - Backup target configuration is a station preference (task 33's
@@ -523,25 +543,151 @@ current universe images; OH sends are discrete messages worth a ring buffer.
 
 ### system-stats-panel
 Stations panel (task 10) has cpu/mem/uptime. Missing: network throughput,
-sync backlog, tick cost, WS client counts, broker stats.
-- Extend `Station` rows vs. a new LOCAL stats collection; sample rates.
+sync backlog, WS client counts, broker stats.
+- **Tick cost is done and the shape question is answered.** `demo-shows` put it on
+  the `Station` row as `Option<TickCost>` — mean, worst, the playback half of each,
+  and the tick count for the window — on the grounds that a station is already the
+  sole authority on its own numbers there. So: extend the row, not a new LOCAL
+  collection, unless something arrives that a row genuinely cannot hold (a ring
+  buffer of recent ticks would be that).
+- What is left here is the panel: nothing in the frontend reads `tick_cost` yet.
+  Absent has to render as absent — a settled station is not an instant one.
+- Sample rates for the rest; `REPORT_INTERVAL` is two seconds and everything on the
+  row shares it.
+- **The browser's load belongs here too, not just the backend's.** Once
+  `values-as-functions` lands, a console is a browser evaluating a rig at frame rate
+  in wasm, and that is a real cost on a real machine — a tablet at the back of the
+  room can be the thing that is struggling while every station is comfortable. So the
+  panel shows both.
+  - What a browser can honestly report about itself: frame rate and dropped frames
+    (`requestAnimationFrame` deltas), time spent in the evaluator per frame, how many
+    parameters it is evaluating, `performance.memory` where the browser offers it, and
+    its measured clock offset from the station — which is the one number that says
+    whether what it is showing can be trusted at all.
+  - Where it lives: a browser is not a station and must not appear in `stations`.
+    A LOCAL collection keyed by WebSocket session is the obvious shape, published by
+    the client and owned by the station it is connected to — which also makes it
+    disappear correctly when the tab closes.
+  - Open: does a client's report replicate to peers, so any console can see that the
+    tablet is struggling, or is it LOCAL to the station serving it? Seeing it from
+    anywhere is the useful version and costs a row per client per session.
 
 ## Performance
 
-### multithreading
-The engine is one actor; task 29 measured 2000 fixtures at ~137% of one core
-with the tick itself the small half (apply/broadcast/output per moved
-fixture is the cost). Named cheaper wins first: per-key writes instead of
-cloning whole `live_values` maps.
-- Parallelize the render (rayon over fixtures) vs. partition computation
-  across stations (task 10's open question — which also answers redundancy).
-- Do the cheap win, then measure again before adding threads.
+### values-as-functions — proposed, see `changes/values-as-functions/`
+The WASM evaluator question below is **answered: WASM**, and the proposal is where
+the rest of the answers are. Kept here as the record of what was asked.
 
-### demo-shows
-Small / big / huge seeded shows to find bottlenecks (task 29's numbers came
-from ad-hoc rigs). Extend `scripts/demo-seed.mjs` with size presets; huge =
-thousands of fixtures, hundreds of cues, effects running, several plans.
-- Doubles as regression material: record tick cost per preset in CI?
+A live value stops being state and becomes something each consumer evaluates for
+itself, from objects the console already stores. Supersedes most of
+`multithreading` (kept below as the record of what was asked).
+
+**What is already true, verified 2026-09-01.** A fade and an effect are *already*
+self-contained pure functions of time: `RunningFade { from, to, t0, duration_ms,
+easing, cue_id }` carries an absolute anchor and needs nothing else, and
+`RunningEffect` is the same shape. `docs/SPEC.md`'s principle already says rendering
+is a pure function of replicated state plus the wall clock. And one output path
+already works this way end to end: `connectors/openhaunt.rs:162` reads
+`fixture.live_effects` and ships the *object* to the node, deduplicated, and the node
+evaluates it — "an effect leaving the console as one message instead of forty a
+second".
+
+**Why it is worth doing.** Of a 35.2 ms tick at 2005 fixtures, computing every value
+is **0.07 ms**. Reading the state to do it is 33.8 ms and writing the answer back is
+2.2 ms. The tick is not expensive because it evaluates; it is expensive because the
+answer becomes state — read, written, versioned, broadcast. Stop storing it and
+99.8% of the tick goes with it.
+
+**`live_values` was SYNCED for a reason that measurement has retired.** The thinking
+was that calculating is the hard part, so one station should calculate and share. At
+0.07 ms for two thousand fixtures, sharing costs orders of magnitude more than
+recomputing, and at 40 Hz across a session it would be the largest thing on the
+network. It is also already vestigial: playback writes it through `apply_local`, i.e.
+as LOCAL whatever the field declares, so the only thing the SYNCED declaration does
+is put a stale sample in the snapshot a joining station is handed before it
+recomputes.
+
+**The question a proposal has to answer first, because it can sink the whole idea.**
+If consumers evaluate, the evaluator exists in every consumer's runtime — Rust for
+connectors and plugins, TypeScript for the browser. That is the `fixture-groups` tax
+again, and this one is far bigger: easings, curves, step lists, spread, phase,
+direction, width, rate against speed masters, priority stacking, home fallback, split
+in/out fades. Two implementations of that will drift, and a drift means the screen
+disagrees with the lamps.
+- **Compile the evaluator to WASM and run one implementation in both runtimes.** The
+  repo already builds Rust to `wasm32-wasip2` for plugins. This is the option that
+  makes the change safe, and it would serve `rig-viewer-fidelity` too, which wants
+  per-frame beam evaluation for the same reason.
+- If not WASM, then what holds the twins together — a `testdata` corpus like
+  `selection-queries.json`, but for playback maths?
+
+**The other open questions.**
+- Does `live_values` survive as a concept at all? "Store to cue", `__set_home` and the
+  values panel all need "what is it right now", which becomes an evaluation at a
+  stated instant. Well-defined, but it is an API change with reach, and every panel
+  reading `fixture.live_values` is downstream of it.
+- **Flows still need a tick.** A `Watch` node does edge detection on a parameter,
+  which cannot be done without sampling. It is small — `watched` is already a gated
+  set, and the gate exists because 40 Hz across every fixture was too much — but it
+  is the one periodic consumer that remains.
+- **Sensed inputs stay state.** `Contact`, `Temperature`, `Humidity` come *from*
+  devices and are not functions of time. The split is clean: driven outputs are
+  functions, sensed inputs are state. Worth writing into the spec so it stays clean.
+- Does each output connector own its own loop, evaluating from objects the engine
+  pushes only when the show changes? DMX already dedups and drops to an 800 ms
+  refresh when idle (`connectors/dmx.rs:119`), so it is most of the way there.
+- What does `observability/tick-cost` measure once there is no engine tick? The thing
+  with a deadline becomes the output frame, which is still worth a figure, but the
+  spec archived with `demo-shows` describes a tick that would no longer exist.
+- Browser evaluates only what is on screen; DMX must evaluate everything. Both are
+  cheap for different reasons, and the spec should say so rather than leave "only if
+  visible" sounding like a general rule.
+
+### multithreading — mostly answered, see `values-as-functions`
+The record of what was asked. The engine is one actor; task 29 measured 2000
+fixtures at ~137% of one core and named cheaper wins first: per-key writes
+instead of cloning whole `live_values` maps.
+- "Parallelise the render (rayon over fixtures)" is **answered: no.** The render
+  is 0.07 ms of a 35 ms tick. There is nothing there to parallelise.
+- "Do the cheap win, then measure again before adding threads" was right, and the
+  measuring is what moved the target — see roadmap task 43.
+- **Still open, and untouched by any of this:** partitioning computation across
+  stations, which is task 10's question and also the redundancy one. Worth asking
+  again only when there is a workload that a single station cannot carry, and the
+  numbers for that will be different once values are not state.
+
+### demo-shows — done, see `changes/archive/2026-09-01-demo-shows/`
+Shipped as roadmap task 43. `scripts/demo.sh --size small|big|huge`, with `small`
+the hand-made show and the default, and `--measure` printing what a tick cost on
+this machine.
+
+The answers to the questions below. The presets are **additive** on the hand-made
+show rather than replacing it, and a cue captures a **slice** of the rig rather than
+all of it — 300 cues times 2000 fixtures is 600,000 captures, which measures JSON
+rather than lighting. Seeding stayed **on the WebSocket API**, pipelined through a
+bounded window of 64 rather than one awaited round trip at a time: a 2000-fixture
+seed is the largest exercise of the write path in the repo and worth more than the
+43 s it costs in release. Bounded rather than unbounded because the engine's command
+channel is 256 deep, and the backpressure would otherwise arrive as a spurious
+timeout.
+
+And **no, not in CI.** A threshold needs a number that holds still; two identical
+runs of `huge` varied by more than a percentage point of CPU and fifteen milliseconds
+of tick. A gate that flaps gets disabled, which is worse than no gate. Revisit once
+`multithreading` has moved the numbers.
+
+What it turned up, which is the reason it was worth doing first: a station now
+publishes what its own tick costs, as **two** figures — the whole tick and the
+`Playback::tick` part — and at 2000 fixtures playback is **one percent** of the tick.
+Task 29 put that split at roughly one in three. A single figure would have credited
+all of it to playback and sent `multithreading` to the wrong half.
+
+**And the third counter got added afterwards, for one run, because the answer changes
+what `multithreading` is.** Of a 35.2 ms tick at 2005 fixtures: reading the show
+**33.8 ms (93%)**, computing 0.07 ms, applying 2.2 ms. `playback_tick` calls
+`read_collection` six times and each one clones a collection out of `ShowState` as
+`serde_json::Value` and deserialises it whole. The engine re-deserialises the show
+forty times a second, and that — not applying, and not concurrency — is the tick.
 
 ## Media and time
 
