@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pult_schema::{
+    events::operation::NodeId,
     lifecycle::Lifecycle,
     path::PathSegment,
     types::plugin::{
@@ -175,6 +176,8 @@ pub struct PluginManager {
     /// Where this station's plugin data lives, when it was told; `None` falls back
     /// to `PULT_PLUGIN_DATA` and then to the config directory.
     station_data: Option<PathBuf>,
+    /// Which station this is, so a fetch asks the *other* ones.
+    node_id: NodeId,
     broadcast: UpdateBroadcast,
     deps: InstanceDeps,
     plugins: BTreeMap<String, Loaded>,
@@ -187,10 +190,11 @@ pub struct PluginManager {
 
 /// How many times a station asks its peers for a bundle before it gives up.
 ///
-/// Only counts attempts where somebody could not be reached. Four, backing off from
-/// a quarter of a second, is under two seconds in the worst case — enough to ride
-/// out a peer that is busy coming up, and short enough that a genuinely absent
-/// bundle is still reported while the operator is still looking at the screen.
+/// Only attempts where somebody could not be *reached* are repeated; a peer that
+/// answered "no" is not asked twice. Four, backing off 250ms, 500ms, 1s, is 1.75
+/// seconds of waiting plus however long the requests themselves took — enough to
+/// ride out a peer that is busy coming up, and short enough that a bundle nobody
+/// has is still reported while the operator is looking at the screen.
 const ASK_PEERS_TIMES: u32 = 4;
 
 impl PluginManager {
@@ -201,6 +205,7 @@ impl PluginManager {
         dirs: Vec<PathBuf>,
         pool: Option<Arc<SqlitePool>>,
         station_data: Option<PathBuf>,
+        node_id: NodeId,
     ) -> (Self, PluginsHandle) {
         // Canonical from the start: `--plugins plugins` is a fine thing to
         // type, but the watcher reports absolute paths, and matching a change
@@ -226,6 +231,7 @@ impl PluginManager {
                 engine,
                 pool,
                 station_data,
+                node_id,
                 broadcast,
                 deps,
                 plugins: BTreeMap::new(),
@@ -821,6 +827,7 @@ impl PluginManager {
         };
         let engine = self.engine.clone();
         let tx = self.tx.clone();
+        let me = self.node_id.0;
         info!("[plugin:{}] fetching its bundle from a peer", package.plugin_id);
         tokio::spawn(async move {
             let short = sha[..sha.len().min(12)].to_string();
@@ -837,7 +844,7 @@ impl PluginManager {
 
             let mut result = Err(format!("no station in this session has the bundle {short}"));
             for attempt in 0..ASK_PEERS_TIMES {
-                let peers = peer_addresses(&engine).await;
+                let peers = crate::infra::assets::peer_addresses(&engine, me).await;
                 // Every arm sets the answer before it decides whether to go round
                 // again: the message has to be *this* attempt's, or a retry that
                 // ends in "nobody has it" would report the previous attempt's
@@ -862,12 +869,18 @@ impl PluginManager {
                         ));
                         true
                     }
+                    // Storing what came back failed, which is this station's disk
+                    // rather than anybody's network. Asking again would ask the
+                    // same disk the same question.
                     Err(e) => {
                         result = Err(format!("fetching the bundle failed: {e}"));
-                        true
+                        false
                     }
                 };
-                if !again {
+                // No sleep after the last attempt: there is nothing left to wait
+                // for, and an operator would be watching "fetching" for two seconds
+                // after the console had already given up.
+                if !again || attempt + 1 == ASK_PEERS_TIMES {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(250 << attempt)).await;
@@ -950,17 +963,6 @@ fn find<'a>(
     plugin_id: &str,
 ) -> Option<&'a pult_schema::types::plugin::PluginPackage> {
     roster.iter().find(|p| p.plugin_id == plugin_id)
-}
-
-/// Where the other stations serve HTTP, which is where a bundle can be had.
-async fn peer_addresses(engine: &EngineHandle) -> Vec<String> {
-    let path = vec![PathSegment::Key("stations".into())];
-    let Ok(value) = engine.get(path).await else { return Vec::new() };
-    let Ok(stations) = serde_json::from_value::<Vec<pult_schema::types::station::Station>>(value)
-    else {
-        return Vec::new();
-    };
-    stations.into_iter().map(|station| station.http_addr).collect()
 }
 
 /// Enough of a manifest to carry a name and a failure, for a plugin whose real

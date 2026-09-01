@@ -14,9 +14,12 @@
 
 use anyhow::{bail, Result};
 use chrono::Utc;
+use pult_schema::path::PathSegment;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 use tracing::debug;
+
+use crate::engine::EngineHandle;
 
 /// What the store holds for one asset.
 pub struct Asset {
@@ -141,6 +144,27 @@ impl Fetched {
             _ => None,
         }
     }
+}
+
+/// Where the *other* stations serve HTTP, which is where an asset can be had.
+///
+/// Every station publishes its own row into `stations`, so "the other ones" has to
+/// be said out loud or a station asks itself — which it already knows the answer to,
+/// since not having the asset locally is what started the search. It was said out
+/// loud in one of the two places that wanted it and not the other, and the one that
+/// forgot spent a round trip, and then a retry, learning nothing.
+pub async fn peer_addresses(engine: &EngineHandle, me: uuid::Uuid) -> Vec<String> {
+    let path = vec![PathSegment::Key("stations".into())];
+    let Ok(value) = engine.get(path).await else { return Vec::new() };
+    let Ok(stations) = serde_json::from_value::<Vec<pult_schema::types::station::Station>>(value)
+    else {
+        return Vec::new();
+    };
+    stations
+        .into_iter()
+        .filter(|s| s.id != me && !s.http_addr.is_empty())
+        .map(|s| s.http_addr)
+        .collect()
 }
 
 pub async fn fetch_from_peers(pool: &SqlitePool, sha: &str, peers: &[String]) -> Result<Fetched> {

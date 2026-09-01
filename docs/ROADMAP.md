@@ -1853,6 +1853,28 @@ The trap in writing it was that `break` left the *previous* attempt's message in
 place, so a fetch that ended in "nobody has it" reported "could not reach one
 station". Every arm sets the answer before deciding whether to go round again.
 
+Reviewing that retry turned up the thing underneath it. **Every station publishes
+its own row into `stations`**, and there were two `peer_addresses`: the one in
+`api/rest` filtered self out, and the one in `infra/plugins` did not — while its doc
+comment said "the other stations". So a fetch asked *itself* for a bundle it had
+just established it did not have, spending a round trip to be told 404 by its own
+HTTP server. Harmless-looking until the retry, which made a self-ask that failed
+under load cost four attempts instead of one, and which is what put "could not reach
+1 station" in front of an operator about their own console. There is now one
+`peer_addresses`, in `assets.rs`, and both callers use it.
+
+Three smaller things from the same reading. The constant's comment said "under two
+seconds" for backoffs summing to 3.75; it sleeps after the last attempt no longer,
+since there is nothing left to wait for; and an `Err` from `fetch_from_peers` is
+this station's disk failing to store what came back, not a network, so it stops
+rather than asking the same disk the same question four times.
+
+The retry is held by a test that fails without it: a peer that drops the first
+caller's connection and serves properly after. Closing a connection before any
+response is a transport error rather than an answer, which is the shape of the real
+thing and costs milliseconds rather than the ten-second timeout that black-holing
+the port would have.
+
 ## Further out
 
 Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.

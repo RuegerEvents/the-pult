@@ -3645,3 +3645,59 @@ mod relative {
         );
     }
 }
+
+
+/// Who a station asks for an asset it does not have.
+mod peers {
+    use super::*;
+
+    fn a_station_row(id: Uuid, http_addr: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "hostname": "console",
+            "is_leader": false,
+            "sync_addr": "127.0.0.1:1",
+            "http_addr": http_addr,
+            "cpu_percent": 0.0, "mem_used": 0, "mem_total": 0, "uptime_s": 0,
+            "output_plugins": [], "computes_fixtures": 0, "total_fixtures": 0,
+            "last_seen": Utc::now().to_rfc3339(),
+        })
+    }
+
+    /// Every station publishes its own row, so "ask the other stations" has to say
+    /// so out loud. A station asking itself already knows the answer — not having
+    /// the asset locally is what started the search — and the round trip taught it
+    /// nothing, twice over once a fetch learned to retry.
+    #[tokio::test]
+    async fn a_station_does_not_ask_itself() {
+        let h = harness().await;
+        let me = Uuid::new_v4();
+        let you = Uuid::new_v4();
+        for (id, addr) in [(me, "127.0.0.1:7700"), (you, "127.0.0.1:7710")] {
+            h.engine
+                .set(create_path("stations"), Lifecycle::Synced, a_station_row(id, addr))
+                .await
+                .unwrap();
+        }
+
+        let peers = crate::infra::assets::peer_addresses(&h.engine, me).await;
+        assert_eq!(peers, vec!["127.0.0.1:7710".to_string()], "only the other one");
+    }
+
+    /// A station that has not said where it serves HTTP cannot be asked, and an
+    /// empty address would be a request to `http:///assets/…`.
+    #[tokio::test]
+    async fn a_station_with_no_address_is_not_asked() {
+        let h = harness().await;
+        h.engine
+            .set(
+                create_path("stations"),
+                Lifecycle::Synced,
+                a_station_row(Uuid::new_v4(), ""),
+            )
+            .await
+            .unwrap();
+
+        assert!(crate::infra::assets::peer_addresses(&h.engine, Uuid::new_v4()).await.is_empty());
+    }
+}

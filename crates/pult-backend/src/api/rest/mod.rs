@@ -261,7 +261,7 @@ async fn download(
 
     // Somebody uploaded this on another console. Every station publishes where its
     // HTTP API is, so the ones worth asking are the other rows in `stations`.
-    let peers = peer_addresses(&state).await;
+    let peers = assets::peer_addresses(&state.engine, state.node_id.0).await;
     match assets::fetch_from_peers(&state.pool, &sha, &peers).await {
         Ok(fetched) => match fetched.asset() {
             Some(asset) => serve(asset),
@@ -292,21 +292,6 @@ fn serve(asset: assets::Asset) -> Response {
         headers.insert(header::CONTENT_DISPOSITION, header::HeaderValue::from_static("attachment"));
     }
     (headers, asset.bytes).into_response()
-}
-
-/// Where the other stations serve HTTP.
-async fn peer_addresses(state: &AssetState) -> Vec<String> {
-    let path = vec![pult_schema::path::PathSegment::Key("stations".into())];
-    let Ok(value) = state.engine.get(path).await else { return Vec::new() };
-    let Ok(stations) = serde_json::from_value::<Vec<pult_schema::types::station::Station>>(value)
-    else {
-        return Vec::new();
-    };
-    stations
-        .into_iter()
-        .filter(|s| s.id != state.node_id.0 && !s.http_addr.is_empty())
-        .map(|s| s.http_addr)
-        .collect()
 }
 
 #[cfg(test)]

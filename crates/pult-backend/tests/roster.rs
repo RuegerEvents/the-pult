@@ -928,6 +928,69 @@ async fn a_fetched_bundle_is_run_once_it_arrives() {
     seeker.stop();
 }
 
+/// A peer that did not answer is asked again.
+///
+/// The distinction the fetch turns on: being unable to reach a station is not that
+/// station saying it lacks the bundle. Before, one dropped connection left the
+/// plugin permanently failed — nothing re-drives a fetch until the roster changes
+/// — which at a get-in means a console that came up half a second early has a
+/// plugin that will not run until somebody notices and touches the show.
+#[tokio::test]
+async fn a_peer_that_did_not_answer_is_asked_again() {
+    let seeker = Station::start().await;
+    let (bytes, digest) = a_bundle("retried", "1.0");
+
+    // A station that drops the first caller's connection on the floor and serves
+    // properly from then on. Closing the connection before any response is a
+    // transport error to the client, which is exactly the shape of the real thing:
+    // a station too busy to accept, rather than one answering "no".
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = bytes.clone();
+    tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+        let app = axum::Router::new().route(
+            "/assets/{sha}",
+            axum::routing::get(move || {
+                let served = served.clone();
+                async move {
+                    (
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            "application/vnd.pult.plugin+zip",
+                        )],
+                        served,
+                    )
+                }
+            }),
+        );
+        let _ = axum::serve(listener, app).await;
+    });
+    tell_about(&seeker, addr.to_string()).await;
+
+    // Cleared, or it would pass by already having it unpacked rather than by
+    // asking twice — which is the one thing this test is about.
+    std::fs::remove_dir_all(own_cache().join(&digest)).ok();
+    seeker.install("retried", &digest).await;
+
+    let row = seeker
+        .eventually("retried", "past fetching", |r| r["status"]["state"] != "Fetching")
+        .await;
+    let reason = row["status"]["reason"].as_str().unwrap_or_default();
+    assert!(
+        !reason.contains("could not reach"),
+        "one dropped connection is not a station without the bundle: {row}",
+    );
+    assert!(
+        own_cache().join(&digest).join("pult-plugin.toml").is_file(),
+        "and the second ask got it: {row}",
+    );
+
+    seeker.stop();
+}
+
 #[tokio::test]
 async fn a_peer_answering_with_the_wrong_bytes_gets_nowhere() {
     let seeker = Station::start().await;
