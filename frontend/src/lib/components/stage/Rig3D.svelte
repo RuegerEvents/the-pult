@@ -15,8 +15,7 @@
 		planExtent,
 		throwDistance,
 		wrapDegrees,
-		PAN_TRAVEL,
-		TILT_TRAVEL
+		travelOf
 	} from '$lib/stage.js';
 	import {
 		bearingFromPoint,
@@ -390,8 +389,10 @@
 			grab.turned += wrapDegrees(angle - grab.angle);
 			grab.angle = angle;
 
-			const [key, travel] =
-				grab.kind === 'pan' ? (['Pan', PAN_TRAVEL] as const) : (['Tilt', TILT_TRAVEL] as const);
+			// The head's own travel, so a drag on a 630° head and a drag on a 540° one
+			// move each of them by the degrees the pointer actually turned.
+			const key = grab.kind === 'pan' ? ('Pan' as const) : ('Tilt' as const);
+			const travel = travelOf(typeOf(beam.fixture), key);
 			setValue([beam.fixture.id], key, {
 				type: 'Float',
 				value: clamp01(grab.from + grab.turned / travel)

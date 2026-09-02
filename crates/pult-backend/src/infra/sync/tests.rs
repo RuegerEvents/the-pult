@@ -1337,7 +1337,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
         cue::{Cue, FollowMode, ParameterCapture},
         effect::Easing,
         fixture::{
-            FixtureType, ParameterBinding, ParameterDefinition, ParameterDirection, ParameterKind,
+            FixtureType, ParameterBinding, ParameterDefinition, ParameterKind,
             ParameterValue,
         },
         sequence::Sequence,
@@ -1372,18 +1372,15 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
         channel_count: 2,
         parameters: vec![
             ParameterDefinition {
-                kind: ParameterKind::Intensity,
-                direction: ParameterDirection::Output,
-                binding: ParameterBinding::Dmx { channel: 1 },
-                default_value: ParameterValue::Float(0.0),
+                binding: Some(ParameterBinding::Dmx { channel: 1 }),
+                ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
             },
             ParameterDefinition {
-                kind: ParameterKind::Pan,
-                direction: ParameterDirection::Output,
-                binding: ParameterBinding::Dmx { channel: 2 },
-                default_value: ParameterValue::Float(0.5),
+                binding: Some(ParameterBinding::Dmx { channel: 2 }),
+                ..ParameterDefinition::new(ParameterKind::Pan, ParameterValue::Float(0.5))
             },
         ],
+        ..FixtureType::default()
     };
     put(&one, "fixture_types", serde_json::to_value(&fixture_type).unwrap()).await;
 

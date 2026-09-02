@@ -22,6 +22,9 @@ pub struct AppState {
     pub session: SessionHandle,
     pub devices: DeviceHandle,
     pub plugins: PluginsHandle,
+    /// One conversation with the GDTF Share for the whole station. Its session is a
+    /// cookie, so two of these would be two logins where the Share expects one.
+    pub share: crate::infra::interop::share::ShareHandle,
     pub node_id: NodeId,
     pub ws_registry: SubscriptionRegistry,
     pub broadcast: UpdateBroadcast,

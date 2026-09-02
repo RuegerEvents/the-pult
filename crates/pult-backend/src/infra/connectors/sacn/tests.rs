@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use pult_schema::types::fixture::{
     Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDefinition,
-    ParameterDirection, ParameterKind, ParameterValue,
+    ParameterKind, ParameterValue,
 };
 use uuid::Uuid;
 
@@ -123,17 +123,16 @@ fn a_dimmer_patch(universe: u16, level: f32) -> Patch {
         manufacturer: "Acme".into(),
         channel_count: 1,
         parameters: vec![ParameterDefinition {
-            kind: ParameterKind::Intensity,
-            direction: ParameterDirection::Output,
-            binding: ParameterBinding::Dmx { channel: 1 },
-            default_value: ParameterValue::Float(0.0),
+            binding: Some(ParameterBinding::Dmx { channel: 1 }),
+            ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
         }],
+        ..FixtureType::default()
     };
     let mut fixture = Fixture {
         id: Uuid::new_v4(),
         name: "Spot".into(),
         fixture_type_id: fixture_type.id,
-        address: FixtureAddress::Dmx { universe, address: 1 },
+        address: FixtureAddress::dmx(universe, 1),
         position: None,
         sensed_values: HashMap::new(),
         live_effects: Default::default(),
@@ -210,9 +209,13 @@ async fn a_fixture_on_a_node_puts_nothing_on_a_universe() {
     let (receiver, addr) = a_receiver().await;
     let mut output = SacnOutput::bind(Some(addr)).await.unwrap();
 
+    // Addressed to the node before the patch is built, because where a fixture's
+    // channels land is resolved once, when the patch arrives — the same as when it
+    // settles. Moving a fixture after the fact moves nothing.
     let mut patch = a_dimmer_patch(1, 1.0);
-    patch.fixtures[0].address =
-        FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(1) };
+    let mut fixture = patch.fixtures.remove(0);
+    fixture.address = FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(1) };
+    let patch = Patch::new(vec![fixture], patch.fixture_types.into_values().collect(), vec![]);
     output.send(&patch, &[], 0).await.unwrap();
 
     let anything = tokio::time::timeout(

@@ -31,6 +31,17 @@ const corpus: { cases: Case[] } = JSON.parse(
 	readFileSync(new URL('../../../testdata/driven-values.json', import.meta.url), 'utf8')
 );
 
+type MixCase = {
+	name: string;
+	color: { r: number; g: number; b: number; overrides?: Record<string, number> };
+	emitters: { name: string; rgb?: [number, number, number]; subtractive?: boolean }[];
+	expect: number[];
+};
+
+const mixCorpus: { cases: MixCase[] } = JSON.parse(
+	readFileSync(new URL('../../../testdata/color-mix.json', import.meta.url), 'utf8')
+);
+
 /** Close enough that a difference is a bug rather than a rounding. */
 const TOLERANCE = 1e-3;
 
@@ -50,10 +61,12 @@ function agree(a: ParameterValue | null, b: ParameterValue | null): boolean {
 
 type Built = {
 	initSync: (opts: { module: BufferSource }) => unknown;
+	emitter_levels: (color: unknown, emitters: unknown) => [string, number][];
 	Evaluator: new () => {
 		set_driving(driving: unknown): void;
 		watch(keys: unknown): void;
 		evaluate(nowMs: number): Float32Array;
+		color_overrides(key: string, nowMs: number): Record<string, number>;
 	};
 };
 
@@ -121,6 +134,54 @@ describe('the evaluator, compiled for a browser', () => {
 		expect(unpack(packed, 0)).toEqual({ type: 'Float', value: 0.75 });
 		expect(unpack(packed, 1)).toEqual({ type: 'Float', value: 0.5 });
 		expect(unpack(packed, 2)).toEqual({ type: 'Float', value: 0.25 });
+	});
+});
+
+describe('mixing a colour onto the dies that make it', () => {
+	it('agrees with the native build on every case in the corpus', () => {
+		if (!built) return;
+		expect(mixCorpus.cases.length).toBeGreaterThan(10);
+
+		const wrong: string[] = [];
+		for (const c of mixCorpus.cases) {
+			const got = built.emitter_levels(c.color, c.emitters).map(([, level]) => level);
+			const ok =
+				got.length === c.expect.length &&
+				got.every((level, at) => Math.abs(level - c.expect[at]) < TOLERANCE);
+			if (!ok) {
+				wrong.push(`${c.name}: expected ${JSON.stringify(c.expect)}, got ${JSON.stringify(got)}`);
+			}
+		}
+		expect(wrong, `${wrong.length} cases disagree`).toEqual([]);
+	});
+
+	it('names the emitters in the order the fixture lists them', () => {
+		if (!built) return;
+		const levels = built.emitter_levels({ r: 1, g: 1, b: 1 }, [
+			{ name: 'Red', rgb: [1, 0, 0] },
+			{ name: 'White', rgb: [1, 1, 1] }
+		]);
+		expect(levels.map(([name]) => name)).toEqual(['Red', 'White']);
+	});
+});
+
+describe("a colour's pinned emitters", () => {
+	it('come back from the evaluator, which the packed answer has no room for', () => {
+		if (!built) return;
+		const evaluator = new built.Evaluator();
+		evaluator.set_driving({
+			'spot/ColorRgb': {
+				home: { type: 'Color', value: { r: 1, g: 1, b: 1, overrides: { White: 0.25 } } }
+			}
+		});
+		expect(evaluator.color_overrides('spot/ColorRgb', 0)).toEqual({ White: 0.25 });
+	});
+
+	it('are an empty map on anything that is not a colour', () => {
+		if (!built) return;
+		const evaluator = new built.Evaluator();
+		evaluator.set_driving({ 'spot/Intensity': { home: { type: 'Float', value: 0.5 } } });
+		expect(evaluator.color_overrides('spot/Intensity', 0)).toEqual({});
 	});
 });
 

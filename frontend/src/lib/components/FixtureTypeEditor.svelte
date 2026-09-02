@@ -20,7 +20,12 @@
 		PARAMETER_KINDS
 	} from '$lib/patch.js';
 	import { editing } from '$lib/stores/editing.js';
+	import { backendOrigin } from '$lib/ws/endpoint.js';
+	import { userId } from '$lib/stores/user.js';
+
+	const backend = () => backendOrigin(window.location);
 	import ValueControl from './programmer/controls/ValueControl.svelte';
+	import FixtureTypeShare from './FixtureTypeShare.svelte';
 
 	const data = getDataContext();
 	// The same lock as the fixtures below it: this editor lives in the Patch panel
@@ -28,6 +33,12 @@
 	const unlocked = editing('patch');
 
 	let types = $state<FixtureType[]>([]);
+	/// What the last import said, shown until the next one or until it is dismissed.
+	let report = $state<{ ok: boolean; text: string; warnings: string[] } | null>(null);
+	let importing = $state(false);
+	let fileInput = $state<HTMLInputElement | null>(null);
+	/// Which half of this panel is showing: the show's own types, or the Share.
+	let tab = $state<'types' | 'share'>('types');
 	let expanded = $state<string | null>(null);
 	let newName = $state('');
 	let creating = $state(false);
@@ -37,8 +48,84 @@
 	const isColour = (kind: ParameterKind) => kind === 'ColorRgb';
 
 	/// Whichever number a binding carries — a DMX channel or a port index.
-	const bindingSlot = (binding: ParameterBinding) =>
-		'Dmx' in binding ? binding.Dmx.channel : binding.Port.index;
+	///
+	/// A parameter need not have one at all: where a DMX channel sits belongs to a
+	/// *mode*, so an imported type binds nothing and its layout says where each
+	/// parameter goes. A hand-made type still binds a channel, and that binding is
+	/// what the implicit default mode is built from.
+	const bindingSlot = (binding: ParameterBinding | null) => {
+		if (!binding) return 1;
+		return 'Dmx' in binding ? binding.Dmx.channel : binding.Port.index;
+	};
+
+	/// A parameter with nothing but a kind and a channel: what this editor makes.
+	const aParameter = (kind: ParameterKind, channel: number): ParameterDefinition => ({
+		kind,
+		direction: 'Output',
+		binding: dmxBinding(channel),
+		default_value: defaultValueFor(kind),
+		physical: null,
+		slots: [],
+		feature_group: null,
+		emitters: []
+	});
+
+	/**
+	 * Send a `.gdtf` to the station and say what it made of it.
+	 *
+	 * The file goes as raw bytes with the operator's id in a header, because an HTTP
+	 * request carries no `Identify` the way the socket does — and an import an
+	 * operator cannot undo would be the worst thing on this panel.
+	 */
+	async function importGdtf(file: File) {
+		importing = true;
+		report = null;
+		try {
+			const answer = await fetch(`${backend()}/api/import/gdtf`, {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/vnd.gdtf+zip',
+					'x-pult-user': $userId
+				},
+				body: await file.arrayBuffer()
+			});
+			if (!answer.ok) {
+				report = { ok: false, text: (await answer.text()) || answer.statusText, warnings: [] };
+				return;
+			}
+			const body = await answer.json();
+			const warnings: string[] = body.warnings ?? [];
+			report = {
+				ok: true,
+				text: body.replaced
+					? `Updated ${file.name} — every fixture patched to it follows.`
+					: `Imported ${file.name}.`,
+				warnings
+			};
+		} catch (error) {
+			report = { ok: false, text: String(error), warnings: [] };
+		} finally {
+			importing = false;
+			if (fileInput) fileInput.value = '';
+		}
+	}
+
+	/// A type as a file to save. An imported one comes back as the archive it arrived
+	/// in; one made here comes back as a generated file another console can open.
+	function exportGdtf(type: FixtureType) {
+		window.open(`${backend()}/api/export/gdtf/${type.id}`, '_blank');
+	}
+
+	/// Where an imported type came from, in words.
+	function sourceLabel(type: FixtureType): string {
+		if (type.source === 'Manual') return 'made here';
+		if (type.source === 'Node') return 'described by its node';
+		const revision = type.source.Gdtf.revision;
+		return revision ? `GDTF · ${revision}` : 'GDTF';
+	}
+
+	const isImported = (type: FixtureType) =>
+		typeof type.source === 'object' && 'Gdtf' in type.source;
 
 	async function createType() {
 		const name = newName.trim();
@@ -47,15 +134,26 @@
 			id: crypto.randomUUID(),
 			name,
 			manufacturer: 'Generic',
+			short_name: '',
+			long_name: name,
+			description: '',
 			channel_count: 1,
-			parameters: [
-				{
-					kind: 'Intensity',
-					direction: 'Output',
-					binding: dmxBinding(1),
-					default_value: { type: 'Float', value: 0 }
-				}
-			]
+			parameters: [aParameter('Intensity', 1)],
+			// A type made here names no mode: where its channels go follows from the
+			// bindings above, and the station computes the layout from them. Modes are
+			// what an imported GDTF file brings.
+			dmx_modes: [],
+			physical: {
+				weight_kg: null,
+				power_w: null,
+				dimensions_m: null,
+				connectors: [],
+				leg_height_m: null,
+				operating_temperature: null,
+				beam_angle_deg: null
+			},
+			geometry: [],
+			source: 'Manual'
 		});
 		newName = '';
 		creating = false;
@@ -81,15 +179,7 @@
 			const channel = bindingChannel(p.binding);
 			return channel === null ? n : Math.max(n, channel + (isColour(p.kind) ? 3 : 1));
 		}, 1);
-		await setParameters(type, [
-			...type.parameters,
-			{
-				kind: 'Intensity',
-				direction: 'Output',
-				binding: dmxBinding(next),
-				default_value: { type: 'Float', value: 0 }
-			}
-		]);
+		await setParameters(type, [...type.parameters, aParameter('Intensity', next)]);
 	}
 
 	async function updateParameter(
@@ -147,13 +237,55 @@
 <section class="block">
 	<header class="block-head">
 		<h2>Fixture types</h2>
-		{#if $unlocked}
+		<nav class="tabs">
+			<button class="tab" class:on={tab === 'types'} onclick={() => (tab = 'types')}>In this show</button>
+			<button class="tab" class:on={tab === 'share'} onclick={() => (tab = 'share')}>From GDTF Share</button>
+		</nav>
+		{#if $unlocked && tab === 'types'}
+			<button
+				class="btn btn-ghost"
+				disabled={importing}
+				onclick={() => fileInput?.click()}
+			>{importing ? 'Importing…' : 'Import GDTF'}</button>
 			<button class="btn btn-ghost" onclick={() => (creating = !creating)}>
 				{creating ? 'Cancel' : '+ Type'}
 			</button>
 		{/if}
 	</header>
 
+	<!-- Hidden rather than styled: the button above is the control, and a file input
+	     cannot be made to look like the rest of this panel. -->
+	<input
+		class="file"
+		type="file"
+		accept=".gdtf,application/vnd.gdtf+zip"
+		bind:this={fileInput}
+		onchange={(e) => {
+			const file = e.currentTarget.files?.[0];
+			if (file) importGdtf(file);
+		}}
+	/>
+
+	{#if report}
+		<div class="report" class:bad={!report.ok}>
+			<p>{report.text}</p>
+			{#if report.warnings.length > 0}
+				<!-- Warnings, not errors: a Share file with a dangling reference is still
+				     a fixture somebody has to patch tonight. -->
+				<details>
+					<summary>{report.warnings.length} thing{report.warnings.length === 1 ? '' : 's'} worth knowing</summary>
+					<ul>
+						{#each report.warnings as warning}<li>{warning}</li>{/each}
+					</ul>
+				</details>
+			{/if}
+			<button class="btn btn-ghost btn-icon" title="Dismiss" onclick={() => (report = null)}>×</button>
+		</div>
+	{/if}
+
+	{#if tab === 'share'}
+		<FixtureTypeShare />
+	{:else}
 	{#if creating && $unlocked}
 		<form class="new-row" onsubmit={(e) => { e.preventDefault(); createType(); }}>
 			<input class="input" placeholder="Type name, e.g. Source Four" bind:value={newName} use:focusOnMount />
@@ -175,8 +307,16 @@
 				>
 					<span class="caret" class:open={expanded === type.id}>▸</span>
 					<span class="name">{type.name}</span>
-					<span class="meta">{type.channel_count} ch · {type.parameters.length} params</span>
+					<span class="meta">
+						{type.channel_count} ch · {type.parameters.length} params
+						{#if isImported(type)}· {sourceLabel(type)}{/if}
+					</span>
 				</button>
+				<button
+					class="btn btn-ghost btn-icon"
+					title="Export {type.name} as GDTF"
+					onclick={() => exportGdtf(type)}
+				>↓</button>
 				{#if $unlocked}
 					<button
 						class="btn btn-danger btn-icon"
@@ -191,7 +331,49 @@
 					<div class="detail">
 						<label class="field">
 							<span>Name</span>
-							{#if $unlocked}
+							{#if type.dmx_modes.length > 0}
+							<!-- Read-only: a mode is what the manufacturer's file says, and
+							     the console has no business rewriting it. Which mode a
+							     given unit is in is on the fixture, in the Patch table. -->
+							<div class="field wide">
+								<span>Modes</span>
+								<table class="modes">
+									<thead><tr><th>Name</th><th>Footprint</th><th>Parameters</th></tr></thead>
+									<tbody>
+										{#each type.dmx_modes as mode (mode.name)}
+											<tr>
+												<td>{mode.name}</td>
+												<td>{mode.breaks.map((b, i) => `${b} ch${type.dmx_modes.some((m) => m.breaks.length > 1) ? ` (break ${i + 1})` : ''}`).join(' + ')}</td>
+												<td>{new Set(mode.channels.map((c) => c.parameter_key)).size}</td>
+											</tr>
+										{/each}
+									</tbody>
+								</table>
+							</div>
+						{/if}
+
+						{#if type.physical.weight_kg !== null || type.physical.power_w !== null || type.physical.beam_angle_deg !== null}
+							<div class="field wide">
+								<span>Physical</span>
+								<p class="reading">
+									{[
+										type.physical.weight_kg !== null ? `${type.physical.weight_kg} kg` : null,
+										type.physical.power_w !== null ? `${type.physical.power_w} W` : null,
+										type.physical.beam_angle_deg !== null ? `${type.physical.beam_angle_deg}° beam` : null,
+										type.physical.operating_temperature
+											? `${type.physical.operating_temperature[0]} to ${type.physical.operating_temperature[1]} °C`
+											: null,
+										type.physical.connectors.length > 0
+											? type.physical.connectors.map((c) => c.kind).join(', ')
+											: null
+									]
+										.filter(Boolean)
+										.join(' · ')}
+								</p>
+							</div>
+						{/if}
+
+						{#if $unlocked}
 								<input
 									class="input"
 									value={type.name}
@@ -340,9 +522,51 @@
 			</li>
 		{/each}
 	</ul>
+	{/if}
 </section>
 
 <style>
+	.tabs { display: flex; gap: 2px; margin-left: auto; }
+	.tab {
+		background: none;
+		border: none;
+		border-bottom: 2px solid transparent;
+		color: #999;
+		font: inherit;
+		font-size: 12px;
+		padding: 2px 8px 3px;
+		cursor: pointer;
+	}
+	.tab.on { color: #ddd; border-bottom-color: var(--accent, #4a9eff); }
+
+	/* The button in the header is the control; the input itself is never seen. */
+	.file { display: none; }
+
+	.report {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		align-items: start;
+		gap: 8px;
+		margin: 8px 0;
+		padding: 8px 12px;
+		border-radius: 4px;
+		background: #1c1c1c;
+		border-left: 3px solid #4caf50;
+		font-size: 12px;
+	}
+	.report.bad { border-left-color: #e5534b; }
+	.report p { margin: 0; }
+	.report ul { margin: 4px 0 0; padding-left: 18px; color: #999; }
+	.report summary { cursor: pointer; color: #999; }
+
+	/* A table does not fit beside a 90px label, so a wide field stacks. */
+	.field.wide { align-items: flex-start; flex-direction: column; gap: 4px; }
+
+	.modes { width: 100%; border-collapse: collapse; font-size: 12px; }
+	.modes th,
+	.modes td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid #2e2e2e; }
+	.modes th { font-weight: 500; color: #999; }
+
 	.block { margin-bottom: 24px; }
 	.block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }

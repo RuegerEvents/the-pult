@@ -418,7 +418,7 @@ impl DeviceManager {
             .iter()
             .find(|p| {
                 p.direction == ParameterDirection::Input
-                    && p.binding == ParameterBinding::Port { index: port }
+                    && p.binding == Some(ParameterBinding::Port { index: port })
             })
             .map(|p| parameter_key(&p.kind))
     }
@@ -776,9 +776,13 @@ impl DeviceManager {
             .fixtures()
             .await
             .iter()
-            .filter_map(|f| match &f.address {
-                FixtureAddress::Dmx { universe, .. } => Some(*universe),
-                FixtureAddress::OpenHaunt { universe, .. } => *universe,
+            .flat_map(|f| match &f.address {
+                // Every break, not just the first: a gateway handed a universe a
+                // fixture's second break is already in would collide silently.
+                FixtureAddress::Dmx { breaks, .. } => {
+                    breaks.iter().map(|entry| entry.universe).collect::<Vec<_>>()
+                }
+                FixtureAddress::OpenHaunt { universe, .. } => universe.iter().copied().collect(),
             })
             .collect();
         (1..=u16::MAX).find(|n| !taken.contains(n)).unwrap_or(1)

@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<GDTF DataVersion="1.2">
+    <FixtureType Name="Test RGBW Mover" ShortName="TRGBW" LongName="Test RGBW Moving Head" Manufacturer="Pult" Description="Two modes, a 16-bit pan, a non-adjacent fine offset and a second DMX break." FixtureTypeID="1B1E4C3A-0000-4000-8000-000000000002" CanHaveChildren="No">
+        <AttributeDefinitions>
+            <ActivationGroups>
+                <ActivationGroup Name="ColorRGB"/>
+                <ActivationGroup Name="PanTilt"/>
+            </ActivationGroups>
+            <FeatureGroups>
+                <FeatureGroup Name="Dimmer" Pretty="Dimmer">
+                    <Feature Name="Dimmer"/>
+                </FeatureGroup>
+                <FeatureGroup Name="Position" Pretty="Position">
+                    <Feature Name="PanTilt"/>
+                </FeatureGroup>
+                <FeatureGroup Name="Color" Pretty="Colour">
+                    <Feature Name="RGB"/>
+                </FeatureGroup>
+                <FeatureGroup Name="Beam" Pretty="Beam">
+                    <Feature Name="Beam"/>
+                </FeatureGroup>
+            </FeatureGroups>
+            <Attributes>
+                <Attribute Name="Dimmer" Pretty="Dim" Feature="Dimmer.Dimmer" PhysicalUnit="Percent"/>
+                <Attribute Name="Pan" Pretty="P" ActivationGroup="PanTilt" Feature="Position.PanTilt" PhysicalUnit="Angle"/>
+                <Attribute Name="Tilt" Pretty="T" ActivationGroup="PanTilt" Feature="Position.PanTilt" PhysicalUnit="Angle"/>
+                <Attribute Name="ColorAdd_R" Pretty="R" ActivationGroup="ColorRGB" Feature="Color.RGB" PhysicalUnit="ColorComponent" Color="0.64,0.33,21.26"/>
+                <Attribute Name="ColorAdd_G" Pretty="G" ActivationGroup="ColorRGB" Feature="Color.RGB" PhysicalUnit="ColorComponent" Color="0.3,0.6,71.52"/>
+                <Attribute Name="ColorAdd_B" Pretty="B" ActivationGroup="ColorRGB" Feature="Color.RGB" PhysicalUnit="ColorComponent" Color="0.15,0.06,7.22"/>
+                <Attribute Name="ColorAdd_W" Pretty="W" ActivationGroup="ColorRGB" Feature="Color.RGB" PhysicalUnit="ColorComponent" Color="0.3127,0.329,100"/>
+                <Attribute Name="Zoom" Pretty="Zoom" Feature="Beam.Beam" PhysicalUnit="Angle"/>
+                <Attribute Name="Shutter1" Pretty="Sh" Feature="Beam.Beam"/>
+                <Attribute Name="Gobo1" Pretty="G1" Feature="Beam.Beam"/>
+            </Attributes>
+        </AttributeDefinitions>
+        <Wheels>
+            <Wheel Name="Gobo1">
+                <Slot Name="Open"/>
+                <Slot Name="Breakup" MediaFileName="breakup"/>
+                <Slot Name="Dots" MediaFileName="dots"/>
+            </Wheel>
+        </Wheels>
+        <PhysicalDescriptions>
+            <Emitters>
+                <Emitter Name="Red" Color="0.64,0.33,21.26" DominantWaveLength="625"/>
+                <Emitter Name="Green" Color="0.3,0.6,71.52" DominantWaveLength="530"/>
+                <Emitter Name="Blue" Color="0.15,0.06,7.22" DominantWaveLength="465"/>
+                <Emitter Name="White" Color="0.3127,0.329,100"/>
+            </Emitters>
+            <Connectors>
+                <Connector Name="DMX In" Type="XLR5" DMXBreak="1"/>
+                <Connector Name="Power" Type="powerCON"/>
+            </Connectors>
+            <Properties>
+                <OperatingTemperature Low="-10" High="45"/>
+                <Weight Value="18.5"/>
+                <PowerConsumption Value="450" PowerFactor="0.95" VoltageLow="100" VoltageHigh="240"/>
+                <LegHeight Value="0"/>
+            </Properties>
+        </PhysicalDescriptions>
+        <Models>
+            <Model Name="Base" Length="0.4" Width="0.4" Height="0.3" PrimitiveType="Base"/>
+            <Model Name="Yoke" Length="0.4" Width="0.15" Height="0.4" PrimitiveType="Yoke"/>
+            <Model Name="Head" Length="0.3" Width="0.3" Height="0.4" PrimitiveType="Head"/>
+        </Models>
+        <Geometries>
+            <Geometry Name="Base" Model="Base" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}">
+                <Axis Name="Yoke" Model="Yoke" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,300,1}">
+                    <Axis Name="Head" Model="Head" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,200,1}">
+                        <Beam Name="Beam" Model="Head" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,150,1}" LuminousFlux="12000" ColorTemperature="6500" BeamAngle="12" FieldAngle="15" BeamRadius="0.08" BeamType="Spot"/>
+                    </Axis>
+                </Axis>
+            </Geometry>
+        </Geometries>
+        <DMXModes>
+            <DMXMode Name="Standard" Description="Everything, 16-bit position." Geometry="Base">
+                <DMXChannels>
+                    <DMXChannel DMXBreak="1" Offset="1,7" Geometry="Yoke">
+                        <LogicalChannel Attribute="Pan">
+                            <ChannelFunction Name="Pan" Attribute="Pan" DMXFrom="0/1" Default="32768/2" PhysicalFrom="-270" PhysicalTo="270" RealFade="2"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="2,8" Geometry="Head">
+                        <LogicalChannel Attribute="Tilt">
+                            <ChannelFunction Name="Tilt" Attribute="Tilt" DMXFrom="0/1" Default="32768/2" PhysicalFrom="-135" PhysicalTo="135" RealFade="1.5"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="3" Geometry="Head">
+                        <LogicalChannel Attribute="ColorAdd_R">
+                            <ChannelFunction Name="Red" Attribute="ColorAdd_R" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1" Emitter="Red"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="4" Geometry="Head">
+                        <LogicalChannel Attribute="ColorAdd_G">
+                            <ChannelFunction Name="Green" Attribute="ColorAdd_G" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1" Emitter="Green"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="5" Geometry="Head">
+                        <LogicalChannel Attribute="ColorAdd_B">
+                            <ChannelFunction Name="Blue" Attribute="ColorAdd_B" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1" Emitter="Blue"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="6" Geometry="Head">
+                        <LogicalChannel Attribute="ColorAdd_W">
+                            <ChannelFunction Name="White" Attribute="ColorAdd_W" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1" Emitter="White"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="9" Geometry="Head">
+                        <LogicalChannel Attribute="Zoom">
+                            <ChannelFunction Name="Zoom" Attribute="Zoom" DMXFrom="0/1" Default="128/1" PhysicalFrom="12" PhysicalTo="45"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="10" Geometry="Head">
+                        <LogicalChannel Attribute="Gobo1" Snap="Yes">
+                            <ChannelFunction Name="Gobo1" Attribute="Gobo1" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1" Wheel="Gobo1">
+                                <ChannelSet Name="Open" DMXFrom="0/1" WheelSlotIndex="1"/>
+                                <ChannelSet Name="Breakup" DMXFrom="10/1" WheelSlotIndex="2"/>
+                                <ChannelSet Name="Dots" DMXFrom="20/1" WheelSlotIndex="3"/>
+                            </ChannelFunction>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="2" Offset="1" Geometry="Base">
+                        <LogicalChannel Attribute="Dimmer">
+                            <ChannelFunction Name="Dimmer" Attribute="Dimmer" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="2" Offset="2" Geometry="Base">
+                        <LogicalChannel Attribute="Shutter1">
+                            <ChannelFunction Name="Shutter1" Attribute="Shutter1" DMXFrom="0/1" Default="255/1" PhysicalFrom="0" PhysicalTo="1">
+                                <ChannelSet Name="Closed" DMXFrom="0/1"/>
+                                <ChannelSet Name="Open" DMXFrom="32/1"/>
+                                <ChannelSet Name="Strobe" DMXFrom="64/1" PhysicalFrom="1" PhysicalTo="20"/>
+                            </ChannelFunction>
+                        </LogicalChannel>
+                    </DMXChannel>
+                </DMXChannels>
+            </DMXMode>
+            <DMXMode Name="Basic" Description="Dimmer and colour only, one break." Geometry="Base">
+                <DMXChannels>
+                    <DMXChannel DMXBreak="1" Offset="1" Geometry="Base">
+                        <LogicalChannel Attribute="Dimmer">
+                            <ChannelFunction Name="Dimmer" Attribute="Dimmer" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="2" Geometry="Head">
+                        <LogicalChannel Attribute="ColorAdd_R">
+                            <ChannelFunction Name="Red" Attribute="ColorAdd_R" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1" Emitter="Red"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="3" Geometry="Head">
+                        <LogicalChannel Attribute="ColorAdd_G">
+                            <ChannelFunction Name="Green" Attribute="ColorAdd_G" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1" Emitter="Green"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="4" Geometry="Head">
+                        <LogicalChannel Attribute="ColorAdd_B">
+                            <ChannelFunction Name="Blue" Attribute="ColorAdd_B" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1" Emitter="Blue"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                </DMXChannels>
+            </DMXMode>
+        </DMXModes>
+        <Revisions>
+            <Revision Text="First" Date="2026-09-02T00:00:00" ModifiedBy="the-pult"/>
+        </Revisions>
+    </FixtureType>
+</GDTF>

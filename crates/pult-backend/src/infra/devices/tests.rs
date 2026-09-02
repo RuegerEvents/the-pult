@@ -551,7 +551,7 @@ async fn a_gateway_is_adopted_onto_a_universe_nothing_else_is_using() {
         .iter()
         .map(|f| match &f.address {
             FixtureAddress::OpenHaunt { universe, .. } => *universe,
-            FixtureAddress::Dmx { universe, .. } => Some(*universe),
+            FixtureAddress::Dmx { breaks, .. } => breaks.first().map(|entry| entry.universe),
         })
         .collect();
     assert_eq!(universes, vec![Some(1), Some(2)], "two gateways must not share a universe");

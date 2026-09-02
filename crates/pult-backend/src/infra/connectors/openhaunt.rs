@@ -165,7 +165,7 @@ impl OpenHauntOutput {
                 if parameter.direction != ParameterDirection::Output {
                     continue;
                 }
-                let Some(port) = parameter.binding.port() else { continue };
+                let Some(port) = parameter.binding.and_then(|binding| binding.port()) else { continue };
                 let param_key = parameter_key(&parameter.kind);
                 let key = (serial.to_string(), port);
                 let capable = self.capability(serial, port);
@@ -331,7 +331,7 @@ fn port_payload(value: &ParameterValue) -> serde_json::Value {
         ParameterValue::Float(level) => serde_json::json!({ "value": level }),
         ParameterValue::Int(n) => serde_json::json!({ "value": n }),
         ParameterValue::Text(text) => serde_json::json!({ "text": text }),
-        ParameterValue::Color { r, g, b } => serde_json::json!({
+        ParameterValue::Color { r, g, b, .. } => serde_json::json!({
             "r": to_byte(*r),
             "g": to_byte(*g),
             "b": to_byte(*b),

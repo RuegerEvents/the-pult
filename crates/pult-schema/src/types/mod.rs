@@ -1,3 +1,4 @@
+pub mod dmx_mode;
 pub mod fixture;
 pub mod sequence;
 pub mod cue;

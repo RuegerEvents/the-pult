@@ -313,7 +313,7 @@ mod tests {
         use pult_schema::{
             lifecycle::Lifecycle,
             types::fixture::{
-                FixtureType, ParameterBinding, ParameterDefinition, ParameterDirection,
+                FixtureType, ParameterBinding, ParameterDefinition,
                 ParameterKind, ParameterValue,
             },
         };
@@ -333,11 +333,10 @@ mod tests {
             manufacturer: "Acme".into(),
             channel_count: 1,
             parameters: vec![ParameterDefinition {
-                kind: ParameterKind::Intensity,
-                direction: ParameterDirection::Output,
-                binding: ParameterBinding::Dmx { channel: 1 },
-                default_value: ParameterValue::Float(0.0),
+                binding: Some(ParameterBinding::Dmx { channel: 1 }),
+                ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
             }],
+            ..FixtureType::default()
         };
         let fixture_id = uuid::Uuid::new_v4();
         let create = |table: &str| {

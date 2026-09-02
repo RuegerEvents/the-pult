@@ -17,11 +17,30 @@ const PNG: &[u8] = &[
 
 /// A console serving its asset routes, and the address to reach it on.
 async fn a_console() -> (String, Arc<sqlx::SqlitePool>) {
+    let (addr, pool, _engine) = a_console_and_its_engine().await;
+    (addr, pool)
+}
+
+/// The same, with a handle on the engine.
+///
+/// For the tests that have to put something in the show first. Writing to the pool
+/// behind the engine's back would not do: the engine holds the show in memory and
+/// answers reads from there, so a row inserted underneath it is a row the routes
+/// cannot see — which is the same reason the rest of the console never does it either.
+async fn a_console_and_its_engine() -> (String, Arc<sqlx::SqlitePool>, crate::engine::EngineHandle) {
     let pool = Arc::new(showfile::open_in_memory().await.unwrap());
     let (engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool.clone(), None);
     tokio::spawn(engine.run());
 
-    let state = AssetState { pool: pool.clone(), engine: handle, node_id: NodeId(Uuid::new_v4()) };
+    let state = AssetState {
+        pool: pool.clone(),
+        engine: handle.clone(),
+        node_id: NodeId(Uuid::new_v4()),
+        // Pointed nowhere and given no disk cache: nothing in this module asks the
+        // Share anything, and a client that could reach the real one from a test
+        // would be a test that goes to somebody else's server.
+        share: infra::interop::share::ShareHandle::with_base("http://127.0.0.1:1", None),
+    };
     let app: Router = routes().with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -29,7 +48,7 @@ async fn a_console() -> (String, Arc<sqlx::SqlitePool>) {
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    (addr.to_string(), pool)
+    (addr.to_string(), pool, handle)
 }
 
 #[tokio::test]
@@ -303,4 +322,238 @@ async fn a_preference_that_is_not_a_number_is_refused() {
         .unwrap()
         .status();
     assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+}
+
+// ── GDTF, in and out ──────────────────────────────────────────────────────────
+
+/// One of the checked-in fixture definitions, zipped the way a browser would send it.
+fn a_gdtf(name: &str) -> Vec<u8> {
+    use std::io::Write;
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testdata/gdtf")
+        .join(name);
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()))
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+    files.sort();
+    for path in files {
+        writer
+            .start_file(path.file_name().unwrap().to_string_lossy().into_owned(), options)
+            .unwrap();
+        writer.write_all(&std::fs::read(&path).unwrap()).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+async fn fixture_types(pool: &sqlx::SqlitePool) -> Vec<pult_schema::types::fixture::FixtureType> {
+    pult_schema::db::get_all(pool).await.unwrap()
+}
+
+#[tokio::test]
+async fn importing_a_gdtf_patches_the_show_with_the_fixture_it_describes() {
+    let (addr, pool) = a_console().await;
+    let client = reqwest::Client::new();
+
+    let posted = client
+        .post(format!("http://{addr}/api/import/gdtf"))
+        .header("content-type", assets::GDTF_MIME)
+        .body(a_gdtf("rgbw-two-mode"))
+        .send()
+        .await
+        .unwrap();
+    assert!(posted.status().is_success(), "{:?}", posted.text().await);
+
+    let body: serde_json::Value = posted.json().await.unwrap();
+    assert_eq!(body["replaced"], false);
+    assert_eq!(body["warnings"].as_array().unwrap().len(), 0);
+
+    // The engine writes through a channel, so give it a moment to land.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let types = fixture_types(&pool).await;
+    assert_eq!(types.len(), 1);
+    assert_eq!(types[0].name, "Test RGBW Mover");
+    assert_eq!(types[0].id.to_string(), body["fixture_type_id"].as_str().unwrap());
+    assert_eq!(types[0].dmx_modes.len(), 2);
+    assert_eq!(types[0].physical.weight_kg, Some(18.5));
+}
+
+#[tokio::test]
+async fn the_file_itself_is_kept_so_the_row_is_a_reading_of_it_rather_than_a_replacement() {
+    use pult_schema::types::fixture::FixtureTypeSource;
+
+    let (addr, pool) = a_console().await;
+    let bytes = a_gdtf("rgbw-two-mode");
+    let client = reqwest::Client::new();
+    client
+        .post(format!("http://{addr}/api/import/gdtf"))
+        .header("content-type", assets::GDTF_MIME)
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let types = fixture_types(&pool).await;
+    let FixtureTypeSource::Gdtf { asset, .. } = &types[0].source else {
+        panic!("an imported type says where it came from: {:?}", types[0].source);
+    };
+    let stored = assets::get(&pool, asset).await.unwrap().expect("the archive was kept");
+    assert_eq!(stored.bytes, bytes, "byte for byte, so a later reader gets more out of it");
+    assert_eq!(stored.mime, assets::GDTF_MIME);
+}
+
+#[tokio::test]
+async fn importing_the_same_fixture_again_updates_the_row_rather_than_making_a_second() {
+    let (addr, pool) = a_console().await;
+    let client = reqwest::Client::new();
+    for _ in 0..2 {
+        let posted = client
+            .post(format!("http://{addr}/api/import/gdtf"))
+            .header("content-type", assets::GDTF_MIME)
+            .body(a_gdtf("rgbw-two-mode"))
+            .send()
+            .await
+            .unwrap();
+        assert!(posted.status().is_success());
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
+    assert_eq!(
+        fixture_types(&pool).await.len(),
+        1,
+        "the file's own id is the row's, so every fixture patched to it follows the revision",
+    );
+}
+
+#[tokio::test]
+async fn a_body_that_is_not_a_gdtf_is_refused_and_leaves_nothing_behind() {
+    let (addr, pool) = a_console().await;
+    let client = reqwest::Client::new();
+
+    let posted = client
+        .post(format!("http://{addr}/api/import/gdtf"))
+        .header("content-type", assets::GDTF_MIME)
+        .body(PNG)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(posted.status(), 400);
+    assert!(posted.text().await.unwrap().contains("not a GDTF"));
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(fixture_types(&pool).await.is_empty(), "a refused import stores nothing");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM assets")
+        .fetch_one(&*pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "and no asset either");
+}
+
+#[tokio::test]
+async fn an_imported_type_exports_as_the_file_it_arrived_in() {
+    let (addr, _pool) = a_console().await;
+    let bytes = a_gdtf("rgbw-two-mode");
+    let client = reqwest::Client::new();
+
+    let body: serde_json::Value = client
+        .post(format!("http://{addr}/api/import/gdtf"))
+        .header("content-type", assets::GDTF_MIME)
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let id = body["fixture_type_id"].as_str().unwrap();
+
+    let exported = client.get(format!("http://{addr}/api/export/gdtf/{id}")).send().await.unwrap();
+    assert!(exported.status().is_success());
+    assert_eq!(exported.headers()["content-type"], assets::GDTF_MIME);
+    let disposition = exported.headers()["content-disposition"].to_str().unwrap().to_string();
+    assert!(disposition.starts_with("attachment;"), "a zip is never a document: {disposition}");
+    assert!(disposition.contains("Pult@Test RGBW Mover.gdtf"), "{disposition}");
+    assert_eq!(
+        exported.bytes().await.unwrap(),
+        bytes,
+        "the archive is the record; a re-derived approximation of it would be worse",
+    );
+}
+
+#[tokio::test]
+async fn a_type_this_console_made_for_itself_still_exports_as_something_openable() {
+    use pult_schema::types::fixture::{
+        FixtureType, ParameterDefinition, ParameterKind, ParameterValue,
+    };
+
+    let (addr, _pool, engine) = a_console_and_its_engine().await;
+    let fixture_type = FixtureType {
+        id: Uuid::new_v4(),
+        name: "Hand Made".into(),
+        manufacturer: "Nobody".into(),
+        channel_count: 4,
+        parameters: vec![
+            ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0)),
+            ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0)),
+        ],
+        ..FixtureType::default()
+    };
+    engine
+        .set(
+            vec![
+                pult_schema::path::PathSegment::Key("fixture_types".into()),
+                pult_schema::path::PathSegment::Key("__create".into()),
+            ],
+            pult_schema::lifecycle::Lifecycle::Persisted,
+            serde_json::to_value(&fixture_type).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+    let exported = client
+        .get(format!("http://{addr}/api/export/gdtf/{}", fixture_type.id))
+        .send()
+        .await
+        .unwrap();
+    assert!(exported.status().is_success());
+    let bytes = exported.bytes().await.unwrap();
+
+    // And another console can open it — which is the whole point of generating one.
+    let read = pult_gdtf::GdtfFile::parse(&bytes).expect("a real GDTF");
+    let gdtf = &read.description.fixture_type;
+    assert_eq!(gdtf.name, "Hand Made");
+    assert_eq!(
+        gdtf.fixture_type_id.to_lowercase(),
+        fixture_type.id.to_string(),
+        "the console's own id, so exporting and re-importing lands on this row",
+    );
+    let mode = &gdtf.dmx_modes.items[0];
+    assert_eq!(
+        pult_gdtf::resolve::footprint(gdtf, mode),
+        vec![4],
+        "a dimmer and three colour channels",
+    );
+    assert!(pult_gdtf::validate::check(gdtf).is_empty());
+}
+
+#[tokio::test]
+async fn asking_for_a_fixture_type_nobody_has_is_a_not_found() {
+    let (addr, _pool) = a_console().await;
+    let missing = Uuid::new_v4();
+    let answer = reqwest::Client::new()
+        .get(format!("http://{addr}/api/export/gdtf/{missing}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), 404);
 }

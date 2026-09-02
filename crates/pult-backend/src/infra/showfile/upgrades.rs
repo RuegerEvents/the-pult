@@ -102,6 +102,33 @@ const UPGRADES: &[Upgrade] = &[
         "ALTER TABLE fixtures DROP COLUMN dmx_address",
     ],
     },
+    Upgrade {
+        // Everything GDTF brought to a fixture type. The additive pass adds each
+        // column nullable, and a JSON column read as NULL is not an empty list — it
+        // is a parse failure, in `from_columns`, which reads each column on its own
+        // and unwraps. So every one of them needs a value on every existing row.
+        //
+        // `Manual` for the source, because a type that was in a showfile before this
+        // existed was either typed in or seeded — and a node-derived one says so again
+        // the moment its node describes itself, which is the whole point of the
+        // distinction. Nothing here is guessed: a type that named no mode still has
+        // one, computed from its parameters rather than written down.
+        name: "fixture types: modes, physical data, geometry and where the type came from",
+        table: "fixture_types",
+        applies: |columns| columns.iter().any(|c| c == "dmx_modes"),
+        statements: &[
+            "UPDATE fixture_types SET dmx_modes = '[]' WHERE dmx_modes IS NULL",
+            "UPDATE fixture_types SET geometry = '[]' WHERE geometry IS NULL",
+            "UPDATE fixture_types SET physical = '{}' WHERE physical IS NULL",
+            "UPDATE fixture_types SET source = '\"Manual\"' WHERE source IS NULL",
+            // Plain text, not JSON: a `String` field is stored and read as the text
+            // itself, so `'\"\"'` here would be a type whose short name is two quote
+            // marks.
+            "UPDATE fixture_types SET short_name = '' WHERE short_name IS NULL",
+            "UPDATE fixture_types SET long_name = '' WHERE long_name IS NULL",
+            "UPDATE fixture_types SET description = '' WHERE description IS NULL",
+        ],
+    },
 ];
 
 pub async fn run(pool: &SqlitePool) -> Result<()> {

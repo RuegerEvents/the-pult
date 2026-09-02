@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<GDTF DataVersion="1.2">
+    <FixtureType Name="Test Cell Bar" ShortName="TBAR" LongName="Test Four Cell Bar" Manufacturer="Pult" Description="One cell described once and referenced four times, which is the whole reason a mode's channel list is not its footprint." FixtureTypeID="1B1E4C3A-0000-4000-8000-000000000003" CanHaveChildren="No">
+        <AttributeDefinitions>
+            <FeatureGroups>
+                <FeatureGroup Name="Dimmer" Pretty="Dimmer">
+                    <Feature Name="Dimmer"/>
+                </FeatureGroup>
+                <FeatureGroup Name="Color" Pretty="Colour">
+                    <Feature Name="RGB"/>
+                </FeatureGroup>
+            </FeatureGroups>
+            <Attributes>
+                <Attribute Name="Dimmer" Pretty="Dim" Feature="Dimmer.Dimmer" PhysicalUnit="Percent"/>
+                <Attribute Name="ColorAdd_R" Pretty="R" Feature="Color.RGB" PhysicalUnit="ColorComponent"/>
+                <Attribute Name="ColorAdd_G" Pretty="G" Feature="Color.RGB" PhysicalUnit="ColorComponent"/>
+                <Attribute Name="ColorAdd_B" Pretty="B" Feature="Color.RGB" PhysicalUnit="ColorComponent"/>
+            </Attributes>
+        </AttributeDefinitions>
+        <Models>
+            <Model Name="Bar" Length="1" Width="0.15" Height="0.15" PrimitiveType="Cube"/>
+            <Model Name="Cell" Length="0.2" Width="0.15" Height="0.15" PrimitiveType="Cube"/>
+        </Models>
+        <Geometries>
+            <Geometry Name="Bar" Model="Bar" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}">
+                <GeometryReference Name="Cell 1" Model="Cell" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{-300,0,0,1}" Geometry="Pixel">
+                    <Break DMXOffset="1/1" DMXBreak="1"/>
+                </GeometryReference>
+                <GeometryReference Name="Cell 2" Model="Cell" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{-100,0,0,1}" Geometry="Pixel">
+                    <Break DMXOffset="5/1" DMXBreak="1"/>
+                </GeometryReference>
+                <GeometryReference Name="Cell 3" Model="Cell" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{100,0,0,1}" Geometry="Pixel">
+                    <Break DMXOffset="9/1" DMXBreak="1"/>
+                </GeometryReference>
+                <GeometryReference Name="Cell 4" Model="Cell" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{300,0,0,1}" Geometry="Pixel">
+                    <Break DMXOffset="13/1" DMXBreak="1"/>
+                </GeometryReference>
+            </Geometry>
+            <Geometry Name="Pixel" Model="Cell" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}"/>
+        </Geometries>
+        <DMXModes>
+            <DMXMode Name="Pixel" Description="Four cells of dimmer and RGB." Geometry="Bar">
+                <DMXChannels>
+                    <DMXChannel DMXBreak="1" Offset="1" Geometry="Pixel">
+                        <LogicalChannel Attribute="Dimmer">
+                            <ChannelFunction Name="Dimmer" Attribute="Dimmer" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="2" Geometry="Pixel">
+                        <LogicalChannel Attribute="ColorAdd_R">
+                            <ChannelFunction Name="Red" Attribute="ColorAdd_R" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="3" Geometry="Pixel">
+                        <LogicalChannel Attribute="ColorAdd_G">
+                            <ChannelFunction Name="Green" Attribute="ColorAdd_G" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="4" Geometry="Pixel">
+                        <LogicalChannel Attribute="ColorAdd_B">
+                            <ChannelFunction Name="Blue" Attribute="ColorAdd_B" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                </DMXChannels>
+            </DMXMode>
+        </DMXModes>
+    </FixtureType>
+</GDTF>

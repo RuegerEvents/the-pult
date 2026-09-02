@@ -3,17 +3,22 @@
 //! Shared by every protocol in the DMX family, so Art-Net and sACN differ only in
 //! how they put the bytes on the wire.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use pult_render::color::EmitterSpec;
 use pult_schema::types::{
+    dmx_mode::DmxChannelLayout,
     fixture::{
-        driving, Fixture, FixtureType, ParameterDirection, ParameterValue,
+        driving, emitters_of, Emitter, Fixture, FixtureAddress, FixtureType, ParameterDirection,
+        ParameterValue,
     },
     programmer::ProgrammerValue,
 };
 use uuid::Uuid;
 
 use crate::model::playback::parameter_key;
+
+pub mod encode;
 
 /// A DMX universe: 512 channels, indexed from 0 for channel 1.
 pub const UNIVERSE_SIZE: usize = 512;
@@ -58,6 +63,55 @@ pub struct Patch {
     /// descriptions rather than of the moment: it is what lets a connector drop from
     /// its frame rate to its protocol's keep-alive when a show has settled.
     settles_at: Option<u64>,
+    /// Every parameter this patch puts on a wire, and where each one's bytes go.
+    ///
+    /// Resolved once, when the patch arrives, for the same reason `settles_at` is:
+    /// which mode a fixture is in, and where that mode puts each parameter, is a
+    /// property of the patch rather than of the moment. A frame over two thousand
+    /// fixtures therefore does no mode lookups and no string comparison against a mode
+    /// name — it walks a flat list and writes bytes.
+    ///
+    /// Grouped by *parameter* rather than by channel, and that is the whole point of
+    /// the shape: an RGBW head's colour is four bytes and one value, and a flat list
+    /// of channels would evaluate the same colour four times a frame.
+    placed: Vec<PlacedParameter>,
+    /// Every universe this patch occupies, ascending.
+    ///
+    /// Not derivable from `placed`: a fixture whose parameters are all inputs, or all
+    /// on ports, places no channel and still occupies its universe.
+    universes: Vec<u16>,
+}
+
+/// One parameter of one fixture, and every byte it reaches.
+struct PlacedParameter {
+    /// Index into `Patch::fixtures` rather than a borrow, so the patch owns one copy
+    /// of everything and a connector can keep it across frames.
+    fixture: usize,
+    /// The key this parameter is driven under, evaluated once per frame however many
+    /// bytes it comes to.
+    key: String,
+    /// Where in `Patch::programmer` this parameter's held entry is, if anything is
+    /// holding it. Resolved here so a frame does not build a key to look it up with.
+    held: Option<usize>,
+    /// What to send when nothing is driving it.
+    default: ParameterValue,
+    channels: Vec<PlacedChannel>,
+}
+
+/// One byte-span of one parameter, at the universe and address its mode puts it.
+struct PlacedChannel {
+    universe: u16,
+    /// The break's 1-based start address in that universe.
+    address: u16,
+    layout: DmxChannelLayout,
+    /// The one emitter this channel drives, for a colour. `None` on everything else —
+    /// and on a colour channel whose mode named an emitter the type does not have,
+    /// which is a channel there is nothing honest to write into.
+    ///
+    /// Resolved here rather than per frame: the mixer wants a spec, the schema holds
+    /// an `Emitter`, and converting between them per channel per frame was measurably
+    /// the whole cost of colour on a rig of five hundred.
+    emitter: Option<EmitterSpec>,
 }
 
 impl Patch {
@@ -77,9 +131,109 @@ impl Patch {
             programmer,
             held,
             settles_at: Some(0),
+            placed: Vec::new(),
+            universes: Vec::new(),
         };
         patch.settles_at = patch.work_out_when_it_settles();
+        (patch.placed, patch.universes) = patch.place_channels();
         patch
+    }
+
+    /// Work out where every parameter of every DMX fixture lands.
+    ///
+    /// A fixture whose mode its type does not have falls back to the type's first mode
+    /// and says so once: going dark because a GDTF file was revised is worse than going
+    /// to the wrong mode, and silently doing either is worse than both.
+    fn place_channels(&self) -> (Vec<PlacedParameter>, Vec<u16>) {
+        let mut placed: Vec<PlacedParameter> = Vec::new();
+        let mut universes: Vec<u16> = Vec::new();
+        let mut warned: HashSet<(Uuid, String)> = HashSet::new();
+
+        for (index, fixture) in self.fixtures.iter().enumerate() {
+            let FixtureAddress::Dmx { mode: mode_name, breaks } = &fixture.address else {
+                continue;
+            };
+            let Some(fixture_type) = self.fixture_type(fixture) else {
+                // Patched to a type that is not in the show. Nothing sensible to send.
+                continue;
+            };
+            if !fixture_type.dmx_modes.is_empty()
+                && !fixture_type.has_mode(mode_name)
+                && warned.insert((fixture_type.id, mode_name.clone()))
+            {
+                tracing::warn!(
+                    fixture_type = %fixture_type.name,
+                    mode = %mode_name,
+                    "no such mode on this type; falling back to its first"
+                );
+            }
+            let mode = fixture_type.mode(mode_name);
+
+            // Every break this unit occupies, so a universe exists for it even when
+            // nothing in it is driven. A patched fixture's universe is on the wire
+            // whether or not the show is doing anything to it, which is what keeps a
+            // rig of sensors from silently dropping its universe off the network.
+            for entry in breaks {
+                if !universes.contains(&entry.universe) {
+                    universes.push(entry.universe);
+                }
+            }
+
+            // What the type says about each parameter, by key, so the loop below does
+            // one lookup rather than a scan per channel.
+            let by_key: HashMap<String, (&ParameterValue, Vec<Emitter>)> = fixture_type
+                .parameters
+                .iter()
+                .filter(|p| p.direction == ParameterDirection::Output)
+                .map(|p| (parameter_key(&p.kind), (&p.default_value, emitters_of(p))))
+                .collect();
+
+            for layout in &mode.channels {
+                // A virtual channel occupies no slot, so there is nothing to write.
+                if layout.offsets.is_empty() {
+                    continue;
+                }
+                // A mode may place a channel the parameter list has nothing for — a
+                // control channel the console has no concept of. Nothing drives it, so
+                // nothing writes it.
+                let Some((default, emitters)) = by_key.get(&layout.parameter_key) else {
+                    continue;
+                };
+                let Some(entry) = breaks.get(layout.break_index as usize) else {
+                    // The mode wants a break this unit was never given an address in.
+                    // Dropping the channel is the only answer that is not a guess.
+                    continue;
+                };
+                let channel = PlacedChannel {
+                    universe: entry.universe,
+                    address: entry.address,
+                    layout: layout.clone(),
+                    emitter: layout.emitter.as_deref().and_then(|name| {
+                        emitters.iter().find(|each| each.name == name).map(encode::spec_of)
+                    }),
+                };
+
+                // Beside the other bytes of the same parameter where there are any,
+                // so the frame evaluates a colour once and writes four bytes from it.
+                match placed.iter_mut().rev().find(|each| {
+                    each.fixture == index && each.key == layout.parameter_key
+                }) {
+                    Some(existing) => existing.channels.push(channel),
+                    None => placed.push(PlacedParameter {
+                        fixture: index,
+                        key: layout.parameter_key.clone(),
+                        held: self
+                            .held
+                            .get(&(fixture.id, layout.parameter_key.clone()))
+                            .copied(),
+                        default: (*default).clone(),
+                        channels: vec![channel],
+                    }),
+                }
+            }
+        }
+        universes.sort_unstable();
+        (placed, universes)
     }
 
     pub fn fixture_type(&self, fixture: &Fixture) -> Option<&FixtureType> {
@@ -129,74 +283,42 @@ impl Patch {
 /// Render the whole patch into universes, one per universe number in use, as of
 /// `now_ms`.
 ///
-/// Only fixtures with a DMX address take part. A fixture on an OpenHaunt node has
-/// no slot in a universe, and neither does a parameter bound to a port or one the
-/// device writes rather than reads — none of those have a channel to occupy.
+/// Only fixtures with a DMX address take part, and only through the mode they are
+/// patched in: a parameter the mode does not place, one the device writes rather than
+/// reads, and one on an OpenHaunt node all have no channel to occupy.
 pub fn render(patch: &Patch, now_ms: u64) -> Vec<Universe> {
-    let mut universes: HashMap<u16, Universe> = HashMap::new();
+    let mut universes: HashMap<u16, Universe> =
+        patch.universes.iter().map(|number| (*number, Universe::new(*number))).collect();
 
-    for fixture in &patch.fixtures {
-        let Some((number, address)) = fixture.address.dmx() else { continue };
-        let Some(fixture_type) = patch.fixture_type(fixture) else {
-            // Patched to a type that is not in the show. Nothing sensible to send.
-            continue;
-        };
-        let universe = universes.entry(number).or_insert_with(|| Universe::new(number));
+    for parameter in &patch.placed {
+        let fixture = &patch.fixtures[parameter.fixture];
+        // Once, however many bytes it comes to: an RGBW head's colour is one
+        // evaluation and four writes, not four of each.
+        let driving = driving(
+            fixture,
+            patch.fixture_type(fixture),
+            parameter.held.and_then(|at| patch.programmer.get(at)),
+            &parameter.key,
+        );
+        let value = pult_render::value_at(&driving, now_ms);
+        let value = value.as_ref().unwrap_or(&parameter.default);
 
-        for parameter in &fixture_type.parameters {
-            if parameter.direction != ParameterDirection::Output {
-                continue;
-            }
-            let Some(channel) = parameter.binding.dmx_channel() else { continue };
-            let key = parameter_key(&parameter.kind);
-            let value = patch
-                .value_at(fixture, &key, now_ms)
-                .unwrap_or_else(|| parameter.default_value.clone());
-            write_parameter(&mut universe.channels, address, channel, &value);
+        for channel in &parameter.channels {
+            let universe =
+                universes.entry(channel.universe).or_insert_with(|| Universe::new(channel.universe));
+            encode::write_channel(
+                &mut universe.channels,
+                channel.address,
+                &channel.layout,
+                value,
+                channel.emitter.as_ref(),
+            );
         }
     }
 
     let mut out: Vec<Universe> = universes.into_values().collect();
     out.sort_by_key(|u| u.number);
     out
-}
-
-/// Write one parameter into the universe at the fixture's address.
-///
-/// Addresses are 1-based on the outside and 0-based in the buffer. A parameter that
-/// would run past channel 512 is dropped rather than wrapping into another fixture.
-fn write_parameter(
-    channels: &mut [u8; UNIVERSE_SIZE],
-    dmx_address: u16,
-    channel: u8,
-    value: &ParameterValue,
-) {
-    let base = dmx_address as usize + channel as usize - 1;
-    let Some(start) = base.checked_sub(1) else { return };
-
-    match value {
-        ParameterValue::Color { r, g, b } => {
-            for (offset, component) in [r, g, b].into_iter().enumerate() {
-                if let Some(slot) = channels.get_mut(start + offset) {
-                    *slot = to_byte(*component);
-                }
-            }
-        }
-        other => {
-            if let Some(slot) = channels.get_mut(start) {
-                *slot = match other {
-                    ParameterValue::Float(f) => to_byte(*f),
-                    ParameterValue::Int(i) => (*i).clamp(0, 255) as u8,
-                    ParameterValue::Bool(true) => 255,
-                    ParameterValue::Bool(false) => 0,
-                    // A display's text has no byte on a DMX line. Leaving the channel
-                    // alone is the only honest thing to write.
-                    ParameterValue::Text(_) => return,
-                    ParameterValue::Color { .. } => unreachable!("handled above"),
-                };
-            }
-        }
-    }
 }
 
 // ── Not sending what has not changed ──────────────────────────────────────────
@@ -268,12 +390,6 @@ impl SequenceCounter {
             }
         }
     }
-}
-
-/// A 0.0 to 1.0 parameter as a DMX byte. Out-of-range values clamp rather than wrap,
-/// so a bad value dims a light instead of flashing it to full.
-fn to_byte(value: f32) -> u8 {
-    (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// Put a fixture where the console holds a parameter at a value.

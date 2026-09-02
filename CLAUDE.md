@@ -16,6 +16,7 @@ ends as the next numbered task.
 - **`crates/pult-render`** — The evaluator: what a parameter is doing, worked out from what is driving it and a moment. `serde` and `uuid` and nothing else — no clock, no OS — because it is compiled twice.
 - **`crates/pult-render-wasm`** — The same crate for a page: `wasm32-unknown-unknown` + `wasm-bindgen`, built by `scripts/build-evaluator.sh` into `frontend/src/lib/evaluator/`.
 - **`crates/pult-schema`** — Data model + path accessor infrastructure. All entity types live here. Source of truth for the WebSocket protocol and sync protocol.
+- **`crates/pult-gdtf`** — GDTF, read and written. A pure format library: `quick-xml`, `serde`, `zip`, `uuid`, `thiserror`, and *no pult crate* — which is what lets it be tested against other people's files with no station near it. Writing is why it exists rather than a crate off crates.io. The translation into the schema is `crates/pult-backend/src/infra/interop/gdtf/`.
 - **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, SQLite showfiles, peer sync (mDNS + TCP), the WASM plugin runtime (`infra/plugins/`), fixture connectors. `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.
@@ -69,6 +70,58 @@ answers `null` and panels show a gap rather than a plausible wrong number.
 What is *sensed* is the exception and stays state. `Fixture::sensed_values` holds what a
 device reported — a contact, a temperature, a humidity — because the console cannot work
 that out: it was told it. Driven outputs are functions; sensed inputs are state.
+
+## A fixture type says what a light can do; a mode says where the bytes go
+
+`FixtureType::parameters` is what an operator can set. `FixtureType::dmx_modes` is how
+those parameters reach a DMX line in one particular mode, and which mode a given unit
+is in lives on its address — `FixtureAddress::Dmx { mode, breaks }`, a place *per break*
+because a fixture with a separate dimmer break sits in two spans that need not be in the
+same universe.
+
+**A type with no modes still has one.** Everything the console made for itself — a type
+derived from an OpenHaunt node, the demo seed, the hand editor — carries a legacy
+`ParameterBinding::Dmx { channel }` per parameter and no modes, and
+`FixtureType::mode()` computes an implicit `"Default"` from those. Computed rather than
+rewritten at load, and the reason is the SQLite read path: `#[derive(PultSchema)]`
+generates `from_columns`, which reads each column on its own and unwraps, so a
+deserialize-time rewrite would never see the other columns it needs and a NULL one
+would panic. Which is also why every new non-`Option` column needs a row in
+`crates/pult-backend/src/infra/showfile/upgrades.rs`, and why a migration of a field's
+*shape* lives on the field type's own `Deserialize`.
+
+**A colour is one parameter and several channels.** Every `ColorAdd_*` and `ColorSub_*`
+attribute is the fixture's colour; a reader that made three parameters would give an
+operator three faders where every other console gives a picker. So the type carries an
+emitter list, each channel of a mode names the one it drives, and `pult_render::color`
+gets from a colour to a level per emitter — compiled twice like the rest of the
+evaluator and held together by `testdata/color-mix.json`.
+
+**A `.gdtf` is kept whole and the row is a reading of it.** The archive lives in the
+asset store and `FixtureTypeSource::Gdtf` points at it by sha256, so exporting hands
+back the file byte for byte and a later version of this console reads more out of the
+same bytes without asking anybody to download anything again. `FixtureTypeSource` also
+decides what may be overwritten: a node's own type is rebuilt whenever the node
+describes itself again, and doing that to an imported one would throw the file away.
+
+```
+cargo test -p pult-gdtf                              # the format library
+scripts/fetch-interop-corpus.sh                      # other people's files, gitignored
+cargo test -p pult-gdtf -- --ignored                 # against them
+```
+
+The GDTF Share needs a login, and it lives in the station's `preferences.toml` and never
+in the show — a showfile travels, and a password in one travels with it. Three things
+about that server are load-bearing and written down in `infra/interop/share.rs`: its
+login answers **200 with an HTML page** when the credentials are wrong, so success is
+decided by the body; its list is **tens of megabytes and unfiltered**, so it is fetched
+once, cached, and searched locally; and its session **goes idle after about two hours**,
+so an unauthorised answer logs in again and retries exactly once.
+
+Both import paths go through `infra/interop/apply.rs`, which is where the rules about
+writing live: a plan is built by a pure function before anything is stored, so a
+rejected file leaves neither an asset nor a row behind; every write carries one gesture,
+so an import is one Ctrl-Z; and a write that fails takes the rest back.
 
 ## Lifecycle System
 
@@ -393,6 +446,11 @@ Not `--workspace`: `pult-gui` and `openhaunt-node-sim-gui` are workspace members
 that one lockfile covers everything and CI can build with `--locked`, but they are
 excluded from `default-members` so that a plain `cargo build` does not need
 webkit2gtk on the machine. Build them by name (`-p pult-gui`).
+
+`pult-gdtf` has an `#[ignore]`d half that reads other people's files.
+`scripts/fetch-interop-corpus.sh` downloads them into gitignored `testdata/corpus/`;
+what is checked in beside it is `testdata/gdtf/`, three small fixtures written here.
+CI runs both halves.
 
 `pult-render-wasm` *is* a default member, despite being the browser's half: its tests
 are the corpus that holds the two compilations of the evaluator to each other, and a

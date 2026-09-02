@@ -7,6 +7,7 @@ pub mod session;
 pub mod stations;
 pub mod devices;
 pub mod connectors;
+pub mod interop;
 pub mod plugins;
 
 /// The address this machine reaches the local network on.

@@ -180,6 +180,10 @@ pub async fn start(config: Config) -> Result<Running> {
         session: session_handle,
         devices: device_handle,
         plugins: plugin_handle,
+        // Built even where nobody has a login: it costs a client with an empty cookie
+        // jar, and asking it anything without one answers "set a login" rather than
+        // going anywhere.
+        share: crate::infra::interop::share::ShareHandle::new(),
         node_id,
         ws_registry: SubscriptionRegistry::default(),
         broadcast: broadcast.clone(),

@@ -18,8 +18,8 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::types::fixture::{
-    FixtureType, ParameterBinding, ParameterDefinition, ParameterDirection, ParameterKind,
-    ParameterValue,
+    FixturePhysical, FixtureType, FixtureTypeSource, ParameterDefinition, ParameterDirection,
+    ParameterKind, ParameterValue,
 };
 
 /// Descriptor flag bit 6 means the module switches mains voltage.
@@ -243,13 +243,15 @@ pub fn fixture_type_from(
         .ports
         .iter()
         .map(|port| ParameterDefinition {
-            kind: kind_for(port, seen.get(port.name.as_str()).copied().unwrap_or(1) > 1),
             direction: match port.access {
                 PortAccess::ReadOnly => ParameterDirection::Input,
                 PortAccess::ReadWrite => ParameterDirection::Output,
             },
-            binding: ParameterBinding::Port { index: port.port },
-            default_value: default_value(port),
+            ..ParameterDefinition::on_port(
+                kind_for(port, seen.get(port.name.as_str()).copied().unwrap_or(1) > 1),
+                port.port,
+                default_value(port),
+            )
         })
         .collect();
 
@@ -257,9 +259,19 @@ pub fn fixture_type_from(
         id: fixture_type_id(module_type, description),
         name: module_name.to_string(),
         manufacturer: "OpenHaunt".to_string(),
+        long_name: module_name.to_string(),
         // A gateway occupies a whole universe; a node with ports occupies none.
         channel_count: if description.dmx.is_some() { 512 } else { 0 },
         parameters,
+        // A node's ports are not a DMX layout: what reaches them is a port write, so
+        // there is no mode to be in.
+        dmx_modes: Vec::new(),
+        physical: FixturePhysical::default(),
+        geometry: Vec::new(),
+        // The one source the console rebuilds without being asked: this whole function
+        // runs again whenever the node describes itself again.
+        source: FixtureTypeSource::Node,
+        ..FixtureType::default()
     }
 }
 
@@ -285,7 +297,7 @@ fn default_value(port: &PortDescription) -> ParameterValue {
         PortDataType::Boolean => ParameterValue::Bool(port.default.unwrap_or(0.0) != 0.0),
         PortDataType::Number => ParameterValue::Float(port.default.unwrap_or(0.0) as f32),
         PortDataType::String => ParameterValue::Text(String::new()),
-        PortDataType::Color => ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 },
+        PortDataType::Color => ParameterValue::rgb(0.0, 0.0, 0.0),
     }
 }
 
@@ -363,7 +375,7 @@ mod tests {
             let ft = fixture_type_from(module_type, "Module", &description);
             assert_eq!(ft.parameters.len(), description.ports.len());
             for (parameter, port) in ft.parameters.iter().zip(&description.ports) {
-                assert_eq!(parameter.binding, ParameterBinding::Port { index: port.port });
+                assert_eq!(parameter.binding.and_then(|b| b.port()), Some(port.port));
             }
         }
     }
@@ -444,7 +456,7 @@ mod tests {
         assert_eq!(ft.parameters[2].default_value, ParameterValue::Text(String::new()));
         assert_eq!(
             ft.parameters[3].default_value,
-            ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 },
+            ParameterValue::rgb(0.0, 0.0, 0.0),
         );
     }
 

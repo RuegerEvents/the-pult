@@ -50,6 +50,9 @@ pub struct AssetState {
     pub pool: Arc<SqlitePool>,
     pub engine: EngineHandle,
     pub node_id: NodeId,
+    /// One conversation with the GDTF Share for the whole station: the session is a
+    /// cookie, and two clients would be two logins where the Share expects one.
+    pub share: infra::interop::share::ShareHandle,
 }
 
 impl FromRef<AppState> for AssetState {
@@ -58,6 +61,7 @@ impl FromRef<AppState> for AssetState {
             pool: state.pool.clone(),
             engine: state.engine.clone(),
             node_id: state.node_id,
+            share: state.share.clone(),
         }
     }
 }
@@ -74,6 +78,17 @@ where
         // bytes in a body, too large for the WebSocket, and the answer is what
         // the show now says about it.
         .route("/api/plugins", post(install_plugin))
+        // A fixture definition, in and out. The same shape as a plugin bundle: bytes
+        // in a body, too large for the WebSocket, and the answer is what the show now
+        // says about it.
+        .route("/api/import/gdtf", post(import_gdtf))
+        .route("/api/export/gdtf/{fixture_type_id}", get(export_gdtf))
+        // The Share. A search is a read and could have been an RPC; importing from it
+        // is a write, and the rule that the RPC table is read-only is worth more than
+        // the symmetry — so all three are here, where writes belong.
+        .route("/api/gdtf-share/status", get(share_status))
+        .route("/api/gdtf-share/search", get(share_search))
+        .route("/api/gdtf-share/import", post(share_import))
         // Raw bytes rather than multipart: there is one file and its type is in the
         // header, so a form encoding would only be something else to get wrong.
         .layer(axum::extract::DefaultBodyLimit::max(assets::MAX_BYTES))
@@ -147,7 +162,193 @@ async fn install_plugin(
     Ok(Json(json!({ "installed": value, "replaced": existing.is_some() })))
 }
 
-/// Kept apart from [`routes`] because the body limit those two carry is for the
+/// Whether this console can talk to the Share, and how fresh its list is.
+async fn share_status(State(state): State<AssetState>) -> Json<serde_json::Value> {
+    Json(state.share.status().await)
+}
+
+#[derive(serde::Deserialize)]
+struct ShareQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    manufacturer: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Fetch the list again rather than searching the cached one.
+    #[serde(default)]
+    refresh: bool,
+}
+
+/// Search the Share, locally, over a list fetched at most once a day.
+async fn share_search(
+    State(state): State<AssetState>,
+    axum::extract::Query(query): axum::extract::Query<ShareQuery>,
+) -> Result<Json<serde_json::Value>, Response> {
+    if query.refresh {
+        state.share.list(true).await.map_err(share_error)?;
+    }
+    let hits = state
+        .share
+        .search(&query.q, query.manufacturer.as_deref(), query.limit.unwrap_or(50).min(500))
+        .await
+        .map_err(share_error)?;
+    Ok(Json(json!({ "fixtures": hits })))
+}
+
+#[derive(serde::Deserialize)]
+struct ShareImport {
+    rid: u32,
+}
+
+/// Download one file from the Share and import it, in one go.
+///
+/// The same import the upload route runs — the bytes reached this console a different
+/// way and nothing after that differs, which is what keeps there from being two import
+/// paths to keep in step.
+async fn share_import(
+    State(state): State<AssetState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ShareImport>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let bytes = state.share.download(query.rid).await.map_err(share_error)?;
+    let mut answer = import_gdtf_bytes(&state, &headers, Bytes::from(bytes)).await?;
+    // Where it came from, so the Fixture Types panel can say "revision 2.0 from the
+    // Share" rather than only "GDTF".
+    answer["rid"] = json!(query.rid);
+    Ok(Json(answer))
+}
+
+/// A Share failure in the terms a browser can act on.
+fn share_error(error: infra::interop::share::ShareError) -> Response {
+    use infra::interop::share::ShareError;
+    let status = match error {
+        ShareError::NoCredentials | ShareError::BadCredentials => StatusCode::UNAUTHORIZED,
+        ShareError::Status(_) | ShareError::Network(_) | ShareError::Unreadable(_) => {
+            StatusCode::BAD_GATEWAY
+        }
+    };
+    (status, error.to_string()).into_response()
+}
+
+/// The user an HTTP write is attributed to./// The user an HTTP write is attributed to.
+///
+/// The socket learns who is writing from `Identify`; a request has no such
+/// conversation, so the page sends the same id in a header. A request that does not
+/// falls back to the show's default operator, exactly as a socket that never
+/// identified does — because a write carrying no author can never be taken back, and
+/// an import is the last thing an operator should be unable to undo.
+fn user_for_writes(headers: &HeaderMap) -> uuid::Uuid {
+    headers
+        .get("x-pult-user")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| uuid::Uuid::parse_str(text).ok())
+        .unwrap_or(pult_schema::types::user::User::DEFAULT_ID)
+}
+
+/// Import a fixture definition from a `.gdtf`.
+///
+/// The order is the same as installing a plugin's, and for the same reason: the file
+/// is parsed and read into a plan **before** anything is stored, so a body that is not
+/// a GDTF leaves neither an asset nor a row behind.
+///
+/// The whole import is one gesture, so an operator who imported the wrong file takes
+/// it back with one Ctrl-Z.
+async fn import_gdtf(
+    State(state): State<AssetState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, Response> {
+    Ok(Json(import_gdtf_bytes(&state, &headers, body).await?))
+}
+
+/// The import itself, shared by the upload route and the Share one.
+///
+/// How the bytes arrived is the only thing those two differ about, and this is
+/// everything after that — so there is one import path rather than two to keep in
+/// step.
+async fn import_gdtf_bytes(
+    state: &AssetState,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Result<serde_json::Value, Response> {
+    use pult_schema::types::fixture::FixtureType;
+
+    if !pult_gdtf::GdtfFile::sniff(&body) {
+        // The type header is not enough to decide by: a browser sends
+        // `application/octet-stream` for a file it has no type for, and the honest
+        // check is whether the bytes are a zip with a description in them.
+        return Err(bad_request("this is not a GDTF file: no description.xml in it"));
+    }
+
+    let existing: Vec<FixtureType> = state
+        .engine
+        .get(vec![pult_schema::path::PathSegment::Key("fixture_types".into())])
+        .await
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let replaced = {
+        let ids: Vec<uuid::Uuid> = existing.iter().map(|each| each.id).collect();
+        move |id: uuid::Uuid| ids.contains(&id)
+    };
+
+    let (plan, fixture_type_id) = infra::interop::gdtf::plan_import(&body, &existing)
+        .map_err(|error| bad_request(&error.to_string()))?;
+    let was_there = replaced(fixture_type_id);
+
+    let report =
+        infra::interop::apply::apply(plan, &state.pool, &state.engine, user_for_writes(headers))
+            .await
+            .map_err(|error| {
+                (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+            })?;
+
+    Ok(json!({
+        "fixture_type_id": fixture_type_id,
+        "replaced": was_there,
+        "warnings": report.warnings,
+    }))
+}
+
+/// Hand back a fixture type as a `.gdtf`.
+///
+/// The archive it was imported from where there is one, and a generated file
+/// otherwise — so a type this console made for itself is still something another
+/// console can open.
+async fn export_gdtf(
+    State(state): State<AssetState>,
+    Path(fixture_type_id): Path<uuid::Uuid>,
+) -> Result<Response, Response> {
+    use pult_schema::types::fixture::FixtureType;
+
+    let types: Vec<FixtureType> = state
+        .engine
+        .get(vec![pult_schema::path::PathSegment::Key("fixture_types".into())])
+        .await
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let Some(fixture_type) = types.into_iter().find(|each| each.id == fixture_type_id) else {
+        return Err((StatusCode::NOT_FOUND, "no such fixture type").into_response());
+    };
+
+    let (bytes, filename) = infra::interop::gdtf::export(&state.pool, &fixture_type)
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response())?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, assets::GDTF_MIME.to_string()),
+            // An attachment, so a zip can never be navigated to as a document.
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\"")),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+/// Kept apart from [`routes`] because the body limit those two carry is for the/// Kept apart from [`routes`] because the body limit those two carry is for the
 /// one route that takes megabytes, and this one takes nothing at all.
 pub fn config_routes<S>() -> Router<S>
 where
@@ -212,6 +413,33 @@ async fn set_preferences(Json(body): Json<serde_json::Value>) -> Result<Json<ser
     if let Some(ms) = number("homeFadeMs")? {
         asked.home_fade_ms = ms;
     }
+
+    // The Share login. Named as a pair, so setting one without the other is a
+    // half-credential nothing can use; `null` clears it, which is how somebody logs
+    // this console out of the Share for good.
+    match body.get("gdtfShare") {
+        None => {}
+        Some(serde_json::Value::Null) => asked.gdtf_share = None,
+        Some(value) => {
+            let user = value.get("user").and_then(|v| v.as_str()).unwrap_or_default();
+            // A blank password means "leave the one you have": a settings form that
+            // never shows the password cannot send it back, and re-typing it to change
+            // an email address would be a trap.
+            let password = value.get("password").and_then(|v| v.as_str());
+            let kept = asked.gdtf_share.as_ref().map(|each| each.password.clone());
+            let password = match (password, kept) {
+                (Some(typed), _) if !typed.is_empty() => typed.to_string(),
+                (_, Some(kept)) => kept,
+                _ => String::new(),
+            };
+            if user.is_empty() || password.is_empty() {
+                return Err(bad_request("a Share login needs both a user and a password"));
+            }
+            asked.gdtf_share =
+                Some(infra::preferences::ShareCredentials { user: user.to_string(), password });
+        }
+    }
+
     let asked = asked.sane();
 
     infra::preferences::save(&asked).map_err(|e| {
@@ -229,6 +457,12 @@ fn as_json(prefs: &infra::preferences::Preferences) -> serde_json::Value {
         "historyDepthMax": pult_schema::types::show::HISTORY_DEPTH_MAX,
         "homeFadeMs": prefs.home_fade_ms,
         "homeFadeMsMax": pult_schema::types::show::HOME_FADE_MS_MAX,
+        // The user, and whether there is a password — never the password. A settings
+        // form needs both of those and an onlooker can use neither.
+        "gdtfShare": prefs.gdtf_share.as_ref().map(|each| json!({
+            "user": each.user,
+            "hasPassword": !each.password.is_empty(),
+        })),
     })
 }
 

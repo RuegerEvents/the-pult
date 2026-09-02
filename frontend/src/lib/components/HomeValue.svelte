@@ -73,7 +73,14 @@
 		type="color"
 		aria-label="{label} rests at"
 		value={asHex(value)}
-		onchange={(e) => onchange({ type: 'Color', value: fromHex(e.currentTarget.value) })}
+		onchange={(e) =>
+			onchange({
+				type: 'Color',
+				// The pinned emitters survive an edit of the colour: somebody who set
+				// the white by hand and then dragged the picker meant to change the
+				// colour, not to let go of the white.
+				value: { ...fromHex(e.currentTarget.value), overrides: value.value.overrides }
+			})}
 	/>
 {:else}
 	<input

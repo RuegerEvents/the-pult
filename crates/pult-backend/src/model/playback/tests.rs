@@ -53,16 +53,14 @@ const FIXTURE_TYPE: Uuid = Uuid::from_u128(0x5ea75ea7_0000_0000_0000_00000000000
 /// what an OpenHaunt node describes and what the console reads back.
 fn the_type() -> &'static [pult_schema::types::fixture::FixtureType] {
     use pult_schema::types::fixture::{
-        FixtureType, ParameterBinding, ParameterDefinition, ParameterDirection,
+        FixtureType, ParameterBinding, ParameterDefinition,
     };
     static TYPES: std::sync::OnceLock<Vec<FixtureType>> = std::sync::OnceLock::new();
     TYPES.get_or_init(|| {
         let at = |kind: ParameterKind, channel: u8, default_value: ParameterValue| {
             ParameterDefinition {
-                kind,
-                direction: ParameterDirection::Output,
-                binding: ParameterBinding::Dmx { channel },
-                default_value,
+                binding: Some(ParameterBinding::Dmx { channel }),
+                ..ParameterDefinition::new(kind, default_value)
             }
         };
         vec![FixtureType {
@@ -72,10 +70,11 @@ fn the_type() -> &'static [pult_schema::types::fixture::FixtureType] {
             channel_count: 6,
             parameters: vec![
                 at(ParameterKind::Intensity, 1, ParameterValue::Float(0.0)),
-                at(ParameterKind::ColorRgb, 2, ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 }),
+                at(ParameterKind::ColorRgb, 2, ParameterValue::rgb(0.0, 0.0, 0.0)),
                 at(ParameterKind::Pan, 5, ParameterValue::Float(0.5)),
                 at(ParameterKind::Tilt, 6, ParameterValue::Float(0.5)),
             ],
+            ..FixtureType::default()
         }]
     })
 }
@@ -85,7 +84,7 @@ fn a_fixture() -> Fixture {
         id: Uuid::new_v4(),
         name: "Spot".into(),
         fixture_type_id: FIXTURE_TYPE,
-        address: FixtureAddress::Dmx { universe: 1, address: 1 },
+        address: FixtureAddress::dmx(1, 1),
         position: None,
         sensed_values: HashMap::new(),
         live_effects: Default::default(),
@@ -589,11 +588,11 @@ fn a_captures_own_out_time_wins_over_the_cues() {
 #[test]
 fn a_parameter_with_no_order_takes_the_in_time() {
     let mut fixture = a_fixture();
-    already_at(&mut fixture, "ColorRgb", ParameterValue::Color { r: 1.0, g: 1.0, b: 1.0 });
+    already_at(&mut fixture, "ColorRgb", ParameterValue::rgb(1.0, 1.0, 1.0));
     let capture = ParameterCapture {
         fixture_id: fixture.id,
         parameter_kind: ParameterKind::ColorRgb,
-        value: ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 },
+        value: ParameterValue::rgb(0.0, 0.0, 0.0),
         fade_in_ms: 0,
         fade_out_ms: 0,
         delay_in_ms: 0,
@@ -625,11 +624,11 @@ fn a_parameter_with_no_order_takes_the_in_time() {
 #[test]
 fn colour_fades_channel_by_channel() {
     let mut fixture = a_fixture();
-    already_at(&mut fixture, "ColorRgb", ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 });
+    already_at(&mut fixture, "ColorRgb", ParameterValue::rgb(0.0, 0.0, 0.0));
     let capture = ParameterCapture {
         fixture_id: fixture.id,
         parameter_kind: ParameterKind::ColorRgb,
-        value: ParameterValue::Color { r: 1.0, g: 0.5, b: 0.0 },
+        value: ParameterValue::rgb(1.0, 0.5, 0.0),
         fade_in_ms: 1000,
         fade_out_ms: 0,
         delay_in_ms: 0,
@@ -647,7 +646,7 @@ fn colour_fades_channel_by_channel() {
     pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
 
     match live(&fixtures, fixture.id, "ColorRgb", start + 500) {
-        Some(ParameterValue::Color { r, g, b }) => {
+        Some(ParameterValue::Color { r, g, b, .. }) => {
             assert!((r - 0.5).abs() < 0.001);
             assert!((g - 0.25).abs() < 0.001);
             assert!(b.abs() < 0.001);
@@ -1097,7 +1096,7 @@ fn the_programmer_leaves_parameters_it_does_not_hold_alone() {
             ParameterCapture {
                 fixture_id: fixture.id,
                 parameter_kind: ParameterKind::ColorRgb,
-                value: ParameterValue::Color { r: 1.0, g: 0.0, b: 0.0 },
+                value: ParameterValue::rgb(1.0, 0.0, 0.0),
                 fade_in_ms: 0,
                 fade_out_ms: 0,
                 delay_in_ms: 0,
@@ -1117,7 +1116,7 @@ fn the_programmer_leaves_parameters_it_does_not_hold_alone() {
     assert_eq!(level_of(&fixtures, &programmer, fixture.id, 0), 0.1);
     assert_eq!(
         live(&fixtures, fixture.id, "ColorRgb", 0),
-        Some(ParameterValue::Color { r: 1.0, g: 0.0, b: 0.0 }),
+        Some(ParameterValue::rgb(1.0, 0.0, 0.0)),
         "the colour was never in the programmer, so the cue still owns it",
     );
 }

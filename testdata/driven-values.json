@@ -1,14 +1,14 @@
 {
   "about": [
     "What a parameter is doing, as a corpus: what is driving it, a moment, and the",
-    "value that comes out. Read by two test suites \u2014 a native Rust one in",
+    "value that comes out. Read by two test suites — a native Rust one in",
     "crates/pult-render-wasm/tests, and a vitest one in frontend/src/lib that loads",
     "the same crate compiled to wasm and asks it the same questions.",
     "",
     "This file is what replaced writing the evaluator twice. `values-as-functions`",
-    "declined to translate the arithmetic into TypeScript \u2014 the surface is easings,",
+    "declined to translate the arithmetic into TypeScript — the surface is easings,",
     "curves, step lists, spread, phase, direction, width, master rates, priority and",
-    "home fallback, and two of it would drift \u2014 so what has to be guarded is not two",
+    "home fallback, and two of it would drift — so what has to be guarded is not two",
     "implementations agreeing but two *compilations* of one agreeing. A wasm build",
     "that optimises a float differently, or a boundary that packs a colour wrong, is",
     "exactly the failure this catches, and it shows up here rather than as a screen",
@@ -1414,6 +1414,224 @@
       "expect": {
         "type": "Float",
         "value": 0.5
+      }
+    },
+    {
+      "name": "a colour a cue pinned an emitter on rests there",
+      "driving": {
+        "home": {
+          "type": "Color",
+          "value": {
+            "r": 1.0,
+            "g": 1.0,
+            "b": 1.0,
+            "overrides": {
+              "White": 0.25
+            }
+          }
+        }
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 1.0,
+          "g": 1.0,
+          "b": 1.0,
+          "overrides": {
+            "White": 0.25
+          }
+        }
+      }
+    },
+    {
+      "name": "a colour written before overrides existed reads as one with none",
+      "driving": {
+        "home": {
+          "type": "Color",
+          "value": {
+            "r": 0.5,
+            "g": 0.25,
+            "b": 0.0
+          }
+        }
+      },
+      "at": 0,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 0.5,
+          "g": 0.25,
+          "b": 0.0,
+          "overrides": {}
+        }
+      }
+    },
+    {
+      "name": "a fade between two colours moves the pinned emitter with the rest",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Color",
+            "value": {
+              "r": 0.0,
+              "g": 0.0,
+              "b": 0.0,
+              "overrides": {
+                "White": 0.0
+              }
+            }
+          },
+          "to": {
+            "type": "Color",
+            "value": {
+              "r": 1.0,
+              "g": 1.0,
+              "b": 1.0,
+              "overrides": {
+                "White": 1.0
+              }
+            }
+          },
+          "t0": 0,
+          "duration_ms": 1000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 500,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 0.5,
+          "g": 0.5,
+          "b": 0.5,
+          "overrides": {
+            "White": 0.5
+          }
+        }
+      }
+    },
+    {
+      "name": "an emitter only the destination pins arrives with the fade rather than at the start",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Color",
+            "value": {
+              "r": 1.0,
+              "g": 1.0,
+              "b": 1.0
+            }
+          },
+          "to": {
+            "type": "Color",
+            "value": {
+              "r": 1.0,
+              "g": 1.0,
+              "b": 1.0,
+              "overrides": {
+                "White": 0.0
+              }
+            }
+          },
+          "t0": 0,
+          "duration_ms": 1000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 500,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 1.0,
+          "g": 1.0,
+          "b": 1.0,
+          "overrides": {}
+        }
+      }
+    },
+    {
+      "name": "and is there once it lands",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Color",
+            "value": {
+              "r": 1.0,
+              "g": 1.0,
+              "b": 1.0
+            }
+          },
+          "to": {
+            "type": "Color",
+            "value": {
+              "r": 1.0,
+              "g": 1.0,
+              "b": 1.0,
+              "overrides": {
+                "White": 0.0
+              }
+            }
+          },
+          "t0": 0,
+          "duration_ms": 1000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 1.0,
+          "g": 1.0,
+          "b": 1.0,
+          "overrides": {
+            "White": 0.0
+          }
+        }
+      }
+    },
+    {
+      "name": "an emitter only the source pinned lets go when the fade lands",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Color",
+            "value": {
+              "r": 1.0,
+              "g": 1.0,
+              "b": 1.0,
+              "overrides": {
+                "White": 0.25
+              }
+            }
+          },
+          "to": {
+            "type": "Color",
+            "value": {
+              "r": 0.0,
+              "g": 0.0,
+              "b": 0.0
+            }
+          },
+          "t0": 0,
+          "duration_ms": 1000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 0.0,
+          "g": 0.0,
+          "b": 0.0,
+          "overrides": {}
+        }
       }
     }
   ]

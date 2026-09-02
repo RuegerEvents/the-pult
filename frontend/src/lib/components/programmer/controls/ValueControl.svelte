@@ -29,7 +29,8 @@
 {#if value.type === 'Color'}
 	<ColorControl
 		value={value.value}
-		oninput={(rgb) => oninput({ type: 'Color', value: rgb })}
+		oninput={(rgb) =>
+			oninput({ type: 'Color', value: { ...rgb, overrides: value.value.overrides } })}
 	/>
 {:else if value.type === 'Float'}
 	<Fader

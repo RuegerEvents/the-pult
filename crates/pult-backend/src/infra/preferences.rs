@@ -72,6 +72,24 @@ pub struct Preferences {
     /// a preference but a disagreement the audience can watch. This is what *this*
     /// desk starts a new show with, and after that it stops mattering.
     pub home_fade_ms: u32,
+    /// What to log in to the GDTF Share as.
+    ///
+    /// A station preference and never show data, for the reason a plugin credential is
+    /// one: a showfile travels, and a password in it travels with it. `None` until
+    /// somebody types one, and the Fixture Types panel says where to.
+    ///
+    /// The password is written here and **never read back out over HTTP** — `GET
+    /// /api/preferences` answers with the user and whether a password is set, which is
+    /// everything a settings form needs and nothing an onlooker can use.
+    #[serde(default)]
+    pub gdtf_share: Option<ShareCredentials>,
+}
+
+/// A login for the GDTF Share.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShareCredentials {
+    pub user: String,
+    pub password: String,
 }
 
 impl Default for Preferences {
@@ -82,6 +100,7 @@ impl Default for Preferences {
             home_fade_ms: 0,
             oplog_retention_minutes: OPLOG_RETENTION_MINUTES_DEFAULT,
             plugins: std::collections::BTreeMap::new(),
+            gdtf_share: None,
         }
     }
 }

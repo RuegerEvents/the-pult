@@ -1,0 +1,132 @@
+{
+  "about": [
+    "A colour, a fixture's emitters, and the level each of them comes to.",
+    "",
+    "Read by two test suites — crates/pult-render-wasm/tests/corpus.rs natively, and",
+    "frontend/src/lib/evaluator.test.ts against the wasm build of the same crate — for",
+    "the same reason testdata/driven-values.json is: there is one implementation of",
+    "the mixing, compiled twice, and what has to be guarded is that the two",
+    "compilations agree. A page showing a white die at half while the lamp is at full",
+    "is exactly the failure this catches.",
+    "",
+    "`emitters` is the fixture's list in the order the mode drives them; `expect` is",
+    "one level per emitter, in that same order."
+  ],
+  "cases": [
+    {
+      "name": "a plain RGB par passes its components straight through",
+      "color": { "r": 1.0, "g": 0.5, "b": 0.0 },
+      "emitters": [
+        { "name": "Red", "rgb": [1.0, 0.0, 0.0] },
+        { "name": "Green", "rgb": [0.0, 1.0, 0.0] },
+        { "name": "Blue", "rgb": [0.0, 0.0, 1.0] }
+      ],
+      "expect": [1.0, 0.5, 0.0]
+    },
+    {
+      "name": "an RGBW head lights its white die with the neutral part of the colour",
+      "color": { "r": 1.0, "g": 0.4, "b": 0.4 },
+      "emitters": [
+        { "name": "Red", "rgb": [1.0, 0.0, 0.0] },
+        { "name": "Green", "rgb": [0.0, 1.0, 0.0] },
+        { "name": "Blue", "rgb": [0.0, 0.0, 1.0] },
+        { "name": "White", "rgb": [1.0, 1.0, 1.0] }
+      ],
+      "expect": [1.0, 0.4, 0.4, 0.4]
+    },
+    {
+      "name": "red is not white",
+      "color": { "r": 1.0, "g": 0.0, "b": 0.0 },
+      "emitters": [
+        { "name": "Red", "rgb": [1.0, 0.0, 0.0] },
+        { "name": "Green", "rgb": [0.0, 1.0, 0.0] },
+        { "name": "Blue", "rgb": [0.0, 0.0, 1.0] },
+        { "name": "White", "rgb": [1.0, 1.0, 1.0] }
+      ],
+      "expect": [1.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "name": "an amber die takes as much of itself as fits under the colour",
+      "color": { "r": 1.0, "g": 0.5, "b": 0.0 },
+      "emitters": [{ "name": "Amber", "rgb": [1.0, 0.5, 0.0] }],
+      "expect": [1.0]
+    },
+    {
+      "name": "and nothing at all on a colour it is not in",
+      "color": { "r": 0.0, "g": 1.0, "b": 0.0 },
+      "emitters": [{ "name": "Amber", "rgb": [1.0, 0.5, 0.0] }],
+      "expect": [0.0]
+    },
+    {
+      "name": "a lime die on a yellow-green",
+      "color": { "r": 0.75, "g": 1.0, "b": 0.0 },
+      "emitters": [{ "name": "Lime", "rgb": [0.75, 1.0, 0.0] }],
+      "expect": [1.0]
+    },
+    {
+      "name": "a CMY system is one minus the component each flag removes",
+      "color": { "r": 1.0, "g": 0.0, "b": 0.0 },
+      "emitters": [
+        { "name": "Cyan", "rgb": [0.0, 1.0, 1.0], "subtractive": true },
+        { "name": "Magenta", "rgb": [1.0, 0.0, 1.0], "subtractive": true },
+        { "name": "Yellow", "rgb": [1.0, 1.0, 0.0], "subtractive": true }
+      ],
+      "expect": [0.0, 1.0, 1.0]
+    },
+    {
+      "name": "and open white pulls every flag out of the beam",
+      "color": { "r": 1.0, "g": 1.0, "b": 1.0 },
+      "emitters": [
+        { "name": "Cyan", "rgb": [0.0, 1.0, 1.0], "subtractive": true },
+        { "name": "Magenta", "rgb": [1.0, 0.0, 1.0], "subtractive": true },
+        { "name": "Yellow", "rgb": [1.0, 1.0, 0.0], "subtractive": true }
+      ],
+      "expect": [0.0, 0.0, 0.0]
+    },
+    {
+      "name": "an override wins over anything derived",
+      "color": { "r": 1.0, "g": 1.0, "b": 1.0, "overrides": { "White": 0.0 } },
+      "emitters": [
+        { "name": "Red", "rgb": [1.0, 0.0, 0.0] },
+        { "name": "Green", "rgb": [0.0, 1.0, 0.0] },
+        { "name": "Blue", "rgb": [0.0, 0.0, 1.0] },
+        { "name": "White", "rgb": [1.0, 1.0, 1.0] }
+      ],
+      "expect": [1.0, 1.0, 1.0, 0.0]
+    },
+    {
+      "name": "an override on an emitter the fixture does not have changes nothing",
+      "color": { "r": 0.5, "g": 0.5, "b": 0.5, "overrides": { "UV": 1.0 } },
+      "emitters": [
+        { "name": "Red", "rgb": [1.0, 0.0, 0.0] },
+        { "name": "Green", "rgb": [0.0, 1.0, 0.0] },
+        { "name": "Blue", "rgb": [0.0, 0.0, 1.0] }
+      ],
+      "expect": [0.5, 0.5, 0.5]
+    },
+    {
+      "name": "an emitter the file never measured, whose name is one we know",
+      "color": { "r": 0.5, "g": 0.5, "b": 0.5 },
+      "emitters": [{ "name": "White" }],
+      "expect": [0.5]
+    },
+    {
+      "name": "an emitter the file never measured, whose name settles nothing, stays dark",
+      "color": { "r": 1.0, "g": 1.0, "b": 1.0 },
+      "emitters": [{ "name": "Diode 4" }],
+      "expect": [0.0]
+    },
+    {
+      "name": "a measured red that is not exactly red still passes through",
+      "color": { "r": 0.7, "g": 0.0, "b": 0.0 },
+      "emitters": [{ "name": "Red", "rgb": [1.0, 0.02, 0.01] }],
+      "expect": [0.7]
+    },
+    {
+      "name": "a fixture with no emitters at all has nothing to say",
+      "color": { "r": 1.0, "g": 1.0, "b": 1.0 },
+      "emitters": [],
+      "expect": []
+    }
+  ]
+}

@@ -53,7 +53,7 @@ async fn a_showfile_written_before_fixture_addresses_still_opens() {
     assert_eq!(fixtures[0].id, id);
     assert_eq!(
         fixtures[0].address,
-        FixtureAddress::Dmx { universe: 1, address: 7 },
+        FixtureAddress::dmx(1, 7),
         "the old universe/address pair has to survive as an address",
     );
 }
@@ -67,11 +67,11 @@ async fn an_upgraded_showfile_can_be_written_to() {
     // The old columns were NOT NULL and are no longer written, so an INSERT that
     // names only the current columns fails the constraint unless they are gone.
     let mut fixture: Fixture = db::get_all(&pool).await.unwrap().pop().unwrap();
-    fixture.address = FixtureAddress::Dmx { universe: 3, address: 21 };
+    fixture.address = FixtureAddress::dmx(3, 21);
     db::upsert(&pool, &fixture).await.unwrap();
 
     let reloaded: Vec<Fixture> = db::get_all(&pool).await.unwrap();
-    assert_eq!(reloaded[0].address, FixtureAddress::Dmx { universe: 3, address: 21 });
+    assert_eq!(reloaded[0].address, FixtureAddress::dmx(3, 21));
 }
 
 #[tokio::test]
@@ -83,7 +83,107 @@ async fn opening_the_same_showfile_twice_upgrades_it_once() {
     super::migrate_for_test(&pool).await.unwrap();
 
     let fixtures: Vec<Fixture> = db::get_all(&pool).await.unwrap();
-    assert_eq!(fixtures[0].address, FixtureAddress::Dmx { universe: 1, address: 7 });
+    assert_eq!(fixtures[0].address, FixtureAddress::dmx(1, 7));
+}
+
+// ── Fixture types before GDTF ─────────────────────────────────────────────────
+
+/// `fixture_types` as it was written before a type had modes, physical data, a
+/// geometry tree or a source.
+///
+/// Worth a test of its own rather than trusting the additive pass, because the SQLite
+/// read path does not go through the entity's `Deserialize`: `from_columns` reads each
+/// column separately and unwraps, so a non-`Option` field whose column is NULL panics
+/// while a show is being opened. This is what proves the upgrade rows are doing the
+/// work they exist for.
+async fn write_a_showfile_with_a_pre_gdtf_type(pool: &SqlitePool) -> uuid::Uuid {
+    sqlx::query(
+        "CREATE TABLE fixture_types (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            manufacturer TEXT NOT NULL,
+            channel_count INTEGER NOT NULL,
+            parameters TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO fixture_types (id, name, manufacturer, channel_count, parameters) \
+         VALUES (?1, ?2, ?3, 4, ?4)",
+    )
+    .bind(id.to_string())
+    .bind("RGB Par")
+    .bind("Acme")
+    // Written with `dmx_channel`, which is the shape from before bindings existed.
+    .bind(
+        r#"[{"kind":"Intensity","dmx_channel":1,"default_value":{"type":"Float","value":0.0}},
+            {"kind":"ColorRgb","dmx_channel":2,"default_value":{"type":"Color","value":{"r":0.0,"g":0.0,"b":0.0}}}]"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn a_fixture_type_written_before_gdtf_still_opens() {
+    use pult_schema::types::fixture::{FixtureType, FixtureTypeSource};
+
+    let pool = blank_pool().await;
+    let id = write_a_showfile_with_a_pre_gdtf_type(&pool).await;
+
+    super::migrate_for_test(&pool).await.unwrap();
+
+    let types: Vec<FixtureType> = db::get_all(&pool).await.unwrap();
+    assert_eq!(types.len(), 1);
+    let fixture_type = &types[0];
+    assert_eq!(fixture_type.id, id);
+    assert_eq!(fixture_type.source, FixtureTypeSource::Manual);
+    assert!(fixture_type.dmx_modes.is_empty(), "it never named a mode");
+    assert!(fixture_type.short_name.is_empty());
+    assert_eq!(fixture_type.physical.weight_kg, None);
+}
+
+#[tokio::test]
+async fn a_type_that_never_named_a_mode_is_still_laid_out_where_it_always_was() {
+    use pult_schema::types::fixture::FixtureType;
+
+    let pool = blank_pool().await;
+    write_a_showfile_with_a_pre_gdtf_type(&pool).await;
+    super::migrate_for_test(&pool).await.unwrap();
+
+    let types: Vec<FixtureType> = db::get_all(&pool).await.unwrap();
+    let mode = types[0].mode("Default");
+
+    // The intensity where its old `dmx_channel` put it, and the colour across the
+    // three that followed its own — which is exactly what the connector did before
+    // modes existed.
+    let offsets: Vec<Vec<u16>> = mode.channels.iter().map(|c| c.offsets.clone()).collect();
+    assert_eq!(offsets, vec![vec![1], vec![2], vec![3], vec![4]]);
+    let emitters: Vec<Option<&str>> =
+        mode.channels.iter().map(|c| c.emitter.as_deref()).collect();
+    assert_eq!(emitters, vec![None, Some("Red"), Some("Green"), Some("Blue")]);
+    assert_eq!(mode.breaks, vec![4]);
+}
+
+#[tokio::test]
+async fn an_upgraded_fixture_type_can_be_written_back() {
+    use pult_schema::types::fixture::FixtureType;
+
+    let pool = blank_pool().await;
+    write_a_showfile_with_a_pre_gdtf_type(&pool).await;
+    super::migrate_for_test(&pool).await.unwrap();
+
+    let mut fixture_type: FixtureType = db::get_all(&pool).await.unwrap().pop().unwrap();
+    fixture_type.short_name = "RGBP".into();
+    db::upsert(&pool, &fixture_type).await.unwrap();
+
+    let reloaded: Vec<FixtureType> = db::get_all(&pool).await.unwrap();
+    assert_eq!(reloaded[0].short_name, "RGBP");
 }
 
 // ── Triggers become flows ─────────────────────────────────────────────────────

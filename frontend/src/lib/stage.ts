@@ -208,15 +208,39 @@ export function fixtureTint(fixture: Fixture, showing: Showing): string {
 }
 
 /**
- * How far a head swings and nods, end to end, in degrees.
+ * How far a head swings and nods, end to end, in degrees, for a type that does not
+ * say.
  *
- * A stand-in for ranges `FixtureType` does not carry yet: right about which way a
- * head is moving, wrong in detail for any particular one, and replaced by real
- * per-type ranges the moment there are any. Named rather than written twice, so the
- * two views and the inverse below cannot drift apart about it.
+ * The fallback and no longer the answer: a fixture imported from a GDTF file carries
+ * the travel its manufacturer measured, and {@link travelOf} reads that. These two
+ * are what is left for a type somebody typed into the editor and for a light whose
+ * file never said — right about which way a head is moving, wrong in detail for any
+ * particular one, and named rather than written twice so the two views and the
+ * inverse below cannot drift apart about them.
  */
 export const PAN_TRAVEL = 540;
 export const TILT_TRAVEL = 270;
+
+/**
+ * How far a parameter of this type actually travels, in degrees.
+ *
+ * The type's own `physical` range where it has one — which is the whole point of
+ * importing a fixture definition: a head with 540° of pan and one with 630° stop
+ * pointing at the same place for the same number.
+ *
+ * A range in any unit but degrees is ignored rather than trusted: this function
+ * answers an angle, and a channel measured in seconds is not one.
+ */
+export function travelOf(
+	type: FixtureType | undefined,
+	kind: 'Pan' | 'Tilt'
+): number {
+	const fallback = kind === 'Pan' ? PAN_TRAVEL : TILT_TRAVEL;
+	const range = type?.parameters.find((p) => p.kind === kind)?.physical;
+	if (!range || range.unit !== 'Degrees') return fallback;
+	const travel = Math.abs(range.to - range.from);
+	return travel > 0 ? travel : fallback;
+}
 
 /** The direction a fixture points with pan and tilt both centred. */
 function restDirection(fixture: Fixture): Vec3 {
@@ -254,7 +278,7 @@ export function panAngle(
 	if (!hasParameter(type, 'Pan')) return null;
 	const pan = asNumber(showing.value(fixture.id, 'Pan') ?? undefined);
 	if (pan === null) return null;
-	return bearingOf(restDirection(fixture)) + (pan - 0.5) * PAN_TRAVEL;
+	return bearingOf(restDirection(fixture)) + (pan - 0.5) * travelOf(type, 'Pan');
 }
 
 /**
@@ -271,7 +295,7 @@ export function tiltAngle(
 	if (!hasParameter(type, 'Tilt')) return null;
 	const tilt = asNumber(showing.value(fixture.id, 'Tilt') ?? undefined);
 	if (tilt === null) return null;
-	return elevationOf(restDirection(fixture)) + (tilt - 0.5) * TILT_TRAVEL;
+	return elevationOf(restDirection(fixture)) + (tilt - 0.5) * travelOf(type, 'Tilt');
 }
 
 /**
@@ -296,10 +320,10 @@ export function aimAt(
 	const rest = restDirection(fixture);
 
 	const pan = hasParameter(type, 'Pan')
-		? clamp(0.5 + wrapDegrees(bearingOf(towards) - bearingOf(rest)) / PAN_TRAVEL)
+		? clamp(0.5 + wrapDegrees(bearingOf(towards) - bearingOf(rest)) / travelOf(type, 'Pan'))
 		: null;
 	const tilt = hasParameter(type, 'Tilt')
-		? clamp(0.5 + (elevationOf(towards) - elevationOf(rest)) / TILT_TRAVEL)
+		? clamp(0.5 + (elevationOf(towards) - elevationOf(rest)) / travelOf(type, 'Tilt'))
 		: null;
 	return { pan, tilt };
 }

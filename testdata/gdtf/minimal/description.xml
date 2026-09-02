@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<GDTF DataVersion="1.2">
+    <FixtureType Name="Test Dimmer" ShortName="TDIM" LongName="Test Dimmer" Manufacturer="Pult" Description="One channel, so a reader has something honest to fail on." FixtureTypeID="1B1E4C3A-0000-4000-8000-000000000001" CanHaveChildren="No">
+        <AttributeDefinitions>
+            <FeatureGroups>
+                <FeatureGroup Name="Dimmer" Pretty="Dimmer">
+                    <Feature Name="Dimmer"/>
+                </FeatureGroup>
+            </FeatureGroups>
+            <Attributes>
+                <Attribute Name="Dimmer" Pretty="Dim" Feature="Dimmer.Dimmer" PhysicalUnit="Percent"/>
+            </Attributes>
+        </AttributeDefinitions>
+        <Models>
+            <Model Name="Body" Length="0.2" Width="0.2" Height="0.3" PrimitiveType="Cube"/>
+        </Models>
+        <Geometries>
+            <Geometry Name="Body" Model="Body" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}">
+                <Beam Name="Beam" Model="Body" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,150,1}" LuminousFlux="1000" ColorTemperature="3200" BeamAngle="25" FieldAngle="30" BeamRadius="0.05" BeamType="Wash"/>
+            </Geometry>
+        </Geometries>
+        <DMXModes>
+            <DMXMode Name="Default" Geometry="Body">
+                <DMXChannels>
+                    <DMXChannel DMXBreak="1" Offset="1" Geometry="Body">
+                        <LogicalChannel Attribute="Dimmer">
+                            <ChannelFunction Name="Dimmer" Attribute="Dimmer" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                </DMXChannels>
+            </DMXMode>
+        </DMXModes>
+        <Revisions>
+            <Revision Text="First" Date="2026-09-02T00:00:00" ModifiedBy="the-pult"/>
+        </Revisions>
+    </FixtureType>
+</GDTF>

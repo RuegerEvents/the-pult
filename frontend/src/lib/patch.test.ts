@@ -1,16 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import type { Fixture, ParameterValue } from './generated/index.js';
+import type {
+	DmxMode,
+	Fixture,
+	FixtureAddress,
+	FixtureType,
+	ParameterValue
+} from './generated/index.js';
 import {
 	addressLabel,
 	channelRange,
 	clashingFixtures,
+	DEFAULT_MODE,
 	defaultDirectionFor,
 	defaultValueFor,
+	dmxAddress,
+	dmxBreaks,
+	droppedByMode,
+	fixtureMode,
+	footprint,
 	formatValue,
 	isDmx,
 	kindFromLabel,
 	kindOption,
 	kindLabel,
+	modeHas,
+	modeOf,
 	nextFreeAddress,
 	parameterKey,
 	parameterKindLabel,
@@ -22,7 +36,7 @@ function aFixture(partial: Partial<Fixture> = {}): Fixture {
 		id: crypto.randomUUID(),
 		name: 'Spot',
 		fixture_type_id: 'type',
-		address: { Dmx: { universe: 1, address: 1 } },
+		address: { Dmx: { mode: DEFAULT_MODE, breaks: [{ universe: 1, address: 1 }] } },
 		position: null,
 		sensed_values: {},
 		live_effects: {},
@@ -33,7 +47,10 @@ function aFixture(partial: Partial<Fixture> = {}): Fixture {
 }
 
 const atDmx = (universe: number, address: number, partial: Partial<Fixture> = {}) =>
-	aFixture({ address: { Dmx: { universe, address } }, ...partial });
+	aFixture({
+		address: { Dmx: { mode: DEFAULT_MODE, breaks: [{ universe, address }] } },
+		...partial
+	});
 
 const onNode = (serial: string, universe: number | null = null) =>
 	aFixture({ address: { OpenHaunt: { serial, universe } } });
@@ -126,7 +143,7 @@ describe('picking a kind', () => {
 
 describe('defaults for a kind', () => {
 	it('gives colour a colour and intensity a number', () => {
-		expect(defaultValueFor('ColorRgb')).toEqual({ type: 'Color', value: { r: 0, g: 0, b: 0 } });
+		expect(defaultValueFor('ColorRgb')).toEqual({ type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } });
 		expect(defaultValueFor('Intensity')).toEqual({ type: 'Float', value: 0 });
 		expect(defaultValueFor('GoboIndex')).toEqual({ type: 'Int', value: 0 });
 	});
@@ -146,11 +163,11 @@ describe('formatting a live value', () => {
 	});
 
 	it('shows a colour as hex', () => {
-		expect(formatValue({ type: 'Color', value: { r: 1, g: 0.5, b: 0 } })).toBe('#ff8000');
+		expect(formatValue({ type: 'Color', value: { r: 1, g: 0.5, b: 0, overrides: {} } })).toBe('#ff8000');
 	});
 
 	it('clamps a colour rather than producing nonsense hex', () => {
-		expect(formatValue({ type: 'Color', value: { r: 4, g: -1, b: 0 } })).toBe('#ff0000');
+		expect(formatValue({ type: 'Color', value: { r: 4, g: -1, b: 0, overrides: {} } })).toBe('#ff0000');
 	});
 
 	it('shows booleans and integers plainly', () => {
@@ -237,8 +254,8 @@ describe('address clashes', () => {
 		const clashing = new Set<string>();
 		for (const a of fixtures) {
 			for (const b of fixtures) {
-				const da = 'Dmx' in a.address ? a.address.Dmx : null;
-				const db = 'Dmx' in b.address ? b.address.Dmx : null;
+				const da = dmxAddress(a.address);
+				const db = dmxAddress(b.address);
 				if (!da || !db || a.id === b.id || da.universe !== db.universe) continue;
 				const aEnd = da.address + Math.max(span(a), 1) - 1;
 				const bEnd = db.address + Math.max(span(b), 1) - 1;
@@ -305,5 +322,117 @@ describe('the next free address', () => {
 
 	it('is not moved by fixtures that are not on DMX at all', () => {
 		expect(nextFreeAddress([onNode('1a2b3c', 1), atDmx(1, 1)], 1, span)).toBe(5);
+	});
+});
+
+describe('the mode a fixture is patched in', () => {
+	const aMode = (name: string, breaks: number[], keys: string[]): DmxMode => ({
+		name,
+		breaks,
+		channels: keys.map((parameter_key, at) => ({
+			parameter_key,
+			break_index: 0,
+			offsets: [at + 1],
+			default: 0,
+			functions: [],
+			emitter: null
+		}))
+	});
+
+	const aType = (modes: DmxMode[], channelCount = 0): FixtureType => ({
+		id: 'a-type',
+		name: 'Head',
+		manufacturer: 'Nobody',
+		short_name: '',
+		long_name: '',
+		description: '',
+		channel_count: channelCount,
+		parameters: [],
+		dmx_modes: modes,
+		physical: {
+			weight_kg: null,
+			power_w: null,
+			dimensions_m: null,
+			connectors: [],
+			leg_height_m: null,
+			operating_temperature: null,
+			beam_angle_deg: null
+		},
+		geometry: [],
+		source: 'Manual'
+	});
+
+	const inMode = (name: string): FixtureAddress => ({
+		Dmx: { mode: name, breaks: [{ universe: 1, address: 1 }] }
+	});
+
+	it('is the one it names', () => {
+		const type = aType([aMode('Standard', [10], ['Pan']), aMode('Basic', [4], ['Intensity'])]);
+		expect(modeOf(type, inMode('Basic'))?.name).toBe('Basic');
+	});
+
+	it('falls back to the first when the file has been revised out from under it', () => {
+		const type = aType([aMode('Standard', [10], ['Pan'])]);
+		expect(
+			modeOf(type, inMode('Extended'))?.name,
+			'going to the wrong mode beats going dark',
+		).toBe('Standard');
+	});
+
+	it('is nothing at all for a type that names none, which still has one', () => {
+		const type = aType([], 4);
+		expect(modeOf(type, inMode(DEFAULT_MODE))).toBeNull();
+		expect(
+			footprint(type, inMode(DEFAULT_MODE)),
+			'and its footprint is what the patch panel always showed',
+		).toEqual([4]);
+	});
+
+	it('reports a footprint per break', () => {
+		const type = aType([aMode('Split', [10, 2], ['Pan'])]);
+		expect(footprint(type, inMode('Split'))).toEqual([10, 2]);
+	});
+
+	it('says which parameters it carries, and a type with no modes carries everything', () => {
+		const mode = aMode('Basic', [2], ['Intensity', 'ColorRgb']);
+		expect(modeHas(mode, 'Intensity')).toBe(true);
+		expect(modeHas(mode, 'Zoom')).toBe(false);
+		expect(modeHas(null, 'Zoom'), 'a type with no modes places everything').toBe(true);
+	});
+
+	it('names what a change would stop sending, before it is made', () => {
+		const basic = aMode('Basic', [2], ['Intensity', 'ColorRgb']);
+		expect(droppedByMode(basic, ['Intensity', 'Zoom', 'Gobo:1'])).toEqual(['Zoom', 'Gobo:1']);
+		expect(droppedByMode(basic, ['Intensity'])).toEqual([]);
+	});
+});
+
+describe('an address with more than one break', () => {
+	const twoBreaks: FixtureAddress = {
+		Dmx: {
+			mode: 'Split',
+			breaks: [
+				{ universe: 1, address: 5 },
+				{ universe: 7, address: 100 }
+			]
+		}
+	};
+
+	it('answers the first for anything that means "where is it patched"', () => {
+		expect(dmxAddress(twoBreaks)).toEqual({ universe: 1, address: 5 });
+	});
+
+	it('hands back every one to anything that has to see them all', () => {
+		expect(dmxBreaks(twoBreaks)).toHaveLength(2);
+		expect(dmxBreaks(twoBreaks)[1]).toEqual({ universe: 7, address: 100 });
+	});
+
+	it('reads as being in two places, because it is', () => {
+		expect(addressLabel(aFixture({ address: twoBreaks }))).toBe('1 / 5 + 7 / 100');
+	});
+
+	it('is empty for a fixture on a node', () => {
+		expect(dmxBreaks(onNode('1a2b3c').address)).toEqual([]);
+		expect(fixtureMode(onNode('1a2b3c').address)).toBeNull();
 	});
 });

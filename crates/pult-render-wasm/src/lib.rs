@@ -27,7 +27,7 @@ use pult_render::{
     value::ParameterValue,
     Driving,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 /// What is acting on one parameter, as the page describes it.
@@ -92,7 +92,7 @@ fn pack(value: Option<ParameterValue>, out: &mut [f32]) {
             out[0] = BOOL;
             out[1] = if on { 1.0 } else { 0.0 };
         }
-        Some(ParameterValue::Color { r, g, b }) => {
+        Some(ParameterValue::Color { r, g, b, .. }) => {
             out[0] = COLOR;
             out[1] = r;
             out[2] = g;
@@ -100,6 +100,31 @@ fn pack(value: Option<ParameterValue>, out: &mut [f32]) {
         }
         Some(ParameterValue::Text(_)) => out[0] = TEXT,
     }
+}
+
+/// What each of a fixture's emitters should be at, for one colour.
+///
+/// A free function rather than a method, because the question is about a *fixture* and
+/// a colour somebody is dragging, not about anything the show is driving: the colour
+/// control asks it as the picker moves, before any of it has been written.
+///
+/// The same [`pult_render::color::mix`] the station's DMX connector calls, so the
+/// per-emitter strip in the programmer shows the levels the lamps are actually at.
+#[wasm_bindgen]
+pub fn emitter_levels(color: JsValue, emitters: JsValue) -> Result<JsValue, JsValue> {
+    let color: pult_render::Color = serde_wasm_bindgen::from_value(color)?;
+    let emitters: Vec<pult_render::EmitterSpec> = serde_wasm_bindgen::from_value(emitters)?;
+    Ok(pult_render::mix(&color, &emitters).serialize(&plain_javascript())?)
+}
+
+/// A serializer that answers with plain objects and arrays.
+///
+/// `serde_wasm_bindgen`'s default turns a map into a JS `Map`, which is right for a
+/// round trip and wrong for a value a Svelte component reads: everything else crossing
+/// this boundary is JSON-shaped, and one `Map` among them is a `.get()` where every
+/// other line is a property access.
+fn plain_javascript() -> serde_wasm_bindgen::Serializer {
+    serde_wasm_bindgen::Serializer::json_compatible()
 }
 
 // ── The evaluator ─────────────────────────────────────────────────────────────
@@ -188,6 +213,21 @@ impl Evaluator {
         self.packed.clone()
     }
 
+    /// One parameter's per-emitter overrides, for the colour control alone.
+    ///
+    /// Separate from [`Evaluator::evaluate`] for the reason [`Evaluator::text`] is: the
+    /// packed answer is a fixed four floats, a map of names to levels does not fit in
+    /// it, and widening the stride would make every frame of every rig pay for a panel
+    /// that is open on one screen. The colour control asks for this; nothing else does.
+    pub fn color_overrides(&self, key: &str, now_ms: f64) -> Result<JsValue, JsValue> {
+        let now = now_ms.max(0.0) as u64;
+        let overrides = match self.driving.get(key).and_then(|d| pult_render::value_at(&d.driving(), now)) {
+            Some(ParameterValue::Color { overrides, .. }) => overrides,
+            _ => Default::default(),
+        };
+        Ok(overrides.serialize(&plain_javascript())?)
+    }
+
     /// One parameter's text, for the few that have one.
     ///
     /// Separate because a line of text does not fit in four floats, and putting a
@@ -226,7 +266,7 @@ mod tests {
         pack(Some(ParameterValue::Float(0.25)), &mut out);
         assert_eq!(out, [FLOAT, 0.25, 0.0, 0.0]);
 
-        pack(Some(ParameterValue::Color { r: 1.0, g: 0.5, b: 0.0 }), &mut out);
+        pack(Some(ParameterValue::rgb(1.0, 0.5, 0.0)), &mut out);
         assert_eq!(out, [COLOR, 1.0, 0.5, 0.0]);
 
         pack(Some(ParameterValue::Bool(true)), &mut out);

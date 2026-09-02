@@ -5,6 +5,7 @@ members = [
     "crates/pult-render",
     "crates/pult-render-wasm",
     "crates/pult-schema",
+    "crates/pult-gdtf",
     "crates/pult-backend",
     "crates/pult-gui",
     "tools/pult-codegen",
@@ -23,6 +24,7 @@ default-members = [
     # suite is a guard nobody runs.
     "crates/pult-render-wasm",
     "crates/pult-schema",
+    "crates/pult-gdtf",
     "crates/pult-backend",
     "tools/pult-codegen",
     "tools/openhaunt-node-sim",
@@ -57,6 +59,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # TypeScript gen
 pult-render = { path = "crates/pult-render" }
+pult-gdtf = { path = "crates/pult-gdtf" }
 ts-rs = { version = "10", features = ["uuid-impl", "chrono-impl", "serde-json-impl", "indexmap-impl"] }
 
 # Proc macro infra (only in pult-macros)
@@ -86,13 +89,19 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 mdns-sd = "0.13"
 
 # HTTP client, for talking to OpenHaunt nodes
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "cookies"] }
 sha2 = "0.10"
 hex = "0.4"
 
 # Plugin bundles. `deflate` and nothing else: a bundle is a manifest, a component
 # and some scripts, and every other codec is another decoder to trust.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# GDTF and MVR are both zipped XML. `serialize` for the serde derives the object
+# models are written with, `overlapped-lists` because the GDTF geometry tree
+# interleaves child kinds and serde's sequence handling has to look past a foreign
+# element to keep filling a list.
+quick-xml = { version = "0.42", features = ["serialize", "overlapped-lists"] }
 
 # MQTT: an embedded broker the leader runs, and a client to talk to it.
 # No TLS on either: nodes are on the show's own network, and pulling in a second

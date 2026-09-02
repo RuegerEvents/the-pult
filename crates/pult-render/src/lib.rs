@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod color;
 pub mod driving;
 pub mod effect;
 pub mod value;
@@ -23,4 +24,5 @@ pub use effect::{
     fade_value_at, step_value, Curve, Direction, Easing, EffectSource, RunningEffect, RunningFade,
     Shape, Step,
 };
+pub use color::{level_from, level_of, mix, Color, EmitterSpec};
 pub use value::{interpolate, ParameterValue};

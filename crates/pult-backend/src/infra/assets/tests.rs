@@ -167,8 +167,13 @@ async fn each_kind_of_asset_has_its_own_ceiling() {
     // both would either refuse a reasonable component or accept a photograph.
     let plan_ceiling = ceiling_for("image/png").expect("a plan is storable");
     let bundle_ceiling = ceiling_for(BUNDLE_MIME).expect("a bundle is storable");
+    let gdtf_ceiling = ceiling_for(GDTF_MIME).expect("a fixture definition is storable");
     assert!(bundle_ceiling > plan_ceiling, "wasm is bulkier than a drawing");
-    assert_eq!(MAX_BYTES, bundle_ceiling, "the body limit is the widest of them");
+    assert!(
+        gdtf_ceiling > bundle_ceiling,
+        "a moving head's meshes and gobo images are bulkier than either",
+    );
+    assert_eq!(MAX_BYTES, gdtf_ceiling, "the body limit is the widest of them");
 
     let too_big = vec![0u8; plan_ceiling + 1];
     let err = put(&pool, "image/png", &too_big).await.unwrap_err().to_string();

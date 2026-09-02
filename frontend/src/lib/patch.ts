@@ -1,6 +1,9 @@
 import type {
+	DmxBreak,
+	DmxMode,
 	Fixture,
 	FixtureAddress,
+	FixtureType,
 	ParameterBinding,
 	ParameterDirection,
 	ParameterKind,
@@ -29,6 +32,17 @@ export const PARAMETER_KINDS = [
 	'Pan',
 	'Tilt',
 	'GoboIndex',
+	'Zoom',
+	'Focus',
+	'Iris',
+	'Shutter',
+	'Strobe',
+	'ColorTemperature',
+	'Gobo',
+	'GoboRotation',
+	'ColorWheel',
+	'Prism',
+	'Frost',
 	'Switch',
 	'Contact',
 	'Temperature',
@@ -93,6 +107,11 @@ export function parameterKindLabel(kind: ParameterKind): string {
 	if ('Raw' in kind) return `Raw:${kind.Raw}`;
 	if ('Switch' in kind) return `Switch:${kind.Switch}`;
 	if ('Named' in kind) return `Named:${kind.Named}`;
+	if ('Gobo' in kind) return `Gobo:${kind.Gobo}`;
+	if ('GoboRotation' in kind) return `GoboRotation:${kind.GoboRotation}`;
+	if ('ColorWheel' in kind) return `ColorWheel:${kind.ColorWheel}`;
+	if ('Prism' in kind) return `Prism:${kind.Prism}`;
+	if ('Frost' in kind) return `Frost:${kind.Frost}`;
 	return `Contact:${kind.Contact}`;
 }
 
@@ -109,8 +128,15 @@ export function parameterKey(kind: ParameterKind): string {
  * on the parameter. A level is the least surprising thing to fall back to.
  */
 export function defaultValueFor(kind: ParameterKind): ParameterValue {
-	if (kind === 'ColorRgb') return { type: 'Color', value: { r: 0, g: 0, b: 0 } };
+	if (kind === 'ColorRgb') return { type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } };
 	if (kind === 'GoboIndex') return { type: 'Int', value: 0 };
+	if (
+		typeof kind === 'object' &&
+		('Gobo' in kind || 'ColorWheel' in kind || 'Prism' in kind || 'Frost' in kind)
+	) {
+		// A wheel picks a slot by number, not a level.
+		return { type: 'Int', value: 0 };
+	}
 	if (kind === 'Text') return { type: 'Text', value: '' };
 	if (typeof kind === 'object' && ('Switch' in kind || 'Contact' in kind)) {
 		return { type: 'Bool', value: false };
@@ -142,9 +168,37 @@ export function formatValue(value: ParameterValue | undefined): string {
 
 // ── Addresses ─────────────────────────────────────────────────────────────────
 
-/** Universe and start address, for the fixtures that live on a DMX line. */
+/**
+ * The mode every fixture is in until somebody says otherwise.
+ *
+ * Mirrors `DEFAULT_MODE` in `crates/pult-schema/src/types/fixture.rs`, and is the name
+ * the station's implicit mode takes — so a fixture patched here and a fixture read out
+ * of an old showfile name the same thing.
+ */
+export const DEFAULT_MODE = 'Default';
+
+/** Every DMX break a fixture occupies. Empty for anything not on a DMX line. */
+export function dmxBreaks(address: FixtureAddress): DmxBreak[] {
+	// `?? []` rather than a bare read: these two functions are on the drawing path of
+	// every panel, and an address from a peer running an older build would otherwise
+	// take a whole view down rather than showing one fixture oddly.
+	return 'Dmx' in address ? (address.Dmx.breaks ?? []) : [];
+}
+
+/**
+ * Universe and start address of a fixture's first break.
+ *
+ * The first, and named so, because a fixture with a separate dimmer break has two —
+ * and every caller that means "where is it patched" means this one. Anything that
+ * has to see all of them asks {@link dmxBreaks}.
+ */
 export function dmxAddress(address: FixtureAddress): { universe: number; address: number } | null {
-	return 'Dmx' in address ? address.Dmx : null;
+	return dmxBreaks(address)[0] ?? null;
+}
+
+/** Which of its type's modes a fixture is patched in. */
+export function fixtureMode(address: FixtureAddress): string | null {
+	return 'Dmx' in address ? address.Dmx.mode : null;
 }
 
 export const isDmx = (fixture: Fixture) => dmxAddress(fixture.address) !== null;
@@ -152,22 +206,79 @@ export const isDmx = (fixture: Fixture) => dmxAddress(fixture.address) !== null;
 /** How a fixture is addressed, for a table cell: "1 / 10" or a node serial. */
 export function addressLabel(fixture: Fixture): string {
 	const address = fixture.address;
-	if ('Dmx' in address) return `${address.Dmx.universe} / ${address.Dmx.address}`;
+	if ('Dmx' in address) {
+		// One span per break, so a fixture in two universes reads as being in two.
+		return address.Dmx.breaks.map((b) => `${b.universe} / ${b.address}`).join(' + ') || '–';
+	}
 	const node = address.OpenHaunt;
 	return node.universe === null ? node.serial : `${node.serial} · universe ${node.universe}`;
 }
 
 /** The DMX channel a parameter occupies, if it occupies one at all. */
-export function bindingChannel(binding: ParameterBinding): number | null {
+export function bindingChannel(binding: ParameterBinding | null): number | null {
+	if (!binding) return null;
 	return 'Dmx' in binding ? binding.Dmx.channel : null;
+}
+
+// ── Modes ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The mode a fixture is patched in, resolved against its type.
+ *
+ * Mirrors `FixtureType::mode` in the schema, and the rules are the same one for the
+ * same reason: a show patched against a GDTF file that has since been revised names a
+ * mode the new file dropped, and the first mode is a better answer than nothing.
+ *
+ * A type with no modes of its own has one all the same — the implicit `Default` the
+ * station computes from the parameters. The browser does *not* recompute that: it
+ * shows the mode name and lets the station lay the channels out, because two
+ * derivations of one layout is exactly the drift this codebase spends its effort
+ * avoiding. So a type with no `dmx_modes` answers `null` here, and callers read
+ * `channel_count` as they always have.
+ */
+export function modeOf(fixtureType: FixtureType | undefined, address: FixtureAddress): DmxMode | null {
+	const modes = fixtureType?.dmx_modes ?? [];
+	if (modes.length === 0) return null;
+	const name = fixtureMode(address);
+	return modes.find((m) => m.name === name) ?? modes[0];
+}
+
+/** How many channels a fixture occupies in each of its breaks. */
+export function footprint(fixtureType: FixtureType | undefined, address: FixtureAddress): number[] {
+	const mode = modeOf(fixtureType, address);
+	if (mode) return mode.breaks;
+	return [Math.max(fixtureType?.channel_count ?? 0, 0)];
+}
+
+/**
+ * Whether a mode places a parameter at all.
+ *
+ * What the programmer greys a control out on: a head in its basic mode has no zoom,
+ * and offering one that goes nowhere is worse than saying it is not there. A type with
+ * no modes places everything, which is what it always did.
+ */
+export function modeHas(mode: DmxMode | null, parameterKey: string): boolean {
+	if (!mode) return true;
+	return mode.channels.some((channel) => channel.parameter_key === parameterKey);
+}
+
+/**
+ * The parameters a cue captures that a mode would drop.
+ *
+ * Answered before the mode is changed, so the patch panel can say what will stop
+ * working rather than have the operator find out on stage.
+ */
+export function droppedByMode(mode: DmxMode, captured: string[]): string[] {
+	return captured.filter((key) => !modeHas(mode, key));
 }
 
 /** The channel range a fixture occupies, as "1–4". Empty for anything not on DMX. */
 export function channelRange(fixture: Fixture, channelCount: number): string {
-	const dmx = dmxAddress(fixture.address);
-	if (!dmx) return '';
-	const last = dmx.address + Math.max(channelCount, 1) - 1;
-	return last > dmx.address ? `${dmx.address}–${last}` : String(dmx.address);
+	const breaks = dmxBreaks(fixture.address);
+	if (breaks.length === 0) return '';
+	const first = breaks[0];
+	const last = first.address + Math.max(channelCount, 1) - 1;
+	return last > first.address ? `${first.address}–${last}` : String(first.address);
 }
 
 /**

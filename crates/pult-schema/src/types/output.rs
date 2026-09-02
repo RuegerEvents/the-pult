@@ -157,21 +157,34 @@ impl OutputCoverage {
 
         // Keyed so that every fixture on one universe lands in one gap, in a
         // stable order: nodes first, then universes ascending.
+        //
+        // Per *break* rather than per fixture, because a fixture with a separate
+        // dimmer break sits in two universes and one of them can be carried while the
+        // other is not — a gap a per-fixture answer cannot say.
         let mut gaps: BTreeMap<(u8, u16), OutputGap> = BTreeMap::new();
         for fixture in fixtures {
-            let key = match fixture.address {
-                FixtureAddress::OpenHaunt { .. } if !nodes_driven => (0, 0),
-                FixtureAddress::Dmx { universe, .. } if !dmx_carried(universe) => (1, universe),
-                _ => continue,
-            };
-            let gap = gaps.entry(key).or_insert_with(|| OutputGap {
-                kind: if key.0 == 0 { OutputKind::OpenHaunt } else { OutputKind::Sacn },
-                universe: (key.0 == 1).then_some(key.1),
-                fixture_ids: Vec::new(),
-                fixture_names: Vec::new(),
-            });
-            gap.fixture_ids.push(fixture.id);
-            gap.fixture_names.push(fixture.name.clone());
+            let mut keys: Vec<(u8, u16)> = Vec::new();
+            match &fixture.address {
+                FixtureAddress::OpenHaunt { .. } if !nodes_driven => keys.push((0, 0)),
+                FixtureAddress::Dmx { breaks, .. } => {
+                    for entry in breaks {
+                        if !dmx_carried(entry.universe) && !keys.contains(&(1, entry.universe)) {
+                            keys.push((1, entry.universe));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for key in keys {
+                let gap = gaps.entry(key).or_insert_with(|| OutputGap {
+                    kind: if key.0 == 0 { OutputKind::OpenHaunt } else { OutputKind::Sacn },
+                    universe: (key.0 == 1).then_some(key.1),
+                    fixture_ids: Vec::new(),
+                    fixture_names: Vec::new(),
+                });
+                gap.fixture_ids.push(fixture.id);
+                gap.fixture_names.push(fixture.name.clone());
+            }
         }
         OutputCoverage { gaps: gaps.into_values().collect() }
     }
@@ -212,7 +225,7 @@ mod tests {
     }
 
     fn dmx(universe: u16) -> FixtureAddress {
-        FixtureAddress::Dmx { universe, address: 1 }
+        FixtureAddress::dmx(universe, 1)
     }
 
     #[test]

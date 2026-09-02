@@ -6,14 +6,19 @@
 	import { getDataContext } from '$lib/ws/context.js';
 	import { select, selected, toggle } from '$lib/stores/selection.js';
 	import { output, watching } from '$lib/stores/output.js';
-	import type { Fixture, FixtureType, ParameterValue } from '$lib/generated/index.js';
+	import type { Cue, Fixture, FixtureType, ParameterValue } from '$lib/generated/index.js';
 	import FixtureTypeEditor from './FixtureTypeEditor.svelte';
 	import HomeValue from './HomeValue.svelte';
 	import {
 		addressLabel,
 		channelRange,
 		clashingFixtures,
+		DEFAULT_MODE,
 		dmxAddress,
+		droppedByMode,
+		dmxBreaks,
+		fixtureMode,
+		footprint,
 		formatValue,
 		kindLabel,
 		nextFreeAddress,
@@ -27,11 +32,15 @@
 	let fixtures = $state<Fixture[]>([]);
 	let types = $state<FixtureType[]>([]);
 	let creating = $state(false);
+	// Only to say what a mode change would cost; nothing here writes a cue.
+	let cues = $state<Cue[]>([]);
 	let newName = $state('');
 	let newTypeId = $state('');
 
 	const typeOf = (fixture: Fixture) => types.find((t) => t.id === fixture.fixture_type_id);
-	const spanOf = (fixture: Fixture) => typeOf(fixture)?.channel_count ?? 1;
+	// The span a fixture occupies is its mode's first break, and `channel_count`
+	// only for a type that names no modes — which is what `footprint` answers.
+	const spanOf = (fixture: Fixture) => footprint(typeOf(fixture), fixture.address)[0] || 1;
 
 	const clashes = $derived(clashingFixtures(fixtures, spanOf));
 
@@ -52,7 +61,12 @@
 			id: crypto.randomUUID(),
 			name,
 			fixture_type_id: newTypeId,
-			address: { Dmx: { universe: 1, address: nextFreeAddress(fixtures, 1, spanOf) } },
+			address: {
+				Dmx: {
+					mode: DEFAULT_MODE,
+					breaks: [{ universe: 1, address: nextFreeAddress(fixtures, 1, spanOf) }]
+				}
+			},
 			position: null,
 			// Nothing has been reported about it and nothing is driving it yet. Both
 			// are the station's to fill in; a client creating a fixture has nothing to
@@ -93,19 +107,96 @@
 		await data.fixtures.byId(fixture.id).home_values.set(home);
 	}
 
+	/// Move a fixture's *first* break. The others follow their own editor.
 	async function setDmx(fixture: Fixture, next: { universe?: number; address?: number }) {
-		const current = dmxAddress(fixture.address);
-		if (!current) return;
-		await data.fixtures.byId(fixture.id).address.set({ Dmx: { ...current, ...next } });
+		const breaks = dmxBreaks(fixture.address);
+		if (breaks.length === 0) return;
+		const mode = fixtureMode(fixture.address) ?? DEFAULT_MODE;
+		await data.fixtures.byId(fixture.id).address.set({
+			Dmx: { mode, breaks: [{ ...breaks[0], ...next }, ...breaks.slice(1)] }
+		});
+	}
+
+	/// Move one of a fixture's later breaks, for a mode that has more than one.
+	async function setBreak(
+		fixture: Fixture,
+		index: number,
+		next: { universe?: number; address?: number }
+	) {
+		const breaks = dmxBreaks(fixture.address);
+		if (!breaks[index]) return;
+		const mode = fixtureMode(fixture.address) ?? DEFAULT_MODE;
+		await data.fixtures.byId(fixture.id).address.set({
+			Dmx: {
+				mode,
+				breaks: breaks.map((b, i) => (i === index ? { ...b, ...next } : b))
+			}
+		});
+	}
+
+	/// Put a fixture into another of its type's modes.
+	///
+	/// A mode with more breaks than the fixture has addresses gets the missing ones at
+	/// the universe of the first, one after the other: a starting point somebody can
+	/// correct, rather than a break with nowhere to go, which sends nothing.
+	/**
+	 * Change a fixture's mode, having said what it will cost.
+	 *
+	 * A basic mode has no zoom, and a cue that captured one goes on saying so while
+	 * nothing sends it. Finding that out on stage is the failure this dialogue exists
+	 * to prevent — so the parameters this show's cues capture and the new mode does
+	 * not place are named *before* the write, and the operator decides.
+	 */
+	async function changeMode(fixture: Fixture, mode: string) {
+		const type = typeOf(fixture);
+		const wanted = type?.dmx_modes.find((m) => m.name === mode);
+		if (!wanted) return;
+
+		const captured = [
+			...new Set(
+				cues
+					.flatMap((cue) => cue.captures)
+					.filter((capture) => capture.fixture_id === fixture.id)
+					.map((capture) => parameterKey(capture.parameter_kind))
+			)
+		];
+		const dropped = droppedByMode(wanted, captured);
+		if (dropped.length > 0) {
+			const list = dropped.join(', ');
+			const ok = window.confirm(
+				`${mode} does not carry ${list}. ` +
+					`${dropped.length === 1 ? 'That parameter is' : 'Those parameters are'} captured in this ` +
+					`show's cues and will stop being sent. Change the mode anyway?`
+			);
+			if (!ok) return;
+		}
+		await setMode(fixture, mode);
+	}
+
+	async function setMode(fixture: Fixture, mode: string) {
+		const type = typeOf(fixture);
+		const wanted = type?.dmx_modes.find((m) => m.name === mode);
+		if (!wanted) return;
+		const breaks = dmxBreaks(fixture.address);
+		const first = breaks[0] ?? { universe: 1, address: 1 };
+		let next = first.address;
+		const filled = wanted.breaks.map((span, index) => {
+			if (breaks[index]) return breaks[index];
+			const entry = { universe: first.universe, address: next };
+			next += Math.max(span, 1);
+			return entry;
+		});
+		await data.fixtures.byId(fixture.id).address.set({ Dmx: { mode, breaks: filled } });
 	}
 
 	onMount(() => {
+		const stopCues = data.cues.subscribeDeep((v) => { cues = v; });
 		const stopFixtures = data.fixtures.subscribeDeep((v) => { fixtures = v; });
 		const stopTypes = data.fixture_types.subscribeDeep((v) => {
 			types = v;
 			if (!newTypeId && v.length) newTypeId = v[0].id;
 		});
-		return () => { stopFixtures(); stopTypes(); };
+		return () => { stopFixtures(); stopTypes(); stopCues(); };
 	});
 </script>
 
@@ -145,7 +236,7 @@
 			<table class="rig">
 				<thead>
 					<tr>
-						<th></th><th>Name</th><th>Type</th><th>Uni</th><th>Address</th><th>Position</th><th>Live</th><th>Home</th><th></th>
+						<th></th><th>Name</th><th>Type</th><th>Mode</th><th>Uni</th><th>Address</th><th>Position</th><th>Live</th><th>Home</th><th></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -189,6 +280,28 @@
 									{type?.name ?? '—'}
 								{/if}
 							</td>
+							<td class="mode-cell">
+								{#if !type || type.dmx_modes.length === 0}
+									<!-- A type that names no modes has one all the same, computed
+									     by the station from its parameters. There is nothing to
+									     pick between, so there is nothing to show. -->
+									<span class="hint">—</span>
+								{:else if $unlocked}
+									<select
+										class="select"
+										value={fixtureMode(fixture.address) ?? DEFAULT_MODE}
+										onchange={(e) => changeMode(fixture, e.currentTarget.value)}
+									>
+										{#each type.dmx_modes as mode (mode.name)}
+											<option value={mode.name}>
+												{mode.name} · {mode.breaks.join('+')} ch
+											</option>
+										{/each}
+									</select>
+								{:else}
+									{fixtureMode(fixture.address) ?? DEFAULT_MODE}
+								{/if}
+							</td>
 							{#if dmx}
 								<td>
 									{#if $unlocked}
@@ -216,13 +329,39 @@
 									{:else}
 										{dmx.address}
 									{/if}
-									<span class="hint">{channelRange(fixture, type?.channel_count ?? 1)}</span>
+									<span class="hint">{channelRange(fixture, spanOf(fixture))}</span>
+									{#each dmxBreaks(fixture.address).slice(1) as entry, i}
+										<!-- A mode with more than one break sits in more than one
+										     place, and they need not be in the same universe. -->
+										<span class="brk">
+											break {i + 2}:
+											{#if $unlocked}
+												<input
+													class="input tiny"
+													type="number"
+													min="0"
+													value={entry.universe}
+													onchange={(e) => setBreak(fixture, i + 1, { universe: Number(e.currentTarget.value) })}
+												/>/<input
+													class="input tiny"
+													type="number"
+													min="1"
+													max="512"
+													value={entry.address}
+													onchange={(e) => setBreak(fixture, i + 1, { address: Number(e.currentTarget.value) })}
+												/>
+											{:else}
+												{entry.universe} / {entry.address}
+											{/if}
+										</span>
+									{/each}
 								</td>
 							{:else}
 								<!-- A node fixture is addressed by the device it was adopted from,
 								     so there is nothing here to type into. -->
 								<td colspan="2" class="node-address">{addressLabel(fixture)}</td>
 							{/if}
+
 							<td class="position-cell">
 								{#if $unlocked}
 									<!-- Dragging in the plan is right for a whole rig at once and
@@ -315,6 +454,11 @@
 </div>
 
 <style>
+	/* Two numbers side by side for a break, in a cell already holding an address. */
+	.brk { display: block; color: #999; font-size: 11px; }
+	.input.tiny { width: 46px; }
+	.mode-cell .select { max-width: 170px; }
+
 	.patch { padding: 16px 20px; }
 	/* An overridden home value is this rig's answer rather than the type's, and it
 	   should be possible to see which is which at a glance down the column. */

@@ -130,17 +130,16 @@ fn a_dmx_dimmer(universe: u16, level: f32) -> (Fixture, FixtureType) {
         manufacturer: "Acme".into(),
         channel_count: 1,
         parameters: vec![ParameterDefinition {
-            kind: ParameterKind::Intensity,
-            direction: ParameterDirection::Output,
-            binding: ParameterBinding::Dmx { channel: 1 },
-            default_value: ParameterValue::Float(0.0),
+            binding: Some(ParameterBinding::Dmx { channel: 1 }),
+            ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
         }],
+        ..FixtureType::default()
     };
     let mut fixture = Fixture {
         id: Uuid::new_v4(),
         name: "Spot".into(),
         fixture_type_id: fixture_type.id,
-        address: FixtureAddress::Dmx { universe, address: 1 },
+        address: FixtureAddress::dmx(universe, 1),
         position: None,
         sensed_values: HashMap::new(),
         live_effects: Default::default(),
@@ -220,7 +219,7 @@ async fn a_strip_sends_its_colour_as_bytes_and_its_brightness_as_a_number() {
 
     let ft = a_module(WS2812);
     let mut fixture = a_node_fixture(&ft, "led1", None);
-    holding(&mut fixture, "ColorRgb", ParameterValue::Color { r: 1.0, g: 0.5, b: 0.0 });
+    holding(&mut fixture, "ColorRgb", ParameterValue::rgb(1.0, 0.5, 0.0));
     holding(&mut fixture, "Intensity", ParameterValue::Float(0.5));
 
     output.send(&patch(vec![fixture], vec![ft]), &[], 0).await.unwrap();
@@ -695,12 +694,12 @@ async fn a_step_chase_goes_out_as_its_keyframes() {
             curve: Curve::Steps(vec![
                 pult_schema::types::effect::Step {
                     at: 0.0,
-                    value: ParameterValue::Color { r: 1.0, g: 0.0, b: 0.0 },
+                    value: ParameterValue::rgb(1.0, 0.0, 0.0),
                     easing: Easing::Step,
                 },
                 pult_schema::types::effect::Step {
                     at: 0.5,
-                    value: ParameterValue::Color { r: 0.0, g: 1.0, b: 0.0 },
+                    value: ParameterValue::rgb(0.0, 1.0, 0.0),
                     easing: Easing::Linear,
                 },
             ]),

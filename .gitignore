@@ -39,3 +39,7 @@
 
 # The browser's copy of the evaluator, built by scripts/build-evaluator.sh.
 /frontend/src/lib/evaluator/
+
+# Other people's GDTF and MVR files, fetched by scripts/fetch-interop-corpus.sh.
+# Not ours to redistribute, and large; the ignored interop tests read them.
+testdata/corpus/

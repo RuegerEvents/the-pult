@@ -24,8 +24,15 @@ CREATE TABLE IF NOT EXISTS fixture_types (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
     manufacturer TEXT NOT NULL,
+    short_name TEXT NOT NULL,
+    long_name TEXT NOT NULL,
+    description TEXT NOT NULL,
     channel_count INTEGER NOT NULL,
-    parameters TEXT NOT NULL
+    parameters TEXT NOT NULL,
+    dmx_modes TEXT NOT NULL,
+    physical TEXT NOT NULL,
+    geometry TEXT NOT NULL,
+    source TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS flows (

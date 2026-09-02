@@ -1,0 +1,21 @@
+[package]
+name = "pult-gdtf"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+quick-xml.workspace = true
+serde.workspace = true
+zip.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+# A second reader of the same files, for the ignored corpus test only. It reads and
+# does not write, which is why it is not the dependency this crate is built on — but
+# a disagreement between two independent readers is the cheapest evidence there is
+# that one of them is wrong.
+gdtf = "0.3"

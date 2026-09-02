@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use pult_schema::types::fixture::{
     Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDefinition,
-    ParameterDirection, ParameterKind, ParameterValue,
+    ParameterKind, ParameterValue,
 };
 use uuid::Uuid;
 
@@ -59,17 +59,16 @@ fn a_dimmer_patch(level: f32) -> Patch {
         manufacturer: "Acme".into(),
         channel_count: 1,
         parameters: vec![ParameterDefinition {
-            kind: ParameterKind::Intensity,
-            direction: ParameterDirection::Output,
-            binding: ParameterBinding::Dmx { channel: 1 },
-            default_value: ParameterValue::Float(0.0),
+            binding: Some(ParameterBinding::Dmx { channel: 1 }),
+            ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
         }],
+        ..FixtureType::default()
     };
     let mut fixture = Fixture {
         id: Uuid::new_v4(),
         name: "Spot".into(),
         fixture_type_id: fixture_type.id,
-        address: FixtureAddress::Dmx { universe: 3, address: 1 },
+        address: FixtureAddress::dmx(3, 1),
         position: None,
         sensed_values: HashMap::new(),
         live_effects: Default::default(),
@@ -151,11 +150,19 @@ async fn each_universe_gets_its_own_packet() {
     let (node, addr) = a_node().await;
     let mut output = ArtNetOutput::bind(addr).await.unwrap();
 
-    let mut patch = a_dimmer_patch(1.0);
-    let mut second = patch.fixtures[0].clone();
+    // Both fixtures before the patch is built: where a fixture's channels land is
+    // resolved once, when the patch arrives, the same as when it settles. A fixture
+    // pushed in afterwards occupies nothing.
+    let built = a_dimmer_patch(1.0);
+    let first = built.fixtures[0].clone();
+    let mut second = first.clone();
     second.id = Uuid::new_v4();
-    second.address = FixtureAddress::Dmx { universe: 9, address: 1 };
-    patch.fixtures.push(second);
+    second.address = FixtureAddress::dmx(9, 1);
+    let patch = Patch::new(
+        vec![first, second],
+        built.fixture_types.into_values().collect(),
+        vec![],
+    );
 
     output.send(&patch, &[], 0).await.unwrap();
 

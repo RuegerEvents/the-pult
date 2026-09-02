@@ -166,10 +166,22 @@
 
 			{#each rows as row (row.key)}
 				{@const value = valueOf(row.key, row.defaultValue)}
-				<div class="row" class:held={isHeld(row.key)}>
+				{@const unreachable = row.unreachable === row.count}
+				<div class="row" class:held={isHeld(row.key)} class:unreachable>
 					<span class="label">
 						{row.label}
 						{#if row.mixed}<span class="mixed" title="Not every selected fixture has this">mixed</span>{/if}
+						{#if row.unreachable > 0}
+							<!-- The light can do it; the mode it is patched in has nowhere to
+							     send it. Saying so beats a fader that silently does nothing. -->
+							<span
+								class="mixed"
+								title={unreachable
+									? 'The mode this fixture is patched in does not carry this parameter'
+									: `${row.unreachable} of ${row.count} are in a mode that does not carry this`}
+								>not in {unreachable ? 'this mode' : 'every mode'}</span
+							>
+						{/if}
 					</span>
 					<span class="readout mono">
 						{#if $output.at === null}
@@ -259,6 +271,12 @@
 {/if}
 
 <style>
+	/* Dimmed, not hidden, and still movable: the value is stored and takes effect the
+	   moment the fixture is patched in a mode that carries it. */
+	.row.unreachable .label,
+	.row.unreachable .readout,
+	.row.unreachable .control { opacity: 0.45; }
+
 	.values {
 		display: flex;
 		flex-direction: column;

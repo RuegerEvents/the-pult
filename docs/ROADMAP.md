@@ -17,7 +17,8 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Frontend | Working for show, session, sequences, cues, patch, the programmer, effects and speed masters. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. Panels that can change the show open read-only behind an Edit toggle and are sized for a finger. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working, and no longer a tick. Playback decides *what is driving* each parameter — fades and effects anchored on the cue's `went_at` — and publishes the descriptions; nothing stores what they are worth. A pass happens when the show changes, so a fade in progress costs the engine nothing. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Each holds the last patch it was pushed and draws its own frames out of it at its protocol's rate, evaluating rather than being handed values. Configured from the `outputs` collection and editable while the show is up, with per-output status and per-connector frame cost in the UI. Flags only seed an empty showfile. |
-| Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. |
+| Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. Every beam is still one cone at one angle; the geometry and the beam angle a GDTF import brings are stored and not yet drawn. |
+| Fixture definitions | Working. GDTF in and out, with modes, breaks, wheels, emitters, physical data and the geometry tree; the archive is kept whole and exports byte for byte. The GDTF Share is searchable and importable behind a station credential. A type the console derived from a node or somebody typed in is unchanged and still has an implicit mode. |
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
 | Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `sensed_values`; flows turn those into cues. A port that says it can trace a shape is handed one descriptor instead of forty messages a second. Tested end to end against `tools/openhaunt-node-sim` and, since task 22, against real firmware on an ESP32. |
 | WASM plugins | Working. wasmtime component runtime with a WIT contract, permissions, hot reload, plugin-to-plugin calls and runtime introspection of the schema registries. Two reference plugins in `plugins/`: a command line (grammar built from introspection, console panel with completion and spans) and natural-language control (an LLM over the plugin's own gated HTTP, executing through the command line). Plugin UI is built-in surfaces or plugin-shipped web components. `docs/PLUGINS.md` is the author guide. |
@@ -291,7 +292,8 @@ about where anything is.
 
 Left open:
 
-- Pan is taken as 540° about the way a fixture hangs, because `FixtureType` carries
+- Pan is taken as 540° about the way a fixture hangs where the type says nothing —
+  task 45 made that a fallback rather than the answer — because `FixtureType` carried
   no real ranges. Right about which way a head is swinging and wrong in detail for
   any particular one.
 - Nothing prunes an asset. A replaced plan's bytes stay in the showfile.
@@ -417,6 +419,10 @@ Left open:
   moving, wrong in detail for any particular one. Centring the travel on the hung
   direction also lets a head hung straight down fold 135° past vertical and point up
   and backwards, which no real one does; per-type ranges are what settles it.
+  *(Task 45: half settled. `stage.ts`'s `travelOf` reads the type's own `physical`
+  range where a GDTF import gave it one, and the constants are the fallback for a type
+  that never said. The folding-past-vertical part is untouched: what a head can reach
+  is a fact about its geometry, not about how far it turns.)*
 - Parking survives Clear and Store, as the spec asks. Nothing yet parks a value
   *across* a showfile reload, because nothing SYNCED does.
 - The programmer holds a parameter or it does not. There is no partial override, no
@@ -2294,6 +2300,158 @@ waits for is waiting on it. Bounded at three seconds across every candidate, spl
 between them, because somebody is on the other end of the answer — an answer that
 arrives after the caller has given up is the same as no answer.
 
+### 45. GDTF (done)
+
+A fixture type was derived data. An OpenHaunt node describes its own ports and the
+console builds a type from that; the demo seed writes a few by hand; the editor lets
+somebody type one in. Nothing else could make one, which is why the rig view drew every
+beam at the same hardcoded angle and why `stage.ts` carried a `PAN_TRAVEL = 540`
+constant that is right for no particular head.
+
+GDTF is the same idea as a file. This task reads one, writes one, and grew the schema
+by what a real fixture definition turns out to contain.
+
+**`crates/pult-gdtf` is a format library and knows nothing about this console.**
+`quick-xml`, `serde`, `zip`, `uuid`, `thiserror`, and no pult crate — which is what
+lets it be tested against other people's files with no station anywhere near it. The
+translation into the schema lives in `crates/pult-backend/src/infra/interop/gdtf/`,
+where it can be tested against a show. It writes as well as reads, and that is the
+reason it exists rather than a crate off crates.io: `gdtf` 0.3.0 reads and cannot
+write, and the console exports its own types.
+
+**A mode is a detail of addressing; the parameter list is what the light can do.**
+`FixtureType::dmx_modes` holds a layout per mode — a footprint per DMX break, and per
+channel the parameter it drives, which break it is in, its one to four byte offsets,
+its default at its own width, and its named ranges. `FixtureAddress::Dmx` grew from
+`{universe, address}` to `{mode, breaks}`, because a fixture with a separate dimmer
+break sits in two spans that need not be in the same universe, and because universe 1
+address 1 does not say what the bytes mean until the mode does.
+
+**A type with no modes still has one, computed rather than written.**
+`FixtureType::mode` builds an implicit `"Default"` from the legacy `Dmx { channel }`
+bindings where any parameter still carries one, and from parameter order otherwise —
+one byte each, three for a colour, in the order the connector used before layouts
+existed. Computed and not a load-time rewrite, and the reason is the SQLite read path:
+`from_columns` reads each column on its own and unwraps, so a deserialize-time rewrite
+would never see the other columns it needs and a NULL one would panic. `ParameterBinding::Dmx`
+therefore survives as a read-only legacy variant that new code never writes, and every
+showfile, every demo seed and every peer written before this opens unchanged.
+
+**Migrations, in the three places this codebase has learned they go.**
+`FixtureAddress` and `ParameterDefinition` grew hand-written `Deserialize`s that accept
+the old shapes, because both are JSON columns with nothing to alter. The seven new
+non-`Option` columns on `fixture_types` got a row in `upgrades.rs`, because the additive
+pass adds a column nullable and `from_columns` panics on a NULL one. And both are
+tested by loading the old shape rather than trusted, because an `Option` column that
+fails to parse becomes `None` without an error.
+
+**A colour is one parameter and several channels.** `ColorAdd_R`, `_G`, `_B`, `_W`,
+`ColorSub_C` and the rest are all the fixture's colour; a reader that made three
+parameters would give an operator three faders where every other console gives a
+picker. So `ParameterDefinition::emitters` carries the dies, each channel of a mode
+names the one it drives, and `pult_render::color` gets from the one to the other —
+compiled twice like the rest of the evaluator, and held to its native half by
+`testdata/color-mix.json`. RGB passes through, white and amber and lime take the
+largest multiple of their own measured colour that fits under the target, CMY is one
+minus the component each flag removes, and `ParameterValue::Color` grew an `overrides`
+map for the head whose white is warmer than its file says.
+
+**Where the browser had to be given the answer rather than work it out.** The packed
+frame is four floats per parameter, and a map of per-emitter levels does not fit — so
+`pult-render-wasm` gained two exports beside `evaluate`, `color_overrides` and
+`emitter_levels`, for the colour control alone. Widening the stride would have made
+every frame of every rig pay for a panel open on one screen.
+
+**The file is the record; the row is a reading of it.** An imported `.gdtf` is kept
+whole in the asset store and `FixtureTypeSource::Gdtf` points at it by sha256, so a
+later version of this console reads more out of the same bytes rather than asking
+anybody to download anything again — and `GET /api/export/gdtf/{id}` hands back the
+archive byte for byte. A type the console made for itself exports as a generated file
+instead, deliberately minimal: inventing a beam angle or a weight would be writing a
+lie another console would then act on.
+
+**And it is never rebuilt behind the operator's back.** `FixtureTypeSource` exists for
+one reason: `fixture_type_from` runs again whenever a node re-describes itself, and
+doing that to an imported type would throw the file away.
+
+The GDTF Share is behind a login that lives in the station's preferences and never in
+the show — a showfile travels, and a password in one travels with it. Three things
+about it are worth having written down. **Its login answers 200 with an HTML page when
+the credentials are wrong**, so success is decided by the body and never by the status.
+**Its list is tens of megabytes and unfiltered**, so it is fetched once, cached in
+memory and beside the preferences, searched locally, and re-fetched daily or on demand.
+**Its session goes idle after about two hours**, so an unauthorised answer logs in again
+and retries once — once, because a second refusal after a fresh login is not something
+retrying fixes.
+
+Both import paths go through `interop::apply`, which is where the rules about writing
+live: the plan is built by a pure function before anything is stored, so a body that is
+not a GDTF leaves neither an asset nor a row behind; every write carries one gesture, so
+an import is one Ctrl-Z; and a write that fails takes the rest back, which is only
+honest because of the first rule.
+
+**What real files taught this reader, once it was pointed at the Share.** Everything
+below was written strictly first, passed against the three fixtures checked in beside
+it, and failed on the first file downloaded from gdtf-share.com.
+
+- **`"None"` is a value.** The spec uses the literal string where an attribute has
+  nothing to say — `Highlight="None"` on a channel with no highlight — and a reader
+  that only accepted `255/1` there refused the whole fixture.
+- **`-2147483648` appears in unsigned fields.** `i32::MIN` as a "not set" sentinel, in
+  a `WheelSlotIndex` the spec calls a count. Every number in the object model is now
+  read leniently and anything unreadable becomes absent, which is what it meant.
+- **`"N/A"` appears where the Share's own API declares a float.** A rating nobody has
+  given. Strictly typed, one such row failed the deserialization of *the entire list*,
+  so the console answered "the GDTF Share answered something this console could not
+  read" for every search. The list is now read row by row and an unreadable row costs
+  that row.
+- **A Share login is a user name, not an email**, and the field was `type="email"`,
+  which a browser refuses.
+- **Nobody types a fixture's name the way its uploader spaced it.** "mega pointe" found
+  nothing, because the Share calls it "Robin MegaPointe". The search matches word by
+  word and ignores spacing and hyphens on both sides.
+- **Seven files answer to "megapointe" and one of them is Robe's.** The Share says which
+  — `uploader` is `"Manuf."` on exactly one — and that beats any ranking this console
+  could invent. An earlier attempt ranked by *where* the words matched and got "robe
+  mega pointe" backwards, putting a third party's copy above the manufacturer's,
+  because the copy had the word "Robe" in its own name.
+- **The outermost geometry's model is the base plate, not the fixture.** Reading it for
+  `dimensions_m` gave a Robin MegaPointe a height of 9.5 cm. It is the envelope across
+  every part at the place its own geometry puts it: 0.40 × 0.45 × 0.25 m, against 22 kg
+  and a 39-channel mode, which is a fixture somebody could put on a rider.
+
+Two traps worth recording. **`ParameterBinding::Dmx { channel: u8 }` capped a mode at
+255 channels** — gone with modes, offsets are `u16`. And **grouping the frame by channel
+instead of by parameter costs what colour costs**: a flat list of placed channels
+evaluates an RGBW head's colour four times a frame, and mixing the whole fixture to pick
+one level out of the answer allocates a vector of names per channel per frame. Both
+showed up as the frame cost roughly doubling in a debug build and were fixed before
+they reached a release one. Measured at 505 fixtures, `--release`: 0.93 ms a frame
+against 0.90 ms before, and 0.72 ms evaluating against 0.74 ms — unchanged, which is
+what the fix was for.
+
+The lesson under all of those is one the corpus job exists for and could not deliver on
+its own: **this reader is only as good as the files it has been pointed at.** Three
+hand-written fixtures proved the arithmetic and proved nothing about the shapes real
+files take. `scripts/fetch-interop-corpus.sh` with a real Share login is what found
+every item above, in about ten minutes.
+
+`.github/workflows/ci.yml` is new, because there was none: the default suite, the
+frontend, and an `interop-corpus` job that runs `scripts/fetch-interop-corpus.sh` and
+the `#[ignore]`d tests over other people's files. The corpus is gitignored; what is
+checked in is `testdata/gdtf/`, three small fixtures written here — a dimmer, an RGBW
+mover with two modes and two breaks and a 16-bit pan whose fine byte is six slots away
+from its coarse one, and a four-cell bar that describes one cell and references it four
+times, which is the whole reason a mode's channel list is not its footprint.
+
+```
+cargo test -p pult-gdtf                              # the format library
+scripts/fetch-interop-corpus.sh                      # other people's files
+cargo test -p pult-gdtf -- --ignored                 # against them
+curl -X POST http://localhost:7700/api/import/gdtf \
+     -H 'content-type: application/vnd.gdtf+zip' --data-binary @head.gdtf
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -2324,6 +2482,12 @@ the answer to a question asked and got wrong earlier the same day: a
 gdtf-import, because fixture types are built by `fixture_type_from` off a node's
 port description and by the demo seed and by nothing else, and there is no
 fixture type editor in the frontend, so the field would be written by nobody.
+
+Half of that landed as task 45. A GDTF import now brings the beam angle, the
+travel, and the geometry tree, and `stage.ts` reads the type's own range where it
+has one — so the constants are the fallback rather than the answer. What is still
+ahead of the viewer is `mvr-import`, which brings the *rig* rather than the
+fixture: positions, trusses, and the meshes to draw.
 
 **Then the console can be seen at all.** Three panels that share one open
 question — where a per-station diagnostic lives, and whether it reaches a peer —
@@ -2592,6 +2756,14 @@ the cheaper lesson. And their fixture bodies are pure black, so the render canno
 tell you what is hanging up there. Our emissive body tinted by its own output is
 the better call and should survive whatever else changes.
 
+**What task 45 removed from this entry.** The beam angle is no longer unavailable:
+`FixturePhysical::beam_angle_deg` carries what the file measured, and
+`FixtureType::geometry` carries the parts a body articulates on — a base, an axis
+per turning part outermost first, and the beam — with an offset each, in metres and
+in this console's axes. So the yoke-and-head articulation above and the real cone
+are now a rendering job with the data already in the show, rather than a rendering
+job waiting on an import.
+
 Two defects in ours turned up while comparing, and both are still there.
 Corrected on 2026-09-02: an earlier version of this entry said the second one
 went with the task 44 rewire, and it did not. Both are still in
@@ -2712,30 +2884,80 @@ instead, zipped on export, and what that does for dedup across versions.
 
 ### Interop
 
-#### gdtf-import
+#### gdtf-share-panel-polish
 
-GDTF fixture definitions, native or as a plugin. `FixtureType` is derived data
-today, because OpenHaunt nodes describe themselves; GDTF is the same idea as a
-file, where the description becomes a fixture type.
+Task 45 landed GDTF in and out, the Share behind a station credential, and a modes
+table in the Fixture Types panel. What it left is the part that needs somebody to use
+it against real files for a week.
 
-- Real pan and tilt ranges fix the 540°/270° constants task 14 complains about.
-- **It is the only source of a beam angle there is.** Adding
-  `default_beam_angle` to `FixtureType` instead was tried on paper and does not
-  work: fixture types are built by `fixture_type_from` off a node's port
-  description and by the demo seed, and by nothing else, so a field nobody writes
-  is the hardcoded cone with extra steps. A hand-authored catalogue would also
-  answer it, and is the alternative worth naming, but no catalogue exists and
-  this entry is what would bring one.
-- Channel-mode selection, wheels, and physical data: how much of GDTF maps onto
-  `ParameterDefinition` before it has to grow?
+- The Share's list has no manufacturer facet in the UI, only a text match across both
+  names. The backend already filters by manufacturer; the panel does not offer it.
+- A gobo wheel's slot names come across and its **images do not**: the archive carries
+  them and nothing extracts them into the asset store, because there is nothing drawing
+  a gobo yet. That waits on the same work `mvr-import` needs for meshes.
+- Fine channels are folded into their coarse one by `MainAttribute`, which is right for
+  every file that sets it. A file that does not is read as two parameters, one of which
+  does almost nothing. Worth a heuristic on the attribute name once there is a corpus
+  file that needs it.
+- `ChannelFunction`'s `ModeMaster` is modelled and not acted on. A shutter's strobe rate
+  is a parameter of its own here rather than a range that only exists while the shutter
+  channel is in its strobe band, which is a simplification an operator will eventually
+  find.
 
 #### mvr-import
 
-MVR, My Virtual Rig. Task 13 noted that `StagePlan` and the asset store are what
-an import needs and that nothing is in its way.
+MVR, My Virtual Rig. Task 13 noted that `StagePlan` and the asset store are what an
+import needs and that nothing is in its way; task 45 removed the other thing in its
+way, which was that the GDTF files inside an MVR had nowhere to go.
 
-- It brings fixtures, positions and 3D geometry, mapping onto `Fixture::position`
-  and plans. The GDTF references inside an MVR need gdtf-import first, or stubs.
+What is already built for it: `crates/pult-gdtf` reads and writes the embedded fixture
+definitions, `values.rs` holds the millimetre Z-up to metre Y-up conversion and the
+proof that it is a rotation rather than a mirror, `interop::apply` is the one-gesture
+write path, and `POST /api/import/gdtf` is the shape the MVR route would take.
+
+What it still has to answer:
+
+- **`Fixture::position` is a point or a point and a direction, and MVR gives a
+  matrix.** Trusses rotate, and so does anything hung off one. That means a `Transform`
+  — position, rotation, scale — and a `Deserialize` that reads both the old shapes,
+  tested by loading them, because an `Option` column that fails to parse becomes `None`
+  without an error.
+- **There is no entity for a truss, a support or a scene object**, and no layers.
+  `scene_objects` and `layers` collections, with a parent chain, is the shape.
+- **Geometry has to reach the browser.** The meshes are in the archive; the asset store
+  can hold them; nothing loads a `.glb` or a `.3ds` yet. A broken 3DS must not take the
+  rig view down.
+- **A fixture whose GDTF the archive does not carry** needs a placeholder type rather
+  than being dropped — `interop::gdtf::placeholder_id` exists for it and nothing calls
+  it yet.
+- **Re-importing must reconcile rather than duplicate.** By the MVR uuid, keeping LOCAL
+  and SYNCED fields, and listing what is missing rather than deleting it: somebody may
+  have moved that light on purpose.
+
+#### scene-editing
+
+The plan and rig views become an editor, in the spirit of Vectorworks: move and rotate
+trusses, fixtures and objects, parent a fixture to a truss, show, hide and lock layers,
+duplicate, snap to a grid, and place primitives and symbols. Needs `mvr-import` first,
+for the entities to edit.
+
+- The gizmo pattern in `Rig3D.svelte` already does pan and tilt handles; move and rotate
+  are the same shape with a different write.
+- A drag has to be one Ctrl-Z, which the gesture machinery already does.
+- Articulated fixture bodies are the visible payoff and are nearly free now:
+  `FixtureType::geometry` carries the parts, which turn, and the beam angle, so
+  `Rig3D.svelte` can lose its 0.12 constant and its single box per fixture.
+
+#### mvr-xchange
+
+The other half of MVR: a protocol for two consoles or a console and a previz to share a
+scene as it changes, rather than a file somebody exports. Out of scope while there is no
+scene to share.
+
+- It is mDNS discovery and a WebSocket, which this codebase has both of.
+- The open question is whether a shared scene is a *session* in this console's sense or
+  something beside one. Two stations of one show already agree about the rig; an
+  xchange peer is somebody else's software that agrees about part of it.
 
 #### paperwork-export
 

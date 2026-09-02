@@ -163,7 +163,7 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
     use crate::infra::connectors::{dmx::Patch, openhaunt::OpenHauntOutput, OutputPlugin};
     use pult_schema::types::fixture::{
         Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDefinition,
-        ParameterDirection, ParameterKind, ParameterValue,
+        ParameterKind, ParameterValue,
     };
 
     let h = harness().await;
@@ -186,17 +186,16 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
         manufacturer: "Acme".into(),
         channel_count: 1,
         parameters: vec![ParameterDefinition {
-            kind: ParameterKind::Intensity,
-            direction: ParameterDirection::Output,
-            binding: ParameterBinding::Dmx { channel: 1 },
-            default_value: ParameterValue::Float(0.0),
+            binding: Some(ParameterBinding::Dmx { channel: 1 }),
+            ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
         }],
+        ..FixtureType::default()
     };
     let mut dimmer = Fixture {
         id: uuid::Uuid::new_v4(),
         name: "Spot".into(),
         fixture_type_id: dimmer_type.id,
-        address: FixtureAddress::Dmx { universe: 1, address: 1 },
+        address: FixtureAddress::dmx(1, 1),
         position: None,
         sensed_values: Default::default(),
         live_effects: Default::default(),

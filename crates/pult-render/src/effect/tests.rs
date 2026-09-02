@@ -221,19 +221,15 @@ fn a_boolean_under_a_square_wave_spends_half_the_cycle_on() {
 
 // ── Steps ─────────────────────────────────────────────────────────────────────
 
-fn rgb(r: f32, g: f32, b: f32) -> ParameterValue {
-    ParameterValue::Color { r, g, b }
-}
-
 fn a_chase(easing: Easing) -> RunningEffect {
     RunningEffect {
         curve: Curve::Steps(vec![
-            Step { at: 0.0, value: rgb(1.0, 0.0, 0.0), easing },
-            Step { at: 1.0 / 3.0, value: rgb(0.0, 1.0, 0.0), easing },
-            Step { at: 2.0 / 3.0, value: rgb(0.0, 0.0, 1.0), easing },
+            Step { at: 0.0, value: ParameterValue::rgb(1.0, 0.0, 0.0), easing },
+            Step { at: 1.0 / 3.0, value: ParameterValue::rgb(0.0, 1.0, 0.0), easing },
+            Step { at: 2.0 / 3.0, value: ParameterValue::rgb(0.0, 0.0, 1.0), easing },
         ]),
-        low: rgb(0.0, 0.0, 0.0),
-        high: rgb(1.0, 1.0, 1.0),
+        low: ParameterValue::rgb(0.0, 0.0, 0.0),
+        high: ParameterValue::rgb(1.0, 1.0, 1.0),
         ..a_sine(0.0, 1.0, 0.0)
     }
 }
@@ -243,18 +239,18 @@ fn a_chase(easing: Easing) -> RunningEffect {
 #[test]
 fn a_hard_chase_shows_each_step_from_where_it_starts() {
     let chase = a_chase(Easing::Step);
-    assert_eq!(effect_value_at(&chase, 0), rgb(1.0, 0.0, 0.0), "red");
-    assert_eq!(effect_value_at(&chase, 200), rgb(1.0, 0.0, 0.0), "still red");
-    assert_eq!(effect_value_at(&chase, 400), rgb(0.0, 1.0, 0.0), "green");
-    assert_eq!(effect_value_at(&chase, 700), rgb(0.0, 0.0, 1.0), "blue");
-    assert_eq!(effect_value_at(&chase, 1_000), rgb(1.0, 0.0, 0.0), "round to red");
+    assert_eq!(effect_value_at(&chase, 0), ParameterValue::rgb(1.0, 0.0, 0.0), "red");
+    assert_eq!(effect_value_at(&chase, 200), ParameterValue::rgb(1.0, 0.0, 0.0), "still red");
+    assert_eq!(effect_value_at(&chase, 400), ParameterValue::rgb(0.0, 1.0, 0.0), "green");
+    assert_eq!(effect_value_at(&chase, 700), ParameterValue::rgb(0.0, 0.0, 1.0), "blue");
+    assert_eq!(effect_value_at(&chase, 1_000), ParameterValue::rgb(1.0, 0.0, 0.0), "round to red");
 }
 
 #[test]
 fn a_linear_chase_crossfades_between_its_steps() {
     let chase = a_chase(Easing::Linear);
     // A sixth of a cycle in is halfway from the first step to the second.
-    let ParameterValue::Color { r, g, b } = effect_value_at(&chase, 1_000 / 6) else { panic!("a colour") };
+    let ParameterValue::Color { r, g, b, .. } = effect_value_at(&chase, 1_000 / 6) else { panic!("a colour") };
     assert_near(r, 0.5, "half out of red");
     assert_near(g, 0.5, "half into green");
     assert_close(b, 0.0, "no blue yet");
@@ -265,7 +261,7 @@ fn a_linear_chase_crossfades_between_its_steps() {
 #[test]
 fn the_last_step_wraps_round_to_the_first() {
     let chase = a_chase(Easing::Linear);
-    let ParameterValue::Color { r, g, b } = effect_value_at(&chase, 5_000 / 6) else { panic!("a colour") };
+    let ParameterValue::Color { r, g, b, .. } = effect_value_at(&chase, 5_000 / 6) else { panic!("a colour") };
     assert_near(b, 0.5, "half out of blue");
     assert_near(r, 0.5, "half into red");
     assert_close(g, 0.0, "green is behind us");

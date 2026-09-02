@@ -35,6 +35,16 @@ pub struct Asset {
 /// that has never seen it can fetch it from a peer and verify what came back.
 pub const BUNDLE_MIME: &str = "application/vnd.pult.plugin+zip";
 
+/// A GDTF fixture definition: a zip holding `description.xml` and the meshes and
+/// gobo images it names.
+///
+/// The **file** is the record of an imported fixture type, not the row derived from
+/// it: the row is a reading, and a later version of this console will read more out of
+/// the same bytes than this one does. Keeping the archive whole is what makes that a
+/// re-read rather than a re-download, and what lets the type be exported again exactly
+/// as it arrived.
+pub const GDTF_MIME: &str = "application/vnd.gdtf+zip";
+
 /// What may be stored, and how big each kind may be.
 ///
 /// No SVG: it is a document with scripts in it, and serving one from the console's
@@ -53,6 +63,11 @@ pub const ACCEPTED: &[(&str, usize)] = &[
     // 64 MB. A component with a JavaScript panel beside it, not a media library —
     // but wasm is bulkier than a drawing, so it gets more room than one.
     (BUNDLE_MIME, 64 * 1024 * 1024),
+    // 256 MB. A GDTF carries a mesh per moving part and an image per gobo, and a
+    // detailed moving head from the Share is tens of megabytes before anybody has done
+    // anything unusual. The archive's own unpacked ceiling is in `pult-gdtf`, and it
+    // is the one that matters: a zip can claim to be small and not be.
+    (GDTF_MIME, 256 * 1024 * 1024),
 ];
 
 /// The largest anything may be, which is what the HTTP body limit has to be set to.

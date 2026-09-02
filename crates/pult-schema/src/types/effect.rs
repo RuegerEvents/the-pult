@@ -131,12 +131,12 @@ mod tests {
             curve: Curve::Steps(vec![
                 Step {
                     at: 0.0,
-                    value: ParameterValue::Color { r: 1.0, g: 0.0, b: 0.0 },
+                    value: ParameterValue::rgb(1.0, 0.0, 0.0),
                     easing: Easing::Step,
                 },
                 Step {
                     at: 0.5,
-                    value: ParameterValue::Color { r: 0.0, g: 1.0, b: 0.0 },
+                    value: ParameterValue::rgb(0.0, 1.0, 0.0),
                     easing: Easing::Linear,
                 },
             ]),
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(back, spec);
 
         let Curve::Steps(steps) = back.curve else { panic!("still a step list") };
-        assert_eq!(steps[1].value, ParameterValue::Color { r: 0.0, g: 1.0, b: 0.0 });
+        assert_eq!(steps[1].value, ParameterValue::rgb(0.0, 1.0, 0.0));
         assert_eq!(steps[0].easing, Easing::Step, "a hard chase holds and jumps");
     }
 

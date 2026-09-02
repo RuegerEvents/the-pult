@@ -15,7 +15,7 @@ import type {
 	ParameterValue,
 	ProgrammerValue
 } from './generated/index.js';
-import { kindLabel, parameterKey } from './patch.js';
+import { kindLabel, modeHas, modeOf, parameterKey } from './patch.js';
 import type { Showing } from './stores/output.js';
 
 // ── Entry ids ─────────────────────────────────────────────────────────────────
@@ -70,6 +70,15 @@ export type EditableParameter = {
 	defaultValue: ParameterValue;
 	/** How many of the selected fixtures actually have it. */
 	count: number;
+	/**
+	 * How many of them are patched in a mode that does not place it.
+	 *
+	 * A head in its basic mode has a zoom the light can do and the console cannot
+	 * send. Showing that as an ordinary fader would be the panel lying about what
+	 * moving it does; hiding the row would leave an operator unable to work out why
+	 * the light will not zoom. So it is shown, and it says so.
+	 */
+	unreachable: number;
 	/** True when some of the selection has it and some does not. */
 	mixed: boolean;
 };
@@ -94,12 +103,20 @@ export function editableParameters(
 	for (const fixture of fixtures) {
 		const type = byType.get(fixture.fixture_type_id);
 		if (!type) continue;
+		const mode = modeOf(type, fixture.address);
 		for (const parameter of type.parameters) {
 			if (parameter.direction !== 'Output') continue;
 			const key = parameterKey(parameter.kind);
+			// A parameter the fixture's chosen mode does not place is one the console
+			// cannot send. The row stays — it is still a thing the light can do, and an
+			// operator who cannot see it cannot work out why the light will not zoom —
+			// but it says so, and a selection where some fixtures can and some cannot
+			// says that too.
+			const reachable = modeHas(mode, key);
 			const existing = rows.get(key);
 			if (existing) {
 				existing.count += 1;
+				existing.unreachable += reachable ? 0 : 1;
 				continue;
 			}
 			rows.set(key, {
@@ -108,6 +125,7 @@ export function editableParameters(
 				label: kindLabel(parameter.kind),
 				defaultValue: parameter.default_value,
 				count: 1,
+				unreachable: reachable ? 0 : 1,
 				mixed: false
 			});
 		}

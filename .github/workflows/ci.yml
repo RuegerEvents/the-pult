@@ -1,0 +1,89 @@
+name: CI
+
+# What `cargo test`, `npm test` and `npm run check` say, on every push and every
+# pull request. Both sides are kept at zero warnings, so the build is `-D warnings`
+# rather than a step somebody has to read the log of.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # `cargo test` and not `--workspace`: the desktop shells are members so one
+      # lockfile covers them, but building them needs webkit2gtk. The default
+      # members are the console.
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm --prefix frontend ci
+      # The vitest half of the evaluator corpus reads the built wasm, and says so
+      # loudly rather than passing quietly when it is missing.
+      - run: cargo install wasm-bindgen-cli --locked
+      - run: scripts/build-evaluator.sh
+      - run: cargo run -p pult-codegen -- generate
+      - run: npm --prefix frontend test
+      - run: npm --prefix frontend run check
+
+  # ── Other people's files ────────────────────────────────────────────────────
+  # The GDTF and MVR readers, against real files rather than the small ones
+  # checked in beside them. Everything here is `#[ignore]` in the default suite,
+  # because the corpus is not in the repository — it is other people's work under
+  # other people's licences.
+  interop-corpus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # `xmllint` validates our exports against the spec's own XSDs. A test that
+      # cannot find it fails rather than skipping, so a missing tool is visible.
+      - run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+
+      # Keyed on the script, so changing which files the corpus holds fetches
+      # again and leaving it alone does not.
+      - uses: actions/cache@v4
+        with:
+          path: testdata/corpus
+          key: interop-corpus-${{ hashFiles('scripts/fetch-interop-corpus.sh') }}
+
+      - run: scripts/fetch-interop-corpus.sh
+        env:
+          GDTF_SHARE_USER: ${{ secrets.GDTF_SHARE_USER }}
+          GDTF_SHARE_PASSWORD: ${{ secrets.GDTF_SHARE_PASSWORD }}
+
+      - run: cargo test --locked -p pult-gdtf -- --ignored
