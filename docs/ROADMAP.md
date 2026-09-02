@@ -2311,36 +2311,75 @@ Verified against the code on 2026-08-31 unless an entry says otherwise.
 Sections below are themes, not sequence. This list is the sequence, and it is the
 one thing here meant to be rearranged. `→` names what has to exist first.
 
-1. **performance-tests** — 5000 fixtures, and whether the console is still
-   comfortable. First because it is cheap, and because two items below are
-   waiting on what it finds. → none
-2. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
-   frontend proxy comes from; the wire stays generic. → none
-3. **gdtf-import** — fixture definitions from a file. The physical data it brings
-   is where a beam angle and real pan/tilt ranges come from, which is why the two
-   items after it wait on it. → none
-4. **mvr-import** — fixtures, positions and geometry into `StagePlan` and the
+Reordered on 2026-09-02, into four phases with a reason each, rather than into a
+ranking. **Get a real rig in, be able to see what the console is doing, measure
+it, then fix what the measurement found.**
+
+**A real rig first.** Everything downstream reads better against one. The viewer
+gets a beam angle it cannot otherwise have and a plan worth drawing; the
+measurement gets a rig somebody actually hung rather than a generated one; and
+the 540°/270° constants task 14 complains about get real numbers. This is also
+the answer to a question asked and got wrong earlier the same day: a
+`default_beam_angle` on `FixtureType` does **not** free the viewer from
+gdtf-import, because fixture types are built by `fixture_type_from` off a node's
+port description and by the demo seed and by nothing else, and there is no
+fixture type editor in the frontend, so the field would be written by nobody.
+
+**Then the console can be seen at all.** Three panels that share one open
+question — where a per-station diagnostic lives, and whether it reaches a peer —
+so the decision gets made once across the three of them. The log panel leads
+because it is the only one whose audience has no workaround: `logging.log`
+promises a plugin author a log and writes it to a stdout that does not exist
+under `pult-gui`, under a packaged `.app`, or in a browser.
+
+**Then measure**, with the instruments built and a real rig to point them at.
+The browser half of the stats panel is the instrument that decides this, because
+performance-tests doubts the browser and has no other way to look at one.
+
+**Then act on what it found**, as one piece of work rather than three. The viewer
+rewrite, disk off the actor, per-source admission and the parallel-render
+question are all answers to the same measurement, and doing them together is what
+stops each being decided on taste. Note that all three of rig-viewer-fidelity's
+arrows resolve before it for the first time: gdtf-import for the beam angle,
+mvr-import for a rig worth drawing, performance-tests for whether instancing is
+needed.
+
+1. **gdtf-import** — fixture definitions from a file, and the only source of a
+   beam angle or a real pan and tilt range there is. → none
+2. **mvr-import** — fixtures, positions and geometry into `StagePlan` and the
    asset store. → gdtf-import, for the definitions MVR references
-5. **rig-viewer-fidelity** — beams that read as light, and the one live defect
-   left. → gdtf-import for the beam angle; better after mvr-import, which is what
-   puts a rig in there worth drawing; and after performance-tests, which is what
-   says whether the viewer needs rebuilding or only repainting
-6. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
-   plugin over introspection, which is what introspection is for. → none
-7. **outputs-viewer** — what actually leaves the console, per universe and per
-   node. → none
-8. **system-stats-panel** — throughput, sync backlog, per-connector frame cost,
-   client counts, and what the browser costs itself. → none, though
-   performance-tests is what makes the browser half of it urgent
-9. **system-logs-panel** — the console cannot show its own log, and on a desktop
-   app or a tablet there is nowhere else for it to be. → none, and worth deciding
-   alongside 8
-10. **engine-admission** — what is left of the old tick-isolation plan: disk off
-    the write path and per-source admission. → performance-tests, which is what
-    says whether this is the bottleneck or only the tidy thing to do
-11. **showfile-management** — versioning, save-as, autosave, backup. → none
-12. **showfile-assets-folder** — a folder with an assets directory, or one file.
+3. **system-logs-panel** — the console cannot show its own log, and on a desktop
+   app or a tablet there is nowhere else for it to be. → none, and it leads the
+   block because its audience is the one with no workaround
+4. **system-stats-panel** — the browser's half is the figure that does not exist:
+   frame rate, evaluator time per frame, clock offset. The station's half is a
+   read of `frame_costs`, which task 44 publishes and nothing displays. → none,
+   and it is what makes item 6 able to see a browser
+5. **outputs-viewer** — what actually leaves the console, per universe and per
+   node. → none, and it closes the block 3 and 4 open
+6. **performance-tests** — 5000 fixtures, and whether the console is still
+   comfortable. → system-stats-panel, for the browser figure; and better after
+   mvr-import, which is what lets it measure an imported rig rather than only a
+   generated one
+7. **rig-viewer-fidelity** — beams that read as light, and the two live defects
+   in the code it rewrites. → gdtf-import, mvr-import and performance-tests, all
+   of which are now behind it
+8. **engine-admission** — disk off the actor, per-source admission, and the
+   parallel-render question that task 29 answered "no" against a tick that no
+   longer exists. → performance-tests, which says which of those is on the path
+   of a real show. Partitioning across stations is the fourth question here and
+   stays unnumbered: it is worth asking only if item 6 finds a rig one station
+   cannot carry
+9. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
+   frontend proxy comes from; the wire stays generic. → none
+10. **showfile-management** — versioning, save-as, autosave, backup. → none, and
+    what blocks it is a decision rather than code: a checkpoint is either
+    session-wide agreed or explicitly per-station, and everything else follows
+11. **showfile-assets-folder** — a folder with an assets directory, or one file.
     → decided with showfile-management, not separately
+12. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+    plugin over introspection, which is what introspection is for. → none, and
+    much better after gdtf-import, which is what puts a real patch in the show
 13. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
     themselves dynamic. → rig-viewer-fidelity, for anything that happens in 3D
 14. **voice-input** — speech to the command line, grammar first and NL on parse
@@ -2361,6 +2400,12 @@ one thing here meant to be rearranged. `→` names what has to exist first.
     → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
 21. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
     → a real TS plugin wanting to exist
+
+One thing does not belong to any phase. The `<T.SpotLight>` mounted inside `{#if
+beam.output.level > 0.01}` recompiles every material in the scene when a fade
+crosses 1%, which is a fade from black, and the fix is one line. It is written up
+under rig-viewer-fidelity because that is where the context is, and it should not
+wait for item 7.
 
 ### Plugins
 
@@ -2521,16 +2566,35 @@ the cheaper lesson. And their fixture bodies are pure black, so the render canno
 tell you what is hanging up there. Our emissive body tinted by its own output is
 the better call and should survive whatever else changes.
 
-One defect in ours turned up while comparing and is still there.
-`<T.ConeGeometry args={[beam.length * 0.12, beam.length, ...]}>` has reactive
-`args`, so Threlte rebuilds the geometry whenever the throw changes. Dragging a
-beam spot allocates a fresh cone per fixture per frame, and since task 44 the
-throw is re-evaluated every animation frame, so a fade does it too.
+Two defects in ours turned up while comparing, and both are still there.
+Corrected on 2026-09-02: an earlier version of this entry said the second one
+went with the task 44 rewire, and it did not. Both are still in
+`Rig3D.svelte`.
 
-A second one, the `<T.SpotLight>` inside `{#if beam.output.level > 0.01}`, was
-the worse of the two: crossing that threshold changed the scene's light count,
-which changed three.js's program cache key and recompiled every material
-mid-fade. It went with the task 44 rewire and is no longer here.
+- **A geometry per fixture per frame.** `<T.ConeGeometry args={[beam.length *
+  0.12, beam.length, ...]}>` has reactive `args`, so Threlte rebuilds the
+  geometry whenever the throw changes. Dragging a beam spot allocates a fresh
+  cone per fixture per frame, and since task 44 the throw is re-evaluated every
+  animation frame, so a fade does it too.
+- **Every material recompiled at 1%.** The `<T.SpotLight>` is inside `{#if
+  beam.output.level > 0.01}`, so crossing that threshold changes the scene's
+  light count, which changes three.js's program cache key and recompiles every
+  material mid-fade. It fires on the most ordinary thing a console does, a fade
+  from black, and the fix is one line: keep the light mounted and drive its
+  intensity to zero, so the count is constant.
+
+They were briefly split into an item of their own on 2026-09-02 and folded back
+the same day, and the reason is worth keeping. **The first one is deleted by the
+work above rather than fixed by it**: the beam stops being geometry, so there are
+no reactive `args` left to rebuild. Fixing it separately is writing code this
+entry throws away. The second is a one-line fix that the rewrite may or may not
+subsume, depending on whether the floor pool survives as a real light or becomes
+part of the beam shader, so it is worth doing whenever somebody is next in the
+file rather than waiting for anything here.
+
+What does *not* depend on any of this is the three cheap wins at the end of the
+open questions. They touch the gizmos, the camera and the grid, not the beam,
+and nothing above deletes them.
 
 Open questions.
 
@@ -2629,6 +2693,13 @@ today, because OpenHaunt nodes describe themselves; GDTF is the same idea as a
 file, where the description becomes a fixture type.
 
 - Real pan and tilt ranges fix the 540°/270° constants task 14 complains about.
+- **It is the only source of a beam angle there is.** Adding
+  `default_beam_angle` to `FixtureType` instead was tried on paper and does not
+  work: fixture types are built by `fixture_type_from` off a node's port
+  description and by the demo seed, and by nothing else, so a field nobody writes
+  is the hardcoded cone with extra steps. A hand-authored catalogue would also
+  answer it, and is the alternative worth naming, but no catalogue exists and
+  this entry is what would bring one.
 - Channel-mode selection, wheels, and physical data: how much of GDTF maps onto
   `ParameterDefinition` before it has to grow?
 
@@ -2829,7 +2900,14 @@ What to measure, roughly in the order the answers matter.
   somebody does, and so is taking a cue that touches all of them at once.
 - **The browser.** No figure exists at all, because `--measure` deliberately
   stops the dev server and the sims so they are not taking the CPU being
-  measured. The two numbers wanted are the evaluator crossing per frame
+  measured. Which is why system-stats-panel now sits ahead of this item rather
+  than behind it: the browser reporting on itself is the instrument, and there
+  is no other one.
+- **An imported rig, not only a generated one.** gdtf-import and mvr-import are
+  ahead of this item now, which means a real plan with real fixture types can be
+  the thing measured. Worth doing both: the generated rig is the one whose shape
+  can be dialled, and an imported one is the only check that the generated shape
+  resembles a rig anybody hangs. The two numbers wanted are the evaluator crossing per frame
   (`stores/output.ts` evaluates 200 parameters in about 17 µs, so 5000 fixtures'
   worth of a rig panel is roughly 2.5 ms of a 16.7 ms frame at 60 Hz, if it is
   linear) and everything the viewer does around it, which is where the doubt
@@ -2852,11 +2930,22 @@ What to measure, roughly in the order the answers matter.
   note that a connector's thread is already off the engine, so this costs nothing
   architecturally.
 - **rig-viewer-fidelity.** The viewer rebuilds a `Quaternion`, an `Euler` and a
-  `Color` per fixture per frame, and still allocates a fresh `ConeGeometry` per
-  fixture whenever the throw changes. At 5000 fixtures those stop being untidy
-  and start being the frame budget. Whether the viewer has to go imperative and
+  `Color` per fixture per frame. At 5000 fixtures that stops being untidy and
+  starts being the frame budget. But it also still allocates a cone per fixture
+  per frame and recompiles every material when a fade crosses 1%, and both of
+  those are in code that entry rewrites. So measure the **evaluator crossing**
+  hard, because that figure survives whatever the viewer becomes, and treat what
+  the current beam drawing costs as the disposable half. The one question this
+  measurement should still settle for that entry is instancing, which is a
+  question about 5000 `Quaternion`s and not about the cone. Whether the viewer has to go imperative and
   instanced, which is that item's hardest open question, is a decision this
   measurement should make rather than leave to taste.
+
+**This is where the acting phase begins.** rig-viewer-fidelity and
+engine-admission both sit immediately after this item and are both answers to it,
+which is deliberate: the viewer's instancing question and the engine's
+parallel-render question are the same kind of question, and neither should be
+settled on taste. Whatever this measures, those two are what it is measured for.
 
 **Not a CI gate, and task 43 explains why.** Two identical `huge` runs varied by
 more than a percentage point of CPU and fifteen milliseconds of tick. A threshold
