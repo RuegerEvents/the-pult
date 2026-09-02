@@ -9,7 +9,7 @@ use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot, watch},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::engine::EngineHandle;
@@ -33,10 +33,19 @@ pub enum SyncCommand {
         authorship: Authorship,
     },
     /// Connect to a new peer (called by SessionManager on peer discovery).
+    /// Dial a peer, at the first of these addresses that answers.
+    ///
+    /// A list because a station advertises every address it has, and which of them
+    /// reaches *this* machine is not something either end can work out on its own —
+    /// see `session::reachable_at`, which is what puts them in this order.
+    ///
+    /// `reply` carries what happened, so a caller can tell a session it joined from
+    /// one it only asked to join.
     ConnectPeer {
-        addr: SocketAddr,
+        addrs: Vec<SocketAddr>,
         session_id: Uuid,
         show_id: Uuid,
+        reply: oneshot::Sender<Result<SocketAddr, String>>,
     },
     /// Update which node is the current leader (for HelloAck).
     SetLeader(NodeId),
@@ -84,8 +93,24 @@ impl SyncHandle {
             .await;
     }
 
-    pub async fn connect_peer(&self, addr: SocketAddr, session_id: Uuid, show_id: Uuid) {
-        let _ = self.0.send(SyncCommand::ConnectPeer { addr, session_id, show_id }).await;
+    /// Dial a peer, at the first of `addrs` that answers, and say which it was.
+    ///
+    /// Waits for the handshake, so `Ok` means this node reached that station, agreed a
+    /// protocol version and a show with it, and sent it whatever it was missing. What
+    /// it does not wait for is the peer being registered, which happens a moment later
+    /// on this manager's own loop — the connection is real either way.
+    pub async fn connect_peer(
+        &self,
+        addrs: Vec<SocketAddr>,
+        session_id: Uuid,
+        show_id: Uuid,
+    ) -> Result<SocketAddr, String> {
+        let (tx, rx) = oneshot::channel();
+        self.0
+            .send(SyncCommand::ConnectPeer { addrs, session_id, show_id, reply: tx })
+            .await
+            .map_err(|_| "the sync manager has stopped".to_string())?;
+        rx.await.unwrap_or_else(|_| Err("the sync manager dropped the question".into()))
     }
 
     pub async fn set_leader(&self, node_id: NodeId) {
@@ -239,31 +264,39 @@ impl SyncManager {
                 };
                 self.fan_out(msg);
             }
-            SyncCommand::ConnectPeer { addr, session_id, show_id } => {
-                // Spawned, never awaited here. Dialling asks this node's own engine
+            SyncCommand::ConnectPeer { addrs, session_id, show_id, reply } => {
+                // Spawned, never awaited *here*. Dialling asks this node's own engine
                 // for its clock and its missed operations, and the engine reaches
                 // back into this command channel to broadcast every SYNCED write. Do
                 // the handshake inline and that becomes a cycle: the engine blocks on
                 // a full channel, the handshake blocks on the engine, and the loop
                 // that would drain the channel is the one waiting for the handshake.
                 //
-                // The result comes back through the same channel an accepted peer
+                // The *caller* may await it, and does — `session.join` answers what
+                // actually happened. That is safe for the same reason: this loop goes
+                // on draining while the spawned task and the caller wait on each other.
+                //
+                // The connection comes back through the same channel an accepted peer
                 // uses, so there is one place where a peer is registered.
                 let node_id = self.node_id;
                 let engine = self.engine.clone();
                 let on_lost = self.self_tx.clone();
                 let connected = self.connected_tx.clone();
                 tokio::spawn(async move {
-                    let stream = match tokio::net::TcpStream::connect(addr).await {
-                        Ok(stream) => stream,
-                        Err(e) => return warn!("[sync] connect to {addr} failed: {e}"),
+                    let Some((addr, stream)) = dial(&addrs).await else {
+                        let _ = reply.send(Err(format!("nothing answered at any of {addrs:?}")));
+                        return;
                     };
                     match spawn_outbound(stream, node_id, session_id, show_id, engine, on_lost).await
                     {
                         Ok((peer_id, sender)) => {
                             let _ = connected.send((peer_id, sender)).await;
+                            let _ = reply.send(Ok(addr));
                         }
-                        Err(e) => warn!("[sync] outbound handshake to {addr} failed: {e}"),
+                        Err(e) => {
+                            let _ =
+                                reply.send(Err(format!("{addr} did not finish the handshake: {e}")));
+                        }
                     }
                 });
             }
@@ -397,6 +430,41 @@ impl SyncManager {
             self.peers.remove(&id);
         }
     }
+}
+
+// ── Dialling ──────────────────────────────────────────────────────────────────
+
+/// How long reaching a peer may take, across every address it offered.
+///
+/// Bounded, and bounded as a *total*, because somebody is waiting on the answer:
+/// `session.join` reports what actually happened, and an answer that arrives after the
+/// caller has given up is the same as no answer.
+///
+/// A station on the same network answers in milliseconds, and an address that is not
+/// there refuses immediately. What this is for is the third case — a firewall dropping
+/// the packet, where the operating system's own timeout is over a minute. Three seconds
+/// is far longer than a local network ever needs and short enough to sit through.
+const DIAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The first of these addresses that answers, and which one it was.
+///
+/// A station advertises every address it has, and which of them reaches this machine is
+/// not something either end can work out on its own: a link-local IPv6 address is
+/// useless without the interface it was learned on, an IPv4 link-local one works only
+/// on the segment, and loopback works only if the two are the same machine. So the
+/// caller ranks them by how far they reach and this works down the list.
+/// The budget is split evenly between them, so one address that neither answers nor
+/// refuses cannot spend the whole of it before the one that works is tried.
+async fn dial(addrs: &[SocketAddr]) -> Option<(SocketAddr, tokio::net::TcpStream)> {
+    let each = DIAL_BUDGET / addrs.len().max(1) as u32;
+    for addr in addrs {
+        match tokio::time::timeout(each, tokio::net::TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => return Some((*addr, stream)),
+            Ok(Err(e)) => debug!("[sync] {addr} did not answer: {e}"),
+            Err(_) => debug!("[sync] {addr} said nothing in {each:?}"),
+        }
+    }
+    None
 }
 
 #[cfg(test)]

@@ -50,5 +50,5 @@
 ## 8. The whole thing
 
 - [x] 8.1 Verify `cargo test` and `cd frontend && npm test && npm run check` pass with zero warnings from either build
-- [x] 8.2 Verify `scripts/demo.sh --two --size big` brings up two stations that agree on the rig, and that a browser on each shows the same thing at the same moment — verified as `two_stations_agree_about_what_the_rig_is_doing` in the sync suite rather than by hand: the demo's second station could not join on this machine (mDNS advertises a scopeless link-local IPv6 and `infra/session/mod.rs:291` takes the first address it is given, which is unroutable). Pre-existing and unrelated; noted in the backlog
+- [x] 8.2 Verify `scripts/demo.sh --two --size big` brings up two stations that agree on the rig, and that a browser on each shows the same thing at the same moment — both ways. As `two_stations_agree_about_what_the_rig_is_doing` in the sync suite, and by running the demo, which first needed the `peer-address-selection` defect fixing: the second station could not join at all, because mDNS handed over a scopeless link-local IPv6 and `infra/session/mod.rs` dialled whichever address the hash set yielded. Pre-existing, fixed alongside, recorded in roadmap task 44
 - [x] 8.3 Verify the reference plugins still load and run, since the evaluator moved out from under the host functions they use

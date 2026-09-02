@@ -2267,6 +2267,33 @@ reading, so `tokio::time::pause()` does not fast-forward a fade. A test that nee
 to advance has to let real time pass or drive `Playback` directly. Several tests here
 run a short fade in real time for exactly that reason.
 
+**And one bug found while verifying it, fixed here because it was in the way.**
+`scripts/demo.sh --two` could not sync at all on this machine: the two stations
+discovered each other over mDNS, joined the session, and never connected.
+`infra/session/mod.rs` took `info.get_addresses().iter().next()` — and that is a
+`HashSet`, so it was not the first address the other station advertised but whichever
+the hash order gave, differently on different runs. Half the time that was a
+link-local `fe80::` address, which cannot be dialled at all: it is only meaningful
+together with the interface it was learned on, and mdns-sd does not say which that was,
+so the `SocketAddr` built from it carries no scope id and the connect fails with "No
+route to host".
+
+Two halves to the fix, because ranking alone would still be a guess. `reachable_at`
+orders what was advertised by how far it reaches — the network, then the segment, then
+this machine — and drops what cannot be dialled rather than ranking it last, since
+spending a timeout on it only delays the address that was going to work. And
+`sync::dial` works *down* that list with a two-second budget each, because which address
+reaches a given machine is not something either end can know on its own.
+
+And the half of it that was not about addresses at all: `Join` used to answer `Ok`
+before the dial had been tried, so a session that could not be reached was one the UI
+said had been joined — the Sessions panel has had a toast for that since it was written
+and it could never fire. It waits now, and answers what happened, naming every address
+it tried. Safe to wait on despite the deadlock the sync manager is careful about: that
+manager spawns the dial and goes on draining its channel, so nothing the session actor
+waits for is waiting on it. Bounded at three seconds across every candidate, split
+between them, because somebody is on the other end of the answer — an answer that
+arrives after the caller has given up is the same as no answer.
 
 ## Further out
 

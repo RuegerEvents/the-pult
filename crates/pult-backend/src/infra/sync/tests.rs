@@ -133,7 +133,7 @@ async fn a_joining_node_receives_the_leader_s_state() {
     let seq = a_sequence("Act 1");
     create(&leader, &seq).await;
 
-    follower.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    follower.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     eventually("the snapshot to arrive", || async {
         name_of(&follower, seq.id).await.as_deref() == Some("Act 1")
@@ -152,7 +152,7 @@ async fn each_side_learns_the_other_s_node_id() {
     leader.sync.set_leader(elsewhere).await;
     follower.sync.set_leader(elsewhere).await;
 
-    follower.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    follower.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
     eventually("the peers to register", || async {
         peer_count(&leader.sync).await == 1 && peer_count(&follower.sync).await == 1
     })
@@ -178,8 +178,8 @@ async fn a_node_dialling_two_peers_keeps_both() {
 
     let session = Uuid::new_v4();
     let show = Uuid::new_v4();
-    dialler.sync.connect_peer(first.addr, session, show).await;
-    dialler.sync.connect_peer(second.addr, session, show).await;
+    dialler.sync.connect_peer(vec![first.addr], session, show).await.expect("the peer answers");
+    dialler.sync.connect_peer(vec![second.addr], session, show).await.expect("the peer answers");
 
     eventually("both connections to register", || async {
         peer_count(&dialler.sync).await == 2
@@ -202,8 +202,8 @@ async fn a_leader_reaches_every_follower() {
 
     let session = Uuid::new_v4();
     let show = Uuid::new_v4();
-    first.sync.connect_peer(leader.addr, session, show).await;
-    second.sync.connect_peer(leader.addr, session, show).await;
+    first.sync.connect_peer(vec![leader.addr], session, show).await.expect("the peer answers");
+    second.sync.connect_peer(vec![leader.addr], session, show).await.expect("the peer answers");
 
     eventually("both followers to register", || async { peer_count(&leader.sync).await == 2 })
         .await;
@@ -223,7 +223,7 @@ async fn a_write_on_one_node_reaches_the_other() {
 
     let seq = a_sequence("Act 1");
     create(&one, &seq).await;
-    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
     eventually("the snapshot", || async { name_of(&two, seq.id).await.is_some() }).await;
 
     one.engine
@@ -369,7 +369,7 @@ async fn a_brand_new_node_is_sent_a_snapshot() {
     create(&leader, &seq).await;
 
     let joiner = a_node().await;
-    joiner.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    joiner.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     eventually("the joiner to have the show", || async {
         name_of(&joiner, seq.id).await.as_deref() == Some("Act 1")
@@ -404,7 +404,7 @@ async fn a_returning_node_is_replayed_only_what_it_missed() {
         .await
         .unwrap();
 
-    returning.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    returning.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     eventually("the missed write to be replayed", || async {
         name_of(&returning, seq.id).await.as_deref() == Some("Act 2")
@@ -434,7 +434,7 @@ async fn catching_up_replays_several_writes_in_order() {
             .unwrap();
     }
 
-    returning.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    returning.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     eventually("the last write to win", || async {
         name_of(&returning, seq.id).await.as_deref() == Some("Final")
@@ -458,7 +458,7 @@ async fn a_node_that_missed_nothing_is_still_connected_and_current() {
         .await
         .unwrap();
 
-    peer.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    peer.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
     eventually("the peers to register", || async { peer_count(&leader.sync).await == 1 }).await;
 
     // Live replication still works after a catch-up handshake.
@@ -689,7 +689,7 @@ async fn a_session_of_three() -> (Node, Node, Node) {
     let show = Uuid::new_v4();
     for follower in [&first, &second] {
         follower.sync.set_leader(leader.id).await;
-        follower.sync.connect_peer(leader.addr, session, show).await;
+        follower.sync.connect_peer(vec![leader.addr], session, show).await.expect("the peer answers");
     }
     eventually("both followers to register", || async { peer_count(&leader.sync).await == 2 })
         .await;
@@ -763,7 +763,7 @@ async fn the_last_node_standing_leads_itself() {
     let leader = a_node().await;
     let follower = a_node().await;
     follower.sync.set_leader(leader.id).await;
-    follower.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    follower.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
     eventually("the peer to register", || async { peer_count(&leader.sync).await == 1 }).await;
 
     leader.sync.disconnect_all().await;
@@ -785,7 +785,7 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
 
     let leader = a_node().await;
     let follower = a_node().await;
-    follower.sync.connect_peer(leader.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    follower.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     let fixture = Fixture {
         id: Uuid::new_v4(),
@@ -850,7 +850,7 @@ async fn a_station_row_reaches_the_other_console() {
 
     let one = a_node().await;
     let two = a_node().await;
-    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     let station = Station {
         id: one.id.0,
@@ -935,7 +935,7 @@ async fn each_station_reports_its_own_frame_cost_and_not_the_others() {
         .await
         .unwrap();
 
-    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
     eventually("the joining console to have taken the session's rows", || async {
         two.engine
             .get(vec![PathSegment::Key("stations".into()), PathSegment::Id(one.id.0)])
@@ -980,7 +980,7 @@ async fn a_peer_that_reports_no_frame_cost_is_still_a_station() {
 
     let one = a_node().await;
     let two = a_node().await;
-    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     // The row an older build sends: no `frame_costs` key at all, not an empty one.
     let row = serde_json::json!({
@@ -1104,7 +1104,7 @@ async fn a_plugins_show_scoped_write_reaches_the_other_station() {
 
     let one = a_node().await;
     let two = a_node().await;
-    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     let id = PluginDatum::id_for("macros", "saved", "opening");
     let datum = PluginDatum {
@@ -1180,7 +1180,7 @@ async fn two_stations_writing_one_key_converge_on_one_row() {
             .unwrap();
     }
 
-    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     async fn row_count(node: &Node) -> Option<usize> {
         node.engine
@@ -1227,7 +1227,7 @@ async fn a_fixture_row_carrying_the_removed_field_still_arrives() {
 
     let one = a_node().await;
     let two = a_node().await;
-    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     // The row an older build sends: one map called `live_values`, carrying both a
     // driven value and a sensed one, and no `sensed_values` key at all.
@@ -1279,7 +1279,7 @@ async fn a_fixture_row_carrying_the_removed_field_still_arrives() {
 async fn a_fixture_row_from_here_carries_no_live_values() {
     let one = a_node().await;
     let two = a_node().await;
-    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     let fixture_id = Uuid::new_v4();
     one.engine
@@ -1345,7 +1345,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
 
     let one = a_node().await;
     let two = a_node().await;
-    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
 
     let put = |node: &Node, table: &'static str, value: serde_json::Value| {
         let engine = node.engine.clone();
@@ -1559,3 +1559,90 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
 }
 
 
+// ── Reaching a peer that offered several addresses ────────────────────────────
+
+/// A station advertises every address it has, and only some of them reach this
+/// machine. The dialler works down the list rather than picking one and giving up.
+///
+/// The bug this is for: mDNS offered a link-local IPv6 address and an ordinary IPv4
+/// one, the console took whichever the hash set happened to yield first, and two
+/// stations that had found each other never synced. Ranking the addresses is half the
+/// fix; the other half is that a rank is a guess, and a guess needs a second try.
+#[tokio::test]
+async fn a_peer_is_reached_at_the_first_address_that_answers() {
+    let leader = a_node().await;
+    let follower = a_node().await;
+
+    // Two addresses that will not answer, then the one that will. The first is a port
+    // nothing is bound to, which refuses immediately; the second is the same, so the
+    // list is plainly walked rather than the good one happening to be tried first.
+    let nowhere = || {
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
+        let addr = socket.local_addr().expect("its address");
+        drop(socket); // and now nothing is listening there
+        addr
+    };
+
+    let reached = follower
+        .sync
+        .connect_peer(vec![nowhere(), nowhere(), leader.addr], Uuid::new_v4(), Uuid::new_v4())
+        .await
+        .expect("the third address answers");
+    assert_eq!(reached, leader.addr, "and it says which one did");
+
+    eventually("the follower to reach the leader past two dead addresses", || async {
+        peer_count(&follower.sync).await == 1
+    })
+    .await;
+}
+
+/// And when none of them answers it says so, rather than leaving the caller to assume.
+///
+/// Which is what `session.join` is built on: a station that could not be reached has to
+/// be a join that failed, or a console shows a session it is not in and the only trace
+/// of the truth is a line in a log.
+#[tokio::test]
+async fn a_peer_that_answers_nowhere_says_so() {
+    let follower = a_node().await;
+    let nowhere = {
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
+        let addr = socket.local_addr().expect("its address");
+        drop(socket);
+        addr
+    };
+
+    let outcome =
+        follower.sync.connect_peer(vec![nowhere], Uuid::new_v4(), Uuid::new_v4()).await;
+
+    let why = outcome.expect_err("nothing was listening there");
+    assert!(why.contains(&nowhere.to_string()), "and it names where it tried: {why}");
+    assert_eq!(peer_count(&follower.sync).await, 0, "nothing answered, so nothing connected");
+}
+
+/// Something answering that is not a console is a different failure from nothing
+/// answering, and says so differently.
+///
+/// A port that accepts and then says nothing is what an operator gets by typing the
+/// wrong address, or by a station having been replaced by something else on that port.
+/// "Nothing is there" would be the wrong thing to tell them; something is.
+#[tokio::test]
+async fn a_peer_that_answers_but_is_not_a_console_says_that_instead() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let addr = listener.local_addr().expect("its address");
+    tokio::spawn(async move {
+        // Accept, and hang up without a word.
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
+
+    let follower = a_node().await;
+    let why = follower
+        .sync
+        .connect_peer(vec![addr], Uuid::new_v4(), Uuid::new_v4())
+        .await
+        .expect_err("whatever that is, it is not a station");
+
+    assert!(why.contains("handshake"), "and it says how far it got: {why}");
+    assert!(why.contains(&addr.to_string()), "and where: {why}");
+}

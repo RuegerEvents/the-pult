@@ -38,33 +38,30 @@ what has to exist first.
 9. **system-stats-panel** — throughput, sync backlog, per-connector frame cost, client
    counts, and what the *browser* costs itself. Unblocked: there is now a browser load
    to report, because the browser is what evaluates. → none
-10. **peer-address-selection** — two stations on one laptop discover each other and
-    never sync, because the first address mDNS offers is a scopeless link-local IPv6.
-    Small, and it is the demo command most likely to be run. → none
-11. **tick-isolation** — on hold, and due a re-scope: `values-as-functions` answered
+10. **tick-isolation** — on hold, and due a re-scope: `values-as-functions` answered
     most of what it was for. What survives is disk off the write path, per-source
     admission and the single engine queue. → nothing, but re-read it before proposing
-12. **showfile-management** — versioning, save-as, autosave, backup. → none
-13. **showfile-assets-folder** — a folder with an assets directory, or one file.
+11. **showfile-management** — versioning, save-as, autosave, backup. → none
+12. **showfile-assets-folder** — a folder with an assets directory, or one file.
     → decided with showfile-management, not separately
-14. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+13. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
     themselves dynamic. → rig-viewer-fidelity, for anything that happens in the 3D view
-15. **voice-input** — speech to the command line, grammar first and NL on parse
+14. **voice-input** — speech to the command line, grammar first and NL on parse
     failure. → none
-16. **nl-show-context** — what relative syntax cannot reach, and whether it is worth
+15. **nl-show-context** — what relative syntax cannot reach, and whether it is worth
     the permission it costs. → voice-input, which is what shows which utterances
     actually arrive
-17. **open-control-interfaces** — OSC, MIDI, control surfaces. → none
-18. **timecode-workflow** — waveform and beat-grid timecode, timed playback, audio
+16. **open-control-interfaces** — OSC, MIDI, control surfaces. → none
+17. **timecode-workflow** — waveform and beat-grid timecode, timed playback, audio
     import. The biggest item here and the one the spec is most opinionated about.
     → none technically
-19. **llm-cost-overview** — token and cost accounting out of the NL plugin. → none
-20. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own frame
+18. **llm-cost-overview** — token and cost accounting out of the NL plugin. → none
+19. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own frame
     rate survives the boundary. → the benchmarks from demo-shows and
     values-as-functions, which are what decides it
-21. **video-mapping-ndi** — NDI output; scope carefully, it hides a media server.
+20. **video-mapping-ndi** — NDI output; scope carefully, it hides a media server.
     → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-22. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+21. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
     → a real TS plugin wanting to exist
 
 ## Plugins (builds on the WIP WASM runtime)
@@ -589,24 +586,24 @@ sync backlog, WS client counts, broker stats.
     tablet is struggling, or is it LOCAL to the station serving it? Seeing it from
     anywhere is the useful version and costs a row per client per session.
 
-### peer-address-selection
-`infra/session/mod.rs:291` takes the *first* address mDNS advertises for a discovered
-session and connects to that. On a machine whose stack lists a link-local IPv6 first,
-that is `[fe80::…]` with no scope id, and the connect fails with "No route to host" —
-two stations discover each other, join the session, and never sync. Seen on macOS
-while verifying `values-as-functions` with `scripts/demo.sh --two`, which is the
-command most likely to hit it.
+### peer-address-selection — done, see roadmap task 44
+Fixed directly rather than as a change: a defect with no spec surface.
+`session::reachable_at` ranks what mDNS advertises and drops what cannot be dialled at
+all; `sync::dial` works down the list rather than betting on the first of them.
 
-- Try each advertised address rather than the first, in an order that prefers what is
-  likely to work: routable IPv4, routable IPv6, then link-local with a scope id
-  attached. mdns-sd reports the interface, so a scope can be attached rather than
-  guessed.
-- Or filter at discovery and never record an address that cannot be dialled — which is
-  simpler and loses the machine whose *only* address is link-local.
-- Either way the failure should be visible: a session joined and not syncing is worse
-  than one that would not join, and today the only trace is a `WARN` in the log.
-- Not observed in the field, because a real rig is on a real network. Observed every
-  time on one laptop, which is where the demo runs.
+Worse than it read when it was written down. `ServiceInfo::get_addresses()` returns a
+`HashSet`, so "the first address" was whatever the hash order gave — which is why the
+failure looked intermittent rather than like a preference. And a scopeless `fe80::`
+address cannot be dialled at all: mdns-sd does not report the interface it was learned
+on, so there is no scope id to attach, and the address is dropped rather than ranked
+last.
+
+`Join` now waits for the dial and answers what happened, so a session that cannot be
+reached is a join that failed — with the error naming every address it tried, in the
+toast the Sessions panel already had and could never show. Safe to wait on despite the
+deadlock the sync manager guards against: it spawns the dial and goes on draining, so
+nothing the session actor waits for is waiting on it. Bounded at three seconds across
+every candidate, because a caller is on the other end of it.
 
 ## Performance
 
