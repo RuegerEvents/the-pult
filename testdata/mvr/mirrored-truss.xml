@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A truss the drawing mirrored, hung with one light.
+
+     The basis of the second truss has determinant -1, which is what a real
+     Vectorworks file does to twenty-one of its forty-three trusses and what no
+     amount of rotation can express. Both trusses instance the same Symdef, which
+     is why symbols are a collection rather than geometry copied per object.
+
+     Written here rather than taken from a real show: the shapes are somebody
+     else's rig's, the numbers are not. -->
+<GeneralSceneDescription verMajor="1" verMinor="6" provider="the-pult" providerVersion="0.1.0">
+    <Scene>
+        <AUXData>
+            <Symdef uuid="11111111-1111-4111-8111-111111111111" name="Truss 2m">
+                <ChildList>
+                    <Geometry3D fileName="truss-2m.glb"/>
+                </ChildList>
+            </Symdef>
+            <Class uuid="22222222-2222-4222-8222-222222222222" name="Overhead rig"/>
+        </AUXData>
+        <Layers>
+            <Layer uuid="33333333-3333-4333-8333-333333333333" name="Trusses">
+                <ChildList>
+                    <Truss uuid="44444444-4444-4444-8444-444444444444" name="Upstage truss">
+                        <Matrix>{0,1,0}{-1,0,0}{0,0,1}{-1500,-7610,4000}</Matrix>
+                        <Geometries>
+                            <Symbol uuid="55555555-5555-4555-8555-555555555555" symdef="11111111-1111-4111-8111-111111111111"/>
+                        </Geometries>
+                        <Classing>22222222-2222-4222-8222-222222222222</Classing>
+                        <GDTFSpec></GDTFSpec>
+                        <GDTFMode></GDTFMode>
+                    </Truss>
+                    <Truss uuid="66666666-6666-4666-8666-666666666666" name="Downstage truss, mirrored">
+                        <Matrix>{0,-1,0}{-1,0,0}{0,0,1}{-1500,-1921,4000}</Matrix>
+                        <Geometries>
+                            <Symbol uuid="77777777-7777-4777-8777-777777777777" symdef="11111111-1111-4111-8111-111111111111"/>
+                        </Geometries>
+                        <Classing>22222222-2222-4222-8222-222222222222</Classing>
+                    </Truss>
+                </ChildList>
+            </Layer>
+        </Layers>
+    </Scene>
+</GeneralSceneDescription>

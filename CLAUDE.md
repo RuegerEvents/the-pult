@@ -17,6 +17,12 @@ ends as the next numbered task.
 - **`crates/pult-render-wasm`** — The same crate for a page: `wasm32-unknown-unknown` + `wasm-bindgen`, built by `scripts/build-evaluator.sh` into `frontend/src/lib/evaluator/`.
 - **`crates/pult-schema`** — Data model + path accessor infrastructure. All entity types live here. Source of truth for the WebSocket protocol and sync protocol.
 - **`crates/pult-gdtf`** — GDTF, read and written. A pure format library: `quick-xml`, `serde`, `zip`, `uuid`, `thiserror`, and *no pult crate* — which is what lets it be tested against other people's files with no station near it. Writing is why it exists rather than a crate off crates.io. The translation into the schema is `crates/pult-backend/src/infra/interop/gdtf/`.
+- **`crates/pult-mvr`** — MVR, read and written. The other half of the interop pair and
+  a pure format library like `pult-gdtf`, depending on it for the fixture definitions
+  inside an archive and for the millimetre Z-up to metre Y-up conversion they share.
+  `transform.rs` is where a matrix becomes a position, a rotation and a **signed**
+  scale — signed because a fifth of the trusses in a real Vectorworks file are
+  mirrored, and no rotation is a reflection.
 - **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, SQLite showfiles, peer sync (mDNS + TCP), the WASM plugin runtime (`infra/plugins/`), fixture connectors. `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.

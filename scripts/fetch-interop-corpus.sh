@@ -40,7 +40,7 @@ warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 # So this takes them from wherever you have them, and says so when you have not
 # said:
 #
-#     PULT_MVR_SAMPLES=~/Downloads/rigs scripts/fetch-interop-corpus.sh
+#     PULT_MVR_SAMPLES=~/mvr-corpus scripts/fetch-interop-corpus.sh
 #     PULT_MVR_SAMPLES="https://example.com/a.mvr https://example.com/b.mvr" ...
 #
 # An earlier version of this script fetched two URLs at that repository that do

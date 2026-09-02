@@ -86,3 +86,11 @@ jobs:
       # quietly, so a job whose secrets are not set fails visibly. Without that this
       # is a green tick that checked nothing.
       - run: cargo test --locked -p pult-gdtf -- --ignored
+
+      # MVR files come from PULT_MVR_SAMPLES rather than from anywhere public, and
+      # there is no public collection to point at. Without them the fetch script says
+      # so and this step fails on an empty corpus, which is the honest outcome: the
+      # reader is only as good as the files it has been pointed at.
+      - run: cargo test --locked -p pult-mvr -- --ignored
+        env:
+          PULT_MVR_SAMPLES: ${{ secrets.PULT_MVR_SAMPLES }}

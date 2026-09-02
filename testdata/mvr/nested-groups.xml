@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fixtures inside a group inside a group, and the two ways a GDTFSpec is spelled.
+
+     The first fixture names its GDTF without the extension, the way grandMA writes
+     one; the second names it with, the way Vectorworks does. Its mode name carries
+     the numeric prefix and the trailing space the file it came from really has, so
+     trimming before matching would stop finding it.
+
+     The addresses are absolute: 1025 is universe 3 channel 1, and 37 is universe 1
+     channel 37. The second fixture has two breaks in different universes. -->
+<GeneralSceneDescription verMajor="1" verMinor="6">
+    <Scene>
+        <Layers>
+            <Layer uuid="a0000000-0000-4000-8000-000000000001" name="Fixtures">
+                <ChildList>
+                    <GroupObject uuid="a0000000-0000-4000-8000-000000000002" name="Back truss">
+                        <ChildList>
+                            <Fixture uuid="a0000000-0000-4000-8000-000000000003" name="Bar 1">
+                                <Matrix>{0,-0.731354,0.681998}{1,0,0}{0,0.681998,0.731354}{-3600,13900,4000}</Matrix>
+                                <GDTFSpec>Acme@Pixel Bar</GDTFSpec>
+                                <GDTFMode>2: RGBW </GDTFMode>
+                                <Addresses>
+                                    <Address break="0">37</Address>
+                                </Addresses>
+                                <FixtureID>601</FixtureID>
+                                <UnitNumber>0</UnitNumber>
+                                <Color>0.312712,0.329008,100</Color>
+                                <CastShadow>false</CastShadow>
+                                <Mappings/>
+                            </Fixture>
+                            <GroupObject uuid="a0000000-0000-4000-8000-000000000004" name="Inner group">
+                                <ChildList>
+                                    <Fixture uuid="a0000000-0000-4000-8000-000000000005" name="Spot 1">
+                                        <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,6000,5000}</Matrix>
+                                        <GDTFSpec>Acme@Spot.gdtf</GDTFSpec>
+                                        <GDTFMode>Extended</GDTFMode>
+                                        <Addresses>
+                                            <Address break="0">1025</Address>
+                                            <Address break="1">513</Address>
+                                        </Addresses>
+                                        <FixtureID>101</FixtureID>
+                                    </Fixture>
+                                </ChildList>
+                            </GroupObject>
+                        </ChildList>
+                    </GroupObject>
+                </ChildList>
+            </Layer>
+        </Layers>
+    </Scene>
+</GeneralSceneDescription>

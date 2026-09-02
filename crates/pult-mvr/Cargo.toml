@@ -1,0 +1,17 @@
+[package]
+name = "pult-mvr"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+quick-xml.workspace = true
+serde.workspace = true
+zip.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+# The fixture definitions inside an MVR are GDTF files, and the millimetre Z-up to
+# metre Y-up conversion is already written and already proved a rotation there. This
+# crate re-exports that rather than owning a second copy of it.
+pult-gdtf = { path = "../pult-gdtf" }

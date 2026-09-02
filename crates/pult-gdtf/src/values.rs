@@ -54,7 +54,11 @@ impl ParseError {
 ///
 /// The non-optional case never comes up: every value below that is written as an
 /// attribute is optional in the spec, and the required ones are plain strings.
-pub(crate) fn de_from_str_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+///
+/// Public rather than private to this crate because `pult-mvr` reads the same shapes
+/// out of the same kind of file, and a second copy of the leniency below is a second
+/// place for it to be wrong.
+pub fn de_from_str_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: FromStr,
@@ -83,7 +87,7 @@ where
 /// where an integer belongs. A reader that failed on any of them would refuse a
 /// fixture somebody has to patch tonight over an attribute that was saying it had
 /// nothing to say. Anything unreadable becomes absent, which is what it meant.
-pub(crate) fn de_number_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub fn de_number_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: FromStr,
@@ -104,7 +108,7 @@ where
     }
 }
 
-pub(crate) fn ser_display_opt<S, T>(value: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
+pub fn ser_display_opt<S, T>(value: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
     T: fmt::Display,
@@ -569,6 +573,12 @@ pub fn num(value: f32) -> String {
     }
     if text.ends_with('.') {
         text.pop();
+    }
+    // A value a hair under zero rounds to "-0.000000" and strips to "-0", which is a
+    // number no spec asks for and which makes two writes of the same rig differ over
+    // a rounding direction.
+    if text == "-0" {
+        return "0".into();
     }
     text
 }
