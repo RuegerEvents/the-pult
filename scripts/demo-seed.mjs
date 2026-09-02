@@ -222,15 +222,17 @@ try {
 			{
 				kind: 'Intensity',
 				direction: 'Output',
-				binding: { Dmx: { channel: 1 } },
+				binding: null,
 				default_value: { type: 'Float', value: 0 }
 			}
 		]
 	};
 	await create('fixture_types', dimmer);
 
-	// And a moving head, so there is something to puppeteer. A colour takes the
-	// three channels from the one it is bound to, so pan starts at 5.
+	// And a moving head, so there is something to puppeteer. Nothing binds a channel:
+	// where a parameter sits belongs to a mode, and a type that names none has the
+	// implicit one — a byte per parameter in the order they are listed, three for a
+	// colour. So this is intensity at 1, the colour across 2 to 4, pan at 5, tilt at 6.
 	const spot = {
 		id: id(),
 		name: 'Spot',
@@ -240,25 +242,25 @@ try {
 			{
 				kind: 'Intensity',
 				direction: 'Output',
-				binding: { Dmx: { channel: 1 } },
+				binding: null,
 				default_value: { type: 'Float', value: 0 }
 			},
 			{
 				kind: 'ColorRgb',
 				direction: 'Output',
-				binding: { Dmx: { channel: 2 } },
+				binding: null,
 				default_value: { type: 'Color', value: { r: 1, g: 1, b: 1 } }
 			},
 			{
 				kind: 'Pan',
 				direction: 'Output',
-				binding: { Dmx: { channel: 5 } },
+				binding: null,
 				default_value: { type: 'Float', value: 0.5 }
 			},
 			{
 				kind: 'Tilt',
 				direction: 'Output',
-				binding: { Dmx: { channel: 6 } },
+				binding: null,
 				default_value: { type: 'Float', value: 0.5 }
 			}
 		]

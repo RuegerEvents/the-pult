@@ -17,13 +17,14 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Frontend | Working for show, session, sequences, cues, patch, the programmer, effects and speed masters. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. Panels that can change the show open read-only behind an Edit toggle and are sized for a finger. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
 | Playback engine | Working, and no longer a tick. Playback decides *what is driving* each parameter — fades and effects anchored on the cue's `went_at` — and publishes the descriptions; nothing stores what they are worth. A pass happens when the show changes, so a fade in progress costs the engine nothing. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Each holds the last patch it was pushed and draws its own frames out of it at its protocol's rate, evaluating rather than being handed values. Configured from the `outputs` collection and editable while the show is up, with per-output status and per-connector frame cost in the UI. Flags only seed an empty showfile. |
-| Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. Every beam is still one cone at one angle; the geometry and the beam angle a GDTF import brings are stored and not yet drawn. |
+| Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. Since task 47 it draws the *drawing* too: trusses and objects out of an MVR, from their own meshes, with a Layers panel to show and hide parts of it. Every beam is still one cone at one angle; the geometry and the beam angle a GDTF import brings are stored and not yet drawn. Nothing can be moved or placed in either view yet. |
+| Rig interchange | Working. MVR in and out: fixtures with their positions, trusses and objects with their meshes, layers and classes, all keyed by the uuid the file uses so a re-import updates the rig rather than doubling it. A fixture's place is a transform with a signed scale, relative to whatever it hangs off. What an import no longer mentions is reported, never deleted. No scene editing yet. |
 | Fixture definitions | Working. GDTF in and out, with modes, breaks, wheels, emitters, physical data and the geometry tree; the archive is kept whole and exports byte for byte. The GDTF Share is searchable and importable behind a station credential. A type the console derived from a node or somebody typed in is unchanged and still has an implicit mode. |
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
 | Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `sensed_values`; flows turn those into cues. A port that says it can trace a shape is handed one descriptor instead of forty messages a second. Tested end to end against `tools/openhaunt-node-sim` and, since task 22, against real firmware on an ESP32. |
 | WASM plugins | Working. wasmtime component runtime with a WIT contract, permissions, hot reload, plugin-to-plugin calls and runtime introspection of the schema registries. Two reference plugins in `plugins/`: a command line (grammar built from introspection, console panel with completion and spans) and natural-language control (an LLM over the plugin's own gated HTTP, executing through the command line). Plugin UI is built-in surfaces or plugin-shipped web components. `docs/PLUGINS.md` is the author guide. |
 | 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects are in, and a selection is a question about the rig rather than a list. |
-| Selection | Working as a query over the rig: by type, name, sphere, box or the spec's radial cone, built up by adding, narrowing and removing, and ordered along an axis or outwards from a point. Re-evaluated as the rig changes, so a fixture patched under a live selection joins it. Queries cannot be saved as groups yet. |
+| Selection | Working as a query over the rig: by type, name, sphere, box or the spec's radial cone, built up by adding, narrowing and removing, and ordered along an axis or outwards from a point. Re-evaluated as the rig changes, so a fixture patched under a live selection joins it, and read against a *world* position, so a light on a truss is where the truss put it. Saved as groups since task 30. |
 | Effects | Working. One primitive covers a shape and a step list, running from the programmer or a cue, at its own rate or a speed master's. Rendered identically on every station from replicated state, and handed to a node that can trace it for itself. No amplitude fade into one yet. |
 | Undo / history | Working, per person and across their clients, and by gesture rather than by write — one drag is one Ctrl-Z. The oplog carries the author, the previous value and what an operation reverses, so undo is a query over it rather than a stack — which is what lets a tablet take back what the desk did. A History panel shows what everyone changed. Nothing prunes the log. |
 | Timecode | Not started. `FollowMode::Timecode` exists and nothing produces one. |
@@ -2501,6 +2502,181 @@ two were real facts about the console that only the tests knew: how long a stati
 sit in *Fetching* before it says what happened is a number an operator watches, and it
 was written in one place and waited on in another.
 
+### 47. MVR: a rig somebody drew (done)
+
+GDTF is a fixture. MVR is the *rig*: where every light hangs, what it hangs off, what
+truss that is, what the truss is made of, and which layer of the drawing it belongs to.
+This reads one, writes one, and grew the schema by what a real drawing turns out to
+contain.
+
+**`crates/pult-mvr` is a format library and knows nothing about this console**, like
+`pult-gdtf` beside it — and it depends on that one, for the fixture definitions inside
+an archive and for the millimetre Z-up to metre Y-up conversion the two formats share.
+A second copy of that conversion is the one bug that would show up as the screen
+disagreeing with the lamps.
+
+**A place in the rig is a transform, and the scale is signed.** `Fixture::position` was
+a point, or a point and a direction. That is enough to draw a beam and not enough to
+draw a rig: a truss is somewhere, it is turned to face somewhere, things hang off it,
+and moving it should move them. So a position is now a `Transform` — metres, XYZ Euler
+degrees, and a scale — *relative to whatever the fixture hangs off*.
+
+The scale is signed because twenty-one of the forty-three trusses in the first real
+file this was pointed at have a basis whose determinant is −1: the drawing mirrored
+them. No rotation is a reflection, so an unsigned decomposition brings a mirrored truss
+back as some rotation that puts it nearly right, with its bolt holes on the wrong side
+and nothing in the numbers admitting it. The reflection is pulled onto X.
+
+**Five new collections**, all keyed by the uuid the file uses: `scene_objects` (with
+`Group` for the handle that moves a truss and its lights together), `layers`, `symbols`
+— because ninety-five objects in one drawing share ninety-five symbol definitions and
+the meshes are the bulk of the archive — `classes`, and `named_assets`, which exists
+because a `.3ds` asks for `tx603.jpg` by that string and a content-addressed store has
+no names in it.
+
+**Composing a parent chain is worked out twice**, `types/scene.rs` and
+`frontend/src/lib/scene.ts`, for the reason `SelectionQuery` is evaluated twice:
+dragging a truss re-composes every child per frame and cannot be a round trip.
+`testdata/transforms.json` holds them together. Its `matrices` half starts from a
+matrix as a file writes one and is read by `pult-backend`, which is where `pult-mvr`
+and `pult-schema` meet without either depending on the other.
+
+Consequence: **a geometric selection term reads a world position**, so `evaluate` takes
+the scene objects as well as the fixtures. The selection corpus proves it without being
+told to — a fixture whose own row puts it at the origin sorts after the one at x=3,
+because the truss it hangs off is at x=8.
+
+**Every uuid the file uses is the id the row gets.** An imported fixture's `id` *is* its
+MVR uuid, so a re-import updates the drawing rather than doubling it, with no lookup
+table to keep, and an export writes the ids back without inventing any. A fixture
+*type* is the exception, keyed by the GDTF's own `FixtureTypeID`, because a drawing can
+name one definition twice.
+
+The file wins on a re-import — transform, address, mode, name, layer, parent — and what
+an earlier import left in a layer this one no longer mentions is **listed under
+`missing` and never deleted**: somebody may have taken that light out on purpose. A
+fixture whose GDTF the archive does not carry gets a placeholder type rather than being
+dropped, so the address, the mode and the place survive until somebody supplies the
+real file.
+
+**And the round trip is the test.** Every real file in the corpus, imported, written
+back out and read again, gives the same fixtures at the same addresses in the same
+modes: 36, 46 and 46 of them.
+
+**Before any of it, showfiles stopped being a migration target.** `upgrades.rs`, both
+hand-written legacy `Deserialize` shims and `ParameterBinding::Dmx` are gone. While the
+console is in development nobody is carrying a season's work in one, and a migration is
+a promise about every shape the data has ever had. What replaces it is a refusal that
+says what is wrong, and it needs two checks because a showfile fails two ways. A stamp
+— `PRAGMA user_version` against `SCHEMA_GENERATION` — catches a changed *shape*, which
+nothing else can see: an `Option` column that fails to parse becomes `None` with no
+error. And a scan for a required column nothing filled in catches the additive pass's
+own hole, where a new non-`Option` field's column is NULL on every row and
+`from_columns` panics mid-open. `add_missing_columns` stays: adding a field is free.
+
+The hand editor's per-parameter channel is derived now rather than typed. Where a
+parameter sits belongs to a mode, and a type made by hand has the implicit one, which
+lays its parameters out in the order they are listed.
+
+**What real files taught this reader.** Everything below was written strictly first and
+failed on a file somebody actually exported.
+
+- **The first file is not well-formed XML.** A grandMA export ends with a NUL byte
+  after `</GeneralSceneDescription>`, and every strict parser refuses the whole document
+  over one byte nothing reads.
+- **A `GDTFSpec` is spelled three ways.** grandMA writes `Vendor@Product` bare;
+  Vectorworks writes it with `.gdtf`; and a zip's central directory does not always
+  decode a name the way the XML spells it — an ARRI Orbiter with a degree sign in its
+  name comes out of the archive as `15┬░` and out of the XML as `15°`. The lookup walks
+  down from exact to letters-and-digits-only and says which rung answered. It does
+  **not** warn about the extension rung: that is how one whole family of exporters
+  spells a spec, and a line per fixture is a report nobody reads.
+- **`Color="nan,nan,nan"` is in a real Robe file**, on a colour wheel's black slot, and
+  Rust parses "nan" into a number quite happily. What followed was worse than a refusal:
+  the NaN reached the schema, `serde_json` wrote it as `null`, and the fixture type was
+  stored as a row that could never be read back. Silent loss, with no bad data to blame.
+  Reachable through `/api/import/gdtf` too, so it was a latent defect in task 45's path
+  as much as in this one.
+- **Every `Option<u32>` in the schema was losing its value.** `#[derive(PultSchema)]`
+  stores an optional field as JSON text but gave the column the *inner* type's affinity,
+  so `Option<u32>` declared INTEGER, SQLite converted the text `101` to the number 101
+  on the way in, the text-based reader found no text on the way out, and the field read
+  back as `None`. `Fixture::fixture_number` was the first optional number the schema had
+  ever had, which is why nothing caught it before.
+- **`order` is a SQL keyword** and the generated `CREATE TABLE` does not quote one. A
+  `Layer::order` column fails to open the show; it is `sort_order`.
+- **Two fixture types can honestly want the same file name.** One drawing carries the
+  same Robe head twice — two `FixtureTypeID`s, one product name — and written under one
+  archive entry they become one type on the way back in, with half the rig repatching
+  itself. A name already taken gets a number, in id order, so two exports of one show
+  write the same names. Worth recording that the guess going in was wrong: those two
+  files were assumed to be the same file under two names, and they are not. Same byte
+  count, different sha256, different `FixtureTypeID` — genuinely two definitions, and no
+  keying strategy collapses them.
+
+- **And `scripts/demo.sh` was broken for two commits without a test noticing.** The
+  seed still wrote a `ParameterBinding::Dmx`, which the schema no longer has, so the
+  demo came up empty — and nothing in `cargo test` runs the seed. It was found by
+  running `--measure`, which is the only thing in the repository that does. Worth
+  knowing: the seed is a client of the write path like any other, and the suite does
+  not exercise it.
+
+**Two more that only the second implementation could find**, both in the pair that
+turns an aim into a rotation and back. `atan2(-0, -0)` is −π, so a light hung straight
+down — which has no bearing to speak of — was stored as turned all the way round, and
+the epsilons that came back out of the angles then read as a bearing of 45°: every beam
+in the demo pointed the wrong way. And `facing` returned `-0` components, which flips
+any bearing taken off one. Neither is visible from one side; writing the browser's half
+against the same corpus is what surfaced them.
+
+**The browser draws it.** `geometry.ts` loads a mesh once per sha and clones it per
+object. A `.3ds` is Z-up and is turned in that one place; its textures resolve through
+`named_assets` and three.js's own URL modifier, so nothing below that line knows assets
+are addressed by hash; and a file the loader refuses becomes a placeholder box, because
+a rig view that goes blank over one bad mesh in two hundred is worse than one with a
+box in it. A mirrored instance gets its own material — negative scale reverses winding.
+The Layers panel shows and hides parts of the drawing, per browser, and hiding one takes
+its objects out of the plan and the rig **and nowhere else**: a hidden fixture still
+takes a cue, still answers a group, and is still in the patch.
+
+And the beam maths now reads a *world* position: a light on a truss somebody turned
+points where the truss points it.
+
+**Measured, and the honest reading is "unchanged".** At 505 fixtures, `--release`:
+0.24 ms a frame and 0.19 ms evaluating on one run, 0.36 ms and 0.29 ms on the next.
+Task 45's baseline was 0.93 ms and 0.72 ms. Both of these are well under it, and the
+right conclusion is *not* that this task made anything four times faster — nothing in
+it touches the render path. The spread between two consecutive runs on an idle machine
+is 50%, which is larger than any change this work could have caused, so the number that
+matters is that nothing leaked into the frame. Worth remembering the next time a figure
+here is quoted as a comparison: one run of `--measure` is not a benchmark.
+
+The browser has its own figure now, in the rig view's toolbar, and it is a different
+number for a different thing: **8.3 ms a frame** with both corpus rigs loaded — 138
+fixtures, 150 objects and about a hundred meshes. That is read by hand, because
+`--measure` starts no browser on purpose.
+
+Checked against the corpus through the actual UI, which is the thing the tests cannot
+say. A grandMA export of a Moulin Rouge show imports as 102 rows, its fixtures in the
+patch under the mode names the file uses — `63: DIM RGBAWS DIM RGBAWS`, universe 1,
+channels 37 to 148. A Vectorworks drawing of a festival stage imports as 352 more and
+draws as a rig: trusses with their lattice, the towers holding them up, the deck, and
+the fixtures hanging off them in rows.
+
+```
+scripts/fetch-interop-corpus.sh                             # with PULT_MVR_SAMPLES set
+cargo test -p pult-mvr -- --ignored                         # the format library
+cargo test -p pult-backend --test mvr_corpus -- --ignored   # and what it becomes here
+curl -X POST http://localhost:7700/api/import/mvr \
+     -H 'content-type: application/vnd.mvr-scene+zip' --data-binary @rig.mvr
+curl -o rig.mvr http://localhost:7700/api/export/mvr
+```
+
+What it does **not** do is edit. Nothing can be moved, rotated, parented or placed in
+either view yet, fixture bodies are still markers, and gobo images are still not
+extracted. Those are `scene-editing` and `gdtf-share-panel-polish`, both of which this
+task's asset pipeline is what was blocking.
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -2511,7 +2687,7 @@ asked and what is true of the code today, so the questions do not get
 re-discovered from scratch every time somebody picks the item up. When one is
 built it becomes the next numbered task and leaves this list.
 
-Verified against the code on 2026-08-31 unless an entry says otherwise.
+Verified against the code on 2026-09-02 unless an entry says otherwise.
 
 ### The order
 
@@ -2532,11 +2708,12 @@ gdtf-import, because fixture types are built by `fixture_type_from` off a node's
 port description and by the demo seed and by nothing else, and there is no
 fixture type editor in the frontend, so the field would be written by nobody.
 
-Half of that landed as task 45. A GDTF import now brings the beam angle, the
-travel, and the geometry tree, and `stage.ts` reads the type's own range where it
-has one — so the constants are the fallback rather than the answer. What is still
-ahead of the viewer is `mvr-import`, which brings the *rig* rather than the
-fixture: positions, trusses, and the meshes to draw.
+**That phase is done**, as tasks 45 and 47. A GDTF import brings the beam angle, the
+travel and the geometry tree, and `stage.ts` reads the type's own range where it
+has one, so the constants are the fallback rather than the answer. An MVR import
+brings the rig around it: positions as transforms, trusses, layers, and meshes the
+browser draws. Everything below is now measured against, or drawn from, a rig
+somebody actually hung — which was the whole reason for putting this first.
 
 **Then the console can be seen at all.** Three panels that share one open
 question — where a per-station diagnostic lives, and whether it reaches a peer —
@@ -2553,87 +2730,83 @@ performance-tests doubts the browser and has no other way to look at one.
 rewrite, disk off the actor, per-source admission and the parallel-render
 question are all answers to the same measurement, and doing them together is what
 stops each being decided on taste. Note that all three of rig-viewer-fidelity's
-arrows resolve before it for the first time: gdtf-import for the beam angle,
-mvr-import for a rig worth drawing, performance-tests for whether instancing is
-needed.
+arrows are now behind it: gdtf-import gave it the beam angle, mvr-import a rig
+worth drawing, and performance-tests answers whether instancing is needed.
 
-1. **gdtf-import** — fixture definitions from a file, and the only source of a
-   beam angle or a real pan and tilt range there is. → none
-2. **mvr-import** — fixtures, positions and geometry into `StagePlan` and the
-   asset store. → gdtf-import, for the definitions MVR references
-3. **system-logs-panel** — the console cannot show its own log, and on a desktop
+1. **system-logs-panel** — the console cannot show its own log, and on a desktop
    app or a tablet there is nowhere else for it to be. → none, and it leads the
    block because its audience is the one with no workaround
-4. **system-stats-panel** — the browser's half is the figure that does not exist:
+2. **system-stats-panel** — the browser's half is the figure that does not exist:
    frame rate, evaluator time per frame, clock offset. The station's half is a
    read of `frame_costs`, which task 44 publishes and nothing displays. → none,
    and it is what makes item 6 able to see a browser
-5. **outputs-viewer** — what actually leaves the console, per universe and per
+3. **outputs-viewer** — what actually leaves the console, per universe and per
    node. → none, and it closes the block 3 and 4 open
-6. **performance-tests** — 5000 fixtures, and whether the console is still
-   comfortable. → system-stats-panel, for the browser figure; and better after
-   mvr-import, which is what lets it measure an imported rig rather than only a
-   generated one
-7. **rig-viewer-fidelity** — beams that read as light, and the two live defects
-   in the code it rewrites. → gdtf-import, mvr-import and performance-tests, all
-   of which are now behind it
-8. **engine-admission** — disk off the actor, per-source admission, and the
+4. **performance-tests** — 5000 fixtures, and whether the console is still
+   comfortable. → system-stats-panel, for the browser figure. Task 47 removed the
+   other blocker: an imported rig can be the thing measured now, and its own two
+   runs at 505 fixtures came out 50% apart, which is the first thing this item has
+   to fix about the instrument before it measures anything with it
+5. **rig-viewer-fidelity** — beams that read as light, and the two live defects
+   in the code it rewrites. → performance-tests, the last of its three arrows
+   still ahead of it; gdtf-import and mvr-import landed as tasks 45 and 47
+6. **engine-admission** — disk off the actor, per-source admission, and the
    parallel-render question that task 29 answered "no" against a tick that no
    longer exists. → performance-tests, which says which of those is on the path
    of a real show. Partitioning across stations is the fourth question here and
    stays unnumbered: it is worth asking only if item 6 finds a rig one station
    cannot carry
-9. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
+7. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
    frontend proxy comes from; the wire stays generic. → none
-10. **showfile-management** — versioning, save-as, autosave, backup. → none, and
+8. **showfile-management** — versioning, save-as, autosave, backup. → none, and
     what blocks it is a decision rather than code: a checkpoint is either
     session-wide agreed or explicitly per-station, and everything else follows
-11. **showfile-assets-folder** — a folder with an assets directory, or one file.
+9. **showfile-assets-folder** — a folder with an assets directory, or one file.
     → decided with showfile-management, not separately
-12. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+10. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
     plugin over introspection, which is what introspection is for. → none, and
-    much better after gdtf-import, which is what puts a real patch in the show
-13. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+    much better now that gdtf-import has landed and put a real patch in the show
+11. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
     themselves dynamic. → rig-viewer-fidelity, for anything that happens in 3D
-14. **voice-input** — speech to the command line, grammar first and NL on parse
+12. **voice-input** — speech to the command line, grammar first and NL on parse
     failure. → none
-15. **nl-show-context** — what relative syntax cannot reach, and whether it is
+13. **nl-show-context** — what relative syntax cannot reach, and whether it is
     worth the permission it costs. → voice-input, which is what shows which
     utterances actually arrive
-16. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+14. **control-transports** — MIDI and OSC as ports, in and out, with nothing
     above them decided. Was open-control-interfaces until 2026-09-02, when the
     three things people send over those ports turned out to want separate
     entries. → none
-17. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+15. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
     audio import. The biggest item here and the one the spec is most opinionated
     about. → none technically
-18. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+16. **llm-cost-overview** — token and cost accounting out of the NL plugin.
     → none
-19. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+17. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
     frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
     from performance-tests, which are what decide it
-20. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+18. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
     → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-21. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+19. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
     → a real TS plugin wanting to exist
-22. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+20. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
     stage manager's Go arriving at the lights, and this console sending its own
     to sound and video. → control-transports
-23. **surface-layer** — a bound physical thing, which is what the transports are
+21. **surface-layer** — a bound physical thing, which is what the transports are
     not: one event type under every surface, plus the two questions (where a
     headless surface's selection lives, where a fader's gesture begins and ends)
     that decide whether any of the three below is a week or a month.
     → control-transports for the MIDI half, nothing for the USB half
-24. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+22. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
     is what proves the layer before anybody spends a weekend on USB captures.
     → surface-layer
-25. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+23. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
     it can be estimated at all. → surface-layer
-26. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+24. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
     undocumented and to be read off the device. → surface-layer, and
     midi-surfaces for the binding model
 
-Items 22 to 26 were added on 2026-09-02 and sit at the end rather than being
+Items 20 to 24 were added on 2026-09-02 and sit at the end rather than being
 placed, because three of them are blocked on hardware being in the room and not
 on anything in this repository. Any of those can move up the day the hardware is
 on the desk. **show-control is the exception and the one with a case for moving
@@ -2644,7 +2817,7 @@ One thing does not belong to any phase. The `<T.SpotLight>` mounted inside `{#if
 beam.output.level > 0.01}` recompiles every material in the scene when a fade
 crosses 1%, which is a fade from black, and the fix is one line. It is written up
 under rig-viewer-fidelity because that is where the context is, and it should not
-wait for item 7.
+wait for item 5.
 
 ### Plugins
 
@@ -2845,11 +3018,10 @@ and nothing above deletes them.
 
 Open questions.
 
-- Beam angle has nowhere to come from. `FixtureType` carries no beam angle and
-  `ParameterKind` has no `Zoom`, so everything is drawn at the hardcoded
-  `length * 0.12`, a 6.8° half-angle, and a wash looks like a beam. That is a
-  `pult-schema` change and it is the same one gdtf-import wants. Do they land
-  together, or does a `default_beam_angle` on `FixtureType` come first?
+- ~~Beam angle has nowhere to come from.~~ Answered by task 45: `FixtureType`
+  carries a beam angle out of the file and `stage.ts` reads it. What is left of the
+  question is the drawing rather than the data — `Rig3D.svelte` still draws every
+  beam at `length * 0.12`, a 6.8° half-angle, so a wash still looks like a beam.
 - Where does haze live? A station preference seeded into the show the way
   `home_fade_ms` is, or a per-browser view setting? How hazy the room is is a
   fact about the room, which argues for the show, but two operators on two
@@ -2943,7 +3115,9 @@ it against real files for a week.
   names. The backend already filters by manufacturer; the panel does not offer it.
 - A gobo wheel's slot names come across and its **images do not**: the archive carries
   them and nothing extracts them into the asset store, because there is nothing drawing
-  a gobo yet. That waits on the same work `mvr-import` needs for meshes.
+  a gobo yet. Task 47 built that pipeline — the asset store, `named_assets`, and a
+  browser that loads what is in it — so this is now a matter of extracting the images
+  on import and drawing them.
 - Fine channels are folded into their coarse one by `MainAttribute`, which is right for
   every file that sets it. A file that does not is read as two parameters, one of which
   does almost nothing. Worth a heuristic on the attribute name once there is a corpus
@@ -2953,42 +3127,12 @@ it against real files for a week.
   channel is in its strobe band, which is a simplification an operator will eventually
   find.
 
-#### mvr-import
-
-MVR, My Virtual Rig. Task 13 noted that `StagePlan` and the asset store are what an
-import needs and that nothing is in its way; task 45 removed the other thing in its
-way, which was that the GDTF files inside an MVR had nowhere to go.
-
-What is already built for it: `crates/pult-gdtf` reads and writes the embedded fixture
-definitions, `values.rs` holds the millimetre Z-up to metre Y-up conversion and the
-proof that it is a rotation rather than a mirror, `interop::apply` is the one-gesture
-write path, and `POST /api/import/gdtf` is the shape the MVR route would take.
-
-What it still has to answer:
-
-- **`Fixture::position` is a point or a point and a direction, and MVR gives a
-  matrix.** Trusses rotate, and so does anything hung off one. That means a `Transform`
-  — position, rotation, scale — and a `Deserialize` that reads both the old shapes,
-  tested by loading them, because an `Option` column that fails to parse becomes `None`
-  without an error.
-- **There is no entity for a truss, a support or a scene object**, and no layers.
-  `scene_objects` and `layers` collections, with a parent chain, is the shape.
-- **Geometry has to reach the browser.** The meshes are in the archive; the asset store
-  can hold them; nothing loads a `.glb` or a `.3ds` yet. A broken 3DS must not take the
-  rig view down.
-- **A fixture whose GDTF the archive does not carry** needs a placeholder type rather
-  than being dropped — `interop::gdtf::placeholder_id` exists for it and nothing calls
-  it yet.
-- **Re-importing must reconcile rather than duplicate.** By the MVR uuid, keeping LOCAL
-  and SYNCED fields, and listing what is missing rather than deleting it: somebody may
-  have moved that light on purpose.
-
 #### scene-editing
 
 The plan and rig views become an editor, in the spirit of Vectorworks: move and rotate
 trusses, fixtures and objects, parent a fixture to a truss, show, hide and lock layers,
-duplicate, snap to a grid, and place primitives and symbols. Needs `mvr-import` first,
-for the entities to edit.
+duplicate, snap to a grid, and place primitives and symbols. Task 47 built the
+entities to edit and the views that draw them, so this is now unblocked.
 
 - The gizmo pattern in `Rig3D.svelte` already does pan and tilt handles; move and rotate
   are the same shape with a different write.
@@ -3194,9 +3338,8 @@ What to measure, roughly in the order the answers matter.
   measured. Which is why system-stats-panel now sits ahead of this item rather
   than behind it: the browser reporting on itself is the instrument, and there
   is no other one.
-- **An imported rig, not only a generated one.** gdtf-import and mvr-import are
-  ahead of this item now, which means a real plan with real fixture types can be
-  the thing measured. Worth doing both: the generated rig is the one whose shape
+- **An imported rig, not only a generated one.** gdtf-import and mvr-import have
+  landed, so a real plan with real fixture types can be the thing measured. Worth doing both: the generated rig is the one whose shape
   can be dialled, and an imported one is the only check that the generated shape
   resembles a rig anybody hangs. The two numbers wanted are the evaluator crossing per frame
   (`stores/output.ts` evaluates 200 parameters in about 17 µs, so 5000 fixtures'
