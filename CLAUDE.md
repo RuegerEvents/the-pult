@@ -2,15 +2,13 @@
 
 Distributed lighting console system.
 
-## Planning is spec-driven (OpenSpec)
+## Planning lives in the roadmap
 
-New features start as OpenSpec changes, not ad-hoc edits. `openspec/BACKLOG.md`
-holds the candidate changes with their open questions; `/opsx:propose <name>`
-turns one into a change under `openspec/changes/` (proposal, spec deltas,
-design, tasks), `/opsx:apply` implements it, `/opsx:archive` folds the spec
-deltas into `openspec/specs/` when done. `docs/ROADMAP.md` stays the record of
-*finished* work and the decisions made on the way; it is not the planning
-surface anymore.
+`docs/ROADMAP.md` is the whole of it: the numbered tasks are finished work with
+the decisions and the traps recorded, and *What is next* at the end is the
+candidate list, each entry carrying the questions it has to answer before it can
+be built. A new feature starts by reading its entry there and updating it, and
+ends as the next numbered task.
 
 ## Architecture
 

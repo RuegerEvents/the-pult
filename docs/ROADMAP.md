@@ -1,6 +1,6 @@
 # Roadmap
 
-State of the system and what to work on next. Reconstructed from the code on 2026-08-25, then reconciled against [SPEC.md](SPEC.md).
+State of the system, what has been built, and what to work on next. Reconstructed from the code on 2026-08-25, then reconciled against [SPEC.md](SPEC.md).
 
 The spec is the product. This is the build order for getting there, and the gap is still wide: what exists is a synchronised show-state engine with cues, playback, output, and an event system. The spec's 3D programmer, geometric selections, phasers, and waveform timecode are all still ahead.
 
@@ -1373,8 +1373,7 @@ version field.
 
 ### 34. A show carries its plugins (done)
 
-The first change planned in OpenSpec rather than here:
-`openspec/changes/plugin-distribution/`. A plugin was a directory on one
+A plugin was a directory on one
 station's disk named by `--plugins`, which is right for developing one and
 wrong for everything else — a show authored with the command line's panels in
 its layout degraded on every other console in the session, and installing on a
@@ -2295,14 +2294,671 @@ waits for is waiting on it. Bounded at three seconds across every candidate, spl
 between them, because somebody is on the other end of the answer — an answer that
 arrives after the caller has given up is the same as no answer.
 
-## Further out
+## What is next
 
-Planning has moved to OpenSpec: candidate changes and their open questions live in [`openspec/BACKLOG.md`](../openspec/BACKLOG.md), and become changes under `openspec/changes/` via `/opsx:propose`. This document remains the record of finished work. The items below predate that move and are folded into the backlog.
+This document is the whole of the planning, again. The numbered tasks above are
+finished work with the decisions and the traps recorded; the entries below are
+what has not been started, each one carrying the questions it has to answer
+before it can be built. That is the part worth keeping: an entry records what was
+asked and what is true of the code today, so the questions do not get
+re-discovered from scratch every time somebody picks the item up. When one is
+built it becomes the next numbered task and leaves this list.
 
-Everything below is in the spec and has no schema and no code yet. Listed so the near-term work does not paint itself into a corner.
+Verified against the code on 2026-08-31 unless an entry says otherwise.
 
-**3D programmer.** The rig *view* is task 13 and programming in it is task 14 — the camera frames a picked fixture, pan and tilt are grabbed by ring and arc, and the quicksheet opens at the light. Effects over a selection are task 25. What that leaves of the spec's §Programming is blind, highlight and fan, and modifiers that are themselves dynamic — an effect whose rate is an effect.
+### The order
 
-**Waveform timecode and "timecode without timecode".** Beat grids, markers, live audio analysis for band sync. Should subsume the `Timecode` follow mode rather than sit beside it.
+Sections below are themes, not sequence. This list is the sequence, and it is the
+one thing here meant to be rearranged. `→` names what has to exist first.
 
-**Open control interfaces.** OSC, MIDI, and control surfaces alongside the existing WebSocket API.
+1. **performance-tests** — 5000 fixtures, and whether the console is still
+   comfortable. First because it is cheap, and because two items below are
+   waiting on what it finds. → none
+2. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
+   frontend proxy comes from; the wire stays generic. → none
+3. **gdtf-import** — fixture definitions from a file. The physical data it brings
+   is where a beam angle and real pan/tilt ranges come from, which is why the two
+   items after it wait on it. → none
+4. **mvr-import** — fixtures, positions and geometry into `StagePlan` and the
+   asset store. → gdtf-import, for the definitions MVR references
+5. **rig-viewer-fidelity** — beams that read as light, and the one live defect
+   left. → gdtf-import for the beam angle; better after mvr-import, which is what
+   puts a rig in there worth drawing; and after performance-tests, which is what
+   says whether the viewer needs rebuilding or only repainting
+6. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+   plugin over introspection, which is what introspection is for. → none
+7. **outputs-viewer** — what actually leaves the console, per universe and per
+   node. → none
+8. **system-stats-panel** — throughput, sync backlog, per-connector frame cost,
+   client counts, and what the browser costs itself. → none, though
+   performance-tests is what makes the browser half of it urgent
+9. **system-logs-panel** — the console cannot show its own log, and on a desktop
+   app or a tablet there is nowhere else for it to be. → none, and worth deciding
+   alongside 8
+10. **engine-admission** — what is left of the old tick-isolation plan: disk off
+    the write path and per-source admission. → performance-tests, which is what
+    says whether this is the bottleneck or only the tidy thing to do
+11. **showfile-management** — versioning, save-as, autosave, backup. → none
+12. **showfile-assets-folder** — a folder with an assets directory, or one file.
+    → decided with showfile-management, not separately
+13. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+    themselves dynamic. → rig-viewer-fidelity, for anything that happens in 3D
+14. **voice-input** — speech to the command line, grammar first and NL on parse
+    failure. → none
+15. **nl-show-context** — what relative syntax cannot reach, and whether it is
+    worth the permission it costs. → voice-input, which is what shows which
+    utterances actually arrive
+16. **open-control-interfaces** — OSC, MIDI, control surfaces. → none
+17. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+    audio import. The biggest item here and the one the spec is most opinionated
+    about. → none technically
+18. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+    → none
+19. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+    frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
+    from performance-tests, which are what decide it
+20. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
+21. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+    → a real TS plugin wanting to exist
+
+### Plugins
+
+#### typed-plugin-sdk
+
+Introspection is the right wire and a poor thing to program against. A plugin
+learns the schema from `introspection::entities()` as JSON and navigates it by
+hand, with no types, no compile-time field names, and stringly-typed paths
+(`&["cues", id, "fade_time"]`). Every plugin author pays for that.
+
+The fix is codegen into the **SDK**, not the WIT. `pult-codegen` already
+generates `frontend/src/lib/ws/data.ts` from the `EntityMeta` inventory, giving
+the frontend `data.sequences[5].cues[3].fadeTime.set(4)` while the WebSocket wire
+stays generic path-plus-JSON. `plugins/sdk` can have that same split, from the
+same inventory and the same tool: `sdk::data::cues().nth(3).fade_time().set(4.0)`
+over an unchanged `data.set(path, json)`.
+
+- Codegen'ing the WIT itself is ruled out, and task 35 records why. A
+  component's imports are stamped with the package version, and a record type's
+  fields are part of every signature using it, so `Cue` gaining a field would be
+  a breaking ABI change. The schema changes daily and a show now carries its
+  plugins between machines, so a bundle built against schema-of-Tuesday would
+  refuse to load on a station from schema-of-Wednesday. Today no plugin notices
+  the schema growing, and that property is worth keeping.
+- Introspection stays. It answers the runtime question, which is what *this*
+  station has including collections the SDK never heard of. A command-line plugin
+  building its grammar and a sync plugin walking unknown tables both need that.
+  Typed codegen is for what is known at build time.
+- How does the SDK version relate to the station's? A plugin built against a
+  newer SDK writing a field an older station lacks gets a per-path runtime error,
+  the same graceful failure the frontend already has. Worth confirming the
+  message is good.
+- Where does the generated code live, checked in beside `sdk/src/lib.rs` or
+  emitted into `OUT_DIR` by a build script? Checked in matches how the frontend
+  does it and keeps the plugins workspace buildable without the console's.
+
+#### openhaunt-as-plugin
+
+Should the OpenHaunt output path, and Art-Net and sACN with it, be WASM plugins
+rather than built-in connectors? The spec calls output a plugin layer already;
+today `OutputPlugin` is a Rust trait inside the backend.
+
+- Measure the 40 Hz output path through a WASM boundary before deciding. Tasks
+  43 and 44 have the numbers to compare against, and they are not the numbers
+  this question was first asked against: a connector's cost is now its own frame,
+  2.86 ms for 2005 fixtures, not a share of a tick.
+- Discovery over mDNS and the embedded MQTT broker are harder to host in a guest
+  than frame emission is.
+- Middle ground: keep the connectors native and expose the same registration to
+  plugins, so a *new* protocol can be a plugin without moving the built-ins.
+
+#### plugin-language-hosts
+
+A plugin that hosts other plugins in another language, say a TypeScript host
+embedding a JS runtime so plugins can be written in TS on top of it.
+
+- Does the host API, meaning permissions, introspection and surfaces, pass
+  through cleanly, or does the host become a second plugin API that drifts?
+- Alternative: componentize JS directly with jco or StarlingMonkey, so a TS
+  plugin is a component and no host plugin exists.
+- Defer until a real TS plugin wants to exist.
+
+### Natural language and voice
+
+#### voice-input
+
+Voice as an input path to the command line. The question that shapes it: an
+utterance may already be valid command-line syntax, and with the NL plugin
+installed it would go to the LLM anyway, costing money and latency for nothing.
+Without the NL plugin it should parse directly.
+
+- Route: try the grammar first and fall back to NL only on parse failure?
+- Where speech-to-text runs, in the browser through the Web Speech API, on the
+  station, or in a plugin.
+- Push-to-talk against a wake word, and confirmation before destructive commands.
+
+#### nl-show-context
+
+"A bit darker" needs the current value and the NL plugin has none.
+`plugins/natural-language-control/pult-plugin.toml` grants no data access
+(`commands = false`) by design; everything goes through the command line.
+
+Task 39 answered most of this. `at +10` and `at -10` are command-line syntax, so
+"a bit darker" is an utterance the plugin can answer with no show data and no new
+permission, and the one grammar and one audit trail survive. What is left is the
+part relative syntax cannot reach, "make it look like the second verse", which
+needs the show, and whether that is worth the safety story it costs. The
+alternative is still read access with state in the prompt, which weakens the
+story and grows the prompt with the rig.
+
+#### llm-cost-overview
+
+Token and cost accounting for the NL plugin, visible over the REST API.
+
+- Where it is measured. The plugin sees the usage fields on each response; the
+  host sees only bytes. So the plugin reports, into LOCAL state, and a
+  `GET /api/...` beside `/api/config` and a panel read the same numbers.
+- Per session, per show, or per station? And cost tables per provider and model
+  live where, kept up to date by whom?
+
+### Programming model
+
+#### 3d-programmer-remainder
+
+What is left of the spec's §Programming once the rig view (task 13), programming
+in it (task 14) and effects over a selection (task 25) are done: **blind**,
+**highlight** and **fan**, and modifiers that are themselves dynamic, meaning an
+effect whose rate is an effect.
+
+- Blind wants a second programmer buffer that does not reach the output. Is that
+  a second `programmer_values` collection or a flag on the existing one? It is
+  SYNCED either way, so two operators can be blind separately or not at all,
+  and which of those is right is the decision.
+- Highlight is a temporary output override for the selection, the same shape as
+  home (`__home`) pointed the other way. Reuse that machinery or not?
+- Fan needs an order over the selection, and `SelectionQuery` now carries one
+  from task 38. Does fan reuse it, and what does fanning an unordered selection
+  mean?
+- A dynamic modifier is a graph rather than a value, and nothing in the schema is
+  recursive yet.
+
+### Visualisation
+
+#### rig-viewer-fidelity
+
+The 3D rig viewer draws a beam as a `ConeGeometry` wearing a flat additive
+material (`frontend/src/lib/components/stage/Rig3D.svelte`). That is enough to
+say where a light is pointing and not enough to look like light. Prior art read
+in full on 2026-09-01: ASLS Studio's visualizer (`src/plugins/visualizer/`, about
+2.7k lines), which is this problem solved a level up. It is GPL-3.0 and we are
+MIT, so what travels is the technique, not the code.
+
+What they do, in the order it matters to us.
+
+- The beam is not geometry. One 100 m open-ended cylinder, instanced, and the
+  beam angle is vertex displacement: the far ring is scaled by `tan(angle)` in
+  the vertex shader. Zoom costs a float in an attribute and nothing is rebuilt.
+- Brightness depends on where you stand. Four terms multiply together: how
+  side-on the beam is seen, how near the camera is to looking down the barrel, an
+  inverse-square-ish falloff along its length, and a power term on the silhouette
+  so a cylinder stops reading as a tube.
+- Haze is four octaves of 3D simplex noise sampled in world space with *time as
+  the third axis*, so it drifts. Density and turbulence are the two knobs.
+- The beam smoothsteps out over the last centimetre above the deck instead of
+  clipping through it.
+- Colour is scaled in HSV, value only, so a dim beam keeps its hue rather than
+  crushing towards grey the way scaling RGB does.
+- Base, yoke and head are three `InstancedMesh`es sharing one material, with
+  per-fixture state in `InstancedBufferAttribute`s, and the model articulates:
+  the yoke swings on pan, the head nods on tilt.
+- Selection is one per-instance float that an `onBeforeCompile` patch turns into
+  emissive. No material swap and no extra draw call.
+
+Two things about them are worth not copying. Their README credits the
+`postprocessing` library and there is no `EffectComposer` anywhere in their
+`src/`; every bit of glow is additive blending in one fragment shader, which is
+the cheaper lesson. And their fixture bodies are pure black, so the render cannot
+tell you what is hanging up there. Our emissive body tinted by its own output is
+the better call and should survive whatever else changes.
+
+One defect in ours turned up while comparing and is still there.
+`<T.ConeGeometry args={[beam.length * 0.12, beam.length, ...]}>` has reactive
+`args`, so Threlte rebuilds the geometry whenever the throw changes. Dragging a
+beam spot allocates a fresh cone per fixture per frame, and since task 44 the
+throw is re-evaluated every animation frame, so a fade does it too.
+
+A second one, the `<T.SpotLight>` inside `{#if beam.output.level > 0.01}`, was
+the worse of the two: crossing that threshold changed the scene's light count,
+which changed three.js's program cache key and recompiled every material
+mid-fade. It went with the task 44 rewire and is no longer here.
+
+Open questions.
+
+- Beam angle has nowhere to come from. `FixtureType` carries no beam angle and
+  `ParameterKind` has no `Zoom`, so everything is drawn at the hardcoded
+  `length * 0.12`, a 6.8° half-angle, and a wash looks like a beam. That is a
+  `pult-schema` change and it is the same one gdtf-import wants. Do they land
+  together, or does a `default_beam_angle` on `FixtureType` come first?
+- Where does haze live? A station preference seeded into the show the way
+  `home_fade_ms` is, or a per-browser view setting? How hazy the room is is a
+  fact about the room, which argues for the show, but two operators on two
+  tablets may reasonably want different pictures.
+- Instancing against the derived `beams` array, which performance-tests should
+  decide rather than taste. Every frame rebuilds a
+  `Quaternion`, an `Euler` and a `Color` per fixture, sixty times a second now
+  rather than forty, since the viewer draws its own frames rather than waiting to
+  be pushed values. Instanced attributes are the fix, and they sit badly with
+  Threlte's declarative `#each` and with picking, which raycasts against
+  per-fixture objects. Does the viewer drop to imperative three.js inside one
+  Threlte component, and what happens to the gizmos if it does?
+- What is already done for you. The evaluator is in the page: `stores/output.ts`
+  registers what a panel is showing and evaluates all of it in one wasm crossing
+  per frame, 200 parameters in about 17 µs, and `Showing.at` is `null` while the
+  browser cannot place itself on the station's clock. A beam that is drawn is a
+  beam that was evaluated for the moment it is drawn at, which is what this item
+  wanted.
+- Their singletons do not survive the move. `SceneManager`, `Controls` and
+  `AnimationManager` are module-level globals over shared mutable buffers, fine
+  for one viewport and broken in our tiled workspace, where two `rig` panels can
+  be open at once. Anything we take has to be per-panel.
+- Placement, as opposed to aiming. They have `TransformControls` with a 0.5 m
+  translate snap, keyboard modes, and multi-select through a bounding-box group
+  so a whole truss moves together. We have pan, tilt and spot gizmos for aiming a
+  head and nothing for rigging one in 3D. Same change or its own?
+- Strobe needs a `ParameterKind` before it can be rendered at all; theirs is a
+  square wave against the animation clock driving the intensity attribute. Out of
+  scope here, or the reason to do that schema work once?
+- Three cheap wins need no design and could go in ahead of the rest.
+  `depthTest: false` on our existing gizmo rings so they are never buried inside
+  a fixture body. Cancelling a `follow` camera transition on any pointer or wheel
+  input. And an infinite grid shader, with `fwidth` line antialiasing, two scales
+  and a distance fade, to replace the fixed `GridHelper`, which aliases badly
+  past about 40 m and stops at the edge of the plan.
+
+### Showfiles
+
+#### showfile-management
+
+Versioning, backup, automated backup to an external drive. Today there is one
+SQLite file, written on every PERSISTED write, with **no explicit save at all**:
+no `save` RPC, and nothing defers a write.
+
+- **Save should mean checkpoint, not flush.** The want is committed intent. Try
+  something in rehearsal and discard it, name a version, get back to the show as
+  it was at the end of yesterday. The want is *not* deferred durability. A show
+  that loses an evening's programming because nobody pressed Save is the worst
+  failure this console has, and it happens exactly where people forget, on a long
+  tech, late, everyone tired. So keep writing continuously as the crash journal
+  and let Save mark a point, rather than making the write wait for a keypress.
+- There is no performance case for deferring either. Task 44 took the tick off
+  the write path entirely, and operator edits happen at human rate.
+- **Revert-to-last-save wants the oplog, not a second history.** The log is
+  already per-node sequenced and already bounded by task 37's retention, so a
+  checkpoint is a marked seq and reverting is a rewind, the same machinery undo
+  uses.
+- The hard part, and the reason this cannot be a small change: **the show is
+  replicated live.** If one console defers or reverts while another saves, what
+  got saved? A checkpoint is either session-wide agreed or explicitly
+  per-station, and that decision drives everything else here.
+- Save-as, snapshots, autosave cadence, and what a "version" even is when the
+  show is also replicated live to peers.
+- Backup target configuration is a station preference; task 33's
+  `preferences.toml` is the home.
+- Restore: open a backup read-only, or roll the working file back?
+- Whether a backup is also an oplog prune point. Task 37 answered pruning on its
+  own; this only has to say how the two meet.
+
+#### showfile-assets-folder
+
+Assets are a blob table inside the SQLite file (task 13), addressed by sha256.
+The question is whether a showfile should be a *folder* with an assets directory
+instead, zipped on export, and what that does for dedup across versions.
+
+- Content addressing already gives dedup, and versioned backups of a folder share
+  unchanged assets naturally through hardlinks or a store-once layout.
+- A single file is robust against half-copies; a folder is friendlier to rsync
+  and to looking inside. Export-as-zip can exist either way.
+- Decide it together with showfile-management, not separately.
+
+### Interop
+
+#### gdtf-import
+
+GDTF fixture definitions, native or as a plugin. `FixtureType` is derived data
+today, because OpenHaunt nodes describe themselves; GDTF is the same idea as a
+file, where the description becomes a fixture type.
+
+- Real pan and tilt ranges fix the 540°/270° constants task 14 complains about.
+- Channel-mode selection, wheels, and physical data: how much of GDTF maps onto
+  `ParameterDefinition` before it has to grow?
+
+#### mvr-import
+
+MVR, My Virtual Rig. Task 13 noted that `StagePlan` and the asset store are what
+an import needs and that nothing is in its way.
+
+- It brings fixtures, positions and 3D geometry, mapping onto `Fixture::position`
+  and plans. The GDTF references inside an MVR need gdtf-import first, or stubs.
+
+#### paperwork-export
+
+Patch lists, cue sheets, rider paperwork.
+
+- A read-only report is an ideal plugin, since introspection already exposes all
+  the data. The open part is print CSS against generating a PDF.
+
+#### open-control-interfaces
+
+OSC, MIDI and control surfaces alongside the existing WebSocket API.
+
+- Native connector or plugin? This argues with openhaunt-as-plugin, and the
+  answer may differ: a control surface is input rather than a 40 Hz output path,
+  so the latency case against a WASM boundary is much weaker here.
+- What does an OSC address map onto, the path API directly
+  (`/pult/sequences/3/go`), or the command line, which already has one grammar
+  and one audit trail?
+- MIDI needs a device on a particular station, so a surface is LOCAL to whoever
+  it is plugged into while the thing it drives is SYNCED. Same shape as a fixture
+  connector.
+- Learn mode, press a fader and bind it, is the UX that makes it usable, and it
+  is a write to the show. Which collection?
+
+### Observability
+
+#### outputs-viewer
+
+A live view of what leaves the console: a DMX sheet per universe, OpenHaunt
+messages per node. The dedup caches in `connectors::dmx` already hold the current
+universe images; OpenHaunt sends are discrete messages worth a ring buffer.
+
+- LOCAL state on the owning station, with the viewer subscribing cross-station.
+  The latency numbers set the precedent: a link property is published by whoever
+  measured it.
+- 40 Hz times 512 bytes should not hit the WebSocket unthrottled. Snapshot on
+  demand, or diff at panel rate.
+
+#### system-stats-panel
+
+The Stations panel (task 10) has CPU, memory and uptime. Missing: network
+throughput, sync backlog, WebSocket client counts, broker stats.
+
+- **Frame cost is done and the shape question is answered.** Task 44 put it on
+  the `Station` row as `Vec<FrameCost>`, one entry per connector, each with the
+  mean, the worst, the evaluating half of each and the frame count for the
+  window, on the grounds that a station is already the sole authority on its own
+  numbers there. So extend the row rather than adding a LOCAL collection, unless
+  something arrives that a row genuinely cannot hold. A ring buffer of recent
+  frames would be that.
+- What is left is the panel: nothing in the frontend reads `frame_costs` yet.
+  Absent has to render as absent, because a settled connector is not an instant
+  one, and a station with two connectors shows two rows rather than an average.
+- Sample rates for the rest. `REPORT_INTERVAL` is two seconds and everything on
+  the row shares it.
+- **The browser's load belongs here too, not just the backend's.** Since task 44
+  a console *is* a browser evaluating a rig at frame rate in wasm, and that is a
+  real cost on a real machine. A tablet at the back of the room can be the thing
+  that is struggling while every station is comfortable.
+  - What a browser can honestly report about itself: frame rate and dropped
+    frames from `requestAnimationFrame` deltas, time spent in the evaluator per
+    frame, how many parameters it is evaluating, `performance.memory` where the
+    browser offers it, and its measured clock offset from the station, which is
+    the one number that says whether what it is showing can be trusted at all.
+  - Where it lives: a browser is not a station and must not appear in `stations`.
+    A LOCAL collection keyed by WebSocket session is the obvious shape, published
+    by the client and owned by the station it is connected to, which also makes
+    it disappear correctly when the tab closes.
+  - Open: does a client's report replicate to peers, so any console can see that
+    the tablet is struggling, or is it LOCAL to the station serving it? Seeing it
+    from anywhere is the useful version and costs a row per client per session.
+
+#### system-logs-panel
+
+Nothing in the console shows the console's own log. `tracing` writes to stdout,
+in `pult-backend/src/main.rs` and `pult-gui/src/main.rs` alike, filtered by an
+`EnvFilter` built once at startup with `pult_backend=debug` and whatever
+`RUST_LOG` says. Nothing captures it, and `scripts/demo.sh` redirecting each
+component into `.demo/*.log` is the only place a line is ever kept.
+
+**Which means that on every way of running this that is not a terminal, the log
+does not exist.** `cargo run -p pult-gui` writes to a stdout nobody is looking
+at, a packaged `.app` from the release workflow has nowhere to write it at all,
+and a browser on the network, which is a whole console by design, has no access
+to the station's stdout on any machine. A rig is consoles in racks and tablets in
+the room.
+
+**And plugins are already logging into it.** `wit/pult-plugin.wit`'s
+`logging.log` says its message "lands in the station's log, prefixed with the
+plugin id", and `host_impls.rs:799` puts it through `tracing` with
+`[plugin:<id>]` in front. So a plugin author debugging a plugin is debugging into
+a void unless they happened to start the station from a shell. That is the
+strongest argument for the panel, because it is the audience with no workaround.
+
+**Not the History panel.** That is the oplog: who changed what, per person,
+undoable, replicated, pruned on its own retention. This is diagnostics, per
+station, not replicated, nobody's to undo, and hundreds of lines a second at
+`debug`. Two panels, and this says so because "we have a history panel" is the
+obvious wrong answer.
+
+What made it worth writing down: task 44 ended with two failures whose only trace
+was a `WARN`, one of them the address bug at the end of it. The join now answers
+for itself, but a peer lost
+mid-show, an output whose socket would not bind, a node that stopped answering, a
+showfile migration that complained, all of them are lines nobody sees. The cases
+that matter are exactly the ones where the console *keeps working*, because a
+crash at least announces itself.
+
+Open questions.
+
+- **Where do the lines live?** Not the oplog, for the reasons above. A LOCAL ring
+  buffer published like `output_status` is the obvious shape, but LOCAL state is
+  replaced whole on every write and this is an append-only stream. Replacing a
+  thousand-line buffer per line is not a mechanism, it is a mistake. Does this
+  want a subscribe-only stream over the WebSocket instead, which is a new shape
+  in the protocol and should be resisted until it is plainly needed?
+- **Kept where, and for how long?** In memory only, or a file beside
+  `preferences.toml`? A file survives the crash that is the reason somebody went
+  looking; memory does not. `.demo/*.log` is the shape of the file version and it
+  is per run, which is probably right.
+- **What level, and who chooses?** `pult_backend=debug` is loud, a line per write
+  and a heartbeat every five seconds per peer, and a panel showing all of it is
+  unreadable. A `log_level` station preference is the obvious home, this
+  machine's business the way `oplog_retention_minutes` is. Changing it while the
+  show is up means `tracing_subscriber::reload`, since the filter is built once
+  at startup. Worth it, or is a restart acceptable for a diagnostic setting?
+- **Does a peer's log reach this console?** Reading the roof station's log from
+  the booth is the useful version, and it is the same argument system-stats-panel
+  makes about a browser reporting its own load. It is also a great deal of
+  traffic, and a question about what a log line carries: a path, a hostname,
+  whatever a plugin chose to say.
+- **Filtering by plugin is nearly free**, because the prefix is already there.
+  Worth making a first-class filter rather than a search box, given who needs it.
+- **The browser's own errors.** A console is a browser, and an exception inside a
+  panel is invisible to the operator and to the station. Same panel, or out of
+  scope? It is the same question system-stats-panel asks about frame rate and
+  evaluator time, and the two should probably be answered together.
+
+### Performance
+
+#### performance-tests
+
+The target is a number, and it is **5000 fixtures with the show still feeling
+immediate**: a cue taken without a visible stutter, an output frame inside its
+budget, and a rig panel holding its frame rate on a machine somebody would
+actually put in a booth. Nothing has been measured above 2005.
+
+**The instrument mostly exists.** `scripts/demo.sh --measure --release --size
+huge` seeds 2000 fixtures across 24 universes, drives every sequence to a cue
+with an effect running, seeds an Art-Net output at loopback so there is a frame
+to measure at all, and prints what one cost. It reads the station's own published
+`frame_costs` over the same WebSocket a browser uses, so the figure printed is
+the figure the Stations panel shows and the figure a peer sees. Where it is
+wrong, it is wrong everywhere, which is the property worth having.
+
+What that instrument said on 2026-09-02 at 2005 fixtures, in release: 2.86 ms per
+output frame at 34 Hz, of which evaluating is 2.60 ms and putting it on the wire
+0.26 ms, against a 25 ms budget. And zero updates to a connected browser across
+four seconds of a running fade.
+
+**The naive extrapolation, which is the thing to go and disprove.** Evaluating
+looks linear in the rig, so 5000 fixtures is around 6.5 ms of a 25 ms frame:
+comfortable. 5000 six-channel heads is about 59 universes rather than 24, and
+per-universe assembly and 59 socket writes are the part of the frame that does
+not shrink. So the prediction is that the station is fine and the *browser* is
+not, and the point of the work is to find out where that prediction is wrong
+rather than to confirm it.
+
+What to measure, roughly in the order the answers matter.
+
+- **A bigger preset.** `--size` takes small, big and huge today, at 5, 500 and
+  2000. Either a fourth name or `--size <n>`, and `<n>` is more useful here
+  because the shape of the curve is the answer, not one point on it. Whether the
+  cue count and the slice share scale with the rig or stay put has to be decided
+  deliberately: 300 cues times 5000 fixtures is a million and a half captures,
+  which measures JSON rather than lighting, and task 43 already made that mistake
+  once on purpose to see what it looked like.
+- **Where the frame goes at 5000.** The evaluating and emitting halves are
+  already published separately, and that split is what saved the last round of
+  this work from being spent on the wrong half. A third figure, per-universe
+  assembly against the socket write, is probably what this round needs, and it
+  should be added the way the reading/computing/applying split was: temporarily,
+  by hand, and then permanently if it turns out to be the one that matters.
+- **The write path, not only the frame.** Seeding 2000 fixtures takes about 43
+  seconds in release through the WebSocket API, pipelined through a window of 64.
+  That is the largest exercise of the write path in the repo and it is a real
+  measurement, not overhead to be tolerated. Patching 5000 fixtures is something
+  somebody does, and so is taking a cue that touches all of them at once.
+- **The browser.** No figure exists at all, because `--measure` deliberately
+  stops the dev server and the sims so they are not taking the CPU being
+  measured. The two numbers wanted are the evaluator crossing per frame
+  (`stores/output.ts` evaluates 200 parameters in about 17 µs, so 5000 fixtures'
+  worth of a rig panel is roughly 2.5 ms of a 16.7 ms frame at 60 Hz, if it is
+  linear) and everything the viewer does around it, which is where the doubt
+  actually is.
+
+**How this meets the two items either side of it.**
+
+- **engine-admission.** If a cue over 5000 fixtures stalls behind a plugin's
+  write loop or a peer's catch-up, per-source admission is the fix and this is
+  what proves it. If it stalls on an fsync, the writer task is. If it stalls on
+  neither, engine-admission is still worth doing and stops being urgent.
+- **Threads, which have been answered "no" twice and deserve asking again.** Task
+  29 rejected parallelising the render because it was 0.07 ms of a 35 ms tick,
+  and task 44 removed the field the other half of that proposal wanted cheaper
+  writes for. But evaluating is now **91% of an output frame** rather than 0.2%
+  of a tick, and it is embarrassingly parallel across fixtures: `pult-render` is
+  pure, takes no locks and touches no OS. So rayon over fixtures inside a
+  connector's frame is a genuinely different question from the one that was
+  refused, and 5000 fixtures is where it gets asked. Measure before deciding, and
+  note that a connector's thread is already off the engine, so this costs nothing
+  architecturally.
+- **rig-viewer-fidelity.** The viewer rebuilds a `Quaternion`, an `Euler` and a
+  `Color` per fixture per frame, and still allocates a fresh `ConeGeometry` per
+  fixture whenever the throw changes. At 5000 fixtures those stop being untidy
+  and start being the frame budget. Whether the viewer has to go imperative and
+  instanced, which is that item's hardest open question, is a decision this
+  measurement should make rather than leave to taste.
+
+**Not a CI gate, and task 43 explains why.** Two identical `huge` runs varied by
+more than a percentage point of CPU and fifteen milliseconds of tick. A threshold
+in milliseconds on a shared runner flaps, a flapping gate gets disabled, and a
+disabled gate is worse than none. So this is a script somebody runs before a
+release and records the numbers from.
+
+What *could* be a gate is a figure that does not flap, and task 44 produced
+exactly one: **zero updates to a connected browser during a four-second fade on a
+2000-fixture rig.** Counts of messages, of allocations, of universes touched, of
+oplog rows written are machine-independent, and a regression in any of them is
+the kind of thing that used to be found in a theatre. Worth finding the two or
+three that are worth asserting on, and asserting on those instead of on
+milliseconds.
+
+Open questions.
+
+- Is 5000 the right number, or is the honest target "as many as one Art-Net
+  network can carry"? 59 universes is already past what a single 100 Mbit segment
+  is comfortable with, which makes this partly a networking question rather than
+  a CPU one.
+- Does the target mean 5000 on one station, or 5000 across a session? Splitting a
+  rig between consoles is the partitioning question below, and if the answer to
+  this item is "one station cannot", that question stops being hypothetical.
+- Which machine is the target? A figure with no machine attached means nothing,
+  and "a machine somebody would put in a booth" needs naming: the release
+  workflow builds for four targets and an aarch64 Linux box is a very different
+  answer from an M-series laptop.
+- What does the tablet at the back of the room have to manage? A browser is a
+  whole console by design, and the weakest one in the building is the real
+  target. That is the same argument system-stats-panel makes, and this is the
+  item that gives it a number.
+
+#### engine-admission
+
+What survives of a plan called tick-isolation, which was written against the
+architecture task 44 left behind. It is worth reading that history before picking
+this up, because most of what it proposed is now unnecessary rather than
+optimised: the typed `PlaybackView` existed to make a per-tick read of the show
+cheap and there is no per-tick read; batching per-tick writes has no per-tick
+writes to batch; and playback on its own thread became a loop inside each output
+connector, which already had one. The engine has no periodic work left except the
+sampling flow `Watch` nodes need, and that is proportional to what is watched.
+
+Two things survive, and they are worth doing on their own terms.
+
+- **Disk off the actor.** `persist`, `oplog::append` and `order::save` are
+  awaited inside the actor's command arm against a pool of `max_connections(1)`,
+  so one operator's edit waits behind another's fsync. Lower priority than it
+  looked, since the disk is no longer anywhere near the show, but it is still an
+  operator waiting on a disk. The fix is a single writer task with an ordered
+  queue: still ordered, still durable, no longer between a command and its reply.
+- **Per-source admission.** Plugins reach the engine through the same
+  `EngineHandle` a browser does (`host_impls.rs:207`), into one 256-deep channel
+  with no priority. A plugin in a write loop, a browser fetching the whole show
+  and a peer catching up all queue together. Give each source its own budget so
+  no one of them can crowd out an operator. This is the largest thing left here,
+  and nothing since has touched it.
+
+`OutputHandle::push` is the model for both: a `try_send` that drops when the
+consumer is behind, documented as "Never blocks the engine" in
+`connectors/mod.rs:82`. Frames keep leaving whatever the engine is doing.
+
+One non-goal from the original plan still holds: no new durability guarantee, and
+a write that was acknowledged before still is. The other, no parallel render, has
+stopped being obvious. It was written when evaluating was 0.07 ms of the engine's
+tick; it is now 2.60 ms of a connector's 2.86 ms frame, which is somebody else's
+thread but is still the frame. performance-tests is where that gets asked again,
+and it is also what says whether either half of this item is on the path of a
+real show or merely untidy.
+
+#### Partitioning computation across stations
+
+The one part of the old multithreading item that nothing has answered.
+Parallelising the render was answered with **no** (there was nothing there to
+parallelise, and task 44 removed the field the other proposal wanted cheaper
+writes for), but splitting the work of a show between consoles is task 10's
+question and also the redundancy one. Worth asking again only when there is a
+workload a single station cannot carry, and the numbers for that will be
+different from any measured so far.
+
+### Media and time
+
+#### timecode-workflow
+
+The big one, and the spec is opinionated about it: waveform and beat-grid
+timecode, plus "timecode without timecode" meaning timed cue playback, with audio
+import and playback. `FollowMode::Timecode` has existed unimplemented since task
+3, deliberately waiting for this design rather than getting a stopgap. It should
+subsume that follow mode rather than sit beside it.
+
+- Audio import lands in the asset store. Playback happens on which station, and
+  what do the others chase? The OpenHaunt clock topic and `went_at` anchoring are
+  the prior art for shared time.
+- Beat grids relate to speed masters; tap tempo is a degenerate beat grid.
+- Is external SMPTE or MTC in scope, or explicitly out?
+
+#### video-mapping-ndi
+
+NDI output for video mapping. Almost certainly a plugin, which would be the first
+real test of whether the plugin API can carry a heavy output, or else a sibling
+connector.
+
+- Frames come from where, a pixel-mapped fixture array rendered by the engine, or
+  media playback? Scope this carefully. It hides a media server.
