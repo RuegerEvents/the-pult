@@ -792,7 +792,7 @@ pub(super) async fn live_value(
         .await
         .into_iter()
         .find(|f| f.id == fixture_id)?
-        .live_values
+        .sensed_values
         .get(key)
         .map(|v| serde_json::to_value(v).unwrap())
 }
@@ -874,7 +874,7 @@ async fn an_input_from_a_device_nobody_adopted_changes_nothing() {
 
     let fixtures = h.fixtures().await;
     assert!(
-        fixtures.iter().all(|f| f.live_values.is_empty()),
+        fixtures.iter().all(|f| f.sensed_values.is_empty()),
         "an unadopted device drives nothing",
     );
 }

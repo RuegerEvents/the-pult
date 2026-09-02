@@ -16,6 +16,7 @@ import type {
 	ProgrammerValue
 } from './generated/index.js';
 import { kindLabel, parameterKey } from './patch.js';
+import type { Showing } from './stores/output.js';
 
 // ── Entry ids ─────────────────────────────────────────────────────────────────
 
@@ -63,7 +64,7 @@ export function entryId(fixtureId: string, key: string): string {
 /** One row of the values panel: a parameter the selection can be set to. */
 export type EditableParameter = {
 	kind: ParameterKind;
-	/** Its `live_values` key, which is also half of an entry id. */
+	/** Its parameter key, which is also half of an entry id. */
 	key: string;
 	label: string;
 	defaultValue: ParameterValue;
@@ -123,13 +124,14 @@ export function editableParameters(
  */
 export function commonValue(
 	fixtures: Fixture[],
-	key: string
+	key: string,
+	showing: Showing
 ): { value: ParameterValue | null; mixed: boolean } {
 	let found: ParameterValue | null = null;
 	let seen = false;
 	for (const fixture of fixtures) {
-		const value = fixture.live_values[key];
-		if (value === undefined) continue;
+		const value = showing.value(fixture.id, key);
+		if (value === null) continue;
 		if (!seen) {
 			found = value;
 			seen = true;

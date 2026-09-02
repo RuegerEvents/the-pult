@@ -1,6 +1,14 @@
 //! Playback tests.
 //!
-//! Time is passed in, so a fade runs to completion here in microseconds.
+//! A moment is passed in, so a whole act runs here in microseconds.
+//!
+//! What these assert changed shape with the change that removed stored values. A pass
+//! publishes what is *driving* each parameter — the fades and shapes, anchored in
+//! console milliseconds — and never a number. So a test takes what a pass published,
+//! puts it on the rig the way the engine does ([`apply`]), and then asks what a
+//! consumer would see at a moment ([`live`]). That second step is the same evaluation
+//! an output connector and a browser do, which is the point: a test that asserted what
+//! the engine wrote would no longer be asserting anything an operator can see.
 
 use std::collections::HashMap;
 
@@ -14,20 +22,9 @@ use pult_schema::types::{
 use pult_schema::types::effect::Easing;
 use super::*;
 
-/// The wall clock the value-and-fade tests tick at.
-///
-/// Fixed, and any constant would do: none of those sequences carries a `went_at`, so
-/// the anchor falls back to whatever wall clock the tick was given and every fade
-/// measures from `now` exactly as it did before there was a wall clock at all. The
-/// effect tests below call `tick` directly, because for them the wall clock is the
-/// thing under test.
+/// Where this test file's clock starts. Any constant would do: the sequences that do
+/// not carry a `went_at` anchor on whatever moment the pass was given.
 const WALL: u64 = 1_700_000_000_000;
-
-impl Playback {
-    fn tick_at(&mut self, now: Instant, view: &ShowView<'_>) -> Vec<PlaybackEffect> {
-        self.tick(now, WALL, view)
-    }
-}
 
 /// The view most of these tests want: a rig of [`a_fixture`]s, all of one type, and
 /// a show that snaps rather than fades when it lets go.
@@ -90,11 +87,30 @@ fn a_fixture() -> Fixture {
         fixture_type_id: FIXTURE_TYPE,
         address: FixtureAddress::Dmx { universe: 1, address: 1 },
         position: None,
-        live_values: HashMap::new(),
+        sensed_values: HashMap::new(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
     }
+}
+
+/// A fixture already sitting at a value, the way one that has been driven is.
+///
+/// A parked fade rather than a stored number, because that is the only way a
+/// parameter holds a value now: a fade of no length from the value to itself, which
+/// evaluates to that value at every moment there is.
+fn already_at(fixture: &mut Fixture, key: &str, value: ParameterValue) {
+    fixture.live_fades.insert(
+        key.into(),
+        RunningFade {
+            from: value.clone(),
+            to: value,
+            t0: 0,
+            duration_ms: 0,
+            easing: Easing::Step,
+            cue_id: Uuid::nil(),
+        },
+    );
 }
 
 fn a_cue(fade_in_ms: u32, captures: Vec<ParameterCapture>) -> Cue {
@@ -133,13 +149,67 @@ fn a_sequence(cues: &[&Cue], active: Option<usize>) -> Sequence {
     }
 }
 
-fn live(effects: &[PlaybackEffect], fixture_id: Uuid, key: &str) -> Option<ParameterValue> {
-    effects.iter().rev().find_map(|e| match e {
-        PlaybackEffect::SetLiveValues { fixture_id: f, values } if *f == fixture_id => {
-            values.get(key).cloned()
-        }
-        _ => None,
-    })
+/// What a parameter is putting out `after` milliseconds into this file's clock.
+///
+/// Reads the rig, not the pass, and that is the whole point: what a pass publishes is
+/// a description, and the value only exists when somebody evaluates it. Call [`apply`]
+/// first, the way the engine writes what a pass returned.
+fn live(fixtures: &[Fixture], fixture_id: Uuid, key: &str, after_ms: u64) -> Option<ParameterValue> {
+    live_under(fixtures, &[], fixture_id, key, after_ms)
+}
+
+/// The same question with the programmer over the top, which is where it belongs: the
+/// entries are SYNCED show state that every consumer already has, so playback does not
+/// republish the rig when somebody lets go of a fader.
+fn live_under(
+    fixtures: &[Fixture],
+    programmer: &[ProgrammerValue],
+    fixture_id: Uuid,
+    key: &str,
+    after_ms: u64,
+) -> Option<ParameterValue> {
+    let fixture = fixtures.iter().find(|f| f.id == fixture_id)?;
+    let held = pult_schema::types::fixture::HeldByProgrammer::of(programmer);
+    pult_schema::types::fixture::value_at(
+        fixture,
+        the_type().iter().find(|t| t.id == fixture.fixture_type_id),
+        held.get(fixture_id, key),
+        key,
+        WALL + after_ms,
+    )
+}
+
+/// The same, at a moment given as an absolute console millisecond — which is what the
+/// effect tests want, because for an effect the anchor is the input everything depends
+/// on rather than scaffolding.
+fn live_at(fixtures: &[Fixture], fixture_id: Uuid, key: &str, at_ms: u64) -> Option<ParameterValue> {
+    let fixture = fixtures.iter().find(|f| f.id == fixture_id)?;
+    pult_schema::types::fixture::value_at(
+        fixture,
+        the_type().iter().find(|t| t.id == fixture.fixture_type_id),
+        None,
+        key,
+        at_ms,
+    )
+}
+
+/// The same, with the programmer over it.
+fn live_at_under(
+    fixtures: &[Fixture],
+    programmer: &[ProgrammerValue],
+    fixture_id: Uuid,
+    key: &str,
+    at_ms: u64,
+) -> Option<ParameterValue> {
+    let fixture = fixtures.iter().find(|f| f.id == fixture_id)?;
+    let held = pult_schema::types::fixture::HeldByProgrammer::of(programmer);
+    pult_schema::types::fixture::value_at(
+        fixture,
+        the_type().iter().find(|t| t.id == fixture.fixture_type_id),
+        held.get(fixture_id, key),
+        key,
+        at_ms,
+    )
 }
 
 fn as_float(value: Option<ParameterValue>) -> f32 {
@@ -149,16 +219,70 @@ fn as_float(value: Option<ParameterValue>) -> f32 {
     }
 }
 
-/// Apply live-value effects back onto the fixtures, the way the engine does, so the
-/// next tick sees the state the last one produced.
+/// Put what a pass published onto the fixtures, the way the engine does, so the rig
+/// carries it into the next pass and into every reading of it.
 fn apply(fixtures: &mut [Fixture], effects: &[PlaybackEffect]) {
     for effect in effects {
-        if let PlaybackEffect::SetLiveValues { fixture_id, values } = effect {
-            if let Some(f) = fixtures.iter_mut().find(|f| f.id == *fixture_id) {
-                f.live_values = values.clone();
+        match effect {
+            PlaybackEffect::SetLiveFades { fixture_id, fades } => {
+                if let Some(f) = fixtures.iter_mut().find(|f| f.id == *fixture_id) {
+                    f.live_fades = fades.clone();
+                }
             }
+            PlaybackEffect::SetLiveEffects { fixture_id, effects } => {
+                if let Some(f) = fixtures.iter_mut().find(|f| f.id == *fixture_id) {
+                    f.live_effects = effects.clone();
+                }
+            }
+            _ => {}
         }
     }
+}
+
+/// A pass at an absolute console millisecond, with what it published written back.
+///
+/// What the effect tests want: an effect's anchor is the input its whole rendering
+/// depends on, and the reason two stations agree is that they are given the same one,
+/// so those tests name the moment outright rather than counting from a base.
+#[allow(clippy::too_many_arguments)]
+fn at(
+    playback: &mut Playback,
+    at_ms: u64,
+    fixtures: &mut Vec<Fixture>,
+    sequences: &[Sequence],
+    cues: &[Cue],
+    programmer: &[ProgrammerValue],
+    masters: &[pult_schema::types::speedmaster::SpeedMaster],
+) -> Vec<PlaybackEffect> {
+    let effects = {
+        let view = view(sequences, cues, fixtures, programmer, masters);
+        playback.pass(at_ms, &view)
+    };
+    apply(fixtures, &effects);
+    effects
+}
+
+/// A pass, with what it published written straight back onto the rig.
+///
+/// Most of these tests want the two together — the engine never does one without the
+/// other — and doing them in one call keeps the borrow of `fixtures` short enough that
+/// a test can hold a mutable rig and read it afterwards.
+#[allow(clippy::too_many_arguments)]
+fn pass(
+    playback: &mut Playback,
+    after_ms: u64,
+    fixtures: &mut Vec<Fixture>,
+    sequences: &[Sequence],
+    cues: &[Cue],
+    programmer: &[ProgrammerValue],
+    masters: &[pult_schema::types::speedmaster::SpeedMaster],
+) -> Vec<PlaybackEffect> {
+    let effects = {
+        let view = view(sequences, cues, fixtures, programmer, masters);
+        playback.pass(WALL + after_ms, &view)
+    };
+    apply(fixtures, &effects);
+    effects
 }
 
 // ── Cue activation ────────────────────────────────────────────────────────────
@@ -168,12 +292,12 @@ fn taking_a_cue_marks_it_active() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 1.0)]);
     let sequence = a_sequence(&[&cue], Some(0));
-    let fixtures = [fixture];
+    let mut fixtures = vec![fixture];
     let cues = [cue.clone()];
     let sequences = [sequence];
 
     let mut playback = Playback::default();
-    let effects = playback.tick_at(Instant::now(), &view(&sequences, &cues, &fixtures, &[], &[]));
+    let effects = pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
 
     assert!(effects.contains(&PlaybackEffect::SetCueActive { cue_id: cue.id, is_active: true }));
 }
@@ -183,42 +307,41 @@ fn moving_on_deactivates_the_previous_cue() {
     let fixture = a_fixture();
     let first = a_cue(0, vec![intensity(fixture.id, 1.0)]);
     let second = a_cue(0, vec![intensity(fixture.id, 0.5)]);
-    let fixtures = [fixture];
+    let mut fixtures = vec![fixture];
     let cues = [first.clone(), second.clone()];
     let mut sequences = [a_sequence(&[&first, &second], Some(0))];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let now = 0;
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
 
     sequences[0].active_cue_index = Some(1);
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let effects = pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
 
     assert!(effects.contains(&PlaybackEffect::SetCueActive { cue_id: first.id, is_active: false }));
     assert!(effects.contains(&PlaybackEffect::SetCueActive { cue_id: second.id, is_active: true }));
 }
 
 #[test]
-fn running_off_the_end_deactivates_the_last_cue_and_holds_the_output() {
+fn taking_the_sequence_off_deactivates_its_cue_and_lets_the_light_go() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 1.0)]);
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let mut sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-
+    let now = 0;
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    
     sequences[0].active_cue_index = None;
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let effects = pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
 
     assert!(effects.contains(&PlaybackEffect::SetCueActive { cue_id: cue.id, is_active: false }));
     assert_eq!(
-        fixtures[0].live_values.get("Intensity"),
-        Some(&ParameterValue::Float(1.0)),
-        "a light does not go dark because the operator ran out of cues",
+        live(&fixtures, fixture.id, "Intensity", now),
+        Some(ParameterValue::Float(0.0)),
+        "no cue active means the sequence was taken off, and what it drove goes home",
     );
 }
 
@@ -228,14 +351,14 @@ fn running_off_the_end_deactivates_the_last_cue_and_holds_the_output() {
 fn a_zero_time_cue_snaps_straight_to_its_values() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 1.0)]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let effects = playback.tick_at(Instant::now(), &view(&sequences, &cues, &fixtures, &[], &[]));
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    assert_eq!(as_float(live(&effects, fixture.id, "Intensity")), 1.0);
+    assert_eq!(as_float(live(&fixtures, fixture.id, "Intensity", 0)), 1.0);
     assert!(!playback.has_work(), "a snap leaves nothing running");
 }
 
@@ -243,46 +366,42 @@ fn a_zero_time_cue_snaps_straight_to_its_values() {
 fn a_fade_moves_through_its_middle_before_reaching_the_target() {
     let fixture = a_fixture();
     let cue = a_cue(4000, vec![intensity(fixture.id, 1.0)]);
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
+    let start = 0;
 
-    let effects = playback.tick_at(start, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(as_float(live(&effects, fixture.id, "Intensity")), 0.0, "starts from dark");
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert_eq!(as_float(live(&fixtures, fixture.id, "Intensity", start)), 0.0, "starts from dark");
 
-    let effects = playback.tick_at(start + Duration::from_secs(1), &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert!((as_float(live(&effects, fixture.id, "Intensity")) - 0.25).abs() < 0.001);
+    pass(&mut playback, start + 1000, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert!((as_float(live(&fixtures, fixture.id, "Intensity", start + 1000)) - 0.25).abs() < 0.001);
 
-    let effects = playback.tick_at(start + Duration::from_secs(3), &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert!((as_float(live(&effects, fixture.id, "Intensity")) - 0.75).abs() < 0.001);
+    pass(&mut playback, start + 3000, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert!((as_float(live(&fixtures, fixture.id, "Intensity", start + 3000)) - 0.75).abs() < 0.001);
 
-    let effects = playback.tick_at(start + Duration::from_secs(4), &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(as_float(live(&effects, fixture.id, "Intensity")), 1.0);
+    pass(&mut playback, start + 4000, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert_eq!(as_float(live(&fixtures, fixture.id, "Intensity", start + 4000)), 1.0);
     assert!(!playback.has_work(), "a finished fade is dropped");
 }
 
 #[test]
 fn a_fade_starts_from_where_the_fixture_already_is() {
     let mut fixture = a_fixture();
-    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(0.5));
+    already_at(&mut fixture, "Intensity", ParameterValue::Float(0.5));
     let cue = a_cue(1000, vec![intensity(fixture.id, 1.0)]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    playback.tick_at(start, &view(&sequences, &cues, &fixtures, &[], &[]));
-    let effects = playback.tick_at(start + Duration::from_millis(500), &view(&sequences, &cues, &fixtures, &[], &[]));
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    assert!((as_float(live(&effects, fixture.id, "Intensity")) - 0.75).abs() < 0.001);
+    assert!((as_float(live(&fixtures, fixture.id, "Intensity", start + 500)) - 0.75).abs() < 0.001);
 }
 
 #[test]
@@ -290,21 +409,21 @@ fn re_cueing_mid_fade_picks_up_from_the_value_on_stage() {
     let fixture = a_fixture();
     let slow = a_cue(4000, vec![intensity(fixture.id, 1.0)]);
     let snap = a_cue(0, vec![intensity(fixture.id, 0.0)]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [slow.clone(), snap.clone()];
     let mut sequences = [a_sequence(&[&slow, &snap], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    playback.tick_at(start, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
 
     // Half way up, take the next cue. The old fade must not keep running.
-    let half = start + Duration::from_secs(2);
-    playback.tick_at(half, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let half = start + 2000;
+    pass(&mut playback, half, &mut fixtures, &sequences, &cues, &[], &[]);
     sequences[0].active_cue_index = Some(1);
-    let effects = playback.tick_at(half, &view(&sequences, &cues, &fixtures, &[], &[]));
+    pass(&mut playback, half, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    assert_eq!(as_float(live(&effects, fixture.id, "Intensity")), 0.0);
+    assert_eq!(as_float(live(&fixtures, fixture.id, "Intensity", half)), 0.0);
     assert!(!playback.has_work());
 }
 
@@ -315,20 +434,23 @@ fn a_capture_delay_holds_the_parameter_before_it_moves() {
     capture.delay_in_ms = 1000;
     capture.fade_in_ms = 1000;
     let cue = a_cue(0, vec![capture]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
+    let start = 0;
 
-    playback.tick_at(start, &view);
-    let effects = playback.tick_at(start + Duration::from_millis(500), &view);
-    assert!(live(&effects, fixture.id, "Intensity").is_none(), "nothing moves during the delay");
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(
+        as_float(live(&fixtures, fixture.id, "Intensity", start + 500)),
+        0.0,
+        "the fade is described from the far side of the delay, so nothing moves inside it",
+    );
 
-    let effects = playback.tick_at(start + Duration::from_millis(1500), &view);
-    assert!((as_float(live(&effects, fixture.id, "Intensity")) - 0.5).abs() < 0.001);
+    pass(&mut playback, start + 1500, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!((as_float(live(&fixtures, fixture.id, "Intensity", start + 1500)) - 0.5).abs() < 0.001);
 }
 
 #[test]
@@ -337,54 +459,52 @@ fn a_capture_fade_time_overrides_the_cue_s() {
     let mut fast = intensity(fixture.id, 1.0);
     fast.fade_in_ms = 1000;
     let cue = a_cue(10_000, vec![fast]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
-    playback.tick_at(start, &view);
-    let effects = playback.tick_at(start + Duration::from_millis(1000), &view);
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    pass(&mut playback, start + 1000, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    assert_eq!(as_float(live(&effects, fixture.id, "Intensity")), 1.0);
+    assert_eq!(as_float(live(&fixtures, fixture.id, "Intensity", start + 1000)), 1.0);
 }
 
 #[test]
 fn fading_one_parameter_leaves_the_others_where_they_were() {
     let mut fixture = a_fixture();
-    fixture.live_values.insert("Pan".into(), ParameterValue::Float(0.3));
+    already_at(&mut fixture, "Pan", ParameterValue::Float(0.3));
     let cue = a_cue(0, vec![intensity(fixture.id, 1.0)]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let effects = playback.tick_at(Instant::now(), &view(&sequences, &cues, &fixtures, &[], &[]));
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    assert_eq!(as_float(live(&effects, fixture.id, "Pan")), 0.3);
-    assert_eq!(as_float(live(&effects, fixture.id, "Intensity")), 1.0);
+    assert_eq!(as_float(live(&fixtures, fixture.id, "Pan", 0)), 0.3);
+    assert_eq!(as_float(live(&fixtures, fixture.id, "Intensity", 0)), 1.0);
 }
 
 #[test]
 fn an_unchanged_fixture_is_not_written_again() {
     let fixture = a_fixture();
     let cue = a_cue(1000, vec![intensity(fixture.id, 1.0)]);
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let effects = playback.tick_at(start, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    // Same instant, so nothing has moved.
-    let effects = playback.tick_at(start, &view(&sequences, &cues, &fixtures, &[], &[]));
-    assert!(
-        !effects.iter().any(|e| matches!(e, PlaybackEffect::SetLiveValues { .. })),
-        "an unmoved fixture must not be rewritten every tick",
-    );
+    // The fade is described once. A second pass over an unchanged show has nothing to
+    // add — not even half way through, when the value it renders has plainly moved.
+    let again = pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!(again.is_empty(), "an unchanged description must not be written again");
+    let midway = pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!(midway.is_empty(), "and the fade progressing is not a change to the show");
 }
 
 // ── Split fades ───────────────────────────────────────────────────────────────
@@ -395,25 +515,24 @@ fn an_unchanged_fixture_is_not_written_again() {
 fn a_cue_with_an_out_time_takes_it_only_where_the_parameter_comes_down() {
     let rising = a_fixture();
     let mut falling = a_fixture();
-    falling.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+    already_at(&mut falling, "Intensity", ParameterValue::Float(1.0));
 
     let mut cue = a_cue(1000, vec![intensity(rising.id, 1.0), intensity(falling.id, 0.0)]);
     cue.fade_out_ms = 4000;
 
-    let fixtures = [rising.clone(), falling.clone()];
+    let mut fixtures = vec![rising.clone(), falling.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
-    playback.tick_at(start, &view);
-    let effects = playback.tick_at(start + Duration::from_millis(500), &view);
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
 
     // Halfway through a one-second in time.
-    assert!((as_float(live(&effects, rising.id, "Intensity")) - 0.5).abs() < 0.001);
+    assert!((as_float(live(&fixtures, rising.id, "Intensity", start + 500)) - 0.5).abs() < 0.001);
     // An eighth of the way through a four-second out time, from full.
-    assert!((as_float(live(&effects, falling.id, "Intensity")) - 0.875).abs() < 0.001);
+    assert!((as_float(live(&fixtures, falling.id, "Intensity", start + 500)) - 0.875).abs() < 0.001);
 }
 
 /// The property every show written before this change relies on: an unset out time
@@ -421,21 +540,20 @@ fn a_cue_with_an_out_time_takes_it_only_where_the_parameter_comes_down() {
 #[test]
 fn a_cue_with_no_out_time_fades_one_way_in_both_directions() {
     let mut fixture = a_fixture();
-    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+    already_at(&mut fixture, "Intensity", ParameterValue::Float(1.0));
     let cue = a_cue(1000, vec![intensity(fixture.id, 0.0)]);
 
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
-    playback.tick_at(start, &view);
-    let effects = playback.tick_at(start + Duration::from_millis(500), &view);
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
 
     assert!(
-        (as_float(live(&effects, fixture.id, "Intensity")) - 0.5).abs() < 0.001,
+        (as_float(live(&fixtures, fixture.id, "Intensity", start + 500)) - 0.5).abs() < 0.001,
         "the in time, taken downwards",
     );
 }
@@ -443,25 +561,24 @@ fn a_cue_with_no_out_time_fades_one_way_in_both_directions() {
 #[test]
 fn a_captures_own_out_time_wins_over_the_cues() {
     let mut fixture = a_fixture();
-    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+    already_at(&mut fixture, "Intensity", ParameterValue::Float(1.0));
 
     let mut capture = intensity(fixture.id, 0.0);
     capture.fade_out_ms = 2000;
     let mut cue = a_cue(1000, vec![capture]);
     cue.fade_out_ms = 8000;
 
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
-    playback.tick_at(start, &view);
-    let effects = playback.tick_at(start + Duration::from_millis(500), &view);
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
 
     assert!(
-        (as_float(live(&effects, fixture.id, "Intensity")) - 0.75).abs() < 0.001,
+        (as_float(live(&fixtures, fixture.id, "Intensity", start + 500)) - 0.75).abs() < 0.001,
         "a quarter of the way through two seconds, not a sixteenth of eight",
     );
 }
@@ -472,9 +589,7 @@ fn a_captures_own_out_time_wins_over_the_cues() {
 #[test]
 fn a_parameter_with_no_order_takes_the_in_time() {
     let mut fixture = a_fixture();
-    fixture
-        .live_values
-        .insert("ColorRgb".into(), ParameterValue::Color { r: 1.0, g: 1.0, b: 1.0 });
+    already_at(&mut fixture, "ColorRgb", ParameterValue::Color { r: 1.0, g: 1.0, b: 1.0 });
     let capture = ParameterCapture {
         fixture_id: fixture.id,
         parameter_kind: ParameterKind::ColorRgb,
@@ -488,17 +603,16 @@ fn a_parameter_with_no_order_takes_the_in_time() {
     let mut cue = a_cue(1000, vec![capture]);
     cue.fade_out_ms = 8000;
 
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
-    playback.tick_at(start, &view);
-    let effects = playback.tick_at(start + Duration::from_millis(500), &view);
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    match live(&effects, fixture.id, "ColorRgb") {
+    match live(&fixtures, fixture.id, "ColorRgb", start + 500) {
         Some(ParameterValue::Color { r, .. }) => {
             assert!((r - 0.5).abs() < 0.001, "half of one second, not of eight");
         }
@@ -511,9 +625,7 @@ fn a_parameter_with_no_order_takes_the_in_time() {
 #[test]
 fn colour_fades_channel_by_channel() {
     let mut fixture = a_fixture();
-    fixture
-        .live_values
-        .insert("ColorRgb".into(), ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 });
+    already_at(&mut fixture, "ColorRgb", ParameterValue::Color { r: 0.0, g: 0.0, b: 0.0 });
     let capture = ParameterCapture {
         fixture_id: fixture.id,
         parameter_kind: ParameterKind::ColorRgb,
@@ -525,17 +637,16 @@ fn colour_fades_channel_by_channel() {
         easing: Easing::Linear,
     };
     let cue = a_cue(0, vec![capture]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
-    playback.tick_at(start, &view);
-    let effects = playback.tick_at(start + Duration::from_millis(500), &view);
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    match live(&effects, fixture.id, "ColorRgb") {
+    match live(&fixtures, fixture.id, "ColorRgb", start + 500) {
         Some(ParameterValue::Color { r, g, b }) => {
             assert!((r - 0.5).abs() < 0.001);
             assert!((g - 0.25).abs() < 0.001);
@@ -548,7 +659,7 @@ fn colour_fades_channel_by_channel() {
 #[test]
 fn a_boolean_switches_at_the_top_of_the_fade_not_the_end() {
     let mut fixture = a_fixture();
-    fixture.live_values.insert("Raw:5".into(), ParameterValue::Bool(false));
+    already_at(&mut fixture, "Raw:5", ParameterValue::Bool(false));
     let capture = ParameterCapture {
         fixture_id: fixture.id,
         parameter_kind: ParameterKind::Raw(5),
@@ -560,17 +671,16 @@ fn a_boolean_switches_at_the_top_of_the_fade_not_the_end() {
         easing: Easing::Linear,
     };
     let cue = a_cue(0, vec![capture]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
-    playback.tick_at(start, &view);
-    let effects = playback.tick_at(start + Duration::from_millis(1), &view);
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    pass(&mut playback, start + 1, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    assert_eq!(live(&effects, fixture.id, "Raw:5"), Some(ParameterValue::Bool(true)));
+    assert_eq!(live(&fixtures, fixture.id, "Raw:5", start + 1), Some(ParameterValue::Bool(true)));
 }
 
 #[test]
@@ -588,24 +698,25 @@ fn a_follow_cue_fires_after_the_fade_plus_its_delay() {
     let mut first = a_cue(2000, vec![intensity(fixture.id, 1.0)]);
     first.follow_mode = FollowMode::FollowAfter { delay_ms: 1000 };
     let second = a_cue(0, vec![intensity(fixture.id, 0.0)]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [first.clone(), second.clone()];
     let sequences = [a_sequence(&[&first, &second], Some(0))];
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
     let seq_id = sequences[0].id;
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    playback.tick_at(start, &view);
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    let effects = playback.tick_at(start + Duration::from_millis(2500), &view);
+    // A follow's `at` is the moment it came due, on the same clock a fade is measured
+    // against — so it advances with the tick rather than staying at the base.
+    let effects = pass(&mut playback, start + 2500, &mut fixtures, &sequences, &cues, &[], &[]);
     assert!(
-        !effects.contains(&PlaybackEffect::GoNext { sequence_id: seq_id, at: WALL }),
+        !effects.iter().any(|e| matches!(e, PlaybackEffect::GoNext { sequence_id, .. } if *sequence_id == seq_id)),
         "the delay is measured from the end of the fade, not the start",
     );
 
-    let effects = playback.tick_at(start + Duration::from_millis(3100), &view);
-    assert!(effects.contains(&PlaybackEffect::GoNext { sequence_id: seq_id, at: WALL }));
+    let effects = pass(&mut playback, start + 3100, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!(effects.contains(&PlaybackEffect::GoNext { sequence_id: seq_id, at: WALL + 3100 }));
 }
 
 #[test]
@@ -614,20 +725,19 @@ fn a_follow_fires_once() {
     let mut first = a_cue(0, vec![intensity(fixture.id, 1.0)]);
     first.follow_mode = FollowMode::FollowAfter { delay_ms: 0 };
     let second = a_cue(0, vec![]);
-    let fixtures = [fixture];
+    let mut fixtures = vec![fixture];
     let cues = [first.clone(), second.clone()];
     let sequences = [a_sequence(&[&first, &second], Some(0))];
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
     let seq_id = sequences[0].id;
 
     let mut playback = Playback::default();
-    let start = Instant::now();
+    let start = 0;
 
     // No fade and no delay, so it is due on the tick that takes the cue.
-    let first_tick = playback.tick_at(start, &view);
+    let first_tick = pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
     assert!(first_tick.contains(&PlaybackEffect::GoNext { sequence_id: seq_id, at: WALL }));
 
-    let second_tick = playback.tick_at(start + Duration::from_millis(10), &view);
+    let second_tick = pass(&mut playback, start + 10, &mut fixtures, &sequences, &cues, &[], &[]);
     assert!(!second_tick.contains(&PlaybackEffect::GoNext { sequence_id: seq_id, at: WALL }));
 }
 
@@ -637,18 +747,18 @@ fn taking_a_cue_by_hand_cancels_a_pending_follow() {
     let mut first = a_cue(0, vec![intensity(fixture.id, 1.0)]);
     first.follow_mode = FollowMode::FollowAfter { delay_ms: 5000 };
     let second = a_cue(0, vec![]);
-    let fixtures = [fixture];
+    let mut fixtures = vec![fixture];
     let cues = [first.clone(), second.clone()];
     let mut sequences = [a_sequence(&[&first, &second], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    playback.tick_at(start, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
 
     sequences[0].active_cue_index = Some(1);
-    playback.tick_at(start + Duration::from_millis(10), &view(&sequences, &cues, &fixtures, &[], &[]));
+    pass(&mut playback, start + 10, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    let effects = playback.tick_at(start + Duration::from_secs(10), &view(&sequences, &cues, &fixtures, &[], &[]));
+    let effects = pass(&mut playback, start + 10000, &mut fixtures, &sequences, &cues, &[], &[]);
     assert!(
         !effects.iter().any(|e| matches!(e, PlaybackEffect::GoNext { .. })),
         "the follow belonged to a cue that is no longer running",
@@ -659,15 +769,14 @@ fn taking_a_cue_by_hand_cancels_a_pending_follow() {
 fn a_manual_cue_never_fires_a_follow() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 1.0)]);
-    let fixtures = [fixture];
+    let mut fixtures = vec![fixture];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
-    let view = view(&sequences, &cues, &fixtures, &[], &[]);
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    playback.tick_at(start, &view);
-    let effects = playback.tick_at(start + Duration::from_secs(60), &view);
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+    let effects = pass(&mut playback, start + 60000, &mut fixtures, &sequences, &cues, &[], &[]);
 
     assert!(!effects.iter().any(|e| matches!(e, PlaybackEffect::GoNext { .. })));
 }
@@ -676,12 +785,12 @@ fn a_manual_cue_never_fires_a_follow() {
 
 #[test]
 fn an_idle_show_reports_no_work() {
-    let fixtures: [Fixture; 0] = [];
+    let mut fixtures: Vec<Fixture> = vec![];
     let cues: [Cue; 0] = [];
     let sequences: [Sequence; 0] = [];
 
     let mut playback = Playback::default();
-    let effects = playback.tick_at(Instant::now(), &view(&sequences, &cues, &fixtures, &[], &[]));
+    let effects = pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
 
     assert!(effects.is_empty());
     assert!(!playback.has_work());
@@ -691,16 +800,16 @@ fn an_idle_show_reports_no_work() {
 fn a_deleted_sequence_releases_its_cue() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 1.0)]);
-    let fixtures = [fixture];
+    let mut fixtures = vec![fixture];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    playback.tick_at(start, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let start = 0;
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
 
     let none: [Sequence; 0] = [];
-    let effects = playback.tick_at(start, &view(&none, &cues, &fixtures, &[], &[]));
+    let effects = pass(&mut playback, start, &mut fixtures, &none, &cues, &[], &[]);
 
     assert!(effects.contains(&PlaybackEffect::SetCueActive { cue_id: cue.id, is_active: false }));
 }
@@ -718,36 +827,34 @@ fn held_intensity(fixture_id: Uuid, level: f32) -> ProgrammerValue {
     held(fixture_id, ParameterKind::Intensity, ParameterValue::Float(level))
 }
 
-/// What a fixture is actually putting out, after the tick's effects were applied.
+/// What a fixture is actually putting out, with the programmer over the top.
 ///
-/// The programmer tests ask about the stage rather than about the effect list: a
-/// tick that changes nothing rightly emits nothing, so "what is the level now" and
-/// "what did this tick write" are different questions, and this is the first one.
-fn level_of(fixtures: &[Fixture], fixture_id: Uuid) -> f32 {
-    as_float(
-        fixtures
-            .iter()
-            .find(|f| f.id == fixture_id)
-            .and_then(|f| f.live_values.get("Intensity").cloned()),
-    )
+/// The programmer tests ask about the stage rather than about the effect list: a pass
+/// that changes nothing rightly publishes nothing, so "what is the level now" and
+/// "what did this pass write" are different questions, and this is the first one.
+fn level_of(
+    fixtures: &[Fixture],
+    programmer: &[ProgrammerValue],
+    fixture_id: Uuid,
+    after_ms: u64,
+) -> f32 {
+    as_float(live_under(fixtures, programmer, fixture_id, "Intensity", after_ms))
 }
 
 #[test]
 fn a_programmer_value_beats_the_cue_playing_under_it() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 1.0)]);
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
     let programmer = [held_intensity(fixture.id, 0.25)];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let effects =
-        playback.tick_at(now, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
-
-    assert_eq!(level_of(&fixtures, fixture.id), 0.25);
+    let now = 0;
+        pass(&mut playback, now, &mut fixtures, &sequences, &cues, &programmer, &[]);
+    
+    assert_eq!(level_of(&fixtures, &programmer, fixture.id, now), 0.25);
 }
 
 #[test]
@@ -755,31 +862,26 @@ fn a_fade_keeps_running_under_a_held_value_and_release_lands_on_it() {
     let fixture = a_fixture();
     // Four seconds up, so the fade is plainly mid-flight when the value goes back.
     let cue = a_cue(4000, vec![intensity(fixture.id, 1.0)]);
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
     let programmer = [held_intensity(fixture.id, 0.1)];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let effects =
-        playback.tick_at(start, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
-
-    let halfway = start + Duration::from_millis(2000);
-    let effects =
-        playback.tick_at(halfway, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(
-        level_of(&fixtures, fixture.id),
+    let start = 0;
+        pass(&mut playback, start, &mut fixtures, &sequences, &cues, &programmer, &[]);
+    
+    let halfway = start + 2000;
+        pass(&mut playback, halfway, &mut fixtures, &sequences, &cues, &programmer, &[]);
+        assert_eq!(
+        level_of(&fixtures, &programmer, fixture.id, halfway),
         0.1,
         "the fade is running, but the programmer is what reaches the output",
     );
 
     // Let go. The cue is halfway up, so that is where the parameter belongs.
-    let effects = playback.tick_at(halfway, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    let released = level_of(&fixtures, fixture.id);
+    pass(&mut playback, halfway, &mut fixtures, &sequences, &cues, &[], &[]);
+        let released = level_of(&fixtures, &[], fixture.id, halfway);
     assert!(
         released > 0.4 && released < 0.6,
         "release should land on the fade, not on where it started: got {released}",
@@ -790,27 +892,23 @@ fn a_fade_keeps_running_under_a_held_value_and_release_lands_on_it() {
 fn releasing_with_no_fade_puts_back_what_was_there() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 0.8)]);
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
+    let start = 0;
     // The cue lands first, with nothing in the programmer.
-    let effects = playback.tick_at(start, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.8);
+    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert_eq!(level_of(&fixtures, &[], fixture.id, start), 0.8);
 
     let programmer = [held_intensity(fixture.id, 0.2)];
-    let later = start + Duration::from_millis(100);
-    let effects =
-        playback.tick_at(later, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.2);
+    let later = start + 100;
+        pass(&mut playback, later, &mut fixtures, &sequences, &cues, &programmer, &[]);
+        assert_eq!(level_of(&fixtures, &programmer, fixture.id, later), 0.2);
 
-    let effects = playback.tick_at(later, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.8);
+    pass(&mut playback, later, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert_eq!(level_of(&fixtures, &[], fixture.id, later), 0.8);
 }
 
 /// Nothing was underneath, so letting go lands on where the parameter rests. For a
@@ -819,21 +917,18 @@ fn releasing_with_no_fade_puts_back_what_was_there() {
 #[test]
 fn a_held_value_over_a_fixture_no_cue_has_touched_releases_to_where_it_rests() {
     let fixture = a_fixture();
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues: [Cue; 0] = [];
     let sequences: [Sequence; 0] = [];
     let programmer = [held_intensity(fixture.id, 0.7)];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let effects =
-        playback.tick_at(now, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.7);
+    let now = 0;
+        pass(&mut playback, now, &mut fixtures, &sequences, &cues, &programmer, &[]);
+        assert_eq!(level_of(&fixtures, &programmer, fixture.id, now), 0.7);
 
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.0, "which for a dimmer is off");
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert_eq!(level_of(&fixtures, &[], fixture.id, now), 0.0, "which for a dimmer is off");
 }
 
 /// The house light. Its type is a dimmer like any other and rests dark; this one
@@ -843,21 +938,18 @@ fn a_held_value_over_a_fixture_no_cue_has_touched_releases_to_where_it_rests() {
 fn a_fixture_that_rests_on_releases_to_on() {
     let mut fixture = a_fixture();
     fixture.home_values.insert("Intensity".into(), ParameterValue::Float(1.0));
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues: [Cue; 0] = [];
     let sequences: [Sequence; 0] = [];
     let programmer = [held_intensity(fixture.id, 0.2)];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let effects =
-        playback.tick_at(now, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.2, "the operator has it");
+    let now = 0;
+        pass(&mut playback, now, &mut fixtures, &sequences, &cues, &programmer, &[]);
+        assert_eq!(level_of(&fixtures, &programmer, fixture.id, now), 0.2, "the operator has it");
 
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 1.0, "and letting go gives it back");
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert_eq!(level_of(&fixtures, &[], fixture.id, now), 1.0, "and letting go gives it back");
 }
 
 /// A fade on a parameter nothing has driven starts where that parameter rests, which
@@ -879,15 +971,15 @@ fn a_first_fade_starts_from_where_the_parameter_rests() {
             effect: None,
         }],
     );
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let effects = playback.tick_at(Instant::now(), &view(&sequences, &cues, &fixtures, &[], &[]));
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
 
     assert_eq!(
-        as_float(live(&effects, fixture.id, "Tilt")),
+        as_float(live(&fixtures, fixture.id, "Tilt", 0)),
         0.5,
         "centred, which is where the node said this port rests",
     );
@@ -896,7 +988,7 @@ fn a_first_fade_starts_from_where_the_parameter_rests() {
 #[test]
 fn locking_a_value_changes_nothing_about_the_output() {
     let fixture = a_fixture();
-    let fixtures = [fixture.clone()];
+    let fixtures = vec![fixture.clone()];
     let cues: [Cue; 0] = [];
     let sequences: [Sequence; 0] = [];
 
@@ -910,10 +1002,8 @@ fn locking_a_value_changes_nothing_about_the_output() {
         let programmer = [entry.clone()];
         let mut fixtures = fixtures.clone();
         let mut playback = Playback::default();
-        let effects = playback
-            .tick_at(Instant::now(), &view(&sequences, &cues, &fixtures, &programmer, &[]));
-        apply(&mut fixtures, &effects);
-        level_of(&fixtures, fixture.id)
+        pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &programmer, &[]);
+        level_of(&fixtures, &programmer, fixture.id, 0)
     };
 
     unlocked.locked = false;
@@ -923,69 +1013,78 @@ fn locking_a_value_changes_nothing_about_the_output() {
 #[test]
 fn another_writer_under_a_held_key_is_covered_again() {
     let fixture = a_fixture();
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues: [Cue; 0] = [];
     let sequences: [Sequence; 0] = [];
     let programmer = [held_intensity(fixture.id, 0.3)];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let effects =
-        playback.tick_at(now, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
+    let now = 0;
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &programmer, &[]);
 
-    // A flow action, or an input off a device: it writes `live_values` directly and
-    // knows nothing about the programmer.
-    fixtures[0].live_values.insert("Intensity".into(), ParameterValue::Float(0.95));
+    // A flow action driving the same parameter. It knows nothing about the programmer,
+    // and it does not need to: the programmer is a layer over what it wrote rather
+    // than a writer racing it.
+    playback.set_parameter(fixture.id, "Intensity".into(), ParameterValue::Float(0.95), WALL + now);
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &programmer, &[]);
+    assert_eq!(level_of(&fixtures, &programmer, fixture.id, now), 0.3);
 
-    let effects =
-        playback.tick_at(now, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.3);
-
-    // And that write is what the value goes back to, because it is what playback
-    // would be showing now.
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.95);
+    // And that drive is what the value goes back to, because it is what playback is
+    // showing underneath.
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, now), 0.95);
 }
 
 #[test]
-fn a_settled_programmer_is_not_re_emitted_every_tick() {
+fn a_settled_programmer_is_not_re_emitted() {
     let fixture = a_fixture();
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
+    let cues: [Cue; 0] = [];
+    let sequences: [Sequence; 0] = [];
+    let programmer = [held_effect(fixture.id, a_sine(0.0))];
+
+    let mut playback = Playback::default();
+    let first = pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &programmer, &[]);
+    assert!(!first.is_empty(), "the shape it is holding is published once");
+
+    let again = pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &programmer, &[]);
+    assert!(again.is_empty(), "nothing changed, so nothing should be written");
+}
+
+/// A plain held value is never published at all. It is a SYNCED programmer entry that
+/// every consumer already has, and putting a second copy of it on the fixture would be
+/// the station telling the browser what the browser told the station.
+#[test]
+fn a_plain_held_value_is_not_republished_onto_the_fixture() {
+    let fixture = a_fixture();
+    let mut fixtures = vec![fixture.clone()];
     let cues: [Cue; 0] = [];
     let sequences: [Sequence; 0] = [];
     let programmer = [held_intensity(fixture.id, 0.5)];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let effects =
-        playback.tick_at(now, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
-    assert!(!effects.is_empty());
+    let out = pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &programmer, &[]);
 
-    let effects =
-        playback.tick_at(now, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    assert!(effects.is_empty(), "nothing moved, so nothing should be written");
+    assert!(out.is_empty(), "nothing to publish: {out:?}");
+    assert_eq!(level_of(&fixtures, &programmer, fixture.id, 0), 0.5, "and it still shows");
 }
 
+/// Holding a value used to be outstanding work, because a flow action writing the
+/// same key would otherwise take it for good. It is not any more: the programmer is a
+/// layer evaluated over playback rather than a value racing other writers, so there is
+/// nothing to keep re-asserting.
 #[test]
-fn holding_a_value_is_work_so_the_engine_keeps_ticking() {
+fn holding_a_value_is_not_work_the_engine_has_to_keep_doing() {
     let fixture = a_fixture();
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues: [Cue; 0] = [];
     let sequences: [Sequence; 0] = [];
     let programmer = [held_intensity(fixture.id, 0.5)];
 
-    // Otherwise a flow action writing the same key would take it for good: that
-    // write does not bump the show's version, so nothing else would ask for a tick.
     let mut playback = Playback::default();
-    playback.tick_at(Instant::now(), &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    assert!(playback.has_work());
-
-    playback.tick_at(Instant::now(), &view(&sequences, &cues, &fixtures, &[], &[]));
-    assert!(!playback.has_work(), "and stops once the programmer is empty");
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &programmer, &[]);
+    assert!(!playback.has_work());
+    assert_eq!(level_of(&fixtures, &programmer, fixture.id, 0), 0.5, "and it still holds");
 }
 
 #[test]
@@ -1007,20 +1106,18 @@ fn the_programmer_leaves_parameters_it_does_not_hold_alone() {
             },
         ],
     );
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], Some(0))];
     let programmer = [held_intensity(fixture.id, 0.1)];
 
     let mut playback = Playback::default();
-    let effects = playback
-        .tick_at(Instant::now(), &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &programmer, &[]);
 
-    assert_eq!(level_of(&fixtures, fixture.id), 0.1);
+    assert_eq!(level_of(&fixtures, &programmer, fixture.id, 0), 0.1);
     assert_eq!(
-        fixtures[0].live_values.get("ColorRgb"),
-        Some(&ParameterValue::Color { r: 1.0, g: 0.0, b: 0.0 }),
+        live(&fixtures, fixture.id, "ColorRgb", 0),
+        Some(ParameterValue::Color { r: 1.0, g: 0.0, b: 0.0 }),
         "the colour was never in the programmer, so the cue still owns it",
     );
 }
@@ -1111,19 +1208,19 @@ fn a_cue_effect_is_measured_from_when_the_cue_went() {
     let cue = a_cue(0, vec![intensity_effect(fixture.id, a_sine(0.0))]);
     let mut sequence = a_sequence(&[&cue], Some(0));
     sequence.went_at = Some(10_000);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue];
     let sequences = [sequence];
-    let view = || view(&sequences, &cues, &fixtures, &[], &[]);
 
     let mut playback = Playback::default();
-    let now = Instant::now();
+    at(&mut playback, 10_000, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    let peak = playback.tick(now, 10_250, &view());
-    assert!((as_float(live(&peak, fixture.id, "Intensity")) - 1.0).abs() < 1e-4, "peak");
-
-    let trough = playback.tick(now, 10_750, &view());
-    assert!(as_float(live(&trough, fixture.id, "Intensity")).abs() < 1e-4, "trough");
+    // One pass, two readings. The shape was published once and the moment does the
+    // rest, which is the whole of what this change did.
+    let peak = as_float(live_at(&fixtures, fixture.id, "Intensity", 10_250));
+    assert!((peak - 1.0).abs() < 1e-4, "peak: {peak}");
+    let trough = as_float(live_at(&fixtures, fixture.id, "Intensity", 10_750));
+    assert!(trough.abs() < 1e-4, "trough: {trough}");
 }
 
 /// Two stations run the same tick at different milliseconds. Anchored on the cue,
@@ -1134,23 +1231,25 @@ fn two_stations_that_took_the_cue_at_different_moments_still_agree() {
     let cue = a_cue(0, vec![intensity_effect(fixture.id, a_sine(0.0))]);
     let mut sequence = a_sequence(&[&cue], Some(0));
     sequence.went_at = Some(10_000);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue];
     let sequences = [sequence];
 
     // One station starts ticking 40 ms after the Go, the other 600 ms after.
     let mut prompt = Playback::default();
-    prompt.tick(Instant::now(), 10_040, &view(&sequences, &cues, &fixtures, &[], &[]));
+    at(&mut prompt, 10_040, &mut fixtures, &sequences, &cues, &[], &[]);
     let mut late = Playback::default();
-    late.tick(Instant::now(), 10_600, &view(&sequences, &cues, &fixtures, &[], &[]));
+    at(&mut late, 10_600, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    // Now both are asked for the same instant.
-    let a = prompt.tick(Instant::now(), 11_250, &view(&sequences, &cues, &fixtures, &[], &[]));
-    let b = late.tick(Instant::now(), 11_250, &view(&sequences, &cues, &fixtures, &[], &[]));
+    // Each station's rig carries what its own playback published.
+    let mut here = fixtures.clone();
+    let mut there = fixtures.clone();
+    apply(&mut here, &at(&mut prompt, 11_250, &mut fixtures.clone(), &sequences, &cues, &[], &[]));
+    apply(&mut there, &at(&mut late, 11_250, &mut fixtures.clone(), &sequences, &cues, &[], &[]));
 
     assert_eq!(
-        live(&a, fixture.id, "Intensity"),
-        live(&b, fixture.id, "Intensity"),
+        live_at(&here, fixture.id, "Intensity", 11_250),
+        live_at(&there, fixture.id, "Intensity", 11_250),
         "the same cue at the same instant is the same value",
     );
 }
@@ -1165,34 +1264,36 @@ fn two_fixtures_half_a_cycle_apart_are_mirror_images() {
     );
     let mut sequence = a_sequence(&[&cue], Some(0));
     sequence.went_at = Some(0);
-    let fixtures = [one.clone(), two.clone()];
+    let mut fixtures = vec![one.clone(), two.clone()];
     let cues = [cue];
     let sequences = [sequence];
 
     let mut playback = Playback::default();
-    let out = playback.tick(Instant::now(), 250, &view(&sequences, &cues, &fixtures, &[], &[]));
+    at(&mut playback, 250, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    let a = as_float(live(&out, one.id, "Intensity"));
-    let b = as_float(live(&out, two.id, "Intensity"));
+    let a = as_float(live_at(&fixtures, one.id, "Intensity", 250));
+    let b = as_float(live_at(&fixtures, two.id, "Intensity", 250));
     assert!((a - 1.0).abs() < 1e-4, "the first is at the top: {a}");
     assert!(b.abs() < 1e-4, "the second is at the bottom: {b}");
 }
 
-/// An effect never arrives anywhere, so the engine can never stop ticking while one
-/// is running. Without this the show would freeze at whatever the last tick rendered.
+/// An effect never arrives anywhere, which used to mean a station running one could
+/// never stop ticking. It is not work any more, and that is the change: the shape was
+/// described once, and a value nobody stores needs nobody to advance it.
 #[test]
-fn a_running_effect_is_outstanding_work() {
+fn a_running_effect_is_not_outstanding_work() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity_effect(fixture.id, a_sine(0.0))]);
     let sequences = [a_sequence(&[&cue], Some(0))];
-    let fixtures = [fixture];
+    let mut fixtures = vec![fixture];
     let cues = [cue];
 
     let mut playback = Playback::default();
     assert!(!playback.has_work(), "nothing yet");
 
-    playback.tick(Instant::now(), 0, &view(&sequences, &cues, &fixtures, &[], &[]));
-    assert!(playback.has_work(), "and now there is, for as long as it runs");
+    at(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!(!playback.has_work(), "and still nothing: the chase runs itself");
+    assert_eq!(playback.next_deadline(), None, "so there is nothing to wake up for");
 }
 
 #[test]
@@ -1200,21 +1301,20 @@ fn leaving_the_cue_stops_its_effect() {
     let fixture = a_fixture();
     let first = a_cue(0, vec![intensity_effect(fixture.id, a_sine(0.0))]);
     let second = a_cue(0, vec![intensity(fixture.id, 0.25)]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [first.clone(), second.clone()];
     let mut sequences = [a_sequence(&[&first, &second], Some(0))];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    playback.tick(now, 0, &view(&sequences, &cues, &fixtures, &[], &[]));
-    assert!(playback.has_work(), "the effect is running");
+    at(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!(!fixtures[0].live_effects.is_empty(), "the effect is running");
 
     sequences[0].active_cue_index = Some(1);
-    let out = playback.tick(now, 100, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let out = at(&mut playback, 100, &mut fixtures, &sequences, &cues, &[], &[]);
 
     assert!(
         running_effects(&out, fixture.id).is_some_and(|e| e.is_empty()),
-        "and the plugins are told it stopped",
+        "and the plugins are told it stopped: {out:?}",
     );
 }
 
@@ -1230,7 +1330,7 @@ fn a_programmer_effect_beats_a_cue_effect_and_a_plain_value_beats_both() {
     let cue = a_cue(0, vec![intensity_effect(fixture.id, a_sine(0.0))]);
     let mut sequence = a_sequence(&[&cue], Some(0));
     sequence.went_at = Some(0);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue];
     let sequences = [sequence];
 
@@ -1238,13 +1338,9 @@ fn a_programmer_effect_beats_a_cue_effect_and_a_plain_value_beats_both() {
     let programmer = [held_effect(fixture.id, a_sine(0.5))];
 
     let mut playback = Playback::default();
-    let out = playback.tick(
-        Instant::now(),
-        750,
-        &view(&sequences, &cues, &fixtures, &programmer, &[]),
-    );
+    let out = at(&mut playback, 750, &mut fixtures, &sequences, &cues, &programmer, &[]);
 
-    let value = as_float(live(&out, fixture.id, "Intensity"));
+    let value = as_float(live_at(&fixtures, fixture.id, "Intensity", 750));
     assert!((value - 1.0).abs() < 1e-4, "the programmer's effect is what shows: {value}");
 
     let listed = running_effects(&out, fixture.id).expect("listed");
@@ -1261,26 +1357,24 @@ fn a_plain_programmer_value_covers_a_cue_effect_and_unlists_it() {
     let cue = a_cue(0, vec![intensity_effect(fixture.id, a_sine(0.0))]);
     let mut sequence = a_sequence(&[&cue], Some(0));
     sequence.went_at = Some(0);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue];
     let sequences = [sequence];
     let programmer = [held_value(fixture.id, 0.3)];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
 
     // The chase is running and the plugins have been told so.
-    let before = playback.tick(now, 250, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let before = at(&mut playback, 250, &mut fixtures, &sequences, &cues, &[], &[]);
     assert!(!running_effects(&before, fixture.id).unwrap().is_empty(), "running");
 
     // Then somebody grabs the fader.
-    let after = playback.tick(
-        now,
-        260,
-        &view(&sequences, &cues, &fixtures, &programmer, &[]),
-    );
+    let after = at(&mut playback, 260, &mut fixtures, &sequences, &cues, &programmer, &[]);
 
-    assert_eq!(live(&after, fixture.id, "Intensity"), Some(ParameterValue::Float(0.3)));
+    assert_eq!(
+        live_at_under(&fixtures, &programmer, fixture.id, "Intensity", 260),
+        Some(ParameterValue::Float(0.3)),
+    );
     assert!(
         running_effects(&after, fixture.id).is_some_and(|e| e.is_empty()),
         "nothing is periodic on this fixture as far as a node is concerned",
@@ -1296,19 +1390,18 @@ fn releasing_a_held_value_gives_the_cue_effect_back() {
     let cue = a_cue(0, vec![intensity_effect(fixture.id, a_sine(0.0))]);
     let mut sequence = a_sequence(&[&cue], Some(0));
     sequence.went_at = Some(0);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue];
     let sequences = [sequence];
     let holding = [held_value(fixture.id, 0.3)];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    playback.tick(now, 250, &view(&sequences, &cues, &fixtures, &holding, &[]));
+    at(&mut playback, 250, &mut fixtures, &sequences, &cues, &holding, &[]);
 
     // Let go at three quarters of a cycle, where the sine is at the bottom.
-    let out = playback.tick(now, 750, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let out = at(&mut playback, 750, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    let value = as_float(live(&out, fixture.id, "Intensity"));
+    let value = as_float(live_at(&fixtures, fixture.id, "Intensity", 750));
     assert!(value.abs() < 1e-4, "back on the effect, at the trough it has reached: {value}");
     let listed = running_effects(&out, fixture.id).expect("listed again");
     assert!(matches!(listed["Intensity"].source, EffectSource::Cue(_)));
@@ -1327,7 +1420,7 @@ fn an_effect_on_a_master_takes_the_masters_tempo_and_anchor() {
     let cue = a_cue(0, vec![intensity_effect(fixture.id, spec)]);
     let mut sequence = a_sequence(&[&cue], Some(0));
     sequence.went_at = Some(50_000);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue];
     let sequences = [sequence];
 
@@ -1342,17 +1435,13 @@ fn an_effect_on_a_master_takes_the_masters_tempo_and_anchor() {
     }];
 
     let mut playback = Playback::default();
-    let out = playback.tick(
-        Instant::now(),
-        51_250,
-        &view(&sequences, &cues, &fixtures, &[], &masters),
-    );
+    let out = at(&mut playback, 51_250, &mut fixtures, &sequences, &cues, &[], &masters);
 
     let listed = running_effects(&out, fixture.id).expect("listed");
     assert!((listed["Intensity"].rate_hz - 1.0).abs() < 1e-4, "one hertz");
     assert_eq!(listed["Intensity"].t0, 1_000, "the master's anchor");
     // 51250 is a quarter of a second past a whole number of cycles from 1000.
-    let value = as_float(live(&out, fixture.id, "Intensity"));
+    let value = as_float(live_at(&fixtures, fixture.id, "Intensity", 51_250));
     assert!((value - 1.0).abs() < 1e-4, "at the top: {value}");
 }
 
@@ -1365,7 +1454,7 @@ fn editing_the_master_re_resolves_every_effect_on_it() {
     let master_id = Uuid::new_v4();
     let spec = EffectSpec { rate: Rate::Master { id: master_id, multiplier: 1.0 }, ..a_sine(0.0) };
     let programmer = [held_effect(fixture.id, spec)];
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let master = |bpm: f32, t0: u64| {
         [SpeedMaster {
             id: master_id,
@@ -1378,13 +1467,12 @@ fn editing_the_master_re_resolves_every_effect_on_it() {
     };
 
     let mut playback = Playback::default();
-    let now = Instant::now();
     let slow = master(60.0, 0);
-    let before = playback.tick(now, 0, &view(&[], &[], &fixtures, &programmer, &slow));
+    let before = at(&mut playback, 0, &mut fixtures, &[], &[], &programmer, &slow);
     assert!((running_effects(&before, fixture.id).unwrap()["Intensity"].rate_hz - 1.0).abs() < 1e-4);
 
     let fast = master(240.0, 5_000);
-    let after = playback.tick(now, 1, &view(&[], &[], &fixtures, &programmer, &fast));
+    let after = at(&mut playback, 1, &mut fixtures, &[], &[], &programmer, &fast);
     let listed = running_effects(&after, fixture.id).unwrap();
     assert!((listed["Intensity"].rate_hz - 4.0).abs() < 1e-4, "four hertz");
     assert_eq!(listed["Intensity"].t0, 5_000, "measured from the tap that changed it");
@@ -1393,7 +1481,7 @@ fn editing_the_master_re_resolves_every_effect_on_it() {
 // ── What is handed to the plugins ─────────────────────────────────────────────
 
 #[test]
-fn a_fade_is_described_from_the_cues_anchor_and_leaves_when_it_lands() {
+fn a_fade_is_described_from_the_cues_anchor_and_stays_after_it_lands() {
     let fixture = a_fixture();
     let capture =
         ParameterCapture { delay_in_ms: 500, easing: Easing::EaseInOut, ..intensity(fixture.id, 1.0) };
@@ -1401,13 +1489,12 @@ fn a_fade_is_described_from_the_cues_anchor_and_leaves_when_it_lands() {
     let mut sequence = a_sequence(&[&cue], Some(0));
     sequence.went_at = Some(10_000);
     let cue_id = cue.id;
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue];
     let sequences = [sequence];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let out = playback.tick(now, 10_000, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let out = at(&mut playback, 10_000, &mut fixtures, &sequences, &cues, &[], &[]);
 
     let listed = running_fades(&out, fixture.id).expect("listed");
     let fade = &listed["Intensity"];
@@ -1416,13 +1503,15 @@ fn a_fade_is_described_from_the_cues_anchor_and_leaves_when_it_lands() {
     assert_eq!(fade.easing, Easing::EaseInOut);
     assert_eq!(fade.cue_id, cue_id);
 
-    // Well past the end of it.
-    let done = playback.tick(
-        now + Duration::from_millis(4_000),
-        14_000,
-        &view(&sequences, &cues, &fixtures, &[], &[]),
+    // Well past the end of it. The fade stays, because it is the only record of where
+    // the parameter got to — nothing stores the number it landed on.
+    let done = at(&mut playback, 14_000, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!(done.is_empty(), "and nothing was written to say it had arrived: {done:?}");
+    assert_eq!(
+        live_at(&fixtures, fixture.id, "Intensity", 14_000),
+        Some(ParameterValue::Float(1.0)),
+        "which is what a landed fade evaluates to for ever after",
     );
-    assert!(running_fades(&done, fixture.id).is_some_and(|f| f.is_empty()), "gone");
 }
 
 /// A key that is being driven by an effect has no fade to describe, even if one is
@@ -1433,17 +1522,16 @@ fn a_key_under_an_effect_is_not_also_listed_as_a_fade() {
     let fixture = a_fixture();
     let first = a_cue(3_000, vec![intensity(fixture.id, 1.0)]);
     let second = a_cue(0, vec![intensity_effect(fixture.id, a_sine(0.0))]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [first.clone(), second.clone()];
     let mut sequences = [a_sequence(&[&first, &second], Some(0))];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let fading = playback.tick(now, 0, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let fading = at(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
     assert!(!running_fades(&fading, fixture.id).unwrap().is_empty(), "the fade is listed first");
 
     sequences[0].active_cue_index = Some(1);
-    let out = playback.tick(now, 100, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let out = at(&mut playback, 100, &mut fixtures, &sequences, &cues, &[], &[]);
 
     assert!(!running_effects(&out, fixture.id).unwrap().is_empty(), "the effect is listed");
     assert!(running_fades(&out, fixture.id).unwrap().is_empty(), "and no fade beside it");
@@ -1456,34 +1544,32 @@ fn an_unchanged_description_is_not_written_again() {
     let cue = a_cue(0, vec![intensity_effect(fixture.id, a_sine(0.0))]);
     let mut sequence = a_sequence(&[&cue], Some(0));
     sequence.went_at = Some(0);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue];
     let sequences = [sequence];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let first = playback.tick(now, 0, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let first = at(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
     assert!(running_effects(&first, fixture.id).is_some(), "said once");
 
-    let second = playback.tick(now, 25, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let second = at(&mut playback, 25, &mut fixtures, &sequences, &cues, &[], &[]);
     assert!(
         running_effects(&second, fixture.id).is_none(),
         "and not again on the next tick, though the value it renders has moved",
     );
-    assert!(live(&second, fixture.id, "Intensity").is_some(), "the value still goes out");
+    assert!(live_at(&fixtures, fixture.id, "Intensity", 25).is_some(), "the value still goes out");
 }
 
-// ── What a tick costs ─────────────────────────────────────────────────────────
+// ── What a pass costs ────────────────────────────────────────────────────────
 //
-// Task 19 left this open: an effect never arrives anywhere, so a station running
-// one never idles. Before effects existed a settled show stopped ticking entirely;
-// now a show with a chase up ticks at 40 Hz for as long as it is up, on every
-// station. These put a number on it rather than leaving it as a worry.
+// Task 19 left this open: an effect never arrives anywhere, so a station running one
+// never idled, and a chase up meant 40 Hz of writes for as long as it was up. That
+// question is answered rather than measured now — a pass happens when the *show*
+// changes, so a chase running costs exactly nothing until somebody takes a cue.
 //
-// Not assertions about wall-clock speed — a loaded CI box would fail those, and a
-// test that fails because somebody else was compiling is a test people delete.
-// They print, and the one assertion is the shape of the work rather than its
-// duration: how many writes a tick asks the engine to make.
+// What is left worth asserting is the shape of the work rather than its duration: how
+// many writes a pass asks the engine to make, and that a second pass over an unchanged
+// show asks for none.
 
 /// A rig of `n` fixtures, all under one cue, all running a sine.
 fn a_rig_under_one_effect(n: usize) -> (Vec<Fixture>, Vec<Cue>, Vec<Sequence>) {
@@ -1499,103 +1585,67 @@ fn a_rig_under_one_effect(n: usize) -> (Vec<Fixture>, Vec<Cue>, Vec<Sequence>) {
     (fixtures, vec![cue], vec![sequence])
 }
 
-/// Roughly how long one tick takes, averaged over enough of them to mean something.
-fn cost_per_tick(n: usize, ticks: u32) -> std::time::Duration {
-    let (fixtures, cues, sequences) = a_rig_under_one_effect(n);
-    let mut playback = Playback::default();
-    let now = Instant::now();
-
-    // The first tick starts the cue and is not typical of the rest.
-    playback.tick(now, 0, &view(&sequences, &cues, &fixtures, &[], &[]));
-
-    let started = Instant::now();
-    for i in 0..ticks {
-        playback.tick(
-            now + Duration::from_millis(i as u64 * 25),
-            i as u64 * 25,
-            &view(&sequences, &cues, &fixtures, &[], &[]),
-        );
-    }
-    started.elapsed() / ticks
-}
-
-/// The headline number: what a tick costs at a few rig sizes.
+/// A chase over a large rig is described once and then costs nothing.
 ///
-/// The budget is 25 ms — that is the tick interval, and a tick that takes longer
-/// than the gap between ticks is a console that has fallen behind rather than a
-/// console that is busy.
+/// The number this replaces was five hundred writes every twenty-five milliseconds,
+/// for as long as the chase was up, on every station running the show. It is now two
+/// writes per fixture once, and zero thereafter.
 #[test]
-fn a_tick_costs_something_worth_writing_down() {
-    for n in [1, 50, 200, 500, 1000] {
-        let each = cost_per_tick(n, 200);
-        let share = each.as_secs_f64() / TICK.as_secs_f64() * 100.0;
-        println!("{n:>5} fixtures on one effect: {each:>10.2?} per tick ({share:.2}% of the budget)");
-    }
-}
-
-/// The thing task 19 actually worried about: how many writes a tick asks for.
-///
-/// `emit` compares against the show and drops the no-ops, so a rig holding still
-/// costs nothing to keep holding. A rig under an effect does not hold still, and
-/// this is the number that grows with it.
-#[test]
-fn a_tick_asks_for_one_write_per_moving_fixture_and_no_more() {
-    let (fixtures, cues, sequences) = a_rig_under_one_effect(500);
+fn a_running_effect_is_described_once_and_then_asks_for_nothing() {
+    let (mut fixtures, cues, sequences) = a_rig_under_one_effect(500);
     let mut playback = Playback::default();
-    let now = Instant::now();
-    playback.tick(now, 0, &view(&sequences, &cues, &fixtures, &[], &[]));
 
-    let out = playback.tick(now, 25, &view(&sequences, &cues, &fixtures, &[], &[]));
-
-    let values = out
-        .iter()
-        .filter(|e| matches!(e, PlaybackEffect::SetLiveValues { .. }))
-        .count();
-    let descriptions = out
+    let taken = at(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    let descriptions = taken
         .iter()
         .filter(|e| {
             matches!(e, PlaybackEffect::SetLiveEffects { .. } | PlaybackEffect::SetLiveFades { .. })
         })
         .count();
+    assert_eq!(descriptions, 1000, "one effects write and one fades write per fixture");
 
-    assert_eq!(values, 500, "one value write per fixture that moved");
-    assert_eq!(
-        descriptions, 0,
-        "and none of the descriptions again: they were said on the first tick and have not changed",
-    );
+    for after in [25, 1_000, 60_000] {
+        let out = at(&mut playback, after, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert!(
+            out.is_empty(),
+            "the shape has not changed at {after} ms, so there is nothing to say: {out:?}",
+        );
+    }
 }
 
-/// The other half of the same question, and the reassuring half: a rig that is not
-/// moving costs nothing per tick however large it is.
-///
-/// This is what makes the number above the honest worst case rather than the normal
-/// one. A show is mostly still.
+/// And the value it renders still moves, which is the whole trade: the console said
+/// what is happening once, and time does the rest.
+#[test]
+fn the_value_moves_although_nothing_was_written() {
+    let (mut fixtures, cues, sequences) = a_rig_under_one_effect(4);
+    let mut playback = Playback::default();
+    at(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    let id = fixtures[0].id;
+
+    // A 1 Hz sine anchored at 0: half at the start, the top a quarter in, the bottom
+    // three quarters in. Nothing was written between these three readings.
+    assert!((as_float(live_at(&fixtures, id, "Intensity", 0)) - 0.5).abs() < 1e-4);
+    assert!((as_float(live_at(&fixtures, id, "Intensity", 250)) - 1.0).abs() < 1e-4);
+    assert!(as_float(live_at(&fixtures, id, "Intensity", 750)).abs() < 1e-4);
+}
+
+/// A rig that is holding still asks for nothing however large it is, and the engine
+/// has nothing left to wake up for.
 #[test]
 fn a_rig_that_is_holding_still_asks_for_nothing() {
-    let fixtures: Vec<Fixture> = (0..500).map(|_| a_fixture()).collect();
+    let mut fixtures: Vec<Fixture> = (0..500).map(|_| a_fixture()).collect();
     let captures = fixtures.iter().map(|f| intensity(f.id, 0.5)).collect();
     let cue = a_cue(0, captures);
     let sequences = [a_sequence(&[&cue], Some(0))];
     let cues = [cue];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    // Take the cue and let its zero-length fades land.
-    playback.tick(now, 0, &view(&sequences, &cues, &fixtures, &[], &[]));
+    at(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    // The show now says what the cue asked for, so the next tick has nothing to say.
-    let settled: Vec<Fixture> = fixtures
-        .iter()
-        .map(|f| {
-            let mut f = f.clone();
-            f.live_values.insert("Intensity".into(), ParameterValue::Float(0.5));
-            f
-        })
-        .collect();
-    let out = playback.tick(now, 25, &view(&sequences, &cues, &settled, &[], &[]));
-
+    let out = at(&mut playback, 25, &mut fixtures, &sequences, &cues, &[], &[]);
     assert!(out.is_empty(), "a still rig asks for nothing: {} effects", out.len());
-    assert!(!playback.has_work(), "and the engine can stop ticking altogether");
+    assert!(!playback.has_work(), "and there is nothing to wake the engine for");
+    assert_eq!(playback.next_deadline(), None, "not even a deadline to sleep on");
 }
 
 // ── Taking a sequence off ─────────────────────────────────────────────────────
@@ -1620,21 +1670,19 @@ fn view_fading_home<'a>(
 fn taking_a_sequence_off_puts_what_it_was_driving_back() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 0.8)]);
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let mut sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.8);
+    let now = 0;
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert_eq!(level_of(&fixtures, &[], fixture.id, now), 0.8);
 
     sequences[0].active_cue_index = None;
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-
-    assert_eq!(level_of(&fixtures, fixture.id), 0.0, "back where a dimmer rests");
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    
+    assert_eq!(level_of(&fixtures, &[], fixture.id, now), 0.0, "back where a dimmer rests");
 }
 
 /// A sequence taken off must not reach into another one's fixture. The rule is
@@ -1646,22 +1694,20 @@ fn a_parameter_another_live_sequence_could_drive_is_left_alone() {
     let theirs = a_fixture();
     let mine = a_cue(0, vec![intensity(ours.id, 0.8), intensity(theirs.id, 0.8)]);
     let yours = a_cue(0, vec![intensity(theirs.id, 0.4)]);
-    let mut fixtures = [ours.clone(), theirs.clone()];
+    let mut fixtures = vec![ours.clone(), theirs.clone()];
     let cues = [mine.clone(), yours.clone()];
     let mut sequences = [a_sequence(&[&mine], Some(0)), a_sequence(&[&yours], Some(0))];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-
+    let now = 0;
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    
     sequences[0].active_cue_index = None;
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-
-    assert_eq!(level_of(&fixtures, ours.id), 0.0, "only this sequence had it");
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    
+    assert_eq!(level_of(&fixtures, &[], ours.id, now), 0.0, "only this sequence had it");
     assert_eq!(
-        level_of(&fixtures, theirs.id),
+        level_of(&fixtures, &[], theirs.id, now),
         0.4,
         "the other sequence is still on and still has it",
     );
@@ -1673,25 +1719,22 @@ fn a_parameter_another_live_sequence_could_drive_is_left_alone() {
 fn a_held_parameter_is_not_taken_off_with_the_sequence() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 0.8)]);
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let mut sequences = [a_sequence(&[&cue], Some(0))];
     let programmer = [held_intensity(fixture.id, 0.6)];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.6);
+    let now = 0;
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &programmer, &[]);
+        assert_eq!(level_of(&fixtures, &programmer, fixture.id, now), 0.6);
 
     sequences[0].active_cue_index = None;
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &programmer, &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.6, "still the operator's");
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &programmer, &[]);
+        assert_eq!(level_of(&fixtures, &programmer, fixture.id, now), 0.6, "still the operator's");
 
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.0, "and letting go lands on home");
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+        assert_eq!(level_of(&fixtures, &[], fixture.id, now), 0.0, "and letting go lands on home");
 }
 
 /// Opening a show is not taking every sequence off. Nothing is active when a
@@ -1700,18 +1743,20 @@ fn a_held_parameter_is_not_taken_off_with_the_sequence() {
 #[test]
 fn a_show_that_was_never_on_releases_nothing() {
     let mut fixture = a_fixture();
-    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(0.3));
+    already_at(&mut fixture, "Intensity", ParameterValue::Float(0.3));
     let cue = a_cue(0, vec![intensity(fixture.id, 0.8)]);
-    let fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let sequences = [a_sequence(&[&cue], None)];
 
     let mut playback = Playback::default();
-    let effects = playback.tick_at(Instant::now(), &view(&sequences, &cues, &fixtures, &[], &[]));
+    let effects = pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    assert!(
-        live(&effects, fixture.id, "Intensity").is_none(),
-        "nothing transitioned, so nothing was released: {effects:?}",
+    assert!(effects.is_empty(), "nothing transitioned, so nothing was released: {effects:?}");
+    assert_eq!(
+        live(&fixtures, fixture.id, "Intensity", 0),
+        Some(ParameterValue::Float(0.3)),
+        "and the fixture is left exactly where it was found",
     );
 }
 
@@ -1723,22 +1768,21 @@ fn a_station_that_never_ran_the_earlier_cues_releases_the_same_parameters() {
     let fixture = a_fixture();
     let first = a_cue(0, vec![intensity(fixture.id, 0.8)]);
     let second = a_cue(0, vec![]);
-    let mut fixtures = [fixture.clone()];
-    fixtures[0].live_values.insert("Intensity".into(), ParameterValue::Float(0.8));
+    let mut fixtures = vec![fixture.clone()];
+    already_at(&mut fixtures[0], "Intensity", ParameterValue::Float(0.8));
     let cues = [first.clone(), second.clone()];
     // On the second cue, and this playback has never seen the first one run.
     let mut sequences = [a_sequence(&[&first, &second], Some(1))];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
+    let now = 0;
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
 
     sequences[0].active_cue_index = None;
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    
     assert_eq!(
-        level_of(&fixtures, fixture.id),
+        level_of(&fixtures, &[], fixture.id, now),
         0.0,
         "the first cue's parameter went home even though this station never ran it",
     );
@@ -1750,35 +1794,34 @@ fn a_station_that_never_ran_the_earlier_cues_releases_the_same_parameters() {
 fn a_show_with_a_home_time_fades_home() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 0.6)]);
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let mut sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let start = Instant::now();
-    let effects = playback.tick_at(start, &view_fading_home(&sequences, &cues, &fixtures, &[], 3000));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.6);
+    let home = |playback: &mut Playback, after: u64, fixtures: &mut Vec<Fixture>, sequences: &[Sequence]| {
+        let effects = {
+            let view = view_fading_home(sequences, &cues, fixtures, &[], 3000);
+            playback.pass(WALL + after, &view)
+        };
+        apply(fixtures, &effects);
+    };
+
+    home(&mut playback, 0, &mut fixtures, &sequences);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 0), 0.6);
 
     sequences[0].active_cue_index = None;
-    let effects = playback.tick_at(start, &view_fading_home(&sequences, &cues, &fixtures, &[], 3000));
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.6, "the fade has not begun to move yet");
-
-    let effects = playback.tick_at(
-        start + Duration::from_millis(500),
-        &view_fading_home(&sequences, &cues, &fixtures, &[], 3000),
+    home(&mut playback, 0, &mut fixtures, &sequences);
+    assert_eq!(
+        level_of(&fixtures, &[], fixture.id, 0),
+        0.6,
+        "the fade has not begun to move yet",
     );
-    apply(&mut fixtures, &effects);
-    let sixth = level_of(&fixtures, fixture.id);
+
+    // No further pass: the fade home was described once, and the moment does the rest.
+    let sixth = level_of(&fixtures, &[], fixture.id, 500);
     assert!(sixth < 0.6 && sixth > 0.0, "part of the way home, not there: {sixth}");
-
-    let effects = playback.tick_at(
-        start + Duration::from_millis(3000),
-        &view_fading_home(&sequences, &cues, &fixtures, &[], 3000),
-    );
-    apply(&mut fixtures, &effects);
-    assert_eq!(level_of(&fixtures, fixture.id), 0.0, "and it arrives");
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 3000), 0.0, "and it arrives");
 }
 
 /// A sequence taken off stops asserting its effects too. An effect has nowhere to
@@ -1802,20 +1845,18 @@ fn taking_a_sequence_off_stops_its_effects() {
         t0: None,
     });
     let cue = a_cue(0, vec![capture]);
-    let mut fixtures = [fixture.clone()];
+    let mut fixtures = vec![fixture.clone()];
     let cues = [cue.clone()];
     let mut sequences = [a_sequence(&[&cue], Some(0))];
 
     let mut playback = Playback::default();
-    let now = Instant::now();
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-
+    let now = 0;
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    
     sequences[0].active_cue_index = None;
-    let effects = playback.tick_at(now, &view(&sequences, &cues, &fixtures, &[], &[]));
-    apply(&mut fixtures, &effects);
-
-    assert_eq!(level_of(&fixtures, fixture.id), 0.0, "home, not still tracing a sine");
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    
+    assert_eq!(level_of(&fixtures, &[], fixture.id, now), 0.0, "home, not still tracing a sine");
     assert!(!playback.has_work(), "and nothing is left running");
 }
 
@@ -1836,30 +1877,94 @@ fn two_stations_release_to_the_same_rig() {
 
     // The console that ran the act.
     let mut ran_it = Playback::default();
-    let mut here = [fixture.clone()];
-    let now = Instant::now();
-    let effects = ran_it.tick_at(now, &view(&sequences, &cues, &here, &[], &[]));
+    let mut here = vec![fixture.clone()];
+    let now = 0;
+    let effects = pass(&mut ran_it, now, &mut here, &sequences, &cues, &[], &[]);
     apply(&mut here, &effects);
     sequences[0].active_cue_index = Some(1);
-    let effects = ran_it.tick_at(now, &view(&sequences, &cues, &here, &[], &[]));
+    let effects = pass(&mut ran_it, now, &mut here, &sequences, &cues, &[], &[]);
     apply(&mut here, &effects);
 
     // The console that walked in during cue two, with the show as it now stands.
     let mut just_arrived = Playback::default();
     let mut there = here.clone();
-    let effects = just_arrived.tick_at(now, &view(&sequences, &cues, &there, &[], &[]));
+    let effects = pass(&mut just_arrived, now, &mut there, &sequences, &cues, &[], &[]);
     apply(&mut there, &effects);
 
     sequences[0].active_cue_index = None;
-    let effects = ran_it.tick_at(now, &view(&sequences, &cues, &here, &[], &[]));
+    let effects = pass(&mut ran_it, now, &mut here, &sequences, &cues, &[], &[]);
     apply(&mut here, &effects);
-    let effects = just_arrived.tick_at(now, &view(&sequences, &cues, &there, &[], &[]));
+    let effects = pass(&mut just_arrived, now, &mut there, &sequences, &cues, &[], &[]);
     apply(&mut there, &effects);
 
-    assert_eq!(level_of(&here, fixture.id), 0.0);
+    assert_eq!(level_of(&here, &[], fixture.id, now), 0.0);
     assert_eq!(
-        level_of(&here, fixture.id),
-        level_of(&there, fixture.id),
+        level_of(&here, &[], fixture.id, now),
+        level_of(&there, &[], fixture.id, now),
         "one rig, whatever each console watched happen",
     );
+}
+
+// ── The numbers did not move ─────────────────────────────────────────────────
+
+/// The non-goal of the whole change, written as a test: the same fade produces the
+/// same number at the same instant. If a single frame differs, that is a bug in this
+/// change rather than a new behaviour.
+///
+/// The figures below were taken from the console before values stopped being stored —
+/// a four-second ease-in-out from dark to full, sampled every half second, which is
+/// the arithmetic `Playback::tick` used to run once per 25 ms and write down.
+#[test]
+fn a_cue_fade_gives_the_numbers_it_always_gave() {
+    let fixture = a_fixture();
+    let capture = ParameterCapture { easing: Easing::EaseInOut, ..intensity(fixture.id, 1.0) };
+    let cue = a_cue(4_000, vec![capture]);
+    let sequences = [a_sequence(&[&cue], Some(0))];
+    let cues = [cue];
+    let mut fixtures = vec![fixture.clone()];
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+
+    // t/4000 through an ease-in-out: 2t² below the halfway mark, 1 - 2(1-t)² above.
+    let expected = [
+        (0, 0.0),
+        (500, 0.031_25),
+        (1_000, 0.125),
+        (1_500, 0.281_25),
+        (2_000, 0.5),
+        (2_500, 0.718_75),
+        (3_000, 0.875),
+        (3_500, 0.968_75),
+        (4_000, 1.0),
+        (9_000, 1.0),
+    ];
+    for (at, want) in expected {
+        let got = as_float(live(&fixtures, fixture.id, "Intensity", at));
+        assert!((got - want).abs() < 1e-5, "at {at} ms: expected {want}, got {got}");
+    }
+}
+
+/// And the same for a cue effect, which was already evaluated this way — so this is
+/// the control: if these numbers had moved, the move would be in the arithmetic
+/// rather than in what stopped storing it.
+#[test]
+fn a_cue_effect_gives_the_numbers_it_always_gave() {
+    let fixture = a_fixture();
+    let cue = a_cue(0, vec![intensity_effect(fixture.id, a_sine(0.0))]);
+    let mut sequence = a_sequence(&[&cue], Some(0));
+    sequence.went_at = Some(0);
+    let sequences = [sequence];
+    let cues = [cue];
+    let mut fixtures = vec![fixture.clone()];
+
+    let mut playback = Playback::default();
+    at(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+
+    // 0.5 + 0.5·sin(2πx) at one hertz: half at the start, the top a quarter in, half
+    // again at the half, the bottom three quarters in.
+    for (at_ms, want) in [(0u64, 0.5f32), (250, 1.0), (500, 0.5), (750, 0.0), (1_000, 0.5)] {
+        let got = as_float(live_at(&fixtures, fixture.id, "Intensity", at_ms));
+        assert!((got - want).abs() < 1e-5, "at {at_ms} ms: expected {want}, got {got}");
+    }
 }

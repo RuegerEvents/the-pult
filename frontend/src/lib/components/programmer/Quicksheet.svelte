@@ -19,6 +19,7 @@
 	import { byKey, remove, setValue } from '$lib/stores/programmer.js';
 	import PanTiltPad from './controls/PanTiltPad.svelte';
 	import ValueControl from './controls/ValueControl.svelte';
+	import { output, watching } from '$lib/stores/output.js';
 
 	let { fixture, onclose }: { fixture: Fixture; onclose?: () => void } = $props();
 
@@ -31,8 +32,16 @@
 	const tiltRow = $derived(rows.find((r) => r.kind === 'Tilt') ?? null);
 	const others = $derived(rows.filter((r) => r.kind !== 'Pan' && r.kind !== 'Tilt'));
 
+	/// This sheet's own parameters, evaluated every frame for as long as it is open.
+	$effect(() => {
+		const registered = watching(rows.map((row) => `${fixture.id}/${row.key}`));
+		return () => registered.stop();
+	});
+
 	function valueOf(key: string, fallback: ParameterValue): ParameterValue {
-		return $byKey.get(`${fixture.id}/${key}`)?.value ?? fixture.live_values[key] ?? fallback;
+		return (
+			$byKey.get(`${fixture.id}/${key}`)?.value ?? $output.value(fixture.id, key) ?? fallback
+		);
 	}
 
 	const axis = (row: { key: string; defaultValue: ParameterValue } | null) => {
@@ -77,7 +86,9 @@
 		{@const value = valueOf(row.key, row.defaultValue)}
 		<div class="row" class:held={$byKey.has(`${fixture.id}/${row.key}`)}>
 			<span class="label">{row.label}</span>
-			<span class="readout mono">{formatValue(commonValue([fixture], row.key).value ?? undefined)}</span>
+			<span class="readout mono">
+				{formatValue(commonValue([fixture], row.key, $output).value ?? undefined)}
+			</span>
 			<ValueControl
 				{value}
 				label={row.label}

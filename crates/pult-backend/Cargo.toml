@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 pult-schema = { path = "../pult-schema" }
+pult-render = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }

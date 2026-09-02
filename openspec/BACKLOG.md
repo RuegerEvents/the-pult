@@ -12,11 +12,13 @@ what has to exist first.
 
 ## Order
 
-1. **demo-shows** — small/big/huge seeded shows as size presets, and the tick-cost
-   numbers the next item is judged by. → none
-2. **multithreading** — per-key `live_values` writes, then measure, then threads. High
-   because it is engine internals: every change after this one is more code sitting
-   on top of the thing being changed. → demo-shows
+1. ~~**demo-shows**~~ — done, see `changes/archive/`. The numbers item 2 is judged
+   by now exist, and `scripts/demo.sh --measure` reproduces them.
+2. ~~**values-as-functions**~~ — done, see `changes/archive/`. A live value stopped
+   being state: 35.2 ms of tick became 2.86 ms of output frame, and a cue on a
+   2000-fixture rig now puts nothing at all on a connected console's socket. It also
+   left the browser running the evaluator in wasm, which is what items 5 and 8 below
+   now build on.
 3. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
    frontend proxy comes from; the wire stays generic. → none
 4. **gdtf-import** — fixture definitions from a file; the physical data it brings is
@@ -24,37 +26,45 @@ what has to exist first.
    after it wait on it. → none
 5. **mvr-import** — fixtures, positions and geometry into `StagePlan` and the asset
    store. → gdtf-import, for the definitions MVR references
-6. **rig-viewer-fidelity** — beams that read as light, and the two live defects (a
-   `ConeGeometry` rebuilt per fixture per frame, a `SpotLight` recompiling every
-   material mid-fade). → gdtf-import, for the beam angle it has nowhere else to get;
-   and better after mvr-import, which is what puts a rig in there worth drawing
+6. **rig-viewer-fidelity** — beams that read as light, and the one live defect left
+   (a `ConeGeometry` rebuilt per fixture per frame). `values-as-functions` unblocked
+   it and left it a per-frame reading of the rig to draw from. → gdtf-import, for the
+   beam angle it has nowhere else to get; and better after mvr-import, which is what
+   puts a rig in there worth drawing
 7. **paperwork-export** — patch lists, cue sheets, rider paperwork; a read-only
    plugin over introspection, which is what introspection is for. → none
 8. **outputs-viewer** — what actually leaves the console, per universe and per node.
    → none
-9. **system-stats-panel** — throughput, sync backlog, tick cost, client counts. Reads
-   better after 2, which is what makes tick cost worth watching. → none
-10. **showfile-management** — versioning, save-as, autosave, backup. → none
-11. **showfile-assets-folder** — a folder with an assets directory, or one file.
+9. **system-stats-panel** — throughput, sync backlog, per-connector frame cost, client
+   counts, and what the *browser* costs itself. Unblocked: there is now a browser load
+   to report, because the browser is what evaluates. → none
+10. **system-logs-panel** — the console cannot show its own log, and on a desktop app
+    or a tablet there is nowhere else for it to be. Plugins already log into it and
+    their authors cannot read it. → none, and worth deciding alongside 9
+11. **tick-isolation** — on hold, and due a re-scope: `values-as-functions` answered
+    most of what it was for. What survives is disk off the write path, per-source
+    admission and the single engine queue. → nothing, but re-read it before proposing
+12. **showfile-management** — versioning, save-as, autosave, backup. → none
+13. **showfile-assets-folder** — a folder with an assets directory, or one file.
     → decided with showfile-management, not separately
-12. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+14. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
     themselves dynamic. → rig-viewer-fidelity, for anything that happens in the 3D view
-13. **voice-input** — speech to the command line, grammar first and NL on parse
+15. **voice-input** — speech to the command line, grammar first and NL on parse
     failure. → none
-14. **nl-show-context** — what relative syntax cannot reach, and whether it is worth
+16. **nl-show-context** — what relative syntax cannot reach, and whether it is worth
     the permission it costs. → voice-input, which is what shows which utterances
     actually arrive
-15. **open-control-interfaces** — OSC, MIDI, control surfaces. → none
-16. **timecode-workflow** — waveform and beat-grid timecode, timed playback, audio
+17. **open-control-interfaces** — OSC, MIDI, control surfaces. → none
+18. **timecode-workflow** — waveform and beat-grid timecode, timed playback, audio
     import. The biggest item here and the one the spec is most opinionated about.
     → none technically
-17. **llm-cost-overview** — token and cost accounting out of the NL plugin. → none
-18. **openhaunt-as-plugin** — output connectors as WASM, if 40 Hz survives the
-    boundary. → the benchmarks from demo-shows and multithreading, which are what
-    decides it
-19. **video-mapping-ndi** — NDI output; scope carefully, it hides a media server.
+19. **llm-cost-overview** — token and cost accounting out of the NL plugin. → none
+20. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own frame
+    rate survives the boundary. → the benchmarks from demo-shows and
+    values-as-functions, which are what decides it
+21. **video-mapping-ndi** — NDI output; scope carefully, it hides a media server.
     → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-20. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+22. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
     → a real TS plugin wanting to exist
 
 ## Plugins (builds on the WIP WASM runtime)
@@ -355,16 +365,18 @@ lesson. And their fixture bodies are pure black, so the render cannot tell you w
 is hanging up there. Our emissive body tinted by its own output is the better call
 and should survive whatever else changes.
 
-Two defects in ours turned up while comparing, both worth fixing whatever shape the
-change takes.
+One defect in ours turned up while comparing, and is still there.
 
 - `<T.ConeGeometry args={[beam.length * 0.12, beam.length, ...]}>`. `args` is
   reactive, so Threlte rebuilds the geometry whenever the throw changes. Dragging a
-  beam spot allocates a fresh cone per fixture per frame.
-- The `<T.SpotLight>` sits inside `{#if beam.output.level > 0.01}`. Crossing that
-  threshold changes the scene's light count, which changes three.js's program cache
-  key and recompiles every material in the scene. A blackout-to-full fade therefore
-  thrashes the shader compiler at exactly the moment the picture matters.
+  beam spot allocates a fresh cone per fixture per frame — and since
+  `values-as-functions` the throw is re-evaluated every animation frame, so a fade now
+  does it too.
+
+A second one, the `<T.SpotLight>` inside `{#if beam.output.level > 0.01}`, was the
+worse of the two: crossing that threshold changed the scene's light count, which
+changed three.js's program cache key and recompiled every material mid-fade. It went
+with the `values-as-functions` rewire and is no longer here.
 
 Open questions.
 
@@ -377,12 +389,18 @@ Open questions.
   `home_fade_ms` is, or a per-browser view setting? How hazy the room is is a fact
   about the room, which argues for the show, but two operators on two tablets may
   reasonably want different pictures.
-- Instancing against the derived-per-tick `beams` array. Today every `live_values`
-  tick rebuilds a `Quaternion`, an `Euler` and a `Color` per fixture, forty times a
-  second through a fade. Instanced attributes are the fix, and they sit badly with
-  Threlte's declarative `#each` and with picking, which raycasts against per-fixture
-  objects. Does the viewer drop to imperative three.js inside one Threlte component,
-  and what happens to the gizmos if it does?
+- Instancing against the derived `beams` array. Every frame rebuilds a `Quaternion`,
+  an `Euler` and a `Color` per fixture — *sixty* times a second now, not forty, since
+  the viewer draws its own frames rather than waiting to be pushed values. Instanced
+  attributes are the fix, and they sit badly with Threlte's declarative `#each` and
+  with picking, which raycasts against per-fixture objects. Does the viewer drop to
+  imperative three.js inside one Threlte component, and what happens to the gizmos if
+  it does?
+- **What is already done for you.** The evaluator is in the page: `stores/output.ts`
+  registers what a panel is showing and evaluates all of it in one wasm crossing per
+  frame (200 parameters in ~17 µs), and `Showing.at` is `null` while the browser
+  cannot place itself on the station's clock. A beam that is drawn is a beam that was
+  evaluated for the moment it is drawn at, which is what this item wanted.
 - Their singletons do not survive the move. `SceneManager`, `Controls` and
   `AnimationManager` are module-level globals over shared mutable buffers, which is
   fine for one viewport and breaks in our tiled workspace, where two `rig` panels can
@@ -455,7 +473,25 @@ pruned showfile, so a session should not mix builds across this.
 
 ### showfile-management
 Versioning, backup, automated backup to an external drive. Today: one SQLite
-file, saved in place; the oplog grows forever (pruning is history-pruning).
+file, written on every PERSISTED write, with **no explicit save at all** — there
+is no `save` RPC and nothing defers a write.
+- **Save should mean checkpoint, not flush.** The want is committed intent — try
+  something in rehearsal and discard it, name a version, get back to the show as it
+  was at the end of yesterday. The want is *not* deferred durability: a show that
+  loses an evening's programming because nobody pressed Save is the worst failure
+  this console has, and it happens exactly where people forget — a long tech, late,
+  everyone tired. So keep writing continuously as the crash journal and let Save mark
+  a point, rather than making the write wait for a keypress.
+- There is no performance case for deferring either, and there will be even less
+  once `values-as-functions` takes the tick off the write path: operator edits
+  happen at human rate.
+- **Revert-to-last-save wants the oplog, not a second history.** The log is already
+  per-node sequenced and already bounded by `history-pruning`, so a checkpoint is a
+  marked seq and reverting is a rewind — the same machinery undo uses.
+- The hard part, and the reason this cannot be a small change: **the show is
+  replicated live.** If one console defers or reverts while another saves, what got
+  saved? A checkpoint is either session-wide agreed or explicitly per-station, and
+  that decision drives everything else here.
 - Save-as / snapshots / autosave cadence; what a "version" is when the show
   is also replicated live to peers.
 - Backup target configuration is a station preference (task 33's
@@ -521,27 +557,202 @@ current universe images; OH sends are discrete messages worth a ring buffer.
 - 40 Hz × 512 bytes should not hit the WebSocket unthrottled — snapshot on
   demand or diffed at panel rate.
 
+### system-logs-panel
+Nothing in the console shows the console's own log. `tracing` writes to stdout, in
+`pult-backend/src/main.rs` and `pult-gui/src/main.rs` alike, filtered by an `EnvFilter`
+built once at startup with `pult_backend=debug` and whatever `RUST_LOG` says. Nothing
+captures it, and `scripts/demo.sh` redirecting each component into `.demo/*.log` is the
+only place a line is ever kept.
+
+**Which means that on every way of running this that is not a terminal, the log does
+not exist.** `cargo run -p pult-gui` writes to a stdout nobody is looking at, a packaged
+`.app` from the release workflow has nowhere to write it at all, and a browser on the
+network — which is a whole console, by design — has no access to the station's stdout on
+any machine. A rig is consoles in racks and tablets in the room.
+
+**And plugins are already logging into it.** `wit/pult-plugin.wit`'s `logging.log` says
+its message "lands in the station's log, prefixed with the plugin id", and
+`host_impls.rs:799` puts it through `tracing` with `[plugin:<id>]` in front. So a plugin
+author debugging a plugin is debugging into a void unless they happened to start the
+station from a shell. That is the single strongest argument for the panel, because it is
+the audience with no workaround.
+
+**Not the History panel.** That is the oplog: who changed what, per person, undoable,
+replicated, pruned on its own retention. This is diagnostics: per station, not
+replicated, nobody's to undo, and hundreds of lines a second at `debug`. Two panels, and
+the entry says so because "we have a history panel" is the obvious wrong answer.
+
+What made it worth writing down: `values-as-functions` and `peer-address-selection` both
+ended with a failure whose only trace was a `WARN`. The join now answers for itself, but
+a peer lost mid-show, an output whose socket would not bind, a node that stopped
+answering, a showfile migration that complained — all of them are lines nobody sees. The
+cases that matter are exactly the ones where the console *keeps working*, because a
+crash at least announces itself.
+
+Open questions.
+
+- **Where do the lines live?** Not the oplog, for the reasons above. A LOCAL ring
+  buffer published like `output_status` is the obvious shape, but LOCAL state is
+  replaced whole on every write and this is an append-only stream — replacing a
+  thousand-line buffer per line is not a mechanism, it is a mistake. Does this want a
+  subscribe-only stream over the WebSocket instead, which is a new shape in the
+  protocol and should be resisted until it is plainly needed?
+- **Kept where, and for how long?** In memory only, or a file beside
+  `preferences.toml`? A file survives the crash that is the reason somebody went
+  looking; memory does not. `.demo/*.log` is the shape of the file version and it is
+  per run, which is probably right.
+- **What level, and who chooses?** `pult_backend=debug` is loud — a line per write, a
+  heartbeat every five seconds per peer — and a panel showing all of it is unreadable.
+  A `log_level` station preference is the obvious home, this machine's business the way
+  `oplog_retention_minutes` is. Changing it while the show is up means
+  `tracing_subscriber::reload`, since the filter is built once at startup; is that
+  worth it, or is a restart acceptable for a diagnostic setting?
+- **Does a peer's log reach this console?** Reading the roof station's log from the
+  booth is the useful version, and it is the same argument `system-stats-panel` makes
+  about a browser reporting its own load. It is also a great deal of traffic and a
+  question about what a log line carries — a path, a hostname, whatever a plugin chose
+  to say.
+- **Filtering by plugin is nearly free**, because the prefix is already there. Worth
+  making a first-class filter rather than a search box, given who needs it.
+- **The browser's own errors.** A console is a browser, and an exception inside a panel
+  is invisible to the operator and to the station. Same panel, or out of scope? It is
+  the same question `system-stats-panel` asks about frame rate and evaluator time, and
+  the two should probably be answered together.
+
 ### system-stats-panel
 Stations panel (task 10) has cpu/mem/uptime. Missing: network throughput,
-sync backlog, tick cost, WS client counts, broker stats.
-- Extend `Station` rows vs. a new LOCAL stats collection; sample rates.
+sync backlog, WS client counts, broker stats.
+- **Frame cost is done and the shape question is answered.** `values-as-functions` put
+  it on the `Station` row as `Vec<FrameCost>` — one entry per connector, each with the
+  mean, the worst, the evaluating half of each, and the frame count for the window —
+  on the grounds that a station is already the sole authority on its own numbers there.
+  So: extend the row, not a new LOCAL collection, unless something arrives that a row
+  genuinely cannot hold (a ring buffer of recent frames would be that).
+- What is left here is the panel: nothing in the frontend reads `frame_costs` yet.
+  Absent has to render as absent — a settled connector is not an instant one — and a
+  station with two connectors shows two rows, not an average.
+- Sample rates for the rest; `REPORT_INTERVAL` is two seconds and everything on the
+  row shares it.
+- **The browser's load belongs here too, not just the backend's.** Since
+  `values-as-functions`, a console *is* a browser evaluating a rig at frame rate in
+  wasm, and that is a real cost on a real machine — a tablet at the back of the
+  room can be the thing that is struggling while every station is comfortable. So the
+  panel shows both.
+  - What a browser can honestly report about itself: frame rate and dropped frames
+    (`requestAnimationFrame` deltas), time spent in the evaluator per frame, how many
+    parameters it is evaluating, `performance.memory` where the browser offers it, and
+    its measured clock offset from the station — which is the one number that says
+    whether what it is showing can be trusted at all.
+  - Where it lives: a browser is not a station and must not appear in `stations`.
+    A LOCAL collection keyed by WebSocket session is the obvious shape, published by
+    the client and owned by the station it is connected to — which also makes it
+    disappear correctly when the tab closes.
+  - Open: does a client's report replicate to peers, so any console can see that the
+    tablet is struggling, or is it LOCAL to the station serving it? Seeing it from
+    anywhere is the useful version and costs a row per client per session.
+
+### peer-address-selection — done, see roadmap task 44
+Fixed directly rather than as a change: a defect with no spec surface.
+`session::reachable_at` ranks what mDNS advertises and drops what cannot be dialled at
+all; `sync::dial` works down the list rather than betting on the first of them.
+
+Worse than it read when it was written down. `ServiceInfo::get_addresses()` returns a
+`HashSet`, so "the first address" was whatever the hash order gave — which is why the
+failure looked intermittent rather than like a preference. And a scopeless `fe80::`
+address cannot be dialled at all: mdns-sd does not report the interface it was learned
+on, so there is no scope id to attach, and the address is dropped rather than ranked
+last.
+
+`Join` now waits for the dial and answers what happened, so a session that cannot be
+reached is a join that failed — with the error naming every address it tried, in the
+toast the Sessions panel already had and could never show. Safe to wait on despite the
+deadlock the sync manager guards against: it spawns the dial and goes on draining, so
+nothing the session actor waits for is waiting on it. Bounded at three seconds across
+every candidate, because a caller is on the other end of it.
 
 ## Performance
 
-### multithreading
-The engine is one actor; task 29 measured 2000 fixtures at ~137% of one core
-with the tick itself the small half (apply/broadcast/output per moved
-fixture is the cost). Named cheaper wins first: per-key writes instead of
-cloning whole `live_values` maps.
-- Parallelize the render (rayon over fixtures) vs. partition computation
-  across stations (task 10's open question — which also answers redundancy).
-- Do the cheap win, then measure again before adding threads.
+### values-as-functions — done, see `changes/archive/2026-09-02-values-as-functions/`
+Shipped as roadmap task 44. A live value stopped being state: what is *driving* a
+parameter is the state, and every consumer evaluates a number for the moment it needs
+one. The engine's 25 ms timer went with it.
 
-### demo-shows
-Small / big / huge seeded shows to find bottlenecks (task 29's numbers came
-from ad-hoc rigs). Extend `scripts/demo-seed.mjs` with size presets; huge =
-thousands of fixtures, hundreds of cues, effects running, several plans.
-- Doubles as regression material: record tick cost per preset in CI?
+**What it came to**, `--release`, `--size huge`, 2005 fixtures: 35.2 ms per tick at
+40 Hz became **2.86 ms per output frame** at 34 Hz — eleven percent of the frame budget
+against a hundred and forty percent of the tick budget — and a connected browser was
+sent **nothing at all** about the rig across four seconds of a running show.
+
+**The evaluator question was answered WASM**, and the reasoning is worth keeping: the
+surface (easings, curves, step lists, spread, phase, direction, width, master rates,
+priority, home fallback, split fades) is an order of magnitude larger than
+`SelectionQuery`, and a drift between twins shows up as the screen disagreeing with the
+lamps. `crates/pult-render` is linked natively and compiled to
+`wasm32-unknown-unknown` by `crates/pult-render-wasm`; `testdata/driven-values.json`
+holds the two *compilations* together the way `selection-queries.json` holds the two
+implementations of a query together.
+
+**What it leaves for others.**
+- `rig-viewer-fidelity` — unblocked and served: the 3D view already evaluates every
+  beam it draws, per frame, in wasm, so the per-frame beam evaluation that item wanted
+  exists. The `SpotLight` defect went with the rewire; the `ConeGeometry` rebuild did
+  not, and is still there to fix.
+- `system-stats-panel` — unblocked and enlarged. There is now a browser load worth
+  reporting, and the clock offset is the one number that says whether what a browser is
+  showing can be trusted at all.
+- `tick-isolation` — most of what it was for is answered. What survives is disk off the
+  write path and the single engine queue; re-scope before proposing.
+- **Still open, untouched:** partitioning computation across stations. Task 10's
+  question, and the numbers for it are different now that a station's cost is its
+  output frames rather than its tick.
+
+### multithreading — mostly answered, see `values-as-functions`
+The record of what was asked. The engine is one actor; task 29 measured 2000
+fixtures at ~137% of one core and named cheaper wins first: per-key writes
+instead of cloning whole `live_values` maps.
+- "Parallelise the render (rayon over fixtures)" is **answered: no.** The render
+  is 0.07 ms of a 35 ms tick. There is nothing there to parallelise.
+- "Per-key writes instead of cloning whole `live_values` maps" is **answered: there
+  are no such writes.** `values-as-functions` removed the field rather than making its
+  writes cheaper. See roadmap task 44.
+- "Do the cheap win, then measure again before adding threads" was right, and the
+  measuring is what moved the target — see roadmap tasks 43 and 44.
+- **Still open, and untouched by any of this:** partitioning computation across
+  stations, which is task 10's question and also the redundancy one. Worth asking
+  again only when there is a workload that a single station cannot carry, and the
+  numbers for that will be different once values are not state.
+
+### demo-shows — done, see `changes/archive/2026-09-01-demo-shows/`
+Shipped as roadmap task 43. `scripts/demo.sh --size small|big|huge`, with `small`
+the hand-made show and the default, and `--measure` printing what a tick cost on
+this machine.
+
+The answers to the questions below. The presets are **additive** on the hand-made
+show rather than replacing it, and a cue captures a **slice** of the rig rather than
+all of it — 300 cues times 2000 fixtures is 600,000 captures, which measures JSON
+rather than lighting. Seeding stayed **on the WebSocket API**, pipelined through a
+bounded window of 64 rather than one awaited round trip at a time: a 2000-fixture
+seed is the largest exercise of the write path in the repo and worth more than the
+43 s it costs in release. Bounded rather than unbounded because the engine's command
+channel is 256 deep, and the backpressure would otherwise arrive as a spurious
+timeout.
+
+And **no, not in CI.** A threshold needs a number that holds still; two identical
+runs of `huge` varied by more than a percentage point of CPU and fifteen milliseconds
+of tick. A gate that flaps gets disabled, which is worse than no gate. Revisit once
+`multithreading` has moved the numbers.
+
+What it turned up, which is the reason it was worth doing first: a station now
+publishes what its own tick costs, as **two** figures — the whole tick and the
+`Playback::tick` part — and at 2000 fixtures playback is **one percent** of the tick.
+Task 29 put that split at roughly one in three. A single figure would have credited
+all of it to playback and sent `multithreading` to the wrong half.
+
+**And the third counter got added afterwards, for one run, because the answer changes
+what `multithreading` is.** Of a 35.2 ms tick at 2005 fixtures: reading the show
+**33.8 ms (93%)**, computing 0.07 ms, applying 2.2 ms. `playback_tick` calls
+`read_collection` six times and each one clones a collection out of `ShowState` as
+`serde_json::Value` and deserialises it whole. The engine re-deserialises the show
+forty times a second, and that — not applying, and not concurrency — is the tick.
 
 ## Media and time
 

@@ -30,6 +30,7 @@ import type {
 	Vec3
 } from './generated/index.js';
 import { parameterKey } from './patch.js';
+import type { Showing } from './stores/output.js';
 
 // ── Where things are ──────────────────────────────────────────────────────────
 
@@ -173,25 +174,35 @@ const asNumber = (value: ParameterValue | undefined): number | null => {
 	return null;
 };
 
-const read = (fixture: Fixture, kind: ParameterKind) => fixture.live_values[parameterKey(kind)];
-
-/** What a fixture is putting out: a colour and how much of it, 0–1. */
-export function fixtureOutput(fixture: Fixture): { r: number; g: number; b: number; level: number } {
-	const colour = read(fixture, 'ColorRgb');
+/**
+ * What a fixture is putting out: a colour and how much of it, 0–1.
+ *
+ * Asked of a [`Showing`] rather than read off the fixture, because nothing stores what
+ * a parameter is doing any more — the console keeps what is *driving* it and every
+ * consumer works out a number for the moment it is drawing. A `Showing` that cannot
+ * place itself on the station's clock answers nothing, and a fixture then reads as
+ * dark: a light nobody can vouch for is better drawn as off than as a guess.
+ */
+export function fixtureOutput(
+	fixture: Fixture,
+	showing: Showing
+): { r: number; g: number; b: number; level: number } {
+	const read = (kind: ParameterKind) => showing.value(fixture.id, parameterKey(kind)) ?? undefined;
+	const colour = read('ColorRgb');
 	const rgb =
 		colour?.type === 'Color' ? colour.value : { r: 1, g: 1, b: 1 };
 	// A fixture with no dimmer channel is as bright as its colour: a colour-mixing
 	// LED with everything up is on, and reporting it dark would be a lie.
-	const intensity = asNumber(read(fixture, 'Intensity'));
+	const intensity = asNumber(read('Intensity'));
 	// A relay driving a practical is either on or off, and that is its level.
-	const switched = asNumber(read(fixture, { Switch: 0 }));
+	const switched = asNumber(read({ Switch: 0 }));
 	const level = intensity ?? switched ?? (colour ? 1 : 0);
 	return { r: rgb.r, g: rgb.g, b: rgb.b, level: clamp(level) };
 }
 
 /** That output as a CSS colour, dimmed by its own level. */
-export function fixtureTint(fixture: Fixture): string {
-	const { r, g, b, level } = fixtureOutput(fixture);
+export function fixtureTint(fixture: Fixture, showing: Showing): string {
+	const { r, g, b, level } = fixtureOutput(fixture, showing);
 	const byte = (v: number) => Math.round(clamp(v) * level * 255);
 	return `rgb(${byte(r)}, ${byte(g)}, ${byte(b)})`;
 }
@@ -235,9 +246,13 @@ const hasParameter = (type: FixtureType | undefined, kind: ParameterKind) =>
  * Pan is reported 0–1 across the fixture's whole travel, centred on the way the
  * fixture hangs, so 0.5 is always the rest bearing however the head was rigged.
  */
-export function panAngle(fixture: Fixture, type: FixtureType | undefined): number | null {
+export function panAngle(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	showing: Showing
+): number | null {
 	if (!hasParameter(type, 'Pan')) return null;
-	const pan = asNumber(read(fixture, 'Pan'));
+	const pan = asNumber(showing.value(fixture.id, 'Pan') ?? undefined);
 	if (pan === null) return null;
 	return bearingOf(restDirection(fixture)) + (pan - 0.5) * PAN_TRAVEL;
 }
@@ -248,9 +263,13 @@ export function panAngle(fixture: Fixture, type: FixtureType | undefined): numbe
  * The same shape as {@link panAngle}: 0.5 is the elevation it was hung at, and the
  * travel opens either side of that.
  */
-export function tiltAngle(fixture: Fixture, type: FixtureType | undefined): number | null {
+export function tiltAngle(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	showing: Showing
+): number | null {
 	if (!hasParameter(type, 'Tilt')) return null;
-	const tilt = asNumber(read(fixture, 'Tilt'));
+	const tilt = asNumber(showing.value(fixture.id, 'Tilt') ?? undefined);
 	if (tilt === null) return null;
 	return elevationOf(restDirection(fixture)) + (tilt - 0.5) * TILT_TRAVEL;
 }
@@ -335,10 +354,14 @@ export function fohCamera(fixtures: Fixture[]): { position: [number, number, num
  * leaves the other where the fixture was hung, so a rig with only pan patched still
  * points the way it did before tilt existed.
  */
-export function beamDirection(fixture: Fixture, type: FixtureType | undefined): Vec3 {
+export function beamDirection(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	showing: Showing
+): Vec3 {
 	const rest = restDirection(fixture);
-	const bearing = panAngle(fixture, type);
-	const elevation = tiltAngle(fixture, type);
+	const bearing = panAngle(fixture, type, showing);
+	const elevation = tiltAngle(fixture, type, showing);
 	if (bearing === null && elevation === null) return rest;
 	return fromAngles(bearing ?? bearingOf(rest), elevation ?? elevationOf(rest));
 }
@@ -356,11 +379,12 @@ export function beamDirection(fixture: Fixture, type: FixtureType | undefined): 
 export function beamSpot(
 	fixture: Fixture,
 	type: FixtureType | undefined,
+	showing: Showing,
 	{ floorY = 0, maxThrow = Infinity }: { floorY?: number; maxThrow?: number } = {}
 ): Vec3 | null {
 	const at = fixturePoint(fixture);
 	if (!at) return null;
-	const direction = beamDirection(fixture, type);
+	const direction = beamDirection(fixture, type, showing);
 	const length = Math.min(throwDistance(at, direction, floorY), maxThrow);
 	return {
 		x: at.x + direction.x * length,

@@ -1,17 +1,24 @@
-//! Cue playback: fades, active-cue tracking, and follow cues.
+//! Cue playback: what is driving each parameter, active-cue tracking, follow cues.
 //!
-//! [`Playback`] is a pure state machine. [`Playback::tick`] takes the current show
-//! and a timestamp and returns the effects to apply. It never reads a clock and never
-//! touches the engine, so a test can drive an entire fade in a few microseconds.
+//! [`Playback`] is a pure state machine. [`Playback::pass`] takes the current show and
+//! a moment and returns the changes to apply. It never reads a clock and never touches
+//! the engine, so a test can drive a whole act in a few microseconds.
 //!
-//! The engine applies the effects it returns with LOCAL lifecycle. Live values and
-//! active-cue flags are derived from cue state, and cue state is already replicated,
-//! so every node computes the same output from the same input. Fanning the derived
-//! values out to peers as well would be several hundred redundant messages a second
-//! during a fade, and every node would be writing over every other node's copy.
+//! **It decides what is driving a parameter; it does not work out any values.** The
+//! fades and effects it publishes are anchored descriptions, and whoever needs a
+//! number — an output connector on its own frame, a browser on its own refresh —
+//! evaluates one for the moment it is asking about. So a pass happens when the *show*
+//! changes rather than at a rate, and a fade in progress is not a pass at all.
+//!
+//! Which is also why a fade that has landed is kept rather than dropped. Nothing
+//! stores the number it landed on any more, so the finished fade is the only record of
+//! where the parameter got to — and evaluating one is exactly that constant.
+//!
+//! What it publishes lands with LOCAL lifecycle. Every station derives the same
+//! descriptions from the same replicated cue state, so fanning them out to peers would
+//! be sending each console a slower copy of what it has already computed.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use pult_schema::types::{
     cue::{Cue, FollowMode},
@@ -22,35 +29,33 @@ use pult_schema::types::{
     speedmaster::SpeedMaster,
 };
 
-/// The `Fixture::live_values` map key for a parameter, re-exported from the schema
-/// where it lives now: the browser and the command-line plugin derive the same key,
-/// and one of them being right is the only version of this worth having.
+/// The map key for a parameter, re-exported from the schema where it lives now: the
+/// browser and the command-line plugin derive the same key, and one of them being
+/// right is the only version of this worth having.
 pub use pult_schema::types::fixture::parameter_key;
 use uuid::Uuid;
 
 use super::effects;
 
 mod programmer;
-use programmer::{Key, Overlay};
-
-/// How often the engine ticks playback. 25 ms is 40 Hz, comfortably finer than
-/// DMX's 44 Hz refresh and far finer than an operator can see.
-pub const TICK: Duration = Duration::from_millis(25);
+use programmer::{held_by_the_programmer, Held, Key};
 
 // ── Effects ───────────────────────────────────────────────────────────────────
 
 /// A change playback wants made. The engine turns each one into a path write.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlaybackEffect {
-    SetLiveValues { fixture_id: Uuid, values: HashMap<String, ParameterValue> },
     /// What is periodic on this fixture right now, keyed by parameter key.
     ///
-    /// Not an instruction to change anything: the values are already being written by
-    /// `SetLiveValues`. This is the description of *why* they are moving, so an output
-    /// plugin can hand the shape to a node that can trace it and stop sending samples.
+    /// A description rather than a value: the shape and its anchor, from which anyone
+    /// holding the row works out what the parameter is at any moment they like. Which
+    /// is also what lets an output plugin hand the shape to a node that can trace it
+    /// and then say nothing more.
     SetLiveEffects { fixture_id: Uuid, effects: HashMap<String, RunningEffect> },
-    /// The fades this station is part way through, described so a node could run one
-    /// unattended instead.
+    /// The fades on this fixture, described so a node could run one unattended.
+    ///
+    /// Including the ones that have arrived. A landed fade is a constant function of
+    /// time, and it is the console's only record of where that parameter is.
     SetLiveFades { fixture_id: Uuid, fades: HashMap<String, RunningFade> },
     SetCueActive { cue_id: Uuid, is_active: bool },
     GoNext { sequence_id: Uuid, at: u64 },
@@ -58,23 +63,22 @@ pub enum PlaybackEffect {
 
 // ── View ──────────────────────────────────────────────────────────────────────
 
-/// What playback needs to see of the show on a given tick.
+/// What playback needs to see of the show on a given pass.
 pub struct ShowView<'a> {
     pub sequences: &'a [Sequence],
     pub cues: HashMap<Uuid, &'a Cue>,
     pub fixtures: &'a [Fixture],
     /// The same fixtures, by id.
     ///
-    /// Built once a tick because everything that walks the rig then has to look one
-    /// up: `emit` for every fixture that moved, `live_value` for every key a fade or
-    /// an effect starts on. Scanning the slice for each of those made the tick
-    /// quadratic in the size of the rig, which nothing noticed while a settled show
-    /// stopped ticking — and an effect never lets it settle.
+    /// Built once a pass because everything that walks the rig then has to look one
+    /// up: every key a fade or an effect starts on, every fixture whose motion is
+    /// republished. Scanning the slice for each of those made a pass quadratic in the
+    /// size of the rig.
     by_id: HashMap<Uuid, &'a Fixture>,
     /// The types those fixtures were patched as, by id.
     ///
     /// Here for one question: where does a parameter rest when nothing is driving it.
-    /// A handful of rows where `fixtures` is thousands, so this is not the per-tick
+    /// A handful of rows where `fixtures` is thousands, so this is not the per-pass
     /// cost that a rig of movers is.
     types_by_id: HashMap<Uuid, &'a FixtureType>,
     /// What the programmer is holding. Replicated show state like everything else
@@ -126,8 +130,9 @@ impl<'a> ShowView<'a> {
         self.cues.get(cue_id).copied()
     }
 
-    pub(super) fn live_value(&self, fixture_id: Uuid, key: &str) -> Option<ParameterValue> {
-        self.fixture(fixture_id)?.live_values.get(key).cloned()
+    /// The type a fixture is patched as, if this station has the row.
+    fn fixture_type(&self, fixture: &Fixture) -> Option<&'a FixtureType> {
+        self.types_by_id.get(&fixture.fixture_type_id).copied()
     }
 
     /// Where a parameter rests when nothing is driving it: this fixture's own
@@ -176,135 +181,164 @@ impl<'a> ShowView<'a> {
 
 // ── Fades ─────────────────────────────────────────────────────────────────────
 
+/// A fade, and which parameter it is on.
+///
+/// The description is a [`RunningFade`] and nothing else — no monotonic anchor beside
+/// the console one, no cached progress. Playback does not evaluate fades any more, so
+/// there is nothing left for a second clock to be more accurate about, and a fade
+/// carrying one instant rather than two is a fade that means the same thing on every
+/// station and in a browser.
 #[derive(Debug, Clone)]
 struct Fade {
     fixture_id: Uuid,
     key: String,
-    from: ParameterValue,
-    to: ParameterValue,
-    /// When interpolation starts. Capture delay is already folded in.
-    start: Instant,
-    duration: Duration,
-    /// The same instant on the wall clock, so a node that can run the fade itself can
-    /// be told when it began rather than how far through it is.
-    t0_ms: u64,
-    easing: Easing,
-    cue_id: Uuid,
+    running: RunningFade,
 }
 
 impl Fade {
-    /// Position through the fade at `now`, 0.0 before it starts and 1.0 once done.
-    fn progress(&self, now: Instant) -> f32 {
-        if now < self.start {
-            return 0.0;
-        }
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-        let elapsed = now.duration_since(self.start).as_secs_f32();
-        (elapsed / self.duration.as_secs_f32()).min(1.0)
+    /// The console millisecond this fade lands on.
+    fn ends_at(&self) -> u64 {
+        self.running.t0.saturating_add(self.running.duration_ms as u64)
     }
+}
 
-    fn is_done(&self, now: Instant) -> bool {
-        self.progress(now) >= 1.0
-    }
-
-    fn value_at(&self, now: Instant) -> ParameterValue {
-        interpolate(&self.from, &self.to, effects::ease(self.easing, self.progress(now)))
-    }
-
-    /// This fade, described well enough for somebody else to run it.
-    fn running(&self) -> RunningFade {
-        RunningFade {
-            from: self.from.clone(),
-            to: self.to.clone(),
-            t0: self.t0_ms,
-            duration_ms: self.duration.as_millis() as u32,
-            easing: self.easing,
-            cue_id: self.cue_id,
-        }
-    }
-
-    /// When this fade finishes, including any delay before it starts.
-    fn ends_at(&self) -> Instant {
-        self.start + self.duration
+/// A parameter parked where it is: a fade of no length, from a value to itself.
+///
+/// What replaces a value that used to simply stay in a map. An effect that stops
+/// without anything taking its key, or a flow setting a parameter outright, both leave
+/// the parameter asserting one number for ever — and one number for ever is a fade
+/// that has already landed.
+fn parked(fixture_id: Uuid, key: String, value: ParameterValue, at: u64) -> Fade {
+    Fade {
+        fixture_id,
+        key,
+        running: RunningFade {
+            from: value.clone(),
+            to: value,
+            t0: at,
+            duration_ms: 0,
+            easing: Easing::Step,
+            // Nobody's cue is doing this, so nothing claims it.
+            cue_id: Uuid::nil(),
+        },
     }
 }
 
 // ── Playback ──────────────────────────────────────────────────────────────────
 
-/// Values a tick wants written, gathered before anything is emitted.
-///
-/// Fades and the programmer both write here, and only then is each fixture's map
-/// compared against what was last handed to the engine. Emitting from each in turn
-/// would have the second overwrite the first's map with a stale copy of the fixture.
-type Changes = HashMap<Uuid, HashMap<String, ParameterValue>>;
-
 #[derive(Default)]
 pub struct Playback {
     /// The cue each sequence is currently playing, so a change can be spotted.
     playing: HashMap<Uuid, Uuid>,
-    /// Running fades, at most one per (fixture, parameter).
+    /// What is driving each (fixture, parameter) as a fade — including the ones that
+    /// have arrived, which is what makes this the record of where the rig is.
     fades: Vec<Fade>,
     /// Effects a cue is asserting, at most one per (fixture, parameter). The
-    /// programmer's own live in the overlay, because that is what decides precedence.
+    /// programmer's are worked out from its entries on each pass, because that is
+    /// where the precedence between the two is decided.
     effects: HashMap<Key, RunningEffect>,
     /// What was last handed to the engine as `live_effects` and `live_fades`, so an
-    /// unchanged description is not written again forty times a second.
+    /// unchanged description is not written again.
     ///
-    /// Unlike `emit`, which deliberately keeps no such record, nothing else in the
-    /// system writes these two fields: they are LOCAL and this is their only writer,
-    /// so there is no other hand for the cache to be wrong about.
+    /// Nothing else in the system writes those two fields: they are LOCAL and this is
+    /// their only writer, so there is no other hand for the cache to be wrong about.
     motion: HashMap<Uuid, (HashMap<String, RunningEffect>, HashMap<String, RunningFade>)>,
-    /// Sequences with a follow cue due, and when.
-    follows: HashMap<Uuid, Instant>,
-    /// What the programmer is holding over playback.
-    overlay: Overlay,
+    /// Sequences with a follow cue due, and the console millisecond it is due at.
+    follows: HashMap<Uuid, u64>,
 }
 
 impl Playback {
-    /// True while a fade is running or a follow cue is pending. The engine skips the
-    /// tick entirely when this is false and nothing in the show has changed.
-    pub fn has_work(&self) -> bool {
-        !self.fades.is_empty()
-            || !self.effects.is_empty()
-            || !self.follows.is_empty()
-            || self.overlay.has_work()
+    /// The next console millisecond at which a pass would do something on its own.
+    ///
+    /// Only a follow cue answers. A fade needs no pass to progress — nobody is storing
+    /// what it is worth — and an effect never ends, so neither of them is a reason to
+    /// wake the engine up. This is what a station with a show up and no follows
+    /// pending sleeps on: nothing.
+    pub fn next_deadline(&self) -> Option<u64> {
+        self.follows.values().copied().min()
     }
 
-    /// One pass. `now` measures durations, `wall_ms` places them on the console clock.
+    /// True while something is outstanding that a pass would act on.
+    pub fn has_work(&self) -> bool {
+        !self.follows.is_empty()
+    }
+
+    /// True when nothing is driving anything and nothing is remembered.
     ///
-    /// Two clocks because they answer different questions. A fade's progress is an
-    /// elapsed duration and `Instant` is the only clock that cannot go backwards
-    /// under it. An effect's phase is a position on a clock every station shares, and
-    /// only the wall clock is shared.
-    pub fn tick(
-        &mut self,
-        now: Instant,
-        wall_ms: u64,
-        view: &ShowView<'_>,
-    ) -> Vec<PlaybackEffect> {
+    /// What the engine asks before reading the rig. A pass is O(rig) because it has
+    /// to look at every fixture that could have motion on it, and a show with nothing
+    /// running has none — so patching two thousand fixtures into an idle show should
+    /// not cost two thousand walks of the rig it is building.
+    pub fn is_idle(&self) -> bool {
+        self.playing.is_empty()
+            && self.fades.is_empty()
+            && self.effects.is_empty()
+            && self.motion.is_empty()
+            && self.follows.is_empty()
+    }
+
+    /// What one parameter is putting out at `wall_ms`, from playback's own layers.
+    ///
+    /// The same stack a connector or a browser evaluates, read from what this object
+    /// is about to publish rather than from the show it published to last time — so a
+    /// cue asking where a parameter is mid-pass gets this pass's answer.
+    fn value_at(&self, view: &ShowView<'_>, at: &Key, wall_ms: u64) -> Option<ParameterValue> {
+        let fixture = view.fixture(at.0)?;
+        let held = held_by_the_programmer(view, at);
+        // Playback's own memory first, then what the fixture already carries. The two
+        // agree everywhere except inside a pass — playback publishes onto the fixture
+        // and nothing else writes those two fields — so the fallback matters for the
+        // case where this playback has never seen the cue that put it there.
+        let driving = pult_render::Driving {
+            programmer: match &held {
+                Some(Held::Value(value)) => Some(value),
+                _ => None,
+            },
+            effect: match &held {
+                Some(Held::Effect(effect)) => Some(effect),
+                _ => self.effects.get(at).or_else(|| fixture.live_effects.get(&at.1)),
+            },
+            fade: self
+                .fades
+                .iter()
+                .find(|f| f.fixture_id == at.0 && f.key == at.1)
+                .map(|f| &f.running)
+                .or_else(|| fixture.live_fades.get(&at.1)),
+            home: None,
+        };
+        pult_render::value_at(&driving, wall_ms)
+            .or_else(|| home_value_by_key(fixture, view.fixture_type(fixture), &at.1))
+    }
+
+    /// One pass, placed at `wall_ms` on the console clock.
+    ///
+    /// Run when the show changes or a follow comes due, and at no other time. What it
+    /// returns is a set of descriptions, not a set of values: nothing here works out
+    /// what any parameter is worth.
+    pub fn pass(&mut self, wall_ms: u64, view: &ShowView<'_>) -> Vec<PlaybackEffect> {
         let mut effects = Vec::new();
-        self.track_cue_changes(now, wall_ms, view, &mut effects);
-
-        let mut changes = Changes::new();
-        self.advance_fades(now, wall_ms, &mut changes);
-        // After the fades, so a cue asserting an effect on a key wins over a fade the
-        // same cue started on it; before the overlay, so the programmer still covers
-        // both.
-        self.render_effects(wall_ms, &mut changes);
-        self.overlay.assert(view, wall_ms, &mut changes);
-        self.emit(view, changes, &mut effects);
+        self.track_cue_changes(wall_ms, view, &mut effects);
         self.emit_motion(view, &mut effects);
-
-        self.fire_due_follows(now, wall_ms, &mut effects);
+        self.fire_due_follows(wall_ms, &mut effects);
         effects
+    }
+
+    /// Drive one parameter to a value outright, with nothing to fade from.
+    ///
+    /// A flow action setting a parameter, which is the one writer besides cues and the
+    /// programmer. It parks the value as a landed fade, so it survives exactly as long
+    /// as it used to survive in a map — until a cue, a release or another action takes
+    /// the key. Last writer wins, which is a design question and not a bug to fix in
+    /// passing.
+    pub fn set_parameter(&mut self, fixture_id: Uuid, key: String, value: ParameterValue, at: u64) {
+        self.fades.retain(|f| !(f.fixture_id == fixture_id && f.key == key));
+        self.effects.remove(&(fixture_id, key.clone()));
+        self.fades.push(parked(fixture_id, key, value, at));
     }
 
     /// Spot sequences that moved to a different cue, and start that cue's fades.
     fn track_cue_changes(
         &mut self,
-        now: Instant,
         wall_ms: u64,
         view: &ShowView<'_>,
         effects: &mut Vec<PlaybackEffect>,
@@ -336,7 +370,13 @@ impl Playback {
                 // A cue that is no longer up stops asserting its effects. Its fades are
                 // left to finish, because a fade has somewhere to arrive and an effect
                 // does not.
-                self.effects.retain(|_, fx| fx.source != EffectSource::Cue(cue_id));
+                //
+                // An effect *has* nowhere to arrive, so what it was showing when it
+                // stopped is parked: stopping a chase freezes the look, which is what
+                // it did when the value was simply left sitting in a map.
+                self.park_stopped_effects(view, wall_ms, |fx| {
+                    fx.source == EffectSource::Cue(cue_id)
+                });
             }
             self.follows.remove(&sequence.id);
 
@@ -345,7 +385,7 @@ impl Playback {
                 // reach it, now that Go at the last cue stays there. So everything it
                 // was driving and nothing else is still driving goes home.
                 self.playing.remove(&sequence.id);
-                self.release_sequence(now, wall_ms, sequence, view);
+                self.release_sequence(wall_ms, sequence, view);
                 continue;
             };
             self.playing.insert(sequence.id, cue_id);
@@ -353,7 +393,7 @@ impl Playback {
 
             if let Some(cue) = view.cues.get(&cue_id) {
                 let anchor = view.anchor_for(sequence, wall_ms);
-                self.start_cue(now, wall_ms, anchor, cue, view, sequence.id);
+                self.start_cue(wall_ms, anchor, cue, view, sequence.id);
             }
         }
     }
@@ -377,7 +417,6 @@ impl Playback {
     /// back is by then the home value, since nothing else is asserting it.
     fn release_sequence(
         &mut self,
-        now: Instant,
         wall_ms: u64,
         sequence: &Sequence,
         view: &ShowView<'_>,
@@ -388,22 +427,27 @@ impl Playback {
         }
         let still_driven = view.captured_by_the_sequences_that_are_on(Some(sequence.id));
 
-        let duration = Duration::from_millis(view.home_fade_ms as u64);
-        for (fixture_id, key) in mine {
-            if still_driven.contains(&(fixture_id, key.clone())) {
+        for at in mine {
+            if still_driven.contains(&at) {
                 continue;
             }
+            let (fixture_id, key) = at.clone();
+            // Where it is *before* its own fade and effect are taken away, so a
+            // parameter half way through a cue's fade goes home from where it had got
+            // to rather than from where that fade was aiming.
+            let from = self.value_at(view, &at, wall_ms);
+
             // Its own fades and effects stop: they were this sequence asserting
             // something, and it has been told to stop asserting. A cue *changing*
             // leaves a fade to finish because it has somewhere to arrive; a sequence
             // going off does not.
             self.fades.retain(|f| !(f.fixture_id == fixture_id && f.key == key));
-            self.effects.remove(&(fixture_id, key.clone()));
+            self.effects.remove(&at);
 
             let Some(to) = view.home_value(fixture_id, &key) else {
                 continue;
             };
-            let from = view.live_value(fixture_id, &key).unwrap_or_else(|| to.clone());
+            let from = from.unwrap_or_else(|| to.clone());
             if from == to {
                 continue;
             }
@@ -411,18 +455,49 @@ impl Playback {
             self.fades.push(Fade {
                 fixture_id,
                 key,
-                from,
-                to,
-                start: now,
-                duration,
-                t0_ms: wall_ms,
-                easing: Easing::Linear,
-                // No cue is doing this. A node told about the movement is told about a
-                // movement, and the panel that asks "is this my cue's fade" gets no.
-                cue_id: Uuid::nil(),
-                // A zero duration lands on the next tick, which is what a show that
-                // has not asked for a home time wants: releasing has always snapped.
+                running: RunningFade {
+                    from,
+                    to,
+                    t0: wall_ms,
+                    // A zero duration is a fade that has already landed, which is what
+                    // a show that has not asked for a home time wants: releasing has
+                    // always snapped.
+                    duration_ms: view.home_fade_ms,
+                    easing: Easing::Linear,
+                    // No cue is doing this. A node told about the movement is told
+                    // about a movement, and the panel that asks "is this my cue's
+                    // fade" gets no.
+                    cue_id: Uuid::nil(),
+                },
             });
+        }
+    }
+
+    /// Freeze whatever the effects this predicate picks out were showing, and drop
+    /// them.
+    ///
+    /// An effect has nowhere to arrive, so when it stops there is no value it was on
+    /// its way to. Parking what it was showing at `wall_ms` is what keeps a stopped
+    /// chase looking like a held look rather than snapping to a home value nothing
+    /// asked for.
+    fn park_stopped_effects(
+        &mut self,
+        view: &ShowView<'_>,
+        wall_ms: u64,
+        mut which: impl FnMut(&RunningEffect) -> bool,
+    ) {
+        let stopping: Vec<Key> = self
+            .effects
+            .iter()
+            .filter(|(_, fx)| which(fx))
+            .map(|(at, _)| at.clone())
+            .collect();
+        for at in stopping {
+            let showing = self.value_at(view, &at, wall_ms);
+            self.effects.remove(&at);
+            let Some(value) = showing else { continue };
+            self.fades.retain(|f| !(f.fixture_id == at.0 && f.key == at.1));
+            self.fades.push(parked(at.0, at.1, value, wall_ms));
         }
     }
 
@@ -434,22 +509,21 @@ impl Playback {
     /// fade; an effect anchored that way would stay out of step for good.
     fn start_cue(
         &mut self,
-        now: Instant,
         wall_ms: u64,
         anchor: u64,
         cue: &Cue,
         view: &ShowView<'_>,
         sequence_id: Uuid,
     ) {
-        // Where the anchor falls on the monotonic clock, which is what fades measure
-        // against. A cue that went before this station got the message started in the
-        // past, so the fade is already part way through.
-        let anchor_instant = shift(now, anchor as i64 - wall_ms as i64);
-        let mut latest_end = now;
+        let mut latest_end = wall_ms;
 
         for capture in &cue.captures {
             let key = parameter_key(&capture.parameter_kind);
             let at = (capture.fixture_id, key.clone());
+
+            // Where the parameter is *now*, before this capture takes the key off
+            // whatever had it. A cue re-taken mid-fade fades on from here.
+            let showing = self.value_at(view, &at, wall_ms);
 
             // Whichever this capture asserts, it takes the key off the other.
             self.fades.retain(|f| !(f.fixture_id == capture.fixture_id && f.key == key));
@@ -468,18 +542,13 @@ impl Playback {
                 continue;
             }
 
-            let delay = Duration::from_millis(capture.delay_in_ms as u64);
-
             // Fade from wherever the parameter is now, so re-cueing mid-fade is
             // smooth — and from where it rests when nothing has ever driven it, which
             // is the fixture's answer rather than a zero of the right shape.
-            let from = self
-                .fades
-                .iter()
-                .find(|f| f.fixture_id == capture.fixture_id && f.key == key)
-                .map(|f| f.value_at(now))
-                .or_else(|| view.live_value(capture.fixture_id, &key))
-                .or_else(|| view.home_value(capture.fixture_id, &key))
+            //
+            // Read before the key is cleared above? No: `from` is taken from `showing`,
+            // which was evaluated for this key before either was removed.
+            let from = showing
                 // A fixture whose type has gone: nothing can say where it rests, so
                 // the cue lands rather than fading from a zero nobody vouched for.
                 .unwrap_or_else(|| capture.value.clone());
@@ -493,20 +562,19 @@ impl Playback {
                 (0, cue_out) => cue_out,
                 (own, _) => own,
             };
-            let duration = Duration::from_millis(
-                if descending(&from, &capture.value) { down } else { up } as u64,
-            );
+            let duration_ms = if descending(&from, &capture.value) { down } else { up };
 
             let fade = Fade {
                 fixture_id: capture.fixture_id,
                 key: key.clone(),
-                from,
-                to: capture.value.clone(),
-                start: anchor_instant + delay,
-                duration,
-                t0_ms: anchor + capture.delay_in_ms as u64,
-                easing: capture.easing,
-                cue_id: cue.id,
+                running: RunningFade {
+                    from,
+                    to: capture.value.clone(),
+                    t0: anchor + capture.delay_in_ms as u64,
+                    duration_ms,
+                    easing: capture.easing,
+                    cue_id: cue.id,
+                },
             };
             latest_end = latest_end.max(fade.ends_at());
 
@@ -515,133 +583,56 @@ impl Playback {
 
         if let FollowMode::FollowAfter { delay_ms } = cue.follow_mode {
             // "After the previous cue completes, plus a delay": the fade has to land first.
-            self.follows.insert(sequence_id, latest_end + Duration::from_millis(delay_ms as u64));
+            self.follows.insert(sequence_id, latest_end + delay_ms as u64);
         }
         // Timecode follows need a timecode source, which does not exist yet.
     }
 
-    /// Move every running fade forward.
+    /// Publish what is driving every parameter: the shapes, and the fades.
     ///
-    /// A fade under a key the programmer holds keeps running: it does not reach the
-    /// output, but it does say where that key would land if the value were released,
-    /// so it is recorded rather than dropped.
-    fn advance_fades(&mut self, now: Instant, wall_ms: u64, changes: &mut Changes) {
-        if self.fades.is_empty() {
-            return;
-        }
-
-        let advanced: Vec<(Uuid, String, ParameterValue)> = self
-            .fades
-            .iter()
-            .filter(|fade| now >= fade.start) // anything else is still inside its delay
-            .map(|fade| (fade.fixture_id, fade.key.clone(), fade.value_at(now)))
-            .collect();
-
-        for (fixture_id, key, value) in advanced {
-            match self.overlay.covering(fixture_id, &key, wall_ms) {
-                Some(held) => {
-                    self.overlay.note_beneath(fixture_id, &key, value);
-                    changes.entry(fixture_id).or_default().insert(key, held);
-                }
-                None => {
-                    changes.entry(fixture_id).or_default().insert(key, value);
-                }
-            }
-        }
-
-        self.fades.retain(|f| !f.is_done(now));
-    }
-
-    /// Render every effect a cue is asserting.
+    /// Only the winner of playback's own two layers is listed, so a fade under an
+    /// effect is left out — it is still recorded here, but it is not what anybody is
+    /// seeing, and a node handed both would have to decide between them.
     ///
-    /// The same arrangement as a fade under a held key: the value is worked out and
-    /// recorded as what is underneath, so releasing the programmer lands on where the
-    /// effect has got to by then rather than where it was when the key was grabbed.
-    fn render_effects(&mut self, wall_ms: u64, changes: &mut Changes) {
-        if self.effects.is_empty() {
-            return;
-        }
-
-        let rendered: Vec<(Uuid, String, ParameterValue)> = self
-            .effects
-            .iter()
-            .map(|(key, effect)| {
-                (key.0, key.1.clone(), effects::value_at(effect, wall_ms))
-            })
-            .collect();
-
-        for (fixture_id, key, value) in rendered {
-            match self.overlay.covering(fixture_id, &key, wall_ms) {
-                Some(held) => {
-                    self.overlay.note_beneath(fixture_id, &key, value);
-                    changes.entry(fixture_id).or_default().insert(key, held);
-                }
-                None => {
-                    changes.entry(fixture_id).or_default().insert(key, value);
-                }
-            }
-        }
-    }
-
-    /// Hand the tick's changes to the engine, one effect per fixture that moved.
+    /// A parameter the programmer holds a plain *value* on is listed as nothing at
+    /// all, and that absence is load-bearing: it is what tells a node to stop tracing
+    /// a shape it was handed and take values again. So these two fields go on meaning
+    /// "what is reaching the light", and a consumer that also reads the programmer
+    /// gets the same answer either way.
     ///
-    /// What was written last tick is not remembered, because the show itself is the
-    /// better record of it: a flow action or a device input can write a live value
-    /// between two ticks, and a cache of playback's own writes would report that
-    /// fixture as already correct and never put it back.
-    fn emit(&self, view: &ShowView<'_>, changes: Changes, effects: &mut Vec<PlaybackEffect>) {
-        for (fixture_id, changed) in changes {
-            // A fixture that has left the rig has nowhere for a value to land.
-            let Some(fixture) = view.fixture(fixture_id) else {
-                continue;
-            };
-            // Merge onto what the fixture already has, so a fade for one parameter
-            // does not drop the others.
-            let mut values = fixture.live_values.clone();
-            values.extend(changed);
-
-            if values == fixture.live_values {
-                continue;
-            }
-            effects.push(PlaybackEffect::SetLiveValues { fixture_id, values });
-        }
-    }
-
-    /// Say what is moving, and why, for the plugins and panels that cannot work it out.
-    ///
-    /// Only the winner per key is listed. A plain programmer value over a cue effect
-    /// produces no entry at all, which is how a node holding a shape gets told to stop
-    /// tracing it and take a value instead. A fade under a hold or under an effect is
-    /// likewise not listed: it is still running, but it is not what anybody is seeing.
+    /// A programmer *effect* is listed, because resolving it against a speed master is
+    /// work only a station can do.
     fn emit_motion(&mut self, view: &ShowView<'_>, out: &mut Vec<PlaybackEffect>) {
         let mut per_fixture: HashMap<Uuid, (HashMap<String, RunningEffect>, HashMap<String, RunningFade>)> =
             HashMap::new();
+        let held = programmer::held_keys(view);
 
         for (key, effect) in &self.effects {
-            if self.overlay.holds(key.0, &key.1) {
+            if held.contains(key) {
                 continue;
             }
             per_fixture.entry(key.0).or_default().0.insert(key.1.clone(), effect.clone());
         }
-        // The programmer writes last here too, so its effect covers the cue's.
-        for (key, effect) in self.overlay.held_effects() {
-            per_fixture.entry(key.0).or_default().0.insert(key.1.clone(), effect.clone());
+        // The programmer writes last here, so its shape covers the cue's.
+        for (key, effect) in programmer::held_effects(view) {
+            per_fixture.entry(key.0).or_default().0.insert(key.1, effect);
         }
 
         for fade in &self.fades {
-            let covered = self.overlay.holds(fade.fixture_id, &fade.key)
-                || self.effects.contains_key(&(fade.fixture_id, fade.key.clone()));
-            if covered {
+            let at = (fade.fixture_id, fade.key.clone());
+            if held.contains(&at)
+                || per_fixture.get(&fade.fixture_id).is_some_and(|(fx, _)| fx.contains_key(&fade.key))
+            {
                 continue;
             }
             per_fixture
                 .entry(fade.fixture_id)
                 .or_default()
                 .1
-                .insert(fade.key.clone(), fade.running());
+                .insert(fade.key.clone(), fade.running.clone());
         }
 
-        // Every fixture that had motion last tick has to be considered too, or one
+        // Every fixture that had motion last pass has to be considered too, or one
         // that has just stopped would keep its last description for ever.
         let considered: Vec<Uuid> = view
             .fixtures
@@ -651,7 +642,34 @@ impl Playback {
             .collect();
 
         for fixture_id in considered {
-            let (effects, fades) = per_fixture.remove(&fixture_id).unwrap_or_default();
+            let (mut effects, mut fades) = per_fixture.remove(&fixture_id).unwrap_or_default();
+
+            // Keep what the fixture already carries on keys playback has no opinion
+            // about. The map is written whole, so publishing only what this object
+            // knows would silently take a parameter's driver away because some *other*
+            // parameter of the same fixture moved.
+            if let Some(fixture) = view.fixture(fixture_id) {
+                for (key, effect) in &fixture.live_effects {
+                    let mine = (fixture_id, key.clone());
+                    if !held.contains(&mine)
+                        && !self.effects.contains_key(&mine)
+                        && !self.holds_a_fade(&mine)
+                    {
+                        effects.entry(key.clone()).or_insert_with(|| effect.clone());
+                    }
+                }
+                for (key, fade) in &fixture.live_fades {
+                    let mine = (fixture_id, key.clone());
+                    if !held.contains(&mine)
+                        && !self.effects.contains_key(&mine)
+                        && !self.holds_a_fade(&mine)
+                        && !effects.contains_key(key)
+                    {
+                        fades.entry(key.clone()).or_insert_with(|| fade.clone());
+                    }
+                }
+            }
+
             let previous = self.motion.get(&fixture_id);
 
             if previous.map(|(e, f)| (e, f)) != Some((&effects, &fades)) {
@@ -669,15 +687,23 @@ impl Playback {
             }
         }
 
-        // A fixture that has left the rig takes its record with it.
+        // A fixture that has left the rig takes its record with it — and so do the
+        // fades and effects that were driving it, which nothing can publish any more.
         self.motion.retain(|id, _| view.by_id.contains_key(id));
+        self.fades.retain(|f| view.by_id.contains_key(&f.fixture_id));
+        self.effects.retain(|at, _| view.by_id.contains_key(&at.0));
     }
 
-    fn fire_due_follows(&mut self, now: Instant, wall_ms: u64, effects: &mut Vec<PlaybackEffect>) {
+    /// Does playback itself have a fade on this parameter?
+    fn holds_a_fade(&self, at: &Key) -> bool {
+        self.fades.iter().any(|f| f.fixture_id == at.0 && f.key == at.1)
+    }
+
+    fn fire_due_follows(&mut self, wall_ms: u64, effects: &mut Vec<PlaybackEffect>) {
         let due: Vec<Uuid> = self
             .follows
             .iter()
-            .filter(|(_, at)| **at <= now)
+            .filter(|(_, at)| **at <= wall_ms)
             .map(|(seq_id, _)| *seq_id)
             .collect();
         for sequence_id in due {
@@ -686,19 +712,6 @@ impl Playback {
             // the cue it fires there, rather than wherever its own actor got to.
             effects.push(PlaybackEffect::GoNext { sequence_id, at: wall_ms });
         }
-    }
-}
-
-/// `now`, moved by a signed number of milliseconds.
-///
-/// A cue anchored before this process started cannot be placed on the monotonic clock
-/// at all, and `now` is then the closest thing to the truth there is: the fade is
-/// treated as beginning here rather than panicking or running backwards.
-fn shift(now: Instant, by_ms: i64) -> Instant {
-    if by_ms >= 0 {
-        now + Duration::from_millis(by_ms as u64)
-    } else {
-        now.checked_sub(Duration::from_millis((-by_ms) as u64)).unwrap_or(now)
     }
 }
 
@@ -718,31 +731,6 @@ fn descending(from: &ParameterValue, to: &ParameterValue) -> bool {
         (Float(a), Float(b)) => b < a,
         (Int(a), Int(b)) => b < a,
         _ => false,
-    }
-}
-
-/// Blend two parameter values. Values that cannot be blended, and values of
-/// different kinds, snap to the target when the fade completes.
-pub(crate) fn interpolate(from: &ParameterValue, to: &ParameterValue, t: f32) -> ParameterValue {
-    use ParameterValue::*;
-    match (from, to) {
-        (Float(a), Float(b)) => Float(a + (b - a) * t),
-        (Int(a), Int(b)) => Int((*a as f32 + (*b as f32 - *a as f32) * t).round() as i32),
-        (Color { r: r0, g: g0, b: b0 }, Color { r: r1, g: g1, b: b1 }) => Color {
-            r: r0 + (r1 - r0) * t,
-            g: g0 + (g1 - g0) * t,
-            b: b0 + (b1 - b0) * t,
-        },
-        // A boolean has nothing between its two states, so it switches at the start
-        // of the fade rather than at the end, where it would look like a late cue.
-        (Bool(a), Bool(b)) => Bool(if t > 0.0 { *b } else { *a }),
-        (a, b) => {
-            if t >= 1.0 {
-                b.clone()
-            } else {
-                a.clone()
-            }
-        }
     }
 }
 

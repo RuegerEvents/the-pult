@@ -57,5 +57,13 @@ pub enum ServerMessage {
     Error {
         message: String,
     },
+    /// The other half of the clock exchange: what the station's show clock said when
+    /// it answered, and the client's own stamp handed straight back.
+    ClockSync {
+        sent_at: f64,
+        /// The station's show clock, in console unix milliseconds — the same clock
+        /// every fade and every effect in the show is anchored in.
+        station_ms: f64,
+    },
     Pong,
 }

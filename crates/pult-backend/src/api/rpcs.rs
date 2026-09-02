@@ -15,7 +15,14 @@
 
 use pult_schema::{
     path::PathSegment,
-    types::{evaluate, Fixture, Group},
+    types::{
+        evaluate,
+        fixture::{
+            driving, output_parameters, parameter_key, FixtureType, HeldByProgrammer,
+            ParameterKind,
+        },
+        Fixture, Group,
+    },
 };
 use serde_json::Value;
 
@@ -73,6 +80,15 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"groupId","type":"string","optional":false}]"#,
         doc: "The fixtures a saved group picks out of the rig right now, in its order.",
     },
+    // A read, so deliberately not a command: asking what a light is doing must not
+    // write history. It exists because nothing stores the answer any more — the
+    // console keeps what is *driving* each parameter and evaluates on demand — and a
+    // caller that cannot hold the whole stack still has to be able to ask.
+    LocalRpcMeta {
+        method: "parameter.value",
+        args_schema: r#"[{"name":"fixtureId","type":"string","optional":false},{"name":"parameterKind","type":"object","optional":true}]"#,
+        doc: "What a fixture's parameters are putting out right now; one when named, all of them when not.",
+    },
 ];
 
 /// What dispatching needs to reach. Cheap to clone: three channel handles.
@@ -107,6 +123,18 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
         "device.forget" => {
             deps.devices.forget(serial()?).await?;
             Ok(Value::Null)
+        }
+        "parameter.value" => {
+            let fixture_id: uuid::Uuid = serde_json::from_value(args["fixtureId"].clone())
+                .map_err(|e| format!("invalid fixtureId: {e}"))?;
+            let kind = match args.get("parameterKind") {
+                Some(k) if !k.is_null() => Some(
+                    serde_json::from_value::<ParameterKind>(k.clone())
+                        .map_err(|e| format!("invalid parameterKind: {e}"))?,
+                ),
+                _ => None,
+            };
+            what_is_it_doing(&deps.engine, fixture_id, kind).await
         }
         "selection.resolve" => {
             let group_id: uuid::Uuid = serde_json::from_value(args["groupId"].clone())
@@ -145,6 +173,67 @@ pub fn is_local_rpc(method: &str) -> bool {
     method.starts_with("session.")
         || method.starts_with("device.")
         || method.starts_with("selection.")
+        || method.starts_with("parameter.")
+}
+
+/// What a fixture's parameters are putting out, right now.
+///
+/// One parameter when named, and every one an operator can set when not — the two
+/// shapes `__home` and `__set_home` take, so the trio reads as a trio. The answer is a
+/// map keyed by parameter key, which is the same key `home_values` and `live_fades`
+/// use, so a caller can line it up with anything else it has read.
+///
+/// Evaluated at one instant for the whole fixture. Two readings of the clock would put
+/// a mover's pan and its tilt a millisecond apart, which is a pose nothing ever struck.
+async fn what_is_it_doing(
+    engine: &EngineHandle,
+    fixture_id: uuid::Uuid,
+    kind: Option<ParameterKind>,
+) -> Result<Value, String> {
+    let row = engine
+        .get(vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture_id)])
+        .await
+        .map_err(|_| format!("there is no fixture {fixture_id}"))?;
+    if row.is_null() {
+        return Err(format!("there is no fixture {fixture_id}"));
+    }
+    let fixture: Fixture = serde_json::from_value(row)
+        .map_err(|e| format!("fixture {fixture_id} does not parse: {e}"))?;
+
+    let types = engine
+        .get(vec![PathSegment::Key("fixture_types".into())])
+        .await
+        .map_err(|e| format!("cannot read the fixture types: {e}"))?;
+    let types: Vec<FixtureType> = serde_json::from_value(types).unwrap_or_default();
+    let fixture_type = types.iter().find(|t| t.id == fixture.fixture_type_id);
+
+    let entries = engine
+        .get(vec![PathSegment::Key("programmer_values".into())])
+        .await
+        .map_err(|e| format!("cannot read the programmer: {e}"))?;
+    let entries: Vec<pult_schema::types::programmer::ProgrammerValue> =
+        serde_json::from_value(entries).unwrap_or_default();
+    let held = HeldByProgrammer::of(&entries);
+
+    let keys: Vec<String> = match (&kind, fixture_type) {
+        (Some(kind), _) => vec![parameter_key(kind)],
+        (None, Some(fixture_type)) => {
+            output_parameters(fixture_type).map(|p| parameter_key(&p.kind)).collect()
+        }
+        // Patched to a type this station has not got. Whatever the fixture overrides
+        // for itself is still the truth about it, so that is what it can answer with.
+        (None, None) => fixture.home_values.keys().cloned().collect(),
+    };
+
+    let now_ms = pult_schema::types::sequence::now_ms();
+    let values: std::collections::HashMap<String, pult_schema::types::fixture::ParameterValue> =
+        keys.into_iter()
+            .filter_map(|key| {
+                let driving = driving(&fixture, fixture_type, held.get(fixture_id, &key), &key);
+                pult_render::value_at(&driving, now_ms).map(|value| (key, value))
+            })
+            .collect();
+    serde_json::to_value(values).map_err(|e| e.to_string())
 }
 
 /// The fixtures a group picks out of the rig as it is now.
@@ -210,5 +299,113 @@ mod tests {
                 serde_json::from_str(meta.args_schema).expect("args_schema is JSON");
             assert!(parsed.is_array(), "{} args_schema is not an array", meta.method);
         }
+    }
+
+    /// A plugin, or anything else that can call but cannot read the rig, asking what
+    /// a light is doing mid-fade — and getting the value for the moment it asked.
+    ///
+    /// This is what replaced reading a stored map. Nothing keeps the number any more,
+    /// so the caller that could once have read it has to be able to ask instead, and
+    /// asking must not write anything down: it is a read, so it is an RPC rather than
+    /// a command.
+    #[tokio::test]
+    async fn asking_what_a_parameter_is_doing_answers_for_the_moment_it_was_asked() {
+        use pult_schema::{
+            lifecycle::Lifecycle,
+            types::fixture::{
+                FixtureType, ParameterBinding, ParameterDefinition, ParameterDirection,
+                ParameterKind, ParameterValue,
+            },
+        };
+
+        let pool =
+            std::sync::Arc::new(crate::infra::showfile::open_in_memory().await.expect("showfile"));
+        let (engine, handle, _broadcast) = crate::engine::ShowEngine::new(
+            pult_schema::events::operation::NodeId(uuid::Uuid::new_v4()),
+            pool,
+            None,
+        );
+        tokio::spawn(engine.run());
+
+        let fixture_type = FixtureType {
+            id: uuid::Uuid::new_v4(),
+            name: "Dimmer".into(),
+            manufacturer: "Acme".into(),
+            channel_count: 1,
+            parameters: vec![ParameterDefinition {
+                kind: ParameterKind::Intensity,
+                direction: ParameterDirection::Output,
+                binding: ParameterBinding::Dmx { channel: 1 },
+                default_value: ParameterValue::Float(0.0),
+            }],
+        };
+        let fixture_id = uuid::Uuid::new_v4();
+        let create = |table: &str| {
+            vec![PathSegment::Key(table.into()), PathSegment::Key("__create".into())]
+        };
+        handle
+            .set(
+                create("fixture_types"),
+                Lifecycle::Persisted,
+                serde_json::to_value(&fixture_type).unwrap(),
+            )
+            .await
+            .unwrap();
+        handle
+            .set(
+                create("fixtures"),
+                Lifecycle::Persisted,
+                serde_json::json!({
+                    "id": fixture_id,
+                    "name": "Spot",
+                    "fixture_type_id": fixture_type.id,
+                    "address": { "Dmx": { "universe": 1, "address": 1 } },
+                    "position": null,
+                }),
+            )
+            .await
+            .unwrap();
+
+        // Nothing driving it: it answers with where it rests.
+        let deps = LocalRpcDeps {
+            session: SessionHandle(tokio::sync::mpsc::channel(1).0),
+            devices: DeviceHandle(tokio::sync::mpsc::channel(1).0),
+            engine: handle.clone(),
+        };
+        let ask = || {
+            dispatch("parameter.value", serde_json::json!({ "fixtureId": fixture_id }), &deps)
+        };
+        assert_eq!(ask().await.unwrap()["Intensity"]["value"], 0.0, "where it rests");
+
+        // A four second fade, one second old.
+        let now = pult_schema::types::sequence::now_ms();
+        handle
+            .set(
+                vec![
+                    PathSegment::Key("fixtures".into()),
+                    PathSegment::Id(fixture_id),
+                    PathSegment::Key("live_fades".into()),
+                ],
+                Lifecycle::Local,
+                serde_json::json!({
+                    "Intensity": {
+                        "from": ParameterValue::Float(0.0),
+                        "to": ParameterValue::Float(1.0),
+                        "t0": now - 1_000,
+                        "duration_ms": 4_000,
+                        "easing": "Linear",
+                        "cue_id": uuid::Uuid::nil(),
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+
+        let first = ask().await.unwrap()["Intensity"]["value"].as_f64().unwrap();
+        assert!(first > 0.2 && first < 0.35, "a quarter of the way up: {first}");
+
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let later = ask().await.unwrap()["Intensity"]["value"].as_f64().unwrap();
+        assert!(later > first, "and it has moved on since, with nothing written: {later}");
     }
 }

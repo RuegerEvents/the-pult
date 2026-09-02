@@ -16,6 +16,8 @@
 	import { byKey, setValue } from '$lib/stores/programmer.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
 	import { asOneGesture } from '$lib/stores/gesture.js';
+	import { output, watching } from '$lib/stores/output.js';
+	import { parameterKey } from '$lib/patch.js';
 
 	type Mode = 'move' | 'program' | 'scale' | 'origin';
 
@@ -57,15 +59,26 @@
 	/// whatever the view is showing, so it is always somewhere a pointer can reach.
 	const maxThrow = $derived(Math.min(40, Math.max(4, view.width * 0.45)));
 
+	/// What this plan needs evaluated every frame. Nothing stores what a light is
+	/// doing, so a panel that does not say what it is showing is a panel that shows
+	/// nothing — and one that says too much only pays for parameters nobody looks at.
+	$effect(() => {
+		const keys = placed.flatMap((fixture) =>
+			(typeOf(fixture)?.parameters ?? []).map((p) => `${fixture.id}/${parameterKey(p.kind)}`)
+		);
+		const registered = watching(keys);
+		return () => registered.stop();
+	});
+
 	const symbols = $derived(
 		placed.map((fixture) => {
 			const at = fixturePoint(fixture)!;
-			const spot = beamSpot(fixture, typeOf(fixture), { maxThrow });
+			const spot = beamSpot(fixture, typeOf(fixture), $output, { maxThrow });
 			return {
 				fixture,
 				at,
-				tint: fixtureTint(fixture),
-				level: fixtureOutput(fixture).level,
+				tint: fixtureTint(fixture, $output),
+				level: fixtureOutput(fixture, $output).level,
 				/// Where the beam lands, in this symbol's own coordinates.
 				reach: spot ? { dx: spot.x - at.x, dz: spot.z - at.z } : null
 			};

@@ -5,7 +5,12 @@
 
 use std::collections::HashMap;
 
-use pult_schema::types::fixture::{Fixture, FixtureType, ParameterDirection, ParameterValue};
+use pult_schema::types::{
+    fixture::{
+        driving, Fixture, FixtureType, ParameterDirection, ParameterValue,
+    },
+    programmer::ProgrammerValue,
+};
 use uuid::Uuid;
 
 use crate::model::playback::parameter_key;
@@ -26,24 +31,108 @@ impl Universe {
     }
 }
 
-/// The patch: what a plugin needs to place a fixture's values on a wire.
+/// The patch: what a plugin needs to work out a fixture's values and place them on a
+/// wire.
+///
+/// Values, not *the* values. Nothing here is a number a station computed and stored;
+/// it is what is *driving* each parameter — the fades and effects anchored in console
+/// time, the programmer over the top, the home value underneath — and a connector
+/// turns that into numbers for whatever moment its own frame is for. Which is why a
+/// connector can run at its own rate over a patch nobody has pushed it since the cue
+/// went.
 pub struct Patch {
     pub fixtures: Vec<Fixture>,
     pub fixture_types: HashMap<Uuid, FixtureType>,
+    /// What the programmer is holding, indexed by the parameter it holds.
+    ///
+    /// Owned rather than borrowed, because a connector keeps its patch across frames
+    /// and the engine is long gone by the time the next one is drawn.
+    pub programmer: Vec<ProgrammerValue>,
+    /// Where in `programmer` each held parameter is, so a frame over a rig of
+    /// thousands does not scan a look of thousands per parameter.
+    held: HashMap<(Uuid, String), usize>,
+    /// The console millisecond after which nothing in this patch changes on its own,
+    /// or `None` while an effect is running.
+    ///
+    /// Worked out once, when the patch arrives, because it is a property of the
+    /// descriptions rather than of the moment: it is what lets a connector drop from
+    /// its frame rate to its protocol's keep-alive when a show has settled.
+    settles_at: Option<u64>,
 }
 
 impl Patch {
+    pub fn new(
+        fixtures: Vec<Fixture>,
+        fixture_types: Vec<FixtureType>,
+        programmer: Vec<ProgrammerValue>,
+    ) -> Self {
+        let held = programmer
+            .iter()
+            .enumerate()
+            .map(|(at, entry)| ((entry.fixture_id, parameter_key(&entry.parameter_kind)), at))
+            .collect();
+        let mut patch = Self {
+            fixtures,
+            fixture_types: fixture_types.into_iter().map(|t| (t.id, t)).collect(),
+            programmer,
+            held,
+            settles_at: Some(0),
+        };
+        patch.settles_at = patch.work_out_when_it_settles();
+        patch
+    }
+
     pub fn fixture_type(&self, fixture: &Fixture) -> Option<&FixtureType> {
         self.fixture_types.get(&fixture.fixture_type_id)
     }
+
+    /// What is acting on one parameter of one fixture, highest priority first.
+    pub fn driving<'a>(&'a self, fixture: &'a Fixture, key: &str) -> pult_render::Driving<'a> {
+        let held = self
+            .held
+            .get(&(fixture.id, key.to_string()))
+            .and_then(|at| self.programmer.get(*at));
+        driving(fixture, self.fixture_type(fixture), held, key)
+    }
+
+    /// What one parameter is putting out at `now_ms`.
+    pub fn value_at(&self, fixture: &Fixture, key: &str, now_ms: u64) -> Option<ParameterValue> {
+        pult_render::value_at(&self.driving(fixture, key), now_ms)
+    }
+
+    /// True while anything in the patch is still moving at `now_ms`.
+    pub fn is_moving(&self, now_ms: u64) -> bool {
+        match self.settles_at {
+            None => true,
+            Some(at) => now_ms < at,
+        }
+    }
+
+    fn work_out_when_it_settles(&self) -> Option<u64> {
+        let mut latest = 0;
+        for fixture in &self.fixtures {
+            for fade in fixture.live_fades.values() {
+                latest = latest.max(fade.t0.saturating_add(fade.duration_ms as u64));
+            }
+            if !fixture.live_effects.is_empty() {
+                return None;
+            }
+        }
+        // A programmer shape runs for ever too, wherever the station resolved it to.
+        if self.programmer.iter().any(|entry| entry.effect.is_some()) {
+            return None;
+        }
+        Some(latest)
+    }
 }
 
-/// Render the whole patch into universes, one per universe number in use.
+/// Render the whole patch into universes, one per universe number in use, as of
+/// `now_ms`.
 ///
 /// Only fixtures with a DMX address take part. A fixture on an OpenHaunt node has
 /// no slot in a universe, and neither does a parameter bound to a port or one the
 /// device writes rather than reads — none of those have a channel to occupy.
-pub fn render(patch: &Patch) -> Vec<Universe> {
+pub fn render(patch: &Patch, now_ms: u64) -> Vec<Universe> {
     let mut universes: HashMap<u16, Universe> = HashMap::new();
 
     for fixture in &patch.fixtures {
@@ -59,11 +148,11 @@ pub fn render(patch: &Patch) -> Vec<Universe> {
                 continue;
             }
             let Some(channel) = parameter.binding.dmx_channel() else { continue };
-            let value = fixture
-                .live_values
-                .get(&parameter_key(&parameter.kind))
-                .unwrap_or(&parameter.default_value);
-            write_parameter(&mut universe.channels, address, channel, value);
+            let key = parameter_key(&parameter.kind);
+            let value = patch
+                .value_at(fixture, &key, now_ms)
+                .unwrap_or_else(|| parameter.default_value.clone());
+            write_parameter(&mut universe.channels, address, channel, &value);
         }
     }
 
@@ -185,6 +274,27 @@ impl SequenceCounter {
 /// so a bad value dims a light instead of flashing it to full.
 fn to_byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Put a fixture where the console holds a parameter at a value.
+///
+/// A landed fade, from the value to itself, because that is the only way a parameter
+/// holds a value now — nothing stores the number. Test-only, and shared by every
+/// connector's tests so that they all describe the same rig the same way.
+#[cfg(test)]
+pub(crate) fn holding(fixture: &mut Fixture, key: &str, value: ParameterValue) {
+    use pult_schema::types::effect::{Easing, RunningFade};
+    fixture.live_fades.insert(
+        key.into(),
+        RunningFade {
+            from: value.clone(),
+            to: value,
+            t0: 0,
+            duration_ms: 0,
+            easing: Easing::Step,
+            cue_id: Uuid::nil(),
+        },
+    );
 }
 
 #[cfg(test)]

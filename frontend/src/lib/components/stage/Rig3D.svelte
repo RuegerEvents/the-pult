@@ -27,6 +27,8 @@
 	} from '$lib/puppeteer.js';
 	import { selected, select, toggle } from '$lib/stores/selection.js';
 	import { setValue } from '$lib/stores/programmer.js';
+	import { output as showing, watching } from '$lib/stores/output.js';
+	import { parameterKey } from '$lib/patch.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 
@@ -134,13 +136,25 @@
 
 	/// Everything one fixture needs drawing: where it is, where it points, how far
 	/// the beam runs and what colour it is.
+	/// Everything in the scene, evaluated every frame. A superset of what is strictly
+	/// visible, deliberately: a beam that stopped being evaluated because the camera
+	/// turned would freeze where it was, and a cheap superset is better than exact
+	/// bookkeeping about visibility.
+	$effect(() => {
+		const keys = placed.flatMap((fixture) =>
+			(typeOf(fixture)?.parameters ?? []).map((p) => `${fixture.id}/${parameterKey(p.kind)}`)
+		);
+		const registered = watching(keys);
+		return () => registered.stop();
+	});
+
 	const beams = $derived(
 		placed.map((fixture) => {
 			const at = fixturePoint(fixture)!;
 			const type = typeOf(fixture);
-			const direction = beamDirection(fixture, type);
+			const direction = beamDirection(fixture, type, $showing);
 			const length = throwDistance(at, direction);
-			const output = fixtureOutput(fixture);
+			const output = fixtureOutput(fixture, $showing);
 			// Both meshes are drawn about their own Y and centred on their middle, so
 			// each has to be turned to face the beam and pushed half its length along
 			// it. They are turned by *opposite* ends, though:
@@ -161,7 +175,7 @@
 				return [euler.x, euler.y, euler.z] as [number, number, number];
 			};
 
-			const bearing = bearingOnFloor(fixture, type);
+			const bearing = bearingOnFloor(fixture, type, $showing);
 			return {
 				fixture,
 				type,
@@ -229,8 +243,12 @@
 	const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 	/// What an axis is showing now, which is where a drag of it starts from.
+	///
+	/// Evaluated rather than read: a head half way through a cue's move is somewhere
+	/// nothing has written down, and grabbing it has to start from where it actually
+	/// is rather than from where the last thing anybody stored had it.
 	function axisOf(fixture: Fixture, key: 'Pan' | 'Tilt'): number {
-		const value = fixture.live_values[key];
+		const value = $showing.value(fixture.id, key);
 		return value?.type === 'Float' ? value.value : 0.5;
 	}
 	/// Which gizmo the pointer is over, so it can light up before it is grabbed.
@@ -350,7 +368,7 @@
 		// the drag is read off.
 		const normal: Vec3 = { x: -beam.bearing.z, y: 0, z: beam.bearing.x };
 		const point = rayOnPlane(ray, beam.at, normal);
-		return point ? elevationFromPoint(beam.fixture, beam.type, point) : null;
+		return point ? elevationFromPoint(beam.fixture, beam.type, point, $showing) : null;
 	}
 
 	function endGrab() {

@@ -31,7 +31,7 @@ use crate::{
         connectors::{
             dmx::{render, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER},
             sacn::e131_data_packet,
-            OutputPlugin, SendFuture,
+            Frame, Frames, OutputPlugin, SendFuture,
         },
         devices::{DeviceDirectory, DeviceHandle},
     },
@@ -86,7 +86,11 @@ impl OpenHauntOutput {
     }
 
     /// Unicast every universe a gateway is listening for, to that gateway.
-    async fn feed_the_gateways(&mut self, patch: &Patch) -> Result<()> {
+    async fn feed_the_gateways(
+        &mut self,
+        patch: &Patch,
+        now_ms: u64,
+    ) -> Result<std::time::Duration> {
         let gateways: Vec<(String, u16, SocketAddr)> = self
             .directory
             .borrow()
@@ -100,13 +104,15 @@ impl OpenHauntOutput {
             })
             .collect();
         if gateways.is_empty() {
-            return Ok(());
+            return Ok(std::time::Duration::ZERO);
         }
 
         let now = std::time::Instant::now();
         // Render once for the whole patch, not once per gateway: the universes are
         // the same however many nodes are waiting for them.
-        for universe in render(patch) {
+        let universes = render(patch, now_ms);
+        let evaluating = now.elapsed();
+        for universe in universes {
             let listening: Vec<&SocketAddr> = gateways
                 .iter()
                 .filter(|(_, n, _)| *n == universe.number)
@@ -131,7 +137,7 @@ impl OpenHauntOutput {
                 self.socket.send_to(&packet, addr).await?;
             }
         }
-        Ok(())
+        Ok(evaluating)
     }
 
     /// Send each port whatever is the least it needs to hear.
@@ -140,7 +146,13 @@ impl OpenHauntOutput {
     /// its own, or the stream of values every node has always got. The first two are
     /// sent once and then nothing more, which is the whole point — a three second
     /// fade was a hundred and twenty messages and is now one.
-    fn drive_the_ports(&mut self, patch: &Patch) {
+    ///
+    /// Which of the three applies is decided by what is *driving* the port, in the
+    /// same priority order every other consumer uses. A parameter the programmer has
+    /// hold of is a value however much is running underneath it: the fade under it is
+    /// still published, because letting go must not need the station to republish the
+    /// rig, and a node handed it would trace something nobody is looking at.
+    fn drive_the_ports(&mut self, patch: &Patch, now_ms: u64) {
         self.forget_what_rebooted_nodes_were_sent();
         for fixture in &patch.fixtures {
             let Some(serial) = fixture.address.serial() else { continue };
@@ -157,9 +169,10 @@ impl OpenHauntOutput {
                 let param_key = parameter_key(&parameter.kind);
                 let key = (serial.to_string(), port);
                 let capable = self.capability(serial, port);
+                let driving = patch.driving(fixture, &param_key);
 
                 // 1. A shape the port has said it can trace.
-                if let Some(effect) = fixture.live_effects.get(&param_key) {
+                if let Some(effect) = driving.effect.filter(|_| driving.programmer.is_none()) {
                     if let Some(payload) = capable
                         .as_ref()
                         .filter(|c| supports(c, effect))
@@ -187,7 +200,10 @@ impl OpenHauntOutput {
                 }
 
                 // 3. A fade the port can run itself, described once.
-                if let Some(fade) = fixture.live_fades.get(&param_key) {
+                if let Some(fade) = driving
+                    .fade
+                    .filter(|_| driving.programmer.is_none() && driving.effect.is_none())
+                {
                     if capable.as_ref().is_some_and(|c| c.transitions) {
                         let payload = transition_payload(fade);
                         if self.last_sent_effect.get(&key) != Some(&payload) {
@@ -203,9 +219,11 @@ impl OpenHauntOutput {
                     }
                 }
 
-                // 4. The stream of values, as it has always been.
-                let value = fixture.live_values.get(&param_key).unwrap_or(&parameter.default_value);
-                let payload = port_payload(value);
+                // 4. The stream of values, as it has always been — worked out here for
+                // this frame's moment rather than read off a fixture.
+                let value = pult_render::value_at(&driving, now_ms)
+                    .unwrap_or_else(|| parameter.default_value.clone());
+                let payload = port_payload(&value);
                 if self.last_sent.get(&key) == Some(&payload) {
                     continue;
                 }
@@ -271,15 +289,33 @@ impl OutputPlugin for OpenHauntOutput {
         "openhaunt"
     }
 
-    fn send<'a>(&'a mut self, patch: &'a Patch, _changed: &'a [Uuid]) -> SendFuture<'a> {
+    /// A frame while something moves, and the DMX family's keep-alive when nothing
+    /// does — because a gateway is fed E1.31 and expects to keep hearing it. The ports
+    /// themselves are told only what changed, so a settled rig of relays and displays
+    /// costs one comparison per port per keep-alive and puts nothing on the wire.
+    fn frames(&self) -> Frames {
+        Frames::DMX
+    }
+
+    fn send<'a>(
+        &'a mut self,
+        patch: &'a Patch,
+        _changed: &'a [Uuid],
+        now_ms: u64,
+    ) -> SendFuture<'a> {
         Box::pin(async move {
             // Nothing is patched to a node, so there is nobody to talk to.
             if !patch.fixtures.iter().any(|f| matches!(f.address, FixtureAddress::OpenHaunt { .. }))
             {
-                return Ok(());
+                return Ok(Frame::default());
             }
-            self.drive_the_ports(patch);
-            self.feed_the_gateways(patch).await
+            let began = std::time::Instant::now();
+            self.drive_the_ports(patch, now_ms);
+            // The ports are worked out here and only queued, so this whole call is
+            // evaluating. What the gateways cost is measured inside their own render.
+            let mut frame = Frame { evaluating: began.elapsed() };
+            frame.evaluating += self.feed_the_gateways(patch, now_ms).await?;
+            Ok(frame)
         })
     }
 }

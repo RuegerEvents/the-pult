@@ -7,6 +7,7 @@ use pult_schema::types::fixture::{
 use uuid::Uuid;
 
 use super::*;
+use crate::infra::connectors::dmx::holding;
 
 fn a_packet(universe: u16, channels: &[u8; UNIVERSE_SIZE]) -> Vec<u8> {
     e131_data_packet(&[0xab; 16], "the-pult", universe, 1, 100, channels)
@@ -134,17 +135,14 @@ fn a_dimmer_patch(universe: u16, level: f32) -> Patch {
         fixture_type_id: fixture_type.id,
         address: FixtureAddress::Dmx { universe, address: 1 },
         position: None,
-        live_values: HashMap::new(),
+        sensed_values: HashMap::new(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
     };
-    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(level));
+    holding(&mut fixture, "Intensity", ParameterValue::Float(level));
 
-    Patch {
-        fixtures: vec![fixture],
-        fixture_types: [(fixture_type.id, fixture_type)].into_iter().collect(),
-    }
+    Patch::new(vec![fixture], vec![fixture_type], vec![])
 }
 
 /// A receiver on an ephemeral port, so the tests never touch 5568 or multicast.
@@ -169,7 +167,7 @@ async fn fixture_levels_reach_the_wire() {
     let (receiver, addr) = a_receiver().await;
     let mut output = SacnOutput::bind(Some(addr)).await.unwrap();
 
-    output.send(&a_dimmer_patch(3, 1.0), &[]).await.unwrap();
+    output.send(&a_dimmer_patch(3, 1.0), &[], 0).await.unwrap();
 
     let packet = recv(&receiver).await;
     assert_eq!(&packet[113..115], &[0x00, 0x03], "universe 3");
@@ -181,9 +179,9 @@ async fn an_unchanged_universe_is_not_resent() {
     let (receiver, addr) = a_receiver().await;
     let mut output = SacnOutput::bind(Some(addr)).await.unwrap();
 
-    output.send(&a_dimmer_patch(1, 1.0), &[]).await.unwrap();
+    output.send(&a_dimmer_patch(1, 1.0), &[], 0).await.unwrap();
     let _ = recv(&receiver).await;
-    output.send(&a_dimmer_patch(1, 1.0), &[]).await.unwrap();
+    output.send(&a_dimmer_patch(1, 1.0), &[], 0).await.unwrap();
 
     let again = tokio::time::timeout(
         std::time::Duration::from_millis(100),
@@ -198,9 +196,9 @@ async fn the_sequence_counter_advances_and_skips_zero() {
     let (receiver, addr) = a_receiver().await;
     let mut output = SacnOutput::bind(Some(addr)).await.unwrap();
 
-    output.send(&a_dimmer_patch(1, 0.5), &[]).await.unwrap();
+    output.send(&a_dimmer_patch(1, 0.5), &[], 0).await.unwrap();
     let first = recv(&receiver).await;
-    output.send(&a_dimmer_patch(1, 0.6), &[]).await.unwrap();
+    output.send(&a_dimmer_patch(1, 0.6), &[], 0).await.unwrap();
     let second = recv(&receiver).await;
 
     assert_ne!(first[111], 0, "zero means 'sequence not implemented'");
@@ -215,7 +213,7 @@ async fn a_fixture_on_a_node_puts_nothing_on_a_universe() {
     let mut patch = a_dimmer_patch(1, 1.0);
     patch.fixtures[0].address =
         FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(1) };
-    output.send(&patch, &[]).await.unwrap();
+    output.send(&patch, &[], 0).await.unwrap();
 
     let anything = tokio::time::timeout(
         std::time::Duration::from_millis(100),

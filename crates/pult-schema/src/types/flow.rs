@@ -29,7 +29,7 @@ use crate::{
 #[ts(export)]
 pub enum TriggerSource {
     /// One parameter of one fixture. A contact on an I/O node, a temperature, or
-    /// anything else that lands in `live_values`.
+    /// anything else a device reports.
     Parameter { fixture_id: Uuid, parameter: ParameterKind },
 }
 

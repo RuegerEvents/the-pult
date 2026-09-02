@@ -36,3 +36,6 @@
 
 # Vitest's cache, when it is run from the repository root rather than frontend/.
 /node_modules/
+
+# The browser's copy of the evaluator, built by scripts/build-evaluator.sh.
+/frontend/src/lib/evaluator/

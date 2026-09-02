@@ -39,6 +39,7 @@
 	} from '$lib/selection.js';
 	import { collection } from '$lib/stores/show.js';
 	import { fixtureTint } from '$lib/stage.js';
+	import { output } from '$lib/stores/output.js';
 
 	const data = getDataContext();
 	const fixtures = collection('fixtures');
@@ -311,7 +312,7 @@
 				>
 					<span class="grip" aria-hidden="true">⠿</span>
 					<span class="position mono">{index + 1}</span>
-					<span class="dot" style:background={fixtureTint(fixture)}></span>
+					<span class="dot" style:background={fixtureTint(fixture, $output)}></span>
 					<span class="name">{fixture.name}</span>
 					<button
 						class="icon"

@@ -20,6 +20,7 @@ import {
 	storeCaptures,
 	withFloat
 } from './programmer.js';
+import { readingOf } from './stores/output.js';
 
 const fixture = (over: Partial<Fixture> = {}): Fixture => ({
 	id: 'f',
@@ -27,7 +28,7 @@ const fixture = (over: Partial<Fixture> = {}): Fixture => ({
 	fixture_type_id: 'mover',
 	address: { Dmx: { universe: 1, address: 1 } },
 	position: null,
-	live_values: {},
+	sensed_values: {},
 	live_effects: {},
 	live_fades: {},
 	home_values: {},
@@ -127,41 +128,31 @@ describe('what a selection can be given', () => {
 describe('reading a selection back', () => {
 	const level = (v: number): ParameterValue => ({ type: 'Float', value: v });
 
+	const two = [fixture(), fixture({ id: 'g' })];
+
 	it('reports the value when the selection agrees', () => {
-		const two = [
-			fixture({ live_values: { Intensity: level(0.5) } }),
-			fixture({ id: 'g', live_values: { Intensity: level(0.5) } })
-		];
-		expect(commonValue(two, 'Intensity')).toEqual({ value: level(0.5), mixed: false });
+		const showing = readingOf({ 'f/Intensity': level(0.5), 'g/Intensity': level(0.5) });
+		expect(commonValue(two, 'Intensity', showing)).toEqual({ value: level(0.5), mixed: false });
 	});
 
 	it('says so when it does not', () => {
-		const two = [
-			fixture({ live_values: { Intensity: level(0.5) } }),
-			fixture({ id: 'g', live_values: { Intensity: level(0.9) } })
-		];
-		expect(commonValue(two, 'Intensity').mixed).toBe(true);
+		const showing = readingOf({ 'f/Intensity': level(0.5), 'g/Intensity': level(0.9) });
+		expect(commonValue(two, 'Intensity', showing).mixed).toBe(true);
 	});
 
-	it('ignores fixtures that have never reported the parameter', () => {
-		const two = [fixture({ live_values: { Intensity: level(0.5) } }), fixture({ id: 'g' })];
-		expect(commonValue(two, 'Intensity')).toEqual({ value: level(0.5), mixed: false });
+	it('ignores fixtures nothing can say anything about', () => {
+		const showing = readingOf({ 'f/Intensity': level(0.5) });
+		expect(commonValue(two, 'Intensity', showing)).toEqual({ value: level(0.5), mixed: false });
 	});
 
 	it('compares colours channel by channel', () => {
 		const red: ParameterValue = { type: 'Color', value: { r: 1, g: 0, b: 0 } };
 		const green: ParameterValue = { type: 'Color', value: { r: 0, g: 1, b: 0 } };
 		expect(
-			commonValue(
-				[fixture({ live_values: { ColorRgb: red } }), fixture({ id: 'g', live_values: { ColorRgb: red } })],
-				'ColorRgb'
-			).mixed
+			commonValue(two, 'ColorRgb', readingOf({ 'f/ColorRgb': red, 'g/ColorRgb': red })).mixed
 		).toBe(false);
 		expect(
-			commonValue(
-				[fixture({ live_values: { ColorRgb: red } }), fixture({ id: 'g', live_values: { ColorRgb: green } })],
-				'ColorRgb'
-			).mixed
+			commonValue(two, 'ColorRgb', readingOf({ 'f/ColorRgb': red, 'g/ColorRgb': green })).mixed
 		).toBe(true);
 	});
 });

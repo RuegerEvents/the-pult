@@ -15,6 +15,7 @@
 
 import type { Fixture, FixtureType, Vec3 } from './generated/index.js';
 import { beamDirection, fixtureFacing, fixturePoint } from './stage.js';
+import type { Showing } from './stores/output.js';
 
 /** A pointer, as the scene sees it: somewhere to look from and a way to look. */
 export type Ray = { origin: Vec3; direction: Vec3 };
@@ -64,11 +65,12 @@ export function bearingFromPoint(fixture: Fixture, point: Vec3): number | null {
 export function elevationFromPoint(
 	fixture: Fixture,
 	type: FixtureType | undefined,
-	point: Vec3
+	point: Vec3,
+	showing: Showing
 ): number | null {
 	const at = fixturePoint(fixture);
 	if (!at) return null;
-	const facing = bearingOnFloor(fixture, type);
+	const facing = bearingOnFloor(fixture, type, showing);
 	const reach = (point.x - at.x) * facing.x + (point.z - at.z) * facing.z;
 	const rise = point.y - at.y;
 	if (Math.abs(reach) < 1e-4 && Math.abs(rise) < 1e-4) return null;
@@ -86,8 +88,15 @@ export function elevationFromPoint(
  * Exported because the 3D view has to *draw* that plane as well as read angles out
  * of it: the tilt arc is a gizmo lying in exactly this direction.
  */
-export function bearingOnFloor(fixture: Fixture, type: FixtureType | undefined): { x: number; z: number } {
-	for (const v of [beamDirection(fixture, type), fixtureFacing(fixture) ?? { x: 0, y: 0, z: 1 }]) {
+export function bearingOnFloor(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	showing: Showing
+): { x: number; z: number } {
+	for (const v of [
+		beamDirection(fixture, type, showing),
+		fixtureFacing(fixture) ?? { x: 0, y: 0, z: 1 }
+	]) {
 		const length = Math.hypot(v.x, v.z);
 		if (length > 1e-4) return { x: v.x / length, z: v.z / length };
 	}

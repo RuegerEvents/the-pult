@@ -173,7 +173,7 @@ async fn a_station_runs_the_reference_plugins() {
                     "fixture_type_id": fixture_type,
                     "address": { "Dmx": { "universe": 1, "address": 1 } },
                     "position": null,
-                    "live_values": {}
+                    "sensed_values": {}
                 }),
             )
             .await
@@ -254,7 +254,7 @@ async fn a_station_runs_the_reference_plugins() {
             json!({
                 "id": spot, "name": "Nudged", "fixture_type_id": uuid::Uuid::new_v4(),
                 "address": { "Dmx": { "universe": 1, "address": 100 } },
-                "position": null, "live_values": {}
+                "position": null
             }),
         )
         .await
@@ -323,14 +323,33 @@ async fn a_station_runs_the_reference_plugins() {
             json!({
                 "id": untouched, "name": "Untouched", "fixture_type_id": uuid::Uuid::new_v4(),
                 "address": { "Dmx": { "universe": 1, "address": 110 } },
-                "position": null, "live_values": {}
+                "position": null
             }),
         )
         .await
         .expect("a fixture nobody has touched");
+    // Playback is showing 0.3: a landed fade, which is how a parameter holds a value
+    // now that nothing stores the number.
     running
         .engine
-        .set_live_value(untouched, "Intensity".into(), json!({ "type": "Float", "value": 0.3 }))
+        .set(
+            vec![
+                pult_schema::path::PathSegment::Key("fixtures".into()),
+                pult_schema::path::PathSegment::Id(untouched),
+                pult_schema::path::PathSegment::Key("live_fades".into()),
+            ],
+            pult_schema::lifecycle::Lifecycle::Local,
+            json!({
+                "Intensity": {
+                    "from": { "type": "Float", "value": 0.3 },
+                    "to": { "type": "Float", "value": 0.3 },
+                    "t0": 0,
+                    "duration_ms": 0,
+                    "easing": "Step",
+                    "cue_id": uuid::Uuid::nil(),
+                }
+            }),
+        )
         .await
         .expect("playback is showing something");
 
