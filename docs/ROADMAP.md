@@ -2387,7 +2387,10 @@ needed.
 15. **nl-show-context** — what relative syntax cannot reach, and whether it is
     worth the permission it costs. → voice-input, which is what shows which
     utterances actually arrive
-16. **open-control-interfaces** — OSC, MIDI, control surfaces. → none
+16. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+    above them decided. Was open-control-interfaces until 2026-09-02, when the
+    three things people send over those ports turned out to want separate
+    entries. → none
 17. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
     audio import. The biggest item here and the one the spec is most opinionated
     about. → none technically
@@ -2400,6 +2403,29 @@ needed.
     → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
 21. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
     → a real TS plugin wanting to exist
+22. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+    stage manager's Go arriving at the lights, and this console sending its own
+    to sound and video. → control-transports
+23. **surface-layer** — a bound physical thing, which is what the transports are
+    not: one event type under every surface, plus the two questions (where a
+    headless surface's selection lives, where a fader's gesture begins and ends)
+    that decide whether any of the three below is a week or a month.
+    → control-transports for the MIDI half, nothing for the USB half
+24. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+    is what proves the layer before anybody spends a weekend on USB captures.
+    → surface-layer
+25. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+    it can be estimated at all. → surface-layer
+26. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+    undocumented and to be read off the device. → surface-layer, and
+    midi-surfaces for the binding model
+
+Items 22 to 26 were added on 2026-09-02 and sit at the end rather than being
+placed, because three of them are blocked on hardware being in the room and not
+on anything in this repository. Any of those can move up the day the hardware is
+on the desk. **show-control is the exception and the one with a case for moving
+up now**: it needs a MIDI port and nothing else, and a stage manager pressing Go
+is a more common way for this console to be driven than any surface in the list.
 
 One thing does not belong to any phase. The `<T.SpotLight>` mounted inside `{#if
 beam.output.level > 0.01}` recompiles every material in the scene when a fade
@@ -2720,19 +2746,13 @@ Patch lists, cue sheets, rider paperwork.
 
 #### open-control-interfaces
 
-OSC, MIDI and control surfaces alongside the existing WebSocket API.
-
-- Native connector or plugin? This argues with openhaunt-as-plugin, and the
-  answer may differ: a control surface is input rather than a 40 Hz output path,
-  so the latency case against a WASM boundary is much weaker here.
-- What does an OSC address map onto, the path API directly
-  (`/pult/sequences/3/go`), or the command line, which already has one grammar
-  and one audit trail?
-- MIDI needs a device on a particular station, so a surface is LOCAL to whoever
-  it is plugged into while the thing it drives is SYNCED. Same shape as a fixture
-  connector.
-- Learn mode, press a fader and bind it, is the UX that makes it usable, and it
-  is a write to the show. Which collection?
+Dissolved on 2026-09-02 into *External control* at the end of this document, and
+kept here as a heading so a reader looking for it lands somewhere. It had OSC,
+MIDI and control surfaces in one entry, on the assumption that they were one
+piece of work. They are three: a transport, show control over it, and a bound
+piece of hardware that is a different thing again. Its two questions survive, the
+address-mapping one under show-control and the connector-or-plugin one under
+control-transports.
 
 ### Observability
 
@@ -3051,3 +3071,214 @@ connector.
 
 - Frames come from where, a pixel-mapped fixture array rendered by the engine, or
   media playback? Scope this carefully. It hides a media server.
+
+### External control
+
+Everything that drives this console from outside a browser, and everything it
+drives from outside itself. Added on 2026-09-02 out of a question about one
+piece of hardware, and restructured the same day after the first draft got the
+layering wrong: it filed MIDI and OSC under control surfaces, when a surface is
+only one of the things people send over those ports.
+
+Three layers, and the entries below are in that order. A **transport** is a
+port: bytes and messages in and out with nothing above them decided. **Show
+control** is a message meaning an act, in either direction, with no hardware
+identity behind it. A **surface** is a bound physical object with state,
+feedback and a learn mode, and it is the highest of the three. A MIDI controller
+is a surface reached over a transport; an MSC Go from a stage manager's desk
+arrives over the same transport and is not a surface at all.
+
+#### control-transports
+
+MIDI and OSC as ports. Nothing above them decided here on purpose.
+
+- **A port belongs to a station, what arrives over it belongs to the show.** A
+  MIDI interface is plugged into one machine, so the port list is LOCAL, in the
+  shape `infra/devices/mod.rs` already uses: an actor owning a piece of LOCAL
+  state and pushing it to the engine whenever it changes. What arrives is a Go,
+  and a Go is SYNCED. That split is the same one a fixture connector makes, and
+  it is the only part of this that is already answered.
+- **Which station listens, when a session has several?** MIDI decides itself,
+  since whoever has the cable has it. OSC does not: every station could bind
+  8000, and then two consoles take the same Go from one packet. Worth deciding
+  here rather than discovering it in a tech.
+- **Outbound is half of this and the half that gets forgotten.** A transport
+  that only receives makes show-control's second half impossible to write later
+  without reopening this item.
+- `midir` for MIDI ports, `rosc` for OSC. Neither is a large dependency.
+- **Native or plugin?** Inherited from open-control-interfaces, and this is the
+  cheapest place in the repository to answer it: a UDP socket and a string is
+  close to free either way, so measuring a plugin on the input path here costs
+  almost nothing and tells openhaunt-as-plugin something it wants to know.
+
+#### show-control
+
+Triggering this console from other equipment, and triggering other equipment
+from it. MSC, plus plain MIDI notes and control changes and OSC addresses used
+as triggers. Both directions.
+
+This is the item with a real theatre behind it rather than a desk toy: the SM
+presses Go on a prompt desk, or QLab does, and the lights take it.
+
+**Inbound MSC is a SysEx frame this schema cannot currently express.** The frame
+is `F0 7F <device id> 02 <command format> <command> <data> F7`, command format
+`0x01` for lighting, and the cue argument is ASCII with `0x00` between cue
+number, cue list and cue path. Check the byte-level detail against MMA RP-002
+before implementing rather than against this paragraph. Two problems fall
+straight out of it.
+
+- **A cue has a number and a sequence does not.** `Cue::number` is a fractional
+  f64 (`types/cue.rs:52`), which is exactly the shape MSC addresses. `Sequence`
+  has `id` and `name` and nothing an SM would write down as a list number. So
+  either sequences gain a number, which is a schema change with an ordering
+  question behind it, or the binding table maps a string to a sequence uuid by
+  hand. The second changes no data model for the sake of one protocol, and is
+  the coward's answer that is probably right.
+- **And `go_to_cue` takes a uuid.** Its signature is `{ cueId: string, at?:
+  number }` (`types/sequence.rs:66`), so no inbound MSC GO can be spelled with
+  the commands that exist today. Either a command that takes a number, or the
+  lookup happens in whatever receives the message. Where that lookup lives is
+  the same question as where a group name gets resolved, and should get the same
+  answer.
+- **GO, STOP, RESUME, TIMED_GO, ALL_OFF.** GO is `go_next` and `go_to_cue`, and
+  ALL_OFF is `Sequence::off` across every sequence, which task 43 built along
+  with the release fade and `Show::home_fade_ms`, so that one arrives free. STOP
+  and RESUME have no equivalent and cannot get one cheaply: a fade here is a
+  function of time rather than a thing being stepped, so pausing one means
+  re-anchoring it, and the whole model says nothing keeps what a parameter is
+  doing. That is a reason to answer "out of scope" out loud rather than leave it
+  looking like an oversight.
+- **An external trigger has no operator, and the oplog already has a view on
+  that.** `Operation::is_undoable` requires `user_id.is_some()`
+  (`events/operation.rs:196`), so an unattributed write is not undoable and not
+  in the History panel, which is the same mechanism plugin stores use. A Go from
+  the SM's desk probably wants to be exactly that: it happened, the log of the
+  show records it, and no operator can Ctrl-Z the stage manager. Decide it
+  deliberately, because minting a user for the prompt desk is also defensible
+  and much harder to reverse later.
+- **Outbound has nowhere in the show to hang.** Nothing says "when this cue
+  goes, send this". `FollowMode` is the nearest thing and it is about this
+  console's own next cue. So it is either a field on the cue, which is simple
+  and puts a MIDI string in the middle of a lighting cue, or a table of rules
+  keyed by event, which is one more place to look when a trigger does not fire.
+  The rule table, on balance: a rig that talks to sound, video and a fog machine
+  wants all of that visible together, and half of those rules will not be about
+  cues at all.
+- **All-call is device id `0x7F` and answering it is a choice.** A console that
+  responds to every device id will take another department's Go. That is a
+  station preference, not a constant.
+- **What does an OSC address map onto?** Inherited from open-control-interfaces
+  and still open: the path API directly (`/pult/sequences/3/go`), or the command
+  line, which already has one grammar and one audit trail. It should get the
+  same answer as surface-layer's question about a key press.
+
+#### surface-layer
+
+One event type under every control surface, and the reason the three devices
+below are entries rather than one item each carrying the same questions.
+
+**A surface is input, so `OutputPlugin` is the wrong trait.** That one is patch
+to wire at a frame rate (`infra/connectors/mod.rs:97`) and has nothing a key
+press fits into. Note what this layer is *not*: it sits above control-transports
+and above USB, and it exists for the things a raw message does not have, which
+are identity, binding, feedback and a learn mode. An MSC Go needs none of those,
+which is why show-control is a separate item and not a client of this one.
+
+- **One event type, decided before any device is decoded.** Key down and up,
+  fader moved to an absolute position, encoder turned by a delta, wheel spun.
+  Every decoder produces it and every binding consumes it. Skip it and the wing
+  becomes a special case, and MIDI re-argues all of it afterwards.
+- **Where does a key press go?** The command line is already a grammar and
+  already an audit trail, and an MA-style keypad spells command-line syntax with
+  its legends. Routing keys through `exec` gets one implementation and one
+  history. Faders and encoders cannot go that way at a few hundred events a
+  second.
+- **An encoder is a `__by`, not a value.** The delta verb exists
+  (`engine/mod.rs:1480`), resolves at the station above the oplog, and an
+  encoder has no absolute position to send in the first place. A fader is the
+  one control that genuinely wants an absolute write.
+- **The hard one: a headless surface has no selection.** `selection_of(ctx)`
+  (`plugins/command-line/src/lib.rs:676`) reads the selection out of the
+  caller's context, and the browser fills that from a Svelte store, because a
+  selection is one operator's. A wing on a desk has no store and no browser.
+  Either the station starts keeping a selection per surface, which makes a
+  surface a kind of operator, or a surface binds to a browser session and is
+  dead without one. This decision is most of the work in the whole section, and
+  every device below waits on it.
+- **And no gesture boundaries.** `frontend/src/lib/stores/gesture.ts` is blunt
+  about it: only the client knows where an act begins and ends, because the
+  backend sees a stream of writes and no guessing at the gaps would tell a drag
+  from two quick edits. A physical fader has no pointer-down to begin one. So a
+  surface has to invent the boundaries from when motion stops, with a tail like
+  the store's `TAIL_MS`, or every fader move costs a few hundred presses of
+  Ctrl-Z to take back.
+- **Learn mode splits across two lifecycles.** The binding is the show's and
+  PERSISTED, so it travels in the showfile and a spare console inherits it.
+  Which surface is plugged into which station is LOCAL and must not travel, or
+  opening the show on a laptop claims a wing that is in another building.
+
+#### midi-surfaces
+
+MIDI control surfaces, on top of control-transports and surface-layer. First of
+the three devices deliberately, and not because it is the most wanted: it is
+documented, the hardware is cheap, and there is nothing to reverse engineer, so
+it is the honest test of whether surface-layer's event type and binding model
+survive contact with hardware. Finding that out on a fifty-pound controller
+beats finding it out halfway through a USB capture.
+
+- Notes and control changes map onto the event type with no decoding worth the
+  name, so this entry is almost entirely surface-layer's questions with a real
+  device attached.
+- **A CC is 7 bits, which is 128 steps across a fader's travel.** Whether that
+  is enough for an intensity fader is a question to settle with a fader in a
+  hand, not by arithmetic. 14-bit CC exists in the spec and few surfaces send
+  it, so assume 7 and see.
+- Feedback (LED rings, motor faders) is the same problem as wing feedback and
+  far cheaper to get wrong. Worth doing here first for that reason alone.
+- **MTC belongs to timecode-workflow and MSC belongs to show-control.** Neither
+  is this item, and all three want to open a MIDI port, which is what
+  control-transports is for.
+
+#### makepro-x
+
+MakePro X hardware.
+
+**Written on 2026-09-02 from a request rather than from a device, and the first
+question is unanswered: what does it speak?** USB HID, MIDI, a serial protocol,
+Art-Net, or something of its own. Nothing below is worth much until the model is
+named and the interface known, and this entry wants rewriting rather than
+building from as it stands.
+
+- If it turns out to be HID or MIDI, this is a mapping file over midi-surfaces
+  and not an item at all, which would be the good outcome.
+- If it has a protocol of its own, it is the second consumer of surface-layer
+  and therefore the one that says whether the layer generalised or whether it
+  was quietly shaped around whatever got decoded first.
+- Feedback, as with the other two: which half is in scope.
+
+#### ma3-command-wing
+
+A grandMA3 command wing, over USB.
+
+- **The protocol is not documented and MA will not publish it**, so this is read
+  off the device or not at all. Reverse engineering for interoperability is on
+  firm ground (EU Software Directive art. 6, DMCA 1201(f)). The complication is
+  that an MA wing is also the onPC licence dongle, so some of what crosses the
+  bus is likely a challenge and response with nothing in it worth having, and
+  that part is not something to replicate.
+- **The cheap question first, and it is still unanswered: what does it enumerate
+  as?** `system_profiler SPUSBDataType` with one plugged in. Checked on
+  2026-09-02 with none attached, so the answer is not in this document. HID with
+  a readable report descriptor is a weekend with `hidapi` and a loop watching
+  which bit flips. Vendor-specific bulk or interrupt means capture instead
+  (USBPcap on Windows against onPC, or `ifconfig XHC20 up` and Wireshark on
+  macOS) and pressing one key a hundred times to find it in the diff. **Nobody
+  should put a number on this item before that answer exists**, and the two
+  answers are a week apart.
+- **Keys, faders and encoders are the achievable half.** The LEDs and the
+  encoder displays are output reports with their own framing, and they are a
+  separate project rather than a later afternoon of the same one. Decide which
+  half is in scope before starting, or the item never finishes.
+- The keypad is the strongest argument in the section for routing keys through
+  the command line, since the wing's key legends already are the grammar's
+  words.
