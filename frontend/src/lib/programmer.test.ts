@@ -21,12 +21,13 @@ import {
 	withFloat
 } from './programmer.js';
 import { readingOf } from './stores/output.js';
+import { aFixtureType, aParameter } from './test-fixtures.js';
 
 const fixture = (over: Partial<Fixture> = {}): Fixture => ({
 	id: 'f',
 	name: 'Spot',
 	fixture_type_id: 'mover',
-	address: { Dmx: { universe: 1, address: 1 } },
+	address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
 	position: null,
 	sensed_values: {},
 	live_effects: {},
@@ -35,17 +36,17 @@ const fixture = (over: Partial<Fixture> = {}): Fixture => ({
 	...over
 });
 
-const mover: FixtureType = {
+const mover: FixtureType = aFixtureType({
 	id: 'mover',
 	name: 'Mover',
 	manufacturer: 'Generic',
 	channel_count: 6,
 	parameters: [
-		{ kind: 'Intensity', direction: 'Output', binding: { Dmx: { channel: 1 } }, default_value: { type: 'Float', value: 0 } },
-		{ kind: 'ColorRgb', direction: 'Output', binding: { Dmx: { channel: 2 } }, default_value: { type: 'Color', value: { r: 1, g: 1, b: 1 } } },
-		{ kind: 'Pan', direction: 'Output', binding: { Dmx: { channel: 5 } }, default_value: { type: 'Float', value: 0.5 } }
+		aParameter({ kind: 'Intensity', default_value: { type: 'Float', value: 0 } }),
+		aParameter({ kind: 'ColorRgb', default_value: { type: 'Color', value: { r: 1, g: 1, b: 1, overrides: {} } } }),
+		aParameter({ kind: 'Pan', default_value: { type: 'Float', value: 0.5 } })
 	]
-};
+});
 
 const dimmer: FixtureType = {
 	...mover,
@@ -57,7 +58,7 @@ const sensor: FixtureType = {
 	...mover,
 	id: 'sensor',
 	parameters: [
-		{ kind: { Contact: 0 }, direction: 'Input', binding: { Port: { index: 0 } }, default_value: { type: 'Bool', value: false } }
+		aParameter({ kind: { Contact: 0 }, direction: 'Input', binding: { Port: { index: 0 } }, default_value: { type: 'Bool', value: false } })
 	]
 };
 
@@ -146,8 +147,8 @@ describe('reading a selection back', () => {
 	});
 
 	it('compares colours channel by channel', () => {
-		const red: ParameterValue = { type: 'Color', value: { r: 1, g: 0, b: 0 } };
-		const green: ParameterValue = { type: 'Color', value: { r: 0, g: 1, b: 0 } };
+		const red: ParameterValue = { type: 'Color', value: { r: 1, g: 0, b: 0, overrides: {} } };
+		const green: ParameterValue = { type: 'Color', value: { r: 0, g: 1, b: 0, overrides: {} } };
 		expect(
 			commonValue(two, 'ColorRgb', readingOf({ 'f/ColorRgb': red, 'g/ColorRgb': red })).mixed
 		).toBe(false);
@@ -289,9 +290,9 @@ describe('values', () => {
 	it('nudges each kind by a share of its own range', () => {
 		expect(nudge({ type: 'Float', value: 0.5 }, 0.1)).toEqual({ type: 'Float', value: 0.6 });
 		expect(nudge({ type: 'Int', value: 100 }, 0.1)).toEqual({ type: 'Int', value: 126 });
-		expect(nudge({ type: 'Color', value: { r: 0.5, g: 0, b: 1 } }, 0.25)).toEqual({
+		expect(nudge({ type: 'Color', value: { r: 0.5, g: 0, b: 1, overrides: {} } }, 0.25)).toEqual({
 			type: 'Color',
-			value: { r: 0.75, g: 0.25, b: 1 }
+			value: { r: 0.75, g: 0.25, b: 1, overrides: {} }
 		});
 	});
 

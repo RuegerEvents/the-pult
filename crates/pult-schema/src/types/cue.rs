@@ -78,26 +78,6 @@ mod tests {
     use super::*;
     use crate::types::effect::{Curve, Direction, Rate, Shape, Spread};
 
-    /// `captures` is one JSON column, so a cue stored before effects existed is read
-    /// back through this shape and nothing migrates it. The defaults are the whole
-    /// migration.
-    #[test]
-    fn a_capture_stored_before_effects_existed_still_parses() {
-        let legacy = serde_json::json!({
-            "fixture_id": Uuid::nil(),
-            "parameter_kind": { "Intensity": null },
-            "value": { "type": "Float", "value": 0.5 },
-            "fade_in_ms": 3000,
-            "fade_out_ms": 0,
-            "delay_in_ms": 0,
-        });
-
-        let parsed: ParameterCapture = serde_json::from_value(legacy).unwrap();
-        assert!(parsed.effect.is_none(), "no effect asserted");
-        assert_eq!(parsed.easing, Easing::Linear, "what every fade did before there was a choice");
-        assert_eq!(parsed.fade_in_ms, 3000);
-    }
-
     #[test]
     fn a_capture_carrying_an_effect_round_trips() {
         let capture = ParameterCapture {

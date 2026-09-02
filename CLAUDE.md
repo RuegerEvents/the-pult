@@ -80,15 +80,27 @@ because a fixture with a separate dimmer break sits in two spans that need not b
 same universe.
 
 **A type with no modes still has one.** Everything the console made for itself — a type
-derived from an OpenHaunt node, the demo seed, the hand editor — carries a legacy
-`ParameterBinding::Dmx { channel }` per parameter and no modes, and
-`FixtureType::mode()` computes an implicit `"Default"` from those. Computed rather than
-rewritten at load, and the reason is the SQLite read path: `#[derive(PultSchema)]`
-generates `from_columns`, which reads each column on its own and unwraps, so a
-deserialize-time rewrite would never see the other columns it needs and a NULL one
-would panic. Which is also why every new non-`Option` column needs a row in
-`crates/pult-backend/src/infra/showfile/upgrades.rs`, and why a migration of a field's
-*shape* lives on the field type's own `Deserialize`.
+derived from an OpenHaunt node, the demo seed, the hand editor — names no mode at all,
+and `FixtureType::mode()` computes an implicit `"Default"`: one byte per output
+parameter in the order the type lists them, three for a colour, and nothing at all for
+a parameter on a module port. Computed rather than stored, so there is one layout
+rather than a written one drifting from the parameters it was written from. The browser
+does not work that out for itself with one exception, `patch.ts`'s `implicitChannels`,
+which the hand editor needs in order to show an operator where the parameter they just
+added has landed — and it says so where it is defined.
+
+**A showfile is not a migration target.** While the console is in development nobody is
+carrying a season's work in one, and a migration is a promise about every shape the data
+has ever had. So there is none: `infra/showfile/mod.rs` stamps a file with
+`SCHEMA_GENERATION` and refuses one from another generation, saying so plainly. Two
+things make that necessary rather than merely tidy, and both are the SQLite read path:
+`#[derive(PultSchema)]` generates `from_columns`, which reads each column on its own and
+unwraps — so a non-`Option` column that is NULL **panics while a show is opening**, and
+an `Option` column that fails to parse **becomes `None` with no error at all**. The
+stamp catches the second, which nothing else can see. `add_missing_columns` stays, since
+adding a field is free; what it cannot do is fill one in, so a check beside the stamp
+names the first required column nothing filled and refuses that too. Bump
+`SCHEMA_GENERATION` when a stored *shape* changes; adding a field is not that.
 
 **A colour is one parameter and several channels.** Every `ColorAdd_*` and `ColorSub_*`
 attribute is the fixture's colour; a reader that made three parameters would give an

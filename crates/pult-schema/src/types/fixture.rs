@@ -53,7 +53,7 @@ impl FixturePosition {
 /// nine channels in one mode and thirty-one in another. And it carries a place *per
 /// break*, because a fixture with a separate dimmer break sits in two spans that need
 /// not be in the same universe.
-#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum FixtureAddress {
     Dmx {
@@ -69,43 +69,6 @@ pub enum FixtureAddress {
         serial: String,
         universe: Option<u16>,
     },
-}
-
-/// `fixtures.address` is one JSON column, so a showfile written before modes existed
-/// holds `{"Dmx": {"universe": 1, "address": 5}}`. Reading it back through this shape
-/// is the whole of that migration: there is no column to alter, and the old form
-/// becomes mode `"Default"` with one break, which is exactly what it meant.
-///
-/// Written out by hand rather than through `#[serde(from = ...)]`, for the reason
-/// [`ParameterDefinitionWire`] is — that attribute is one more thing for ts-rs to fail
-/// to parse and warn about.
-#[derive(Deserialize)]
-enum FixtureAddressWire {
-    Dmx(DmxAddressWire),
-    OpenHaunt { serial: String, universe: Option<u16> },
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum DmxAddressWire {
-    Modal { mode: String, breaks: Vec<DmxBreak> },
-    Legacy { universe: u16, address: u16 },
-}
-
-impl<'de> Deserialize<'de> for FixtureAddress {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(match FixtureAddressWire::deserialize(deserializer)? {
-            FixtureAddressWire::Dmx(DmxAddressWire::Modal { mode, breaks }) => {
-                FixtureAddress::Dmx { mode, breaks }
-            }
-            FixtureAddressWire::Dmx(DmxAddressWire::Legacy { universe, address }) => {
-                FixtureAddress::dmx(universe, address)
-            }
-            FixtureAddressWire::OpenHaunt { serial, universe } => {
-                FixtureAddress::OpenHaunt { serial, universe }
-            }
-        })
-    }
 }
 
 impl Default for FixtureAddress {
@@ -233,31 +196,14 @@ pub enum ParameterDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum ParameterBinding {
-    /// An offset from the fixture's DMX start address, 1-based.
-    ///
-    /// **Legacy, and read-only.** Where a DMX channel is is a fact about a *mode*, not
-    /// about a parameter, so new code writes a [`DmxChannelLayout`] and nothing writes
-    /// this. It survives because every showfile and every demo seed written before
-    /// modes existed says it, and [`FixtureType::mode`] reads those to build the
-    /// implicit default mode — which is what lets an old show open unchanged rather
-    /// than be migrated.
-    Dmx { channel: u8 },
     /// A port on an I/O module, 0-based, as the module numbers its own terminals.
     Port { index: u8 },
 }
 
 impl ParameterBinding {
-    pub fn dmx_channel(&self) -> Option<u8> {
-        match self {
-            ParameterBinding::Dmx { channel } => Some(*channel),
-            ParameterBinding::Port { .. } => None,
-        }
-    }
-
     pub fn port(&self) -> Option<u8> {
         match self {
             ParameterBinding::Port { index } => Some(*index),
-            ParameterBinding::Dmx { .. } => None,
         }
     }
 }
@@ -469,7 +415,7 @@ pub enum GeometryKind {
     Beam,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ParameterDefinition {
     pub kind: ParameterKind,
@@ -494,52 +440,6 @@ pub struct ParameterDefinition {
     /// The light sources a colour parameter mixes across. Empty on everything else.
     #[serde(default)]
     pub emitters: Vec<Emitter>,
-}
-
-/// `fixture_types.parameters` is one JSON column, so a showfile written before
-/// bindings existed holds `dmx_channel` where `binding` now goes. Reading it back
-/// through this shape is the whole migration for that field — there is no column to
-/// alter, and a show that has never been reopened stays readable.
-///
-/// Written out by hand rather than through `#[serde(from = ...)]`, because that
-/// attribute is one more thing for ts-rs to fail to parse and warn about.
-#[derive(Deserialize)]
-struct ParameterDefinitionWire {
-    kind: ParameterKind,
-    #[serde(default)]
-    direction: ParameterDirection,
-    binding: Option<ParameterBinding>,
-    dmx_channel: Option<u8>,
-    default_value: ParameterValue,
-    #[serde(default)]
-    physical: Option<PhysicalRange>,
-    #[serde(default)]
-    slots: Vec<Slot>,
-    #[serde(default)]
-    feature_group: Option<String>,
-    #[serde(default)]
-    emitters: Vec<Emitter>,
-}
-
-impl<'de> Deserialize<'de> for ParameterDefinition {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = ParameterDefinitionWire::deserialize(deserializer)?;
-        Ok(ParameterDefinition {
-            kind: wire.kind,
-            direction: wire.direction,
-            // The legacy `dmx_channel` still folds into a `Dmx` binding rather than
-            // being dropped, because that binding is what the implicit default mode is
-            // computed from. Losing it would repatch every old show at channel 1.
-            binding: wire
-                .binding
-                .or_else(|| wire.dmx_channel.map(|channel| ParameterBinding::Dmx { channel })),
-            default_value: wire.default_value,
-            physical: wire.physical,
-            slots: wire.slots,
-            feature_group: wire.feature_group,
-            emitters: wire.emitters,
-        })
-    }
 }
 
 impl ParameterDefinition {
@@ -682,17 +582,13 @@ impl FixtureType {
 
     /// The one mode a type without modes has.
     ///
-    /// Built from the legacy `Dmx` bindings where any parameter still carries one — a
-    /// colour spanning three consecutive channels from its own, which is what the
-    /// connector did before layouts existed — and from parameter order otherwise, one
-    /// byte each and three for a colour.
+    /// One byte per parameter in the order the type lists them, three for a colour,
+    /// which is what the connector did before layouts existed and what a type derived
+    /// from an OpenHaunt node's ports still means.
     fn implicit_mode(&self) -> DmxMode {
-        let outputs: Vec<&ParameterDefinition> = output_parameters(self).collect();
-        let bound = outputs.iter().any(|p| p.binding.and_then(|b| b.dmx_channel()).is_some());
-
         let mut channels = Vec::new();
         let mut next = 1u16;
-        for parameter in outputs {
+        for parameter in output_parameters(self) {
             let key = parameter_key(&parameter.kind);
             let is_colour = matches!(parameter.default_value, ParameterValue::Color { .. });
             let width = if is_colour { 3 } else { 1 };
@@ -700,18 +596,12 @@ impl FixtureType {
             // A parameter on a *port* has no DMX channel at all, whatever the fixture
             // is addressed to. Giving it a slot in the sequential fallback would put a
             // relay's state on some other fixture's dimmer.
-            let on_a_port = parameter.binding.is_some_and(|b| b.port().is_some());
-            let start = match (on_a_port, bound, parameter.binding.and_then(|b| b.dmx_channel())) {
-                (true, _, _) => 0,
-                (_, true, Some(channel)) => channel as u16,
-                // A parameter with no channel in a type where the others have one has
-                // nowhere to go: inventing a slot would land it on top of one that does.
-                (_, true, None) => 0,
-                (_, false, _) => {
-                    let start = next;
-                    next += width;
-                    start
-                }
+            let start = if parameter.binding.is_some_and(|b| b.port().is_some()) {
+                0
+            } else {
+                let start = next;
+                next += width;
+                start
             };
 
             if is_colour {
@@ -1032,20 +922,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_parameter_written_before_bindings_existed_still_loads() {
-        let legacy = serde_json::json!({
-            "kind": "Intensity",
-            "dmx_channel": 4,
-            "default_value": { "type": "Float", "value": 0.0 }
-        });
-
-        let parsed: ParameterDefinition = serde_json::from_value(legacy).unwrap();
-
-        assert_eq!(parsed.binding, Some(ParameterBinding::Dmx { channel: 4 }));
-        assert_eq!(parsed.direction, ParameterDirection::Output);
-    }
-
-    #[test]
     fn a_parameter_round_trips_through_its_current_shape() {
         let definition = ParameterDefinition {
             direction: ParameterDirection::Input,
@@ -1085,74 +961,7 @@ mod tests {
     }
 
     fn an_intensity(default_value: ParameterValue) -> ParameterDefinition {
-        ParameterDefinition {
-            binding: Some(ParameterBinding::Dmx { channel: 1 }),
-            ..ParameterDefinition::new(ParameterKind::Intensity, default_value)
-        }
-    }
-
-    /// `home_values` is a column that did not exist, so a fixture written before it
-    /// has to read back as one with nothing to say rather than as a parse failure.
-    #[test]
-    fn a_fixture_written_before_home_values_existed_still_loads() {
-        let legacy = serde_json::json!({
-            "id": Uuid::nil(),
-            "name": "House left",
-            "fixture_type_id": Uuid::nil(),
-            "address": { "Dmx": { "universe": 1, "address": 1 } },
-            "position": null,
-            "live_values": {},
-        });
-
-        let parsed: Fixture = serde_json::from_value(legacy).unwrap();
-
-        assert!(parsed.home_values.is_empty(), "nothing to say, rather than nothing at all");
-    }
-
-    /// A row from before values stopped being stored, opened here.
-    ///
-    /// `live_values` is *ignored* rather than read into `sensed_values`. Most of what
-    /// it carried was the console's own output, which is now a function of what is
-    /// driving the parameter; filing that as something a device reported would be a
-    /// station claiming to have been told what it had in fact decided.
-    #[test]
-    fn a_fixture_written_before_values_stopped_being_stored_still_loads() {
-        let legacy = serde_json::json!({
-            "id": Uuid::nil(),
-            "name": "House left",
-            "fixture_type_id": Uuid::nil(),
-            "address": { "Dmx": { "universe": 1, "address": 1 } },
-            "position": null,
-            "live_values": {
-                "Intensity": { "type": "Float", "value": 0.8 },
-                "Contact:0": { "type": "Bool", "value": true },
-            },
-            "home_values": { "Intensity": { "type": "Float", "value": 1.0 } },
-        });
-
-        let parsed: Fixture = serde_json::from_value(legacy).expect("an older row still reads");
-
-        assert!(parsed.sensed_values.is_empty(), "the old map is ignored, not adopted");
-        assert!(parsed.live_fades.is_empty());
-        assert!(parsed.live_effects.is_empty());
-        // And nothing else was lost getting there — the fields that outlived the
-        // change arrive as they were written.
-        assert_eq!(parsed.name, "House left");
-        assert_eq!(parsed.home_values.get("Intensity"), Some(&ParameterValue::Float(1.0)));
-    }
-
-    /// And the other direction: a station on an older build receiving a row from this
-    /// one, which simply does not carry the field it is looking for.
-    #[test]
-    fn a_row_from_here_omits_the_field_an_older_station_looks_for() {
-        let fixture = a_fixture(HashMap::new());
-        let written = serde_json::to_value(&fixture).expect("a fixture serialises");
-
-        assert!(written.get("live_values").is_none(), "there is no such field any more");
-        assert!(written.get("sensed_values").is_some(), "and what replaced half of it is there");
-        // An older build defaults what it cannot find, which is the whole of what it
-        // has to do: `live_values` was `#[serde(default)]`-adjacent there too.
-        assert_eq!(written["sensed_values"], serde_json::json!({}));
+        ParameterDefinition::new(ParameterKind::Intensity, default_value)
     }
 
     #[test]

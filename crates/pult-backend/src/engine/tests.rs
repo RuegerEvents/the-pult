@@ -192,35 +192,6 @@ async fn deleting_a_sequence_removes_it_from_state_and_from_the_showfile() {
 /// A write in a shape the schema has since grown out of comes back in the shape it
 /// has now.
 ///
-/// Every entity goes through its own `Deserialize` on the way in and is stored as what
-/// came out, so a client — the demo seed, a plugin, a peer running an older build —
-/// that writes `{"Dmx": {"universe": 1, "address": 5}}` lands a modern address in the
-/// show and every reader downstream sees one. Without this the browser would be
-/// holding a shape it has no code for, and the fault would look like a rendering bug.
-#[tokio::test]
-async fn an_address_written_in_the_old_shape_is_stored_in_the_new_one() {
-    let h = harness().await;
-
-    let mut fixture = serde_json::to_value(a_fixture("Backlight", 5)).unwrap();
-    fixture["address"] = serde_json::json!({ "Dmx": { "universe": 2, "address": 17 } });
-    let id = fixture["id"].as_str().unwrap().to_string();
-
-    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, fixture).await.unwrap();
-
-    let stored = h
-        .engine
-        .get(entity_path("fixtures", uuid::Uuid::parse_str(&id).unwrap()))
-        .await
-        .unwrap();
-    assert_eq!(stored["address"]["Dmx"]["mode"], "Default");
-    assert_eq!(stored["address"]["Dmx"]["breaks"][0]["universe"], 2);
-    assert_eq!(stored["address"]["Dmx"]["breaks"][0]["address"], 17);
-    assert!(
-        stored["address"]["Dmx"]["universe"].is_null(),
-        "and the shape it was written in is gone rather than carried alongside",
-    );
-}
-
 #[tokio::test]
 async fn cues_and_fixtures_support_the_same_create_read_delete_cycle() {
     let h = harness().await;
@@ -652,7 +623,7 @@ async fn a_peer_operation_is_applied_and_broadcast_locally() {
 #[tokio::test]
 async fn fixture_types_are_reachable_without_the_engine_naming_them() {
     use pult_schema::types::fixture::{
-        FixtureType, ParameterBinding, ParameterDefinition, ParameterKind,
+        FixtureType, ParameterDefinition, ParameterKind,
         ParameterValue,
     };
 
@@ -662,10 +633,10 @@ async fn fixture_types_are_reachable_without_the_engine_naming_them() {
         name: "Source Four".into(),
         manufacturer: "ETC".into(),
         channel_count: 1,
-        parameters: vec![ParameterDefinition {
-            binding: Some(ParameterBinding::Dmx { channel: 1 }),
-            ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
-        }],
+        parameters: vec![ParameterDefinition::new(
+            ParameterKind::Intensity,
+            ParameterValue::Float(0.0),
+        )],
         ..FixtureType::default()
     };
 
@@ -1436,17 +1407,17 @@ async fn value_of(h: &Harness, fixture_id: Uuid, parameter: &str) -> Option<Para
 /// A dimmer that says where it rests, so a fade from nothing has somewhere to start.
 async fn a_dimmer_type(h: &Harness) -> Uuid {
     use pult_schema::types::fixture::{
-        FixtureType, ParameterBinding, ParameterDefinition, ParameterKind,
+        FixtureType, ParameterDefinition, ParameterKind,
     };
     let ft = FixtureType {
         id: Uuid::new_v4(),
         name: "Source Four".into(),
         manufacturer: "ETC".into(),
         channel_count: 1,
-        parameters: vec![ParameterDefinition {
-            binding: Some(ParameterBinding::Dmx { channel: 1 }),
-            ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
-        }],
+        parameters: vec![ParameterDefinition::new(
+            ParameterKind::Intensity,
+            ParameterValue::Float(0.0),
+        )],
         ..FixtureType::default()
     };
     h.engine.set(create_path("fixture_types"), Lifecycle::Persisted, json(&ft)).await.unwrap();
@@ -2764,32 +2735,6 @@ async fn the_history_is_never_longer_than_the_show_keeps() {
     assert_eq!(entries.len() as u32, pult_schema::types::show::HISTORY_DEPTH_MIN);
 }
 
-/// A show saved before the setting existed opens at the default rather than
-/// refusing. The column is added back nullable, so the value on an existing row is
-/// absent — which for a field with a default is a question serde already answers.
-#[tokio::test]
-async fn a_show_saved_before_the_setting_existed_opens_at_the_default() {
-    let mut h = harness().await;
-    let mut show = a_show();
-    show.history_depth = 1234;
-    h.engine.set(key("show"), Lifecycle::Persisted, json(&show)).await.unwrap();
-
-    sqlx::query("ALTER TABLE show DROP COLUMN history_depth")
-        .execute(h.pool.as_ref())
-        .await
-        .unwrap();
-    crate::infra::showfile::migrate_for_test(&h.pool).await.unwrap();
-    h.reload().await;
-
-    let after = h.engine.get(key("show")).await.unwrap();
-    assert_eq!(after["name"], show.name, "the show still opens");
-    assert_eq!(
-        after["history_depth"],
-        json(&pult_schema::types::show::HISTORY_DEPTH_DEFAULT),
-        "and keeps the default number of changes"
-    );
-}
-
 // ── The show always has somebody ──────────────────────────────────────────────
 //
 // Undo is per person and an unattributed write can never be taken back, so a show
@@ -3962,10 +3907,7 @@ mod home {
     }
 
     fn a_parameter(kind: ParameterKind, default: ParameterValue) -> ParameterDefinition {
-        ParameterDefinition {
-            binding: Some(ParameterBinding::Dmx { channel: 1 }),
-            ..ParameterDefinition::new(kind, default)
-        }
+        ParameterDefinition::new(kind, default)
     }
 
     /// A fixture of a type that actually exists, which is what home needs and what
@@ -4071,7 +4013,10 @@ mod home {
                 ParameterDefinition {
                     direction: ParameterDirection::Input,
                     binding: Some(ParameterBinding::Port { index: 0 }),
-                    ..ParameterDefinition::new(ParameterKind::Contact(0), ParameterValue::Bool(false))
+                    ..ParameterDefinition::new(
+                        ParameterKind::Contact(0),
+                        ParameterValue::Bool(false),
+                    )
                 },
             ],
         )

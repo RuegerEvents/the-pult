@@ -96,22 +96,6 @@ pub fn clamp_home_fade_ms(ms: u32) -> u32 {
 mod tests {
     use super::*;
 
-    /// `home_fade_ms` is a column that did not exist. A show written before it has to
-    /// open snapping, which is what every show did before there was a choice.
-    #[test]
-    fn a_show_written_before_a_home_time_existed_snaps() {
-        let legacy = serde_json::json!({
-            "id": Uuid::nil(),
-            "name": "Act 1",
-            "created_at": "2026-08-31T20:00:00Z",
-        });
-
-        let parsed: Show = serde_json::from_value(legacy).unwrap();
-
-        assert_eq!(parsed.home_fade_ms, 0);
-        assert_eq!(parsed.history_depth, HISTORY_DEPTH_DEFAULT, "and the depth it always had");
-    }
-
     #[test]
     fn a_home_time_is_brought_inside_what_the_console_will_do() {
         assert_eq!(clamp_home_fade_ms(0), 0, "snapping is allowed and is the default");

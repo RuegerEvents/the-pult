@@ -162,7 +162,7 @@ async fn forgetting_a_node_leaves_it_running_and_unpatched() {
 async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
     use crate::infra::connectors::{dmx::Patch, openhaunt::OpenHauntOutput, OutputPlugin};
     use pult_schema::types::fixture::{
-        Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDefinition,
+        Fixture, FixtureAddress, FixtureType, ParameterDefinition,
         ParameterKind, ParameterValue,
     };
 
@@ -185,10 +185,10 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
         name: "Dimmer".into(),
         manufacturer: "Acme".into(),
         channel_count: 1,
-        parameters: vec![ParameterDefinition {
-            binding: Some(ParameterBinding::Dmx { channel: 1 }),
-            ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
-        }],
+        parameters: vec![ParameterDefinition::new(
+            ParameterKind::Intensity,
+            ParameterValue::Float(0.0),
+        )],
         ..FixtureType::default()
     };
     let mut dimmer = Fixture {

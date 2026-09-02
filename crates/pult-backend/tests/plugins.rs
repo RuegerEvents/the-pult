@@ -171,7 +171,7 @@ async fn a_station_runs_the_reference_plugins() {
                     "id": id,
                     "name": name,
                     "fixture_type_id": fixture_type,
-                    "address": { "Dmx": { "universe": 1, "address": 1 } },
+                    "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 1 }] } },
                     "position": null,
                     "sensed_values": {}
                 }),
@@ -253,7 +253,7 @@ async fn a_station_runs_the_reference_plugins() {
             pult_schema::lifecycle::Lifecycle::Persisted,
             json!({
                 "id": spot, "name": "Nudged", "fixture_type_id": uuid::Uuid::new_v4(),
-                "address": { "Dmx": { "universe": 1, "address": 100 } },
+                "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 100 }] } },
                 "position": null
             }),
         )
@@ -322,7 +322,7 @@ async fn a_station_runs_the_reference_plugins() {
             pult_schema::lifecycle::Lifecycle::Persisted,
             json!({
                 "id": untouched, "name": "Untouched", "fixture_type_id": uuid::Uuid::new_v4(),
-                "address": { "Dmx": { "universe": 1, "address": 110 } },
+                "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 110 }] } },
                 "position": null
             }),
         )

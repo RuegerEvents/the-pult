@@ -248,18 +248,4 @@ mod tests {
         assert_eq!(seq.active_cue_index, None);
         assert_eq!(seq.went_at, Some(11), "carried, so every station releases from one instant");
     }
-
-    /// SYNCED, and added after showfiles existed, so a sequence written before it
-    /// has no key and reads back unanchored.
-    #[test]
-    fn a_sequence_stored_before_went_at_existed_still_parses() {
-        let legacy = serde_json::json!({
-            "id": Uuid::nil(),
-            "name": "Act 1",
-            "cue_ids": [],
-            "active_cue_index": null,
-        });
-        let parsed: Sequence = serde_json::from_value(legacy).unwrap();
-        assert_eq!(parsed.went_at, None);
-    }
 }

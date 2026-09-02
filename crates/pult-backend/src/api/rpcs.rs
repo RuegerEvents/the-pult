@@ -313,7 +313,7 @@ mod tests {
         use pult_schema::{
             lifecycle::Lifecycle,
             types::fixture::{
-                FixtureType, ParameterBinding, ParameterDefinition,
+                FixtureType, ParameterDefinition,
                 ParameterKind, ParameterValue,
             },
         };
@@ -332,10 +332,10 @@ mod tests {
             name: "Dimmer".into(),
             manufacturer: "Acme".into(),
             channel_count: 1,
-            parameters: vec![ParameterDefinition {
-                binding: Some(ParameterBinding::Dmx { channel: 1 }),
-                ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
-            }],
+            parameters: vec![ParameterDefinition::new(
+                ParameterKind::Intensity,
+                ParameterValue::Float(0.0),
+            )],
             ..FixtureType::default()
         };
         let fixture_id = uuid::Uuid::new_v4();
@@ -358,7 +358,7 @@ mod tests {
                     "id": fixture_id,
                     "name": "Spot",
                     "fixture_type_id": fixture_type.id,
-                    "address": { "Dmx": { "universe": 1, "address": 1 } },
+                    "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 1 }] } },
                     "position": null,
                 }),
             )

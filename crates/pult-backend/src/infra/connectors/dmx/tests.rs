@@ -38,10 +38,7 @@ fn patch(fixtures: Vec<Fixture>, types: Vec<FixtureType>) -> Patch {
 }
 
 fn dimmer() -> ParameterDefinition {
-    ParameterDefinition {
-        binding: Some(ParameterBinding::Dmx { channel: 1 }),
-        ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
-    }
+    ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
 }
 
 #[test]
@@ -61,13 +58,19 @@ fn a_fixture_lands_on_its_patched_address() {
 
 #[test]
 fn a_parameter_offset_is_added_to_the_fixture_address() {
-    let ft = a_type(vec![
-        dimmer(),
-        ParameterDefinition {
-            binding: Some(ParameterBinding::Dmx { channel: 3 }),
-            ..ParameterDefinition::new(ParameterKind::Pan, ParameterValue::Float(0.0))
-        },
-    ]);
+    // Offset 3 with nothing at 2: a gap is a fact about a mode, which is why the
+    // mode is written out rather than left to the implicit one's parameter order.
+    let ft = a_modal_type(
+        vec![
+            dimmer(),
+            ParameterDefinition::new(ParameterKind::Pan, ParameterValue::Float(0.0)),
+        ],
+        vec![DmxMode {
+            name: "Default".into(),
+            breaks: vec![3],
+            channels: vec![channel("Intensity", 0, vec![1]), channel("Pan", 0, vec![3])],
+        }],
+    );
     let mut fixture = a_fixture(&ft, 1, 100);
     holding(&mut fixture, "Pan", ParameterValue::Float(1.0));
 
@@ -79,10 +82,10 @@ fn a_parameter_offset_is_added_to_the_fixture_address() {
 
 #[test]
 fn a_parameter_with_no_live_value_falls_back_to_its_default() {
-    let ft = a_type(vec![ParameterDefinition {
-        binding: Some(ParameterBinding::Dmx { channel: 1 }),
-        ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.5))
-    }]);
+    let ft = a_type(vec![ParameterDefinition::new(
+        ParameterKind::Intensity,
+        ParameterValue::Float(0.5))],
+    );
     let fixture = a_fixture(&ft, 1, 1);
 
     let universes = render(&patch(vec![fixture], vec![ft]), 0);
@@ -92,10 +95,10 @@ fn a_parameter_with_no_live_value_falls_back_to_its_default() {
 
 #[test]
 fn colour_takes_three_consecutive_channels() {
-    let ft = a_type(vec![ParameterDefinition {
-        binding: Some(ParameterBinding::Dmx { channel: 1 }),
-        ..ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
-    }]);
+    let ft = a_type(vec![ParameterDefinition::new(
+        ParameterKind::ColorRgb,
+        ParameterValue::rgb(0.0, 0.0, 0.0))],
+    );
     let mut fixture = a_fixture(&ft, 1, 5);
     holding(&mut fixture, "ColorRgb", ParameterValue::rgb(1.0, 0.5, 0.0));
 
@@ -108,10 +111,10 @@ fn colour_takes_three_consecutive_channels() {
 
 #[test]
 fn a_boolean_is_full_or_nothing() {
-    let ft = a_type(vec![ParameterDefinition {
-        binding: Some(ParameterBinding::Dmx { channel: 1 }),
-        ..ParameterDefinition::new(ParameterKind::Raw(1), ParameterValue::Bool(false))
-    }]);
+    let ft = a_type(vec![ParameterDefinition::new(
+        ParameterKind::Raw(1),
+        ParameterValue::Bool(false))],
+    );
     let mut fixture = a_fixture(&ft, 1, 1);
     holding(&mut fixture, "Raw:1", ParameterValue::Bool(true));
 
@@ -229,13 +232,19 @@ fn a_parameter_bound_to_a_port_takes_no_channel() {
 
 #[test]
 fn an_input_parameter_is_never_written_to_the_wire() {
-    let ft = a_type(vec![ParameterDefinition {
-        // Deliberately bound to a channel: direction alone has to be enough to
-        // keep a reading the device produced from being sent back out.
-        direction: ParameterDirection::Input,
-        binding: Some(ParameterBinding::Dmx { channel: 1 }),
-        ..ParameterDefinition::new(ParameterKind::Contact(0), ParameterValue::Bool(false))
-    }]);
+    // Deliberately given a channel of its own by the mode: direction alone has to be
+    // enough to keep a reading the device produced from being sent back out.
+    let ft = a_modal_type(
+        vec![ParameterDefinition {
+            direction: ParameterDirection::Input,
+            ..ParameterDefinition::new(ParameterKind::Contact(0), ParameterValue::Bool(false))
+        }],
+        vec![DmxMode {
+            name: "Default".into(),
+            breaks: vec![1],
+            channels: vec![channel("Contact:0", 0, vec![1])],
+        }],
+    );
     let mut fixture = a_fixture(&ft, 1, 1);
     holding(&mut fixture, "Contact:0", ParameterValue::Bool(true));
 
@@ -248,10 +257,7 @@ fn an_input_parameter_is_never_written_to_the_wire() {
 fn text_leaves_the_channel_it_sits_on_alone() {
     let ft = a_type(vec![
         dimmer(),
-        ParameterDefinition {
-            binding: Some(ParameterBinding::Dmx { channel: 2 }),
-            ..ParameterDefinition::new(ParameterKind::Text, ParameterValue::Text(String::new()))
-        },
+        ParameterDefinition::new(ParameterKind::Text, ParameterValue::Text(String::new())),
     ]);
     let mut fixture = a_fixture(&ft, 1, 1);
     holding(&mut fixture, "Intensity", ParameterValue::Float(1.0));

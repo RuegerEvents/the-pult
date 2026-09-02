@@ -111,7 +111,9 @@ export function unpack(packed: Float32Array, at: number): ParameterValue | undef
 		case COLOR:
 			return {
 				type: 'Color',
-				value: { r: packed[base + 1], g: packed[base + 2], b: packed[base + 3] }
+				// The packed frame is four floats per parameter and an override map does
+				// not fit in one; `color_overrides` is the export that answers for those.
+				value: { r: packed[base + 1], g: packed[base + 2], b: packed[base + 3], overrides: {} }
 			};
 		case TEXT:
 			// A line of text does not fit in four floats; ask for it by name.

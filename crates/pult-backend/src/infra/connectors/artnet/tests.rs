@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use pult_schema::types::fixture::{
-    Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDefinition,
+    Fixture, FixtureAddress, FixtureType, ParameterDefinition,
     ParameterKind, ParameterValue,
 };
 use uuid::Uuid;
@@ -58,10 +58,10 @@ fn a_dimmer_patch(level: f32) -> Patch {
         name: "Dimmer".into(),
         manufacturer: "Acme".into(),
         channel_count: 1,
-        parameters: vec![ParameterDefinition {
-            binding: Some(ParameterBinding::Dmx { channel: 1 }),
-            ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
-        }],
+        parameters: vec![ParameterDefinition::new(
+            ParameterKind::Intensity,
+            ParameterValue::Float(0.0),
+        )],
         ..FixtureType::default()
     };
     let mut fixture = Fixture {

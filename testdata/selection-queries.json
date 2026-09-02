@@ -22,49 +22,43 @@
       "id": "f0000000-0000-4000-8000-000000000001",
       "name": "Front 1",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a1",
-      "address": { "Dmx": { "universe": 1, "address": 1 } },
-      "position": { "Point": { "x": -3.0, "y": 5.0, "z": 2.0 } },
-      "live_values": {}
+      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 1 }] } },
+      "position": { "Point": { "x": -3.0, "y": 5.0, "z": 2.0 } }
     },
     {
       "id": "f0000000-0000-4000-8000-000000000002",
       "name": "Front 2",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a1",
-      "address": { "Dmx": { "universe": 1, "address": 9 } },
-      "position": { "Point": { "x": -1.0, "y": 5.0, "z": 2.0 } },
-      "live_values": {}
+      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 9 }] } },
+      "position": { "Point": { "x": -1.0, "y": 5.0, "z": 2.0 } }
     },
     {
       "id": "f0000000-0000-4000-8000-000000000003",
       "name": "Front 3",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a1",
-      "address": { "Dmx": { "universe": 1, "address": 17 } },
-      "position": { "Point": { "x": 1.0, "y": 5.0, "z": 2.0 } },
-      "live_values": {}
+      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 17 }] } },
+      "position": { "Point": { "x": 1.0, "y": 5.0, "z": 2.0 } }
     },
     {
       "id": "f0000000-0000-4000-8000-000000000004",
       "name": "Front 4",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a1",
-      "address": { "Dmx": { "universe": 1, "address": 25 } },
-      "position": { "Point": { "x": 3.0, "y": 5.0, "z": 2.0 } },
-      "live_values": {}
+      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 25 }] } },
+      "position": { "Point": { "x": 3.0, "y": 5.0, "z": 2.0 } }
     },
     {
       "id": "f0000000-0000-4000-8000-000000000005",
       "name": "Mover back",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a2",
-      "address": { "Dmx": { "universe": 1, "address": 33 } },
-      "position": { "Axial": { "position": { "x": 0.0, "y": 6.0, "z": -4.0 }, "direction": { "x": 0.0, "y": -1.0, "z": 0.0 } } },
-      "live_values": {}
+      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 33 }] } },
+      "position": { "Axial": { "position": { "x": 0.0, "y": 6.0, "z": -4.0 }, "direction": { "x": 0.0, "y": -1.0, "z": 0.0 } } }
     },
     {
       "id": "f0000000-0000-4000-8000-000000000006",
       "name": "In the case",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a2",
-      "address": { "Dmx": { "universe": 1, "address": 41 } },
-      "position": null,
-      "live_values": {}
+      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 41 }] } },
+      "position": null
     }
   ],
   "cases": [

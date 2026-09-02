@@ -2,24 +2,25 @@ import { describe, it, expect } from 'vitest';
 import type { Fixture, FixtureType, ParameterValue } from './generated/index.js';
 import { bearingFromPoint, elevationFromPoint, rayOnPlane } from './puppeteer.js';
 import { readingOf } from './stores/output.js';
+import { aFixtureType, aParameter } from './test-fixtures.js';
 
-const head: FixtureType = {
+const head: FixtureType = aFixtureType({
 	id: 'head',
 	name: 'Head',
 	manufacturer: 'Generic',
 	channel_count: 6,
 	parameters: [
-		{ kind: 'Pan', direction: 'Output', binding: { Dmx: { channel: 1 } }, default_value: { type: 'Float', value: 0.5 } },
-		{ kind: 'Tilt', direction: 'Output', binding: { Dmx: { channel: 2 } }, default_value: { type: 'Float', value: 0.5 } }
+		aParameter({ kind: 'Pan', default_value: { type: 'Float', value: 0.5 } }),
+		aParameter({ kind: 'Tilt', default_value: { type: 'Float', value: 0.5 } })
 	]
-};
+});
 
 /** Hung six metres up, facing straight down, pan and tilt centred. */
 const hung = (): Fixture => ({
 	id: 'f',
 	name: 'Head',
 	fixture_type_id: 'head',
-	address: { Dmx: { universe: 1, address: 1 } },
+	address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
 	position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } },
 	sensed_values: {},
 	live_effects: {},

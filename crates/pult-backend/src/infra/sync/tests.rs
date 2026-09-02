@@ -1213,131 +1213,13 @@ async fn two_stations_writing_one_key_converge_on_one_row() {
 }
 
 
-/// A session that mixes builds, over the field this change removed.
-///
-/// `live_values` was SYNCED, so an older station goes on sending it. It has to arrive
-/// without being rejected — a peer that cannot parse a fixture row is a peer that
-/// cannot see the rig — and it has to be *ignored* rather than adopted: most of what
-/// that map carried was the console's own output, which is now a function of what is
-/// driving each parameter, and filing it as something a device reported would be a
-/// station claiming to have been told what it had in fact decided.
-#[tokio::test]
-async fn a_fixture_row_carrying_the_removed_field_still_arrives() {
-    use pult_schema::types::fixture::Fixture;
-
-    let one = a_node().await;
-    let two = a_node().await;
-    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
-
-    // The row an older build sends: one map called `live_values`, carrying both a
-    // driven value and a sensed one, and no `sensed_values` key at all.
-    let fixture_id = Uuid::new_v4();
-    let row = serde_json::json!({
-        "id": fixture_id,
-        "name": "House left",
-        "fixture_type_id": Uuid::new_v4(),
-        "address": { "Dmx": { "universe": 1, "address": 1 } },
-        "position": null,
-        "live_values": {
-            "Intensity": { "type": "Float", "value": 0.8 },
-            "Contact:0": { "type": "Bool", "value": true },
-        },
-        "home_values": { "Intensity": { "type": "Float", "value": 1.0 } },
-    });
-    one.engine
-        .set(
-            vec![PathSegment::Key("fixtures".into()), PathSegment::Key("__create".into())],
-            Lifecycle::Persisted,
-            row,
-        )
-        .await
-        .unwrap();
-
-    eventually("the older peer's fixture to arrive whole", || async {
-        let Ok(value) = two
-            .engine
-            .get(vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture_id)])
-            .await
-        else {
-            return false;
-        };
-        let Ok(fixture): Result<Fixture, _> = serde_json::from_value(value) else { return false };
-        fixture.name == "House left"
-            && fixture.sensed_values.is_empty()
-            && fixture.home_values.len() == 1
-    })
-    .await;
-}
-
-/// And the other direction: a row from this build, as an older station receives it.
-///
-/// It carries no `live_values` at all. An older station defaults what it cannot find,
-/// and the practical effect is nil, because it was already computing its own — the
-/// field only ever put a stale sample in the snapshot a joining station was handed
-/// immediately before it recomputed.
-#[tokio::test]
-async fn a_fixture_row_from_here_carries_no_live_values() {
-    let one = a_node().await;
-    let two = a_node().await;
-    two.sync.connect_peer(vec![one.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("the peer answers");
-
-    let fixture_id = Uuid::new_v4();
-    one.engine
-        .set(
-            vec![PathSegment::Key("fixtures".into()), PathSegment::Key("__create".into())],
-            Lifecycle::Persisted,
-            serde_json::json!({
-                "id": fixture_id,
-                "name": "House right",
-                "fixture_type_id": Uuid::new_v4(),
-                "address": { "Dmx": { "universe": 1, "address": 2 } },
-                "position": null,
-            }),
-        )
-        .await
-        .unwrap();
-
-    eventually("the row to reach the peer", || async {
-        two.engine
-            .get(vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture_id)])
-            .await
-            .is_ok_and(|v| v.get("name") == Some(&serde_json::json!("House right")))
-    })
-    .await;
-
-    let arrived = two
-        .engine
-        .get(vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture_id)])
-        .await
-        .unwrap();
-    assert!(arrived.get("live_values").is_none(), "there is no such field any more");
-    assert_eq!(arrived["sensed_values"], serde_json::json!({}), "and what replaced half of it");
-}
-
-
-/// Two stations, one rig, mid-fade: do they agree about what it is doing?
-///
-/// The property the whole of `values-as-functions` rests on. Neither station is told a
-/// value — nothing stores one — so what they share is a cue anchored in console
-/// milliseconds and the arithmetic that turns it into a number.
-///
-/// Two things are asserted, and the difference between them matters. **What is driving
-/// each parameter must be identical**, to the anchor and the millisecond, because that
-/// is what makes the two agree at *every* instant rather than at the one that happened
-/// to be sampled. And what each is putting out **right now** must be within what the
-/// gap between the two questions can explain — because "now" is a different
-/// millisecond for each of them, and demanding they be bit-identical would be
-/// demanding they read one clock, which is exactly what this design does not do.
-///
-/// The reading is asked through `parameter.value`, which is the read a plugin or a
-/// command line makes, so what is compared is what a caller actually gets.
 #[tokio::test]
 async fn two_stations_agree_about_what_the_rig_is_doing() {
     use pult_schema::types::{
         cue::{Cue, FollowMode, ParameterCapture},
         effect::Easing,
         fixture::{
-            FixtureType, ParameterBinding, ParameterDefinition, ParameterKind,
+            FixtureType, ParameterDefinition, ParameterKind,
             ParameterValue,
         },
         sequence::Sequence,
@@ -1371,14 +1253,8 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
         manufacturer: "Generic".into(),
         channel_count: 2,
         parameters: vec![
-            ParameterDefinition {
-                binding: Some(ParameterBinding::Dmx { channel: 1 }),
-                ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
-            },
-            ParameterDefinition {
-                binding: Some(ParameterBinding::Dmx { channel: 2 }),
-                ..ParameterDefinition::new(ParameterKind::Pan, ParameterValue::Float(0.5))
-            },
+            ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0)),
+            ParameterDefinition::new(ParameterKind::Pan, ParameterValue::Float(0.5)),
         ],
         ..FixtureType::default()
     };
@@ -1393,7 +1269,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
                 "id": id,
                 "name": format!("Head {n}"),
                 "fixture_type_id": fixture_type.id,
-                "address": { "Dmx": { "universe": 1, "address": (n as u16) * 2 + 1 } },
+                "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": (n as u16) * 2 + 1 }] } },
                 "position": null,
             }),
         )

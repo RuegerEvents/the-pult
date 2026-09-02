@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use pult_schema::types::{
     fixture::{
-        FixtureType, ParameterBinding, ParameterDefinition, ParameterKind,
+        FixtureType, ParameterDefinition, ParameterKind,
     },
     openhaunt as modules,
     openhaunt::{EffectCapability, PortEffectCapability},
@@ -129,10 +129,10 @@ fn a_dmx_dimmer(universe: u16, level: f32) -> (Fixture, FixtureType) {
         name: "Dimmer".into(),
         manufacturer: "Acme".into(),
         channel_count: 1,
-        parameters: vec![ParameterDefinition {
-            binding: Some(ParameterBinding::Dmx { channel: 1 }),
-            ..ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
-        }],
+        parameters: vec![ParameterDefinition::new(
+            ParameterKind::Intensity,
+            ParameterValue::Float(0.0),
+        )],
         ..FixtureType::default()
     };
     let mut fixture = Fixture {

@@ -16,12 +16,13 @@ import {
 	sortSelection,
 	type SelectionQuery
 } from './selection.js';
+import { aFixtureType } from './test-fixtures.js';
 
 const at = (name: string, x: number, y: number, z: number, typeId = 'par'): Fixture => ({
 	id: name,
 	name,
 	fixture_type_id: typeId,
-	address: { Dmx: { universe: 1, address: 1 } },
+	address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
 	position: { Point: { x, y, z } },
 	sensed_values: {},
 	live_effects: {},
@@ -338,7 +339,7 @@ describe('saying what a query selects', () => {
 				{ combine: 'Drop', term: { kind: 'Ids', ids: ['x'] } }
 			]
 		});
-		const types = [{ id: 'mover', name: 'Mac Aura', manufacturer: '', channel_count: 0, parameters: [] }];
+		const types = [aFixtureType({ id: 'mover', name: 'Mac Aura' })];
 		expect(describeQuery(q, types)).toBe('every Mac Aura, of those, in a region, except 1 picked');
 	});
 

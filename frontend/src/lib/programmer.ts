@@ -293,10 +293,10 @@ export function nudge(value: ParameterValue, delta: number): ParameterValue {
 		case 'Bool':
 			return delta === 0 ? value : { type: 'Bool', value: delta > 0 };
 		case 'Color': {
-			const { r, g, b } = value.value;
+			const { r, g, b, overrides } = value.value;
 			return {
 				type: 'Color',
-				value: { r: clamp01(r + delta), g: clamp01(g + delta), b: clamp01(b + delta) }
+				value: { r: clamp01(r + delta), g: clamp01(g + delta), b: clamp01(b + delta), overrides }
 			};
 		}
 		default:

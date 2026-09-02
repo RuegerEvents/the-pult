@@ -191,7 +191,10 @@ export function blend(low: ParameterValue, high: ParameterValue, level: number):
 			value: {
 				r: low.value.r + (high.value.r - low.value.r) * t,
 				g: low.value.g + (high.value.g - low.value.g) * t,
-				b: low.value.b + (high.value.b - low.value.b) * t
+				b: low.value.b + (high.value.b - low.value.b) * t,
+				// Not interpolated: an override is a fact about the head's own white,
+				// not a point on the way between two colours.
+				overrides: low.value.overrides
 			}
 		};
 	}
@@ -279,7 +282,7 @@ export function zeroLike(like: ParameterValue): ParameterValue {
 		case 'Int':
 			return { type: 'Int', value: 0 };
 		case 'Color':
-			return { type: 'Color', value: { r: 0, g: 0, b: 0 } };
+			return { type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } };
 		case 'Bool':
 			return { type: 'Bool', value: false };
 		default:
@@ -294,7 +297,7 @@ export function fullLike(like: ParameterValue): ParameterValue {
 		case 'Int':
 			return { type: 'Int', value: 255 };
 		case 'Color':
-			return { type: 'Color', value: { r: 1, g: 1, b: 1 } };
+			return { type: 'Color', value: { r: 1, g: 1, b: 1, overrides: {} } };
 		case 'Bool':
 			return { type: 'Bool', value: true };
 		default:

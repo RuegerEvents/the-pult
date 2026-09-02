@@ -52,27 +52,22 @@ const FIXTURE_TYPE: Uuid = Uuid::from_u128(0x5ea75ea7_0000_0000_0000_00000000000
 /// A dimmer that can also colour, pan and tilt, resting dark and centred — which is
 /// what an OpenHaunt node describes and what the console reads back.
 fn the_type() -> &'static [pult_schema::types::fixture::FixtureType] {
-    use pult_schema::types::fixture::{
-        FixtureType, ParameterBinding, ParameterDefinition,
-    };
+    use pult_schema::types::fixture::{FixtureType, ParameterDefinition};
     static TYPES: std::sync::OnceLock<Vec<FixtureType>> = std::sync::OnceLock::new();
     TYPES.get_or_init(|| {
-        let at = |kind: ParameterKind, channel: u8, default_value: ParameterValue| {
-            ParameterDefinition {
-                binding: Some(ParameterBinding::Dmx { channel }),
-                ..ParameterDefinition::new(kind, default_value)
-            }
-        };
+        // Intensity, then a colour across three, then pan and tilt: the implicit
+        // mode's own order, which is what these channels always were.
+        let at = ParameterDefinition::new;
         vec![FixtureType {
             id: FIXTURE_TYPE,
             name: "Spot".into(),
             manufacturer: "Nobody".into(),
             channel_count: 6,
             parameters: vec![
-                at(ParameterKind::Intensity, 1, ParameterValue::Float(0.0)),
-                at(ParameterKind::ColorRgb, 2, ParameterValue::rgb(0.0, 0.0, 0.0)),
-                at(ParameterKind::Pan, 5, ParameterValue::Float(0.5)),
-                at(ParameterKind::Tilt, 6, ParameterValue::Float(0.5)),
+                at(ParameterKind::Intensity, ParameterValue::Float(0.0)),
+                at(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0)),
+                at(ParameterKind::Pan, ParameterValue::Float(0.5)),
+                at(ParameterKind::Tilt, ParameterValue::Float(0.5)),
             ],
             ..FixtureType::default()
         }]

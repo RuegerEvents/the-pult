@@ -10,7 +10,7 @@
 		ParameterKind
 	} from '$lib/generated/index.js';
 	import {
-		bindingChannel,
+		implicitChannels,
 		defaultDirectionFor,
 		defaultValueFor,
 		formatValue,
@@ -43,26 +43,24 @@
 	let newName = $state('');
 	let creating = $state(false);
 
-	const dmxBinding = (channel: number): ParameterBinding => ({ Dmx: { channel } });
 	const portBinding = (index: number): ParameterBinding => ({ Port: { index } });
 	const isColour = (kind: ParameterKind) => kind === 'ColorRgb';
 
-	/// Whichever number a binding carries — a DMX channel or a port index.
+	/// A binding is a *port*, or nothing at all.
 	///
-	/// A parameter need not have one at all: where a DMX channel sits belongs to a
-	/// *mode*, so an imported type binds nothing and its layout says where each
-	/// parameter goes. A hand-made type still binds a channel, and that binding is
-	/// what the implicit default mode is built from.
-	const bindingSlot = (binding: ParameterBinding | null) => {
-		if (!binding) return 1;
-		return 'Dmx' in binding ? binding.Dmx.channel : binding.Port.index;
-	};
+	/// Where a DMX channel sits is a fact about a mode rather than about a parameter,
+	/// so nothing binds one: an imported type's modes say where each parameter goes,
+	/// and a type made here is laid out in the order its parameters are listed. The
+	/// number this panel shows against a DMX parameter is that order, read back from
+	/// [`implicitChannels`], not something anybody typed.
+	const portSlot = (binding: ParameterBinding | null) => (binding ? binding.Port.index : 0);
 
-	/// A parameter with nothing but a kind and a channel: what this editor makes.
-	const aParameter = (kind: ParameterKind, channel: number): ParameterDefinition => ({
+	/// A parameter with nothing but a kind: what this editor makes. It lands on the
+	/// channel after the last one, because that is where the list puts it.
+	const aParameter = (kind: ParameterKind): ParameterDefinition => ({
 		kind,
 		direction: 'Output',
-		binding: dmxBinding(channel),
+		binding: null,
 		default_value: defaultValueFor(kind),
 		physical: null,
 		slots: [],
@@ -138,7 +136,7 @@
 			long_name: name,
 			description: '',
 			channel_count: 1,
-			parameters: [aParameter('Intensity', 1)],
+			parameters: [aParameter('Intensity')],
 			// A type made here names no mode: where its channels go follows from the
 			// bindings above, and the station computes the layout from them. Modes are
 			// what an imported GDTF file brings.
@@ -163,9 +161,10 @@
 	async function setParameters(type: FixtureType, parameters: ParameterDefinition[]) {
 		await data.fixture_types.byId(type.id).parameters.set(parameters);
 		// channel_count follows from the parameters, so the operator never types it.
-		// Only DMX bindings occupy channels; a port takes none.
-		const highest = parameters.reduce((n, p) => {
-			const channel = bindingChannel(p.binding);
+		// Only the ones the implicit mode places occupy channels; a port takes none.
+		const channels = implicitChannels(parameters);
+		const highest = parameters.reduce((n, p, i) => {
+			const channel = channels[i];
 			return channel === null ? n : Math.max(n, channel + (isColour(p.kind) ? 2 : 0));
 		}, 0);
 		if (highest !== type.channel_count) {
@@ -174,12 +173,7 @@
 	}
 
 	async function addParameter(type: FixtureType) {
-		// The next free DMX channel. Ports take none, so they do not move it.
-		const next = type.parameters.reduce((n, p) => {
-			const channel = bindingChannel(p.binding);
-			return channel === null ? n : Math.max(n, channel + (isColour(p.kind) ? 3 : 1));
-		}, 1);
-		await setParameters(type, [...type.parameters, aParameter('Intensity', next)]);
+		await setParameters(type, [...type.parameters, aParameter('Intensity')]);
 	}
 
 	async function updateParameter(
@@ -201,7 +195,7 @@
 	/// channel or port they sit on, so the number is never typed twice.
 	async function setKind(type: FixtureType, index: number, label: string) {
 		const parameter = type.parameters[index];
-		const slot = bindingSlot(parameter.binding);
+		const slot = slotOf(type.parameters, index);
 		await updateParameter(type, index, {
 			// A parameter changing *into* a named one keeps whatever it was called if
 			// it already had a name, and otherwise gets a placeholder to type over.
@@ -219,12 +213,21 @@
 
 	/// Moving a parameter between a DMX channel and a module port. The numbered kinds
 	/// follow the port, so re-binding one renames it too.
-	async function setBinding(type: FixtureType, index: number, binding: ParameterBinding) {
+	async function setBinding(type: FixtureType, index: number, binding: ParameterBinding | null) {
 		const parameter = type.parameters[index];
+		const slot = binding ? binding.Port.index : slotOf(type.parameters, index);
 		await updateParameter(type, index, {
 			binding,
-			kind: kindFromLabel(kindLabel(parameter.kind), bindingSlot(binding))
+			kind: kindFromLabel(kindLabel(parameter.kind), slot)
 		});
+	}
+
+	/// The number this panel shows against a parameter: its port, or the channel the
+	/// implicit mode lands it on.
+	function slotOf(parameters: ParameterDefinition[], index: number): number {
+		const parameter = parameters[index];
+		if (parameter.binding) return parameter.binding.Port.index;
+		return implicitChannels(parameters)[index] ?? 0;
 	}
 
 	async function removeParameter(type: FixtureType, index: number) {
@@ -402,7 +405,8 @@
 							</thead>
 							<tbody>
 								{#each type.parameters as param, i (i)}
-									{@const onDmx = bindingChannel(param.binding) !== null}
+									{@const onDmx = param.binding === null}
+									{@const slot = slotOf(type.parameters, i)}
 									<tr>
 										<td class="kind">
 											{#if !$unlocked}
@@ -459,9 +463,7 @@
 													setBinding(
 														type,
 														i,
-														e.currentTarget.value === 'Dmx'
-															? dmxBinding(bindingSlot(param.binding) || 1)
-															: portBinding(bindingSlot(param.binding))
+														e.currentTarget.value === 'Dmx' ? null : portBinding(portSlot(param.binding))
 													)}
 											>
 												<option value="Dmx">DMX channel</option>
@@ -470,23 +472,21 @@
 											{/if}
 										</td>
 										<td>
-											{#if !$unlocked}
-												<span class="reading">{bindingSlot(param.binding)}</span>
+											<!-- A DMX channel is read rather than typed: where a parameter
+											     sits belongs to a mode, and a type made here has the implicit
+											     one, which lays its parameters out in the order they are
+											     listed. A port is the operator's to choose. -->
+											{#if !$unlocked || onDmx}
+												<span class="reading">{slot}</span>
 											{:else}
 											<input
 												class="input narrow"
 												type="number"
-												min={onDmx ? 1 : 0}
-												max={onDmx ? 512 : 255}
-												value={bindingSlot(param.binding)}
+												min="0"
+												max="255"
+												value={slot}
 												onchange={(e) =>
-													setBinding(
-														type,
-														i,
-														onDmx
-															? dmxBinding(Number(e.currentTarget.value))
-															: portBinding(Number(e.currentTarget.value))
-													)}
+													setBinding(type, i, portBinding(Number(e.currentTarget.value)))}
 											/>
 											{/if}
 											{#if onDmx && isColour(param.kind)}<span class="hint">+2</span>{/if}

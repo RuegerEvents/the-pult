@@ -4,7 +4,7 @@ import type {
 	Fixture,
 	FixtureAddress,
 	FixtureType,
-	ParameterBinding,
+	ParameterDefinition,
 	ParameterDirection,
 	ParameterKind,
 	ParameterValue
@@ -214,10 +214,32 @@ export function addressLabel(fixture: Fixture): string {
 	return node.universe === null ? node.serial : `${node.serial} · universe ${node.universe}`;
 }
 
-/** The DMX channel a parameter occupies, if it occupies one at all. */
-export function bindingChannel(binding: ParameterBinding | null): number | null {
-	if (!binding) return null;
-	return 'Dmx' in binding ? binding.Dmx.channel : null;
+/**
+ * Where the implicit mode puts each parameter: one byte each, three for a colour, in
+ * the order the type lists them. `null` for anything that takes no DMX channel — an
+ * input, or a parameter on a module port.
+ *
+ * The one layout the browser works out for itself, and it is worth saying why, since
+ * everywhere else it deliberately does not. A type with no `dmx_modes` has nothing to
+ * read: the station computes its `Default` mode from the parameters and never stores
+ * it. The hand editor still has to tell an operator where the parameter they just
+ * added has landed, and `channel_count` has to follow from the list. So this mirrors
+ * `FixtureType::implicit_mode` in `crates/pult-schema/src/types/fixture.rs`, and that
+ * one stays the authority: what reaches a lamp is laid out there.
+ */
+export function implicitChannels(parameters: ParameterDefinition[]): (number | null)[] {
+	let next = 1;
+	return parameters.map((parameter) => {
+		if (parameter.direction === 'Input' || parameter.binding !== null) return null;
+		const start = next;
+		next += isColourValue(parameter.default_value) ? 3 : 1;
+		return start;
+	});
+}
+
+/** Whether a parameter's resting value is a colour, which is three bytes and not one. */
+function isColourValue(value: ParameterValue): boolean {
+	return value.type === 'Color';
 }
 
 // ── Modes ─────────────────────────────────────────────────────────────────────

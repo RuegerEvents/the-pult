@@ -21,6 +21,7 @@ import {
 	tiltAngle
 } from './stage.js';
 import { readingOf, NOTHING_YET } from './stores/output.js';
+import { aFixtureType, aParameter } from './test-fixtures.js';
 
 /**
  * What a fixture is putting out, as a consumer sees it.
@@ -50,7 +51,7 @@ const fixture = (over: Partial<Fixture> = {}): Fixture => ({
 	id: 'f',
 	name: 'Front left',
 	fixture_type_id: 't',
-	address: { Dmx: { universe: 1, address: 1 } },
+	address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
 	position: null,
 	sensed_values: {},
 	live_effects: {},
@@ -189,7 +190,7 @@ describe('what things are doing', () => {
 	it('dims a colour by its own intensity', () => {
 		const lit = showing({
 			Intensity: { type: 'Float', value: 0.5 },
-			ColorRgb: { type: 'Color', value: { r: 1, g: 0, b: 0 } }
+			ColorRgb: { type: 'Color', value: { r: 1, g: 0, b: 0, overrides: {} } }
 		});
 		expect(fixtureTint(fixture(), lit)).toBe('rgb(128, 0, 0)');
 	});
@@ -197,7 +198,7 @@ describe('what things are doing', () => {
 	it('takes a colour-only fixture at its word', () => {
 		// No dimmer channel: reporting it dark because there is no Intensity would
 		// be a lie about a fixture that is plainly on.
-		const lit = showing({ ColorRgb: { type: 'Color', value: { r: 0, g: 1, b: 0 } } });
+		const lit = showing({ ColorRgb: { type: 'Color', value: { r: 0, g: 1, b: 0, overrides: {} } } });
 		expect(fixtureOutput(fixture(), lit).level).toBe(1);
 		expect(fixtureTint(fixture(), lit)).toBe('rgb(0, 255, 0)');
 	});
@@ -216,15 +217,15 @@ describe('what things are doing', () => {
 });
 
 describe('pointing', () => {
-	const mover: FixtureType = {
+	const mover: FixtureType = aFixtureType({
 		id: 't',
 		name: 'Mover',
 		manufacturer: 'Generic',
 		channel_count: 4,
 		parameters: [
-			{ kind: 'Pan', direction: 'Output', binding: { Dmx: { channel: 1 } }, default_value: { type: 'Float', value: 0.5 } }
+			aParameter({ kind: 'Pan', default_value: { type: 'Float', value: 0.5 } })
 		]
-	};
+	});
 	const dimmer: FixtureType = { ...mover, parameters: [] };
 
 	const panned = (at: number) => showing({ Pan: { type: 'Float', value: at } });
@@ -249,13 +250,13 @@ describe('pointing', () => {
 		expect(panAngle(fixture(), mover, panned(0))).toBeCloseTo(-270, 6);
 	});
 
-	const head: FixtureType = {
+	const head: FixtureType = aFixtureType({
 		...mover,
 		parameters: [
 			...mover.parameters,
-			{ kind: 'Tilt', direction: 'Output', binding: { Dmx: { channel: 2 } }, default_value: { type: 'Float', value: 0.5 } }
+			aParameter({ kind: 'Tilt', default_value: { type: 'Float', value: 0.5 } })
 		]
-	};
+	});
 
 	/** Hung facing straight down, which is how a head on a bar hangs. */
 	const hung = () =>
@@ -319,16 +320,16 @@ describe('pointing', () => {
 });
 
 describe('aiming a head', () => {
-	const head: FixtureType = {
+	const head: FixtureType = aFixtureType({
 		id: 't',
 		name: 'Head',
 		manufacturer: 'Generic',
 		channel_count: 4,
 		parameters: [
-			{ kind: 'Pan', direction: 'Output', binding: { Dmx: { channel: 1 } }, default_value: { type: 'Float', value: 0.5 } },
-			{ kind: 'Tilt', direction: 'Output', binding: { Dmx: { channel: 2 } }, default_value: { type: 'Float', value: 0.5 } }
+			aParameter({ kind: 'Pan', default_value: { type: 'Float', value: 0.5 } }),
+			aParameter({ kind: 'Tilt', default_value: { type: 'Float', value: 0.5 } })
 		]
-	};
+	});
 	const hung = () =>
 		fixture({
 			position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } }
