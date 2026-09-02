@@ -38,30 +38,33 @@ what has to exist first.
 9. **system-stats-panel** — throughput, sync backlog, per-connector frame cost, client
    counts, and what the *browser* costs itself. Unblocked: there is now a browser load
    to report, because the browser is what evaluates. → none
-10. **tick-isolation** — on hold, and due a re-scope: `values-as-functions` answered
+10. **system-logs-panel** — the console cannot show its own log, and on a desktop app
+    or a tablet there is nowhere else for it to be. Plugins already log into it and
+    their authors cannot read it. → none, and worth deciding alongside 9
+11. **tick-isolation** — on hold, and due a re-scope: `values-as-functions` answered
     most of what it was for. What survives is disk off the write path, per-source
     admission and the single engine queue. → nothing, but re-read it before proposing
-11. **showfile-management** — versioning, save-as, autosave, backup. → none
-12. **showfile-assets-folder** — a folder with an assets directory, or one file.
+12. **showfile-management** — versioning, save-as, autosave, backup. → none
+13. **showfile-assets-folder** — a folder with an assets directory, or one file.
     → decided with showfile-management, not separately
-13. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+14. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
     themselves dynamic. → rig-viewer-fidelity, for anything that happens in the 3D view
-14. **voice-input** — speech to the command line, grammar first and NL on parse
+15. **voice-input** — speech to the command line, grammar first and NL on parse
     failure. → none
-15. **nl-show-context** — what relative syntax cannot reach, and whether it is worth
+16. **nl-show-context** — what relative syntax cannot reach, and whether it is worth
     the permission it costs. → voice-input, which is what shows which utterances
     actually arrive
-16. **open-control-interfaces** — OSC, MIDI, control surfaces. → none
-17. **timecode-workflow** — waveform and beat-grid timecode, timed playback, audio
+17. **open-control-interfaces** — OSC, MIDI, control surfaces. → none
+18. **timecode-workflow** — waveform and beat-grid timecode, timed playback, audio
     import. The biggest item here and the one the spec is most opinionated about.
     → none technically
-18. **llm-cost-overview** — token and cost accounting out of the NL plugin. → none
-19. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own frame
+19. **llm-cost-overview** — token and cost accounting out of the NL plugin. → none
+20. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own frame
     rate survives the boundary. → the benchmarks from demo-shows and
     values-as-functions, which are what decides it
-20. **video-mapping-ndi** — NDI output; scope carefully, it hides a media server.
+21. **video-mapping-ndi** — NDI output; scope carefully, it hides a media server.
     → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-21. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+22. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
     → a real TS plugin wanting to exist
 
 ## Plugins (builds on the WIP WASM runtime)
@@ -553,6 +556,68 @@ current universe images; OH sends are discrete messages worth a ring buffer.
   measured it).
 - 40 Hz × 512 bytes should not hit the WebSocket unthrottled — snapshot on
   demand or diffed at panel rate.
+
+### system-logs-panel
+Nothing in the console shows the console's own log. `tracing` writes to stdout, in
+`pult-backend/src/main.rs` and `pult-gui/src/main.rs` alike, filtered by an `EnvFilter`
+built once at startup with `pult_backend=debug` and whatever `RUST_LOG` says. Nothing
+captures it, and `scripts/demo.sh` redirecting each component into `.demo/*.log` is the
+only place a line is ever kept.
+
+**Which means that on every way of running this that is not a terminal, the log does
+not exist.** `cargo run -p pult-gui` writes to a stdout nobody is looking at, a packaged
+`.app` from the release workflow has nowhere to write it at all, and a browser on the
+network — which is a whole console, by design — has no access to the station's stdout on
+any machine. A rig is consoles in racks and tablets in the room.
+
+**And plugins are already logging into it.** `wit/pult-plugin.wit`'s `logging.log` says
+its message "lands in the station's log, prefixed with the plugin id", and
+`host_impls.rs:799` puts it through `tracing` with `[plugin:<id>]` in front. So a plugin
+author debugging a plugin is debugging into a void unless they happened to start the
+station from a shell. That is the single strongest argument for the panel, because it is
+the audience with no workaround.
+
+**Not the History panel.** That is the oplog: who changed what, per person, undoable,
+replicated, pruned on its own retention. This is diagnostics: per station, not
+replicated, nobody's to undo, and hundreds of lines a second at `debug`. Two panels, and
+the entry says so because "we have a history panel" is the obvious wrong answer.
+
+What made it worth writing down: `values-as-functions` and `peer-address-selection` both
+ended with a failure whose only trace was a `WARN`. The join now answers for itself, but
+a peer lost mid-show, an output whose socket would not bind, a node that stopped
+answering, a showfile migration that complained — all of them are lines nobody sees. The
+cases that matter are exactly the ones where the console *keeps working*, because a
+crash at least announces itself.
+
+Open questions.
+
+- **Where do the lines live?** Not the oplog, for the reasons above. A LOCAL ring
+  buffer published like `output_status` is the obvious shape, but LOCAL state is
+  replaced whole on every write and this is an append-only stream — replacing a
+  thousand-line buffer per line is not a mechanism, it is a mistake. Does this want a
+  subscribe-only stream over the WebSocket instead, which is a new shape in the
+  protocol and should be resisted until it is plainly needed?
+- **Kept where, and for how long?** In memory only, or a file beside
+  `preferences.toml`? A file survives the crash that is the reason somebody went
+  looking; memory does not. `.demo/*.log` is the shape of the file version and it is
+  per run, which is probably right.
+- **What level, and who chooses?** `pult_backend=debug` is loud — a line per write, a
+  heartbeat every five seconds per peer — and a panel showing all of it is unreadable.
+  A `log_level` station preference is the obvious home, this machine's business the way
+  `oplog_retention_minutes` is. Changing it while the show is up means
+  `tracing_subscriber::reload`, since the filter is built once at startup; is that
+  worth it, or is a restart acceptable for a diagnostic setting?
+- **Does a peer's log reach this console?** Reading the roof station's log from the
+  booth is the useful version, and it is the same argument `system-stats-panel` makes
+  about a browser reporting its own load. It is also a great deal of traffic and a
+  question about what a log line carries — a path, a hostname, whatever a plugin chose
+  to say.
+- **Filtering by plugin is nearly free**, because the prefix is already there. Worth
+  making a first-class filter rather than a search box, given who needs it.
+- **The browser's own errors.** A console is a browser, and an exception inside a panel
+  is invisible to the operator and to the station. Same panel, or out of scope? It is
+  the same question `system-stats-panel` asks about frame rate and evaluator time, and
+  the two should probably be answered together.
 
 ### system-stats-panel
 Stations panel (task 10) has cpu/mem/uptime. Missing: network throughput,
