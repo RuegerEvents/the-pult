@@ -15,6 +15,8 @@ surface anymore.
 ## Architecture
 
 - **`crates/pult-macros`** — `#[derive(PultSchema)]` proc macro. Generates `PultEntity` impl, `{T}Patch`, `{T}Create`, `{T}Accessor` from annotated Rust structs.
+- **`crates/pult-render`** — The evaluator: what a parameter is doing, worked out from what is driving it and a moment. `serde` and `uuid` and nothing else — no clock, no OS — because it is compiled twice.
+- **`crates/pult-render-wasm`** — The same crate for a page: `wasm32-unknown-unknown` + `wasm-bindgen`, built by `scripts/build-evaluator.sh` into `frontend/src/lib/evaluator/`.
 - **`crates/pult-schema`** — Data model + path accessor infrastructure. All entity types live here. Source of truth for the WebSocket protocol and sync protocol.
 - **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, SQLite showfiles, peer sync (mDNS + TCP), the WASM plugin runtime (`infra/plugins/`), fixture connectors. `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
@@ -23,6 +25,52 @@ surface anymore.
 - **`tools/openhaunt-node-sim-gui`** — A Tauri window onto a simulated node: buttons for its inputs, and an editor for its config. Talks to the sim over Tauri IPC, so nothing about the OpenHaunt protocol changes to accommodate a debug UI. Applying a config stops the node and starts a new one in its place, without the window closing.
 - **`plugins/`** — WASM plugins: its own cargo workspace (own lockfile; guests build to `wasm32-wasip2`, which does not belong in the console's dependency graph). `sdk/` is what plugins are written against; `command-line` and `natural-language-control` are the reference plugins and the worked examples for `docs/PLUGINS.md`.
 - **`frontend/`** — SvelteKit static-adapter frontend. Built into the binaries that serve it.
+
+## A driven value is evaluated; a sensed one is stored
+
+**Nothing keeps what a parameter is doing.** The console keeps what is *driving* it —
+`live_fades` and `live_effects` on the fixture, anchored in console milliseconds, the
+`programmer_values` entry over them, the home value beneath — and every consumer works
+out a number for the moment and at the rate it needs one. That is the whole of the
+model, and it is why the engine has no tick.
+
+The arithmetic is **one implementation compiled twice**: `pult-render` natively for the
+station, its connectors and its plugins, and `pult-render-wasm` for the browser. There
+is no TypeScript translation of it, deliberately — easings, curves, step lists, spread,
+phase, direction, width, master rates, priority and home fallback are a large enough
+surface that two of it would drift, and the visible form of that drift is the screen
+disagreeing with the lamps. What holds the two *compilations* together is
+`testdata/driven-values.json`, read by `crates/pult-render-wasm/tests/corpus.rs` and by
+`frontend/src/lib/evaluator.test.ts`.
+
+```
+scripts/build-evaluator.sh          # the browser's copy → frontend/src/lib/evaluator/
+```
+
+Three consequences worth holding on to.
+
+**A landed fade stays.** `live_fades` is not a list of what is in flight; it is the
+record of where each parameter got to, because nothing else remembers. A fade that has
+arrived is a constant function of time, and evaluating it gives exactly the number it
+landed on.
+
+**Connectors own their rate.** `OutputPlugin::send(patch, changed, now_ms)` is handed
+what is driving the rig and a moment; the DMX family draws at 40 Hz while anything is
+moving and drops to its keep-alive when nothing is, and an OpenHaunt node that can run
+a fade itself is told once. The engine pushes when the *show* changes — a cue taken, a
+fixture patched, a fader grabbed — and says nothing at all in between. A three-second
+fade over two thousand fixtures is one push.
+
+**The browser has to know the station's clock.** The objects are anchored in console
+time, so a page evaluating against an unadjusted `Date.now()` runs every fade out by
+however wrong its own clock is, silently. `frontend/src/lib/ws/clock.ts` estimates the
+offset the way a round-trip time is estimated, maintains it rather than taking it once,
+and — this is the rule that matters — **says nothing until it has one**: `consoleNow()`
+answers `null` and panels show a gap rather than a plausible wrong number.
+
+What is *sensed* is the exception and stays state. `Fixture::sensed_values` holds what a
+device reported — a contact, a temperature, a humidity — because the console cannot work
+that out: it was told it. Driven outputs are functions; sensed inputs are state.
 
 ## Lifecycle System
 
@@ -162,6 +210,7 @@ scripts/check-api-compat.sh                # an older plugin still runs here
 
 ```
 cargo run -p pult-codegen -- generate     # after any schema change
+scripts/build-evaluator.sh                # the browser's copy of the evaluator
 npm --prefix frontend run build           # once; the backend serves this
 cargo run -p pult-backend                 # then http://localhost:7700
 ```
@@ -241,10 +290,18 @@ playback can tell apart from "ran out of cues".
 
 And the verb backwards: `["fixtures", "__set_home"]` with the same
 `{fixtureId, parameterKind?}` makes where a parameter rests be wherever it is now,
-read from the station's own output. Which is how a house light's actually gets set —
+evaluated at the instant it is asked. Which is how a house light's actually gets set —
 aim it, look at it, keep it — and a verb rather than a write to `home_values` for the
-reason `__home` is one: a caller able to act should not have to be a caller able to
-read the rig. One write of the whole map, so a fixture is one Ctrl-Z.
+reason `__home` is one, sharpened by this change: working out what a parameter is doing
+means holding the whole stack and evaluating it, so a caller able to act would otherwise
+have to be a caller able to read the rig. One write of the whole map, so a fixture is
+one Ctrl-Z.
+
+**And a read, for asking rather than acting.** `parameter.value` is a station RPC —
+`{fixtureId, parameterKind?}`, answering a map keyed by parameter key — for the plugin
+or command line that wants to know what a light is doing and cannot evaluate for
+itself. An RPC rather than a command, deliberately: asking what a lamp is at must not
+write anybody's history.
 
 **A cue fades two ways.** `fade_in_ms` is what a parameter takes going up and
 `fade_out_ms` what it takes coming down, on the cue and per capture, the capture
@@ -284,32 +341,33 @@ Logs for each component land there too.
 **A show can be a size instead of a scene.** `--size small` is the hand-made demo
 and the default; `big` and `huge` add a generated rig on top — 500 or 2000 fixtures
 across as many universes as they need, a cue stack over several sequences each
-capturing a slice of the rig, and effects left running so the station is actually
-ticking. They exist to be measured rather than looked at, and `--measure` is how:
-it seeds, drives every sequence to a cue with an effect on it, and prints what a
-tick cost, then stops — no sims and no dev server, because both would be taking
-the CPU being measured.
+capturing a slice of the rig, and effects left running so the station has something
+moving in it. They exist to be measured rather than looked at, and `--measure` is how:
+it seeds, drives every sequence to a cue with an effect on it, seeds an Art-Net output
+at loopback so there is a frame to measure at all, and prints what one cost — then
+stops, with no sims and no dev server, because both would be taking the CPU being
+measured. `--release` with it, or the figures mean nothing next to anybody else's.
 
 ```
-scripts/demo.sh --size huge              # 2000 fixtures, 300 cues, three plans
-scripts/demo.sh --measure --size big     # seed it, read it, print it, stop
+scripts/demo.sh --size huge                        # 2000 fixtures, 300 cues, three plans
+scripts/demo.sh --measure --release --size huge    # seed it, read it, print it, stop
 ```
 
-**A station knows what its own tick costs** and publishes it in the `stations` row
-beside `cpu_percent`, so the figure `--measure` prints is the one the Stations panel
-shows and the one a peer sees. Two numbers rather than one, because the tick has two
-halves that scale differently — computing what playback wants, and applying it, one
-write and one broadcast and one output push per fixture that moved. On a 2000-fixture
-rig the computing half is under 1% of the tick, so a single figure would have credited
-all of it to playback and sent the next optimisation to the wrong code.
+**A station knows what its own output frames cost** and publishes them in the
+`stations` row beside `cpu_percent`, so the figures `--measure` prints are the ones the
+Stations panel shows and the ones a peer sees. **One entry per connector**, because
+their rates and their costs are their own: Art-Net drawing at 40 Hz beside an OpenHaunt
+node that was told about a fade once are not two samples of one number.
 
-What it is *not*: what the process costs. Flows and the output-config push are
-outside it, which is deliberate — they run whether or not playback had work, so
-including them would make every timer firing a tick and leave a settled station
-unable to say it is settled. A window with no ticks in it reports **nothing rather
-than zero**, since zero would read as "instant" when the truth is "nothing happened".
-What the process costs is `cpu_percent`, in the same row, which is why anything
-printing one prints the other.
+Two figures per connector rather than one, because a frame has two halves that scale
+differently — evaluating, and putting it on the wire. That is not a hypothetical: a
+two-figure split is what showed that evaluating was 0.2% of what a *tick* used to cost,
+and finding what the other 99.8% was still needed a counter added by hand.
+
+What it is *not*: what the process costs. That is `cpu_percent`, in the same row, which
+is why anything printing one prints the other. And a connector that emitted nothing in a
+window reports **nothing rather than zero**, since zero would read as "instant" when the
+truth is that nothing happened.
 
 ## Releases
 
@@ -329,7 +387,7 @@ and Windows. Two things are worth knowing before changing that workflow:
 ```
 cargo test                     # the workspace's default members
 cd plugins && cargo test       # the plugins workspace's pure crates (CLI grammar)
-cd frontend && npm test        # vitest, pure helpers only
+cd frontend && npm test        # vitest, pure helpers and the wasm evaluator
 cd frontend && npm run check   # svelte-check
 ```
 
@@ -337,6 +395,12 @@ Not `--workspace`: `pult-gui` and `openhaunt-node-sim-gui` are workspace members
 that one lockfile covers everything and CI can build with `--locked`, but they are
 excluded from `default-members` so that a plain `cargo build` does not need
 webkit2gtk on the machine. Build them by name (`-p pult-gui`).
+
+`pult-render-wasm` *is* a default member, despite being the browser's half: its tests
+are the corpus that holds the two compilations of the evaluator to each other, and a
+guard outside the default suite is a guard nobody runs. Its vitest half needs
+`scripts/build-evaluator.sh` to have been run, and says so loudly rather than passing
+quietly when it has not.
 
 Both the Rust build and `svelte-check` are kept at zero warnings, so a new one is
 visible rather than buried.

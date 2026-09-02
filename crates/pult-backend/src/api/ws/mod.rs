@@ -302,6 +302,21 @@ async fn handle_client_message(
             send_to_session(state, session_id, msg);
         }
 
+        ClientMessage::ClockSync { sent_at } => {
+            // Answered inline rather than through the engine: the number wanted is
+            // what the show clock says *now*, and queueing the question behind
+            // whatever the engine is doing would put that delay inside the round trip
+            // the client is about to halve.
+            send_to_session(
+                state,
+                session_id,
+                ServerMessage::ClockSync {
+                    sent_at,
+                    station_ms: pult_schema::types::sequence::now_ms() as f64,
+                },
+            );
+        }
+
         ClientMessage::Ping => {
             send_to_session(state, session_id, ServerMessage::Pong);
         }

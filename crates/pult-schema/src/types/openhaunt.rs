@@ -231,7 +231,7 @@ pub fn fixture_type_from(
     module_name: &str,
     description: &NodeDescription,
 ) -> FixtureType {
-    // A name that appears twice would give two parameters one `live_values` key.
+    // A name that appears twice would give two parameters one parameter key.
     // Only named parameters are at risk: the classed kinds either carry their port
     // or are singular on a module.
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();

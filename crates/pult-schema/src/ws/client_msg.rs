@@ -60,5 +60,19 @@ pub enum ClientMessage {
         args: serde_json::Value,
         request_id: String,
     },
+    /// Ask the station what time it thinks it is.
+    ///
+    /// Half of the clock exchange a client needs before it can evaluate anything. What
+    /// is driving a parameter is anchored in console milliseconds, so a browser working
+    /// out a value against its own unadjusted clock runs every fade early or late by
+    /// however wrong that clock is — silently, because each individual value looks
+    /// plausible.
+    ///
+    /// `sent_at` is the client's own clock when it asked, and comes back untouched:
+    /// the round trip is what the client measures the answer against, and only the
+    /// client can measure it. The station reads no clock of the client's own.
+    ClockSync {
+        sent_at: f64,
+    },
     Ping,
 }

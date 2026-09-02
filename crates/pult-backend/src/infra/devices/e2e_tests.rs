@@ -198,12 +198,12 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
         fixture_type_id: dimmer_type.id,
         address: FixtureAddress::Dmx { universe: 1, address: 1 },
         position: None,
-        live_values: Default::default(),
+        sensed_values: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
     };
-    dimmer.live_values.insert("Intensity".into(), ParameterValue::Float(1.0));
+    crate::infra::connectors::dmx::holding(&mut dimmer, "Intensity", ParameterValue::Float(1.0));
 
     let mut fixtures = h.fixtures().await;
     fixtures.push(dimmer);
@@ -214,15 +214,12 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
         .map(|v| serde_json::from_value(v).unwrap())
         .unwrap();
 
-    let patch = Patch {
+    let patch = Patch::new(
         fixtures,
-        fixture_types: types
-            .into_iter()
-            .chain(std::iter::once(dimmer_type))
-            .map(|t| (t.id, t))
-            .collect(),
-    };
-    output.send(&patch, &[]).await.unwrap();
+        types.into_iter().chain(std::iter::once(dimmer_type)).collect(),
+        vec![],
+    );
+    output.send(&patch, &[], 0).await.unwrap();
 
     let (universe, channels) =
         tokio::time::timeout(std::time::Duration::from_secs(2), sim.sacn_frames.recv())
@@ -380,9 +377,8 @@ async fn a_node_that_can_trace_a_shape_is_left_to_get_on_with_it() {
         },
     );
 
-    let patch =
-        Patch { fixtures, fixture_types: types.into_iter().map(|t| (t.id, t)).collect() };
-    output.send(&patch, &[]).await.unwrap();
+    let patch = Patch::new(fixtures, types, vec![]);
+    output.send(&patch, &[], 0).await.unwrap();
 
     // The node has been told, once.
     let watching = sim.snapshot.clone();
@@ -406,11 +402,13 @@ async fn a_node_that_can_trace_a_shape_is_left_to_get_on_with_it() {
     // Taking the shape away stops it, and the console follows with a value.
     let mut settled = patch.fixtures.clone();
     settled[0].live_effects.clear();
-    settled[0].live_values.insert("Intensity".into(), ParameterValue::Float(0.25));
-    output
-        .send(&Patch { fixtures: settled, fixture_types: patch.fixture_types.clone() }, &[])
-        .await
-        .unwrap();
+    crate::infra::connectors::dmx::holding(
+        &mut settled[0],
+        "Intensity",
+        ParameterValue::Float(0.25),
+    );
+    let settled = Patch::new(settled, patch.fixture_types.values().cloned().collect(), vec![]);
+    output.send(&settled, &[], 0).await.unwrap();
 
     let watching = sim.snapshot.clone();
     eventually("the node to stop and take the value", || {

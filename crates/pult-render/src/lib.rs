@@ -13,9 +13,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod driving;
 pub mod effect;
 pub mod value;
 
+pub use driving::{settles_at, value_at, Driving};
 pub use effect::{
     blend, curve_level, cycle_position, ease, effect_value_at, fade_is_done, fade_progress,
     fade_value_at, step_value, Curve, Direction, Easing, EffectSource, RunningEffect, RunningFade,

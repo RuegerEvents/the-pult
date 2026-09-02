@@ -6,9 +6,6 @@
 //! disappearing, which is the more useful failure — an operator wants to see that
 //! the machine in the roof has stopped answering, not to have its row vanish.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-
 use chrono::Utc;
 use pult_schema::{
     events::operation::NodeId,
@@ -17,7 +14,7 @@ use pult_schema::{
     types::{
         fixture::Fixture,
         output::OutputConfig,
-        station::{Station, TickCost},
+        station::{FrameCost, Station},
     },
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
@@ -29,81 +26,6 @@ use crate::engine::EngineHandle;
 /// How often a station says what it is. Fast enough that a console appearing feels
 /// immediate, slow enough that reading `/proc` is not a background job.
 pub const REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// What the engine's ticks have cost since the last time anybody asked.
-///
-/// The engine writes to this on every tick it actually performs; the reporter drains
-/// it once a `REPORT_INTERVAL` and publishes the result. Draining resets it, so the
-/// figures always describe the window just gone rather than all of history.
-///
-/// Plain relaxed atomics rather than a lock or a message. This sits on the tick path,
-/// which is the thing being measured, so it has to cost nothing and it has to cost
-/// the same on five fixtures as on five thousand: four adds and a pair of maxes,
-/// whatever the rig. A `Mutex` would put a lock on the tick path to protect five
-/// integers, and asking the engine for the numbers over its own command channel
-/// would queue the measurement behind the writes it is trying to measure.
-#[derive(Debug, Default)]
-pub struct TickStats {
-    ticks: AtomicU64,
-    total_us: AtomicU64,
-    max_us: AtomicU64,
-    playback_total_us: AtomicU64,
-    playback_max_us: AtomicU64,
-}
-
-impl TickStats {
-    /// Record one tick: how long the whole thing took, and how much of that was
-    /// computing what playback wanted rather than applying it.
-    pub fn record(&self, whole: std::time::Duration, playback: std::time::Duration) {
-        let whole_us = whole.as_micros() as u64;
-        let playback_us = playback.as_micros() as u64;
-        self.total_us.fetch_add(whole_us, Ordering::Relaxed);
-        self.playback_total_us.fetch_add(playback_us, Ordering::Relaxed);
-        self.max_us.fetch_max(whole_us, Ordering::Relaxed);
-        self.playback_max_us.fetch_max(playback_us, Ordering::Relaxed);
-        // Counted last, so a tick landing in the middle of a drain is counted by the
-        // window that also has its microseconds. See `drain`.
-        self.ticks.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Take the window and start a new one.
-    ///
-    /// `None` when the window contained no ticks at all. That is the ordinary state
-    /// of a settled show — the timer still fires, `playback_tick` returns early, and
-    /// nothing is recorded — and it has to stay distinguishable from a tick that took
-    /// no time, which is why this is an `Option` rather than a `TickCost` of zeroes.
-    ///
-    /// The five counters are not read atomically together. Deliberately: the cost of
-    /// making them so is a lock on the tick path, and the cost of not doing is that a
-    /// tick landing between the first swap and the last is attributed to the window
-    /// that already took its microseconds. Because the sums are taken before the
-    /// count, that skews a mean very slightly low for one tick in eighty rather than
-    /// producing a window that claims ticks costing nothing.
-    pub fn drain(&self) -> Option<TickCost> {
-        let total_us = self.total_us.swap(0, Ordering::Relaxed);
-        let max_us = self.max_us.swap(0, Ordering::Relaxed);
-        let playback_total_us = self.playback_total_us.swap(0, Ordering::Relaxed);
-        let playback_max_us = self.playback_max_us.swap(0, Ordering::Relaxed);
-        let ticks = self.ticks.swap(0, Ordering::Relaxed);
-
-        if ticks == 0 {
-            return None;
-        }
-
-        let mean = |total: u64| (total as f64 / ticks as f64 / 1000.0) as f32;
-        Some(TickCost {
-            mean_ms: mean(total_us),
-            max_ms: us_to_ms(max_us),
-            playback_mean_ms: mean(playback_total_us),
-            playback_max_ms: us_to_ms(playback_max_us),
-            ticks: ticks as u32,
-        })
-    }
-}
-
-fn us_to_ms(us: u64) -> f32 {
-    us as f32 / 1000.0
-}
 
 pub struct StationReporter {
     node_id: NodeId,
@@ -118,9 +40,15 @@ pub struct StationReporter {
     started: std::time::Instant,
     /// Peer latencies, measured by the peer loops and published alongside.
     links: watch::Receiver<pult_schema::types::station::PeerLinks>,
-    /// What the engine's ticks have cost since the last report. Drained here, which
-    /// is what makes each published figure describe the window just gone.
-    tick_stats: Arc<TickStats>,
+    /// What each output connector's frames have cost, over the window the output
+    /// manager most recently closed.
+    ///
+    /// A watch rather than an accumulator shared with a lock, and for the same reason
+    /// `links` is one: the manager is a single task that already owns these counters,
+    /// so it can close a window and publish it without anything on the frame path
+    /// taking a lock. Nothing here is a replicated write per frame — the figures ride
+    /// on the station row this reporter already publishes.
+    frames: watch::Receiver<Vec<FrameCost>>,
 }
 
 impl StationReporter {
@@ -130,7 +58,7 @@ impl StationReporter {
         sync_addr: std::net::SocketAddr,
         http_addr: String,
         links: watch::Receiver<pult_schema::types::station::PeerLinks>,
-        tick_stats: Arc<TickStats>,
+        frames: watch::Receiver<Vec<FrameCost>>,
     ) -> Self {
         StationReporter {
             node_id,
@@ -141,7 +69,7 @@ impl StationReporter {
             hostname: System::host_name().unwrap_or_else(|| "console".to_string()),
             started: std::time::Instant::now(),
             links,
-            tick_stats,
+            frames,
         }
     }
 
@@ -228,7 +156,7 @@ impl StationReporter {
             // and taking them resets the counters for the next one. A station whose
             // show is settled drained nothing and says so with `None` rather than
             // repeating whatever it last managed to measure.
-            tick_cost: self.tick_stats.drain(),
+            frame_costs: self.frames.borrow().clone(),
             last_seen: Utc::now(),
         }
     }
@@ -277,77 +205,26 @@ pub async fn prune_stale(engine: &EngineHandle, keep_for: chrono::Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use pult_schema::path::PathSegment;
 
-    fn ms(n: u64) -> Duration {
-        Duration::from_millis(n)
-    }
-
-    /// A settled show stops ticking. Nothing recorded is not a tick of zero.
-    #[test]
-    fn a_window_with_no_ticks_in_it_reports_nothing() {
-        assert_eq!(TickStats::default().drain(), None);
-    }
-
-    #[test]
-    fn a_window_reports_the_mean_and_the_worst_of_what_it_saw() {
-        let stats = TickStats::default();
-        stats.record(ms(2), ms(1));
-        stats.record(ms(8), ms(2));
-        stats.record(ms(2), ms(3));
-
-        let cost = stats.drain().expect("three ticks were recorded");
-        assert_eq!(cost.ticks, 3);
-        assert_eq!(cost.mean_ms, 4.0);
-        // The worst tick, not the last one and not the mean — which is the whole
-        // reason both are published.
-        assert_eq!(cost.max_ms, 8.0);
-        assert_eq!(cost.playback_mean_ms, 2.0);
-        assert_eq!(cost.playback_max_ms, 3.0);
-    }
-
-    /// Draining starts a new window. A station that stops ticking must not keep
-    /// republishing the last figure it managed to measure.
-    #[test]
-    fn draining_a_window_empties_it() {
-        let stats = TickStats::default();
-        stats.record(ms(5), ms(2));
-        assert!(stats.drain().is_some());
-        assert_eq!(stats.drain(), None);
-        assert_eq!(stats.drain(), None);
-    }
-
-    /// The max is a high-water mark within one window and not across windows: a
-    /// station that had one bad tick a minute ago is not still reporting it.
-    #[test]
-    fn the_worst_tick_does_not_outlive_its_window() {
-        let stats = TickStats::default();
-        stats.record(ms(40), ms(30));
-        assert_eq!(stats.drain().unwrap().max_ms, 40.0);
-
-        stats.record(ms(3), ms(1));
-        let cost = stats.drain().expect("the second window had a tick in it");
-        assert_eq!(cost.max_ms, 3.0);
-        assert_eq!(cost.ticks, 1);
-    }
-
-    /// Both halves are recorded, and the computing half is inside the whole. The
-    /// point of the pair is that the difference — applying the effects — is readable.
-    #[test]
-    fn the_two_halves_are_reported_separately() {
-        let stats = TickStats::default();
-        stats.record(ms(10), ms(3));
-
-        let cost = stats.drain().unwrap();
-        assert!(cost.playback_mean_ms < cost.mean_ms);
-        assert_eq!(cost.mean_ms - cost.playback_mean_ms, 7.0);
+    fn a_cost(name: &str, frames: u32) -> FrameCost {
+        FrameCost {
+            output: name.into(),
+            kind: "artnet".into(),
+            mean_ms: 4.0,
+            max_ms: 8.0,
+            evaluating_mean_ms: 1.0,
+            evaluating_max_ms: 2.0,
+            frames,
+            window_ms: 1000,
+        }
     }
 
     /// The reporter, publishing a real row into a real engine.
     ///
-    /// The drain lives in `measure`, so the thing worth pinning down is that a
-    /// station whose window was empty publishes a row saying nothing about its tick
-    /// rather than one claiming its ticks were instant.
+    /// What is worth pinning down here is that a station whose connectors emitted
+    /// nothing publishes a row saying nothing about its frames, rather than one
+    /// claiming its frames were instant.
     mod reporting {
         use super::*;
         use crate::engine::ShowEngine;
@@ -355,13 +232,16 @@ mod tests {
         use pult_schema::types::station::Station;
         use uuid::Uuid;
 
-        async fn a_reporter() -> (crate::engine::EngineHandle, StationReporter, Arc<TickStats>) {
-            let pool = Arc::new(showfile::open_in_memory().await.expect("in-memory showfile"));
+        type Reporting =
+            (crate::engine::EngineHandle, StationReporter, watch::Sender<Vec<FrameCost>>);
+
+        async fn a_reporter() -> Reporting {
+            let pool = std::sync::Arc::new(showfile::open_in_memory().await.expect("in-memory showfile"));
             let node_id = NodeId(Uuid::new_v4());
             let (engine, handle, _broadcast) = ShowEngine::new(node_id, pool, None);
             tokio::spawn(engine.run());
 
-            let stats = Arc::new(TickStats::default());
+            let (frames_tx, frames) = watch::channel(Vec::new());
             let (_tx, links) = watch::channel(Default::default());
             let reporter = StationReporter::new(
                 node_id,
@@ -369,9 +249,9 @@ mod tests {
                 "127.0.0.1:7701".parse().unwrap(),
                 "127.0.0.1:7700".into(),
                 links,
-                Arc::clone(&stats),
+                frames,
             );
-            (handle, reporter, stats)
+            (handle, reporter, frames_tx)
         }
 
         async fn published_row(engine: &crate::engine::EngineHandle) -> Station {
@@ -381,99 +261,52 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_station_that_did_not_tick_publishes_no_tick_cost() {
-            let (engine, mut reporter, _stats) = a_reporter().await;
+        async fn a_station_with_no_outputs_publishes_no_frame_cost() {
+            let (engine, mut reporter, _frames) = a_reporter().await;
 
             reporter.publish().await;
 
             let row = published_row(&engine).await;
-            assert_eq!(row.tick_cost, None, "nothing ticked, so there is nothing to report");
+            assert!(row.frame_costs.is_empty(), "nothing emitted, so there is nothing to report");
             // And the row is otherwise a real row, not a half-published one.
             assert_eq!(row.sync_addr, "127.0.0.1:7701");
         }
 
+        /// Two connectors are two measurements, not two samples of one. Their rates
+        /// and their costs are their own, and a station is not entitled to a single
+        /// figure that hides either.
         #[tokio::test]
-        async fn a_station_that_ticked_publishes_what_it_cost() {
-            let (engine, mut reporter, stats) = a_reporter().await;
-            stats.record(ms(4), ms(1));
-            stats.record(ms(8), ms(3));
+        async fn two_connectors_are_reported_separately() {
+            let (engine, mut reporter, frames) = a_reporter().await;
+            frames.send(vec![a_cost("House", 40), a_cost("Guest console", 3)]).unwrap();
 
             reporter.publish().await;
 
-            let cost = published_row(&engine).await.tick_cost.expect("it ticked twice");
-            assert_eq!(cost.ticks, 2);
-            assert_eq!(cost.mean_ms, 6.0);
-            assert_eq!(cost.max_ms, 8.0);
-            assert_eq!(cost.playback_mean_ms, 2.0);
+            let costs = published_row(&engine).await.frame_costs;
+            assert_eq!(costs.len(), 2);
+            assert_eq!(costs[0].output, "House");
+            assert_eq!(costs[0].frames, 40);
+            assert_eq!(costs[1].output, "Guest console");
+            assert_eq!(costs[1].frames, 3, "and the quiet one is not averaged into the busy one");
         }
 
         /// A station that ran an act and was then taken off has to go quiet about it.
         /// Publishing the same figure for the rest of the evening would read as a
         /// console still working at it.
         #[tokio::test]
-        async fn a_station_that_stops_ticking_does_not_republish_its_last_figure() {
-            let (engine, mut reporter, stats) = a_reporter().await;
-            stats.record(ms(9), ms(3));
+        async fn a_station_that_stops_emitting_does_not_republish_its_last_figure() {
+            let (engine, mut reporter, frames) = a_reporter().await;
+            frames.send(vec![a_cost("House", 40)]).unwrap();
 
             reporter.publish().await;
-            assert!(published_row(&engine).await.tick_cost.is_some());
+            assert!(!published_row(&engine).await.frame_costs.is_empty());
 
+            frames.send(Vec::new()).unwrap();
             reporter.publish().await;
-            assert_eq!(
-                published_row(&engine).await.tick_cost,
-                None,
-                "the second window was empty and should have said so"
+            assert!(
+                published_row(&engine).await.frame_costs.is_empty(),
+                "the second window was empty and should have said so",
             );
         }
-    }
-
-    /// The spec asks that measuring the tick not change what the tick costs. What
-    /// makes that true is that `record` is four atomic operations whatever the rig —
-    /// so the thing to pin down is the *per-call* cost against the 25 ms a tick has.
-    ///
-    /// The bound is deliberately enormous. A relaxed add is nanoseconds; a
-    /// microsecond is a thousand times that and still a twenty-five-thousandth of
-    /// the budget. It is set where it is to catch somebody replacing this with a
-    /// lock or an allocation, not to measure the atomics.
-    #[test]
-    fn recording_a_tick_costs_nothing_worth_measuring() {
-        let stats = TickStats::default();
-        let runs = 100_000;
-
-        let began = std::time::Instant::now();
-        for _ in 0..runs {
-            stats.record(ms(7), ms(2));
-        }
-        let each = began.elapsed() / runs;
-
-        println!("recording one tick costs {each:?}");
-        assert!(
-            each < Duration::from_micros(1),
-            "recording a tick took {each:?} each, which is no longer free",
-        );
-        // And it is the same call on any rig: nothing here reads the show.
-        assert_eq!(stats.drain().unwrap().ticks, runs);
-    }
-
-    #[test]
-    fn recording_from_several_threads_loses_nothing() {
-        let stats = Arc::new(TickStats::default());
-        let threads: Vec<_> = (0..4)
-            .map(|_| {
-                let stats = Arc::clone(&stats);
-                std::thread::spawn(move || {
-                    for _ in 0..250 {
-                        stats.record(ms(2), ms(1));
-                    }
-                })
-            })
-            .collect();
-        for thread in threads {
-            thread.join().unwrap();
-        }
-
-        let cost = stats.drain().unwrap();
-        assert_eq!(cost.ticks, 1000);
-        assert_eq!(cost.mean_ms, 2.0);
     }
 }

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/pult-macros",
     "crates/pult-render",
+    "crates/pult-render-wasm",
     "crates/pult-schema",
     "crates/pult-backend",
     "crates/pult-gui",
@@ -10,12 +11,17 @@ members = [
     "tools/openhaunt-node-sim",
     "tools/openhaunt-node-sim-gui",
 ]
-# The desktop shells are members so that one lockfile covers everything and CI can
-# build them with `--locked`, but not default members: a plain `cargo build` or
-# `cargo test` should not need webkit2gtk on the machine to compile the console.
+# The desktop shells and the browser evaluator are members so that one lockfile covers
+# everything and CI can build them with `--locked`, but not default members: a plain
+# `cargo build` should not need webkit2gtk on the machine, and should not drag
+# `wasm-bindgen` into a native build of the console.
 default-members = [
     "crates/pult-macros",
     "crates/pult-render",
+    # In, despite being the browser's half: its tests are the corpus that holds the
+    # two compilations of the evaluator to each other, and a guard outside the default
+    # suite is a guard nobody runs.
+    "crates/pult-render-wasm",
     "crates/pult-schema",
     "crates/pult-backend",
     "tools/pult-codegen",

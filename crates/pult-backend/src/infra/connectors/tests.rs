@@ -9,6 +9,7 @@ use std::sync::{
 };
 
 use pult_schema::types::{
+    effect::{Easing, RunningFade},
     fixture::{
         Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDefinition,
         ParameterDirection, ParameterKind, ParameterValue,
@@ -47,18 +48,78 @@ struct Recorder {
     fails: bool,
 }
 
+/// A plugin that draws its own frames and writes down what it worked out on each.
+///
+/// The stand-in for a protocol that carries values: it is handed what is *driving*
+/// the rig and a moment, and evaluates for itself, which is the whole of what a
+/// connector does now.
+struct Sampler {
+    levels: Arc<std::sync::Mutex<Vec<f32>>>,
+    period: std::time::Duration,
+}
+
+impl OutputPlugin for Sampler {
+    fn name(&self) -> &'static str {
+        "sampler"
+    }
+
+    fn frames(&self) -> Frames {
+        Frames { while_moving: Some(self.period), when_settled: Some(self.period) }
+    }
+
+    fn send<'a>(&'a mut self, patch: &'a Patch, _changed: &'a [Uuid], now_ms: u64) -> SendFuture<'a> {
+        Box::pin(async move {
+            let began = std::time::Instant::now();
+            for fixture in &patch.fixtures {
+                if let Some(ParameterValue::Float(level)) =
+                    patch.value_at(fixture, "Intensity", now_ms)
+                {
+                    self.levels.lock().unwrap().push(level);
+                }
+            }
+            Ok(Frame { evaluating: began.elapsed() })
+        })
+    }
+}
+
+/// A patch with a fade running on its one fixture, from `t0` for `duration_ms`.
+fn a_fading_patch(t0: u64, duration_ms: u32) -> Patch {
+    let mut patch = a_dimmer_patch(0.0);
+    patch.fixtures[0].live_fades.insert(
+        "Intensity".into(),
+        RunningFade {
+            from: ParameterValue::Float(0.0),
+            to: ParameterValue::Float(1.0),
+            t0,
+            duration_ms,
+            easing: Easing::Linear,
+            cue_id: Uuid::nil(),
+        },
+    );
+    Patch::new(
+        patch.fixtures.clone(),
+        patch.fixture_types.values().cloned().collect(),
+        vec![],
+    )
+}
+
 impl OutputPlugin for Recorder {
     fn name(&self) -> &'static str {
         "recorder"
     }
 
-    fn send<'a>(&'a mut self, _patch: &'a Patch, _changed: &'a [Uuid]) -> SendFuture<'a> {
+    fn send<'a>(
+        &'a mut self,
+        _patch: &'a Patch,
+        _changed: &'a [Uuid],
+        _now_ms: u64,
+    ) -> SendFuture<'a> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fails {
                 anyhow::bail!("this output is unplugged");
             }
-            Ok(())
+            Ok(Frame::default())
         })
     }
 }
@@ -90,22 +151,32 @@ fn a_dimmer_patch(level: f32) -> Patch {
         fixture_type_id: fixture_type.id,
         address: FixtureAddress::Dmx { universe: 3, address: 1 },
         position: None,
-        live_values: Default::default(),
+        sensed_values: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
     };
-    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(level));
-    Patch {
-        fixtures: vec![fixture],
-        fixture_types: [(fixture_type.id, fixture_type)].into_iter().collect(),
-    }
+    // A parameter sits at a value by having a landed fade on it. Nothing stores the
+    // number, so this is the shape of "the console is holding this light at a level".
+    fixture.live_fades.insert(
+        "Intensity".into(),
+        RunningFade {
+            from: ParameterValue::Float(level),
+            to: ParameterValue::Float(level),
+            t0: 0,
+            duration_ms: 0,
+            easing: Easing::Step,
+            cue_id: Uuid::nil(),
+        },
+    );
+    Patch::new(vec![fixture], vec![fixture_type], vec![])
 }
 
 async fn push_a_patch(handle: &OutputHandle, patch: Patch) {
     handle.push(
         patch.fixtures.clone(),
         patch.fixture_types.values().cloned().collect(),
+        patch.programmer.clone(),
         vec![],
     );
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -149,7 +220,8 @@ async fn statuses(engine: &EngineHandle) -> OutputStatuses {
 async fn every_plugin_receives_the_patch() {
     let first = counter();
     let second = counter();
-    let (mut manager, handle) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (mut manager, handle, _costs) =
+        OutputManager::new(NodeId::new(), an_engine().await, None);
     manager.preload(an_output(OutputKind::Artnet, None), Box::new(Recorder { calls: first.clone(), fails: false }));
     manager.preload(an_output(OutputKind::Sacn, None), Box::new(Recorder { calls: second.clone(), fails: false }));
     tokio::spawn(manager.run());
@@ -164,7 +236,8 @@ async fn every_plugin_receives_the_patch() {
 async fn one_failing_plugin_does_not_silence_the_others() {
     let broken = counter();
     let working = counter();
-    let (mut manager, handle) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (mut manager, handle, _costs) =
+        OutputManager::new(NodeId::new(), an_engine().await, None);
     manager.preload(an_output(OutputKind::Artnet, None), Box::new(Recorder { calls: broken.clone(), fails: true }));
     manager.preload(an_output(OutputKind::Sacn, None), Box::new(Recorder { calls: working.clone(), fails: false }));
     tokio::spawn(manager.run());
@@ -184,7 +257,7 @@ async fn one_failing_plugin_does_not_silence_the_others() {
 #[tokio::test]
 async fn a_configured_output_starts_sending() {
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
     tokio::spawn(manager.run());
 
     handle.configure(vec![an_output(OutputKind::Artnet, Some(&addr.to_string()))]);
@@ -196,7 +269,7 @@ async fn a_configured_output_starts_sending() {
 #[tokio::test]
 async fn removing_an_output_stops_it() {
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
     tokio::spawn(manager.run());
     let output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
 
@@ -214,7 +287,7 @@ async fn removing_an_output_stops_it() {
 #[tokio::test]
 async fn disabling_an_output_stops_it_without_deleting_it() {
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
     tokio::spawn(manager.run());
     let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
 
@@ -233,7 +306,7 @@ async fn disabling_an_output_stops_it_without_deleting_it() {
 #[tokio::test]
 async fn an_output_owned_by_another_station_does_not_run_here() {
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
     tokio::spawn(manager.run());
 
     let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
@@ -249,7 +322,7 @@ async fn an_output_owned_by_another_station_does_not_run_here() {
 async fn an_output_owned_by_this_station_runs() {
     let (receiver, addr) = a_receiver().await;
     let node_id = NodeId::new();
-    let (manager, handle) = OutputManager::new(node_id, an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(node_id, an_engine().await, None);
     tokio::spawn(manager.run());
 
     let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
@@ -265,7 +338,7 @@ async fn renaming_an_output_does_not_interrupt_it() {
     // Rebuilding the plugin would re-open the socket and reset its dedup cache, so
     // an unchanged universe would be re-sent — a visible blip for a rename.
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
     tokio::spawn(manager.run());
     let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
 
@@ -286,7 +359,7 @@ async fn renaming_an_output_does_not_interrupt_it() {
 async fn re_addressing_an_output_moves_it() {
     let (old_receiver, old_addr) = a_receiver().await;
     let (new_receiver, new_addr) = a_receiver().await;
-    let (manager, handle) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
     tokio::spawn(manager.run());
     let mut output = an_output(OutputKind::Artnet, Some(&old_addr.to_string()));
 
@@ -303,7 +376,7 @@ async fn re_addressing_an_output_moves_it() {
 
 #[tokio::test]
 async fn an_art_net_output_with_no_address_is_refused_rather_than_guessed_at() {
-    let (manager, handle) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
     let engine = an_engine().await;
     let _ = &engine;
     tokio::spawn(manager.run());
@@ -317,7 +390,7 @@ async fn an_art_net_output_with_no_address_is_refused_rather_than_guessed_at() {
 async fn two_outputs_feed_two_nodes_at_once() {
     let (first_node, first_addr) = a_receiver().await;
     let (second_node, second_addr) = a_receiver().await;
-    let (manager, handle) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
     tokio::spawn(manager.run());
 
     handle.configure(vec![
@@ -336,7 +409,7 @@ async fn two_outputs_feed_two_nodes_at_once() {
 async fn a_working_output_reports_that_it_is_sending() {
     let (_receiver, addr) = a_receiver().await;
     let engine = an_engine().await;
-    let (manager, handle) = OutputManager::new(NodeId::new(), engine.clone(), None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None);
     tokio::spawn(manager.run());
 
     let output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
@@ -358,7 +431,7 @@ async fn a_working_output_reports_that_it_is_sending() {
 #[tokio::test]
 async fn a_failing_output_reports_what_went_wrong() {
     let engine = an_engine().await;
-    let (mut manager, handle) = OutputManager::new(NodeId::new(), engine.clone(), None);
+    let (mut manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None);
     let output = an_output(OutputKind::Artnet, None);
     manager.preload(output.clone(), Box::new(Recorder { calls: counter(), fails: true }));
     tokio::spawn(manager.run());
@@ -376,7 +449,7 @@ async fn a_failing_output_reports_what_went_wrong() {
 async fn an_output_that_stops_running_stops_being_reported() {
     let (_receiver, addr) = a_receiver().await;
     let engine = an_engine().await;
-    let (manager, handle) = OutputManager::new(NodeId::new(), engine.clone(), None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None);
     tokio::spawn(manager.run());
 
     handle.configure(vec![an_output(OutputKind::Artnet, Some(&addr.to_string()))]);
@@ -409,7 +482,7 @@ fn a_bare_address_takes_the_protocol_s_own_port() {
 #[tokio::test]
 async fn a_fixture_no_output_carries_is_reported_until_one_does() {
     let engine = an_engine().await;
-    let (manager, handle) = OutputManager::new(NodeId::new(), engine.clone(), None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None);
     tokio::spawn(manager.run());
 
     // A dimmer on universe 3 and nothing configured: a gap, naming both.
@@ -431,4 +504,128 @@ async fn a_fixture_no_output_carries_is_reported_until_one_does() {
     handle.configure(vec![]);
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
     assert_eq!(coverage(&engine).await.gaps.len(), 1);
+}
+
+// ── A connector's own frames ──────────────────────────────────────────────────
+
+/// The bargain this change made, on one connector: the engine says what is driving
+/// the rig once, and the connector draws a moving value out of it for as long as it
+/// likes without hearing anything more.
+#[tokio::test]
+async fn a_connector_draws_a_moving_value_from_one_patch() {
+    let levels: Arc<std::sync::Mutex<Vec<f32>>> = Default::default();
+    let (mut manager, handle, _costs) =
+        OutputManager::new(NodeId::new(), an_engine().await, None);
+    manager.preload(
+        an_output(OutputKind::Artnet, None),
+        Box::new(Sampler {
+            levels: levels.clone(),
+            period: std::time::Duration::from_millis(20),
+        }),
+    );
+    tokio::spawn(manager.run());
+
+    // A fade starting now and running for half a second. One push, and nothing else
+    // is ever said to this connector.
+    let now = pult_schema::types::sequence::now_ms();
+    push_a_patch(&handle, a_fading_patch(now, 500)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let seen = levels.lock().unwrap().clone();
+    assert!(seen.len() > 5, "the connector drew its own frames: {seen:?}");
+    assert!(
+        seen.windows(2).any(|w| w[1] > w[0]),
+        "and the value moved between them, with nobody writing anything: {seen:?}",
+    );
+    assert!(
+        seen.last().is_some_and(|last| *last > 0.4),
+        "and it got most of the way up: {seen:?}",
+    );
+}
+
+/// The other half: once the fade has landed the connector drops to its protocol's
+/// keep-alive rather than going on drawing at frame rate.
+#[tokio::test]
+async fn a_settled_patch_drops_to_the_keep_alive_rate() {
+    let levels: Arc<std::sync::Mutex<Vec<f32>>> = Default::default();
+    let (mut manager, handle, _costs) =
+        OutputManager::new(NodeId::new(), an_engine().await, None);
+    manager.preload(
+        an_output(OutputKind::Artnet, None),
+        Box::new(Sampler {
+            levels: levels.clone(),
+            period: std::time::Duration::from_millis(20),
+        }),
+    );
+    tokio::spawn(manager.run());
+
+    // A fade that landed long ago: nothing in this patch is moving.
+    push_a_patch(&handle, a_fading_patch(0, 0)).await;
+    let after_the_push = levels.lock().unwrap().len();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let drawn = levels.lock().unwrap().len() - after_the_push;
+    assert!(
+        drawn <= 12,
+        "a settled patch should not be drawn at frame rate: {drawn} frames in 200 ms",
+    );
+}
+
+/// Each connector on its own account, because their rates and their costs are their
+/// own — and a connector that emitted nothing at all carries no figure rather than a
+/// figure of zero.
+#[tokio::test]
+async fn each_connector_reports_its_own_frame_cost() {
+    let (mut manager, handle, mut costs) =
+        OutputManager::new(NodeId::new(), an_engine().await, None);
+    let busy = an_output(OutputKind::Artnet, None);
+    let mut quiet = an_output(OutputKind::Sacn, None);
+    quiet.name = "Guest console".into();
+    manager.preload(
+        busy.clone(),
+        Box::new(Sampler {
+            levels: Default::default(),
+            period: std::time::Duration::from_millis(20),
+        }),
+    );
+    // No frames of its own, and one push is all it will ever be given.
+    manager.preload(quiet.clone(), Box::new(Recorder { calls: counter(), fails: false }));
+    tokio::spawn(manager.run());
+
+    let now = pult_schema::types::sequence::now_ms();
+    push_a_patch(&handle, a_fading_patch(now, 4_000)).await;
+
+    // The manager closes a window every second.
+    let published = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            costs.changed().await.expect("the manager is still running");
+            let now = costs.borrow().clone();
+            if now.len() == 2 {
+                return now;
+            }
+        }
+    })
+    .await
+    .expect("both connectors to report inside three seconds");
+
+    let house = published.iter().find(|c| c.output == busy.name).expect("the busy one");
+    let guest = published.iter().find(|c| c.output == quiet.name).expect("the quiet one");
+    assert!(house.frames > guest.frames, "{house:?} vs {guest:?}");
+    assert!(house.evaluating_mean_ms <= house.mean_ms, "the half is inside the whole");
+    assert_eq!(guest.frames, 1, "one push, and no frames of its own");
+
+    // And once nothing is pushed and the quiet one has no rate, it carries no figure
+    // at all rather than a figure of zero.
+    let later = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            costs.changed().await.expect("the manager is still running");
+            let now = costs.borrow().clone();
+            if !now.iter().any(|c| c.output == quiet.name) {
+                return now;
+            }
+        }
+    })
+    .await
+    .expect("the quiet connector to fall silent inside three seconds");
+    assert!(later.iter().all(|c| c.frames > 0), "nothing reports a window of no frames");
 }

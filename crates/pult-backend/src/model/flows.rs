@@ -39,7 +39,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq)]
 pub struct InputEvent {
     pub fixture_id: Uuid,
-    /// The `live_values` key, as [`crate::model::playback::parameter_key`] writes it.
+    /// The parameter key, as [`crate::model::playback::parameter_key`] writes it.
     pub key: String,
     /// What was there before, if anything ever was.
     pub previous: Option<ParameterValue>,
@@ -107,6 +107,15 @@ impl Flows {
     /// Is there anything to do even with no input? A delay still has to expire.
     pub fn has_work(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    /// When the soonest held pulse comes due.
+    ///
+    /// The engine sleeps on this rather than polling for it. Without it a graph with
+    /// a five-minute delay in it would keep the engine awake for five minutes,
+    /// which is the shape of periodic work this change exists to remove.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.pending.iter().map(|(_, at)| *at).min()
     }
 
     pub fn tick(

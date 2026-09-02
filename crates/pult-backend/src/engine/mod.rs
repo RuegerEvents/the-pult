@@ -28,8 +28,8 @@ use uuid::Uuid;
 
 use crate::{
     error::BackendError,
-    infra::{connectors::OutputHandle, showfile::{oplog, order}, stations::TickStats, sync::SyncHandle},
-    model::playback::{parameter_key, Playback, PlaybackEffect, ShowView, TICK},
+    infra::{connectors::OutputHandle, showfile::{oplog, order}, sync::SyncHandle},
+    model::playback::{parameter_key, Playback, PlaybackEffect, ShowView},
     model::flows::{FlowEffect, FlowGraph, Flows, InputEvent},
 };
 
@@ -297,17 +297,24 @@ pub enum EngineCommand {
         args: serde_json::Value,
         reply: oneshot::Sender<Result<serde_json::Value, BackendError>>,
     },
-    /// Merge one key into a fixture's live values.
+    /// Merge one key into what a fixture's devices have reported.
     ///
     /// A device writing a sensor reading cannot read-modify-write from outside the
     /// actor: two ports reporting in the same millisecond would each write back a
     /// map missing the other's key. Merging inside the actor is the whole point.
-    SetLiveValue {
+    SetSensedValue {
         fixture_id: Uuid,
         key: String,
         value: serde_json::Value,
         reply: oneshot::Sender<Result<(), BackendError>>,
     },
+    /// How many driven parameters the flow sampler is keeping a sample of.
+    ///
+    /// Test-only, and the one thing about the sampler that cannot be observed from
+    /// outside: what it costs is the size of this set, and the property worth pinning
+    /// down is that the set follows the *Watch* nodes rather than the rig.
+    #[cfg(test)]
+    SampledParameters { reply: oneshot::Sender<usize> },
     ApplyPeerOperation(Operation),
     /// Apply a batch of operations a peer sent to catch this node up. Ordered oldest
     /// first, so replaying them in sequence lands on the same state the peer has.
@@ -424,11 +431,13 @@ impl EngineHandle {
         rx.await.unwrap_or_else(|_| Box::pin(futures::stream::empty()))
     }
 
-    /// Merge one key into a fixture's live values, replicating the result.
+    /// Merge one key into what a fixture's devices have reported, replicating the
+    /// result.
     ///
-    /// Unlike a playback effect, which every node derives for itself from cue state,
-    /// an input only exists on the node the device is talking to. It has to be sent.
-    pub async fn set_live_value(
+    /// Unlike what is driving a parameter, which every node derives for itself from
+    /// cue state, an input only exists on the node the device is talking to. It has to
+    /// be sent.
+    pub async fn set_sensed_value(
         &self,
         fixture_id: Uuid,
         key: String,
@@ -436,10 +445,20 @@ impl EngineHandle {
     ) -> Result<(), BackendError> {
         let (tx, rx) = oneshot::channel();
         self.0
-            .send(EngineCommand::SetLiveValue { fixture_id, key, value, reply: tx })
+            .send(EngineCommand::SetSensedValue { fixture_id, key, value, reply: tx })
             .await
             .map_err(|_| BackendError::ChannelClosed)?;
         rx.await?
+    }
+
+    /// How many driven parameters the flow sampler is keeping a sample of.
+    #[cfg(test)]
+    pub async fn sampled_parameters(&self) -> usize {
+        let (tx, rx) = oneshot::channel();
+        if self.0.send(EngineCommand::SampledParameters { reply: tx }).await.is_err() {
+            return 0;
+        }
+        rx.await.unwrap_or(0)
     }
 
     pub async fn get_clock(&self) -> VectorClock {
@@ -566,6 +585,10 @@ pub struct ShowEngine {
     /// instead of deserializing the whole state 40 times a second for nothing.
     state_version: u64,
     playback_seen: u64,
+    /// The version the output side was last handed. Its own counter, because the
+    /// output side has to hear about a change playback rightly ignores — a fixture
+    /// patched into a dark house moves no light and still moves the wire.
+    pushed_version: u64,
     /// The `outputs` collection changed and the output side has not been told yet.
     /// Set on the first tick too, so a saved show comes up sending.
     outputs_dirty: bool,
@@ -578,6 +601,13 @@ pub struct ShowEngine {
     /// The fixture parameters some *Watch* node is looking at, so a fade can be
     /// offered to the flow tick without walking every graph on every frame.
     watched: std::collections::HashSet<(Uuid, String)>,
+    /// What each of those was last seen at, which is what makes an edge visible.
+    ///
+    /// The one place in the console that still keeps a driven value, and it is as
+    /// large as the *Watch* nodes in the show rather than as large as the rig.
+    watch_samples: HashMap<(Uuid, String), pult_schema::types::fixture::ParameterValue>,
+    /// When they were last looked at.
+    watch_sampled_at: std::time::Instant,
     /// Appends since the log was last cut back.
     ///
     /// In memory rather than on disk: a station restarted often prunes at open and
@@ -593,13 +623,6 @@ pub struct ShowEngine {
     /// wrong, and at a threshold of a thousand appends against a delete that takes
     /// seconds, an overlap is reachable rather than theoretical.
     pruning: Arc<std::sync::atomic::AtomicBool>,
-    /// What the ticks have cost since the station last published.
-    ///
-    /// Shared with `StationReporter`, which drains it every couple of seconds. The
-    /// engine only ever adds to it, and only on a tick it actually performed — a
-    /// settled show records nothing, which is what makes "not ticking" a state the
-    /// row can report rather than a very fast tick.
-    tick_stats: Arc<TickStats>,
 }
 
 /// How many appends between prunes.
@@ -608,6 +631,14 @@ pub struct ShowEngine {
 /// station left up for a fortnight is bounded while it runs rather than only when it
 /// is next opened — which is the case that motivated this at all.
 const APPENDS_BETWEEN_PRUNES: u32 = 1_000;
+
+/// How often a watched parameter is looked at.
+///
+/// 40 Hz, which is what the engine used to run its whole tick at and is finer than an
+/// operator can see a threshold cross. The cost of it is one evaluation per watched
+/// parameter, so it is a rate a show sets by how much it watches rather than by how
+/// large its rig is.
+const WATCH_SAMPLE: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl ShowEngine {
     /// Build an engine that owns its command channel. `main` uses `new_with_rx` so it
@@ -647,13 +678,15 @@ impl ShowEngine {
             path_clocks: HashMap::new(),
             state_version: 0,
             playback_seen: 0,
+            pushed_version: 0,
             outputs_dirty: true,
             pushed_fixtures: false,
             flows_dirty: true,
             watched: Default::default(),
+            watch_samples: HashMap::new(),
+            watch_sampled_at: std::time::Instant::now(),
             appends_since_prune: Default::default(),
             pruning: Default::default(),
-            tick_stats: Default::default(),
         };
         (engine, broadcast)
     }
@@ -663,24 +696,32 @@ impl ShowEngine {
         self.output = Some(output);
     }
 
-    /// Share the tick accumulator with whoever publishes it. Call before `run`.
-    ///
-    /// A station that is never given one still measures — into an accumulator nobody
-    /// drains, which is what an engine in a test wants and costs the same either way.
-    pub fn set_tick_stats(&mut self, stats: Arc<TickStats>) {
-        self.tick_stats = stats;
-    }
-
     pub async fn run(mut self) {
-        let mut ticker = tokio::time::interval(TICK);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
         loop {
+            // What the engine does on its own, and when. There is no rate here: a fade
+            // in progress is nothing for the engine to do, because nobody is storing
+            // what it is worth. What is left is a follow cue coming due, a *Watch* node
+            // wanting a sample, and work left over from the last command — so a station
+            // running a show with neither of those sleeps until somebody speaks to it.
+            let wake = tokio::time::sleep(self.next_wake());
+
+            // `biased` so a burst of commands — opening a showfile, a peer catching us
+            // up — drains before any of it is acted on, rather than each write dragging
+            // a pass and an output push behind it.
             let cmd = tokio::select! {
+                biased;
                 cmd = self.rx.recv() => cmd,
-                _ = ticker.tick() => {
+                _ = wake => {
                     self.push_output_config().await;
-                    self.playback_tick().await;
+                    let moved = self.playback_pass().await;
+                    // The output side hears about the show whether or not playback had
+                    // anything to say: a re-addressed or newly patched fixture changes
+                    // the wire without changing a single level.
+                    if self.pushed_version != self.state_version || !moved.is_empty() {
+                        self.pushed_version = self.state_version;
+                        self.push_output(moved).await;
+                    }
+                    self.sample_watched();
                     self.flows_tick().await;
                     continue;
                 }
@@ -771,12 +812,16 @@ impl ShowEngine {
                     self.state_version += 1;
                     let _ = reply.send(result);
                 }
-                EngineCommand::SetLiveValue { fixture_id, key, value, reply } => {
-                    let result = self.set_live_value(fixture_id, key, value).await;
+                EngineCommand::SetSensedValue { fixture_id, key, value, reply } => {
+                    let result = self.set_sensed_value(fixture_id, key, value).await;
                     if result.is_ok() {
                         self.state_version += 1;
                     }
                     let _ = reply.send(result);
+                }
+                #[cfg(test)]
+                EngineCommand::SampledParameters { reply } => {
+                    let _ = reply.send(self.watch_samples.len());
                 }
                 EngineCommand::ApplyPeerOperation(op) => {
                     self.apply_peer_operation(op).await;
@@ -808,47 +853,95 @@ impl ShowEngine {
         }
     }
 
+    // ── Waking up ─────────────────────────────────────────────────────────────
+
+    /// How long until the engine has something of its own to do.
+    ///
+    /// Zero while anything is outstanding, which is what makes a burst of writes turn
+    /// into one pass: the loop polls the command channel first, so this only comes
+    /// round when there is nothing left to drain.
+    fn next_wake(&self) -> std::time::Duration {
+        if self.outputs_dirty
+            || self.state_version != self.playback_seen
+            || self.state_version != self.pushed_version
+            || self.flows_dirty
+            || !self.input_events.is_empty()
+        {
+            return std::time::Duration::ZERO;
+        }
+
+        // Far enough away to be a sleep and not a rate. A station with a show up, no
+        // follow pending and nothing watched genuinely has nothing to do until a
+        // command arrives, and this is how it says so.
+        let mut wait = std::time::Duration::from_secs(3600);
+        if let Some(due) = self.playback.next_deadline() {
+            let now = pult_schema::types::sequence::now_ms();
+            wait = wait.min(std::time::Duration::from_millis(due.saturating_sub(now)));
+        }
+        if !self.watched.is_empty() {
+            wait = wait.min(WATCH_SAMPLE.saturating_sub(self.watch_sampled_at.elapsed()));
+        }
+        // A held pulse in a flow graph is a deadline like a follow cue, not a reason
+        // to keep looking.
+        if let Some(due) = self.flows.next_deadline() {
+            wait = wait.min(due.saturating_duration_since(std::time::Instant::now()));
+        }
+        wait
+    }
+
     // ── Playback ──────────────────────────────────────────────────────────────
 
-    /// Advance cue playback one tick and apply what it asks for.
+    /// Work out what is driving the rig, and publish it.
     ///
-    /// Effects land with LOCAL lifecycle. Live values and active-cue flags are derived
-    /// from cue state, which is already replicated, so every node computes the same
-    /// output for itself rather than each fanning its copy out to all the others.
-    async fn playback_tick(&mut self) {
-        if !self.playback.has_work() && self.state_version == self.playback_seen {
-            return;
+    /// Run when the show changed or a follow came due, and at no other time. What it
+    /// publishes are descriptions — the fades and the shapes, anchored in console time
+    /// — never values: a fade in progress produces nothing here at all, because the
+    /// connector drawing it and the browser showing it each work out what it is worth
+    /// for the moment they are asking about.
+    ///
+    /// It lands with LOCAL lifecycle. Every station derives the same descriptions from
+    /// the same replicated cue state, so fanning them out would be sending each console
+    /// a slower copy of what it has already computed.
+    async fn playback_pass(&mut self) -> Vec<Uuid> {
+        let follow_due = self
+            .playback
+            .next_deadline()
+            .is_some_and(|due| due <= pult_schema::types::sequence::now_ms());
+        if !follow_due && self.state_version == self.playback_seen {
+            return Vec::new();
         }
         self.playback_seen = self.state_version;
 
-        // Timed from here rather than from the top of the timer arm, and that is the
-        // load-bearing choice. `push_output_config` and `flows_tick` fire whether or
-        // not playback had anything to do, so a number that included them would make
-        // every timer firing a tick and "this station is not ticking" would be a state
-        // nothing could report. What is measured is what playback costs — reading the
-        // show, computing what it wants, and applying it — which is also the only part
-        // that grows with the rig. What the *process* costs is `cpu_percent`, in the
-        // same row.
-        let tick_began = std::time::Instant::now();
-
         let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
+        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
+            self.read_collection("programmer_values");
+
+        // Nothing is on, nothing is held, and nothing is remembered — so there is
+        // nothing this pass could publish, and no reason to read the rig to find that
+        // out. Which matters because a pass now runs on every change to the show
+        // rather than at a rate: patching a rig into a dark house would otherwise walk
+        // the whole of it once per fixture.
+        if self.playback.is_idle()
+            && programmer.is_empty()
+            && sequences.iter().all(|s| s.active_cue_index.is_none())
+        {
+            return Vec::new();
+        }
+
         let cues: Vec<pult_schema::types::cue::Cue> = self.read_collection("cues");
         let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
         // For one question — where a parameter rests when nothing is driving it. A
         // handful of rows beside thousands of fixtures.
         let fixture_types: Vec<FixtureType> = self.read_collection("fixture_types");
-        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
-            self.read_collection("programmer_values");
         let masters: Vec<pult_schema::types::speedmaster::SpeedMaster> =
             self.read_collection("speed_masters");
         let home_fade_ms = self.home_fade_ms();
 
-        // Read once per tick rather than per effect: every station has to place this
-        // tick at one instant, and asking the clock twice inside a tick would put two
+        // Read once per pass rather than per effect: every station has to place this
+        // pass at one instant, and asking the clock twice inside one would put two
         // fixtures on the same cue a fraction of a cycle apart.
         let wall_ms = pult_schema::types::sequence::now_ms();
 
-        let playback_began = std::time::Instant::now();
         let effects = {
             let view = ShowView::new(
                 &sequences,
@@ -859,13 +952,8 @@ impl ShowEngine {
                 &masters,
                 home_fade_ms,
             );
-            self.playback.tick(tokio::time::Instant::now().into_std(), wall_ms, &view)
+            self.playback.pass(wall_ms, &view)
         };
-        // The computing half on its own. Task 29 measured it as roughly a third of
-        // the whole, the rest being one write, one broadcast and one output push per
-        // fixture that moved — so publishing one figure would credit all of it to
-        // playback and send the next optimisation to the wrong half.
-        let playback_took = playback_began.elapsed();
 
         // A follower takes its cue positions from the leader, so only the leader
         // fires follow cues. Both ends still run their own fades.
@@ -874,12 +962,6 @@ impl ShowEngine {
 
         for effect in effects {
             match effect {
-                PlaybackEffect::SetLiveValues { fixture_id, values } => {
-                    self.queue_watched_changes(fixture_id, &values);
-                    let path = entity_field_path("fixtures", fixture_id, "live_values");
-                    self.apply_local(path, serde_json::to_value(values).unwrap_or_default()).await;
-                    moved.push(fixture_id);
-                }
                 PlaybackEffect::SetLiveEffects { fixture_id, effects } => {
                     let path = entity_field_path("fixtures", fixture_id, "live_effects");
                     self.apply_local(path, serde_json::to_value(effects).unwrap_or_default())
@@ -908,9 +990,7 @@ impl ShowEngine {
             }
         }
 
-        self.push_output(moved).await;
-
-        self.tick_stats.record(tick_began.elapsed(), playback_took);
+        moved
     }
 
     /// Run a registered command and replicate the result.
@@ -928,45 +1008,67 @@ impl ShowEngine {
         }
     }
 
-    /// Tell the flow tick about a fade, but only where something is watching.
+    /// Sample the driven parameters some *Watch* node is looking at.
     ///
-    /// A cue's own output is show state like any other, so a flow ought to be able
-    /// to react to it — the alternative is a *Watch* node that offers every driven
-    /// parameter and silently never fires for any of them.
+    /// Edge detection is the one thing that cannot be done from a function. A *Watch*
+    /// node asks "when this parameter crosses a threshold", and answering that means
+    /// having looked at it twice — so where everything else in the console stopped
+    /// materialising values, this keeps a sample, and only of what is actually
+    /// watched.
     ///
-    /// The gate matters: this runs at 40 Hz for every fixture in a fade, and without
-    /// it a 500-fixture rig would queue thousands of events a second for a graph
-    /// that reads none of them. `watched` is rebuilt only when the graphs change.
-    fn queue_watched_changes(
-        &mut self,
-        fixture_id: Uuid,
-        values: &std::collections::HashMap<String, pult_schema::types::fixture::ParameterValue>,
-    ) {
+    /// Which is the whole difference from what it replaces. This used to be handed the
+    /// values of every fixture the engine had just written, forty times a second, and
+    /// throw away the ones nothing was looking at; a rig of two thousand paid for a
+    /// graph watching one lamp. Now the set decides the work: nothing watched, nothing
+    /// sampled, and one parameter watched costs one evaluation a sample.
+    fn sample_watched(&mut self) {
         if self.watched.is_empty() {
+            self.watch_samples.clear();
             return;
         }
-        let previous = self
-            .state
-            .entity("fixtures", fixture_id)
-            .and_then(|entity| entity.get("live_values"))
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
+        if self.watch_sampled_at.elapsed() < WATCH_SAMPLE {
+            return;
+        }
+        self.watch_sampled_at = std::time::Instant::now();
 
-        for (key, current) in values {
-            if !self.watched.contains(&(fixture_id, key.clone())) {
+        let now_ms = pult_schema::types::sequence::now_ms();
+        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
+            self.read_collection("programmer_values");
+        let held = pult_schema::types::fixture::HeldByProgrammer::of(&programmer);
+
+        let watching: Vec<(Uuid, String)> = self.watched.iter().cloned().collect();
+        for at in watching {
+            let Some(fixture) = self
+                .state
+                .entity("fixtures", at.0)
+                .and_then(|row| serde_json::from_value::<Fixture>(row.clone()).ok())
+            else {
+                continue;
+            };
+            let fixture_type = self.fixture_type_of(&fixture);
+            let driving = pult_schema::types::fixture::driving(
+                &fixture,
+                fixture_type.as_ref(),
+                held.get(at.0, &at.1),
+                &at.1,
+            );
+            // A parameter nothing is driving is one a device reports, and those queue
+            // their own events as they arrive. Sampling home values would fire a graph
+            // once at startup for every lamp in the rig.
+            if !driving.is_driven() {
+                self.watch_samples.remove(&at);
                 continue;
             }
-            let before = previous
-                .get(key)
-                .and_then(|v| serde_json::from_value(v.clone()).ok());
-            if before.as_ref() == Some(current) {
+            let Some(current) = pult_render::value_at(&driving, now_ms) else { continue };
+            let previous = self.watch_samples.insert(at.clone(), current.clone());
+            if previous.as_ref() == Some(&current) {
                 continue;
             }
             self.input_events.push(InputEvent {
-                fixture_id,
-                key: key.clone(),
-                previous: before,
-                current: current.clone(),
+                fixture_id: at.0,
+                key: at.1,
+                previous,
+                current,
             });
         }
     }
@@ -1049,14 +1151,22 @@ impl ShowEngine {
                 self.run_synced_command(path, serde_json::json!({ "cueId": cue_id })).await;
             }
             TriggerAction::SetParameter { fixture_id, parameter, value } => {
+                // A drive, not a stored value: it takes the key from whatever fade or
+                // effect had it and parks the parameter there, so a connector and a
+                // browser see the same thing every other layer produces. A cue taken
+                // afterwards takes the key back. Last writer wins, which is a design
+                // question and not a bug to fix in passing.
                 let key = crate::model::playback::parameter_key(&parameter);
-                let value = serde_json::to_value(value).unwrap_or_default();
-                // A running fade writing the same key will win the next tick. Last
-                // writer takes it, which is a design question and not a bug to fix
-                // in passing.
-                if let Err(e) = self.set_live_value(fixture_id, key, value).await {
-                    debug!("[flows] set parameter on {fixture_id}: {e}");
-                }
+                self.playback.set_parameter(
+                    fixture_id,
+                    key,
+                    value,
+                    pult_schema::types::sequence::now_ms(),
+                );
+                // The pass that publishes it has already run this time round the loop,
+                // so ask for another rather than leaving the drive until something else
+                // changes the show.
+                self.playback_seen = self.playback_seen.wrapping_sub(1);
             }
         }
     }
@@ -1088,11 +1198,17 @@ impl ShowEngine {
         output.configure(self.read_collection("outputs"));
     }
 
-    /// Hand the current patch to the output plugins.
+    /// Hand the output plugins the current picture of what is driving the rig.
     ///
-    /// Sent on every tick that did any work, including a patch edit that moved no
-    /// light, because a re-addressed fixture changes the wire without changing a
-    /// single level. Plugins decide for themselves what is worth transmitting.
+    /// Sent when the **show** changes — a cue taken, a fade started, a fixture patched,
+    /// an operator taking a fader — and not when a value moves, which after this change
+    /// the engine never separately learns. A connector holds this and draws its own
+    /// frames from it, so a three-second fade is one push rather than a hundred and
+    /// twenty.
+    ///
+    /// The programmer goes with it because it is a layer over playback that only the
+    /// show knows about, and a connector that could not see it would put a cue on the
+    /// wire while an operator had hold of the fader.
     async fn push_output(&mut self, moved: Vec<Uuid>) {
         let Some(output) = &self.output else { return };
         let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
@@ -1104,31 +1220,35 @@ impl ShowEngine {
         // which fixtures nothing reaches — has to hear that there are none left.
         self.pushed_fixtures = !fixtures.is_empty();
         let fixture_types = self.read_collection("fixture_types");
-        output.push(fixtures, fixture_types, moved);
+        let programmer = self.read_collection("programmer_values");
+        output.push(fixtures, fixture_types, programmer, moved);
     }
 
-    /// Merge one key into a fixture's live values and replicate the whole map.
+    /// Merge one key into what a fixture's devices have reported, and replicate the
+    /// whole map.
     ///
     /// SYNCED rather than LOCAL: nothing else on the network can work this value out
-    /// for itself, because it came off a wire attached to this node.
-    async fn set_live_value(
+    /// for itself, because it came off a wire attached to this node. Which is also why
+    /// this is the one value the console still stores — it was told it rather than
+    /// deciding it, so there is no function to evaluate.
+    pub(crate) async fn set_sensed_value(
         &mut self,
         fixture_id: Uuid,
         key: String,
         value: serde_json::Value,
     ) -> Result<(), BackendError> {
-        let path = entity_field_path("fixtures", fixture_id, "live_values");
+        let path = entity_field_path("fixtures", fixture_id, "sensed_values");
         let mut values = self
             .state
             .entity("fixtures", fixture_id)
-            .and_then(|entity| entity.get("live_values"))
+            .and_then(|entity| entity.get("sensed_values"))
             .cloned()
             .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
         let previous = values.get(&key).cloned();
         set_field(&mut values, &key, value.clone());
 
-        // Queued for the next trigger tick rather than read back from the state
-        // there, so a press and a release between two ticks are both seen.
+        // Queued for the next flow pass rather than read back from the state there, so
+        // a press and a release between two passes are both seen.
         if let Ok(current) = serde_json::from_value(value) {
             self.input_events.push(InputEvent {
                 fixture_id,
@@ -1145,7 +1265,7 @@ impl ShowEngine {
         if let Some(sync) = &self.sync {
             sync.broadcast_synced(path, values, self.clock.clone(), Authorship::none()).await;
         }
-        // The output side has to see it now: an input can arrive between two ticks,
+        // The output side has to see it now: an input can arrive between two passes,
         // and a relay that follows a button should not wait for the next one.
         self.push_output(vec![fixture_id]).await;
         Ok(())
@@ -1478,29 +1598,30 @@ impl ShowEngine {
             ));
         }
 
-        // Nothing held, so the programmer takes the key — starting from what
-        // playback is showing, or from what the fixture type says the parameter
-        // rests at when nothing has ever driven it.
+        // Nothing held, so the programmer takes the key — starting from what playback
+        // is showing at this instant, which since nothing stores that any more means
+        // evaluating the fade or shape driving it, and falling through to where the
+        // parameter rests when nothing ever has.
         let fixture_uuid: Uuid =
             fixture_id.parse().map_err(|_| bad("that fixtureId is not a uuid"))?;
+        // The type is optional here, deliberately: a fixture patched to a type this
+        // station has not received is still being driven by whatever is on it, and a
+        // nudge should move that rather than refuse.
         let showing = self
-            .state
-            .get_by_path(&vec![
-                PathSegment::Key("fixtures".into()),
-                PathSegment::Id(fixture_uuid),
-                PathSegment::Key("live_values".into()),
-                PathSegment::Key(key.clone()),
-            ])
-            .filter(|v| !v.is_null())
-            .map(|showing| {
-                serde_json::from_value::<ParameterValue>(showing)
-                    .map_err(|e| bad(&format!("the live value does not parse: {e}")))
+            .fixture_row(fixture_uuid)
+            .and_then(|fixture| {
+                let fixture_type = self.fixture_type_of(&fixture);
+                let driving = pult_schema::types::fixture::driving(
+                    &fixture,
+                    fixture_type.as_ref(),
+                    None, // nothing is held: that is the branch above
+                    &key,
+                );
+                pult_render::value_at(&driving, pult_schema::types::sequence::now_ms())
             })
-            .transpose()?
             .or_else(|| self.home_value_of(fixture_uuid, &kind))
             .ok_or_else(|| bad("that fixture has no such parameter"))?;
-        let current = showing;
-        let next = current.nudged(by).map_err(|reason| bad(&reason))?;
+        let next = showing.nudged(by).map_err(|reason| bad(&reason))?;
 
         Ok((
             vec![
@@ -1534,6 +1655,32 @@ impl ShowEngine {
     /// Read out of the state tree and parsed rather than picked at as JSON, because
     /// everything asked of them here — an override, a parameter's direction, its
     /// default — is a question the schema already answers.
+    /// One patched fixture, if this station has it.
+    fn fixture_row(&self, fixture_id: Uuid) -> Option<Fixture> {
+        self.state
+            .get_by_path(&vec![
+                PathSegment::Key("fixtures".into()),
+                PathSegment::Id(fixture_id),
+            ])
+            .filter(|v| !v.is_null())
+            .and_then(|row| serde_json::from_value(row).ok())
+    }
+
+    /// The type a fixture is patched as, where this station holds the row.
+    ///
+    /// Optional because it need not: a fixture patched to a type that has not
+    /// replicated yet still has its own home overrides, and a house light should not
+    /// go dark waiting for a row.
+    fn fixture_type_of(&self, fixture: &Fixture) -> Option<FixtureType> {
+        self.state
+            .get_by_path(&vec![
+                PathSegment::Key("fixture_types".into()),
+                PathSegment::Id(fixture.fixture_type_id),
+            ])
+            .filter(|v| !v.is_null())
+            .and_then(|row| serde_json::from_value(row).ok())
+    }
+
     fn fixture_and_type(&self, fixture_id: Uuid) -> Option<(Fixture, FixtureType)> {
         let fixture = self
             .state
@@ -1686,11 +1833,12 @@ impl ShowEngine {
     /// house light: rather than sending a parameter to where it rests, it makes where
     /// it rests be wherever the parameter is now. Aim the light, look at it, keep it.
     ///
-    /// A verb rather than an ordinary write to `home_values` because the value being
-    /// stored is one only the station holds. A browser could read `live_values` and
-    /// write the map itself; the command line and a plugin with no data access could
-    /// not, and the whole argument `__by` and `__home` made was that a caller able to
-    /// act should not have to be a caller able to read the rig.
+    /// A verb rather than an ordinary write to `home_values` because working out what
+    /// a parameter is putting out means holding the whole stack — the fade, the shape
+    /// over it, the programmer over that — and evaluating it for this instant. A
+    /// browser can do that; the command line and a plugin with no data access cannot,
+    /// and the whole argument `__by` and `__home` made was that a caller able to act
+    /// should not have to be a caller able to read the rig.
     ///
     /// One write, of the whole map. `home_values` is a single JSON column, so that is
     /// the shape of the field — and it means taking a fixture's whole output is one
@@ -1742,11 +1890,29 @@ impl ShowEngine {
             None => output_parameters(&fixture_type).map(|p| p.kind.clone()).collect(),
         };
 
+        // Evaluated at one instant for the whole fixture, so a mover caught mid-fade
+        // keeps the pose it was actually in rather than a pan from one millisecond and
+        // a tilt from the next.
+        let now_ms = pult_schema::types::sequence::now_ms();
+        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
+            self.read_collection("programmer_values");
+        let held = pult_schema::types::fixture::HeldByProgrammer::of(&programmer);
+
         let mut home = fixture.home_values.clone();
         let mut took = false;
         for kind in kinds {
             let key = parameter_key(&kind);
-            let Some(value) = fixture.live_values.get(&key) else {
+            let driving = pult_schema::types::fixture::driving(
+                &fixture,
+                Some(&fixture_type),
+                held.get(fixture_uuid, &key),
+                &key,
+            );
+            // Only where something is actually driving it. A parameter resting at its
+            // home value has nothing to take: taking it would write back what is
+            // already the answer, and put a change that changed nothing into history.
+            let value = driving.is_driven().then(|| pult_render::value_at(&driving, now_ms)).flatten();
+            let Some(value) = value else {
                 // Named on its own, being told is better than being ignored — an
                 // operator who asked for one parameter is looking at that parameter.
                 if named.is_some() {
@@ -1757,7 +1923,7 @@ impl ShowEngine {
                 }
                 continue;
             };
-            home.insert(key, value.clone());
+            home.insert(key, value);
             took = true;
         }
         // Nothing on stage to take. Not an error: a fixture that has never been driven
@@ -2177,8 +2343,8 @@ impl ShowEngine {
         // collection back; a singleton is the same problem with one row.
         //
         // Entities are deliberately not treated this way. A field write there is
-        // `fixtures/<id>/live_values` at forty a second during a fade, and sending the
-        // whole rig each time is the thing `subscribeDeep` exists to avoid.
+        // `fixtures/<id>/live_fades` when a cue is taken over a rig of thousands, and
+        // sending the whole rig each time is what `subscribeDeep` exists to avoid.
         let whole = match path.as_slice() {
             [PathSegment::Key(k), PathSegment::Key(a)] if a == "__create" => Some(k.as_str()),
             [PathSegment::Key(k), _, PathSegment::Key(a)] if a == "__delete" => Some(k.as_str()),

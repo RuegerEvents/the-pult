@@ -793,7 +793,7 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
         fixture_type_id: Uuid::new_v4(),
         address: FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: None },
         position: None,
-        live_values: Default::default(),
+        sensed_values: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
@@ -819,7 +819,7 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
 
     leader
         .engine
-        .set_live_value(
+        .set_sensed_value(
             fixture.id,
             "Contact:3".into(),
             serde_json::json!({ "type": "Bool", "value": true }),
@@ -835,7 +835,7 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
         else {
             return false;
         };
-        fixture["live_values"]["Contact:3"]["value"] == serde_json::json!(true)
+        fixture["sensed_values"]["Contact:3"]["value"] == serde_json::json!(true)
     })
     .await;
 }
@@ -865,7 +865,7 @@ async fn a_station_row_reaches_the_other_console() {
         output_plugins: vec!["House".into()],
         computes_fixtures: 0,
         total_fixtures: 0,
-        tick_cost: None,
+        frame_costs: Vec::new(),
         last_seen: Utc::now(),
     };
     one.engine
@@ -887,18 +887,18 @@ async fn a_station_row_reaches_the_other_console() {
     .await;
 }
 
-/// Playback runs on every station, so two consoles are doing the same work on
-/// different hardware. Their tick figures differing is a fact about the session, not
-/// a disagreement to be settled — each row is its author's, and a console reading the
+/// Every station draws its own frames, so two consoles are doing the same work on
+/// different hardware. Their figures differing is a fact about the session, not a
+/// disagreement to be settled — each row is its author's, and a console reading the
 /// session sees both as they were measured.
 #[tokio::test]
-async fn each_station_reports_its_own_tick_cost_and_not_the_others() {
-    use pult_schema::types::station::{Station, TickCost};
+async fn each_station_reports_its_own_frame_cost_and_not_the_others() {
+    use pult_schema::types::station::{FrameCost, Station};
 
     let one = a_node().await;
     let two = a_node().await;
 
-    let a_row = |id: Uuid, host: &str, cost: TickCost| Station {
+    let a_row = |id: Uuid, host: &str, cost: FrameCost| Station {
         id,
         hostname: host.into(),
         is_leader: false,
@@ -911,19 +911,27 @@ async fn each_station_reports_its_own_tick_cost_and_not_the_others() {
         output_plugins: vec![],
         computes_fixtures: 0,
         total_fixtures: 0,
-        tick_cost: Some(cost),
+        frame_costs: vec![cost],
         last_seen: Utc::now(),
     };
 
     // One console is working hard and the other is nearly idle.
-    let busy =
-        TickCost { mean_ms: 7.9, max_ms: 31.0, playback_mean_ms: 2.4, playback_max_ms: 9.0, ticks: 80 };
-    let idle =
-        TickCost { mean_ms: 0.4, max_ms: 0.9, playback_mean_ms: 0.1, playback_max_ms: 0.2, ticks: 80 };
+    let cost = |mean_ms: f32, max_ms: f32| FrameCost {
+        output: "House".into(),
+        kind: "artnet".into(),
+        mean_ms,
+        max_ms,
+        evaluating_mean_ms: mean_ms / 4.0,
+        evaluating_max_ms: max_ms / 4.0,
+        frames: 80,
+        window_ms: 2_000,
+    };
+    let busy = cost(7.9, 31.0);
+    let idle = cost(0.4, 0.9);
     let create = vec![PathSegment::Key("stations".into()), PathSegment::Key("__create".into())];
 
     one.engine
-        .set(create.clone(), Lifecycle::Synced, serde_json::to_value(a_row(one.id.0, "booth", busy)).unwrap())
+        .set(create.clone(), Lifecycle::Synced, serde_json::to_value(a_row(one.id.0, "booth", busy.clone())).unwrap())
         .await
         .unwrap();
 
@@ -941,7 +949,7 @@ async fn each_station_reports_its_own_tick_cost_and_not_the_others() {
     // own — which in a running system is a non-event: the reporter publishes again a
     // couple of seconds later, which is this line.
     two.engine
-        .set(create, Lifecycle::Synced, serde_json::to_value(a_row(two.id.0, "roof", idle)).unwrap())
+        .set(create, Lifecycle::Synced, serde_json::to_value(a_row(two.id.0, "roof", idle.clone())).unwrap())
         .await
         .unwrap();
 
@@ -955,24 +963,26 @@ async fn each_station_reports_its_own_tick_cost_and_not_the_others() {
         let booth = rows.iter().find(|r| r.hostname == "booth");
         let roof = rows.iter().find(|r| r.hostname == "roof");
         match (booth, roof) {
-            (Some(booth), Some(roof)) => booth.tick_cost == Some(busy) && roof.tick_cost == Some(idle),
+            (Some(booth), Some(roof)) => {
+                booth.frame_costs == vec![busy.clone()] && roof.frame_costs == vec![idle.clone()]
+            }
             _ => false,
         }
     })
     .await;
 }
 
-/// A session can mix builds. A peer that cannot report a tick cost is a station like
+/// A session can mix builds. A peer that cannot report a frame cost is a station like
 /// any other, and the rest of what it says has to arrive intact.
 #[tokio::test]
-async fn a_peer_that_reports_no_tick_cost_is_still_a_station() {
+async fn a_peer_that_reports_no_frame_cost_is_still_a_station() {
     use pult_schema::types::station::Station;
 
     let one = a_node().await;
     let two = a_node().await;
     two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
 
-    // The row an older build sends: no `tick_cost` key at all, not a null one.
+    // The row an older build sends: no `frame_costs` key at all, not an empty one.
     let row = serde_json::json!({
         "id": one.id.0,
         "hostname": "roof",
@@ -1004,7 +1014,7 @@ async fn a_peer_that_reports_no_tick_cost_is_still_a_station() {
             return false;
         };
         let Ok(station): Result<Station, _> = serde_json::from_value(value) else { return false };
-        station.tick_cost.is_none()
+        station.frame_costs.is_empty()
             && station.hostname == "roof"
             && station.total_fixtures == 7
             && station.output_plugins == vec!["Art-Net".to_string()]
@@ -1201,3 +1211,351 @@ async fn two_stations_writing_one_key_converge_on_one_row() {
     })
     .await;
 }
+
+
+/// A session that mixes builds, over the field this change removed.
+///
+/// `live_values` was SYNCED, so an older station goes on sending it. It has to arrive
+/// without being rejected — a peer that cannot parse a fixture row is a peer that
+/// cannot see the rig — and it has to be *ignored* rather than adopted: most of what
+/// that map carried was the console's own output, which is now a function of what is
+/// driving each parameter, and filing it as something a device reported would be a
+/// station claiming to have been told what it had in fact decided.
+#[tokio::test]
+async fn a_fixture_row_carrying_the_removed_field_still_arrives() {
+    use pult_schema::types::fixture::Fixture;
+
+    let one = a_node().await;
+    let two = a_node().await;
+    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    // The row an older build sends: one map called `live_values`, carrying both a
+    // driven value and a sensed one, and no `sensed_values` key at all.
+    let fixture_id = Uuid::new_v4();
+    let row = serde_json::json!({
+        "id": fixture_id,
+        "name": "House left",
+        "fixture_type_id": Uuid::new_v4(),
+        "address": { "Dmx": { "universe": 1, "address": 1 } },
+        "position": null,
+        "live_values": {
+            "Intensity": { "type": "Float", "value": 0.8 },
+            "Contact:0": { "type": "Bool", "value": true },
+        },
+        "home_values": { "Intensity": { "type": "Float", "value": 1.0 } },
+    });
+    one.engine
+        .set(
+            vec![PathSegment::Key("fixtures".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Persisted,
+            row,
+        )
+        .await
+        .unwrap();
+
+    eventually("the older peer's fixture to arrive whole", || async {
+        let Ok(value) = two
+            .engine
+            .get(vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture_id)])
+            .await
+        else {
+            return false;
+        };
+        let Ok(fixture): Result<Fixture, _> = serde_json::from_value(value) else { return false };
+        fixture.name == "House left"
+            && fixture.sensed_values.is_empty()
+            && fixture.home_values.len() == 1
+    })
+    .await;
+}
+
+/// And the other direction: a row from this build, as an older station receives it.
+///
+/// It carries no `live_values` at all. An older station defaults what it cannot find,
+/// and the practical effect is nil, because it was already computing its own — the
+/// field only ever put a stale sample in the snapshot a joining station was handed
+/// immediately before it recomputed.
+#[tokio::test]
+async fn a_fixture_row_from_here_carries_no_live_values() {
+    let one = a_node().await;
+    let two = a_node().await;
+    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    let fixture_id = Uuid::new_v4();
+    one.engine
+        .set(
+            vec![PathSegment::Key("fixtures".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Persisted,
+            serde_json::json!({
+                "id": fixture_id,
+                "name": "House right",
+                "fixture_type_id": Uuid::new_v4(),
+                "address": { "Dmx": { "universe": 1, "address": 2 } },
+                "position": null,
+            }),
+        )
+        .await
+        .unwrap();
+
+    eventually("the row to reach the peer", || async {
+        two.engine
+            .get(vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture_id)])
+            .await
+            .is_ok_and(|v| v.get("name") == Some(&serde_json::json!("House right")))
+    })
+    .await;
+
+    let arrived = two
+        .engine
+        .get(vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture_id)])
+        .await
+        .unwrap();
+    assert!(arrived.get("live_values").is_none(), "there is no such field any more");
+    assert_eq!(arrived["sensed_values"], serde_json::json!({}), "and what replaced half of it");
+}
+
+
+/// Two stations, one rig, mid-fade: do they agree about what it is doing?
+///
+/// The property the whole of `values-as-functions` rests on. Neither station is told a
+/// value — nothing stores one — so what they share is a cue anchored in console
+/// milliseconds and the arithmetic that turns it into a number.
+///
+/// Two things are asserted, and the difference between them matters. **What is driving
+/// each parameter must be identical**, to the anchor and the millisecond, because that
+/// is what makes the two agree at *every* instant rather than at the one that happened
+/// to be sampled. And what each is putting out **right now** must be within what the
+/// gap between the two questions can explain — because "now" is a different
+/// millisecond for each of them, and demanding they be bit-identical would be
+/// demanding they read one clock, which is exactly what this design does not do.
+///
+/// The reading is asked through `parameter.value`, which is the read a plugin or a
+/// command line makes, so what is compared is what a caller actually gets.
+#[tokio::test]
+async fn two_stations_agree_about_what_the_rig_is_doing() {
+    use pult_schema::types::{
+        cue::{Cue, FollowMode, ParameterCapture},
+        effect::Easing,
+        fixture::{
+            FixtureType, ParameterBinding, ParameterDefinition, ParameterDirection, ParameterKind,
+            ParameterValue,
+        },
+        sequence::Sequence,
+    };
+
+    let one = a_node().await;
+    let two = a_node().await;
+    two.sync.connect_peer(one.addr, Uuid::new_v4(), Uuid::new_v4()).await;
+
+    let put = |node: &Node, table: &'static str, value: serde_json::Value| {
+        let engine = node.engine.clone();
+        async move {
+            engine
+                .set(
+                    vec![
+                        PathSegment::Key(table.into()),
+                        PathSegment::Key("__create".into()),
+                    ],
+                    Lifecycle::Persisted,
+                    value,
+                )
+                .await
+                .unwrap();
+        }
+    };
+
+    // A mover with somewhere to rest, so a fade has a beginning.
+    let fixture_type = FixtureType {
+        id: Uuid::new_v4(),
+        name: "Head".into(),
+        manufacturer: "Generic".into(),
+        channel_count: 2,
+        parameters: vec![
+            ParameterDefinition {
+                kind: ParameterKind::Intensity,
+                direction: ParameterDirection::Output,
+                binding: ParameterBinding::Dmx { channel: 1 },
+                default_value: ParameterValue::Float(0.0),
+            },
+            ParameterDefinition {
+                kind: ParameterKind::Pan,
+                direction: ParameterDirection::Output,
+                binding: ParameterBinding::Dmx { channel: 2 },
+                default_value: ParameterValue::Float(0.5),
+            },
+        ],
+    };
+    put(&one, "fixture_types", serde_json::to_value(&fixture_type).unwrap()).await;
+
+    let rig: Vec<Uuid> = (0..8).map(|_| Uuid::new_v4()).collect();
+    for (n, id) in rig.iter().enumerate() {
+        put(
+            &one,
+            "fixtures",
+            serde_json::json!({
+                "id": id,
+                "name": format!("Head {n}"),
+                "fixture_type_id": fixture_type.id,
+                "address": { "Dmx": { "universe": 1, "address": (n as u16) * 2 + 1 } },
+                "position": null,
+            }),
+        )
+        .await;
+    }
+
+    // A long fade, so it is plainly still moving however slow the machine running this
+    // is — a fade that had landed by the time it was sampled would have both stations
+    // agreeing about a constant, which proves nothing.
+    let capture = |fixture_id: Uuid, kind: ParameterKind, to: f32| ParameterCapture {
+        fixture_id,
+        parameter_kind: kind,
+        value: ParameterValue::Float(to),
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        delay_in_ms: 0,
+        effect: None,
+        easing: Easing::EaseInOut,
+    };
+    let cue = Cue {
+        id: Uuid::new_v4(),
+        name: "Act 1".into(),
+        number: 1.0,
+        captures: rig
+            .iter()
+            .enumerate()
+            .flat_map(|(n, id)| {
+                [
+                    capture(*id, ParameterKind::Intensity, 0.1 + n as f32 / 16.0),
+                    capture(*id, ParameterKind::Pan, 1.0 - n as f32 / 16.0),
+                ]
+            })
+            .collect(),
+        follow_mode: FollowMode::Manual,
+        fade_in_ms: 30_000,
+        fade_out_ms: 0,
+        is_active: false,
+    };
+    put(&one, "cues", serde_json::to_value(&cue).unwrap()).await;
+    let sequence = Sequence {
+        id: Uuid::new_v4(),
+        name: "Act 1".into(),
+        cue_ids: vec![cue.id],
+        active_cue_index: None,
+        went_at: None,
+    };
+    put(&one, "sequences", serde_json::to_value(&sequence).unwrap()).await;
+
+    eventually("the show to reach the second station", || async {
+        two.engine
+            .get(vec![PathSegment::Key("cues".into()), PathSegment::Id(cue.id)])
+            .await
+            .is_ok_and(|v| !v.is_null())
+    })
+    .await;
+
+    // Go on one of them, carrying the moment — the way a client presses Go. The other
+    // hears about the Go, not about any value. Without the `at` each station would
+    // stamp the cue with its own clock and anchor the same fade a millisecond apart,
+    // which is what that argument exists to prevent.
+    one.engine
+        .set(
+            seq_path(sequence.id, "goNext"),
+            Lifecycle::Synced,
+            serde_json::json!({ "at": pult_schema::types::sequence::now_ms() }),
+        )
+        .await
+        .unwrap();
+
+    eventually("the second station to see the cue go", || async {
+        two.engine
+            .get(vec![PathSegment::Key("sequences".into()), PathSegment::Id(sequence.id)])
+            .await
+            .is_ok_and(|v| v["active_cue_index"] == serde_json::json!(0))
+    })
+    .await;
+    // And to have worked out for itself what that means, which it does on its own
+    // pass rather than by being told.
+    eventually("the second station to be driving the rig", || async {
+        two.engine
+            .get(vec![
+                PathSegment::Key("fixtures".into()),
+                PathSegment::Id(rig[0]),
+                PathSegment::Key("live_fades".into()),
+            ])
+            .await
+            .is_ok_and(|v| v.get("Intensity").is_some())
+    })
+    .await;
+
+    // Now ask them both, three times across the fade.
+    let ask = |node: &Node, fixture_id: Uuid| {
+        let deps = crate::api::rpcs::LocalRpcDeps {
+            session: crate::infra::session::SessionHandle(tokio::sync::mpsc::channel(1).0),
+            devices: crate::infra::devices::DeviceHandle(tokio::sync::mpsc::channel(1).0),
+            engine: node.engine.clone(),
+        };
+        async move {
+            crate::api::rpcs::dispatch(
+                "parameter.value",
+                serde_json::json!({ "fixtureId": fixture_id }),
+                &deps,
+            )
+            .await
+            .expect("a station answers what its rig is doing")
+        }
+    };
+
+    // A thirtieth of a second of skew across a thirty-second fade is a thousandth of
+    // its range. This is thirty times that, which is loose enough for a loaded machine
+    // and still an order of magnitude tighter than any disagreement worth catching.
+    const TOLERANCE: f64 = 0.03;
+
+    let mut moving = 0;
+    for _ in 0..3 {
+        for fixture_id in &rig {
+            // What is *driving* it: identical, to the anchor and the millisecond.
+            let driving = |node: &Node| {
+                let engine = node.engine.clone();
+                let id = *fixture_id;
+                async move {
+                    engine
+                        .get(vec![
+                            PathSegment::Key("fixtures".into()),
+                            PathSegment::Id(id),
+                            PathSegment::Key("live_fades".into()),
+                        ])
+                        .await
+                        .expect("a station says what is driving its rig")
+                }
+            };
+            let (here, there) = tokio::join!(driving(&one), driving(&two));
+            assert_eq!(
+                here, there,
+                "two stations describing one fade differently:\n  one: {here:#}\n  two: {there:#}",
+            );
+            assert!(here.get("Intensity").is_some(), "the fade is still on the rig");
+
+            // And what it is putting out: the same, within the gap between the asking.
+            let (here, there) = tokio::join!(ask(&one, *fixture_id), ask(&two, *fixture_id));
+            let here = here.as_object().expect("a map of parameters").clone();
+            let there = there.as_object().expect("a map of parameters").clone();
+            assert_eq!(here.len(), there.len(), "one rig, two answers of different shapes");
+            for (key, value) in &here {
+                let level = value["value"].as_f64().unwrap_or(0.0);
+                let other = there[key]["value"].as_f64().unwrap_or(0.0);
+                assert!(
+                    (level - other).abs() < TOLERANCE,
+                    "{key}: {level} here and {other} there is further apart than the asking",
+                );
+                if level > 0.001 && level < 0.999 {
+                    moving += 1;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    }
+
+    assert!(moving > 0, "nothing was part way anywhere, so agreeing proved nothing");
+}
+
+

@@ -20,8 +20,16 @@ export function connect(port, { timeoutMs = 5000 } = {}) {
 	const pending = new Map();
 	let counter = 0;
 
+	/** Called with every pushed update, for anything counting what a fade costs. */
+	const watchers = new Set();
+
 	ws.onmessage = (event) => {
-		const { payload } = JSON.parse(event.data);
+		const message = JSON.parse(event.data);
+		const { payload } = message;
+		if (message.type === 'Update') {
+			watchers.forEach((notify) => notify(payload));
+			return;
+		}
 		const waiting = payload?.request_id && pending.get(payload.request_id);
 		if (!waiting) return;
 		pending.delete(payload.request_id);
@@ -56,7 +64,18 @@ export function connect(port, { timeoutMs = 5000 } = {}) {
 		get: (path) => request('Get', { path }),
 		set: (path, value) => request('Set', { path, value }),
 		create: (table, entity) => request('Set', { path: [table, '__create'], value: entity }),
-		call: (method, args = {}) => request('Call', { method, args })
+		call: (method, args = {}) => request('Call', { method, args }),
+		/**
+		 * Watch a path pattern and count what arrives.
+		 *
+		 * No request id and no reply: a subscription is a standing instruction rather
+		 * than a question, which is why it does not go through `request`.
+		 */
+		subscribe: (pattern, onUpdate) => {
+			ws.send(JSON.stringify({ type: 'Subscribe', payload: { pattern } }));
+			watchers.add(onUpdate);
+			return () => watchers.delete(onUpdate);
+		}
 	};
 }
 

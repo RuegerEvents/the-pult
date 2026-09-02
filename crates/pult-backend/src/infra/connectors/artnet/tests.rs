@@ -7,6 +7,7 @@ use pult_schema::types::fixture::{
 use uuid::Uuid;
 
 use super::*;
+use crate::infra::connectors::dmx::holding;
 
 // ── Packet format ─────────────────────────────────────────────────────────────
 
@@ -70,17 +71,14 @@ fn a_dimmer_patch(level: f32) -> Patch {
         fixture_type_id: fixture_type.id,
         address: FixtureAddress::Dmx { universe: 3, address: 1 },
         position: None,
-        live_values: HashMap::new(),
+        sensed_values: HashMap::new(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
     };
-    fixture.live_values.insert("Intensity".into(), ParameterValue::Float(level));
+    holding(&mut fixture, "Intensity", ParameterValue::Float(level));
 
-    Patch {
-        fixtures: vec![fixture],
-        fixture_types: [(fixture_type.id, fixture_type)].into_iter().collect(),
-    }
+    Patch::new(vec![fixture], vec![fixture_type], vec![])
 }
 
 /// A receiver bound to a free local port, standing in for a lighting node.
@@ -105,7 +103,7 @@ async fn fixture_levels_reach_the_wire() {
     let (node, addr) = a_node().await;
     let mut output = ArtNetOutput::bind(addr).await.unwrap();
 
-    output.send(&a_dimmer_patch(1.0), &[]).await.unwrap();
+    output.send(&a_dimmer_patch(1.0), &[], 0).await.unwrap();
 
     let packet = recv(&node).await;
     assert_eq!(&packet[0..8], b"Art-Net\0");
@@ -119,16 +117,16 @@ async fn an_unchanged_universe_is_not_resent() {
     let mut output = ArtNetOutput::bind(addr).await.unwrap();
     let patch = a_dimmer_patch(0.5);
 
-    output.send(&patch, &[]).await.unwrap();
+    output.send(&patch, &[], 0).await.unwrap();
     let first = recv(&node).await;
     assert_eq!(first[18], 128);
 
     // Same values, so nothing should go out.
-    output.send(&patch, &[]).await.unwrap();
-    output.send(&patch, &[]).await.unwrap();
+    output.send(&patch, &[], 0).await.unwrap();
+    output.send(&patch, &[], 0).await.unwrap();
 
     // A changed level breaks the silence, and is the next thing the node hears.
-    output.send(&a_dimmer_patch(1.0), &[]).await.unwrap();
+    output.send(&a_dimmer_patch(1.0), &[], 0).await.unwrap();
     let next = recv(&node).await;
     assert_eq!(next[18], 255, "an idle rig must not fill the network with identical frames");
 }
@@ -138,9 +136,9 @@ async fn the_sequence_counter_advances_and_skips_zero() {
     let (node, addr) = a_node().await;
     let mut output = ArtNetOutput::bind(addr).await.unwrap();
 
-    output.send(&a_dimmer_patch(0.1), &[]).await.unwrap();
+    output.send(&a_dimmer_patch(0.1), &[], 0).await.unwrap();
     let first = recv(&node).await;
-    output.send(&a_dimmer_patch(0.2), &[]).await.unwrap();
+    output.send(&a_dimmer_patch(0.2), &[], 0).await.unwrap();
     let second = recv(&node).await;
 
     assert_eq!(first[12], 1);
@@ -159,7 +157,7 @@ async fn each_universe_gets_its_own_packet() {
     second.address = FixtureAddress::Dmx { universe: 9, address: 1 };
     patch.fixtures.push(second);
 
-    output.send(&patch, &[]).await.unwrap();
+    output.send(&patch, &[], 0).await.unwrap();
 
     let mut universes = vec![recv(&node).await[14], recv(&node).await[14]];
     universes.sort();
@@ -171,8 +169,8 @@ async fn an_empty_patch_sends_nothing() {
     let (node, addr) = a_node().await;
     let mut output = ArtNetOutput::bind(addr).await.unwrap();
 
-    let empty = Patch { fixtures: vec![], fixture_types: HashMap::new() };
-    output.send(&empty, &[]).await.unwrap();
+    let empty = Patch::new(vec![], vec![], vec![]);
+    output.send(&empty, &[], 0).await.unwrap();
 
     let mut buf = [0u8; 64];
     let got = tokio::time::timeout(

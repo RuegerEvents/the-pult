@@ -37,7 +37,7 @@ const fixture = (id: string, x: number, typeId = 'par'): Fixture => ({
 	fixture_type_id: typeId,
 	address: { Dmx: { universe: 1, address: 1 } },
 	position: { Point: { x, y: 5, z: 0 } },
-	live_values: {},
+	sensed_values: {},
 	live_effects: {},
 	live_fades: {},
 	home_values: {}

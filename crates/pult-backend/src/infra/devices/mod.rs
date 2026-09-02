@@ -380,7 +380,7 @@ impl DeviceManager {
                     return;
                 };
                 let value = serde_json::to_value(&value).unwrap_or_default();
-                if let Err(e) = self.engine.set_live_value(fixture_id, key, value).await {
+                if let Err(e) = self.engine.set_sensed_value(fixture_id, key, value).await {
                     warn!("[devices] {serial} port {port}: {e}");
                 }
             }
@@ -405,7 +405,7 @@ impl DeviceManager {
         }
     }
 
-    /// The `live_values` key for whatever is bound to a port on a fixture.
+    /// The parameter key for whatever is bound to a port on a fixture.
     ///
     /// A node numbers its own terminals, so the port is the only thing both ends
     /// agree on; the parameter's kind is this console's business alone.
@@ -607,7 +607,7 @@ impl DeviceManager {
             fixture_type_id: fixture_type.id,
             address: FixtureAddress::OpenHaunt { serial: serial.to_string(), universe },
             position: None,
-            live_values: Default::default(),
+            sensed_values: Default::default(),
             live_effects: Default::default(),
             live_fades: Default::default(),
             home_values: Default::default(),

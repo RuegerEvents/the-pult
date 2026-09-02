@@ -18,10 +18,12 @@
 #   scripts/demo.sh --size big   a bigger rig: small (the default) is the
 #                                hand-made show, big adds 500 fixtures and a
 #                                stack of cues, huge adds 2000 and three plans
-#   scripts/demo.sh --measure    seed, run the show, print what a tick costs on
-#                                this machine, and stop. No sims, no frontend —
-#                                they would be competing for the CPU being
-#                                measured. Combine with --size.
+#   scripts/demo.sh --measure    seed, run the show, print what an output frame
+#                                costs on this machine, and stop. No sims, no
+#                                frontend — they would be competing for the CPU
+#                                being measured. Combine with --size and
+#                                --release, which is the only way the figures
+#                                mean anything next to somebody else's.
 #
 # Ports can be overridden: PORT, SYNC_PORT, BROKER_PORT — and PORT_2, SYNC_PORT_2,
 # BROKER_PORT_2 for the second station.
@@ -51,6 +53,8 @@ TWO=0
 PLUGINS=0
 SIZE=small
 MEASURE=0
+OUTPUT_FLAGS=()
+PROFILE=debug
 # A while loop rather than `for arg`, because --size takes a value.
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -61,6 +65,7 @@ while [ $# -gt 0 ]; do
     --plugins) PLUGINS=1 ;;
     --size) shift; SIZE=${1:-}; [ -n "$SIZE" ] || { echo "--size needs one of small, big, huge" >&2; exit 2; } ;;
     --measure) MEASURE=1 ;;
+    --release) PROFILE=release ;;
     # The comment block at the top of this file is the help text, so the two
     # cannot drift apart. Printed up to the first line that is not a comment.
     -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
@@ -76,6 +81,11 @@ done
 if [ "$MEASURE" = 1 ]; then
   SIMS=0
   TWO=0
+  # And something to measure. What has a deadline is the *output frame*, so a station
+  # with nothing on a wire has nothing to say — correctly, and unhelpfully to somebody
+  # who ran this to get a number. Art-Net at loopback: nothing is listening, which
+  # costs the same to send and puts no packets on anybody's network.
+  OUTPUT_FLAGS=(--artnet 127.0.0.1:6454)
 fi
 
 # ── Stopping cleanly ──────────────────────────────────────────────────────────
@@ -147,10 +157,12 @@ fi
 
 mkdir -p "$DEMO_DIR"
 
-echo "building"
+echo "building${PROFILE:+ ($PROFILE)}"
 # Not --workspace: the desktop shells are workspace members but not default
 # members, and building them needs webkit on the machine.
-if ! cargo build --quiet > "$DEMO_DIR/build.log" 2>&1; then
+BUILD_FLAGS=()
+[ "$PROFILE" = release ] && BUILD_FLAGS=(--release)
+if ! cargo build --quiet ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} > "$DEMO_DIR/build.log" 2>&1; then
   echo "the build failed:" >&2
   cat "$DEMO_DIR/build.log" >&2
   exit 1
@@ -184,12 +196,13 @@ fi
 # start_station <showfile> <port> <sync-port> <broker-port> <log>
 start_station() {
   local showfile=$1 port=$2 sync_port=$3 broker_port=$4 log=$5
-  "$ROOT/target/debug/pult-backend" \
+  "$ROOT/target/$PROFILE/pult-backend" \
     --showfile "$showfile" \
     --port "$port" \
     --sync-port "$sync_port" \
     --openhaunt-broker-port "$broker_port" \
     ${PLUGIN_FLAGS[@]+"${PLUGIN_FLAGS[@]}"} \
+    ${OUTPUT_FLAGS[@]+"${OUTPUT_FLAGS[@]}"} \
     > "$log" 2>&1 &
   PIDS+=($!)
 
@@ -213,16 +226,16 @@ if [ "$SIMS" = 1 ]; then
   echo "starting three simulated OpenHaunt nodes"
   # --auto presses contact 0 every couple of seconds, so a flow wired to it
   # visibly fires without anyone having to hold a button.
-  "$ROOT/target/debug/openhaunt-node-sim" --module input --serial 1a2b3c --port 8801 --auto 2500 \
+  "$ROOT/target/$PROFILE/openhaunt-node-sim" --module input --serial 1a2b3c --port 8801 --auto 2500 \
     > "$DEMO_DIR/sim-input.log" 2>&1 &
   PIDS+=($!)
-  "$ROOT/target/debug/openhaunt-node-sim" --module relay --serial 4d5e6f --port 8802 \
+  "$ROOT/target/$PROFILE/openhaunt-node-sim" --module relay --serial 4d5e6f --port 8802 \
     > "$DEMO_DIR/sim-relay.log" 2>&1 &
   PIDS+=($!)
   # A module the catalogue has never heard of, whose fog output advertises every
   # shape: this is the node that shows an effect leaving the console as one
   # message instead of forty a second.
-  "$ROOT/target/debug/openhaunt-node-sim" \
+  "$ROOT/target/$PROFILE/openhaunt-node-sim" \
     --config "$ROOT/tools/openhaunt-node-sim/configs/fog-machine.json" \
     > "$DEMO_DIR/sim-fog.log" 2>&1 &
   PIDS+=($!)
@@ -245,7 +258,7 @@ fi
 
 if [ "$MEASURE" = 1 ]; then
   echo "measuring the ${SIZE} show"
-  node "$ROOT/scripts/demo-measure.mjs" "$PORT" --label "$SIZE" --build debug
+  node "$ROOT/scripts/demo-measure.mjs" "$PORT" --label "$SIZE" --build "$PROFILE"
   exit 0
 fi
 

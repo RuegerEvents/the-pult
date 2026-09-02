@@ -12,7 +12,10 @@ edition.workspace = true
 # filesystem: a moment is an argument, never something looked up.
 [dependencies]
 serde = { workspace = true }
-uuid = { workspace = true }
+# Not the workspace's uuid: that one carries `v4`, and a random generator is a source
+# of randomness `wasm32-unknown-unknown` has no default for — so taking it would make
+# a crate that mints no ids fail to build for the one target it exists to reach.
+uuid = { version = "1", default-features = false, features = ["std", "serde"] }
 # Only so the moved types keep their TypeScript bindings. Off by default, and off for
 # the wasm build, where nothing generates TypeScript and the weight is not wanted.
 ts-rs = { workspace = true, optional = true }

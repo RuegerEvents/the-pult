@@ -1,0 +1,22 @@
+[package]
+name = "pult-render-wasm"
+version.workspace = true
+edition.workspace = true
+
+# The console's evaluator, compiled for a page.
+#
+# `wasm32-unknown-unknown` with `wasm-bindgen`, which is not the toolchain the plugins
+# use: those are `wasm32-wasip2` components run by wasmtime *on the host*, and a
+# component is the wrong thing entirely for code that has to run inside a browser tab.
+# This is a second wasm toolchain and it is deliberate.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pult-render = { workspace = true }
+serde = { workspace = true }
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+serde_json = { workspace = true }

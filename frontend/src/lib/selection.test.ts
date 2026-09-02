@@ -23,7 +23,7 @@ const at = (name: string, x: number, y: number, z: number, typeId = 'par'): Fixt
 	fixture_type_id: typeId,
 	address: { Dmx: { universe: 1, address: 1 } },
 	position: { Point: { x, y, z } },
-	live_values: {},
+	sensed_values: {},
 	live_effects: {},
 	live_fades: {},
 	home_values: {}

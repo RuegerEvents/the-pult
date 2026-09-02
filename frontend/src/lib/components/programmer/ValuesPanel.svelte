@@ -19,6 +19,7 @@
 	import { collection } from '$lib/stores/show.js';
 	import { selection } from '$lib/stores/selection.js';
 	import { revealPanel } from '$lib/stores/layout.js';
+	import { output, watching } from '$lib/stores/output.js';
 	import {
 		byKey,
 		cancelEdit,
@@ -55,12 +56,21 @@
 	const editing = $derived($cues.find((c) => c.id === $editingCue) ?? null);
 	const anyUnlocked = $derived($entries.some((e) => !e.locked));
 
+	/// What this panel is showing, so it is evaluated every frame. The selection's
+	/// parameters and nothing else: a rig of thousands with a dozen selected costs a
+	/// dozen.
+	$effect(() => {
+		const keys = chosen.flatMap((fixture) => rows.map((row) => `${fixture.id}/${row.key}`));
+		const registered = watching(keys);
+		return () => registered.stop();
+	});
+
 	/** The value a control should be showing: what is held, else what is on stage. */
 	function valueOf(key: string, fallback: ParameterValue): ParameterValue {
 		const first = chosen[0];
 		const entry = first ? $byKey.get(`${first.id}/${key}`) : undefined;
 		if (entry) return entry.value;
-		return commonValue(chosen, key).value ?? fallback;
+		return commonValue(chosen, key, $output).value ?? fallback;
 	}
 
 	const isHeld = (key: string) => chosen.some((f) => $byKey.has(`${f.id}/${key}`));
@@ -162,10 +172,14 @@
 						{#if row.mixed}<span class="mixed" title="Not every selected fixture has this">mixed</span>{/if}
 					</span>
 					<span class="readout mono">
-						{#if commonValue(chosen, row.key).mixed}
+						{#if $output.at === null}
+							<span class="waiting" title="This browser has not yet placed itself on the station's clock"
+								>—</span
+							>
+						{:else if commonValue(chosen, row.key, $output).mixed}
 							—
 						{:else}
-							{formatValue(commonValue(chosen, row.key).value ?? undefined)}
+							{formatValue(commonValue(chosen, row.key, $output).value ?? undefined)}
 						{/if}
 					</span>
 					<div class="control">
@@ -360,6 +374,12 @@
 		color: var(--text-dim);
 		font-size: var(--font-xs);
 		text-align: right;
+	}
+	/* Nothing has been evaluated yet, because this browser cannot say what time the
+	   station thinks it is. Dimmer than "mixed", because it is not a fact about the
+	   rig — it is this page admitting it does not know. */
+	.waiting {
+		opacity: 0.45;
 	}
 	.mono {
 		font-family: monospace;

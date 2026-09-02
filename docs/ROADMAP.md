@@ -15,11 +15,11 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
 | Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness and latency, vector-clock conflict resolution, and leader failover. Stations publish themselves and are visible in the UI. |
 | Frontend | Working for show, session, sequences, cues, patch, the programmer, effects and speed masters. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. Panels that can change the show open read-only behind an Edit toggle and are sized for a finger. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
-| Playback engine | Working. Fades, active-cue tracking, FollowAfter cues and effects at 40 Hz, anchored on the cue's `went_at` so two stations render the same instant rather than each measuring from its own arrival. |
-| Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Configured from the `outputs` collection and editable while the show is up, with per-output status in the UI. Flags only seed an empty showfile. |
+| Playback engine | Working, and no longer a tick. Playback decides *what is driving* each parameter — fades and effects anchored on the cue's `went_at` — and publishes the descriptions; nothing stores what they are worth. A pass happens when the show changes, so a fade in progress costs the engine nothing. |
+| Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Each holds the last patch it was pushed and draws its own frames out of it at its protocol's rate, evaluating rather than being handed values. Configured from the `outputs` collection and editable while the show is up, with per-output status and per-connector frame cost in the UI. Flags only seed an empty showfile. |
 | Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. |
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
-| Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `live_values`; flows turn those into cues. A port that says it can trace a shape is handed one descriptor instead of forty messages a second. Tested end to end against `tools/openhaunt-node-sim` and, since task 22, against real firmware on an ESP32. |
+| Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `sensed_values`; flows turn those into cues. A port that says it can trace a shape is handed one descriptor instead of forty messages a second. Tested end to end against `tools/openhaunt-node-sim` and, since task 22, against real firmware on an ESP32. |
 | WASM plugins | Working. wasmtime component runtime with a WIT contract, permissions, hot reload, plugin-to-plugin calls and runtime introspection of the schema registries. Two reference plugins in `plugins/`: a command line (grammar built from introspection, console panel with completion and spans) and natural-language control (an LLM over the plugin's own gated HTTP, executing through the command line). Plugin UI is built-in surfaces or plugin-shipped web components. `docs/PLUGINS.md` is the author guide. |
 | 3D programmer | Working in outline. A shared programmer buffer beats playback, and pan and tilt are puppeteered by grabbing a ring, an arc, or the beam spot on the floor — in the rig and on the plan. Effects are in, and a selection is a question about the rig rather than a list. |
 | Selection | Working as a query over the rig: by type, name, sphere, box or the spec's radial cone, built up by adding, narrowing and removing, and ordered along an axis or outwards from a point. Re-evaluated as the rig changes, so a fixture patched under a live selection joins it. Queries cannot be saved as groups yet. |
@@ -2154,6 +2154,119 @@ which is worse than no gate. The A/B above is the shape of the problem: two *ide
 runs of `huge` varied by more than a percentage point of CPU and fifteen milliseconds
 of tick. Revisit once `multithreading` has moved the numbers and we know how stable
 they are.
+
+
+### 44. Values as functions (done)
+
+Task 43 measured a tick and the number came back wrong-shaped. At 2005 fixtures a
+tick cost 35.2 ms, and of that **33.8 ms was reading the show, 2.2 ms was applying the
+answer, and 0.07 ms was computing it**. The conclusion written down then was that the
+tick was not a concurrency problem. It was not a *computation* problem either. It was
+that the answer became state.
+
+The console evaluated a fade forty times a second and stored the result in
+`Fixture::live_values`, and every one of those samples was then read, written,
+versioned, broadcast and read again. Stop storing it and 99.8% of the tick goes with
+it, along with the reason for the engine to have a tick at all.
+
+**A fade was already an object.** `RunningFade { from, to, t0, duration_ms, easing }`
+anchors in absolute console milliseconds and needs nothing else to be evaluated;
+`RunningEffect` is the same shape. One output path already took that offer — an
+OpenHaunt node advertising `transitions` is handed the description and left to it, so
+a three-second fade leaves the console as one message instead of a hundred and twenty.
+This change is that offer taken everywhere.
+
+**What the numbers came to**, on the same machine, `--release`, `--size huge`:
+
+| 2005 fixtures | before | after |
+|---|---|---|
+| whole | 35.2 ms per tick, 40 Hz | **2.86 ms per output frame**, 34 Hz |
+| reading the show | 33.8 ms | — |
+| applying it | 2.2 ms | 0.26 ms (emitting) |
+| computing it | 0.07 ms | 2.60 ms (evaluating) |
+| updates to a connected browser | thousands a second | **0 in four seconds** |
+
+The evaluating figure went *up*, and that is not a regression: the old 0.07 ms rendered
+only what had moved since the last tick, and the new 2.60 ms works out every parameter
+of every patched fixture from scratch, every frame, plus assembling twenty-four
+universes. Paying it thirty-four times a second instead of paying thirty-five
+milliseconds forty times a second is the trade. Eleven percent of the frame budget
+against a hundred and forty percent of the tick budget.
+
+The last row is the one an operator feels. A cue on a 2000-fixture rig used to put a
+few thousand messages a second onto every connected console; it now puts none at all,
+because nothing about the rig changes while a fade runs.
+
+**One evaluator, compiled twice, and no TypeScript twin.** The arithmetic moved to
+`crates/pult-render` — `serde` and `uuid` and nothing that touches an OS — and is
+linked natively by the station and compiled to `wasm32-unknown-unknown` by
+`crates/pult-render-wasm` for the browser. This is a *second* wasm toolchain: the
+plugins are `wasm32-wasip2` components run by wasmtime on the host, which is the wrong
+tool entirely for code that has to run inside a tab.
+
+The alternative was what `fixture-groups` did for `SelectionQuery`: write it twice and
+hold the two together with a corpus. It was declined, and the reason is the size of the
+surface and the shape of the failure. Easings, curves, step lists, spread, phase,
+direction, width, master rates, priority, home fallback and split fades are an order of
+magnitude more than a selection query, and a drift between them shows up as the screen
+disagreeing with the lamps — which an operator cannot work around and may not notice
+until it matters. What is guarded instead is that the two *compilations* agree:
+`testdata/driven-values.json` is 47 cases read by a native Rust test and by a vitest one
+that loads the wasm build and asks it the same questions.
+
+**A landed fade stays.** `live_fades` stopped meaning "in flight" and started meaning
+"what is driving this parameter", including the fades that have arrived. That follows
+from the removal rather than being a decision beside it: once nothing stores the number
+a fade landed on, the finished fade is the only thing that remembers it, and evaluating
+one gives exactly that constant. An effect that stops without anything taking its key is
+*parked* the same way — a fade of no length at the value it was showing — because
+stopping a chase should freeze the look, which is what leaving the number in a map used
+to do by accident.
+
+**Connectors own their rate; the engine pushes the show.** `OutputPlugin::send` gained
+a moment and lost the assumption that somebody had already computed the values. Each
+connector holds the last patch it was pushed and draws its own frames out of it — the
+DMX family at 40 Hz while anything is moving and at its 800 ms keep-alive when nothing
+is; an OpenHaunt node told once. The engine pushes when the *show* changes, which after
+this change is the only kind of change there is.
+
+**The 25 ms timer went, and what replaced it is a deadline.** `ShowEngine::run` now
+sleeps on the soonest thing it actually has to do — a follow cue coming due, a *Watch*
+node wanting a sample — and on nothing at all when there is neither. A settled station
+and a station running a chase are now the same amount of work: none. The one thing that
+still samples is edge detection, which cannot be done from a function; it was already
+gated by a `watched` set and is now *proportional* to it, so a graph watching one lamp
+of two thousand costs one evaluation a sample rather than two thousand thrown away.
+
+**The browser has to learn the station's clock, and say when it has not.** This is the
+one genuinely new mechanism the change needed. The objects are anchored in console time,
+so a page evaluating against an unadjusted `Date.now()` runs every fade out by however
+wrong its own clock is — and does it silently, because every individual value is
+plausible. The offset is estimated the way a round-trip time is, kept as the best of
+five samples, and maintained rather than taken once, because clocks step. The rule that
+makes the failure visible rather than silent: **a client with no offset yet presents
+nothing**. `consoleNow()` answers `null`, and a panel shows a gap.
+
+**What stayed state.** `Fixture::live_values` did not become nothing; its two halves
+were separated. What a device *reported* — a contact, a temperature, a humidity — is
+now `sensed_values`, and it stays SYNCED for the reason it always was: the wire it came
+off is attached to this station and nobody else can work it out. Driven outputs are
+functions of time; sensed inputs are facts the console was told. Removing the old field
+rather than deprecating it was deliberate — an unwritten `live_values` would have left
+every reader compiling and silently seeing nothing move, where a removal makes the
+compiler and `svelte-check` produce the list of things to fix.
+
+**What a tick cost became what a frame costs.** The published figures moved from the
+engine to the output frame, one entry per connector, keeping the mean and the worst and
+the rule that a window with no frames in it reports **nothing rather than zero**. Per
+connector because their rates are their own: Art-Net at 40 Hz beside a node told once
+are not two samples of one number.
+
+**The trap, for whoever is next.** The show clock advances monotonically from one wall
+reading, so `tokio::time::pause()` does not fast-forward a fade. A test that needs one
+to advance has to let real time pass or drive `Playback` directly. Several tests here
+run a short fade in real time for exactly that reason.
+
 
 ## Further out
 

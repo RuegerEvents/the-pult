@@ -1,0 +1,1420 @@
+{
+  "about": [
+    "What a parameter is doing, as a corpus: what is driving it, a moment, and the",
+    "value that comes out. Read by two test suites \u2014 a native Rust one in",
+    "crates/pult-render-wasm/tests, and a vitest one in frontend/src/lib that loads",
+    "the same crate compiled to wasm and asks it the same questions.",
+    "",
+    "This file is what replaced writing the evaluator twice. `values-as-functions`",
+    "declined to translate the arithmetic into TypeScript \u2014 the surface is easings,",
+    "curves, step lists, spread, phase, direction, width, master rates, priority and",
+    "home fallback, and two of it would drift \u2014 so what has to be guarded is not two",
+    "implementations agreeing but two *compilations* of one agreeing. A wasm build",
+    "that optimises a float differently, or a boundary that packs a colour wrong, is",
+    "exactly the failure this catches, and it shows up here rather than as a screen",
+    "disagreeing with the lamps.",
+    "",
+    "Every case names one parameter, so a failure reads as a sentence."
+  ],
+  "cases": [
+    {
+      "name": "a parameter nothing can place has no value",
+      "driving": {},
+      "at": 1000,
+      "expect": null
+    },
+    {
+      "name": "nothing driving it rests at home",
+      "driving": {
+        "home": {
+          "type": "Float",
+          "value": 0.25
+        }
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.25
+      }
+    },
+    {
+      "name": "a linear fade before it starts",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 500,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "a linear fade at 1000",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "a linear fade at 2000",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 2000,
+      "expect": {
+        "type": "Float",
+        "value": 0.25
+      }
+    },
+    {
+      "name": "a linear fade at 3000",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 3000,
+      "expect": {
+        "type": "Float",
+        "value": 0.5
+      }
+    },
+    {
+      "name": "a linear fade at 5000",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 5000,
+      "expect": {
+        "type": "Float",
+        "value": 1.0
+      }
+    },
+    {
+      "name": "a linear fade at 99999",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 99999,
+      "expect": {
+        "type": "Float",
+        "value": 1.0
+      }
+    },
+    {
+      "name": "an ease-in-out fade at 0",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "EaseInOut",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 0,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "an ease-in-out fade at 1000",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "EaseInOut",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.125
+      }
+    },
+    {
+      "name": "an ease-in-out fade at 2000",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "EaseInOut",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 2000,
+      "expect": {
+        "type": "Float",
+        "value": 0.5
+      }
+    },
+    {
+      "name": "an ease-in-out fade at 3000",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "EaseInOut",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 3000,
+      "expect": {
+        "type": "Float",
+        "value": 0.875
+      }
+    },
+    {
+      "name": "an ease-in-out fade at 4000",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "EaseInOut",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 4000,
+      "expect": {
+        "type": "Float",
+        "value": 1.0
+      }
+    },
+    {
+      "name": "an ease-in fade a quarter through",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "EaseIn",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.0625
+      }
+    },
+    {
+      "name": "an ease-out fade a quarter through",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "EaseOut",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.4375
+      }
+    },
+    {
+      "name": "a step fade holds until it arrives",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "Step",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 3999,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "a step fade arrives at the end",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "Step",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 4000,
+      "expect": {
+        "type": "Float",
+        "value": 1.0
+      }
+    },
+    {
+      "name": "a fade of no length has already landed",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.2
+          },
+          "to": {
+            "type": "Float",
+            "value": 0.8
+          },
+          "t0": 0,
+          "duration_ms": 0,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 0,
+      "expect": {
+        "type": "Float",
+        "value": 0.8
+      }
+    },
+    {
+      "name": "a colour fades channel by channel",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Color",
+            "value": {
+              "r": 0.0,
+              "g": 0.0,
+              "b": 0.0
+            }
+          },
+          "to": {
+            "type": "Color",
+            "value": {
+              "r": 1.0,
+              "g": 0.5,
+              "b": 0.0
+            }
+          },
+          "t0": 0,
+          "duration_ms": 1000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 500,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 0.5,
+          "g": 0.25,
+          "b": 0.0
+        }
+      }
+    },
+    {
+      "name": "an integer fade rounds rather than truncates",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Int",
+            "value": 0
+          },
+          "to": {
+            "type": "Int",
+            "value": 10
+          },
+          "t0": 0,
+          "duration_ms": 1000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 350,
+      "expect": {
+        "type": "Int",
+        "value": 4
+      }
+    },
+    {
+      "name": "a boolean switches at the top of the fade, not the end",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Bool",
+            "value": false
+          },
+          "to": {
+            "type": "Bool",
+            "value": true
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 1,
+      "expect": {
+        "type": "Bool",
+        "value": true
+      }
+    },
+    {
+      "name": "a fade running backwards is still a fade",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "t0": 0,
+          "duration_ms": 1000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 250,
+      "expect": {
+        "type": "Float",
+        "value": 0.75
+      }
+    },
+    {
+      "name": "a sine at 0",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Sine"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 0,
+      "expect": {
+        "type": "Float",
+        "value": 0.5
+      }
+    },
+    {
+      "name": "a sine at 250",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Sine"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 250,
+      "expect": {
+        "type": "Float",
+        "value": 1.0
+      }
+    },
+    {
+      "name": "a sine at 500",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Sine"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 500,
+      "expect": {
+        "type": "Float",
+        "value": 0.5
+      }
+    },
+    {
+      "name": "a sine at 750",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Sine"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 750,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "a sine at 1000",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Sine"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.5
+      }
+    },
+    {
+      "name": "a triangle rises over the first half",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Triangle"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 250,
+      "expect": {
+        "type": "Float",
+        "value": 0.5
+      }
+    },
+    {
+      "name": "a triangle falls over the second",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Triangle"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 750,
+      "expect": {
+        "type": "Float",
+        "value": 0.5
+      }
+    },
+    {
+      "name": "a triangle peaks in the middle",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Triangle"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 500,
+      "expect": {
+        "type": "Float",
+        "value": 1.0
+      }
+    },
+    {
+      "name": "a square is high inside its duty cycle",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Square"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.25,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 100,
+      "expect": {
+        "type": "Float",
+        "value": 1.0
+      }
+    },
+    {
+      "name": "a square is low outside it",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Square"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.25,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 300,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "a saw up climbs",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "SawUp"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 750,
+      "expect": {
+        "type": "Float",
+        "value": 0.75
+      }
+    },
+    {
+      "name": "a saw down falls",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "SawDown"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 750,
+      "expect": {
+        "type": "Float",
+        "value": 0.25
+      }
+    },
+    {
+      "name": "phase offsets where a fixture sits in the cycle",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "SawUp"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.5,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 250,
+      "expect": {
+        "type": "Float",
+        "value": 0.75
+      }
+    },
+    {
+      "name": "backward runs the other way",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "SawUp"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Backward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 250,
+      "expect": {
+        "type": "Float",
+        "value": 0.75
+      }
+    },
+    {
+      "name": "low and high scale the shape without changing it",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "SawUp"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.2
+          },
+          "high": {
+            "type": "Float",
+            "value": 0.6
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 500,
+      "expect": {
+        "type": "Float",
+        "value": 0.4
+      }
+    },
+    {
+      "name": "an effect anchored in the future wraps to the top of its cycle",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "SawUp"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 1000,
+          "source": "Programmer"
+        }
+      },
+      "at": 750,
+      "expect": {
+        "type": "Float",
+        "value": 0.75
+      }
+    },
+    {
+      "name": "a colour effect blends between two colours",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "SawUp"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Color",
+            "value": {
+              "r": 0.0,
+              "g": 0.0,
+              "b": 0.0
+            }
+          },
+          "high": {
+            "type": "Color",
+            "value": {
+              "r": 1.0,
+              "g": 1.0,
+              "b": 1.0
+            }
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 500,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 0.5,
+          "g": 0.5,
+          "b": 0.5
+        }
+      }
+    },
+    {
+      "name": "a stopped master holds an effect where it is",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Sine"
+          },
+          "rate_hz": 0.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.25,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 987654,
+      "expect": {
+        "type": "Float",
+        "value": 1.0
+      }
+    },
+    {
+      "name": "a step list holds a hard step",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Steps": [
+              {
+                "at": 0.0,
+                "value": {
+                  "type": "Color",
+                  "value": {
+                    "r": 1.0,
+                    "g": 0.0,
+                    "b": 0.0
+                  }
+                },
+                "easing": "Step"
+              },
+              {
+                "at": 0.5,
+                "value": {
+                  "type": "Color",
+                  "value": {
+                    "r": 0.0,
+                    "g": 0.0,
+                    "b": 1.0
+                  }
+                },
+                "easing": "Linear"
+              }
+            ]
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 250,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 1.0,
+          "g": 0.0,
+          "b": 0.0
+        }
+      }
+    },
+    {
+      "name": "and eases out of a soft one",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Steps": [
+              {
+                "at": 0.0,
+                "value": {
+                  "type": "Color",
+                  "value": {
+                    "r": 1.0,
+                    "g": 0.0,
+                    "b": 0.0
+                  }
+                },
+                "easing": "Step"
+              },
+              {
+                "at": 0.5,
+                "value": {
+                  "type": "Color",
+                  "value": {
+                    "r": 0.0,
+                    "g": 0.0,
+                    "b": 1.0
+                  }
+                },
+                "easing": "Linear"
+              }
+            ]
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 750,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 0.5,
+          "g": 0.0,
+          "b": 0.5
+        }
+      }
+    },
+    {
+      "name": "a step list wraps round the end of the cycle",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Steps": [
+              {
+                "at": 0.0,
+                "value": {
+                  "type": "Color",
+                  "value": {
+                    "r": 1.0,
+                    "g": 0.0,
+                    "b": 0.0
+                  }
+                },
+                "easing": "Step"
+              },
+              {
+                "at": 0.5,
+                "value": {
+                  "type": "Color",
+                  "value": {
+                    "r": 0.0,
+                    "g": 0.0,
+                    "b": 1.0
+                  }
+                },
+                "easing": "Linear"
+              }
+            ]
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 999,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 0.998,
+          "g": 0.0,
+          "b": 0.002
+        }
+      }
+    },
+    {
+      "name": "a step list that lost its steps holds the bottom of its range",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Steps": []
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 250,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "an effect beats a fade",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "SawUp"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        },
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 1000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "home": {
+          "type": "Float",
+          "value": 0.1
+        }
+      },
+      "at": 250,
+      "expect": {
+        "type": "Float",
+        "value": 0.25
+      }
+    },
+    {
+      "name": "a held value beats everything",
+      "driving": {
+        "programmer": {
+          "type": "Float",
+          "value": 0.125
+        },
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "SawUp"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        },
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 1000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "home": {
+          "type": "Float",
+          "value": 0.1
+        }
+      },
+      "at": 250,
+      "expect": {
+        "type": "Float",
+        "value": 0.125
+      }
+    },
+    {
+      "name": "a fade beats the home value under it",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 1000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "home": {
+          "type": "Float",
+          "value": 0.9
+        }
+      },
+      "at": 500,
+      "expect": {
+        "type": "Float",
+        "value": 0.5
+      }
+    }
+  ]
+}

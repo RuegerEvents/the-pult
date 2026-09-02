@@ -24,7 +24,7 @@ function aFixture(partial: Partial<Fixture> = {}): Fixture {
 		fixture_type_id: 'type',
 		address: { Dmx: { universe: 1, address: 1 } },
 		position: null,
-		live_values: {},
+		sensed_values: {},
 		live_effects: {},
 		live_fades: {},
 		home_values: {},

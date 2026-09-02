@@ -1,4 +1,4 @@
-// What this station's tick costs, read off the station itself.
+// What this station's output frames cost, read off the station itself.
 //
 //   node scripts/demo-measure.mjs <port> [--label <name>]
 //
@@ -9,6 +9,11 @@
 // is the property worth having.
 //
 // Run by `scripts/demo.sh --measure`, which seeds a preset first.
+//
+// The thing with a deadline is the output *frame*. There is no engine tick behind it
+// any more: a pass through playback happens when the show changes, and a fade in
+// progress is not a change to the show. So what is printed is per connector, because
+// their rates and their costs are their own.
 
 import { connect, sleep } from './demo-ws.mjs';
 
@@ -22,8 +27,8 @@ for (let i = 0; i < argv.length; i++) {
 	else if (!argv[i].startsWith('--')) port = argv[i];
 }
 
-// `Playback::tick`'s interval, and so the budget a tick has to come in under.
-const TICK_BUDGET_MS = 25;
+// `Frames::DMX`'s moving rate, and so the budget a frame has to come in under.
+const FRAME_BUDGET_MS = 25;
 // `REPORT_INTERVAL` in infra/stations.rs. A window is one of these.
 const REPORT_INTERVAL_MS = 2000;
 
@@ -65,9 +70,25 @@ try {
 		}
 	}
 
-	// Two windows: the first covers the writes above as well as the ticks, the
+	// What a browser is sent while the show runs.
+	//
+	// The other half of the claim, and the one an operator feels: a fade used to be a
+	// write and a broadcast per fixture per tick, so a connected console spent a cue on
+	// the receiving end of a few thousand messages a second. Nothing stores a value any
+	// more, so the only thing a frontend hears about is the show changing — and this
+	// counts what actually arrives rather than asserting that.
+	let pushed = 0;
+	station.subscribe('fixtures/**', () => {
+		pushed += 1;
+	});
+	await sleep(REPORT_INTERVAL_MS * 0.5);
+	const countedFrom = Date.now();
+	pushed = 0;
+
+	// Two windows: the first covers the writes above as well as the frames, the
 	// second is the show running on its own, which is what is being asked about.
-	await sleep(REPORT_INTERVAL_MS * 2.5);
+	await sleep(REPORT_INTERVAL_MS * 2);
+	const countedFor = (Date.now() - countedFrom) / 1000;
 
 	const rows = await get(['stations']);
 	if (!rows?.length) {
@@ -87,54 +108,79 @@ try {
 		console.log(`  ${build} build`);
 	}
 	console.log(
-		`  ${pad('show', 12)}${rpad('fixtures', 9)}${rpad('cues', 6)}` +
-			`${rpad('tick', 10)}${rpad('worst', 10)}${rpad('playback', 10)}${rpad('CPU', 8)}`
+		`  ${pad('station', 12)}${rpad('fixtures', 9)}${rpad('cues', 6)}${rpad('CPU', 8)}`
 	);
-	console.log(`  ${'─'.repeat(65)}`);
-
-	// One station reads as the show it is running; several have to say which is which.
-	const named = rows.length > 1 || !label;
-
+	console.log(`  ${'─'.repeat(35)}`);
 	for (const row of rows) {
-		const cost = row.tick_cost;
 		const host = row.hostname.split('.')[0];
 		console.log(
 			`  ${pad(label || host, 12)}${rpad(fixtures.length, 9)}${rpad(cues.length, 6)}` +
-				`${rpad(cost ? ms(cost.mean_ms) : '—', 10)}` +
-				`${rpad(cost ? ms(cost.max_ms) : '—', 10)}` +
-				`${rpad(cost ? ms(cost.playback_mean_ms) : '—', 10)}` +
 				`${rpad(`${row.cpu_percent.toFixed(0)}%`, 8)}`
 		);
+	}
 
-		if (named) console.log(`    on ${host}`);
+	console.log('');
+	console.log(
+		`  ${pad('connector', 26)}${pad('protocol', 10)}` +
+			`${rpad('frame', 10)}${rpad('worst', 10)}${rpad('evaluating', 12)}${rpad('frames', 8)}`
+	);
+	console.log(`  ${'─'.repeat(76)}`);
 
-		if (!cost) {
-			// Absent is not zero. A station that did no work in the window has nothing
-			// to say about what a tick costs, and says so.
-			console.log('    nothing ran in that window — this station is settled, not instant');
+	let anyMeasured = false;
+	for (const row of rows) {
+		const host = row.hostname.split('.')[0];
+		// One station reads as the show it is running; several have to say which.
+		const where = rows.length > 1 ? ` (${host})` : '';
+
+		if (!row.frame_costs?.length) {
+			// Absent is not zero. A station whose connectors emitted nothing in the
+			// window has nothing to say about what a frame costs, and says so.
+			console.log(`  ${pad(`nothing sending${where}`, 26)}`);
+			console.log('    no frames in that window — this station is settled, not instant');
 			continue;
 		}
 
-		const share = ((cost.mean_ms / TICK_BUDGET_MS) * 100).toFixed(0);
-		const applying = cost.mean_ms - cost.playback_mean_ms;
-		console.log(
-			`    ${share}% of the ${TICK_BUDGET_MS} ms budget over ${cost.ticks} ticks; ` +
-				`computing ${ms(cost.playback_mean_ms)}, applying ${ms(applying)}`
-		);
-		if (cost.max_ms > TICK_BUDGET_MS) {
+		for (const cost of row.frame_costs) {
+			anyMeasured = true;
 			console.log(
-				`    over budget: worst tick ${ms(cost.max_ms)}. A late tick loses smoothness, ` +
-					'not correctness — a value comes from the wall clock, not from the last one.'
+				`  ${pad(cost.output + where, 26)}${pad(cost.kind, 10)}` +
+					`${rpad(ms(cost.mean_ms), 10)}${rpad(ms(cost.max_ms), 10)}` +
+					`${rpad(ms(cost.evaluating_mean_ms), 12)}${rpad(cost.frames, 8)}`
 			);
+			const share = ((cost.mean_ms / FRAME_BUDGET_MS) * 100).toFixed(0);
+			const emitting = cost.mean_ms - cost.evaluating_mean_ms;
+			const rate = cost.window_ms ? ((cost.frames * 1000) / cost.window_ms).toFixed(0) : '?';
+			console.log(
+				`    ${share}% of the ${FRAME_BUDGET_MS} ms budget at ${rate} Hz ` +
+					`over ${(cost.window_ms / 1000).toFixed(1)} s; ` +
+					`evaluating ${ms(cost.evaluating_mean_ms)}, emitting ${ms(emitting)}`
+			);
+			if (cost.max_ms > FRAME_BUDGET_MS) {
+				console.log(
+					`    over budget: worst frame ${ms(cost.max_ms)}. A late frame loses smoothness, ` +
+						'not correctness — a value comes from the clock, not from the last frame.'
+				);
+			}
 		}
 	}
 
-	// What this figure is not, said where it is read, because it is the way it will
-	// be misread: flows and the output-config push are outside it, so it is what
-	// playback costs and not what the process costs. That is the CPU column.
+	// What these figures are not, said where they are read, because it is the way they
+	// will be misread.
 	console.log('');
-	console.log('  tick = playback only (reading the show, computing it, applying it).');
-	console.log('  Flows and output config are outside it; the whole process is the CPU column.');
+	if (!anyMeasured) {
+		console.log('  No output is configured, so there is no frame to measure.');
+		console.log('  Seeding an Art-Net or sACN output is what gives this something to say.');
+	}
+	console.log(
+		`  A connected browser was sent ${pushed} update${pushed === 1 ? '' : 's'} about the rig ` +
+			`in ${countedFor.toFixed(1)} s`
+	);
+	console.log('  — the show changing, never a value moving. Motion is drawn in the page.');
+	console.log('');
+	console.log('  frame = one connector gathering, evaluating and emitting one frame.');
+	console.log('  The engine has no tick behind it: a pass happens when the show changes,');
+	console.log('  and a fade in progress is not a change to the show. The whole process is');
+	console.log('  the CPU column.');
 	console.log('');
 
 	process.exit(0);

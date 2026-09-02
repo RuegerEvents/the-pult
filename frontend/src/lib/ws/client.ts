@@ -1,6 +1,7 @@
 import type { ClientMessage, HistoryEntry, ServerMessage } from '$lib/generated/index.js';
 import type { JsonValue } from '$lib/generated/serde_json/JsonValue.js';
 import type { PathSegment } from '$lib/generated/index.js';
+import { ClockSync, forgetOffset } from './clock.js';
 
 /** Called with the new value and the exact path it was written to. */
 export type SubscriptionHandler = (value: unknown, path: PathSegment[]) => void;
@@ -25,6 +26,16 @@ export class PultWsClient {
 	/** The one act the writes going out right now are part of, if there is one. */
 	private gesture: string | null = null;
 	private connectListeners = new Set<() => void>();
+	/**
+	 * What time the station thinks it is.
+	 *
+	 * Kept here because it belongs to the connection: the objects a browser evaluates
+	 * are anchored in the console milliseconds of the station on the other end of this
+	 * socket, and a different station would be a different clock.
+	 */
+	private clock = new ClockSync({
+		ask: (sentAt) => this.send({ type: 'ClockSync', payload: { sent_at: sentAt } }),
+	});
 
 	onConnect: (() => void) | undefined = undefined;
 	onDisconnect: (() => void) | undefined = undefined;
@@ -74,12 +85,20 @@ export class PultWsClient {
 			for (const msg of queued) {
 				this.socket!.send(JSON.stringify(msg));
 			}
+			// Ask what time it is before anything asks what a light is doing. The
+			// answer is what makes every evaluation on this page mean anything.
+			this.clock.start();
 			this.connectListeners.forEach((cb) => cb());
 			this.onConnect?.();
 		};
 
 		this.socket.onclose = () => {
 			console.log('[pult] WebSocket disconnected');
+			// The offset belonged to that connection. Keeping it across a reconnect
+			// would mean drawing the rig against a station this client is no longer
+			// talking to, which is exactly the silent wrongness this exists to avoid.
+			this.clock.stop();
+			forgetOffset();
 			this.onDisconnect?.();
 			this.scheduleReconnect();
 		};
@@ -100,6 +119,8 @@ export class PultWsClient {
 
 	disconnect(): void {
 		if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+		this.clock.stop();
+		forgetOffset();
 		this.socket?.close();
 		this.socket = null;
 	}
@@ -139,6 +160,11 @@ export class PultWsClient {
 
 	private handleServerMessage(msg: ServerMessage): void {
 		if (msg.type === 'Pong') return;
+
+		if (msg.type === 'ClockSync') {
+			this.clock.answered(msg.payload.sent_at, msg.payload.station_ms);
+			return;
+		}
 
 		if (msg.type === 'Update') {
 			this.subscriptionHandlers.forEach((handlers, pattern) => {

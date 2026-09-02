@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use super::{
     dmx::{render, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER, UNIVERSE_SIZE},
-    OutputPlugin, SendFuture,
+    Frame, Frames, OutputPlugin, SendFuture,
 };
 
 /// The port E1.31 is specified to use.
@@ -133,14 +133,27 @@ impl SacnOutput {
 }
 
 impl OutputPlugin for SacnOutput {
+    fn frames(&self) -> Frames {
+        Frames::DMX
+    }
+
     fn name(&self) -> &'static str {
         "sacn"
     }
 
-    fn send<'a>(&'a mut self, patch: &'a Patch, _changed: &'a [Uuid]) -> SendFuture<'a> {
+    fn send<'a>(
+        &'a mut self,
+        patch: &'a Patch,
+        _changed: &'a [Uuid],
+        now_ms: u64,
+    ) -> SendFuture<'a> {
         Box::pin(async move {
             let now = std::time::Instant::now();
-            for universe in render(patch) {
+            // Timed on its own: rendering is where every parameter of every patched
+            // fixture is worked out, and putting the bytes on the wire is the rest.
+            let universes = render(patch, now_ms);
+            let frame = Frame { evaluating: now.elapsed() };
+            for universe in universes {
                 if !self.sent.needs_send(&universe, now, REFRESH_AFTER) {
                     continue;
                 }
@@ -155,7 +168,7 @@ impl OutputPlugin for SacnOutput {
                 );
                 self.socket.send_to(&packet, self.destination(universe.number)).await?;
             }
-            Ok(())
+            Ok(frame)
         })
     }
 }

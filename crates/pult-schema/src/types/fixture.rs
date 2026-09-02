@@ -5,6 +5,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use super::effect::{RunningEffect, RunningFade};
+use super::programmer::ProgrammerValue;
 use crate::PultSchema;
 
 /// A point in the rig, in metres, from whatever origin the show uses.
@@ -99,7 +100,7 @@ pub enum ParameterKind {
     ///
     /// A node describes its own ports, and it is allowed to describe one the
     /// console has never heard of. The name it gave is the whole identity: it is
-    /// what the operator sees and what the `live_values` key is built from.
+    /// what the operator sees and what the parameter key is built from.
     Named(String),
 }
 
@@ -223,16 +224,40 @@ pub struct Fixture {
     /// Where this fixture is in the rig. None until it has been placed.
     #[pult(lifecycle = PERSISTED)]
     pub position: Option<FixturePosition>,
-    #[pult(lifecycle = SYNCED)]
-    pub live_values: HashMap<String, ParameterValue>,
-    /// What is moving on this fixture, keyed by parameter key.
+    /// What this fixture's devices have *told* the console, keyed by parameter key:
+    /// a contact closure, a temperature, a humidity — anything a device reports.
     ///
-    /// LOCAL rather than SYNCED, and the first LOCAL entity field in the system. Every
-    /// station works these out for itself from replicated state, so broadcasting them
-    /// would be sending each console a slower copy of what it has already computed.
-    /// What they are for is the two readers that cannot compute them: an output plugin
-    /// deciding whether to hand a shape to a node instead of streaming samples at it,
-    /// and a panel drawing where each fixture sits in the cycle.
+    /// The one kind of value the console still stores, and the reason it does is that
+    /// it cannot work it out. What a fixture is being *driven* to is a function of the
+    /// fades and effects on it, the programmer over them and its home value beneath,
+    /// evaluated for whatever moment a consumer asks about; what it is *sensing*
+    /// arrived off a wire and is not a function of anything the console holds.
+    ///
+    /// SYNCED, and for a reason that survived the removal of its driven half: nothing
+    /// else on the network can work this value out, because the wire it came off is
+    /// attached to this station.
+    ///
+    /// Defaulted on the wire so a showfile or a peer from before the split — where one
+    /// map carried both halves under the name `live_values` — opens with this field
+    /// simply absent. The old name is *ignored* rather than aliased onto this one: what
+    /// it mostly carried was driven values, and those are now a function of what is
+    /// driving them. Taking them for readings would be filing the console's own output
+    /// as something a device reported.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub sensed_values: HashMap<String, ParameterValue>,
+    /// What shape is driving each of this fixture's parameters, keyed by parameter
+    /// key.
+    ///
+    /// Together with `live_fades` this is *what the fixture is doing*, and the whole of
+    /// it: nothing stores the values these come to. A shape and its anchor are enough
+    /// for anybody holding the row to work out what the parameter is at any moment they
+    /// care about, which is what lets an output connector run at its protocol's rate, a
+    /// node trace the shape itself, and a browser draw it at its own refresh.
+    ///
+    /// LOCAL rather than SYNCED. Every station works these out for itself from
+    /// replicated cue state, so broadcasting them would be sending each console a
+    /// slower copy of what it has already computed.
     ///
     /// Defaulted on the wire: a LOCAL field is worked out by the station that holds
     /// it, so a client creating a fixture has nothing to say about it and should not
@@ -241,14 +266,19 @@ pub struct Fixture {
     #[serde(default)]
     #[pult(lifecycle = LOCAL)]
     pub live_effects: HashMap<String, RunningEffect>,
-    /// The fades this station is part way through, keyed by parameter key. LOCAL for
-    /// the same reason, and read by the same plugin to hand a timed move to a node
-    /// that can run it unattended. Defaulted for the same reason as above.
+    /// The fades on each of this fixture's parameters, keyed by parameter key. LOCAL
+    /// and defaulted for the same reasons as above.
+    ///
+    /// **Including the ones that have arrived**, which is what makes this the record of
+    /// where the rig is rather than a list of what is in flight. A landed fade is a
+    /// constant function of time, and since nothing stores the number it landed on, it
+    /// is the only thing that remembers it. One entry per parameter anything has ever
+    /// driven, replaced when a cue, a release or an action takes the key.
     #[serde(default)]
     #[pult(lifecycle = LOCAL)]
     pub live_fades: HashMap<String, RunningFade>,
-    /// What this fixture's parameters rest at when nothing is driving them, keyed
-    /// like `live_values`. Empty on nearly every fixture, and then the answer is
+    /// What this fixture's parameters rest at when nothing is driving them, keyed by
+    /// parameter key. Empty on nearly every fixture, and then the answer is
     /// whatever its type declares.
     ///
     /// On the fixture rather than on the type because a house light that comes up
@@ -261,7 +291,8 @@ pub struct Fixture {
     pub home_values: HashMap<String, ParameterValue>,
 }
 
-/// The `live_values` and `home_values` map key for a parameter.
+/// The map key for a parameter, in `home_values`, `sensed_values`, `live_fades` and
+/// `live_effects` alike.
 ///
 /// Here rather than in the backend because three places derive it — the engine, the
 /// browser, and the command-line plugin — and a fourth spelling of it would be a
@@ -317,14 +348,93 @@ pub fn home_value_by_key(
     fixture_type: Option<&FixtureType>,
     key: &str,
 ) -> Option<ParameterValue> {
+    home_value_ref_by_key(fixture, fixture_type, key).cloned()
+}
+
+/// The same answer, borrowed rather than cloned.
+///
+/// What [`driving`] needs: a parameter's home value is looked up once per parameter
+/// per output frame, and cloning a colour at that rate to hand it straight to an
+/// evaluator that only reads it is the sort of cost that becomes the whole frame on a
+/// rig of thousands.
+pub fn home_value_ref_by_key<'a>(
+    fixture: &'a Fixture,
+    fixture_type: Option<&'a FixtureType>,
+    key: &str,
+) -> Option<&'a ParameterValue> {
     if let Some(overridden) = fixture.home_values.get(key) {
-        return Some(overridden.clone());
+        return Some(overridden);
     }
     fixture_type?
         .parameters
         .iter()
         .find(|p| parameter_key(&p.kind) == key)
-        .map(|p| p.default_value.clone())
+        .map(|p| &p.default_value)
+}
+
+// ── What is driving a parameter ──────────────────────────────────────
+
+/// The programmer's entries, indexed by the parameter each one holds.
+///
+/// Built once by whoever is about to evaluate a rig. The alternative — scanning the
+/// entries per parameter — is what makes a frame quadratic in the size of a look, and
+/// a busy programmer is thousands of entries.
+#[derive(Default)]
+pub struct HeldByProgrammer<'a>(HashMap<(Uuid, String), &'a ProgrammerValue>);
+
+impl<'a> HeldByProgrammer<'a> {
+    pub fn of(entries: &'a [ProgrammerValue]) -> Self {
+        Self(
+            entries
+                .iter()
+                .map(|entry| ((entry.fixture_id, parameter_key(&entry.parameter_kind)), entry))
+                .collect(),
+        )
+    }
+
+    pub fn get(&self, fixture_id: Uuid, key: &str) -> Option<&'a ProgrammerValue> {
+        self.0.get(&(fixture_id, key.to_string())).copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Everything acting on one parameter, gathered from the show.
+///
+/// The station publishes the winner of playback's two layers into `live_effects` and
+/// `live_fades`, so those two are read straight off the fixture. The programmer is
+/// read from the SYNCED collection instead, because it is show data rather than
+/// something a station worked out — and only where it holds a plain value: an entry
+/// carrying a shape has already been resolved against its speed master and published
+/// as the running effect, which is what keeps rate-following out of the evaluator.
+pub fn driving<'a>(
+    fixture: &'a Fixture,
+    fixture_type: Option<&'a FixtureType>,
+    held: Option<&'a ProgrammerValue>,
+    key: &str,
+) -> pult_render::Driving<'a> {
+    pult_render::Driving {
+        programmer: held.filter(|entry| entry.effect.is_none()).map(|entry| &entry.value),
+        effect: fixture.live_effects.get(key),
+        fade: fixture.live_fades.get(key),
+        home: home_value_ref_by_key(fixture, fixture_type, key),
+    }
+}
+
+/// What one parameter of one fixture is putting out at `now_ms`.
+///
+/// The whole of "what is this light doing" in one call, for the callers that want an
+/// answer rather than the layers behind it.
+pub fn value_at(
+    fixture: &Fixture,
+    fixture_type: Option<&FixtureType>,
+    held: Option<&ProgrammerValue>,
+    key: &str,
+    now_ms: u64,
+) -> Option<ParameterValue> {
+    pult_render::value_at(&driving(fixture, fixture_type, held, key), now_ms)
 }
 
 /// The parameters of a type an operator can set, in the order it lists them.
@@ -385,7 +495,7 @@ mod tests {
             fixture_type_id: Uuid::nil(),
             address: FixtureAddress::default(),
             position: None,
-            live_values: HashMap::new(),
+            sensed_values: HashMap::new(),
             live_effects: HashMap::new(),
             live_fades: HashMap::new(),
             home_values,
@@ -417,6 +527,52 @@ mod tests {
         let parsed: Fixture = serde_json::from_value(legacy).unwrap();
 
         assert!(parsed.home_values.is_empty(), "nothing to say, rather than nothing at all");
+    }
+
+    /// A row from before values stopped being stored, opened here.
+    ///
+    /// `live_values` is *ignored* rather than read into `sensed_values`. Most of what
+    /// it carried was the console's own output, which is now a function of what is
+    /// driving the parameter; filing that as something a device reported would be a
+    /// station claiming to have been told what it had in fact decided.
+    #[test]
+    fn a_fixture_written_before_values_stopped_being_stored_still_loads() {
+        let legacy = serde_json::json!({
+            "id": Uuid::nil(),
+            "name": "House left",
+            "fixture_type_id": Uuid::nil(),
+            "address": { "Dmx": { "universe": 1, "address": 1 } },
+            "position": null,
+            "live_values": {
+                "Intensity": { "type": "Float", "value": 0.8 },
+                "Contact:0": { "type": "Bool", "value": true },
+            },
+            "home_values": { "Intensity": { "type": "Float", "value": 1.0 } },
+        });
+
+        let parsed: Fixture = serde_json::from_value(legacy).expect("an older row still reads");
+
+        assert!(parsed.sensed_values.is_empty(), "the old map is ignored, not adopted");
+        assert!(parsed.live_fades.is_empty());
+        assert!(parsed.live_effects.is_empty());
+        // And nothing else was lost getting there — the fields that outlived the
+        // change arrive as they were written.
+        assert_eq!(parsed.name, "House left");
+        assert_eq!(parsed.home_values.get("Intensity"), Some(&ParameterValue::Float(1.0)));
+    }
+
+    /// And the other direction: a station on an older build receiving a row from this
+    /// one, which simply does not carry the field it is looking for.
+    #[test]
+    fn a_row_from_here_omits_the_field_an_older_station_looks_for() {
+        let fixture = a_fixture(HashMap::new());
+        let written = serde_json::to_value(&fixture).expect("a fixture serialises");
+
+        assert!(written.get("live_values").is_none(), "there is no such field any more");
+        assert!(written.get("sensed_values").is_some(), "and what replaced half of it is there");
+        // An older build defaults what it cannot find, which is the whole of what it
+        // has to do: `live_values` was `#[serde(default)]`-adjacent there too.
+        assert_eq!(written["sensed_values"], serde_json::json!({}));
     }
 
     #[test]

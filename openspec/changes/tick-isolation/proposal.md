@@ -1,31 +1,37 @@
-## Status: on hold, largely superseded
+## Status: on hold, superseded in the parts that mattered
 
-Do not apply this. It is a good plan for an architecture we have decided to leave.
+Do not apply this. It is a good plan for an architecture we have left.
 
-`values-as-functions` (see `openspec/BACKLOG.md`) makes a live value something each
-consumer evaluates rather than something the engine stores, and that removes most of
-this change's reason to exist rather than optimising it:
+`values-as-functions` shipped on 2026-09-02 (roadmap task 44, archived under
+`changes/archive/`). A live value is no longer something the engine stores; it is
+something each consumer evaluates from what is driving it. That removed most of this
+change's reason to exist rather than optimising it — the figures are 35.2 ms of tick at
+2005 fixtures becoming 2.86 ms of output frame, with the engine doing nothing at all
+between changes to the show:
 
 - **The typed `PlaybackView`** — unnecessary. It exists to make a per-tick read of the
   show cheap; there is no per-tick read once nothing materialises values into state.
 - **One frame per tick** — unnecessary. There are no per-tick writes to batch.
-- **Playback on its own thread** — mostly unnecessary. The loop moves into each output
-  connector, which already has one, and the engine has no periodic work left except
-  the small sampling that flow `Watch` nodes need.
+- **Playback on its own thread** — unnecessary. The loop moved into each output
+  connector, which already had one, and the engine has no periodic work left at all
+  except the sampling that flow `Watch` nodes need — which is now proportional to what
+  is watched rather than to the rig.
 
-What survives, and is worth doing on its own terms whatever happens above:
+What survives, and is worth doing on its own terms — re-scope this proposal around
+these before proposing it again:
 
 - **Disk off the actor.** An operator's edit should not wait behind another's write.
   Lower priority than it looked, since the disk is no longer anywhere near the show.
 - **Per-source admission.** A plugin should not be able to crowd out an operator.
-- **A figure for what the frame costs.** But `observability/tick-cost` describes a
-  tick that would no longer exist, so what it measures has to be re-decided rather
-  than extended — which is one of the open questions on `values-as-functions`.
+  Untouched by any of the above, and now the largest thing left here.
 
-The analysis below stands and is why the successor exists; the measurement in it is
-the reason the plan changed. Re-scope this against whatever `values-as-functions`
-decides, rather than trimming it now — the parts that survive depend on answers that
-change has not given yet.
+And one that is **done**: a figure for what the frame costs.
+`observability/tick-cost` was rewritten by `values-as-functions` to describe the output
+frame, one measurement per connector, keeping the mean and the worst and the rule that
+a window with no frames in it reports nothing rather than zero.
+
+The analysis below stands and is why the successor exists; the measurement in it is the
+reason the plan changed.
 
 ## Why
 

@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { select, selected, toggle } from '$lib/stores/selection.js';
+	import { output, watching } from '$lib/stores/output.js';
 	import type { Fixture, FixtureType, ParameterValue } from '$lib/generated/index.js';
 	import FixtureTypeEditor from './FixtureTypeEditor.svelte';
 	import HomeValue from './HomeValue.svelte';
@@ -34,6 +35,16 @@
 
 	const clashes = $derived(clashingFixtures(fixtures, spanOf));
 
+	/// The whole table's live column, evaluated every frame while the panel is up. The
+	/// patch is what this panel is *about*, so its own list is exactly the superset.
+	$effect(() => {
+		const keys = fixtures.flatMap((fixture) =>
+			(typeOf(fixture)?.parameters ?? []).map((p) => `${fixture.id}/${parameterKey(p.kind)}`)
+		);
+		const registered = watching(keys);
+		return () => registered.stop();
+	});
+
 	async function createFixture() {
 		const name = newName.trim();
 		if (!name || !newTypeId) return;
@@ -43,7 +54,10 @@
 			fixture_type_id: newTypeId,
 			address: { Dmx: { universe: 1, address: nextFreeAddress(fixtures, 1, spanOf) } },
 			position: null,
-			live_values: {},
+			// Nothing has been reported about it and nothing is driving it yet. Both
+			// are the station's to fill in; a client creating a fixture has nothing to
+			// say about either.
+			sensed_values: {},
 			live_effects: {},
 			live_fades: {},
 			// Nothing to say: it rests where its type says it does, until somebody
@@ -228,7 +242,11 @@
 							<td class="live">
 								{#if type}
 									{#each type.parameters as param (parameterKey(param.kind))}
-										<span class="chip">{formatValue(fixture.live_values[parameterKey(param.kind)])}</span>
+										<span class="chip"
+											>{formatValue(
+												$output.value(fixture.id, parameterKey(param.kind)) ?? undefined
+											)}</span
+										>
 									{/each}
 								{/if}
 							</td>

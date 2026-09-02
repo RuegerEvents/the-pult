@@ -16,7 +16,7 @@ use pult_schema::{
 };
 use uuid::Uuid;
 
-use pult_schema::types::effect::Easing;
+use pult_schema::types::effect::{Easing, RunningFade};
 use super::*;
 use crate::infra::showfile;
 
@@ -122,7 +122,7 @@ fn a_fixture(name: &str, address: u16) -> Fixture {
         fixture_type_id: Uuid::new_v4(),
         address: FixtureAddress::Dmx { universe: 1, address },
         position: None,
-        live_values: Default::default(),
+        sensed_values: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
@@ -877,15 +877,15 @@ async fn setting_one_live_value_leaves_the_others_where_they_were() {
     h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
 
     h.engine
-        .set_live_value(fixture.id, "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": true }))
+        .set_sensed_value(fixture.id, "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": true }))
         .await
         .unwrap();
     h.engine
-        .set_live_value(fixture.id, "Temperature".into(), serde_json::json!({ "type": "Float", "value": 21.5 }))
+        .set_sensed_value(fixture.id, "Temperature".into(), serde_json::json!({ "type": "Float", "value": 21.5 }))
         .await
         .unwrap();
 
-    let values = h.engine.get(field_path("fixtures", fixture.id, "live_values")).await.unwrap();
+    let values = h.engine.get(field_path("fixtures", fixture.id, "sensed_values")).await.unwrap();
     assert_eq!(values["Contact:0"]["value"], true);
     assert_eq!(values["Temperature"]["value"], 21.5);
 }
@@ -898,7 +898,7 @@ async fn a_later_reading_replaces_the_earlier_one_on_the_same_key() {
 
     for value in [true, false] {
         h.engine
-            .set_live_value(
+            .set_sensed_value(
                 fixture.id,
                 "Contact:0".into(),
                 serde_json::json!({ "type": "Bool", "value": value }),
@@ -907,7 +907,7 @@ async fn a_later_reading_replaces_the_earlier_one_on_the_same_key() {
             .unwrap();
     }
 
-    let values = h.engine.get(field_path("fixtures", fixture.id, "live_values")).await.unwrap();
+    let values = h.engine.get(field_path("fixtures", fixture.id, "sensed_values")).await.unwrap();
     assert_eq!(values["Contact:0"]["value"], false);
 }
 
@@ -916,7 +916,7 @@ async fn a_live_value_for_a_fixture_that_is_not_patched_is_refused() {
     let h = harness().await;
     let result = h
         .engine
-        .set_live_value(Uuid::new_v4(), "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": true }))
+        .set_sensed_value(Uuid::new_v4(), "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": true }))
         .await;
     assert!(result.is_err(), "an input from a device nothing is patched to has nowhere to go");
 }
@@ -930,7 +930,7 @@ async fn a_live_value_reaches_the_frontends() {
     let mut updates = h.broadcast.subscribe_filtered(PathPattern::new("fixtures/**"));
 
     h.engine
-        .set_live_value(fixture.id, "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": true }))
+        .set_sensed_value(fixture.id, "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": true }))
         .await
         .unwrap();
 
@@ -1018,7 +1018,7 @@ mod flows {
 
     async fn close_the_contact(h: &Harness, fixture_id: Uuid) {
         h.engine
-            .set_live_value(
+            .set_sensed_value(
                 fixture_id,
                 "Contact:0".into(),
                 serde_json::json!({ "type": "Bool", "value": true }),
@@ -1158,9 +1158,11 @@ mod flows {
 
         close_the_contact(&h, sensor.id).await;
 
+        // A flow drives a parameter the way a cue does — it takes the key and parks
+        // the value there — rather than writing a number into a map nothing keeps.
         eventually("the lamp to come on", async || {
-            h.engine.get(field_path("fixtures", lamp.id, "live_values")).await.unwrap()["Switch:0"]
-                ["value"]
+            h.engine.get(field_path("fixtures", lamp.id, "live_fades")).await.unwrap()["Switch:0"]
+                ["to"]["value"]
                 == serde_json::json!(true)
         })
         .await;
@@ -1359,9 +1361,44 @@ fn an_intensity_cue(fixture_id: Uuid, level: f32, fade_in_ms: u32) -> Cue {
     cue
 }
 
+/// What a fixture's intensity is putting out right now.
+///
+/// Evaluated rather than read, because nothing stores it any more: this is the same
+/// stack an output connector and a browser evaluate — the fade or shape driving the
+/// parameter, the programmer over it, the home value under it — asked about this
+/// moment. A test asserting on this is asserting what the rig is doing.
 async fn intensity_of(h: &Harness, fixture_id: Uuid) -> f32 {
-    let fixture = h.engine.get(entity_path("fixtures", fixture_id)).await.unwrap();
-    fixture["live_values"]["Intensity"]["value"].as_f64().unwrap_or(f64::NAN) as f32
+    match value_of(h, fixture_id, "Intensity").await {
+        Some(ParameterValue::Float(level)) => level,
+        _ => f32::NAN,
+    }
+}
+
+async fn value_of(h: &Harness, fixture_id: Uuid, parameter: &str) -> Option<ParameterValue> {
+    let row = h.engine.get(entity_path("fixtures", fixture_id)).await.ok()?;
+    let fixture: pult_schema::types::fixture::Fixture = serde_json::from_value(row).ok()?;
+    let types: Vec<pult_schema::types::fixture::FixtureType> = h
+        .engine
+        .get(key("fixture_types"))
+        .await
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let entries: Vec<pult_schema::types::programmer::ProgrammerValue> = h
+        .engine
+        .get(key("programmer_values"))
+        .await
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let held = pult_schema::types::fixture::HeldByProgrammer::of(&entries);
+    pult_schema::types::fixture::value_at(
+        &fixture,
+        types.iter().find(|t| t.id == fixture.fixture_type_id),
+        held.get(fixture_id, parameter),
+        parameter,
+        pult_schema::types::sequence::now_ms(),
+    )
 }
 
 /// A dimmer that says where it rests, so a fade from nothing has somewhere to start.
@@ -1449,7 +1486,7 @@ async fn a_follow_cue_advances_the_sequence_on_its_own() {
     let h = harness().await;
     let fixture = a_fixture("Spot L", 1);
     let mut first = an_intensity_cue(fixture.id, 1.0, 0);
-    first.follow_mode = FollowMode::FollowAfter { delay_ms: 2000 };
+    first.follow_mode = FollowMode::FollowAfter { delay_ms: 300 };
     let second = an_intensity_cue(fixture.id, 0.0, 0);
     let seq = a_sequence("Act 1", vec![first.id, second.id]);
 
@@ -1458,10 +1495,10 @@ async fn a_follow_cue_advances_the_sequence_on_its_own() {
     h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&second)).await.unwrap();
     h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
 
-    // Setup is done, so the clock can go virtual: tokio now jumps to the next
-    // timer and a multi-second fade finishes in microseconds.
-    tokio::time::pause();
-
+    // Real time, deliberately. A follow is due at a console millisecond, and the show
+    // clock advances monotonically from one wall reading rather than from tokio's, so
+    // `pause()` no longer fast-forwards one. Three hundred milliseconds is short
+    // enough to sit through and long enough that the first assertion lands inside it.
     h.engine
         .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
         .await
@@ -1469,7 +1506,7 @@ async fn a_follow_cue_advances_the_sequence_on_its_own() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(h.engine.get(entity_path("sequences", seq.id)).await.unwrap()["active_cue_index"], 0);
 
-    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert_eq!(
         h.engine.get(entity_path("sequences", seq.id)).await.unwrap()["active_cue_index"],
         1,
@@ -1489,13 +1526,9 @@ async fn playback_output_is_broadcast_to_frontends() {
     h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
     h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
 
-    // Setup is done, so the clock can go virtual: tokio now jumps to the next
-    // timer and a multi-second fade finishes in microseconds.
-    tokio::time::pause();
-
     let mut updates = h
         .engine
-        .subscribe_pattern(PathPattern::new(&format!("fixtures/{}/live_values", fixture.id)))
+        .subscribe_pattern(PathPattern::new(&format!("fixtures/{}/live_fades", fixture.id)))
         .await;
 
     h.engine
@@ -1503,8 +1536,11 @@ async fn playback_output_is_broadcast_to_frontends() {
         .await
         .unwrap();
 
-    let value = updates.next().await.expect("expected a live-values broadcast");
-    assert_eq!(value["Intensity"]["value"], 1.0);
+    // The description, not the value. That is the whole of what a frontend is sent
+    // now: where the parameter is going, when it started and how long it takes, from
+    // which the browser works out what to draw at its own refresh.
+    let fades = updates.next().await.expect("expected a live-fades broadcast");
+    assert_eq!(fades["Intensity"]["to"]["value"], 1.0);
 }
 
 #[tokio::test]
@@ -1517,9 +1553,6 @@ async fn playback_output_is_never_written_to_the_showfile() {
     h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
     h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
     h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
-    // Setup is done, so the clock can go virtual: tokio now jumps to the next
-    // timer and a multi-second fade finishes in microseconds.
-    tokio::time::pause();
 
     h.engine
         .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
@@ -1528,12 +1561,15 @@ async fn playback_output_is_never_written_to_the_showfile() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(intensity_of(&h, fixture.id).await, 1.0);
 
-    tokio::time::resume();
     h.reload().await;
     let after = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
     assert!(
-        after["live_values"].as_object().is_none_or(|m| m.is_empty()),
-        "live values are output, not show data",
+        after["live_fades"].as_object().is_none_or(|m| m.is_empty()),
+        "what is driving a parameter is output, not show data",
+    );
+    assert!(
+        after["sensed_values"].as_object().is_none_or(|m| m.is_empty()),
+        "and neither is what a device reported",
     );
 }
 
@@ -1549,8 +1585,6 @@ async fn a_programmer_entry_takes_a_fixture_over_and_giving_it_back_returns_the_
     h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
     h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
     h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
-
-    tokio::time::pause();
 
     h.engine
         .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
@@ -1672,9 +1706,9 @@ async fn playback_hands_the_patch_to_the_output_plugins() {
 
     assert_eq!(found.len(), 1);
     assert_eq!(
-        found[0].live_values.get("Intensity"),
-        Some(&ParameterValue::Float(1.0)),
-        "output must see the level playback just set",
+        found[0].live_fades.get("Intensity").map(|fade| fade.to.clone()),
+        Some(ParameterValue::Float(1.0)),
+        "output must see what playback just put on the parameter",
     );
 }
 
@@ -1690,20 +1724,33 @@ async fn unpatching_the_last_fixture_tells_the_output_plugins_so() {
 
     let fixture = a_fixture("Spot L", 1);
     handle.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+
+    // Wait for the patch that carries it before taking it away. The engine coalesces
+    // a burst of writes into one pass, so a create and a delete issued back to back
+    // would rightly produce a single push and there would be nothing to follow.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(cmd) = output_rx.recv().await {
+            let OutputCommand::Patch { fixtures, .. } = cmd else { continue };
+            if fixtures.iter().any(|f| f.id == fixture.id) {
+                return;
+            }
+        }
+        panic!("output channel closed before the fixture was pushed");
+    })
+    .await
+    .expect("the fixture should reach the plugins within two seconds");
+
     handle
         .set(delete_path("fixtures", fixture.id), Lifecycle::Persisted, serde_json::Value::Null)
         .await
         .unwrap();
 
-    // Patching pushed a patch with the fixture in it; unpatching has to push one
-    // without it, or a plugin that remembered the fixture keeps remembering it.
+    // Unpatching has to push a patch without it, or a plugin that remembered the
+    // fixture keeps remembering it.
     let saw_empty = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        let mut saw_it = false;
         while let Some(cmd) = output_rx.recv().await {
             let OutputCommand::Patch { fixtures, .. } = cmd else { continue };
-            if fixtures.iter().any(|f| f.id == fixture.id) {
-                saw_it = true;
-            } else if saw_it {
+            if !fixtures.iter().any(|f| f.id == fixture.id) {
                 return true;
             }
         }
@@ -2117,10 +2164,11 @@ mod watching_playback {
             .await
             .unwrap();
 
+        // The action drives the parameter, which shows up as a landed fade on it.
         for _ in 0..100 {
-            let values =
-                h.engine.get(field_path("fixtures", switched.id, "live_values")).await.unwrap();
-            if values["Switch:0"]["value"] == serde_json::json!(true) {
+            let fades =
+                h.engine.get(field_path("fixtures", switched.id, "live_fades")).await.unwrap();
+            if fades["Switch:0"]["to"]["value"] == serde_json::json!(true) {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -2213,12 +2261,165 @@ mod watching_playback {
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        let values = h.engine.get(field_path("fixtures", switched.id, "live_values")).await.unwrap();
+        let fades = h.engine.get(field_path("fixtures", switched.id, "live_fades")).await.unwrap();
         assert_eq!(
-            values["Switch:0"], serde_json::Value::Null,
+            fades["Switch:0"], serde_json::Value::Null,
             "a fade on a fixture the graph does not name must not fire it",
         );
     }
+
+    /// The sampler is proportional to what is watched rather than to the rig.
+    ///
+    /// This is the whole reason the gate exists, and the reason it moved: it used to
+    /// be handed the values of every fixture the engine had just written, forty times
+    /// a second, and throw away the ones nothing was looking at. Now the watched set
+    /// decides the work, so a graph watching one lamp costs one evaluation a sample
+    /// whether the rig is five fixtures or two thousand.
+    #[tokio::test]
+    async fn a_flow_watching_one_parameter_of_a_large_rig_samples_one() {
+        let h = harness().await;
+        let fixture_type = a_dimmer_type(&h).await;
+
+        // A rig large enough that sampling it would plainly cost something, all under
+        // one cue, all fading. Five hundred rather than the two thousand of the `huge`
+        // preset only because every one of them is patched over the wire here; the
+        // property is that the number below does not move whichever it is.
+        let rig: Vec<Fixture> = (0..500)
+            .map(|n| {
+                let mut f = a_fixture(&format!("Spot {n}"), (n % 500) as u16 + 1);
+                f.fixture_type_id = fixture_type;
+                f
+            })
+            .collect();
+        for fixture in &rig {
+            h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(fixture)).await.unwrap();
+        }
+        let captures: Vec<_> = rig
+            .iter()
+            .map(|f| pult_schema::types::cue::ParameterCapture {
+                fixture_id: f.id,
+                parameter_kind: ParameterKind::Intensity,
+                value: pult_schema::types::fixture::ParameterValue::Float(1.0),
+                fade_in_ms: 0,
+                fade_out_ms: 0,
+                delay_in_ms: 0,
+                effect: None,
+                easing: Easing::Linear,
+            })
+            .collect();
+        let cue = Cue {
+            id: Uuid::new_v4(),
+            name: "Everything".into(),
+            number: 1.0,
+            captures,
+            follow_mode: FollowMode::Manual,
+            fade_in_ms: 800,
+            fade_out_ms: 0,
+            is_active: false,
+        };
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+        let sequence = a_sequence("Act 1", vec![cue.id]);
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
+
+        // Nothing watched: the fade runs and no graph is offered anything at all.
+        h.engine
+            .set(field_path("sequences", sequence.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            h.engine.sampled_parameters().await,
+            0,
+            "nothing is watching anything, so nothing is sampled",
+        );
+
+        // Now one lamp of the two thousand is watched, and the cue is retaken.
+        let flow = Flow { id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
+        h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
+        let source = FlowNode {
+            id: Uuid::new_v4(),
+            flow_id: flow.id,
+            kind: FlowNodeKind::Source(TriggerSource::Parameter {
+                fixture_id: rig[7].id,
+                parameter: ParameterKind::Intensity,
+            }),
+            x: 0.0,
+            y: 0.0,
+            active: false,
+            last_fired_at: None,
+        };
+        h.engine.set(create_path("flow_nodes"), Lifecycle::Persisted, json(&source)).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        assert_eq!(
+            h.engine.sampled_parameters().await,
+            1,
+            "one parameter watched is one parameter sampled, whatever the rig",
+        );
+    }
+}
+
+/// The claim the whole change rests on: a fade in progress costs the engine nothing.
+///
+/// One pass when the cue is taken, saying what is driving what, and then silence for
+/// the length of the fade — no writes, no broadcasts, no timer firing on playback's
+/// account. What moves in that window is the value, and it moves because time passes
+/// rather than because anything wrote it down.
+#[tokio::test]
+async fn a_fade_in_progress_produces_no_writes_and_no_broadcasts() {
+    let h = harness().await;
+    let mut fixture = a_fixture("Spot L", 1);
+    fixture.fixture_type_id = a_dimmer_type(&h).await;
+    let cue = an_intensity_cue(fixture.id, 1.0, 2_000);
+    let seq = a_sequence("Act 1", vec![cue.id]);
+
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+
+    h.engine
+        .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+    // Let the pass that takes the cue happen and settle.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let logged_before = showfile::oplog::len(&h.pool).await.unwrap();
+    let mut updates = h.broadcast.0.subscribe();
+    let began = intensity_of(&h, fixture.id).await;
+
+    // Half a second in the middle of the fade, with nobody touching the show.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    assert!(updates.try_recv().is_err(), "a fade in progress broadcasts nothing");
+    assert_eq!(
+        showfile::oplog::len(&h.pool).await.unwrap(),
+        logged_before,
+        "and writes nothing down",
+    );
+
+    // And the value moved anyway, which is the point.
+    let now = intensity_of(&h, fixture.id).await;
+    assert!(now > began + 0.1, "the fade advanced without being driven: {began} then {now}");
+    assert!(now < 1.0, "and is still going");
+}
+
+/// The same for a show that is not doing anything at all. A settled station has no
+/// periodic work left: no tick, no sampler, nothing to wake up for.
+#[tokio::test]
+async fn a_settled_show_does_no_periodic_work() {
+    let h = harness().await;
+    let fixture = a_fixture("Spot L", 1);
+    h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let logged_before = showfile::oplog::len(&h.pool).await.unwrap();
+    let mut updates = h.broadcast.0.subscribe();
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    assert!(updates.try_recv().is_err(), "a settled show broadcasts nothing");
+    assert_eq!(showfile::oplog::len(&h.pool).await.unwrap(), logged_before);
 }
 
 /// `live_effects` is the first LOCAL entity field in the system, so this pins the two
@@ -3385,8 +3586,23 @@ mod relative {
         let h = harness().await;
         let fixture = a_fixture("Spot", 1);
         h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+        // Playback has it at 0.4: a landed fade, which is where a parameter sits when
+        // something has driven it and nothing stores the number.
         h.engine
-            .set_live_value(fixture.id, "Intensity".into(), json(&ParameterValue::Float(0.4)))
+            .set(
+                field_path("fixtures", fixture.id, "live_fades"),
+                Lifecycle::Local,
+                serde_json::json!({
+                    "Intensity": {
+                        "from": ParameterValue::Float(0.4),
+                        "to": ParameterValue::Float(0.4),
+                        "t0": 0,
+                        "duration_ms": 0,
+                        "easing": "Step",
+                        "cue_id": Uuid::nil(),
+                    }
+                }),
+            )
             .await
             .unwrap();
 
@@ -4083,13 +4299,30 @@ mod home {
         ]
     }
 
+    /// Put the station where it is driving these parameters at these levels.
+    ///
+    /// Landed fades, because that is what "driving" is now: a description anchored in
+    /// time, which happens to be constant. Nothing stores the number, so seeding a map
+    /// of numbers would be seeding a state the console never has.
     async fn put_out(h: &Harness, fixture: &Fixture, values: &[(&str, f32)]) {
-        let live: std::collections::HashMap<String, ParameterValue> = values
+        let driving: std::collections::HashMap<String, RunningFade> = values
             .iter()
-            .map(|(key, v)| (key.to_string(), ParameterValue::Float(*v)))
+            .map(|(key, v)| {
+                (
+                    key.to_string(),
+                    RunningFade {
+                        from: ParameterValue::Float(*v),
+                        to: ParameterValue::Float(*v),
+                        t0: 0,
+                        duration_ms: 0,
+                        easing: Easing::Step,
+                        cue_id: Uuid::nil(),
+                    },
+                )
+            })
             .collect();
         h.engine
-            .set(field_path("fixtures", fixture.id, "live_values"), Lifecycle::Local, json(&live))
+            .set(field_path("fixtures", fixture.id, "live_fades"), Lifecycle::Local, json(&driving))
             .await
             .unwrap();
     }
@@ -4194,6 +4427,50 @@ mod home {
             op.path
         );
         assert_eq!(op.value["Intensity"], json(&ParameterValue::Float(0.3)));
+    }
+
+    /// Mid-fade, what is taken is where the parameter is at the moment it is asked
+    /// about — not where the fade started and not where it is going.
+    #[tokio::test]
+    async fn taking_the_output_mid_fade_takes_the_moment_it_was_asked() {
+        let h = harness().await;
+        let fixture = a_patched_fixture(
+            &h,
+            vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0))],
+        )
+        .await;
+
+        // A two second fade from dark to full, half a second old.
+        let now = pult_schema::types::sequence::now_ms();
+        h.engine
+            .set(
+                field_path("fixtures", fixture.id, "live_fades"),
+                Lifecycle::Local,
+                serde_json::json!({
+                    "Intensity": {
+                        "from": ParameterValue::Float(0.0),
+                        "to": ParameterValue::Float(1.0),
+                        "t0": now - 500,
+                        "duration_ms": 2_000,
+                        "easing": "Linear",
+                        "cue_id": Uuid::nil(),
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+
+        h.engine
+            .set(set_home_path(), Lifecycle::Persisted, json!({ "fixtureId": fixture.id }))
+            .await
+            .unwrap();
+
+        let home = h.engine.get(field_path("fixtures", fixture.id, "home_values")).await.unwrap();
+        let taken = home["Intensity"]["value"].as_f64().unwrap() as f32;
+        assert!(
+            taken > 0.15 && taken < 0.6,
+            "a quarter of the way up, give or take how long the call took: {taken}",
+        );
     }
 
     /// A fixture nothing has ever driven has nothing to take. Not an error when it
@@ -4322,111 +4599,10 @@ mod peers {
     }
 }
 
-// ── What a tick costs ─────────────────────────────────────────────────────────
+// ── What a frame costs ────────────────────────────────────────────────────────
+//
+// Measured where the frame is drawn — in the output manager, per connector — and
+// published on the station row from there. The engine has no tick to measure any
+// more: a pass happens when the show changes, and a fade in progress is not a pass.
+// `infra::connectors` and `infra::stations` hold what is left of these.
 
-mod tick_cost {
-    use super::*;
-    use crate::infra::stations::TickStats;
-
-    /// A harness whose engine shares its tick accumulator, the way `start` wires one
-    /// up for the station reporter.
-    async fn harness_measuring() -> (Harness, Arc<TickStats>) {
-        let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
-        let (mut engine, handle, broadcast) =
-            ShowEngine::new(NodeId(Uuid::new_v4()), pool.clone(), None);
-        let stats = Arc::new(TickStats::default());
-        engine.set_tick_stats(stats.clone());
-        tokio::spawn(engine.run());
-        (Harness { engine: handle, broadcast, pool }, stats)
-    }
-
-    /// A show with nothing running settles: `playback_tick` returns before it does
-    /// any work, so there is nothing to record and the station has nothing to say —
-    /// which has to stay different from saying its ticks took no time.
-    ///
-    /// "Settled" means no playback work *and* nothing written since the last tick.
-    /// A write bumps `state_version`, so one tick runs after it to reconcile, and
-    /// that tick is real work and is counted. A station being programmed therefore
-    /// reports a cost; only one left alone reports nothing.
-    #[tokio::test]
-    async fn a_settled_show_records_no_ticks_at_all() {
-        let (h, stats) = harness_measuring().await;
-        h.engine.set(key("show"), Lifecycle::Persisted, json(&a_show())).await.unwrap();
-
-        tokio::time::pause();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        // The one tick that write earned, and then nothing more is coming.
-        let reconciling = stats.drain().expect("a write is reconciled by one tick");
-        assert_eq!(reconciling.ticks, 1);
-
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-        assert_eq!(stats.drain(), None, "the timer fired, but no tick did any work");
-    }
-
-    #[tokio::test]
-    async fn a_station_running_a_fade_records_what_its_ticks_cost() {
-        let (h, stats) = harness_measuring().await;
-        let mut fixture = a_fixture("Spot L", 1);
-        fixture.fixture_type_id = a_dimmer_type(&h).await;
-        let cue = an_intensity_cue(fixture.id, 1.0, 4000);
-        let seq = a_sequence("Act 1", vec![cue.id]);
-
-        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
-        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
-        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
-        // Whatever the setup writes cost, this is about the fade.
-        let _ = stats.drain();
-
-        tokio::time::pause();
-        h.engine
-            .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
-            .await
-            .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-
-        let cost = stats.drain().expect("a fade ticks, and a tick is recorded");
-        assert!(cost.ticks > 0, "a running fade recorded no ticks");
-        // The computing half is inside the whole tick. The point of the pair is that
-        // the difference — applying the effects — can be read off.
-        assert!(
-            cost.playback_mean_ms <= cost.mean_ms,
-            "playback {} claimed more than the whole tick {}",
-            cost.playback_mean_ms,
-            cost.mean_ms
-        );
-        assert!(cost.playback_max_ms <= cost.max_ms);
-        assert!(cost.max_ms >= cost.mean_ms, "the worst tick cannot beat the mean");
-    }
-
-    /// The one the reporter depends on: a station that was ticking and is then taken
-    /// off must go quiet rather than keep republishing its last measurement.
-    #[tokio::test]
-    async fn a_station_that_stops_ticking_stops_reporting_a_cost() {
-        let (h, stats) = harness_measuring().await;
-        let mut fixture = a_fixture("Spot L", 1);
-        fixture.fixture_type_id = a_dimmer_type(&h).await;
-        // A snap, so the fade is over almost as soon as it starts and playback runs
-        // out of work while the engine keeps ticking.
-        let cue = an_intensity_cue(fixture.id, 1.0, 0);
-        let seq = a_sequence("Act 1", vec![cue.id]);
-
-        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
-        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
-        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
-        let _ = stats.drain();
-
-        tokio::time::pause();
-        h.engine
-            .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
-            .await
-            .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert!(stats.drain().is_some(), "taking the cue should have ticked something");
-
-        // Nothing is moving any more. The next window is empty, and the one after it.
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-        assert_eq!(stats.drain(), None, "a settled station repeated its last figure");
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-        assert_eq!(stats.drain(), None);
-    }
-}
