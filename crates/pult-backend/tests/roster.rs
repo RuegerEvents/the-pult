@@ -106,11 +106,18 @@ impl Station {
     /// Wait for one plugin's published row to satisfy `f`, or give up and show
     /// what it actually said.
     async fn eventually(&self, plugin_id: &str, what: &str, f: impl Fn(&Value) -> bool) -> Value {
-        // Patient: several stations come up in this binary at once, and a
-        // fetch that has to time out against a peer is seconds rather than
-        // milliseconds. A test that is merely slow must not read as a failure.
+        // Patient, and patient by *derivation*: several stations come up in this
+        // binary at once, and a fetch that has to give up on an unreachable peer takes
+        // `GIVING_UP_TAKES_AT_MOST` — four attempts of ten seconds each, plus backoff.
+        //
+        // A flat twenty seconds is what this used to wait, and it was a coin flip
+        // whenever a dead address hung instead of refusing: the three tests about a
+        // peer that does not answer failed perhaps one run in two. Waiting on the
+        // budget itself, plus a margin for a loaded machine, means a change to either
+        // constant cannot quietly bring the flake back.
+        let budget = pult_backend::infra::plugins::GIVING_UP_TAKES_AT_MOST + Duration::from_secs(20);
         let mut last = Value::Null;
-        for _ in 0..400 {
+        for _ in 0..(budget.as_millis() / 50) {
             tokio::time::sleep(Duration::from_millis(50)).await;
             let plugins = self.plugins().await;
             if let Some(row) = plugins.iter().find(|p| p["id"] == plugin_id) {
@@ -120,7 +127,9 @@ impl Station {
                 }
             }
         }
-        panic!("waiting for {plugin_id} to be {what}; it was {last}");
+        panic!(
+            "waited {budget:?} for {plugin_id} to be {what}; it was {last}",
+        );
     }
 
     fn stop(self) {
@@ -170,18 +179,31 @@ fn a_bundle_versioned(plugin_id: &str, api: &str, version: &str) -> (Vec<u8>, St
 /// The connect timeout is short on purpose. Left to the operating system it is over
 /// a minute, so one dropped SYN would stall a test rather than be tried again.
 async fn ask(build: impl Fn() -> reqwest::RequestBuilder) -> reqwest::Response {
+    // A wall-clock budget rather than a count of attempts. Ten tries with a rising
+    // backoff came to five and a half seconds, which is enough on an idle machine and
+    // not on a busy one: with every core pinned, twenty-one tests' worth of stations
+    // starting at once all failed here together, which reads as the console being
+    // broken rather than as the box being loaded.
+    //
+    // Half a minute is far past anything a working station needs and still bounded, so
+    // a station that genuinely never listens fails rather than hanging the suite.
+    const GIVE_UP_AFTER: Duration = Duration::from_secs(30);
+
+    let started = std::time::Instant::now();
     let mut last = String::new();
-    for attempt in 0..10u32 {
+    let mut wait = Duration::from_millis(100);
+    while started.elapsed() < GIVE_UP_AFTER {
         match build().send().await {
             Ok(response) => return response,
             Err(e) if e.is_connect() || e.is_timeout() => {
                 last = e.to_string();
-                tokio::time::sleep(Duration::from_millis(100 * u64::from(attempt + 1))).await;
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(2));
             }
             Err(e) => panic!("the station answered with an error: {e}"),
         }
     }
-    panic!("the station never accepted a connection: {last}");
+    panic!("the station never accepted a connection in {GIVE_UP_AFTER:?}: {last}");
 }
 
 fn http() -> reqwest::Client {
@@ -1032,18 +1054,17 @@ async fn a_station_arriving_re_drives_a_fetch_that_gave_up() {
     // The console that has it walks in. Nobody touches the show.
     tell_about(&seeker, holder.running.http_addr.to_string()).await;
 
-    seeker
-        .eventually("late-arrival", "asked again", |r| {
-            !r["status"]["reason"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("no station")
+    // Waited on the *bundle*, not on the reason. A reason that has stopped saying "no
+    // station" is a fetch that has started, not one that has finished — so asserting
+    // the file straight after that was a race the seeker lost about half the time.
+    let landed = own_cache().join(&digest).join("pult-plugin.toml");
+    let row = seeker
+        .eventually("late-arrival", "past asking again", |r| {
+            r["status"]["state"] != "Fetching"
+                && !r["status"]["reason"].as_str().unwrap_or_default().contains("no station")
         })
         .await;
-    assert!(
-        own_cache().join(&digest).join("pult-plugin.toml").is_file(),
-        "and this time it got the bundle",
-    );
+    assert!(landed.is_file(), "and this time it got the bundle: {row}");
 
     holder.stop();
     seeker.stop();

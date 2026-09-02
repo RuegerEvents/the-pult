@@ -180,9 +180,16 @@ impl FromStr for DmxValue {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (value, rest) = s
-            .split_once('/')
-            .ok_or_else(|| ParseError::new("DMX value", s))?;
+        // The spec's grammar is `value/bytes`, and real files write a bare number:
+        // three of the first five downloaded from the Share do. One byte is what a
+        // bare one means, and refusing it refuses the whole fixture.
+        let Some((value, rest)) = s.split_once('/') else {
+            return Ok(DmxValue {
+                value: s.trim().parse().map_err(|_| ParseError::new("DMX value", s))?,
+                byte_count: 1,
+                shifting: false,
+            });
+        };
         let shifting = rest.ends_with('s') || rest.ends_with('S');
         let digits = if shifting {
             &rest[..rest.len() - 1]
@@ -569,6 +576,13 @@ pub fn num(value: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_number_is_one_byte_because_that_is_what_real_files_write() {
+        let bare: DmxValue = "255".parse().unwrap();
+        assert_eq!(bare, DmxValue::new(255, 1));
+        assert_eq!(bare.rescale(2), 65535, "and widens like any other one-byte value");
+    }
 
     #[test]
     fn dmx_values_carry_their_width() {

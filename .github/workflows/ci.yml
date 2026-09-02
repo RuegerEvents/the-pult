@@ -70,10 +70,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # `xmllint` validates our exports against the spec's own XSDs. A test that
-      # cannot find it fails rather than skipping, so a missing tool is visible.
-      - run: sudo apt-get update && sudo apt-get install -y libxml2-utils
-
       # Keyed on the script, so changing which files the corpus holds fetches
       # again and leaving it alone does not.
       - uses: actions/cache@v4
@@ -86,4 +82,7 @@ jobs:
           GDTF_SHARE_USER: ${{ secrets.GDTF_SHARE_USER }}
           GDTF_SHARE_PASSWORD: ${{ secrets.GDTF_SHARE_PASSWORD }}
 
+      # The ignored tests refuse to pass on an empty corpus rather than skipping
+      # quietly, so a job whose secrets are not set fails visibly. Without that this
+      # is a green tick that checked nothing.
       - run: cargo test --locked -p pult-gdtf -- --ignored

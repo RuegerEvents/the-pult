@@ -2394,6 +2394,9 @@ honest because of the first rule.
 below was written strictly first, passed against the three fixtures checked in beside
 it, and failed on the first file downloaded from gdtf-share.com.
 
+- **A DMX value is often a bare number.** The spec's grammar is `value/bytes` and three
+  of the first five files pulled off the Share write `1` where it says `1/1`. A bare one
+  is one byte, and refusing it refused the whole fixture.
 - **`"None"` is a value.** The spec uses the literal string where an attribute has
   nothing to say — `Highlight="None"` on a channel with no highlight — and a reader
   that only accepted `255/1` there refused the whole fixture.
@@ -2434,7 +2437,22 @@ The lesson under all of those is one the corpus job exists for and could not del
 its own: **this reader is only as good as the files it has been pointed at.** Three
 hand-written fixtures proved the arithmetic and proved nothing about the shapes real
 files take. `scripts/fetch-interop-corpus.sh` with a real Share login is what found
-every item above, in about ten minutes.
+every item above.
+
+The corpus it fetches is five files and each is there for a corner: an RGBWAUV par with
+six emitters, the MegaPointe, an Astera PixelBar with a hundred and sixty-five modes and
+its cells behind geometry references, a MAC Aura XIP, and a Sunstrip. All five parse,
+rewrite stably, agree with the `gdtf` crate about every mode and offset, and import —
+the Astera with two warnings out of its 165 modes, which is the "kept at its own
+offsets" fallback saying so rather than dropping a channel.
+
+The script itself was wrong in the same way the reader was, and worth recording because
+it is the more embarrassing half: it fetched two XSDs and an MVR sample from URLs that
+do not exist, reported the 404s, and carried on — a corpus job that looks like it ran.
+That repository publishes the spec as Markdown, has no XSD and no samples, and there is
+no public collection of MVR files to point at, so MVR material now comes from
+`PULT_MVR_SAMPLES` and the script says plainly when it has none. Its Share rids were
+invented too; they are real ones now, verified, with a note saying what each is for.
 
 `.github/workflows/ci.yml` is new, because there was none: the default suite, the
 frontend, and an `interop-corpus` job that runs `scripts/fetch-interop-corpus.sh` and
@@ -2451,6 +2469,37 @@ cargo test -p pult-gdtf -- --ignored                 # against them
 curl -X POST http://localhost:7700/api/import/gdtf \
      -H 'content-type: application/vnd.gdtf+zip' --data-binary @head.gdtf
 ```
+
+### 46. Three flaky roster tests, and none of them was flakiness (done)
+
+`cargo test` failed on `tests/roster.rs` about half the time, and always on a
+different test, which is the shape that gets a suite labelled flaky and re-run rather
+than read. Three separate causes, none of them timing noise.
+
+**A fetch can take forty-two seconds and the test waited twenty.** A station that
+cannot reach a peer asks four times with a ten-second HTTP timeout each, plus backoff.
+`eventually` waited a flat twenty seconds. Whether a test passed depended on whether a
+dead address refused the connection quickly or hung — which is a property of the
+machine, not of the console. The budget is now named where it is spent —
+`assets::PEER_ANSWERS_WITHIN` and `plugins::GIVING_UP_TAKES_AT_MOST` — and the test
+waits on *that* plus a margin, so changing either constant cannot bring it back.
+
+**One test waited on the wrong thing.** `a_station_arriving_re_drives_a_fetch_that_gave_up`
+waited for the failure reason to stop saying "no station" and then asserted the bundle
+was on the disk. A reason that has cleared is a fetch that has *started*. It waits for
+the fetch to finish now.
+
+**And the connect helper gave up in five and a half seconds.** Ten attempts with a
+rising backoff, which is plenty on an idle machine; with every core pinned, twenty-one
+tests' worth of stations starting at once all failed there together, and the suite read
+as the console being broken rather than the box being loaded. A thirty-second wall-clock
+budget replaces the attempt count.
+
+Verified by running the suite eight times with every core pinned, which used to fail
+about half the time and now does not fail at all. Worth writing down because the first
+two were real facts about the console that only the tests knew: how long a station can
+sit in *Fetching* before it says what happened is a number an operator watches, and it
+was written in one place and waited on in another.
 
 ## What is next
 

@@ -182,6 +182,14 @@ pub async fn peer_addresses(engine: &EngineHandle, me: uuid::Uuid) -> Vec<String
         .collect()
 }
 
+/// How long one peer gets to answer before it counts as unreachable.
+///
+/// Named rather than written inline because it is half of how long a station can sit
+/// in *Fetching*, and the other half is [`crate::infra::plugins::ASK_PEERS_TIMES`].
+/// Anything waiting on that state — a test, a panel's patience — has to be able to work
+/// the budget out rather than guess it.
+pub const PEER_ANSWERS_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub async fn fetch_from_peers(pool: &SqlitePool, sha: &str, peers: &[String]) -> Result<Fetched> {
     let mut unreachable = 0usize;
     for addr in peers {
@@ -191,7 +199,7 @@ pub async fn fetch_from_peers(pool: &SqlitePool, sha: &str, peers: &[String]) ->
             // relayed request is answered from local storage or not at all.
             .get(&url)
             .header("x-pult-asset-relay", "1")
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(PEER_ANSWERS_WITHIN)
             .send()
             .await
         {

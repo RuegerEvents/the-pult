@@ -208,7 +208,30 @@ pub struct PluginManager {
 /// seconds of waiting plus however long the requests themselves took — enough to
 /// ride out a peer that is busy coming up, and short enough that a bundle nobody
 /// has is still reported while the operator is looking at the screen.
-const ASK_PEERS_TIMES: u32 = 4;
+pub const ASK_PEERS_TIMES: u32 = 4;
+
+/// The longest a station can be in *Fetching* before it says what happened.
+///
+/// Every attempt against an unreachable peer waits
+/// [`crate::infra::assets::PEER_ANSWERS_WITHIN`], and the backoff between attempts
+/// doubles from 250 ms. Forty-two seconds for one peer, which is a long time to watch a
+/// spinner and the right answer anyway: a station coming up at a get-in is busy, and
+/// giving up sooner would fail a plugin over a second of bad timing.
+///
+/// Public because it is what anything waiting on that state has to wait for. The
+/// roster tests waited twenty seconds against this budget and failed whenever a dead
+/// address hung rather than refusing — a flake that was really this number and the
+/// test's patience being two numbers nobody had related.
+pub const GIVING_UP_TAKES_AT_MOST: Duration = Duration::from_millis(
+    (ASK_PEERS_TIMES as u64) * 10_000 + 250 + 500 + 1_000,
+);
+
+/// The arithmetic above, checked against the constant it is derived from.
+const _: () = assert!(
+    ASK_PEERS_TIMES == 4,
+    "GIVING_UP_TAKES_AT_MOST spells out one backoff term per attempt; \
+     change them together"
+);
 
 impl PluginManager {
     pub fn new(
