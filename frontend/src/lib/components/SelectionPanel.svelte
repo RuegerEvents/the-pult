@@ -67,7 +67,7 @@
 		if (placed.length === 0) return { x: 0, y: 5, z: 0 };
 		const sum = placed.reduce(
 			(a, f) => {
-				const p = 'Point' in f.position! ? f.position!.Point : f.position!.Axial.position;
+				const p = f.position!.position;
 				return { x: a.x + p.x, y: a.y + p.y, z: a.z + p.z };
 			},
 			{ x: 0, y: 0, z: 0 }

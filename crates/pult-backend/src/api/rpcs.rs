@@ -21,6 +21,7 @@ use pult_schema::{
             driving, output_parameters, parameter_key, FixtureType, HeldByProgrammer,
             ParameterKind,
         },
+        scene::SceneObject,
         Fixture, Group,
     },
 };
@@ -262,7 +263,15 @@ async fn resolve_group(engine: &EngineHandle, group_id: uuid::Uuid) -> Result<Va
         .map_err(|e| format!("cannot read the rig: {e}"))?;
     let fixtures: Vec<Fixture> = serde_json::from_value(rig).unwrap_or_default();
 
-    let ids = evaluate(&group.query, &fixtures, None);
+    // A light on a truss is where the truss put it, so the objects it may hang off
+    // are part of the question.
+    let drawing = engine
+        .get(vec![PathSegment::Key("scene_objects".into())])
+        .await
+        .map_err(|e| format!("cannot read the rig: {e}"))?;
+    let objects: Vec<SceneObject> = serde_json::from_value(drawing).unwrap_or_default();
+
+    let ids = evaluate(&group.query, &fixtures, None, &objects);
     serde_json::to_value(ids).map_err(|e| e.to_string())
 }
 

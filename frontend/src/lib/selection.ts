@@ -40,6 +40,7 @@
 import type {
 	Fixture,
 	FixtureType,
+	SceneObject,
 	SelectionClause,
 	SelectionCombine,
 	SelectionOrder,
@@ -47,7 +48,7 @@ import type {
 	SelectionTerm,
 	Vec3
 } from './generated/index.js';
-import { splitPosition } from './stage.js';
+import { byId as objectsById, worldTransform } from './scene.js';
 
 // ── What a query is ───────────────────────────────────────────────────────────
 
@@ -132,7 +133,7 @@ export function inBox(point: Vec3, from: Vec3, to: Vec3): boolean {
 
 // ── Evaluating ────────────────────────────────────────────────────────────────
 
-function matches(term: Term, fixture: Fixture): boolean {
+function matches(term: Term, fixture: Fixture, objects: Map<string, SceneObject>): boolean {
 	switch (term.kind) {
 		case 'Everything':
 			return true;
@@ -149,7 +150,7 @@ function matches(term: Term, fixture: Fixture): boolean {
 	// Everything below is about where a fixture is, and one that has never been
 	// placed is not anywhere.
 	if (!fixture.position) return false;
-	const { point } = splitPosition(fixture.position);
+	const point = worldTransform(fixture.position, fixture.parent, objects).position;
 
 	switch (term.kind) {
 		case 'Sphere':
@@ -176,12 +177,14 @@ function matches(term: Term, fixture: Fixture): boolean {
 export function evaluate(
 	query: SelectionQuery,
 	fixtures: Fixture[],
-	previous: string[] | null = null
+	previous: string[] | null = null,
+	scene: SceneObject[] = []
 ): string[] {
+	const objects = objectsById(scene);
 	let picked: string[] = [];
 
 	for (const { combine, term } of query.clauses) {
-		const hits = fixtures.filter((f) => matches(term, f)).map((f) => f.id);
+		const hits = fixtures.filter((f) => matches(term, f, objects)).map((f) => f.id);
 		if (combine === 'Add') {
 			// Order of arrival is kept for `Manual`, so adding twice does not move a
 			// fixture to the end of the list.
@@ -196,7 +199,7 @@ export function evaluate(
 		}
 	}
 
-	return sortSelection(picked, query.order, fixtures, previous);
+	return sortSelection(picked, query.order, fixtures, previous, scene);
 }
 
 /** Put a set of ids into the order a query asks for. */
@@ -204,8 +207,10 @@ export function sortSelection(
 	ids: string[],
 	order: Order,
 	fixtures: Fixture[],
-	previous: string[] | null = null
+	previous: string[] | null = null,
+	scene: SceneObject[] = []
 ): string[] {
+	const objects = objectsById(scene);
 	const byId = new Map(fixtures.map((f) => [f.id, f]));
 
 	if (order.kind === 'Manual') {
@@ -226,7 +231,7 @@ export function sortSelection(
 		// the origin, where it would sit in the middle of the rig pretending to be
 		// somewhere.
 		if (!fixture.position) return [Number.POSITIVE_INFINITY, fixture.name];
-		const { point } = splitPosition(fixture.position);
+		const point = worldTransform(fixture.position, fixture.parent, objects).position;
 		if (order.kind === 'ByAxis') return [point[order.axis], fixture.name];
 		return [distance(point, order.from), fixture.name];
 	};

@@ -1,0 +1,197 @@
+{
+  "about": [
+    "Placements, read by two test suites: crates/pult-schema/tests/transforms.rs and",
+    "frontend/src/lib/scene.test.ts. Composing a parent chain has to give the same",
+    "answer on a station and in a browser — dragging a truss re-composes every child",
+    "per frame and cannot be a round trip — and this file is what makes that a test",
+    "rather than a promise. It lives outside both because neither owns it.",
+    "",
+    "`matrices` starts from a matrix as an MVR file writes one: four brace-wrapped",
+    "rows of three, millimetres, X right, Y upstage, Z up. That is pult-mvr's half,",
+    "and it is here so that the space conversion and the decomposition agree with",
+    "what the console then does with the result.",
+    "",
+    "`chains` is the console's own half: a local placement, the objects above it, and",
+    "where it therefore is. Angles are XYZ Euler degrees; a negative scale is a",
+    "reflection, which is the only way to say that a drawing mirrored something."
+  ],
+  "matrices": [
+    {
+      "name": "the origin, unturned",
+      "matrix": "{1,0,0}{0,1,0}{0,0,1}{0,0,0}",
+      "transform": {
+        "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "millimetres Z-up become metres Y-up, and upstage becomes negative Z",
+      "matrix": "{1,0,0}{0,1,0}{0,0,1}{-3600,13900,4000}",
+      "transform": {
+        "position": {"x": -3.6, "y": 4.0, "z": -13.9},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "a truss turned a quarter turn: its own X is upstage, which is -Z here",
+      "matrix": "{0,1,0}{-1,0,0}{0,0,1}{-1500,-7610,4000}",
+      "transform": {
+        "position": {"x": -1.5, "y": 4.0, "z": 7.61},
+        "rotation": {"x": 0.0, "y": 90.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "a mirrored truss, out of a real Vectorworks file",
+      "matrix": "{0,-1,0}{-1,0,0}{0,0,1}{-1500,-1921,4000}",
+      "transform": {
+        "position": {"x": -1.5, "y": 4.0, "z": 1.921},
+        "rotation": {"x": 0.0, "y": 90.0, "z": 0.0},
+        "scale": {"x": -1.0, "y": 1.0, "z": 1.0}
+      }
+    }
+  ],
+  "chains": [
+    {
+      "name": "nothing above it is where it says it is",
+      "objects": [],
+      "local": {
+        "position": {"x": 1.0, "y": 2.0, "z": 3.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "parent": null,
+      "world": {
+        "position": {"x": 1.0, "y": 2.0, "z": 3.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "a light on a truss is offset by the truss",
+      "objects": [
+        {
+          "id": "50000000-0000-4000-8000-000000000001",
+          "parent": null,
+          "transform": {
+            "position": {"x": 0.0, "y": 6.0, "z": -4.0},
+            "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+          }
+        }
+      ],
+      "local": {
+        "position": {"x": 2.0, "y": 0.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "parent": "50000000-0000-4000-8000-000000000001",
+      "world": {
+        "position": {"x": 2.0, "y": 6.0, "z": -4.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "a turned truss swings what hangs off it",
+      "objects": [
+        {
+          "id": "50000000-0000-4000-8000-000000000001",
+          "parent": null,
+          "transform": {
+            "position": {"x": 0.0, "y": 6.0, "z": 0.0},
+            "rotation": {"x": 0.0, "y": 90.0, "z": 0.0},
+            "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+          }
+        }
+      ],
+      "local": {
+        "position": {"x": 2.0, "y": 0.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "parent": "50000000-0000-4000-8000-000000000001",
+      "world": {
+        "position": {"x": 0.0, "y": 6.0, "z": -2.0},
+        "rotation": {"x": 0.0, "y": 90.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "two deep, and the chain composes in order",
+      "objects": [
+        {
+          "id": "50000000-0000-4000-8000-000000000001",
+          "parent": null,
+          "transform": {
+            "position": {"x": 0.0, "y": 6.0, "z": 0.0},
+            "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+          }
+        },
+        {
+          "id": "50000000-0000-4000-8000-000000000002",
+          "parent": "50000000-0000-4000-8000-000000000001",
+          "transform": {
+            "position": {"x": 3.0, "y": 0.0, "z": 0.0},
+            "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+          }
+        }
+      ],
+      "local": {
+        "position": {"x": 0.0, "y": -1.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "parent": "50000000-0000-4000-8000-000000000002",
+      "world": {
+        "position": {"x": 3.0, "y": 5.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "a mirrored truss mirrors what hangs off it",
+      "objects": [
+        {
+          "id": "50000000-0000-4000-8000-000000000001",
+          "parent": null,
+          "transform": {
+            "position": {"x": 0.0, "y": 6.0, "z": 0.0},
+            "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "scale": {"x": -1.0, "y": 1.0, "z": 1.0}
+          }
+        }
+      ],
+      "local": {
+        "position": {"x": 2.0, "y": 0.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "parent": "50000000-0000-4000-8000-000000000001",
+      "world": {
+        "position": {"x": -2.0, "y": 6.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": -1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "a parent that is not there leaves a thing where it was",
+      "objects": [],
+      "local": {
+        "position": {"x": 4.0, "y": 5.0, "z": 6.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "parent": "50000000-0000-4000-8000-0000000000ff",
+      "world": {
+        "position": {"x": 4.0, "y": 5.0, "z": 6.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    }
+  ]
+}

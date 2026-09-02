@@ -141,6 +141,22 @@ writing live: a plan is built by a pure function before anything is stored, so a
 rejected file leaves neither an asset nor a row behind; every write carries one gesture,
 so an import is one Ctrl-Z; and a write that fails takes the rest back.
 
+**An MVR is a whole rig, and `POST /api/import/mvr` is the same shape.** Every uuid the
+file uses is the id the row gets — an imported fixture's `id` *is* its MVR uuid — so a
+re-import updates the drawing rather than doubling it, with no lookup table to keep. A
+fixture *type* is the exception and is keyed by the GDTF's own `FixtureTypeID`, since a
+drawing can name one definition twice. The file wins on a re-import, and what an earlier
+import left in a layer this one no longer mentions is **listed under `missing` and never
+deleted**. A fixture whose GDTF the archive does not carry gets a placeholder type, so
+the address, the mode and the place survive until somebody supplies the real file.
+
+```
+cargo test -p pult-mvr -- --ignored                  # other people's rigs
+cargo test -p pult-backend --test mvr_corpus -- --ignored   # and what they become here
+curl -X POST http://localhost:7700/api/import/mvr \
+     -H 'content-type: application/vnd.mvr-scene+zip' --data-binary @rig.mvr
+```
+
 ## Lifecycle System
 
 Every field in the data model has one of three lifecycles:
@@ -378,6 +394,33 @@ winning. Zero out means "this cue does not split its fade" rather than "snap", s
 show that never sets one runs exactly as it did. Only values with an order to be on
 can be going down — a colour has three and a relay none, and those take the in time
 rather than have the console guess a ranking.
+
+## The rig is a drawing, and a place is a transform
+
+`Fixture::position` is an `Option<Transform>` — a position in metres, a rotation as
+XYZ Euler degrees, and a **signed** scale — and it is *relative to whatever the
+fixture hangs off*. Alongside it are `scene_objects` (trusses, rostra, screens, focus
+points, and `Group` for the handle that moves a truss and its lights together),
+`layers`, `symbols`, `classes` and `named_assets`, all PERSISTED and all keyed by the
+uuid the file they came from used, so a re-import matches rather than duplicates.
+
+**Scale is signed because a drawing mirrors things.** Twenty-one of the forty-three
+trusses in the first real MVR this console was pointed at have a basis whose
+determinant is −1. No rotation is a reflection, so an unsigned decomposition brings a
+mirrored truss back as some rotation that puts it nearly right with its bolt holes on
+the wrong side. The reflection is pulled onto X as a negative scale, and anything
+drawing one needs a two-sided material.
+
+**Composing a chain is worked out twice** — `crates/pult-schema/src/types/scene.rs`
+and `frontend/src/lib/scene.ts` — for the reason `SelectionQuery` is evaluated twice:
+dragging a truss re-composes every child per frame and cannot be a round trip. The two
+are held together by `testdata/transforms.json`, whose `chains` half both suites read.
+Its `matrices` half starts from a matrix as an MVR file writes one and is read by
+`pult-backend`, which is where `pult-mvr` and `pult-schema` meet.
+
+Consequence worth holding on to: **a geometric selection term reads a world position**,
+so `evaluate` takes the scene objects as well as the fixtures. A light on a truss is
+where the truss put it.
 
 **A selection is a question about the rig**, not a list of ids — "every mover on the
 downstage truss" stays true after somebody patches a fifth one. What is selected

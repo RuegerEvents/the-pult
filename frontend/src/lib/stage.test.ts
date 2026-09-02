@@ -11,17 +11,16 @@ import {
 	fixtureOutput,
 	fixturePoint,
 	fixtureTint,
-	joinPosition,
 	originForPixel,
 	panAngle,
 	pixelToPlan,
 	planExtent,
 	planToPixel,
-	splitPosition,
 	tiltAngle
 } from './stage.js';
+import { at, facingTransform } from './scene.js';
 import { readingOf, NOTHING_YET } from './stores/output.js';
-import { aFixtureType, aParameter } from './test-fixtures.js';
+import { aFixture, aFixtureType, aParameter } from './test-fixtures.js';
 
 /**
  * What a fixture is putting out, as a consumer sees it.
@@ -47,22 +46,12 @@ const plan = (over: Partial<StagePlan> = {}): StagePlan => ({
 	...over
 });
 
-const fixture = (over: Partial<Fixture> = {}): Fixture => ({
-	id: 'f',
-	name: 'Front left',
-	fixture_type_id: 't',
-	address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
-	position: null,
-	sensed_values: {},
-	live_effects: {},
-	live_fades: {},
-	home_values: {},
-	...over
-});
+const fixture = (over: Partial<Fixture> = {}): Fixture =>
+	aFixture({ id: 'f', name: 'Front left', fixture_type_id: 't', ...over });
 
 describe('where things are', () => {
 	it('reads a point position and an axial one the same way', () => {
-		expect(fixturePoint(fixture({ position: { Point: { x: 1, y: 5, z: 2 } } }))).toEqual({
+		expect(fixturePoint(fixture({ position: at({ x: 1, y: 5, z: 2 }) }))).toEqual({
 			x: 1,
 			y: 5,
 			z: 2
@@ -70,7 +59,7 @@ describe('where things are', () => {
 		expect(
 			fixturePoint(
 				fixture({
-					position: { Axial: { position: { x: 1, y: 5, z: 2 }, direction: { x: 0, y: -1, z: 0 } } }
+					position: facingTransform({ x: 1, y: 5, z: 2 }, { x: 0, y: -1, z: 0 })
 				})
 			)
 		).toEqual({ x: 1, y: 5, z: 2 });
@@ -80,15 +69,23 @@ describe('where things are', () => {
 		expect(fixturePoint(fixture())).toBeNull();
 	});
 
-	it('only knows a facing for a fixture placed axially', () => {
-		expect(fixtureFacing(fixture({ position: { Point: { x: 0, y: 0, z: 0 } } }))).toBeNull();
-		expect(
-			fixtureFacing(
-				fixture({
-					position: { Axial: { position: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: -1, z: 0 } } }
-				})
-			)
-		).toEqual({ x: 0, y: -1, z: 0 });
+	/// Every placed fixture faces somewhere now: a transform that nobody has turned
+	/// hangs straight down, which is what a light on a bar does.
+	it('knows a facing for every placed fixture, and none for an unplaced one', () => {
+		expect(fixtureFacing(fixture())).toBeNull();
+		expect(fixtureFacing(fixture({ position: at({ x: 0, y: 0, z: 0 }) }))).toEqual({
+			x: 0,
+			y: -1,
+			z: 0
+		});
+		// Close rather than equal: an aim goes to three angles and back, and a right
+		// angle through a sine is a right angle plus 1e-16.
+		const sideways = fixtureFacing(
+			fixture({ position: facingTransform({ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }) })
+		)!;
+		expect(sideways.x).toBeCloseTo(1, 6);
+		expect(sideways.y).toBeCloseTo(0, 6);
+		expect(sideways.z).toBeCloseTo(0, 6);
 	});
 });
 
@@ -166,8 +163,8 @@ describe('bounds', () => {
 
 	it('holds every placed fixture with room to spare', () => {
 		const rig = [
-			fixture({ position: { Point: { x: -3, y: 4, z: 0 } } }),
-			fixture({ position: { Point: { x: 5, y: 4, z: 7 } } }),
+			fixture({ position: at({ x: -3, y: 4, z: 0 }) }),
+			fixture({ position: at({ x: 5, y: 4, z: 7 }) }),
 			fixture()
 		];
 		expect(fixtureBounds(rig, 1)).toEqual({ minX: -4, maxX: 6, minZ: -1, maxZ: 8 });
@@ -240,7 +237,7 @@ describe('pointing', () => {
 
 	it('points a centred mover the way it hangs', () => {
 		const facing = fixture({
-			position: { Axial: { position: { x: 0, y: 5, z: 0 }, direction: { x: 0, y: -1, z: 1 } } }
+			position: facingTransform({ x: 0, y: 5, z: 0 }, { x: 0, y: -1, z: 1 })
 		});
 		expect(panAngle(facing, mover, panned(0.5))).toBeCloseTo(0, 6);
 	});
@@ -261,7 +258,7 @@ describe('pointing', () => {
 	/** Hung facing straight down, which is how a head on a bar hangs. */
 	const hung = () =>
 		fixture({
-			position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } }
+			position: facingTransform({ x: 0, y: 6, z: 0 }, { x: 0, y: -1, z: 0 })
 		});
 	/** Where it is showing, pan and tilt centred unless said otherwise. */
 	const centred = (over: Record<string, ParameterValue> = {}) =>
@@ -311,7 +308,7 @@ describe('pointing', () => {
 	it('leaves a pan-only head where tilt would have put it', () => {
 		// The behaviour before tilt existed: swinging keeps the hung elevation.
 		const rigged = fixture({
-			position: { Axial: { position: { x: 0, y: 5, z: 0 }, direction: { x: 0, y: -3, z: 4 } } }
+			position: facingTransform({ x: 0, y: 5, z: 0 }, { x: 0, y: -3, z: 4 })
 		});
 		const beam = beamDirection(rigged, mover, showing({ Pan: { type: 'Float', value: 0.5 } }));
 		expect(beam.y).toBeCloseTo(-0.6, 6);
@@ -332,7 +329,7 @@ describe('aiming a head', () => {
 	});
 	const hung = () =>
 		fixture({
-			position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } }
+			position: facingTransform({ x: 0, y: 6, z: 0 }, { x: 0, y: -1, z: 0 })
 		});
 	const centred = (over: Record<string, ParameterValue> = {}) =>
 		showing({
@@ -418,8 +415,8 @@ describe('the rig in three dimensions', () => {
 	it('opens at front of house looking at the stage', async () => {
 		const { fohCamera } = await import('./stage.js');
 		const rig = [
-			fixture({ position: { Point: { x: -4, y: 5, z: -2 } } }),
-			fixture({ position: { Point: { x: 4, y: 5, z: 1 } } })
+			fixture({ position: at({ x: -4, y: 5, z: -2 }) }),
+			fixture({ position: at({ x: 4, y: 5, z: 1 }) })
 		];
 		const camera = fohCamera(rig);
 		expect(camera.position[1]).toBeCloseTo(1.7, 6);
@@ -430,10 +427,10 @@ describe('the rig in three dimensions', () => {
 
 	it('stands further back for a wider rig', async () => {
 		const { fohCamera } = await import('./stage.js');
-		const near = fohCamera([fixture({ position: { Point: { x: 0, y: 4, z: 0 } } })]);
+		const near = fohCamera([fixture({ position: at({ x: 0, y: 4, z: 0 }) })]);
 		const wide = fohCamera([
-			fixture({ position: { Point: { x: -20, y: 4, z: 0 } } }),
-			fixture({ position: { Point: { x: 20, y: 4, z: 0 } } })
+			fixture({ position: at({ x: -20, y: 4, z: 0 }) }),
+			fixture({ position: at({ x: 20, y: 4, z: 0 }) })
 		]);
 		expect(wide.position[2]).toBeGreaterThan(near.position[2]);
 	});
@@ -441,7 +438,7 @@ describe('the rig in three dimensions', () => {
 	it('points a fixture with no stated direction at the floor', async () => {
 		const { beamDirection } = await import('./stage.js');
 		expect(
-			beamDirection(fixture({ position: { Point: { x: 0, y: 5, z: 0 } } }), undefined, showing({}))
+			beamDirection(fixture({ position: at({ x: 0, y: 5, z: 0 }) }), undefined, showing({}))
 		).toEqual({
 			x: 0,
 			y: -1,
@@ -452,7 +449,7 @@ describe('the rig in three dimensions', () => {
 	it('follows the direction a fixture was hung at', async () => {
 		const { beamDirection } = await import('./stage.js');
 		const hung = fixture({
-			position: { Axial: { position: { x: 0, y: 5, z: 4 }, direction: { x: 0, y: -3, z: -4 } } }
+			position: facingTransform({ x: 0, y: 5, z: 4 }, { x: 0, y: -3, z: -4 })
 		});
 		const beam = beamDirection(hung, undefined, showing({}));
 		expect(Math.hypot(beam.x, beam.y, beam.z)).toBeCloseTo(1, 6);
@@ -477,50 +474,3 @@ describe('the rig in three dimensions', () => {
 	});
 });
 
-describe('a position, in its two forms', () => {
-	/**
-	 * `Point` and `Axial` are the same fact with one detail added, so an editor
-	 * should not make an operator choose a variant before they can type a number.
-	 * These two are what keep the panels from drifting apart about which is which.
-	 */
-	it('splits a plain point and puts it back unchanged', () => {
-		const point = { Point: { x: 1, y: 2, z: 3 } };
-		const parts = splitPosition(point);
-
-		expect(parts.point).toEqual({ x: 1, y: 2, z: 3 });
-		expect(parts.direction).toBeNull();
-		expect(joinPosition(parts.point, parts.direction)).toEqual(point);
-	});
-
-	it('splits an axial one and puts it back unchanged', () => {
-		const axial = {
-			Axial: { position: { x: 1, y: 6, z: -2 }, direction: { x: 0, y: -1, z: 0.5 } }
-		};
-		const parts = splitPosition(axial);
-
-		expect(parts.point).toEqual({ x: 1, y: 6, z: -2 });
-		expect(parts.direction).toEqual({ x: 0, y: -1, z: 0.5 });
-		expect(joinPosition(parts.point, parts.direction)).toEqual(axial);
-	});
-
-	it('treats an unplaced fixture as the origin, facing nowhere', () => {
-		const parts = splitPosition(null);
-		expect(parts.point).toEqual({ x: 0, y: 0, z: 0 });
-		expect(parts.direction).toBeNull();
-	});
-
-	/** A direction turns a point into an axial position, and only that. */
-	it('picks the variant from whether there is a direction', () => {
-		expect(joinPosition({ x: 0, y: 0, z: 0 }, null)).toHaveProperty('Point');
-		expect(joinPosition({ x: 0, y: 0, z: 0 }, HANGING)).toHaveProperty('Axial');
-	});
-
-	/**
-	 * A light with no aim yet is hanging, so the default direction points at the
-	 * floor beneath it rather than at the origin — which for a light upstage would
-	 * be aiming it across the room.
-	 */
-	it('defaults a new direction to straight down', () => {
-		expect(HANGING).toEqual({ x: 0, y: -1, z: 0 });
-	});
-});

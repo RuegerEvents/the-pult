@@ -33,7 +33,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use std::collections::HashMap;
+
 use super::fixture::{Fixture, Vec3};
+use super::scene::{self, SceneObject};
 use crate::PultSchema;
 
 // ── What a query is ───────────────────────────────────────────────────────────
@@ -221,7 +224,24 @@ pub fn in_box(point: Vec3, from: Vec3, to: Vec3) -> bool {
 
 // ── Evaluating ────────────────────────────────────────────────────────────────
 
-fn matches(term: &SelectionTerm, fixture: &Fixture) -> bool {
+/// Where a fixture actually is, with every truss it hangs off applied.
+///
+/// A geometric term asks about the rig as it stands, and a light on a truss is where
+/// the truss put it. `None` for a fixture nobody has placed — which is the honest
+/// answer, and the reason `Everything` and `OfType` exist.
+pub fn world_position(
+    fixture: &Fixture,
+    objects: &HashMap<Uuid, &SceneObject>,
+) -> Option<Vec3> {
+    let local = fixture.position?;
+    Some(scene::world_transform(&local, fixture.parent, objects).position)
+}
+
+fn matches(
+    term: &SelectionTerm,
+    fixture: &Fixture,
+    objects: &HashMap<Uuid, &SceneObject>,
+) -> bool {
     match term {
         SelectionTerm::Everything => return true,
         SelectionTerm::Ids { ids } => return ids.contains(&fixture.id),
@@ -234,8 +254,7 @@ fn matches(term: &SelectionTerm, fixture: &Fixture) -> bool {
 
     // Everything below is about where a fixture is, and one that has never been
     // placed is not anywhere.
-    let Some(position) = fixture.position else { return false };
-    let point = position.position();
+    let Some(point) = world_position(fixture, objects) else { return false };
 
     match term {
         SelectionTerm::Sphere { centre, radius } => distance(point, *centre) <= *radius,
@@ -259,12 +278,14 @@ pub fn evaluate(
     query: &SelectionQuery,
     fixtures: &[Fixture],
     previous: Option<&[Uuid]>,
+    scene: &[SceneObject],
 ) -> Vec<Uuid> {
+    let objects = scene::by_id(scene);
     let mut picked: Vec<Uuid> = Vec::new();
 
     for SelectionClause { combine, term } in &query.clauses {
         let hits: Vec<Uuid> =
-            fixtures.iter().filter(|f| matches(term, f)).map(|f| f.id).collect();
+            fixtures.iter().filter(|f| matches(term, f, &objects)).map(|f| f.id).collect();
         match combine {
             SelectionCombine::Add => {
                 // Order of arrival is kept for `Manual`, so adding twice does not move
@@ -280,7 +301,7 @@ pub fn evaluate(
         }
     }
 
-    sort_selection(&picked, &query.order, fixtures, previous)
+    sort_selection(&picked, &query.order, fixtures, previous, scene)
 }
 
 /// Put a set of ids into the order a query asks for.
@@ -289,6 +310,7 @@ pub fn sort_selection(
     order: &SelectionOrder,
     fixtures: &[Fixture],
     previous: Option<&[Uuid]>,
+    scene: &[SceneObject],
 ) -> Vec<Uuid> {
     if let SelectionOrder::Manual { order: stored } = order {
         // Whatever somebody dragged into place, with anything new on the end. The
@@ -301,6 +323,7 @@ pub fn sort_selection(
 
     // An unplaced fixture sorts to the end of a geometric order rather than to the
     // origin, where it would sit in the middle of the rig pretending to be somewhere.
+    let objects = scene::by_id(scene);
     let key = |id: &Uuid| -> (f32, String) {
         let Some(fixture) = fixtures.iter().find(|f| f.id == *id) else {
             return (f32::INFINITY, id.to_string());
@@ -308,10 +331,9 @@ pub fn sort_selection(
         if matches!(order, SelectionOrder::ByName) {
             return (0.0, fixture.name.to_lowercase());
         }
-        let Some(position) = fixture.position else {
+        let Some(point) = world_position(fixture, &objects) else {
             return (f32::INFINITY, fixture.name.clone());
         };
-        let point = position.position();
         match order {
             SelectionOrder::ByAxis { axis, .. } => {
                 let v = match axis {

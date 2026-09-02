@@ -17,6 +17,12 @@ CREATE TABLE IF NOT EXISTS fixtures (
     fixture_type_id TEXT NOT NULL,
     address TEXT NOT NULL,
     position TEXT,
+    parent TEXT,
+    layer TEXT,
+    class TEXT,
+    focus TEXT,
+    fixture_number TEXT,
+    unit_number TEXT,
     home_values TEXT NOT NULL
 );
 
@@ -64,10 +70,24 @@ CREATE TABLE IF NOT EXISTS groups (
     query TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS layers (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    locked INTEGER NOT NULL,
+    sort_order INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS layouts (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
     tree TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS named_assets (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    mime TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS outputs (
@@ -98,6 +118,23 @@ CREATE TABLE IF NOT EXISTS plugin_packages (
     enabled INTEGER NOT NULL,
     stage TEXT NOT NULL,
     config TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS classes (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scene_objects (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    transform TEXT NOT NULL,
+    parent TEXT,
+    layer TEXT,
+    class TEXT,
+    geometry TEXT NOT NULL,
+    symbol TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sequences (
@@ -132,6 +169,12 @@ CREATE TABLE IF NOT EXISTS stage_plans (
     rotation_deg REAL NOT NULL,
     opacity REAL NOT NULL,
     visible INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS symbols (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    geometry TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS users (

@@ -11,16 +11,21 @@ import type { Flow } from '../generated/Flow.js';
 import type { FlowEdge } from '../generated/FlowEdge.js';
 import type { FlowNode } from '../generated/FlowNode.js';
 import type { Group } from '../generated/Group.js';
+import type { Layer } from '../generated/Layer.js';
 import type { Layout } from '../generated/Layout.js';
+import type { NamedAsset } from '../generated/NamedAsset.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { PluginDatum } from '../generated/PluginDatum.js';
 import type { PluginPackage } from '../generated/PluginPackage.js';
 import type { ProgrammerValue } from '../generated/ProgrammerValue.js';
+import type { SceneClass } from '../generated/SceneClass.js';
+import type { SceneObject } from '../generated/SceneObject.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Show } from '../generated/Show.js';
 import type { SpeedMaster } from '../generated/SpeedMaster.js';
 import type { StagePlan } from '../generated/StagePlan.js';
 import type { Station } from '../generated/Station.js';
+import type { Symbol } from '../generated/Symbol.js';
 import type { User } from '../generated/User.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
@@ -54,7 +59,15 @@ export type GroupEntity = PathProxy<Group> & {
   delete(): Promise<void>;
 };
 
+export type LayerEntity = PathProxy<Layer> & {
+  delete(): Promise<void>;
+};
+
 export type LayoutEntity = PathProxy<Layout> & {
+  delete(): Promise<void>;
+};
+
+export type NamedAssetEntity = PathProxy<NamedAsset> & {
   delete(): Promise<void>;
 };
 
@@ -74,6 +87,14 @@ export type ProgrammerValueEntity = PathProxy<ProgrammerValue> & {
   delete(): Promise<void>;
 };
 
+export type SceneClassEntity = PathProxy<SceneClass> & {
+  delete(): Promise<void>;
+};
+
+export type SceneObjectEntity = PathProxy<SceneObject> & {
+  delete(): Promise<void>;
+};
+
 export type SequenceEntity = PathProxy<Sequence> & {
   delete(): Promise<void>;
   goNext(args: { at?: number }): Promise<void>;
@@ -90,6 +111,10 @@ export type StagePlanEntity = PathProxy<StagePlan> & {
 };
 
 export type StationEntity = PathProxy<Station> & {
+  delete(): Promise<void>;
+};
+
+export type SymbolEntity = PathProxy<Symbol> & {
   delete(): Promise<void>;
 };
 
@@ -190,6 +215,19 @@ export type GroupCollection = {
   [n: number]: GroupEntity;
 };
 
+export type LayerCollection = {
+  get(): Promise<Layer[]>;
+  set(value: Layer[]): Promise<void>;
+  subscribe(cb: (value: Layer[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Layer[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): LayerEntity;
+  nth(n: number): LayerEntity;
+  create(entity: Layer): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  [n: number]: LayerEntity;
+};
+
 export type LayoutCollection = {
   get(): Promise<Layout[]>;
   set(value: Layout[]): Promise<void>;
@@ -201,6 +239,19 @@ export type LayoutCollection = {
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   [n: number]: LayoutEntity;
+};
+
+export type NamedAssetCollection = {
+  get(): Promise<NamedAsset[]>;
+  set(value: NamedAsset[]): Promise<void>;
+  subscribe(cb: (value: NamedAsset[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: NamedAsset[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): NamedAssetEntity;
+  nth(n: number): NamedAssetEntity;
+  create(entity: NamedAsset): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  [n: number]: NamedAssetEntity;
 };
 
 export type OutputConfigCollection = {
@@ -255,6 +306,32 @@ export type ProgrammerValueCollection = {
   [n: number]: ProgrammerValueEntity;
 };
 
+export type SceneClassCollection = {
+  get(): Promise<SceneClass[]>;
+  set(value: SceneClass[]): Promise<void>;
+  subscribe(cb: (value: SceneClass[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: SceneClass[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): SceneClassEntity;
+  nth(n: number): SceneClassEntity;
+  create(entity: SceneClass): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  [n: number]: SceneClassEntity;
+};
+
+export type SceneObjectCollection = {
+  get(): Promise<SceneObject[]>;
+  set(value: SceneObject[]): Promise<void>;
+  subscribe(cb: (value: SceneObject[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: SceneObject[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): SceneObjectEntity;
+  nth(n: number): SceneObjectEntity;
+  create(entity: SceneObject): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  [n: number]: SceneObjectEntity;
+};
+
 export type SequenceCollection = {
   get(): Promise<Sequence[]>;
   set(value: Sequence[]): Promise<void>;
@@ -307,6 +384,19 @@ export type StationCollection = {
   [n: number]: StationEntity;
 };
 
+export type SymbolCollection = {
+  get(): Promise<Symbol[]>;
+  set(value: Symbol[]): Promise<void>;
+  subscribe(cb: (value: Symbol[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Symbol[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): SymbolEntity;
+  nth(n: number): SymbolEntity;
+  create(entity: Symbol): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  [n: number]: SymbolEntity;
+};
+
 export type UserCollection = {
   get(): Promise<User[]>;
   set(value: User[]): Promise<void>;
@@ -331,16 +421,21 @@ export type DataRoot = {
   flow_edges: FlowEdgeCollection;
   flow_nodes: FlowNodeCollection;
   groups: GroupCollection;
+  layers: LayerCollection;
   layouts: LayoutCollection;
+  named_assets: NamedAssetCollection;
   outputs: OutputConfigCollection;
   plugin_data: PluginDatumCollection;
   plugin_packages: PluginPackageCollection;
   programmer_values: ProgrammerValueCollection;
+  classes: SceneClassCollection;
+  scene_objects: SceneObjectCollection;
   sequences: SequenceCollection;
   show: PathProxy<Show | null>;
   speed_masters: SpeedMasterCollection;
   stage_plans: StagePlanCollection;
   stations: StationCollection;
+  symbols: SymbolCollection;
   users: UserCollection;
 };
 

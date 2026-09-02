@@ -45,6 +45,32 @@ pub const BUNDLE_MIME: &str = "application/vnd.pult.plugin+zip";
 /// as it arrived.
 pub const GDTF_MIME: &str = "application/vnd.gdtf+zip";
 
+/// The archive an MVR arrives in, kept whole for the same reason a `.gdtf` is.
+pub const MVR_MIME: &str = "application/vnd.mvr-scene+zip";
+
+/// A mesh, as the two formats an MVR carries them in.
+pub const GLB_MIME: &str = "model/gltf-binary";
+pub const TDS_MIME: &str = "model/3ds";
+
+/// What kind of file a name says it is, for the resources inside an archive.
+///
+/// By extension, because that is all an archive entry gives: an MVR names its meshes
+/// `Geometrie_<uuid>.glb` and its textures `tx603.jpg`, and nothing inside says more.
+/// `None` for anything this console will not store, which becomes a warning naming the
+/// file rather than a refusal of the rig it was part of.
+pub fn mime_for_name(name: &str) -> Option<&'static str> {
+    let extension = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "glb" | "gltf" => GLB_MIME,
+        "3ds" => TDS_MIME,
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gdtf" => GDTF_MIME,
+        _ => return None,
+    })
+}
+
 /// What may be stored, and how big each kind may be.
 ///
 /// No SVG: it is a document with scripts in it, and serving one from the console's
@@ -68,6 +94,14 @@ pub const ACCEPTED: &[(&str, usize)] = &[
     // anything unusual. The archive's own unpacked ceiling is in `pult-gdtf`, and it
     // is the one that matters: a zip can claim to be small and not be.
     (GDTF_MIME, 256 * 1024 * 1024),
+    // 256 MB, the same. An MVR is a GDTF per fixture type plus a mesh per truss
+    // section, so it is the larger of the two by construction.
+    (MVR_MIME, 256 * 1024 * 1024),
+    // 128 MB each. A single mesh out of a real drawing runs to a few megabytes; the
+    // 3.8 MB glb in the corpus is the biggest one seen, and this sits well above
+    // anything an exporter produces on purpose.
+    (GLB_MIME, 128 * 1024 * 1024),
+    (TDS_MIME, 128 * 1024 * 1024),
 ];
 
 /// The largest anything may be, which is what the HTTP body limit has to be set to.

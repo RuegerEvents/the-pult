@@ -154,6 +154,7 @@ fn a_dimmer_patch(level: f32) -> Patch {
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
+        ..Fixture::default()
     };
     // A parameter sits at a value by having a landed fade on it. Nothing stores the
     // number, so this is the shape of "the console is holding this light at a level".

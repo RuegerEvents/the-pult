@@ -557,3 +557,285 @@ async fn asking_for_a_fixture_type_nobody_has_is_a_not_found() {
         .unwrap();
     assert_eq!(answer.status(), 404);
 }
+
+// ── MVR ───────────────────────────────────────────────────────────────────────
+
+/// An `.mvr` built from a checked-in scene, the fixture definitions it names, and
+/// whatever meshes the test wants in it.
+///
+/// The GDTFs come from `testdata/gdtf/` under the names the scene calls them, which is
+/// how a small file gets to be about real fixture definitions rather than about
+/// placeholders.
+fn an_mvr(scene: &str, gdtfs: &[(&str, &str)], resources: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+
+    let scene_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/mvr").join(scene);
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    writer.start_file("GeneralSceneDescription.xml", options).unwrap();
+    writer
+        .write_all(
+            &std::fs::read(&scene_path)
+                .unwrap_or_else(|e| panic!("reading {}: {e}", scene_path.display())),
+        )
+        .unwrap();
+
+    for (entry, from) in gdtfs {
+        writer.start_file(*entry, options).unwrap();
+        writer.write_all(&a_gdtf(from)).unwrap();
+    }
+    for (entry, bytes) in resources {
+        writer.start_file(*entry, options).unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+/// The small rig, with both its fixture definitions and both its meshes.
+fn a_small_rig() -> Vec<u8> {
+    an_mvr(
+        "a-small-rig.xml",
+        &[
+            ("Acme@Test RGBW Mover.gdtf", "rgbw-two-mode"),
+            ("Acme@Test Dimmer.gdtf", "minimal"),
+        ],
+        &[("truss-3m.glb", b"glTF-not-really"), ("rostrum.3ds", b"3ds-not-really")],
+    )
+}
+
+async fn post_mvr(addr: &str, bytes: Vec<u8>) -> serde_json::Value {
+    let posted = reqwest::Client::new()
+        .post(format!("http://{addr}/api/import/mvr"))
+        .header("content-type", assets::MVR_MIME)
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    assert!(posted.status().is_success(), "{:?}", posted.text().await);
+    let body = posted.json().await.unwrap();
+    // The engine writes through a channel, so give it a moment to land.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    body
+}
+
+#[tokio::test]
+async fn importing_an_mvr_patches_the_rig_it_draws() {
+    use pult_schema::types::fixture::Fixture;
+    use pult_schema::types::scene::{Layer, SceneClass, SceneObject, SceneObjectKind, Symbol};
+
+    let (addr, pool) = a_console().await;
+
+    let body = post_mvr(&addr, a_small_rig()).await;
+    assert_eq!(body["warnings"].as_array().unwrap().len(), 0, "{:?}", body["warnings"]);
+    assert!(body["missing"].as_array().unwrap().is_empty());
+
+    let layers: Vec<Layer> = pult_schema::db::get_all(&pool).await.unwrap();
+    assert_eq!(layers.len(), 2, "a layer per layer");
+
+    let classes: Vec<SceneClass> = pult_schema::db::get_all(&pool).await.unwrap();
+    assert_eq!(classes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["Overhead"]);
+
+    let symbols: Vec<Symbol> = pult_schema::db::get_all(&pool).await.unwrap();
+    assert_eq!(symbols.len(), 1);
+    assert_eq!(symbols[0].geometry.len(), 1, "the symbol carries its mesh");
+    assert_eq!(symbols[0].geometry[0].file_name, "truss-3m.glb");
+
+    let mut objects: Vec<SceneObject> = pult_schema::db::get_all(&pool).await.unwrap();
+    objects.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(
+        objects.iter().map(|o| (o.name.as_str(), o.kind)).collect::<Vec<_>>(),
+        vec![("LX1", SceneObjectKind::Truss), ("Rostrum", SceneObjectKind::Object)],
+    );
+
+    let truss = objects.iter().find(|o| o.name == "LX1").unwrap();
+    assert_eq!(truss.transform.position.y, 6.0, "4 m upstage, 6 m up: Z-up becomes Y-up");
+    assert_eq!(truss.transform.position.z, -4.0);
+    assert_eq!(truss.symbol, Some(symbols[0].id), "and it instances the symbol");
+    assert_eq!(truss.class, Some(classes[0].id));
+
+    let mut fixtures: Vec<Fixture> = pult_schema::db::get_all(&pool).await.unwrap();
+    fixtures.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(
+        fixtures.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        vec!["Dimmer 1", "Mover 1"],
+    );
+
+    let mover = fixtures.iter().find(|f| f.name == "Mover 1").unwrap();
+    assert_eq!(mover.parent, Some(truss.id), "it hangs off the truss");
+    assert_eq!(mover.fixture_number, Some(101));
+    assert_eq!(mover.unit_number, Some(1));
+    assert_eq!(
+        mover.address.breaks(),
+        vec![pult_schema::types::dmx_mode::DmxBreak { universe: 3, address: 1 }],
+        "absolute 1025 is universe 3, channel 1",
+    );
+    assert_eq!(
+        mover.address.mode(),
+        Some("Basic"),
+        "and the mode it names is one the type really has",
+    );
+
+    // Its own numbers put it 2 m along the truss; the truss is what puts it in the air.
+    assert_eq!(mover.position.unwrap().position.x, 2.0);
+    assert_eq!(mover.position.unwrap().position.y, 0.0);
+}
+
+#[tokio::test]
+async fn a_mesh_is_stored_under_its_hash_and_findable_by_the_name_the_file_used() {
+    use pult_schema::types::scene::NamedAsset;
+
+    let (addr, pool) = a_console().await;
+    post_mvr(&addr, a_small_rig()).await;
+
+    let mut named: Vec<NamedAsset> = pult_schema::db::get_all(&pool).await.unwrap();
+    named.sort_by(|a, b| a.name.cmp(&b.name));
+    assert_eq!(
+        named.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(),
+        vec!["rostrum.3ds", "truss-3m.glb"],
+        "a name per resource, so a mesh asking for a texture by name can find it",
+    );
+    assert_eq!(named[0].mime, assets::TDS_MIME);
+    assert_eq!(named[1].mime, assets::GLB_MIME);
+
+    // And the bytes are really there, under the hash the row names.
+    let fetched = reqwest::get(format!("http://{addr}/assets/{}", named[1].asset)).await.unwrap();
+    assert!(fetched.status().is_success());
+    assert_eq!(fetched.bytes().await.unwrap().as_ref(), b"glTF-not-really");
+}
+
+#[tokio::test]
+async fn importing_the_same_drawing_again_updates_it_rather_than_doubling_it() {
+    use pult_schema::types::fixture::Fixture;
+    use pult_schema::types::scene::SceneObject;
+
+    let (addr, pool) = a_console().await;
+
+    let first = post_mvr(&addr, a_small_rig()).await;
+    assert!(first["created"].as_u64().unwrap() > 0);
+    assert_eq!(first["updated"], 0);
+
+    let second = post_mvr(&addr, a_small_rig()).await;
+    assert_eq!(second["created"], 0, "nothing new the second time");
+    assert_eq!(second["updated"], first["created"], "everything matched by its own uuid");
+
+    let fixtures: Vec<Fixture> = pult_schema::db::get_all(&pool).await.unwrap();
+    let objects: Vec<SceneObject> = pult_schema::db::get_all(&pool).await.unwrap();
+    assert_eq!(fixtures.len(), 2, "two fixtures, not four");
+    assert_eq!(objects.len(), 2);
+}
+
+/// A fixture whose definition the archive does not carry still lands in the patch.
+///
+/// The alternative is dropping it, which loses the address, the mode and the place —
+/// everything the drawing knew — over a file somebody can supply later.
+#[tokio::test]
+async fn a_fixture_whose_gdtf_is_missing_gets_a_placeholder_and_a_warning() {
+    use pult_schema::types::fixture::{Fixture, FixtureType};
+
+    let (addr, pool) = a_console().await;
+
+    let body = post_mvr(
+        &addr,
+        an_mvr(
+            "a-small-rig.xml",
+            &[("Acme@Test Dimmer.gdtf", "minimal")],
+            &[("truss-3m.glb", b"glTF"), ("rostrum.3ds", b"3ds")],
+        ),
+    )
+    .await;
+
+    let warnings = body["warnings"].as_array().unwrap();
+    assert!(
+        warnings.iter().any(|w| w.as_str().unwrap().contains("placeholder")),
+        "{warnings:?}",
+    );
+
+    let types: Vec<FixtureType> = pult_schema::db::get_all(&pool).await.unwrap();
+    let placeholder = types.iter().find(|t| t.name == "Test RGBW Mover").unwrap();
+    assert_eq!(placeholder.manufacturer, "Acme");
+    assert!(placeholder.parameters.is_empty(), "it does not invent what the file does not say");
+
+    let fixtures: Vec<Fixture> = pult_schema::db::get_all(&pool).await.unwrap();
+    let mover = fixtures.iter().find(|f| f.name == "Mover 1").unwrap();
+    assert_eq!(mover.fixture_type_id, placeholder.id, "the fixture is still patched");
+    assert_eq!(
+        mover.address.breaks(),
+        vec![pult_schema::types::dmx_mode::DmxBreak { universe: 3, address: 1 }],
+        "and still at the address the drawing gave it",
+    );
+}
+
+/// What an earlier import left that this one does not mention is reported, never
+/// deleted: somebody may have taken that light out of the drawing on purpose, and
+/// somebody else may be relying on it being in the show.
+#[tokio::test]
+async fn a_fixture_the_new_drawing_drops_is_listed_and_left_alone() {
+    use pult_schema::types::fixture::Fixture;
+
+    let (addr, pool) = a_console().await;
+    post_mvr(&addr, a_small_rig()).await;
+
+    // The same drawing with the floor light taken out of it.
+    let without = {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/mvr/a-small-rig.xml");
+        let text = std::fs::read_to_string(path).unwrap();
+        let start = text.find("<Fixture uuid=\"c0000000-0000-4000-8000-000000000021\"").unwrap();
+        let end = text[start..].find("</Fixture>").unwrap() + start + "</Fixture>".len();
+        format!("{}{}", &text[..start], &text[end..])
+    };
+    let bytes = {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("GeneralSceneDescription.xml", options).unwrap();
+        writer.write_all(without.as_bytes()).unwrap();
+        for (entry, from) in
+            [("Acme@Test RGBW Mover.gdtf", "rgbw-two-mode"), ("Acme@Test Dimmer.gdtf", "minimal")]
+        {
+            writer.start_file(entry, options).unwrap();
+            writer.write_all(&a_gdtf(from)).unwrap();
+        }
+        for entry in ["truss-3m.glb", "rostrum.3ds"] {
+            writer.start_file(entry, options).unwrap();
+            writer.write_all(b"mesh").unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    };
+
+    let body = post_mvr(&addr, bytes).await;
+
+    let missing = body["missing"].as_array().unwrap();
+    assert!(
+        missing.iter().any(|m| m.as_str().unwrap().contains("Dimmer 1")),
+        "it says what went: {missing:?}",
+    );
+
+    let fixtures: Vec<Fixture> = pult_schema::db::get_all(&pool).await.unwrap();
+    assert!(
+        fixtures.iter().any(|f| f.name == "Dimmer 1"),
+        "and leaves it exactly where it was",
+    );
+}
+
+#[tokio::test]
+async fn a_body_that_is_not_an_mvr_is_refused_and_leaves_nothing_behind() {
+    use pult_schema::types::scene::Layer;
+
+    let (addr, pool) = a_console().await;
+
+    let posted = reqwest::Client::new()
+        .post(format!("http://{addr}/api/import/mvr"))
+        .header("content-type", assets::MVR_MIME)
+        .body(b"not a zip at all".to_vec())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(posted.status(), reqwest::StatusCode::BAD_REQUEST);
+    let layers: Vec<Layer> = pult_schema::db::get_all(&pool).await.unwrap();
+    assert!(layers.is_empty(), "a refused file leaves no rows");
+}

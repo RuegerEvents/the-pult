@@ -62,6 +62,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # TypeScript gen
 pult-render = { path = "crates/pult-render" }
 pult-gdtf = { path = "crates/pult-gdtf" }
+pult-mvr = { path = "crates/pult-mvr" }
 ts-rs = { version = "10", features = ["uuid-impl", "chrono-impl", "serde-json-impl", "indexmap-impl"] }
 
 # Proc macro infra (only in pult-macros)

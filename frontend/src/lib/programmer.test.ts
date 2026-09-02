@@ -21,20 +21,10 @@ import {
 	withFloat
 } from './programmer.js';
 import { readingOf } from './stores/output.js';
-import { aFixtureType, aParameter } from './test-fixtures.js';
+import { aFixture, aFixtureType, aParameter } from './test-fixtures.js';
 
-const fixture = (over: Partial<Fixture> = {}): Fixture => ({
-	id: 'f',
-	name: 'Spot',
-	fixture_type_id: 'mover',
-	address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
-	position: null,
-	sensed_values: {},
-	live_effects: {},
-	live_fades: {},
-	home_values: {},
-	...over
-});
+const fixture = (over: Partial<Fixture> = {}): Fixture =>
+	aFixture({ id: 'f', name: 'Spot', fixture_type_id: 'mover', ...over });
 
 const mover: FixtureType = aFixtureType({
 	id: 'mover',

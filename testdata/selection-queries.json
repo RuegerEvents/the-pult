@@ -8,7 +8,7 @@
     "",
     "A case with no `previous` key is a saved group: nothing outside the query holds an",
     "order, so a Manual order uses the list it carries. A case whose `previous` is a",
-    "list — including an empty one — is a live selection handing the evaluator the",
+    "list \u2014 including an empty one \u2014 is a live selection handing the evaluator the",
     "order an operator dragged the panel into, which wins over the query's own.",
     "",
     "Fixture ids end in the number they are called by below, so a failure is readable."
@@ -17,61 +17,110 @@
     "par": "70000000-0000-4000-8000-0000000000a1",
     "mover": "70000000-0000-4000-8000-0000000000a2"
   },
+  "scene": [
+    {
+      "id": "50000000-0000-4000-8000-000000000001",
+      "name": "SL truss",
+      "kind": "Truss",
+      "transform": {
+        "position": {"x": 8.0, "y": 6.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "parent": null,
+      "layer": null,
+      "class": null,
+      "geometry": [],
+      "symbol": null
+    }
+  ],
   "rig": [
     {
       "id": "f0000000-0000-4000-8000-000000000001",
       "name": "Front 1",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a1",
-      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 1 }] } },
-      "position": { "Point": { "x": -3.0, "y": 5.0, "z": 2.0 } }
+      "address": {"Dmx": {"mode": "Default", "breaks": [{"universe": 1, "address": 1}]}},
+      "position": {
+        "position": {"x": -3.0, "y": 5.0, "z": 2.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
     },
     {
       "id": "f0000000-0000-4000-8000-000000000002",
       "name": "Front 2",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a1",
-      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 9 }] } },
-      "position": { "Point": { "x": -1.0, "y": 5.0, "z": 2.0 } }
+      "address": {"Dmx": {"mode": "Default", "breaks": [{"universe": 1, "address": 9}]}},
+      "position": {
+        "position": {"x": -1.0, "y": 5.0, "z": 2.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
     },
     {
       "id": "f0000000-0000-4000-8000-000000000003",
       "name": "Front 3",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a1",
-      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 17 }] } },
-      "position": { "Point": { "x": 1.0, "y": 5.0, "z": 2.0 } }
+      "address": {"Dmx": {"mode": "Default", "breaks": [{"universe": 1, "address": 17}]}},
+      "position": {
+        "position": {"x": 1.0, "y": 5.0, "z": 2.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
     },
     {
       "id": "f0000000-0000-4000-8000-000000000004",
       "name": "Front 4",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a1",
-      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 25 }] } },
-      "position": { "Point": { "x": 3.0, "y": 5.0, "z": 2.0 } }
+      "address": {"Dmx": {"mode": "Default", "breaks": [{"universe": 1, "address": 25}]}},
+      "position": {
+        "position": {"x": 3.0, "y": 5.0, "z": 2.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
     },
     {
       "id": "f0000000-0000-4000-8000-000000000005",
       "name": "Mover back",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a2",
-      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 33 }] } },
-      "position": { "Axial": { "position": { "x": 0.0, "y": 6.0, "z": -4.0 }, "direction": { "x": 0.0, "y": -1.0, "z": 0.0 } } }
+      "address": {"Dmx": {"mode": "Default", "breaks": [{"universe": 1, "address": 33}]}},
+      "position": {
+        "position": {"x": 0.0, "y": 6.0, "z": -4.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
     },
     {
       "id": "f0000000-0000-4000-8000-000000000006",
       "name": "In the case",
       "fixture_type_id": "70000000-0000-4000-8000-0000000000a2",
-      "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 41 }] } },
+      "address": {"Dmx": {"mode": "Default", "breaks": [{"universe": 1, "address": 41}]}},
       "position": null
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000007",
+      "name": "Hung on the truss",
+      "fixture_type_id": "70000000-0000-4000-8000-0000000000a2",
+      "address": {"Dmx": {"mode": "Default", "breaks": [{"universe": 2, "address": 1}]}},
+      "parent": "50000000-0000-4000-8000-000000000001",
+      "position": {
+        "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
     }
   ],
   "cases": [
     {
       "name": "an empty query selects nothing",
-      "query": { "clauses": [], "order": { "kind": "Manual", "order": [] } },
+      "query": {"clauses": [], "order": {"kind": "Manual", "order": []}},
       "expected": []
     },
     {
       "name": "everything, placed or not",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Everything" } }],
-        "order": { "kind": "Manual", "order": [] }
+        "clauses": [{"combine": "Add", "term": {"kind": "Everything"}}],
+        "order": {"kind": "Manual", "order": []}
       },
       "expected": [
         "f0000000-0000-4000-8000-000000000001",
@@ -79,27 +128,32 @@
         "f0000000-0000-4000-8000-000000000003",
         "f0000000-0000-4000-8000-000000000004",
         "f0000000-0000-4000-8000-000000000005",
-        "f0000000-0000-4000-8000-000000000006"
+        "f0000000-0000-4000-8000-000000000006",
+        "f0000000-0000-4000-8000-000000000007"
       ]
     },
     {
       "name": "by type reaches an unplaced rig",
       "query": {
         "clauses": [
-          { "combine": "Add", "term": { "kind": "OfType", "typeId": "70000000-0000-4000-8000-0000000000a2" } }
+          {
+            "combine": "Add",
+            "term": {"kind": "OfType", "typeId": "70000000-0000-4000-8000-0000000000a2"}
+          }
         ],
-        "order": { "kind": "Manual", "order": [] }
+        "order": {"kind": "Manual", "order": []}
       },
       "expected": [
         "f0000000-0000-4000-8000-000000000005",
-        "f0000000-0000-4000-8000-000000000006"
+        "f0000000-0000-4000-8000-000000000006",
+        "f0000000-0000-4000-8000-000000000007"
       ]
     },
     {
       "name": "by name, case-insensitive substring",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Named", "text": "  FRONT " } }],
-        "order": { "kind": "Manual", "order": [] }
+        "clauses": [{"combine": "Add", "term": {"kind": "Named", "text": "  FRONT "}}],
+        "order": {"kind": "Manual", "order": []}
       },
       "expected": [
         "f0000000-0000-4000-8000-000000000001",
@@ -116,19 +170,13 @@
             "combine": "Add",
             "term": {
               "kind": "Ids",
-              "ids": [
-                "f0000000-0000-4000-8000-000000000003",
-                "f0000000-0000-4000-8000-000000000001"
-              ]
+              "ids": ["f0000000-0000-4000-8000-000000000003", "f0000000-0000-4000-8000-000000000001"]
             }
           }
         ],
-        "order": { "kind": "Manual", "order": [] }
+        "order": {"kind": "Manual", "order": []}
       },
-      "expected": [
-        "f0000000-0000-4000-8000-000000000001",
-        "f0000000-0000-4000-8000-000000000003"
-      ]
+      "expected": ["f0000000-0000-4000-8000-000000000001", "f0000000-0000-4000-8000-000000000003"]
     },
     {
       "name": "a sphere takes the two nearest the middle",
@@ -136,15 +184,12 @@
         "clauses": [
           {
             "combine": "Add",
-            "term": { "kind": "Sphere", "centre": { "x": 0.0, "y": 5.0, "z": 2.0 }, "radius": 2.0 }
+            "term": {"kind": "Sphere", "centre": {"x": 0.0, "y": 5.0, "z": 2.0}, "radius": 2.0}
           }
         ],
-        "order": { "kind": "Manual", "order": [] }
+        "order": {"kind": "Manual", "order": []}
       },
-      "expected": [
-        "f0000000-0000-4000-8000-000000000002",
-        "f0000000-0000-4000-8000-000000000003"
-      ]
+      "expected": ["f0000000-0000-4000-8000-000000000002", "f0000000-0000-4000-8000-000000000003"]
     },
     {
       "name": "a box, with its corners given the wrong way round",
@@ -154,17 +199,14 @@
             "combine": "Add",
             "term": {
               "kind": "Box",
-              "from": { "x": 0.0, "y": 6.0, "z": 3.0 },
-              "to": { "x": -4.0, "y": 4.0, "z": 1.0 }
+              "from": {"x": 0.0, "y": 6.0, "z": 3.0},
+              "to": {"x": -4.0, "y": 4.0, "z": 1.0}
             }
           }
         ],
-        "order": { "kind": "Manual", "order": [] }
+        "order": {"kind": "Manual", "order": []}
       },
-      "expected": [
-        "f0000000-0000-4000-8000-000000000001",
-        "f0000000-0000-4000-8000-000000000002"
-      ]
+      "expected": ["f0000000-0000-4000-8000-000000000001", "f0000000-0000-4000-8000-000000000002"]
     },
     {
       "name": "a cone from front of house, opening upstage",
@@ -174,14 +216,14 @@
             "combine": "Add",
             "term": {
               "kind": "Cone",
-              "from": { "x": 0.0, "y": 5.0, "z": 10.0 },
-              "direction": { "x": 0.0, "y": 0.0, "z": -1.0 },
+              "from": {"x": 0.0, "y": 5.0, "z": 10.0},
+              "direction": {"x": 0.0, "y": 0.0, "z": -1.0},
               "angleDeg": 12.0,
               "reach": 20.0
             }
           }
         ],
-        "order": { "kind": "Manual", "order": [] }
+        "order": {"kind": "Manual", "order": []}
       },
       "expected": [
         "f0000000-0000-4000-8000-000000000002",
@@ -197,26 +239,29 @@
             "combine": "Add",
             "term": {
               "kind": "Cone",
-              "from": { "x": 0.0, "y": 5.0, "z": 10.0 },
-              "direction": { "x": 0.0, "y": 0.0, "z": 0.0 },
+              "from": {"x": 0.0, "y": 5.0, "z": 10.0},
+              "direction": {"x": 0.0, "y": 0.0, "z": 0.0},
               "angleDeg": 90.0,
               "reach": 100.0
             }
           }
         ],
-        "order": { "kind": "Manual", "order": [] }
+        "order": {"kind": "Manual", "order": []}
       },
       "expected": []
     },
     {
-      "name": "add, then keep, then drop — read left to right",
+      "name": "add, then keep, then drop \u2014 read left to right",
       "query": {
         "clauses": [
-          { "combine": "Add", "term": { "kind": "Everything" } },
-          { "combine": "Keep", "term": { "kind": "OfType", "typeId": "70000000-0000-4000-8000-0000000000a1" } },
-          { "combine": "Drop", "term": { "kind": "Named", "text": "Front 1" } }
+          {"combine": "Add", "term": {"kind": "Everything"}},
+          {
+            "combine": "Keep",
+            "term": {"kind": "OfType", "typeId": "70000000-0000-4000-8000-0000000000a1"}
+          },
+          {"combine": "Drop", "term": {"kind": "Named", "text": "Front 1"}}
         ],
-        "order": { "kind": "Manual", "order": [] }
+        "order": {"kind": "Manual", "order": []}
       },
       "expected": [
         "f0000000-0000-4000-8000-000000000002",
@@ -227,8 +272,8 @@
     {
       "name": "keep with nothing to narrow keeps nothing",
       "query": {
-        "clauses": [{ "combine": "Keep", "term": { "kind": "Everything" } }],
-        "order": { "kind": "Manual", "order": [] }
+        "clauses": [{"combine": "Keep", "term": {"kind": "Everything"}}],
+        "order": {"kind": "Manual", "order": []}
       },
       "expected": []
     },
@@ -236,10 +281,13 @@
       "name": "adding the same fixture twice does not move it to the end",
       "query": {
         "clauses": [
-          { "combine": "Add", "term": { "kind": "Named", "text": "Front" } },
-          { "combine": "Add", "term": { "kind": "Ids", "ids": ["f0000000-0000-4000-8000-000000000001"] } }
+          {"combine": "Add", "term": {"kind": "Named", "text": "Front"}},
+          {
+            "combine": "Add",
+            "term": {"kind": "Ids", "ids": ["f0000000-0000-4000-8000-000000000001"]}
+          }
         ],
-        "order": { "kind": "Manual", "order": [] }
+        "order": {"kind": "Manual", "order": []}
       },
       "expected": [
         "f0000000-0000-4000-8000-000000000001",
@@ -251,14 +299,15 @@
     {
       "name": "by name, with the unplaced one sorting on its name like everything else",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Everything" } }],
-        "order": { "kind": "ByName" }
+        "clauses": [{"combine": "Add", "term": {"kind": "Everything"}}],
+        "order": {"kind": "ByName"}
       },
       "expected": [
         "f0000000-0000-4000-8000-000000000001",
         "f0000000-0000-4000-8000-000000000002",
         "f0000000-0000-4000-8000-000000000003",
         "f0000000-0000-4000-8000-000000000004",
+        "f0000000-0000-4000-8000-000000000007",
         "f0000000-0000-4000-8000-000000000006",
         "f0000000-0000-4000-8000-000000000005"
       ]
@@ -266,8 +315,8 @@
     {
       "name": "left to right, with the unplaced one at the end rather than at the origin",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Everything" } }],
-        "order": { "kind": "ByAxis", "axis": "x" }
+        "clauses": [{"combine": "Add", "term": {"kind": "Everything"}}],
+        "order": {"kind": "ByAxis", "axis": "x"}
       },
       "expected": [
         "f0000000-0000-4000-8000-000000000001",
@@ -275,17 +324,19 @@
         "f0000000-0000-4000-8000-000000000005",
         "f0000000-0000-4000-8000-000000000003",
         "f0000000-0000-4000-8000-000000000004",
+        "f0000000-0000-4000-8000-000000000007",
         "f0000000-0000-4000-8000-000000000006"
       ]
     },
     {
       "name": "right to left is the same order reversed",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Everything" } }],
-        "order": { "kind": "ByAxis", "axis": "x", "descending": true }
+        "clauses": [{"combine": "Add", "term": {"kind": "Everything"}}],
+        "order": {"kind": "ByAxis", "axis": "x", "descending": true}
       },
       "expected": [
         "f0000000-0000-4000-8000-000000000006",
+        "f0000000-0000-4000-8000-000000000007",
         "f0000000-0000-4000-8000-000000000004",
         "f0000000-0000-4000-8000-000000000003",
         "f0000000-0000-4000-8000-000000000005",
@@ -296,8 +347,8 @@
     {
       "name": "outwards from a point, with the name breaking each tie",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Everything" } }],
-        "order": { "kind": "ByDistance", "from": { "x": 0.0, "y": 5.0, "z": 2.0 } }
+        "clauses": [{"combine": "Add", "term": {"kind": "Everything"}}],
+        "order": {"kind": "ByDistance", "from": {"x": 0.0, "y": 5.0, "z": 2.0}}
       },
       "expected": [
         "f0000000-0000-4000-8000-000000000002",
@@ -305,19 +356,17 @@
         "f0000000-0000-4000-8000-000000000001",
         "f0000000-0000-4000-8000-000000000004",
         "f0000000-0000-4000-8000-000000000005",
+        "f0000000-0000-4000-8000-000000000007",
         "f0000000-0000-4000-8000-000000000006"
       ]
     },
     {
       "name": "a saved group's manual order, with everything it did not name on the end",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Everything" } }],
+        "clauses": [{"combine": "Add", "term": {"kind": "Everything"}}],
         "order": {
           "kind": "Manual",
-          "order": [
-            "f0000000-0000-4000-8000-000000000004",
-            "f0000000-0000-4000-8000-000000000002"
-          ]
+          "order": ["f0000000-0000-4000-8000-000000000004", "f0000000-0000-4000-8000-000000000002"]
         }
       },
       "expected": [
@@ -326,19 +375,17 @@
         "f0000000-0000-4000-8000-000000000001",
         "f0000000-0000-4000-8000-000000000003",
         "f0000000-0000-4000-8000-000000000005",
-        "f0000000-0000-4000-8000-000000000006"
+        "f0000000-0000-4000-8000-000000000006",
+        "f0000000-0000-4000-8000-000000000007"
       ]
     },
     {
       "name": "a manual order naming a fixture that has since been deleted",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Everything" } }],
+        "clauses": [{"combine": "Add", "term": {"kind": "Everything"}}],
         "order": {
           "kind": "Manual",
-          "order": [
-            "f0000000-0000-4000-8000-0000000000ff",
-            "f0000000-0000-4000-8000-000000000003"
-          ]
+          "order": ["f0000000-0000-4000-8000-0000000000ff", "f0000000-0000-4000-8000-000000000003"]
         }
       },
       "expected": [
@@ -347,33 +394,32 @@
         "f0000000-0000-4000-8000-000000000002",
         "f0000000-0000-4000-8000-000000000004",
         "f0000000-0000-4000-8000-000000000005",
-        "f0000000-0000-4000-8000-000000000006"
+        "f0000000-0000-4000-8000-000000000006",
+        "f0000000-0000-4000-8000-000000000007"
       ]
     },
     {
       "name": "a live selection's hand order wins over the one the query carries",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Everything" } }],
-        "order": { "kind": "Manual", "order": ["f0000000-0000-4000-8000-000000000004"] }
+        "clauses": [{"combine": "Add", "term": {"kind": "Everything"}}],
+        "order": {"kind": "Manual", "order": ["f0000000-0000-4000-8000-000000000004"]}
       },
-      "previous": [
-        "f0000000-0000-4000-8000-000000000002",
-        "f0000000-0000-4000-8000-000000000001"
-      ],
+      "previous": ["f0000000-0000-4000-8000-000000000002", "f0000000-0000-4000-8000-000000000001"],
       "expected": [
         "f0000000-0000-4000-8000-000000000002",
         "f0000000-0000-4000-8000-000000000001",
         "f0000000-0000-4000-8000-000000000003",
         "f0000000-0000-4000-8000-000000000004",
         "f0000000-0000-4000-8000-000000000005",
-        "f0000000-0000-4000-8000-000000000006"
+        "f0000000-0000-4000-8000-000000000006",
+        "f0000000-0000-4000-8000-000000000007"
       ]
     },
     {
       "name": "an empty hand order is still a hand order, and still wins",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Everything" } }],
-        "order": { "kind": "Manual", "order": ["f0000000-0000-4000-8000-000000000004"] }
+        "clauses": [{"combine": "Add", "term": {"kind": "Everything"}}],
+        "order": {"kind": "Manual", "order": ["f0000000-0000-4000-8000-000000000004"]}
       },
       "previous": [],
       "expected": [
@@ -382,25 +428,57 @@
         "f0000000-0000-4000-8000-000000000003",
         "f0000000-0000-4000-8000-000000000004",
         "f0000000-0000-4000-8000-000000000005",
-        "f0000000-0000-4000-8000-000000000006"
+        "f0000000-0000-4000-8000-000000000006",
+        "f0000000-0000-4000-8000-000000000007"
       ]
     },
     {
       "name": "a hand order is ignored by an order that is not manual",
       "query": {
-        "clauses": [{ "combine": "Add", "term": { "kind": "Named", "text": "Front" } }],
-        "order": { "kind": "ByName" }
+        "clauses": [{"combine": "Add", "term": {"kind": "Named", "text": "Front"}}],
+        "order": {"kind": "ByName"}
       },
-      "previous": [
-        "f0000000-0000-4000-8000-000000000004",
-        "f0000000-0000-4000-8000-000000000003"
-      ],
+      "previous": ["f0000000-0000-4000-8000-000000000004", "f0000000-0000-4000-8000-000000000003"],
       "expected": [
         "f0000000-0000-4000-8000-000000000001",
         "f0000000-0000-4000-8000-000000000002",
         "f0000000-0000-4000-8000-000000000003",
         "f0000000-0000-4000-8000-000000000004"
       ]
+    },
+    {
+      "name": "a fixture hung on a truss is where the truss is",
+      "query": {
+        "clauses": [
+          {
+            "combine": "Add",
+            "term": {
+              "kind": "Box",
+              "from": {"x": 7.0, "y": 5.0, "z": -1.0},
+              "to": {"x": 9.0, "y": 7.0, "z": 1.0}
+            }
+          }
+        ],
+        "order": {"kind": "Manual", "order": []}
+      },
+      "expected": ["f0000000-0000-4000-8000-000000000007"]
+    },
+    {
+      "name": "and not where its own row says, which is the origin",
+      "query": {
+        "clauses": [
+          {
+            "combine": "Add",
+            "term": {
+              "kind": "Box",
+              "from": {"x": -1.0, "y": -1.0, "z": -1.0},
+              "to": {"x": 1.0, "y": 1.0, "z": 1.0}
+            }
+          }
+        ],
+        "order": {"kind": "Manual", "order": []}
+      },
+      "expected": []
     }
   ]
 }

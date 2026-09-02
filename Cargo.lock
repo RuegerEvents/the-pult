@@ -4148,6 +4148,7 @@ dependencies = [
  "openhaunt-node-sim",
  "paste",
  "pult-gdtf",
+ "pult-mvr",
  "pult-render",
  "pult-schema",
  "reqwest 0.12.28",

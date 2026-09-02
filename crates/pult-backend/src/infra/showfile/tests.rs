@@ -147,3 +147,46 @@ async fn a_fixture_row(pool: &SqlitePool) -> uuid::Uuid {
     .unwrap();
     id
 }
+
+/// An optional *number* survives the round trip through SQLite.
+///
+/// Worth its own test because the way it failed was silent. Every `Option` field is
+/// stored as JSON text, but the generated column used to take the *inner* type's
+/// affinity — so `Option<u32>` declared INTEGER, SQLite converted the text `101` to
+/// the number 101 on the way in, the text-based reader found no text on the way out,
+/// and the field read back as `None`. No error, no bad data, just a value gone.
+#[tokio::test]
+async fn an_optional_number_comes_back_as_the_number_it_was() {
+    use pult_schema::types::fixture::Fixture;
+
+    let pool = blank_pool().await;
+    super::migrate_for_test(&pool).await.unwrap();
+
+    let written = Fixture {
+        id: uuid::Uuid::new_v4(),
+        name: "Mover 1".into(),
+        fixture_number: Some(101),
+        unit_number: Some(7),
+        ..Fixture::default()
+    };
+    db::upsert(&pool, &written).await.unwrap();
+
+    let read: Vec<Fixture> = db::get_all(&pool).await.unwrap();
+
+    assert_eq!(read[0].fixture_number, Some(101));
+    assert_eq!(read[0].unit_number, Some(7));
+}
+
+/// And an absent one is still absent, which is the case that always worked.
+#[tokio::test]
+async fn an_optional_number_nobody_set_is_still_nothing() {
+    use pult_schema::types::fixture::Fixture;
+
+    let pool = blank_pool().await;
+    super::migrate_for_test(&pool).await.unwrap();
+    db::upsert(&pool, &Fixture { id: uuid::Uuid::new_v4(), ..Fixture::default() }).await.unwrap();
+
+    let read: Vec<Fixture> = db::get_all(&pool).await.unwrap();
+
+    assert_eq!(read[0].fixture_number, None);
+}

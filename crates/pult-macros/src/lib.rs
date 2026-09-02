@@ -447,9 +447,16 @@ fn option_inner_type(ty: &Type) -> Option<&Type> {
 }
 
 fn sql_info_for_field(field_name: &str, ty: &Type, fi: &syn::Ident) -> SqlInfo {
-    if let Some(inner) = option_inner_type(ty) {
-        let inner_info = sql_info_for_field(field_name, inner, fi);
-        let col_def = inner_info.col_def.replace(" NOT NULL", "");
+    if option_inner_type(ty).is_some() {
+        // TEXT, whatever is inside it, because that is what the two expressions below
+        // actually store: an optional field is written as JSON and read back as JSON.
+        //
+        // Taking the inner type's affinity instead is a trap that costs the value and
+        // says nothing. `Option<u32>` would declare INTEGER; SQLite's INTEGER affinity
+        // then converts the text `101` to the number 101 on the way in, `get_text`
+        // finds no text on the way out, and the field reads back as `None` — the same
+        // silent loss an unparseable optional column has, with no bad data to blame.
+        let col_def = format!("{field_name} TEXT");
         // A missing, NULL, or unreadable column reads as None rather than panicking.
         // This is the column a newly added optional field has on every existing row,
         // and a panic here would take the process down while opening a show.

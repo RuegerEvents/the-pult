@@ -79,6 +79,26 @@ where
     }
 }
 
+/// A *value* an attribute might not really have.
+///
+/// [`de_from_str_opt`] with the last step softened: where that one fails the whole
+/// fixture over an attribute it cannot parse, this reads it as absent. For a colour
+/// that is the right answer and the strict version is the wrong one — a real Robe
+/// file writes `Color="nan,nan,nan"` on a black slot, which says the slot has no
+/// colour rather than that the file is broken.
+pub fn de_value_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: FromStr,
+{
+    let Some(raw) = Option::<String>::deserialize(deserializer)? else { return Ok(None) };
+    let text = raw.trim();
+    if text.is_empty() || text == "None" {
+        return Ok(None);
+    }
+    Ok(T::from_str(text).ok())
+}
+
 /// A number an attribute might not really have.
 ///
 /// Read leniently, and that is not politeness — it is what other people's files
@@ -252,6 +272,14 @@ impl FromStr for ColorCie {
                 .map_err(|_| ParseError::new("CIE colour", s))
         };
         let (x, y, luminance) = (next()?, next()?, next()?);
+        // `Color="nan,nan,nan"` is in a real Robe file, on a colour wheel's black
+        // slot, and Rust parses "nan" into a number quite happily. What follows is
+        // worse than a refusal: a NaN reaches the schema, `serde_json` writes it as
+        // `null`, and the row is stored and can never be read back — silent loss with
+        // no bad data to blame. A colour that is not a number is not a colour.
+        if !x.is_finite() || !y.is_finite() || !luminance.is_finite() {
+            return Err(ParseError::new("CIE colour", s));
+        }
         Ok(ColorCie { x, y, luminance })
     }
 }
@@ -586,6 +614,18 @@ pub fn num(value: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real Robe file writes this on a colour wheel's black slot, and Rust parses
+    /// "nan" into a number without complaint. What follows is worse than a refusal: a
+    /// NaN reaches the schema, serialises as `null`, and the row can never be read
+    /// back — a fixture type stored and lost with nothing to blame.
+    #[test]
+    fn a_colour_that_is_not_a_number_is_not_a_colour() {
+        assert!("nan,nan,nan".parse::<ColorCie>().is_err());
+        assert!("0.31,nan,100".parse::<ColorCie>().is_err());
+        assert!("inf,0.3,100".parse::<ColorCie>().is_err());
+        assert!("0.3127,0.329,100".parse::<ColorCie>().is_ok(), "and a real one still reads");
+    }
 
     #[test]
     fn a_bare_number_is_one_byte_because_that_is_what_real_files_write() {

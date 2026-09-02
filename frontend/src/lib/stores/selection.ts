@@ -33,6 +33,9 @@ import {
 import { collection } from './show.js';
 
 const fixtures = collection('fixtures');
+/// What a fixture may hang off. A light on a truss is where the truss put it, so a
+/// geometric term in a query reads a world position rather than the row's own numbers.
+const sceneObjects = collection('scene_objects');
 
 /** The question. Everything below is derived from this and the rig. */
 export const query = writable<SelectionQuery>(EMPTY_QUERY);
@@ -54,12 +57,12 @@ const handOrder = writable<string[]>([]);
 
 /** The fixtures the query picks out, in the order it asks for. */
 export const selection: Readable<string[]> = derived(
-	[query, fixtures, handOrder],
+	[query, fixtures, handOrder, sceneObjects],
 	// An empty hand order means this browser is not holding one, so the query's own
 	// order gets to speak — which is how a recalled group keeps the order it was
 	// saved in until somebody drags it into a different one.
-	([$query, $fixtures, $handOrder]) =>
-		evaluate($query, $fixtures, $handOrder.length ? $handOrder : null)
+	([$query, $fixtures, $handOrder, $sceneObjects]) =>
+		evaluate($query, $fixtures, $handOrder.length ? $handOrder : null, $sceneObjects)
 );
 
 /** Membership, for a component that only needs to ask about one fixture. */

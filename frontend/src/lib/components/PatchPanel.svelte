@@ -67,7 +67,15 @@
 					breaks: [{ universe: 1, address: nextFreeAddress(fixtures, 1, spanOf) }]
 				}
 			},
+			// Nowhere in particular, on no truss, in no layer: a fixture typed into the
+			// patch is not part of anybody's drawing until somebody places it.
 			position: null,
+			parent: null,
+			layer: null,
+			class: null,
+			focus: null,
+			fixture_number: null,
+			unit_number: null,
 			// Nothing has been reported about it and nothing is driving it yet. Both
 			// are the station's to fill in; a client creating a fixture has nothing to
 			// say about either.
@@ -372,7 +380,7 @@
 										onchange={(next) => data.fixtures.byId(fixture.id).position.set(next)}
 									/>
 								{:else if fixture.position}
-									{@const p = 'Point' in fixture.position ? fixture.position.Point : fixture.position.Axial.position}
+									{@const p = fixture.position.position}
 									<span class="coords">{p.x.toFixed(1)}, {p.y.toFixed(1)}, {p.z.toFixed(1)}</span>
 								{:else}
 									<span class="hint">not placed</span>

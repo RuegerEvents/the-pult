@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A rig small enough to assert every part of, with the shapes an import has to get
+     right: two layers, a truss with a light hung off it, a mode named exactly as the
+     GDTF names it, a second break in another universe, and a class both objects are
+     tagged with.
+
+     The two GDTFSpecs name the fixtures checked in under testdata/gdtf/, which the
+     test zips in beside this. -->
+<GeneralSceneDescription verMajor="1" verMinor="6" provider="the-pult">
+    <Scene>
+        <AUXData>
+            <Symdef uuid="c0000000-0000-4000-8000-000000000001" name="Truss 3m">
+                <ChildList>
+                    <Geometry3D fileName="truss-3m.glb"/>
+                </ChildList>
+            </Symdef>
+            <Class uuid="c0000000-0000-4000-8000-000000000002" name="Overhead"/>
+        </AUXData>
+        <Layers>
+            <Layer uuid="c0000000-0000-4000-8000-000000000010" name="Overhead rig">
+                <ChildList>
+                    <Truss uuid="c0000000-0000-4000-8000-000000000011" name="LX1">
+                        <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,4000,6000}</Matrix>
+                        <Geometries>
+                            <Symbol uuid="c0000000-0000-4000-8000-000000000012" symdef="c0000000-0000-4000-8000-000000000001"/>
+                        </Geometries>
+                        <Classing>c0000000-0000-4000-8000-000000000002</Classing>
+                        <ChildList>
+                            <Fixture uuid="c0000000-0000-4000-8000-000000000013" name="Mover 1">
+                                <Matrix>{1,0,0}{0,1,0}{0,0,1}{2000,0,0}</Matrix>
+                                <Classing>c0000000-0000-4000-8000-000000000002</Classing>
+                                <GDTFSpec>Acme@Test RGBW Mover</GDTFSpec>
+                                <GDTFMode>Basic</GDTFMode>
+                                <Addresses>
+                                    <Address break="0">1025</Address>
+                                </Addresses>
+                                <FixtureID>101</FixtureID>
+                                <UnitNumber>1</UnitNumber>
+                            </Fixture>
+                        </ChildList>
+                    </Truss>
+                </ChildList>
+            </Layer>
+            <Layer uuid="c0000000-0000-4000-8000-000000000020" name="Floor">
+                <ChildList>
+                    <Fixture uuid="c0000000-0000-4000-8000-000000000021" name="Dimmer 1">
+                        <Matrix>{1,0,0}{0,1,0}{0,0,1}{-2000,0,500}</Matrix>
+                        <GDTFSpec>Acme@Test Dimmer.gdtf</GDTFSpec>
+                        <GDTFMode>Default</GDTFMode>
+                        <Addresses>
+                            <Address break="0">37</Address>
+                        </Addresses>
+                        <FixtureID>1</FixtureID>
+                    </Fixture>
+                    <SceneObject uuid="c0000000-0000-4000-8000-000000000022" name="Rostrum">
+                        <Matrix>{1,0,0}{0,1,0}{0,0,1}{0,0,0}</Matrix>
+                        <Geometries>
+                            <Geometry3D fileName="rostrum.3ds"/>
+                        </Geometries>
+                    </SceneObject>
+                </ChildList>
+            </Layer>
+        </Layers>
+    </Scene>
+</GeneralSceneDescription>

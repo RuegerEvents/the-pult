@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { get, writable } from 'svelte/store';
+import { at } from '../scene.js';
+import { aFixture } from '../test-fixtures.js';
 
 import type { DataRoot } from '$lib/ws/data.js';
-import type { Fixture } from '$lib/generated/index.js';
+import type { Fixture, SceneObject } from '$lib/generated/index.js';
 import { initShowStores } from './show.js';
 import { evaluate, idsQuery } from '$lib/selection.js';
 import {
@@ -31,20 +33,23 @@ import {
  */
 const rig = writable<Fixture[]>([]);
 
-const fixture = (id: string, x: number, typeId = 'par'): Fixture => ({
-	id,
-	name: id.toUpperCase(),
-	fixture_type_id: typeId,
-	address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
-	position: { Point: { x, y: 5, z: 0 } },
-	sensed_values: {},
-	live_effects: {},
-	live_fades: {},
-	home_values: {}
-});
+const fixture = (id: string, x: number, typeId = 'par'): Fixture =>
+	aFixture({
+		id,
+		name: id.toUpperCase(),
+		fixture_type_id: typeId,
+		position: at({ x, y: 5, z: 0 })
+	});
+
+/// Nothing in these tests hangs off a truss; the collection is here because the
+/// selection store reads it, and a light on a truss is where the truss put it.
+const drawing = writable<SceneObject[]>([]);
 
 initShowStores(
-	{ fixtures: { subscribeDeep: (cb: (v: Fixture[]) => void) => rig.subscribe(cb) } } as unknown as DataRoot,
+	{
+		fixtures: { subscribeDeep: (cb: (v: Fixture[]) => void) => rig.subscribe(cb) },
+		scene_objects: { subscribeDeep: (cb: (v: SceneObject[]) => void) => drawing.subscribe(cb) }
+	} as unknown as DataRoot,
 	// The socket is only reached for undo and identify, neither of which a
 	// selection test touches.
 	{} as never

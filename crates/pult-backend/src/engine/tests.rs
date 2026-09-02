@@ -126,6 +126,7 @@ fn a_fixture(name: &str, address: u16) -> Fixture {
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
+        ..Fixture::default()
     }
 }
 
@@ -1961,11 +1962,11 @@ async fn a_leader_snapshot_carries_the_leader_s_order() {
 
 #[tokio::test]
 async fn a_showfile_written_before_a_field_existed_still_opens() {
-    use pult_schema::types::fixture::{FixturePosition, Vec3};
+    use pult_schema::types::{fixture::Vec3, scene::Transform};
 
     let h = harness().await;
     let mut fixture = a_fixture("Spot L", 1);
-    fixture.position = Some(FixturePosition::Point(Vec3 { x: 1.0, y: 2.0, z: 3.0 }));
+    fixture.position = Some(Transform::at(Vec3 { x: 1.0, y: 2.0, z: 3.0 }));
     h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
 
     // Take the column away, as an older showfile would have it. SQLite can drop a
@@ -1987,21 +1988,25 @@ async fn a_showfile_written_before_a_field_existed_still_opens() {
 
 #[tokio::test]
 async fn a_fixture_position_round_trips_through_the_showfile() {
-    use pult_schema::types::fixture::{FixturePosition, Vec3};
+    use pult_schema::types::{fixture::Vec3, scene::Transform};
 
     let mut h = harness().await;
     let mut fixture = a_fixture("Spot L", 1);
-    fixture.position = Some(FixturePosition::Axial {
+    // Turned and mirrored, so the two halves a plain point would lose both have to
+    // come back: a rotation, and a scale that is negative.
+    fixture.position = Some(Transform {
         position: Vec3 { x: 1.5, y: 6.0, z: -2.0 },
-        direction: Vec3 { x: 0.0, y: -1.0, z: 0.0 },
+        rotation: Vec3 { x: -90.0, y: 45.0, z: 0.0 },
+        scale: Vec3 { x: -1.0, y: 1.0, z: 1.0 },
     });
     h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
 
     h.reload().await;
 
     let after = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
-    assert_eq!(after["position"]["Axial"]["position"]["y"], 6.0);
-    assert_eq!(after["position"]["Axial"]["direction"]["y"], -1.0);
+    assert_eq!(after["position"]["position"]["y"], 6.0);
+    assert_eq!(after["position"]["rotation"]["x"], -90.0);
+    assert_eq!(after["position"]["scale"]["x"], -1.0, "a reflection survives storage");
 }
 
 #[tokio::test]
@@ -3160,7 +3165,8 @@ async fn output_keeps_running_while_the_log_is_pruned() {
 /// now, which is what makes a group survive somebody re-patching the show.
 mod groups {
     use pult_schema::types::{
-        fixture::{FixturePosition, Vec3},
+        fixture::Vec3,
+        scene::Transform,
         Group, SelectionClause, SelectionCombine, SelectionOrder, SelectionQuery, SelectionTerm,
     };
     use serde_json::json;
@@ -3184,7 +3190,7 @@ mod groups {
     fn at(name: &str, x: f32, type_id: Uuid) -> Fixture {
         let mut fixture = a_fixture(name, 1);
         fixture.fixture_type_id = type_id;
-        fixture.position = Some(FixturePosition::Point(Vec3 { x, y: 5.0, z: 2.0 }));
+        fixture.position = Some(Transform::at(Vec3 { x, y: 5.0, z: 2.0 }));
         fixture
     }
 

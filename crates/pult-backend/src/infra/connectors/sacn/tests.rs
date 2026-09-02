@@ -138,6 +138,7 @@ fn a_dimmer_patch(universe: u16, level: f32) -> Patch {
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
+        ..Fixture::default()
     };
     holding(&mut fixture, "Intensity", ParameterValue::Float(level));
 

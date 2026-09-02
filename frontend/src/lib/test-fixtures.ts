@@ -8,7 +8,12 @@
  *
  * Not imported by anything the browser ships: it exists for `*.test.ts`.
  */
-import type { FixturePhysical, FixtureType, ParameterDefinition } from './generated/index.js';
+import type {
+	Fixture,
+	FixturePhysical,
+	FixtureType,
+	ParameterDefinition
+} from './generated/index.js';
 
 export const NOTHING_PHYSICAL: FixturePhysical = {
 	weight_kg: null,
@@ -54,6 +59,32 @@ export function aParameter(
 		slots: [],
 		feature_group: null,
 		emitters: [],
+		...over
+	};
+}
+
+/**
+ * A fixture with only the fields a test is likely to care about. Everything a
+ * drawing puts on one — where it hangs, what it hangs off, its layer and class — is
+ * absent, which is the state of every fixture nobody has drawn.
+ */
+export function aFixture(over: Partial<Fixture> = {}): Fixture {
+	return {
+		id: 'fixture',
+		name: 'Fixture',
+		fixture_type_id: 'type',
+		address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
+		position: null,
+		parent: null,
+		layer: null,
+		class: null,
+		focus: null,
+		fixture_number: null,
+		unit_number: null,
+		sensed_values: {},
+		live_effects: {},
+		live_fades: {},
+		home_values: {},
 		...over
 	};
 }

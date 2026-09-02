@@ -20,6 +20,28 @@ import { connect, inWindow } from './demo-ws.mjs';
 
 // ── Which show ────────────────────────────────────────────────────────────────
 
+/**
+ * A placement: where a thing is, how it is turned, and its size.
+ *
+ * Rotations are XYZ Euler degrees, so a rest direction is a rotation rather than a
+ * vector. The two this seed uses are written out with the direction they mean, since
+ * nobody can read `{ x: 143.1301, y: 0, z: 180 }` and see a light pointing downstage
+ * and down. `crates/pult-schema/src/types/scene.rs` is where the conversion lives;
+ * this file cannot import it, so it carries the two answers instead of a fourth copy
+ * of the arithmetic.
+ */
+const placed = (at, rotation = { x: 0, y: 0, z: 0 }) => ({
+	position: at,
+	rotation,
+	scale: { x: 1, y: 1, z: 1 }
+});
+
+/** Facing (0, -0.8, 0.6): downstage and down, which is how the demo heads hang. */
+const DOWNSTAGE_AND_DOWN = { x: 143.1301, y: 0, z: 180 };
+
+/** Facing (0, -0.9138, 0.4061): the same idea, a little steeper, for the big rig. */
+const STEEPER = { x: 156.0375, y: 0, z: 180 };
+
 const argv = process.argv.slice(2);
 let port = '7700';
 let size = 'small';
@@ -256,9 +278,8 @@ try {
 			id: id(),
 			name,
 			fixture_type_id: dimmer.id,
-			address: { Dmx: { universe: 1, address: 1 + index } },
-			position: { Point: at },
-			live_values: {},
+			address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 + index }] } },
+			position: placed(at),
 		});
 	}
 
@@ -273,9 +294,13 @@ try {
 			id: id(),
 			name,
 			fixture_type_id: spot.id,
-			address: { Dmx: { universe: 1, address: 11 + index * spot.channel_count } },
-			position: { Axial: { position: at, direction: { x: 0, y: -0.8, z: 0.6 } } },
-			live_values: {},
+			address: {
+				Dmx: {
+					mode: 'Default',
+					breaks: [{ universe: 1, address: 11 + index * spot.channel_count }]
+				}
+			},
+			position: placed(at, DOWNSTAGE_AND_DOWN),
 		});
 	}
 
@@ -500,21 +525,23 @@ try {
 			fixture_type_id: spot.id,
 			address: {
 				Dmx: {
-					universe: 2 + Math.floor(i / PER_UNIVERSE),
-					address: 1 + (i % PER_UNIVERSE) * CHANNELS
+					mode: 'Default',
+					breaks: [
+						{
+							universe: 2 + Math.floor(i / PER_UNIVERSE),
+							address: 1 + (i % PER_UNIVERSE) * CHANNELS
+						}
+					]
 				}
 			},
-			position: {
-				Axial: {
-					position: {
-						x: (column - (across - 1) / 2) * 1.2,
-						y: 5 + (row % 3) * 0.5,
-						z: (row - (across - 1) / 2) * 1.2
-					},
-					direction: { x: 0, y: -0.9, z: 0.4 }
-				}
-			},
-			live_values: {}
+			position: placed(
+				{
+					x: (column - (across - 1) / 2) * 1.2,
+					y: 5 + (row % 3) * 0.5,
+					z: (row - (across - 1) / 2) * 1.2
+				},
+				STEEPER
+			)
 		};
 	});
 

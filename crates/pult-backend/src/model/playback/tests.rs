@@ -85,6 +85,7 @@ fn a_fixture() -> Fixture {
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
+        ..Fixture::default()
     }
 }
 

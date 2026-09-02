@@ -201,6 +201,7 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
+        ..Fixture::default()
     };
     crate::infra::connectors::dmx::holding(&mut dimmer, "Intensity", ParameterValue::Float(1.0));
 

@@ -30,30 +30,25 @@ import {
 	parameterKindLabel,
 	PARAMETER_KINDS
 } from './patch.js';
+import { aFixture } from './test-fixtures.js';
 
-function aFixture(partial: Partial<Fixture> = {}): Fixture {
-	return {
+function aTestFixture(partial: Partial<Fixture> = {}): Fixture {
+	return aFixture({
 		id: crypto.randomUUID(),
 		name: 'Spot',
-		fixture_type_id: 'type',
 		address: { Dmx: { mode: DEFAULT_MODE, breaks: [{ universe: 1, address: 1 }] } },
-		position: null,
-		sensed_values: {},
-		live_effects: {},
-		live_fades: {},
-		home_values: {},
 		...partial
-	};
+	});
 }
 
 const atDmx = (universe: number, address: number, partial: Partial<Fixture> = {}) =>
-	aFixture({
+	aTestFixture({
 		address: { Dmx: { mode: DEFAULT_MODE, breaks: [{ universe, address }] } },
 		...partial
 	});
 
 const onNode = (serial: string, universe: number | null = null) =>
-	aFixture({ address: { OpenHaunt: { serial, universe } } });
+	aTestFixture({ address: { OpenHaunt: { serial, universe } } });
 
 describe('parameter keys', () => {
 	it('names the plain kinds after themselves', () => {
@@ -428,7 +423,7 @@ describe('an address with more than one break', () => {
 	});
 
 	it('reads as being in two places, because it is', () => {
-		expect(addressLabel(aFixture({ address: twoBreaks }))).toBe('1 / 5 + 7 / 100');
+		expect(addressLabel(aTestFixture({ address: twoBreaks }))).toBe('1 / 5 + 7 / 100');
 	});
 
 	it('is empty for a fixture on a node', () => {

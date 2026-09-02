@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::values::{ColorCie, DmxValue, Node, de_from_str_opt, de_number_opt, ser_display_opt};
+use crate::values::{ColorCie, DmxValue, Node, de_from_str_opt, de_number_opt, de_value_opt, ser_display_opt};
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PhysicalDescriptions {
@@ -63,7 +63,7 @@ pub struct Emitter {
     pub name: String,
     #[serde(rename = "@Color", default, skip_serializing_if = "Option::is_none")]
     #[serde(
-        deserialize_with = "de_from_str_opt",
+        deserialize_with = "de_value_opt",
         serialize_with = "ser_display_opt"
     )]
     pub color: Option<ColorCie>,
@@ -97,7 +97,7 @@ pub struct Filter {
     pub name: String,
     #[serde(rename = "@Color", default, skip_serializing_if = "Option::is_none")]
     #[serde(
-        deserialize_with = "de_from_str_opt",
+        deserialize_with = "de_value_opt",
         serialize_with = "ser_display_opt"
     )]
     pub color: Option<ColorCie>,

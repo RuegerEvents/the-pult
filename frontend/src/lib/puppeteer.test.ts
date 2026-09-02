@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import type { Fixture, FixtureType, ParameterValue } from './generated/index.js';
 import { bearingFromPoint, elevationFromPoint, rayOnPlane } from './puppeteer.js';
 import { readingOf } from './stores/output.js';
-import { aFixtureType, aParameter } from './test-fixtures.js';
+import { facingTransform } from './scene.js';
+import { aFixture, aFixtureType, aParameter } from './test-fixtures.js';
 
 const head: FixtureType = aFixtureType({
 	id: 'head',
@@ -16,17 +17,13 @@ const head: FixtureType = aFixtureType({
 });
 
 /** Hung six metres up, facing straight down, pan and tilt centred. */
-const hung = (): Fixture => ({
-	id: 'f',
-	name: 'Head',
-	fixture_type_id: 'head',
-	address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
-	position: { Axial: { position: { x: 0, y: 6, z: 0 }, direction: { x: 0, y: -1, z: 0 } } },
-	sensed_values: {},
-	live_effects: {},
-	live_fades: {},
-	home_values: {}
-});
+const hung = (): Fixture =>
+	aFixture({
+		id: 'f',
+		name: 'Head',
+		fixture_type_id: 'head',
+		position: facingTransform({ x: 0, y: 6, z: 0 }, { x: 0, y: -1, z: 0 })
+	});
 
 /**
  * What the head is showing, as a consumer sees it.

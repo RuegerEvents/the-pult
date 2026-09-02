@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * Where a fixture is, and which way it faces at rest.
+	 * Where a fixture is, and which way it is turned.
 	 *
 	 * Positions are set by dragging in the plan and the rig, which is right for a
 	 * whole rig at once and useless for the one light that needs to be at exactly
@@ -9,39 +9,47 @@
 	 * Y is called "trim" here rather than "height" because that is the word on the
 	 * drawing and in the room: trim height is how high a bar is flown, and an
 	 * operator typing one is copying it off a plot.
+	 *
+	 * A rotation is three angles, and nobody aims a light by typing three angles. So
+	 * there is also *aim at*: give it a point in the room and it works the rotation
+	 * out. Scale is not here — a fixture is the size it is, and the mirrored case
+	 * that makes it signed belongs to a truss rather than to a light.
 	 */
 
-	import type { FixturePosition, Vec3 } from '$lib/generated/index.js';
-	import { HANGING, joinPosition, splitPosition } from '$lib/stage.js';
+	import type { Transform, Vec3 } from '$lib/generated/index.js';
+	import { at, facingTransform } from '$lib/scene.js';
 
 	let {
 		position,
 		onchange
 	}: {
-		position: FixturePosition | null;
-		onchange: (next: FixturePosition | null) => void;
+		position: Transform | null;
+		onchange: (next: Transform | null) => void;
 	} = $props();
 
-	const parts = $derived(splitPosition(position));
-	const axial = $derived(parts.direction !== null);
+	/** Where *aim at* is pointing it, until it is applied. */
+	let target = $state<Vec3>({ x: 0, y: 0, z: 0 });
+	let aiming = $state(false);
 
-	function movePoint(patch: Partial<Vec3>) {
-		onchange(joinPosition({ ...parts.point, ...patch }, parts.direction));
+	const placed = $derived(position ?? at({ x: 0, y: 0, z: 0 }));
+
+	function move(patch: Partial<Vec3>) {
+		onchange({ ...placed, position: { ...placed.position, ...patch } });
 	}
 
-	function aim(patch: Partial<Vec3>) {
-		if (!parts.direction) return;
-		onchange(joinPosition(parts.point, { ...parts.direction, ...patch }));
+	function turn(patch: Partial<Vec3>) {
+		onchange({ ...placed, rotation: { ...placed.rotation, ...patch } });
 	}
 
-	/**
-	 * A plain point becomes an axial one facing straight down.
-	 *
-	 * Not at the origin: a light with no aim yet is hanging, and pointing it at the
-	 * floor beneath itself is both the truth and the least surprising default.
-	 */
-	function setAxial(on: boolean) {
-		onchange(joinPosition(parts.point, on ? { ...HANGING } : null));
+	function aimTarget(patch: Partial<Vec3>) {
+		target = { ...target, ...patch };
+	}
+
+	/// Turn it to face the point in the room somebody typed, keeping its scale.
+	function aimAtTarget() {
+		const from = placed.position;
+		const direction = { x: target.x - from.x, y: target.y - from.y, z: target.z - from.z };
+		onchange({ ...facingTransform(from, direction), scale: placed.scale });
 	}
 
 	const step = 0.1;
@@ -49,7 +57,7 @@
 
 <div class="position">
 	{#if position === null}
-		<button class="btn btn-ghost" onclick={() => onchange(joinPosition({ x: 0, y: 0, z: 0 }, null))}>
+		<button class="btn btn-ghost" onclick={() => onchange(at({ x: 0, y: 0, z: 0 }))}>
 			Place
 		</button>
 	{:else}
@@ -60,8 +68,8 @@
 					class="input"
 					type="number"
 					{step}
-					value={parts.point.x}
-					onchange={(e) => movePoint({ x: Number(e.currentTarget.value) })}
+					value={placed.position.x}
+					onchange={(e) => move({ x: Number(e.currentTarget.value) })}
 				/>
 			</label>
 			<label>
@@ -71,8 +79,8 @@
 					class="input"
 					type="number"
 					{step}
-					value={parts.point.y}
-					onchange={(e) => movePoint({ y: Number(e.currentTarget.value) })}
+					value={placed.position.y}
+					onchange={(e) => move({ y: Number(e.currentTarget.value) })}
 				/>
 			</label>
 			<label>
@@ -81,8 +89,8 @@
 					class="input"
 					type="number"
 					{step}
-					value={parts.point.z}
-					onchange={(e) => movePoint({ z: Number(e.currentTarget.value) })}
+					value={placed.position.z}
+					onchange={(e) => move({ z: Number(e.currentTarget.value) })}
 				/>
 			</label>
 			<button
@@ -92,46 +100,79 @@
 			>Unplace</button>
 		</div>
 
-		<label class="aimed">
-			<input type="checkbox" checked={axial} onchange={(e) => setAxial(e.currentTarget.checked)} />
-			<span>Faces a direction</span>
-		</label>
+		<!-- XYZ Euler degrees, which is what the schema holds and what three.js reads.
+		     Typed by anybody copying a drawing; everybody else uses aim at. -->
+		<div class="axes">
+			<label>
+				<span>rot x</span>
+				<input
+					class="input"
+					type="number"
+					step="1"
+					value={placed.rotation.x}
+					onchange={(e) => turn({ x: Number(e.currentTarget.value) })}
+				/>
+			</label>
+			<label>
+				<span>rot y</span>
+				<input
+					class="input"
+					type="number"
+					step="1"
+					value={placed.rotation.y}
+					onchange={(e) => turn({ y: Number(e.currentTarget.value) })}
+				/>
+			</label>
+			<label>
+				<span>rot z</span>
+				<input
+					class="input"
+					type="number"
+					step="1"
+					value={placed.rotation.z}
+					onchange={(e) => turn({ z: Number(e.currentTarget.value) })}
+				/>
+			</label>
+			<button class="btn btn-ghost" onclick={() => (aiming = !aiming)}>
+				{aiming ? 'Done' : 'Aim at…'}
+			</button>
+		</div>
 
-		{#if parts.direction}
-			{@const d = parts.direction}
-			<!-- Pan and tilt are angles away from something, and this is the something.
-			     A moving head without one has nothing to be aimed relative to. -->
+		{#if aiming}
+			<!-- A point in the room rather than three angles. Applying turns the fixture
+			     to face it and leaves everything else alone. -->
 			<div class="axes">
 				<label>
-					<span>→ x</span>
+					<span>at x</span>
 					<input
 						class="input"
 						type="number"
 						{step}
-						value={d.x}
-						onchange={(e) => aim({ x: Number(e.currentTarget.value) })}
+						value={target.x}
+						onchange={(e) => aimTarget({ x: Number(e.currentTarget.value) })}
 					/>
 				</label>
 				<label>
-					<span>→ y</span>
+					<span>at y</span>
 					<input
 						class="input"
 						type="number"
 						{step}
-						value={d.y}
-						onchange={(e) => aim({ y: Number(e.currentTarget.value) })}
+						value={target.y}
+						onchange={(e) => aimTarget({ y: Number(e.currentTarget.value) })}
 					/>
 				</label>
 				<label>
-					<span>→ z</span>
+					<span>at z</span>
 					<input
 						class="input"
 						type="number"
 						{step}
-						value={d.z}
-						onchange={(e) => aim({ z: Number(e.currentTarget.value) })}
+						value={target.z}
+						onchange={(e) => aimTarget({ z: Number(e.currentTarget.value) })}
 					/>
 				</label>
+				<button class="btn btn-ghost" onclick={aimAtTarget}>Aim</button>
 			</div>
 		{/if}
 	{/if}
@@ -170,11 +211,4 @@
 		font-variant-numeric: tabular-nums;
 	}
 
-	.aimed {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		color: var(--text-dim);
-		font-size: var(--font-xs);
-	}
 </style>

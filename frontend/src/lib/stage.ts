@@ -22,13 +22,14 @@
 
 import type {
 	Fixture,
-	FixturePosition,
 	FixtureType,
 	ParameterKind,
 	ParameterValue,
+	SceneObject,
 	StagePlan,
 	Vec3
 } from './generated/index.js';
+import { facing, worldTransform } from './scene.js';
 import { parameterKey } from './patch.js';
 import type { Showing } from './stores/output.js';
 
@@ -37,53 +38,34 @@ import type { Showing } from './stores/output.js';
 /** A point on the floor, in metres. The two axes a ground plan can show. */
 export type PlanPoint = { x: number; z: number };
 
-/** Where a fixture hangs, or `null` if it has never been placed. */
-/**
- * A position as a point and the direction it faces at rest, whichever form it is in.
- *
- * `Point` and `Axial` are the same fact with one detail added, so an editor should
- * not make an operator choose before they can type a number. `null` for a direction
- * means "hangs, faces nowhere in particular" — a par can, and a moving head cannot,
- * because pan and tilt are angles away from *something*.
- */
-export function splitPosition(position: FixturePosition | null): {
-	point: Vec3;
-	direction: Vec3 | null;
-} {
-	if (!position) return { point: { x: 0, y: 0, z: 0 }, direction: null };
-	if ('Point' in position) return { point: position.Point, direction: null };
-	return { point: position.Axial.position, direction: position.Axial.direction };
-}
-
-/**
- * And back again. A direction of `null` is a `Point`; anything else is `Axial`.
- *
- * Going through this rather than writing the variant by hand is what keeps the two
- * forms from drifting apart in the panels that edit them.
- */
-export function joinPosition(point: Vec3, direction: Vec3 | null): FixturePosition {
-	return direction ? { Axial: { position: point, direction } } : { Point: point };
-}
-
 /**
  * Straight down, which is where a light hung on a bar points before anybody aims it.
  *
- * Given as the direction when an operator turns a plain point into an axial one, so
- * that the answer is a light pointing at the floor rather than at the origin.
+ * A transform that has not been turned faces this way already; it is named because a
+ * caller that has no fixture at all still needs an answer.
  */
 export const HANGING = { x: 0, y: -1, z: 0 };
 
-export function fixturePoint(fixture: Fixture): Vec3 | null {
-	const position = fixture.position;
-	if (!position) return null;
-	return 'Point' in position ? position.Point : position.Axial.position;
+/**
+ * Where a fixture hangs, with every truss above it applied.
+ *
+ * `objects` is what it may hang off. Pass none and the answer is the fixture's own
+ * numbers, which is right for a rig nobody has drawn and wrong for one somebody has,
+ * so a caller that has the drawing should hand it over.
+ */
+export function fixturePoint(fixture: Fixture, objects?: Map<string, SceneObject>): Vec3 | null {
+	if (!fixture.position) return null;
+	if (!objects) return fixture.position.position;
+	return worldTransform(fixture.position, fixture.parent, objects).position;
 }
 
-/** Which way a fixture faces at rest, if it was placed axially. */
-export function fixtureFacing(fixture: Fixture): Vec3 | null {
-	const position = fixture.position;
-	if (!position || !('Axial' in position)) return null;
-	return position.Axial.direction;
+/** Which way a fixture faces at rest, or `null` if it has never been placed. */
+export function fixtureFacing(fixture: Fixture, objects?: Map<string, SceneObject>): Vec3 | null {
+	if (!fixture.position) return null;
+	const placed = objects
+		? worldTransform(fixture.position, fixture.parent, objects)
+		: fixture.position;
+	return facing(placed);
 }
 
 /** Turn a point on the floor into the world position a fixture is stored at. */
@@ -151,8 +133,12 @@ export function calibrationScale(
 }
 
 /** A box in metres that holds every placed fixture, with room to breathe. */
-export function fixtureBounds(fixtures: Fixture[], margin = 2) {
-	const points = fixtures.map(fixturePoint).filter((p) => p !== null);
+export function fixtureBounds(
+	fixtures: Fixture[],
+	margin = 2,
+	objects?: Map<string, SceneObject>
+) {
+	const points = fixtures.map((f) => fixturePoint(f, objects)).filter((p) => p !== null);
 	if (points.length === 0) return { minX: -8, maxX: 8, minZ: -6, maxZ: 6 };
 	const xs = points.map((p) => p.x);
 	const zs = points.map((p) => p.z);
@@ -244,7 +230,7 @@ export function travelOf(
 
 /** The direction a fixture points with pan and tilt both centred. */
 function restDirection(fixture: Fixture): Vec3 {
-	return normalise(fixtureFacing(fixture) ?? { x: 0, y: -1, z: 0 });
+	return normalise(fixtureFacing(fixture) ?? HANGING);
 }
 
 /** Compass bearing of a direction on the floor: degrees from downstage towards +X. */

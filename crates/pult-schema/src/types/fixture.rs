@@ -8,6 +8,7 @@ use uuid::Uuid;
 use super::dmx_mode::{DmxBreak, DmxChannelLayout, DmxMode};
 use super::effect::{RunningEffect, RunningFade};
 use super::programmer::ProgrammerValue;
+use super::scene::Transform;
 use crate::PultSchema;
 
 /// A point in the rig, in metres, from whatever origin the show uses.
@@ -17,29 +18,6 @@ pub struct Vec3 {
     pub x: f32,
     pub y: f32,
     pub z: f32,
-}
-
-/// Where a fixture is, and for a moving one, where it points.
-///
-/// The spec asks for positions to be either positional (XYZ) or axial (a position
-/// and a direction vector). Nothing forces a position to be accurate: a rig can be
-/// laid out roughly and corrected later, or updated from tracking data.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub enum FixturePosition {
-    /// Just where it hangs.
-    Point(Vec3),
-    /// Where it hangs and the direction it faces at rest.
-    Axial { position: Vec3, direction: Vec3 },
-}
-
-impl FixturePosition {
-    pub fn position(&self) -> Vec3 {
-        match self {
-            FixturePosition::Point(p) => *p,
-            FixturePosition::Axial { position, .. } => *position,
-        }
-    }
 }
 
 /// How output reaches a fixture.
@@ -670,7 +648,7 @@ pub fn emitters_of(parameter: &ParameterDefinition) -> Vec<Emitter> {
 }
 
 /// A patched fixture instance — a specific unit in the rig.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PultSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, PultSchema)]
 #[ts(export)]
 #[pult(table = "fixtures")]
 pub struct Fixture {
@@ -682,9 +660,34 @@ pub struct Fixture {
     pub fixture_type_id: Uuid,
     #[pult(lifecycle = PERSISTED)]
     pub address: FixtureAddress,
-    /// Where this fixture is in the rig. None until it has been placed.
+    /// Where this fixture is in the rig, **relative to whatever it hangs off**. None
+    /// until it has been placed.
+    ///
+    /// A transform rather than a point and a direction, because a drawing places
+    /// things: a light on a truss turns when the truss does, and a mirrored truss is
+    /// a reflection no rotation can express. [`crate::types::scene::world_transform`]
+    /// composes the chain.
     #[pult(lifecycle = PERSISTED)]
-    pub position: Option<FixturePosition>,
+    pub position: Option<Transform>,
+    /// The object it hangs off — a truss, or a group of them.
+    #[pult(lifecycle = PERSISTED)]
+    pub parent: Option<Uuid>,
+    /// Which layer of the drawing it belongs to.
+    #[pult(lifecycle = PERSISTED)]
+    pub layer: Option<Uuid>,
+    /// The class it is tagged with: "house rig", "touring".
+    #[pult(lifecycle = PERSISTED)]
+    pub class: Option<Uuid>,
+    /// The focus point it is aimed at, where a drawing said one.
+    #[pult(lifecycle = PERSISTED)]
+    pub focus: Option<Uuid>,
+    /// The number on its own label — what an operator calls it, which is not its id
+    /// and need not be unique. MVR's `FixtureID`.
+    #[pult(lifecycle = PERSISTED)]
+    pub fixture_number: Option<u32>,
+    /// Which of several identical units this is, where a drawing numbered them.
+    #[pult(lifecycle = PERSISTED)]
+    pub unit_number: Option<u32>,
     /// What this fixture's devices have *told* the console, keyed by parameter key:
     /// a contact closure, a temperature, a humidity — anything a device reports.
     ///
@@ -948,15 +951,10 @@ mod tests {
 
     fn a_fixture(home_values: HashMap<String, ParameterValue>) -> Fixture {
         Fixture {
-            id: Uuid::nil(),
             name: "House left".into(),
-            fixture_type_id: Uuid::nil(),
             address: FixtureAddress::default(),
-            position: None,
-            sensed_values: HashMap::new(),
-            live_effects: HashMap::new(),
-            live_fades: HashMap::new(),
             home_values,
+            ..Fixture::default()
         }
     }
 

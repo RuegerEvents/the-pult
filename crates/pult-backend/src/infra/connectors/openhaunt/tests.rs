@@ -120,6 +120,7 @@ fn a_node_fixture(fixture_type: &FixtureType, serial: &str, universe: Option<u16
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
+        ..Fixture::default()
     }
 }
 
@@ -145,6 +146,7 @@ fn a_dmx_dimmer(universe: u16, level: f32) -> (Fixture, FixtureType) {
         live_effects: Default::default(),
         live_fades: Default::default(),
         home_values: Default::default(),
+        ..Fixture::default()
     };
     holding(&mut fixture, "Intensity", ParameterValue::Float(level));
     (fixture, fixture_type)

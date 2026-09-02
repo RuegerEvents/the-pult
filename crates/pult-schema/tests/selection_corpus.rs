@@ -8,13 +8,17 @@
 
 use std::collections::HashMap;
 
-use pult_schema::types::{evaluate, Fixture, SelectionQuery};
+use pult_schema::types::{evaluate, scene::SceneObject, Fixture, SelectionQuery};
 use serde::Deserialize;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
 struct Corpus {
     rig: Vec<Fixture>,
+    /// What a fixture may hang off. A light on a truss is where the truss put it, so
+    /// a geometric term reads a world position rather than the numbers on the row.
+    #[serde(default)]
+    scene: Vec<SceneObject>,
     cases: Vec<Case>,
 }
 
@@ -47,7 +51,7 @@ fn every_case_in_the_corpus() {
     };
 
     for case in &corpus.cases {
-        let got = evaluate(&case.query, &corpus.rig, case.previous.as_deref());
+        let got = evaluate(&case.query, &corpus.rig, case.previous.as_deref(), &corpus.scene);
         assert_eq!(
             say(&got),
             say(&case.expected),

@@ -10,6 +10,7 @@
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
 	import { calibrationScale, fixturePoint, originForPixel } from '$lib/stage.js';
+	import { at } from '$lib/scene.js';
 	import { collection } from '$lib/stores/show.js';
 	import { editing } from '$lib/stores/editing.js';
 	import { shownPlanId } from '$lib/stores/stage.js';
@@ -122,9 +123,13 @@
 
 	const place = (fixtureId: string, x: number, z: number) => {
 		const existing = $fixtures.find((f) => f.id === fixtureId);
-		// Keep the height it was hung at; the plan only ever says where on the floor.
-		const y = existing ? (fixturePoint(existing)?.y ?? 0) : 0;
-		data.fixtures.byId(fixtureId).position.set({ Point: { x, y, z } });
+		// Keep the height it was hung at, and the way it is turned; the plan only ever
+		// says where on the floor.
+		const was = existing?.position ?? null;
+		const y = was?.position.y ?? 0;
+		data.fixtures.byId(fixtureId).position.set(
+			was ? { ...was, position: { x, y, z } } : at({ x, y, z })
+		);
 	};
 
 	async function unplaceSelected() {

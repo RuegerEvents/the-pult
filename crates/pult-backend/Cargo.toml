@@ -15,6 +15,7 @@ path = "src/main.rs"
 pult-schema = { path = "../pult-schema" }
 pult-render = { workspace = true }
 pult-gdtf = { workspace = true }
+pult-mvr = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }

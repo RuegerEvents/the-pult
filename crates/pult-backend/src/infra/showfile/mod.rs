@@ -80,8 +80,9 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 /// files that open perfectly well.
 ///
 /// 1. The first stamp. Everything before it is unstamped and refused on sight.
-/// 2. `Fixture::position` became a `Transform`.
-const SCHEMA_GENERATION: i64 = 1;
+/// 2. `Fixture::position` became a `Transform` — a position, a rotation and a signed
+///    scale, where it had been a point or a point and a direction.
+const SCHEMA_GENERATION: i64 = 2;
 
 /// Say plainly that a showfile is from another build, instead of panicking somewhere
 /// deep in a generated `from_columns`.

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, it, expect } from 'vitest';
 
-import type { Fixture, Vec3 } from './generated/index.js';
+import type { Fixture, SceneObject, Vec3 } from './generated/index.js';
 import {
 	describe as describeQuery,
 	evaluate,
@@ -16,19 +16,11 @@ import {
 	sortSelection,
 	type SelectionQuery
 } from './selection.js';
-import { aFixtureType } from './test-fixtures.js';
+import { at as placedAt } from './scene.js';
+import { aFixture, aFixtureType } from './test-fixtures.js';
 
-const at = (name: string, x: number, y: number, z: number, typeId = 'par'): Fixture => ({
-	id: name,
-	name,
-	fixture_type_id: typeId,
-	address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
-	position: { Point: { x, y, z } },
-	sensed_values: {},
-	live_effects: {},
-	live_fades: {},
-	home_values: {}
-});
+const at = (name: string, x: number, y: number, z: number, typeId = 'par'): Fixture =>
+	aFixture({ id: name, name, fixture_type_id: typeId, position: placedAt({ x, y, z }) });
 
 const unplaced = (name: string, typeId = 'par'): Fixture => ({ ...at(name, 0, 0, 0, typeId), position: null });
 
@@ -368,7 +360,7 @@ describe('the corpus the station agrees with', () => {
 		previous?: string[];
 		expected: string[];
 	};
-	const corpus: { rig: Fixture[]; cases: Case[] } = JSON.parse(
+	const corpus: { rig: Fixture[]; scene: SceneObject[]; cases: Case[] } = JSON.parse(
 		readFileSync(new URL('../../../testdata/selection-queries.json', import.meta.url), 'utf8')
 	);
 
@@ -377,7 +369,7 @@ describe('the corpus the station agrees with', () => {
 
 	for (const c of corpus.cases) {
 		it(c.name, () => {
-			const got = evaluate(c.query, corpus.rig, c.previous ?? null);
+			const got = evaluate(c.query, corpus.rig, c.previous ?? null, corpus.scene);
 			expect(named(got)).toEqual(named(c.expected));
 		});
 	}
