@@ -12,6 +12,27 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **A whole rig, from the drawing.** MVR — My Virtual Rig — read and written. Import
+  one and the fixtures arrive patched, at the addresses and in the modes the drawing
+  gives them, where the drawing puts them; so do the trusses and the objects around
+  them, with their own meshes, and the layers they are drawn on. Export writes it back
+  out, with each fixture type's own file where it arrived as one. Every uuid is the
+  one the file uses, so re-importing an updated drawing updates the rig rather than
+  doubling it — and what an earlier import left that the new one no longer mentions is
+  reported, never deleted, because somebody may have taken that light out on purpose.
+  A fixture whose definition the archive does not carry keeps its address and its
+  place under a placeholder type until the real file turns up.
+- **The stage views draw the drawing.** Trusses and objects in the plan and in three
+  dimensions, from the meshes the archive carried. A Layers panel shows and hides
+  parts of the rig — per browser, so two people can work on different parts of it at
+  once — and locking a layer is the show's. A mesh the browser cannot read becomes a
+  box rather than an empty view.
+- **Fixture definitions from a file.** GDTF in and out, with modes, breaks, wheels,
+  emitters, physical data and the geometry tree, so a fixture brings its real beam
+  angle and its real pan and tilt travel instead of the console guessing. The archive
+  is kept whole and exports byte for byte. The GDTF Share is searchable and importable
+  from the Fixture Types panel, behind a login kept in the station's preferences and
+  never in the show — a showfile travels, and a password in one travels with it.
 - **A cue can fade two ways.** The *out* time beside the *in* time, on the cue and on
   each captured value: a parameter takes the out time when the cue asks it to come
   down and the in time when it asks it to go up, which is the split fade every
@@ -145,6 +166,22 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Changed
 
+- **BREAKING: where a fixture is, is now a transform.** A position was a point, or a
+  point and a direction; it is now a position, a rotation and a scale, relative to
+  whatever the fixture hangs off — which is what it takes to draw a rig where trusses
+  turn and things hang off them. The scale is signed because a drawing mirrors things,
+  and no rotation is a reflection.
+- **BREAKING: a showfile from an older build is refused rather than migrated.** While
+  the console is in development a showfile is not something anybody is carrying a
+  season's work in, and a migration is a promise about every shape the data has ever
+  had. A file from another build now says so plainly and names what it is — the
+  generation it was written by, or the field every row needs a value for — instead of
+  being read hopefully and losing something quietly. Start a fresh show.
+- **BREAKING: a hand-made fixture type's channels follow its parameter list.** Where a
+  parameter sits belongs to a *mode*, so the Fixture Types panel reads the channel
+  number back rather than letting one be typed; reordering the parameters is how it
+  changes. Types imported from a file are unaffected — their modes say where
+  everything goes.
 - **BREAKING: Go at the last cue stays on the last cue.** It used to leave the
   sequence with no active cue at all, which meant "the operator ran out of cues" and
   "the operator turned it off" were the same state — and the console could not tell
@@ -165,6 +202,16 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Fixed
 
+- **A colour wheel's black slot no longer loses a fixture type.** A real fixture file
+  writes `nan` where that slot's colour goes; the console read it as a number, stored
+  it, and could never read the row back. The type was there and gone at the same time.
+- **An optional number in the show no longer comes back empty.** A field like a
+  fixture's unit number was written to the showfile and read back as nothing, because
+  the column's type and the way the value was stored disagreed.
+- **A light hanging straight down no longer aims 45° off.** Asking which way a fixture
+  faced when it faced straight down gave an answer 180° out, and everything computed
+  from it — every beam in the rig view and on the plan — was wrong by an amount that
+  looked plausible.
 - **A console that gave up fetching a plugin asks again when one arrives.** A station
   that could find nobody with a plugin's bundle stayed that way until somebody edited
   the show — so the console holding it walking in five minutes late changed nothing,
