@@ -150,11 +150,26 @@ import left in a layer this one no longer mentions is **listed under `missing` a
 deleted**. A fixture whose GDTF the archive does not carry gets a placeholder type, so
 the address, the mode and the place survive until somebody supplies the real file.
 
+**And back out.** `GET /api/export/mvr?layers=…` writes the rig as an archive, with
+each fixture type's own file where it arrived as one and a generated GDTF otherwise —
+the rule `/api/export/gdtf` already follows. Exporting the whole show means the whole
+show, including a symbol nothing instances, a class nothing is tagged with, and the
+fixtures no layer claims; a *filtered* export carries what its layers use. The proof
+is a round trip: every real file in the corpus, imported, written back out and read
+again, gives the same fixtures at the same addresses in the same modes.
+
+One trap it found. **Two fixture types can honestly want the same file name.** One
+drawing carries the same Robe head twice — two `FixtureTypeID`s, one product name —
+and written under one archive entry they become one type on the way back in, with
+half the rig repatching itself. A name already taken now gets a number, in id order,
+so two exports of one show write the same names.
+
 ```
 cargo test -p pult-mvr -- --ignored                  # other people's rigs
 cargo test -p pult-backend --test mvr_corpus -- --ignored   # and what they become here
 curl -X POST http://localhost:7700/api/import/mvr \
      -H 'content-type: application/vnd.mvr-scene+zip' --data-binary @rig.mvr
+curl -o rig.mvr http://localhost:7700/api/export/mvr
 ```
 
 ## Lifecycle System

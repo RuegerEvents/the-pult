@@ -839,3 +839,95 @@ async fn a_body_that_is_not_an_mvr_is_refused_and_leaves_nothing_behind() {
     let layers: Vec<Layer> = pult_schema::db::get_all(&pool).await.unwrap();
     assert!(layers.is_empty(), "a refused file leaves no rows");
 }
+
+/// Import a drawing, export it, and import that into a fresh show: the same rig.
+///
+/// The strongest thing that can be said about a reader and a writer that are two
+/// halves of one crate, and the reason the ids are the file's own: matched by uuid,
+/// the second import of an export creates nothing and updates everything.
+#[tokio::test]
+async fn a_rig_exported_and_imported_again_is_the_same_rig() {
+    use pult_schema::types::fixture::Fixture;
+    use pult_schema::types::scene::{Layer, SceneObject};
+
+    let (addr, pool) = a_console().await;
+    post_mvr(&addr, a_small_rig()).await;
+
+    let exported = reqwest::get(format!("http://{addr}/api/export/mvr")).await.unwrap();
+    assert!(exported.status().is_success());
+    let bytes = exported.bytes().await.unwrap().to_vec();
+    assert!(!bytes.is_empty());
+
+    // A fresh show, and the export read into it.
+    let (second_addr, second_pool) = a_console().await;
+    let report = post_mvr(&second_addr, bytes.clone()).await;
+    assert_eq!(report["warnings"].as_array().unwrap().len(), 0, "{:?}", report["warnings"]);
+
+    let same = |a: &serde_json::Value, b: &serde_json::Value, what: &str| {
+        assert_eq!(a, b, "{what} differs between the two shows");
+    };
+    for (what, first, second) in [
+        (
+            "fixtures",
+            sorted::<Fixture>(&pool).await,
+            sorted::<Fixture>(&second_pool).await,
+        ),
+        (
+            "scene objects",
+            sorted::<SceneObject>(&pool).await,
+            sorted::<SceneObject>(&second_pool).await,
+        ),
+        ("layers", sorted::<Layer>(&pool).await, sorted::<Layer>(&second_pool).await),
+    ] {
+        same(&first, &second, what);
+    }
+
+    // And a third pass over the same bytes into the second show makes nothing.
+    let again = post_mvr(&second_addr, bytes).await;
+    assert_eq!(again["created"], 0, "the export of an export is the same rig again");
+}
+
+/// Every row of a collection, as JSON sorted by id, for comparing two shows.
+async fn sorted<T>(pool: &sqlx::SqlitePool) -> serde_json::Value
+where
+    T: pult_schema::sql::PultSqlRow + serde::Serialize + Send + Unpin,
+{
+    let mut rows: Vec<serde_json::Value> = pult_schema::db::get_all::<T>(pool)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| serde_json::to_value(row).unwrap())
+        .collect();
+    rows.sort_by_key(|row| row["id"].as_str().unwrap_or_default().to_string());
+    serde_json::Value::Array(rows)
+}
+
+/// Exporting one layer writes that layer and nothing else.
+#[tokio::test]
+async fn an_export_of_one_layer_carries_only_what_is_in_it() {
+    use pult_schema::types::scene::Layer;
+
+    let (addr, pool) = a_console().await;
+    post_mvr(&addr, a_small_rig()).await;
+
+    let layers: Vec<Layer> = pult_schema::db::get_all(&pool).await.unwrap();
+    let floor = layers.iter().find(|l| l.name == "Floor").unwrap();
+
+    let bytes = reqwest::get(format!("http://{addr}/api/export/mvr?layers={}", floor.id))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap()
+        .to_vec();
+
+    let file = pult_mvr::MvrFile::parse(&bytes).expect("what came back is an mvr");
+    assert_eq!(
+        file.scene.scene.layers.items.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+        vec!["Floor"],
+    );
+    // And the fixture definition that layer's one fixture needs, and no other.
+    let gdtfs: Vec<&String> =
+        file.resources.keys().filter(|n| n.ends_with(".gdtf")).collect();
+    assert_eq!(gdtfs.len(), 1, "{gdtfs:?}");
+}

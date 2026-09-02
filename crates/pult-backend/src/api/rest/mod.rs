@@ -87,6 +87,7 @@ where
         // route rather than a command: a drawing of two thousand fixtures does not
         // go through a WebSocket frame.
         .route("/api/import/mvr", post(import_mvr))
+        .route("/api/export/mvr", get(export_mvr))
         // The Share. A search is a read and could have been an RPC; importing from it
         // is a write, and the rule that the RPC table is read-only is worth more than
         // the symmetry — so all three are here, where writes belong.
@@ -374,6 +375,89 @@ async fn import_mvr(
     })))
 }
 
+/// Hand the whole rig back as an `.mvr`.
+///
+/// `?layers=<uuid>,<uuid>` writes only those; with none named it writes everything,
+/// including the fixtures no layer claims — a rig patched here and never drawn is
+/// still the operator's show, and an export missing half of it would be a surprise
+/// found on somebody else's console.
+async fn export_mvr(
+    State(state): State<AssetState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, Response> {
+    use pult_schema::path::PathSegment;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    async fn read<T: serde::de::DeserializeOwned>(state: &AssetState, table: &str) -> Vec<T> {
+        state
+            .engine
+            .get(vec![PathSegment::Key(table.into())])
+            .await
+            .ok()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
+    let only: BTreeSet<uuid::Uuid> = params
+        .get("layers")
+        .map(|list| list.split(',').filter_map(|id| uuid::Uuid::parse_str(id.trim()).ok()).collect())
+        .unwrap_or_default();
+
+    let fixture_types: Vec<pult_schema::types::fixture::FixtureType> =
+        read(&state, "fixture_types").await;
+    let fixtures = read(&state, "fixtures").await;
+    let scene_objects = read(&state, "scene_objects").await;
+    let layers = read(&state, "layers").await;
+    let symbols = read(&state, "symbols").await;
+    let classes = read(&state, "classes").await;
+    let named_assets = read(&state, "named_assets").await;
+    let rig = infra::interop::mvr::Rig {
+        fixture_types: &fixture_types,
+        fixtures: &fixtures,
+        scene_objects: &scene_objects,
+        layers: &layers,
+        symbols: &symbols,
+        classes: &classes,
+        named_assets: &named_assets,
+    };
+
+    let export = infra::interop::mvr::plan_export(&rig, &only);
+
+    // The plan says which files belong beside the scene; this is where they are
+    // found. A fixture type that arrived as a file exports as that file, byte for
+    // byte; one the console made for itself exports as a generated one, which is the
+    // same rule `/api/export/gdtf` follows.
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for want in &export.wanted {
+        if let Some(sha) = &want.asset {
+            if let Ok(Some(stored)) = assets::get(&state.pool, sha).await {
+                files.insert(want.name.clone(), stored.bytes);
+                continue;
+            }
+        }
+        if let Some(id) = want.fixture_type {
+            if let Some(fixture_type) = fixture_types.iter().find(|t| t.id == id) {
+                if let Ok((bytes, _)) = infra::interop::gdtf::export(&state.pool, fixture_type).await
+                {
+                    files.insert(want.name.clone(), bytes);
+                }
+            }
+        }
+    }
+
+    let bytes = infra::interop::mvr::export::write(&export, files)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response())?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, assets::MVR_MIME.to_string()),
+            (header::CONTENT_DISPOSITION, "attachment; filename=\"rig.mvr\"".to_string()),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
 /// Hand back a fixture type as a `.gdtf`.
 ///
 /// The archive it was imported from where there is one, and a generated file
@@ -411,7 +495,7 @@ async fn export_gdtf(
         .into_response())
 }
 
-/// Kept apart from [`routes`] because the body limit those two carry is for the/// Kept apart from [`routes`] because the body limit those two carry is for the
+/// Kept apart from [`routes`] because the body limit those two carry is for the
 /// one route that takes megabytes, and this one takes nothing at all.
 pub fn config_routes<S>() -> Router<S>
 where

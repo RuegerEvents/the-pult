@@ -5,8 +5,10 @@
 //! import is one gesture, leaves nothing behind if it is refused, and takes itself
 //! back if a write fails halfway.
 
+pub mod export;
 pub mod plan;
 
+pub use export::{plan_export, Export, Rig};
 pub use plan::{plan_import, Existing};
 
 use pult_mvr::transform::Placement;

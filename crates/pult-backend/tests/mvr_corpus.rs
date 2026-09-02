@@ -188,3 +188,97 @@ fn a_second_import_of_a_real_file_creates_nothing() {
         assert!(second.report.missing.is_empty(), "{name}: {:?}", second.report.missing);
     }
 }
+
+/// A real drawing, written back out and read again, is the same rig.
+///
+/// The corpus version of the round trip: the small checked-in file proves the rule,
+/// and this proves it against files with ninety-five symbols, twenty-eight layers and
+/// a fixture definition whose name does not survive a zip's central directory.
+#[test]
+#[ignore = "needs testdata/corpus/mvr"]
+fn every_real_file_survives_being_written_back_out() {
+    use pult_backend::infra::interop::mvr::{plan_export, Rig};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    for (name, bytes) in corpus() {
+        let plan = plan_import(&bytes, &Existing::default()).expect("plans");
+        let by_table = rows(&plan);
+        let of = |table: &str| -> Vec<serde_json::Value> {
+            by_table.get(table).map(|v| v.iter().map(|v| (*v).clone()).collect()).unwrap_or_default()
+        };
+        fn parse<T: serde::de::DeserializeOwned>(values: Vec<serde_json::Value>) -> Vec<T> {
+            values.into_iter().map(|v| serde_json::from_value(v).unwrap()).collect()
+        }
+
+        let fixture_types = parse(of("fixture_types"));
+        let fixtures: Vec<Fixture> = parse(of("fixtures"));
+        let scene_objects: Vec<SceneObject> = parse(of("scene_objects"));
+        let layers: Vec<Layer> = parse(of("layers"));
+        let symbols = parse(of("symbols"));
+        let classes = parse(of("classes"));
+        let named_assets = parse(of("named_assets"));
+        let rig = Rig {
+            fixture_types: &fixture_types,
+            fixtures: &fixtures,
+            scene_objects: &scene_objects,
+            layers: &layers,
+            symbols: &symbols,
+            classes: &classes,
+            named_assets: &named_assets,
+        };
+
+        // The assets the import would have stored, by their hash, so the export can
+        // be given the files it asks for without a station in the way.
+        let stored: BTreeMap<String, Vec<u8>> = plan
+            .assets
+            .iter()
+            .map(|(_, bytes)| (pult_backend::infra::assets::digest(bytes), bytes.clone()))
+            .collect();
+
+        let export = plan_export(&rig, &BTreeSet::new());
+        let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        for want in &export.wanted {
+            if let Some(sha) = &want.asset {
+                if let Some(bytes) = stored.get(sha) {
+                    files.insert(want.name.clone(), bytes.clone());
+                }
+            }
+        }
+        let written = pult_backend::infra::interop::mvr::export::write(&export, files)
+            .unwrap_or_else(|e| panic!("{name} does not export: {e}"));
+
+        let again = plan_import(&written, &Existing::default())
+            .unwrap_or_else(|e| panic!("{name} does not re-import: {e}"));
+        let back = rows(&again);
+
+        println!(
+            "{name}: {} fixtures out, {} back",
+            fixtures.len(),
+            back.get("fixtures").map_or(0, |v| v.len()),
+        );
+        for (table, values) in &by_table {
+            // `named_assets` is the one that legitimately shrinks: a name whose bytes
+            // this station holds is written back, and a texture nothing references is
+            // not carried into the export at all.
+            if table == "named_assets" {
+                continue;
+            }
+            assert_eq!(
+                back.get(table).map_or(0, |v| v.len()),
+                values.len(),
+                "{name}: {table} changed on the way out and back",
+            );
+        }
+
+        // And the fixtures come back at the same addresses, in the same modes.
+        let back_fixtures: Vec<Fixture> = parse(
+            back.get("fixtures").map(|v| v.iter().map(|v| (*v).clone()).collect()).unwrap_or_default(),
+        );
+        let key = |f: &Fixture| (f.id, f.address.clone(), f.fixture_type_id);
+        let mut before: Vec<_> = fixtures.iter().map(key).collect();
+        let mut after: Vec<_> = back_fixtures.iter().map(key).collect();
+        before.sort_by_key(|(id, _, _)| *id);
+        after.sort_by_key(|(id, _, _)| *id);
+        assert_eq!(before, after, "{name}: the patch changed on the way out and back");
+    }
+}
