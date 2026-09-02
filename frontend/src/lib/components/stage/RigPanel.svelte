@@ -13,6 +13,7 @@
 	import { selection } from '$lib/stores/selection.js';
 	import { shownPlanId } from '$lib/stores/stage.js';
 	import Rig3D from './Rig3D.svelte';
+	import MvrButtons from './MvrButtons.svelte';
 
 	const client = getClientContext();
 	const data = getDataContext();
@@ -23,6 +24,14 @@
 
 	let follow = $state(true);
 	let rig = $state<Rig3D | null>(null);
+
+	/// Polled rather than pushed: a frame cost that re-rendered the toolbar on every
+	/// frame would be a readout that costs what it measures.
+	let cost = $state(0);
+	$effect(() => {
+		const timer = setInterval(() => (cost = rig?.costMs() ?? 0), 1000);
+		return () => clearInterval(timer);
+	});
 
 	// The same plan the plan panel is showing. A show with two rooms in it had the
 	// rig drawing the first one's floor under the second one's lights.
@@ -47,6 +56,15 @@
 			</label>
 		{/if}
 		<span class="spacer"></span>
+		<MvrButtons />
+		<!-- What a frame of this view costs. Read by hand rather than measured by a
+		     script: `scripts/demo.sh --measure` deliberately starts no browser, since
+		     one would be taking the CPU it is measuring. -->
+		{#if cost > 0}
+			<span class="count" title="What one frame of this view costs to draw">
+				{cost.toFixed(1)} ms
+			</span>
+		{/if}
 		<span class="count">{$selection.length} selected</span>
 		<button class="ghost" onclick={() => rig?.goHome()}>Home</button>
 	</nav>

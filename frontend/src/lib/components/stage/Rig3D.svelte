@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { T, useThrelte } from '@threlte/core';
+	import { T, useTask, useThrelte } from '@threlte/core';
 	import { CameraControls, HTML, interactivity } from '@threlte/extras';
 	import type CameraControlsRef from 'camera-controls';
 	import * as THREE from 'three';
@@ -25,6 +25,15 @@
 		type Ray
 	} from '$lib/puppeteer.js';
 	import { selected, select, toggle } from '$lib/stores/selection.js';
+	import {
+		fixtureIsVisible,
+		hiddenLayers,
+		namedAssets,
+		objectsById,
+		symbols,
+		visibleObjects
+	} from '$lib/stores/scene.js';
+	import SceneObjectMesh from './SceneObjectMesh.svelte';
 	import { setValue } from '$lib/stores/programmer.js';
 	import { output as showing, watching } from '$lib/stores/output.js';
 	import { parameterKey } from '$lib/patch.js';
@@ -45,13 +54,43 @@
 		follow?: boolean;
 	} = $props();
 
+	/**
+	 * What a frame of this view costs, in milliseconds.
+	 *
+	 * The station publishes what its *output* frames cost, and that is a different
+	 * number from this one: nothing about drawing a rig reaches a lamp. This is the
+	 * browser's own, and it exists because instancing ninety-five truss meshes is a
+	 * decision that should be answered with a figure rather than with a hunch.
+	 *
+	 * A rolling mean over a second, so it reads as a number rather than a flicker.
+	 */
+	let frameMs = $state(0);
+	let frames = 0;
+	let elapsed = 0;
+	useTask((delta) => {
+		frames += 1;
+		elapsed += delta;
+		if (elapsed >= 1) {
+			frameMs = (elapsed * 1000) / frames;
+			frames = 0;
+			elapsed = 0;
+		}
+	});
+
+	/** What the last second of drawing cost, for a panel that wants to show it. */
+	export function costMs(): number {
+		return frameMs;
+	}
+
 	// Without this, nothing in the scene has ever been clickable: the plugin has to be
 	// installed for `onclick` on a mesh to be anything at all.
 	interactivity();
 
 	const { camera, dom } = useThrelte();
 
-	const placed = $derived(fixtures.filter((f) => fixturePoint(f) !== null));
+	const placed = $derived(
+		fixtures.filter((f) => fixturePoint(f, $objectsById) !== null && fixtureIsVisible(f, $hiddenLayers))
+	);
 	const typeOf = (fixture: Fixture) => types.find((t) => t.id === fixture.fixture_type_id);
 
 	// The opening view: worked out once, when there is first a rig to frame, and
@@ -98,7 +137,7 @@
 		// fade, with the view lurching each time.
 		untrack(() => {
 			const fixture = fixtures.find((f) => f.id === id);
-			const at = fixture && fixturePoint(fixture);
+			const at = fixture && fixturePoint(fixture, $objectsById);
 			if (!at) return;
 			// Stand off along the way the camera is already looking, so framing a
 			// fixture turns the view towards it rather than teleporting round to the
@@ -149,9 +188,9 @@
 
 	const beams = $derived(
 		placed.map((fixture) => {
-			const at = fixturePoint(fixture)!;
+			const at = fixturePoint(fixture, $objectsById)!;
 			const type = typeOf(fixture);
-			const direction = beamDirection(fixture, type, $showing);
+			const direction = beamDirection(fixture, type, $showing, $objectsById);
 			const length = throwDistance(at, direction);
 			const output = fixtureOutput(fixture, $showing);
 			// Both meshes are drawn about their own Y and centred on their middle, so
@@ -404,7 +443,7 @@
 		const point = rayOnPlane(ray, { x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 });
 		if (!point) return;
 		const target = { x: point.x + grab.offset.x, y: 0, z: point.z + grab.offset.z };
-		const { pan, tilt } = aimAt(beam.fixture, beam.type, target);
+		const { pan, tilt } = aimAt(beam.fixture, beam.type, target, $objectsById);
 		if (pan !== null) setValue([beam.fixture.id], 'Pan', { type: 'Float', value: pan });
 		if (tilt !== null) setValue([beam.fixture.id], 'Tilt', { type: 'Float', value: tilt });
 	}
@@ -461,6 +500,17 @@
 >
 	<T.MeshBasicMaterial color="#2a2a2a" />
 </T.GridHelper>
+
+<!-- The drawing: trusses, rostra, anything somebody put in the room. Drawn before
+     the fixtures so a beam lands on top of what it is pointing at. -->
+{#each $visibleObjects as object (object.id)}
+	<SceneObjectMesh
+		{object}
+		objects={$objectsById}
+		symbols={$symbols}
+		names={$namedAssets}
+	/>
+{/each}
 
 {#each beams as beam (beam.fixture.id)}
 	<!-- The body: what you click, and what says where the fixture hangs. -->

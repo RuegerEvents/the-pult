@@ -13,6 +13,16 @@
 		planToPixel
 	} from '$lib/stage.js';
 	import { selected, select, toggle } from '$lib/stores/selection.js';
+	import {
+		fixtureIsVisible,
+		hiddenLayers,
+		namedAssets,
+		objectsById,
+		symbols as sceneSymbols,
+		visibleObjects
+	} from '$lib/stores/scene.js';
+	import { measureAll, meshSizes, PLACEHOLDER_SIZE } from '$lib/geometry.js';
+	import { worldTransform } from '$lib/scene.js';
 	import { byKey, setValue } from '$lib/stores/programmer.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
 	import { asOneGesture } from '$lib/stores/gesture.js';
@@ -49,8 +59,42 @@
 	let box = $state({ w: 1, h: 1 });
 	const height = $derived((view.width * box.h) / Math.max(box.w, 1));
 
-	const placed = $derived(fixtures.filter((f) => fixturePoint(f) !== null));
-	const unplaced = $derived(fixtures.filter((f) => fixturePoint(f) === null));
+	/// The drawing, seen from above: a footprint per object at its world place.
+	///
+	/// The size comes from the loaded mesh, because nothing else knows it — a truss is
+	/// whatever length its file says. Until it has loaded, an object is a default
+	/// square rather than nothing, so a rig that is still fetching its meshes still
+	/// shows where its trusses are.
+	const footprints = $derived.by(() => {
+		const geometryOf = (object: (typeof $visibleObjects)[number]) =>
+			object.geometry.length > 0
+				? object.geometry
+				: ($sceneSymbols.find((s) => s.id === object.symbol)?.geometry ?? []);
+		measureAll(
+			$visibleObjects.flatMap(geometryOf),
+			$namedAssets
+		);
+		return $visibleObjects.map((object) => {
+			const world = worldTransform(object.transform, object.parent, $objectsById);
+			const sizes = geometryOf(object)
+				.map((reference) => $meshSizes.get(reference.asset))
+				.filter((size) => size !== undefined);
+			const width = Math.max(PLACEHOLDER_SIZE, ...sizes.map((size) => size.x));
+			const depth = Math.max(PLACEHOLDER_SIZE, ...sizes.map((size) => size.z));
+			return {
+				object,
+				at: world.position,
+				turn: world.rotation.y,
+				width: width * Math.abs(world.scale.x),
+				depth: depth * Math.abs(world.scale.z),
+				known: sizes.length > 0
+			};
+		});
+	});
+
+	const shown = $derived(fixtures.filter((f) => fixtureIsVisible(f, $hiddenLayers)));
+	const placed = $derived(shown.filter((f) => fixturePoint(f, $objectsById) !== null));
+	const unplaced = $derived(shown.filter((f) => fixturePoint(f, $objectsById) === null));
 	const typeOf = (fixture: Fixture) => types.find((t) => t.id === fixture.fixture_type_id);
 
 	/// Everything one symbol needs drawing, worked out once per delivery rather than
@@ -72,8 +116,8 @@
 
 	const symbols = $derived(
 		placed.map((fixture) => {
-			const at = fixturePoint(fixture)!;
-			const spot = beamSpot(fixture, typeOf(fixture), $output, { maxThrow });
+			const at = fixturePoint(fixture, $objectsById)!;
+			const spot = beamSpot(fixture, typeOf(fixture), $output, { maxThrow }, $objectsById);
 			return {
 				fixture,
 				at,
@@ -104,7 +148,7 @@
 	/// Where the sheet sits on screen. Worked out from the viewBox rather than from a
 	/// CTM, so panning and zooming move it without anything having to ask the DOM.
 	const sheetAt = $derived.by(() => {
-		const at = sheetFixture ? fixturePoint(sheetFixture) : null;
+		const at = sheetFixture ? fixturePoint(sheetFixture, $objectsById) : null;
 		if (!at) return null;
 		return {
 			left: ((at.x - view.x) / view.width) * box.w,
@@ -222,7 +266,7 @@
 	function aim(fixtureId: string, target: { x: number; z: number }) {
 		const fixture = fixtures.find((f) => f.id === fixtureId);
 		if (!fixture) return;
-		const { pan, tilt } = aimAt(fixture, typeOf(fixture), { x: target.x, y: 0, z: target.z });
+		const { pan, tilt } = aimAt(fixture, typeOf(fixture), { x: target.x, y: 0, z: target.z }, $objectsById);
 		if (pan !== null) setValue([fixtureId], 'Pan', { type: 'Float', value: pan });
 		if (tilt !== null) setValue([fixtureId], 'Tilt', { type: 'Float', value: tilt });
 	}
@@ -378,6 +422,22 @@
 			<line x1={-0.6} y1={0} x2={0.6} y2={0} />
 			<line x1={0} y1={-0.6} x2={0} y2={0.6} />
 		</g>
+
+		<!-- The drawing, under the lights: a truss is a thing the beams land on, so it
+		     is drawn first and the fixtures sit on top of it. -->
+		{#each footprints as footprint (footprint.object.id)}
+			<rect
+				class="object"
+				class:guessed={!footprint.known}
+				x={-footprint.width / 2}
+				y={-footprint.depth / 2}
+				width={footprint.width}
+				height={footprint.depth}
+				transform="translate({footprint.at.x} {footprint.at.z}) rotate({-footprint.turn})"
+			>
+				<title>{footprint.object.name}</title>
+			</rect>
+		{/each}
 
 		{#each symbols as symbol (symbol.fixture.id)}
 			<g
@@ -543,6 +603,26 @@
 </div>
 
 <style>
+	/* An object of the drawing: an outline, not a fill. What matters is where the
+	   truss is and how long it is, and a solid block would hide the lights on it. */
+	.object {
+		/* An outline and nothing else. A hundred trusses at 8% fill is a grey wash
+		   with the rig somewhere underneath it, which is what the first version of
+		   this was. */
+		fill: none;
+		stroke: var(--line-strong);
+		stroke-width: 1;
+		vector-effect: non-scaling-stroke;
+		pointer-events: none;
+	}
+
+	/* One whose mesh has not arrived: the console does not know how big it is, and
+	   says so rather than drawing a confident square. */
+	.object.guessed {
+		stroke-dasharray: 0.15 0.15;
+		opacity: 0.5;
+	}
+
 	.wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; position: relative; }
 	/* Dragging a handle must not sweep up the fixture labels as selected text. */
 	svg { flex: 1; min-height: 0; width: 100%; background: #141414; touch-action: none; cursor: grab; user-select: none; }

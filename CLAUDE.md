@@ -437,6 +437,23 @@ Consequence worth holding on to: **a geometric selection term reads a world posi
 so `evaluate` takes the scene objects as well as the fixtures. A light on a truss is
 where the truss put it.
 
+**The browser draws the drawing.** `frontend/src/lib/geometry.ts` loads a mesh once
+per sha and clones it per object, because a rig with ninety-five truss sections
+instances five symbols. Three rules live there: a `.3ds` is Z-up and is turned in that
+one place; a `.3ds` asks for its texture by the bare name the archive carried, which
+`named_assets` and three.js's own URL modifier resolve to a content-addressed asset;
+and a file the loader refuses becomes a placeholder box, because a rig view that goes
+blank over one bad mesh is worse than one with a box in it. A mirrored instance gets
+its own material — negative scale reverses winding, and back-face culling turns it
+inside out.
+
+The **Layers panel** is where a drawing's layers are shown and hidden. Visibility is
+per browser and hiding a layer takes its objects out of the plan and the rig **and
+nowhere else**: a hidden fixture still takes a cue, still answers a group, and is still
+in the patch. And the rig view reports what a frame of *itself* costs, which is not the
+station's output frame cost in the `stations` row — nothing about drawing a rig reaches
+a lamp, and `demo.sh --measure` deliberately starts no browser.
+
 **A selection is a question about the rig**, not a list of ids — "every mover on the
 downstage truss" stays true after somebody patches a fifth one. What is selected
 *right now* is one operator's and lives in a Svelte store; a **saved group** is the

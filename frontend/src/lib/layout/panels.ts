@@ -32,6 +32,7 @@ import StationsPanel from '$lib/components/StationsPanel.svelte';
 import ValuesPanel from '$lib/components/programmer/ValuesPanel.svelte';
 import PlanPanel from '$lib/components/stage/PlanPanel.svelte';
 import RigPanel from '$lib/components/stage/RigPanel.svelte';
+import LayersPanel from '$lib/components/stage/LayersPanel.svelte';
 
 export type PanelId = keyof typeof PANELS;
 
@@ -68,6 +69,7 @@ export const PANELS = {
 	selection: { title: 'Selection', component: SelectionPanel, fills: true },
 	plan: { title: 'Plan', component: PlanPanel, fills: true, editable: true },
 	rig: { title: '3D Rig', component: RigPanel, fills: true },
+	layers: { title: 'Layers', component: LayersPanel, fills: false, editable: true },
 	patch: { title: 'Patch', component: PatchPanel, fills: false, editable: true },
 	flows: { title: 'Flows', component: FlowEditor, fills: true, editable: true },
 	outputs: { title: 'Outputs', component: OutputsPanel, fills: false },

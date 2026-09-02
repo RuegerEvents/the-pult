@@ -17,6 +17,7 @@
 	import { selection } from '$lib/stores/selection.js';
 	import StagePlanView from './StagePlanView.svelte';
 	import { guessScale, uploadPlan } from './upload.js';
+	import MvrButtons from './MvrButtons.svelte';
 
 	const data = getDataContext();
 	const client = getClientContext();
@@ -229,6 +230,7 @@
 		{/if}
 
 		<span class="spacer"></span>
+		<MvrButtons />
 		{#if $selection.length > 0 && mode === 'move'}
 			<button class="ghost" onclick={unplaceSelected}>Unplace</button>
 		{/if}

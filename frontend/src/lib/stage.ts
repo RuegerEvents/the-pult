@@ -228,9 +228,16 @@ export function travelOf(
 	return travel > 0 ? travel : fallback;
 }
 
-/** The direction a fixture points with pan and tilt both centred. */
-function restDirection(fixture: Fixture): Vec3 {
-	return normalise(fixtureFacing(fixture) ?? HANGING);
+/**
+ * The direction a fixture points with pan and tilt both centred.
+ *
+ * `objects` is the drawing it hangs in. Without it the answer is the fixture's own
+ * rotation, which is right for a rig nobody has drawn and wrong for a light on a
+ * truss somebody turned — so every caller that has the drawing passes it, and the
+ * two stage views both do.
+ */
+function restDirection(fixture: Fixture, objects?: Map<string, SceneObject>): Vec3 {
+	return normalise(fixtureFacing(fixture, objects) ?? HANGING);
 }
 
 /** Compass bearing of a direction on the floor: degrees from downstage towards +X. */
@@ -259,12 +266,18 @@ const hasParameter = (type: FixtureType | undefined, kind: ParameterKind) =>
 export function panAngle(
 	fixture: Fixture,
 	type: FixtureType | undefined,
-	showing: Showing
+	showing: Showing,
+	/**
+	 * The drawing this fixture hangs in, where the caller has it. A light on a truss
+	 * somebody turned points where the truss points it, and without this the answer
+	 * is the fixture's own rotation alone.
+	 */
+	objects?: Map<string, SceneObject>
 ): number | null {
 	if (!hasParameter(type, 'Pan')) return null;
 	const pan = asNumber(showing.value(fixture.id, 'Pan') ?? undefined);
 	if (pan === null) return null;
-	return bearingOf(restDirection(fixture)) + (pan - 0.5) * travelOf(type, 'Pan');
+	return bearingOf(restDirection(fixture, objects)) + (pan - 0.5) * travelOf(type, 'Pan');
 }
 
 /**
@@ -276,12 +289,18 @@ export function panAngle(
 export function tiltAngle(
 	fixture: Fixture,
 	type: FixtureType | undefined,
-	showing: Showing
+	showing: Showing,
+	/**
+	 * The drawing this fixture hangs in, where the caller has it. A light on a truss
+	 * somebody turned points where the truss points it, and without this the answer
+	 * is the fixture's own rotation alone.
+	 */
+	objects?: Map<string, SceneObject>
 ): number | null {
 	if (!hasParameter(type, 'Tilt')) return null;
 	const tilt = asNumber(showing.value(fixture.id, 'Tilt') ?? undefined);
 	if (tilt === null) return null;
-	return elevationOf(restDirection(fixture)) + (tilt - 0.5) * travelOf(type, 'Tilt');
+	return elevationOf(restDirection(fixture, objects)) + (tilt - 0.5) * travelOf(type, 'Tilt');
 }
 
 /**
@@ -298,12 +317,18 @@ export function tiltAngle(
 export function aimAt(
 	fixture: Fixture,
 	type: FixtureType | undefined,
-	target: Vec3
+	target: Vec3,
+	/**
+	 * The drawing this fixture hangs in, where the caller has it. A light on a truss
+	 * somebody turned points where the truss points it, and without this the answer
+	 * is the fixture's own rotation alone.
+	 */
+	objects?: Map<string, SceneObject>
 ): { pan: number | null; tilt: number | null } {
-	const at = fixturePoint(fixture);
+	const at = fixturePoint(fixture, objects);
 	if (!at) return { pan: null, tilt: null };
 	const towards = normalise({ x: target.x - at.x, y: target.y - at.y, z: target.z - at.z });
-	const rest = restDirection(fixture);
+	const rest = restDirection(fixture, objects);
 
 	const pan = hasParameter(type, 'Pan')
 		? clamp(0.5 + wrapDegrees(bearingOf(towards) - bearingOf(rest)) / travelOf(type, 'Pan'))
@@ -367,11 +392,17 @@ export function fohCamera(fixtures: Fixture[]): { position: [number, number, num
 export function beamDirection(
 	fixture: Fixture,
 	type: FixtureType | undefined,
-	showing: Showing
+	showing: Showing,
+	/**
+	 * The drawing this fixture hangs in, where the caller has it. A light on a truss
+	 * somebody turned points where the truss points it, and without this the answer
+	 * is the fixture's own rotation alone.
+	 */
+	objects?: Map<string, SceneObject>
 ): Vec3 {
-	const rest = restDirection(fixture);
-	const bearing = panAngle(fixture, type, showing);
-	const elevation = tiltAngle(fixture, type, showing);
+	const rest = restDirection(fixture, objects);
+	const bearing = panAngle(fixture, type, showing, objects);
+	const elevation = tiltAngle(fixture, type, showing, objects);
 	if (bearing === null && elevation === null) return rest;
 	return fromAngles(bearing ?? bearingOf(rest), elevation ?? elevationOf(rest));
 }
@@ -390,11 +421,17 @@ export function beamSpot(
 	fixture: Fixture,
 	type: FixtureType | undefined,
 	showing: Showing,
-	{ floorY = 0, maxThrow = Infinity }: { floorY?: number; maxThrow?: number } = {}
+	{ floorY = 0, maxThrow = Infinity }: { floorY?: number; maxThrow?: number } = {},
+	/**
+	 * The drawing this fixture hangs in, where the caller has it. A light on a truss
+	 * somebody turned points where the truss points it, and without this the answer
+	 * is the fixture's own rotation alone.
+	 */
+	objects?: Map<string, SceneObject>
 ): Vec3 | null {
-	const at = fixturePoint(fixture);
+	const at = fixturePoint(fixture, objects);
 	if (!at) return null;
-	const direction = beamDirection(fixture, type, showing);
+	const direction = beamDirection(fixture, type, showing, objects);
 	const length = Math.min(throwDistance(at, direction, floorY), maxThrow);
 	return {
 		x: at.x + direction.x * length,
