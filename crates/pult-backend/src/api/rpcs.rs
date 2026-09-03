@@ -154,7 +154,7 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     LocalRpcMeta {
         method: "show.new",
         args_schema: r#"[{"name":"name","type":"string","optional":false},{"name":"demo","type":"string","optional":true},{"name":"thenJoin","type":"string","optional":true}]"#,
-        doc: "Make a new show in the shows directory and open it.",
+        doc: "Make a new show in the shows directory and open it; `demo` puts one of the demo rigs in it.",
     },
     LocalRpcMeta {
         method: "show.open",
@@ -179,7 +179,7 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     LocalRpcMeta {
         method: "show.list",
         args_schema: "[]",
-        doc: "The shows this console can offer: where they live, which were opened recently, and what is in the shows directory.",
+        doc: "The shows this console can offer: where they live, which were opened recently, what is in the shows directory, and the demos it can make.",
     },
     LocalRpcMeta {
         method: "client.report",
@@ -525,7 +525,11 @@ pub async fn open_a_show(
             // into — instead of taking the console down and bringing it back with
             // nothing open and an error in the log.
             let bundle = bundle::Bundle::open(path).map_err(|e| format!("{e:#}"))?;
-            crate::ShowSwitch::Open { path: bundle.path().to_path_buf(), then_join: None }
+            crate::ShowSwitch::Open {
+                path: bundle.path().to_path_buf(),
+                then_join: None,
+                demo: None,
+            }
         }
         "show.new" => {
             let name = args["name"].as_str().unwrap_or("Untitled Show").to_string();
@@ -542,7 +546,15 @@ pub async fn open_a_show(
                 ),
                 _ => None,
             };
-            crate::ShowSwitch::Open { path, then_join }
+            let demo = match args.get("demo") {
+                Some(v) if !v.is_null() => Some(
+                    v.as_str()
+                        .and_then(crate::demo::Demo::parse)
+                        .ok_or_else(|| format!("no such demo: {v}"))?,
+                ),
+                _ => None,
+            };
+            crate::ShowSwitch::Open { path, then_join, demo }
         }
         "show.saveAs" => {
             let name = args["name"].as_str().unwrap_or_default().trim().to_string();
@@ -669,6 +681,16 @@ pub async fn list_shows(shows: &crate::ShowsHandle) -> Result<Value, String> {
     }
 
     Ok(serde_json::json!({
+        // The four demos, from the same table `--demo` reads, so a card on the
+        // welcome screen cannot offer one the console does not have.
+        "demos": crate::demo::ALL
+            .iter()
+            .map(|demo| serde_json::json!({
+                "id": demo.id(),
+                "title": demo.title(),
+                "blurb": demo.blurb(),
+            }))
+            .collect::<Vec<_>>(),
         "showsDir": shows.shows_dir,
         "open": shows.bundle.as_ref().map(|b| b.path()),
         "recent": recents,

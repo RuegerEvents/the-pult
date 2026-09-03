@@ -1,18 +1,19 @@
-// Put something in a fresh demo show, over the ordinary WebSocket API.
+// Put a rig worth measuring in a fresh demo show, over the ordinary WebSocket API.
 //
 // Nothing here is privileged — it is the same protocol the frontend speaks, so if
 // this drifts out of date it will fail loudly rather than quietly doing the wrong
 // thing. Run by scripts/demo.sh.
 //
-//   node scripts/demo-seed.mjs <port> [--size small|big|huge|<n>] [--cues <n>] [--slice <f>]
+//   node scripts/demo-seed.mjs <port> [--size big|huge|<n>] [--cues <n>] [--slice <f>]
 //
-// `small` is the hand-made demo: five fixtures, three cues, two flows, and nothing
-// running. It is the default, and it is what every existing invocation gets.
+// This is the *instrument*, and it goes over the public API on purpose: what it
+// measures is then what an operator would feel. The shows meant to be looked at are
+// the console's own — `--demo haunt|theatre|club|festival`, seeded in Rust at open
+// time, which is what a card on the welcome screen presses. `small` used to be here
+// and is `--demo haunt` now.
 //
-// `big` and `huge` add a generated rig on top of it — hundreds or thousands of
-// fixtures, a stack of cues over several sequences, and an effect left running so
-// the station is actually ticking. They exist to be measured rather than looked at:
-// see `scripts/demo.sh --measure`.
+// `big` and `huge` are hundreds or thousands of fixtures, a stack of cues over
+// several sequences, and effects left running so the station is actually ticking.
 //
 // `--size <n>` is any rig size, because the shape of the curve is the answer and not
 // one point on it. The cue stack and the slice are separate axes — `--cues` and
@@ -55,7 +56,7 @@ const STEEPER = { x: 156.0375, y: 0, z: 180 };
 
 const argv = process.argv.slice(2);
 let port = '7700';
-let size = 'small';
+let size = 'big';
 let askedCues = null;
 let askedSlice = null;
 for (let i = 0; i < argv.length; i++) {
@@ -76,7 +77,6 @@ for (let i = 0; i < argv.length; i++) {
  * everything in every cue either.
  */
 const PRESETS = {
-	small: null,
 	big: { heads: 500, cues: 60, sequences: 4, sliceShare: 0.15, plans: 0 },
 	huge: { heads: 2000, cues: 300, sequences: 12, sliceShare: 0.1, plans: 3 }
 };
@@ -112,6 +112,12 @@ if (size in PRESETS) {
 	preset = PRESETS[size];
 } else if (Number.isFinite(Number(size)) && Number(size) > 0) {
 	preset = sized(Math.floor(Number(size)));
+} else if (size === 'small') {
+	console.error(
+		'  `small` is the console\'s own demo now: start it with --demo haunt, or open it\n' +
+			'  from the welcome screen. This script is the measurement instrument.'
+	);
+	process.exit(2);
 } else {
 	console.error(
 		`  unknown size "${size}" — one of ${Object.keys(PRESETS).join(', ')}, or a fixture count`
@@ -121,14 +127,14 @@ if (size in PRESETS) {
 
 // The two axes, applied over whatever the size decided. Given explicitly they win,
 // which is how the curve gets taken along one axis at a time.
-if (preset && askedCues !== null) {
+if (askedCues !== null) {
 	if (!Number.isFinite(askedCues) || askedCues < 0) {
 		console.error(`  --cues wants a count, not "${askedCues}"`);
 		process.exit(2);
 	}
 	preset = { ...preset, cues: Math.floor(askedCues) };
 }
-if (preset && askedSlice !== null) {
+if (askedSlice !== null) {
 	if (!Number.isFinite(askedSlice) || askedSlice <= 0 || askedSlice > 1) {
 		console.error(`  --slice wants a fraction between 0 and 1, not "${askedSlice}"`);
 		process.exit(2);
@@ -258,8 +264,11 @@ await station.open.catch((error) => {
 });
 
 try {
-	if (await get(['show'])) {
-		console.log('  this show already has something in it; leaving it alone');
+	// The rig rather than the show row: the station seeds a `show` for every file it
+	// opens now, so a row is no longer evidence that anybody has done anything.
+	const already = await get(['fixtures']);
+	if (already?.length) {
+		console.log('  this show already has a rig in it; leaving it alone');
 		process.exit(0);
 	}
 
@@ -273,31 +282,12 @@ try {
 		process.exit(1);
 	}
 
-	await set(['show'], {
-		id: id(),
-		name: 'Demo',
-		created_at: new Date().toISOString()
-	});
+	// The name only. The row itself is the station's — it fills in the history depth,
+	// the home fade and the haze from this console's preferences when it opens the
+	// file, and replacing the whole singleton here would put those back to nothing.
+	await set(['show', 'name'], `Demo ${size}`);
 
-	// One ordinary DMX fixture type, so the Patch tab has something in it and an
-	// Art-Net output has something to send.
-	const dimmer = {
-		id: id(),
-		name: 'Dimmer',
-		manufacturer: 'Generic',
-		channel_count: 1,
-		parameters: [
-			{
-				kind: 'Intensity',
-				direction: 'Output',
-				binding: null,
-				default_value: { type: 'Float', value: 0 }
-			}
-		]
-	};
-	await create('fixture_types', dimmer);
-
-	// And a moving head, so there is something to puppeteer. Nothing binds a channel:
+	// A moving head, so there is something to puppeteer. Nothing binds a channel:
 	// where a parameter sits belongs to a mode, and a type that names none has the
 	// implicit one — a byte per parameter in the order they are listed, three for a
 	// colour. So this is intensity at 1, the colour across 2 to 4, pan at 5, tilt at 6.
@@ -335,49 +325,8 @@ try {
 	};
 	await create('fixture_types', spot);
 
-	// Hung where the names say, in metres: X to the right as seen from front of
-	// house, Y up, Z downstage towards the audience. Placed rather than null so the
-	// Stage tab opens with a rig in it rather than three chips in a tray.
-	const fixtures = [
-		['Front left', { x: -3, y: 4.5, z: 2 }],
-		['Front right', { x: 3, y: 4.5, z: 2 }],
-		['Backlight', { x: 0, y: 5, z: -3 }]
-	];
-	for (const [index, [name, at]] of fixtures.entries()) {
-		await create('fixtures', {
-			id: id(),
-			name,
-			fixture_type_id: dimmer.id,
-			address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 + index }] } },
-			position: placed(at),
-		});
-	}
-
-	// Hung axially rather than as points: a moving head needs a rest direction for
-	// pan and tilt to be angles away from, and these two face downstage and down.
-	const heads = [
-		['Head left', { x: -2.5, y: 5, z: -1 }],
-		['Head right', { x: 2.5, y: 5, z: -1 }]
-	];
-	for (const [index, [name, at]] of heads.entries()) {
-		await create('fixtures', {
-			id: id(),
-			name,
-			fixture_type_id: spot.id,
-			address: {
-				Dmx: {
-					mode: 'Default',
-					breaks: [{ universe: 1, address: 11 + index * spot.channel_count }]
-				}
-			},
-			position: placed(at, DOWNSTAGE_AND_DOWN),
-		});
-	}
-
-	const patched = await get(['fixtures']);
-
-	// Two cues that actually move something, so Go does something visible and a
-	// trigger wired to a contact has somewhere to go.
+	// The captures a generated cue is made of. Two shapes: a level, and the same
+	// parameter driven by a shape instead.
 	const capture = (fixture, level) => ({
 		fixture_id: fixture.id,
 		parameter_kind: 'Intensity',
@@ -399,12 +348,9 @@ try {
 	};
 	await create('speed_masters', master);
 
-	// One id across both heads, so the effects panel gathers them back into a
-	// single editable effect rather than two unrelated sines.
+	// One id across every head that carries it, so the effects panel gathers them
+	// back into a single editable effect rather than hundreds of unrelated sines.
 	const chaseId = id();
-	// The two moving heads, as they came back from the show rather than as the
-	// list above spelled them: `patched` carries the ids the effect needs.
-	const movers = patched.filter((f) => f.name.startsWith('Head'));
 
 	/**
 	 * A colour sine on one head, at the phase given.
@@ -434,131 +380,6 @@ try {
 		},
 		easing: 'Linear'
 	});
-
-	const cues = [
-		{
-			id: id(),
-			name: 'House',
-			number: 1,
-			captures: patched.map((f) => capture(f, 0.2)),
-			follow_mode: 'Manual',
-			fade_in_ms: 2000,
-			fade_out_ms: 2000,
-			is_active: false
-		},
-		{
-			id: id(),
-			name: 'Scare',
-			number: 2,
-			captures: patched.map((f) => capture(f, 1.0)),
-			follow_mode: 'Manual',
-			fade_in_ms: 3000,
-			fade_out_ms: 1500,
-			is_active: false
-		},
-		{
-			id: id(),
-			name: 'Possession',
-			number: 3,
-			// Everything up, and the two heads cycling through colour against each
-			// other on the speed master.
-			captures: [
-				...patched.map((f) => capture(f, 0.8)),
-				...movers.map((f, i) => sine(f, i * 0.5))
-			],
-			follow_mode: 'Manual',
-			fade_in_ms: 1000,
-			fade_out_ms: 1000,
-			is_active: false
-		}
-	];
-	for (const cue of cues) await create('cues', cue);
-
-	const sequence = {
-		id: id(),
-		name: 'Haunt',
-		cue_ids: cues.map((c) => c.id),
-		active_cue_index: null,
-		went_at: null
-	};
-	await create('sequences', sequence);
-
-	// Two graphs for the Flows tab. The first is a chain anyone can set off by
-	// hand; the second is the thing a one-row-per-rule trigger could never say.
-	//
-	// Nodes carry their own coordinates rather than being laid out from an index,
-	// because an `And` has two feeders and they cannot share a row.
-	const drawFlow = async (name, placed, wires) => {
-		const flow = { id: id(), name, enabled: true };
-		await create('flows', flow);
-		const ids = [];
-		for (const [kind, x, y] of placed) {
-			const node = {
-				id: id(),
-				flow_id: flow.id,
-				kind,
-				x,
-				y,
-				active: false,
-				last_fired_at: null
-			};
-			ids.push(node.id);
-			await create('flow_nodes', node);
-		}
-		for (const [from, fromPort, to, toPort] of wires) {
-			await create('flow_edges', {
-				id: id(),
-				flow_id: flow.id,
-				from_node: ids[from],
-				from_port: fromPort,
-				to_node: ids[to],
-				to_port: toPort
-			});
-		}
-	};
-
-	const watch = (fixture) => ({
-		Source: { Parameter: { fixture_id: fixture.id, parameter: 'Intensity' } }
-	});
-
-	await drawFlow(
-		'Panic button',
-		[
-			['Button', 40, 60],
-			[{ Delay: { ms: 1500 } }, 280, 60],
-			[{ Action: { GoNext: { sequence_id: sequence.id } } }, 520, 60]
-		],
-		[
-			[0, 0, 1, 0],
-			[1, 0, 2, 0]
-		]
-	);
-
-	await drawFlow(
-		'Both fronts up',
-		[
-			[watch(patched[0]), 40, 40],
-			[watch(patched[1]), 40, 180],
-			['And', 300, 100],
-			[{ Condition: 'RisingEdge' }, 540, 100],
-			[{ Action: { GoToCue: { sequence_id: sequence.id, cue_id: cues[1].id } } }, 780, 100]
-		],
-		// Both watches into the two inputs of the And, then edge-detect the gate:
-		// it fires when the second one comes up, not when either does.
-		[
-			[0, 0, 2, 0],
-			[1, 0, 2, 1],
-			[2, 0, 3, 0],
-			[3, 0, 4, 0]
-		]
-	);
-
-	if (!preset) {
-		console.log(
-			`  seeded: ${patched.length} fixtures, ${cues.length} cues, 1 sequence, 1 speed master, 2 flows`
-		);
-		process.exit(0);
-	}
 
 	// ── A rig worth measuring ─────────────────────────────────────────────────
 	//
@@ -684,9 +505,9 @@ try {
 	// different sizes has to be able to see.
 	const perCue = Math.max(1, Math.round(preset.heads * preset.sliceShare));
 	console.log(
-		`  seeded ${size}: ${patched.length + generated.length} fixtures, ` +
-			`${cues.length + generatedCues.length} cues, ` +
-			`${1 + generatedSequences.length} sequences (${generatedSequences.length} running), ` +
+		`  seeded ${size}: ${generated.length} fixtures, ` +
+			`${generatedCues.length} cues, ` +
+			`${generatedSequences.length} sequences (all running), ` +
 			`${plans} plans, in ${took}s`
 	);
 	console.log(

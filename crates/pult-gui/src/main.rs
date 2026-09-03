@@ -34,6 +34,10 @@ struct Args {
     /// meaningful working directory to find a show in.
     #[arg(long, value_name = "BUNDLE")]
     show: Option<std::path::PathBuf>,
+    /// Put one of the demo shows in, if the show has no rig yet: haunt, theatre,
+    /// club or festival.
+    #[arg(long, value_name = "ID")]
+    demo: Option<pult_backend::demo::Demo>,
     #[arg(long, default_value_t = 1883)]
     openhaunt_broker_port: u16,
     /// Use this station id instead of the one this machine has recorded.
@@ -83,6 +87,7 @@ async fn start(args: &Args, log: LogHandle) -> anyhow::Result<String> {
         port: free_or_any(args.port).await,
         sync_port: free_or_any(args.sync_port).await,
         show: args.show.clone(),
+        demo: args.demo,
         openhaunt_broker_port: args.openhaunt_broker_port,
         node_id: args.node_id,
         log: Some(log),

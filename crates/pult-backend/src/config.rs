@@ -40,6 +40,13 @@ pub struct Config {
     /// directory.
     #[serde(default)]
     pub shows_dir: Option<std::path::PathBuf>,
+    /// Put a demo show in this one, if it has no rig yet.
+    ///
+    /// Applied after the load and only to a show with no fixtures, so a console that
+    /// was started with `--demo` once and has been programmed since does not get a
+    /// second rig on top of somebody's work.
+    #[serde(default)]
+    pub demo: Option<crate::demo::Demo>,
     /// Seeds for the `outputs` collection, applied only to a show that has none.
     #[serde(default)]
     pub artnet: Vec<SocketAddr>,
@@ -95,6 +102,7 @@ impl Default for Config {
             show: None,
             identity: None,
             shows_dir: None,
+            demo: None,
             artnet: Vec::new(),
             sacn: None,
             openhaunt_broker_port: default_broker_port(),

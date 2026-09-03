@@ -26,6 +26,10 @@ struct Args {
     /// so a copied bundle no longer clones the station that made it.
     #[arg(long, value_name = "FILE")]
     identity: Option<std::path::PathBuf>,
+    /// Put one of the demo shows in, if the show has no rig yet: haunt, theatre,
+    /// club or festival.
+    #[arg(long, value_name = "ID")]
+    demo: Option<pult_backend::demo::Demo>,
     /// Where the shows this console makes for itself go, and what the welcome screen
     /// lists. Defaults to the station preference and then to the data directory.
     #[arg(long, value_name = "DIR")]
@@ -96,6 +100,7 @@ async fn main() -> Result<()> {
         show: args.show,
         identity: args.identity,
         shows_dir: args.shows_dir,
+        demo: args.demo,
         artnet: args.artnet,
         sacn: args.sacn,
         openhaunt_broker_port: args.openhaunt_broker_port,

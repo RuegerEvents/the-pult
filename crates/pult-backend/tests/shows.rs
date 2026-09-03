@@ -672,3 +672,47 @@ const PNG: &[u8] = &[
     0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
     0x89,
 ];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_show_can_come_with_a_demo_in_it() {
+    // The welcome screen's cards: an operator opening the console for the first time
+    // has no Node, no repository and no terminal, so the rig has to be something the
+    // binary can make for itself.
+    let dir = Dir::new();
+    let console = Console::start(a_config(&dir)).await.expect("a console starts");
+    let port = console.http_addr().port();
+    let shows = console.shows();
+    tokio::spawn(console.serve());
+
+    rpcs::open_a_show("show.new", &json!({ "name": "Haunted", "demo": "haunt" }), &shows)
+        .await
+        .expect("a demo show is taken");
+    config_when_settled(port, true).await;
+
+    // Read off the summary rather than out of the engine, because that is what the
+    // welcome screen shows and what an operator would see.
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let listed = rpcs::list_shows(&shows).await.expect("it lists");
+        if let Some(row) = listed["inDir"].as_array().and_then(|rows| rows.first()) {
+            if row["fixtures"].as_u64().unwrap_or(0) == 5 {
+                assert_eq!(row["cues"], 3);
+                assert_eq!(row["name"], "Haunt", "the demo names the show, not the folder");
+                return;
+            }
+        }
+    }
+    panic!("the demo never landed in the new show");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_demo_nobody_has_heard_of_is_refused_rather_than_ignored() {
+    let dir = Dir::new();
+    let console = Console::start(a_config(&dir)).await.expect("a console starts");
+    let shows = console.shows();
+
+    let err = rpcs::open_a_show("show.new", &json!({ "name": "X", "demo": "cabaret" }), &shows)
+        .await
+        .unwrap_err();
+    assert!(err.contains("no such demo"), "{err}");
+}

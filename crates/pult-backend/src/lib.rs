@@ -8,6 +8,7 @@
 
 pub mod api;
 pub mod config;
+pub mod demo;
 pub mod engine;
 pub mod error;
 pub mod handle;
@@ -114,6 +115,12 @@ pub enum ShowSwitch {
         /// "join what is already on the network": a station has to have a show
         /// before it can be handed one.
         then_join: Option<Uuid>,
+        /// A demo to put in it once it is open, for the welcome screen's cards.
+        ///
+        /// Carried on the switch rather than seeded before it, because seeding is a
+        /// hundred writes through an engine, and the engine that will hold this show
+        /// does not exist until the station has started.
+        demo: Option<demo::Demo>,
     },
     Close,
     Restore {
@@ -296,8 +303,14 @@ impl Console {
 
         let mut then_join = None;
         match asked {
-            ShowSwitch::Open { path, then_join: join } => {
+            ShowSwitch::Open { path, then_join: join, demo } => {
                 self.config.show = Some(path);
+                // Only for this start. A demo is seeded once into a show with no rig
+                // in it, and leaving the flag on would mean every later restart
+                // trying again — which the seeder itself refuses, but which would
+                // also mean a console that reopened this show years later still
+                // carrying the instruction.
+                self.config.demo = demo;
                 then_join = join;
             }
             ShowSwitch::Close => self.config.show = None,
@@ -327,7 +340,9 @@ impl Console {
             },
         }
 
-        let running = match start(self.config.clone()).await {
+        let starting = self.config.clone();
+        self.config.demo = None;
+        let running = match start(starting).await {
             Ok(running) => running,
             Err(e) => {
                 // The show that was asked for will not open. Falling back to the one
@@ -536,6 +551,14 @@ pub async fn start(config: Config) -> Result<Running> {
     // The flags survive as a way to seed an empty showfile. Anything already
     // configured wins: a flag should not quietly add a second output every start.
     seed_outputs_from_flags(&engine_handle, node_id, &config).await;
+
+    // A demo, if one was asked for and the show has nothing in it. After the load
+    // and after the outputs, so a demo lands on a station that is already sending.
+    if let Some(demo) = config.demo {
+        if let Err(e) = demo::seed(&engine_handle, demo).await {
+            warn!("[demo] could not seed {}: {e:#}", demo.id());
+        }
+    }
 
     // A snapshot on this disk that the show has forgotten gets its row put back —
     // the case a restore leaves behind, and the one an operator reaches for when the

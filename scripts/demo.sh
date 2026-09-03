@@ -16,10 +16,14 @@
 #                                a Command Line panel, a Natural Language bar,
 #                                and a plugin-shipped Programmer Monitor
 #   scripts/demo.sh --size big   a bigger rig: small (the default) is the
-#                                hand-made show, big adds 500 fixtures and a
-#                                stack of cues, huge adds 2000 and three plans.
-#                                --size <n> is any count, since the shape of the
-#                                curve is the answer and not one point on it
+#                                console's own Haunt demo, seeded in Rust at open
+#                                time; big generates 500 fixtures and a stack of
+#                                cues, huge 2000 and three plans. --size <n> is
+#                                any count, since the shape of the curve is the
+#                                answer and not one point on it
+#   scripts/demo.sh --demo <id>  one of the console's own shows instead of the
+#                                hand-made one: haunt, theatre, club, festival.
+#                                The same four the welcome screen offers
 #   scripts/demo.sh --cues <n>   how many cues the generated stack has, held
 #                                apart from the rig size so one axis moves at a
 #                                time
@@ -73,6 +77,7 @@ SIMS=1
 TWO=0
 PLUGINS=0
 SIZE=small
+DEMO=
 CUES=
 SLICE=
 MEASURE=0
@@ -88,6 +93,7 @@ while [ $# -gt 0 ]; do
     --two) TWO=1 ;;
     --plugins) PLUGINS=1 ;;
     --size) shift; SIZE=${1:-}; [ -n "$SIZE" ] || { echo "--size needs small, big, huge or a count" >&2; exit 2; } ;;
+    --demo) shift; DEMO=${1:-}; [ -n "$DEMO" ] || { echo "--demo needs haunt, theatre, club or festival" >&2; exit 2; } ;;
     --cues) shift; CUES=${1:-}; [ -n "$CUES" ] || { echo "--cues needs a count" >&2; exit 2; } ;;
     --slice) shift; SLICE=${1:-}; [ -n "$SLICE" ] || { echo "--slice needs a fraction" >&2; exit 2; } ;;
     --measure) MEASURE=1 ;;
@@ -220,9 +226,10 @@ fi
 # Started before the nodes, so its mDNS browser is listening when they announce
 # themselves. The other order works too, but only once a node re-announces.
 
-# start_station <show> <identity> <port> <sync-port> <broker-port> <log>
+# start_station <show> <identity> <port> <sync-port> <broker-port> <log> [extra flags…]
 start_station() {
   local show=$1 identity=$2 port=$3 sync_port=$4 broker_port=$5 log=$6
+  shift 6
   # Two logs, and they are not the same log. The station writes its own per-run
   # file into PULT_LOG_DIR — the one the System Log panel points at, and the one
   # each station keeps separately, which is why the env var exists at all. The
@@ -238,6 +245,7 @@ start_station() {
     --openhaunt-broker-port "$broker_port" \
     ${PLUGIN_FLAGS[@]+"${PLUGIN_FLAGS[@]}"} \
     ${OUTPUT_FLAGS[@]+"${OUTPUT_FLAGS[@]}"} \
+    "$@" \
     > "$log" 2>&1 &
   PIDS+=($!)
 
@@ -252,8 +260,18 @@ start_station() {
   fi
 }
 
+# The hand-made demo is the console's own now — `--demo haunt`, seeded in Rust at
+# open time, which is what a card on the welcome screen presses. The sized rigs stay
+# with demo-seed.mjs: that one is the measurement instrument, and it goes over the
+# public API on purpose so that what it measures is what an operator would feel.
+DEMO_FLAGS=()
+if [ "$SEED" = 1 ] && [ "$KEEP" = 0 ] && [ "$SIZE" = small ]; then
+  DEMO_FLAGS=(--demo "${DEMO:-haunt}")
+fi
+
 echo "starting the backend on port ${PORT}"
-start_station "$SHOW" "$IDENTITY" "$PORT" "$SYNC_PORT" "$BROKER_PORT" "$DEMO_DIR/backend.log"
+start_station "$SHOW" "$IDENTITY" "$PORT" "$SYNC_PORT" "$BROKER_PORT" "$DEMO_DIR/backend.log" \
+  ${DEMO_FLAGS[@]+"${DEMO_FLAGS[@]}"}
 
 # ── Simulated devices ─────────────────────────────────────────────────────────
 
@@ -278,8 +296,8 @@ fi
 
 # ── Something to look at ──────────────────────────────────────────────────────
 
-if [ "$SEED" = 1 ] && [ "$KEEP" = 0 ]; then
-  echo "seeding a show"
+if [ "$SEED" = 1 ] && [ "$KEEP" = 0 ] && [ "$SIZE" != small ]; then
+  echo "seeding a ${SIZE} show"
   SEED_ARGS=(--size "$SIZE")
   [ -n "$CUES" ] && SEED_ARGS+=(--cues "$CUES")
   [ -n "$SLICE" ] && SEED_ARGS+=(--slice "$SLICE")
