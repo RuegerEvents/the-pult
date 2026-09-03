@@ -16,9 +16,31 @@ const PNG: &[u8] = &[
 ];
 
 /// A console serving its asset routes, and the address to reach it on.
-async fn a_console() -> (String, Arc<sqlx::SqlitePool>) {
-    let (addr, pool, _engine) = a_console_and_its_engine().await;
-    (addr, pool)
+async fn a_console() -> (String, OwnAssets) {
+    let (addr, assets, _engine) = a_console_and_its_engine().await;
+    (addr, assets)
+}
+
+/// An asset store with a directory of its own, taken away when the test ends.
+///
+/// The bytes are files in a bundle now, so a test that stores one has to have
+/// somewhere to put it — an in-memory database is only half a store.
+struct OwnAssets {
+    dir: std::path::PathBuf,
+    store: crate::infra::assets::AssetStore,
+}
+
+impl std::ops::Deref for OwnAssets {
+    type Target = crate::infra::assets::AssetStore;
+    fn deref(&self) -> &crate::infra::assets::AssetStore {
+        &self.store
+    }
+}
+
+impl Drop for OwnAssets {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// The same, with a handle on the engine.
@@ -27,13 +49,20 @@ async fn a_console() -> (String, Arc<sqlx::SqlitePool>) {
 /// behind the engine's back would not do: the engine holds the show in memory and
 /// answers reads from there, so a row inserted underneath it is a row the routes
 /// cannot see — which is the same reason the rest of the console never does it either.
-async fn a_console_and_its_engine() -> (String, Arc<sqlx::SqlitePool>, crate::engine::EngineHandle) {
+async fn a_console_and_its_engine() -> (String, OwnAssets, crate::engine::EngineHandle) {
     let pool = Arc::new(showfile::open_in_memory().await.unwrap());
     let (engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool.clone(), None);
     tokio::spawn(engine.run());
 
+    let dir = std::env::temp_dir().join(format!("pult-rest-assets-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let assets = OwnAssets {
+        store: crate::infra::assets::AssetStore::new(Some(dir.clone()), pool),
+        dir,
+    };
+
     let state = AssetState {
-        pool: pool.clone(),
+        assets: assets.store.clone(),
         engine: handle.clone(),
         node_id: NodeId(Uuid::new_v4()),
         // Pointed nowhere and given no disk cache: nothing in this module asks the
@@ -48,12 +77,12 @@ async fn a_console_and_its_engine() -> (String, Arc<sqlx::SqlitePool>, crate::en
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    (addr.to_string(), pool, handle)
+    (addr.to_string(), assets, handle)
 }
 
 #[tokio::test]
 async fn an_uploaded_plan_comes_back_byte_for_byte() {
-    let (addr, _pool) = a_console().await;
+    let (addr, _assets) = a_console().await;
     let client = reqwest::Client::new();
 
     let posted = client
@@ -81,7 +110,7 @@ async fn an_uploaded_plan_comes_back_byte_for_byte() {
 
 #[tokio::test]
 async fn a_content_type_with_a_charset_on_it_is_still_that_type() {
-    let (addr, _pool) = a_console().await;
+    let (addr, _assets) = a_console().await;
 
     let posted = reqwest::Client::new()
         .post(format!("http://{addr}/assets"))
@@ -98,7 +127,7 @@ async fn a_content_type_with_a_charset_on_it_is_still_that_type() {
 
 #[tokio::test]
 async fn a_type_the_console_will_not_serve_is_refused_with_a_reason() {
-    let (addr, _pool) = a_console().await;
+    let (addr, _assets) = a_console().await;
 
     let posted = reqwest::Client::new()
         .post(format!("http://{addr}/assets"))
@@ -114,7 +143,7 @@ async fn a_type_the_console_will_not_serve_is_refused_with_a_reason() {
 
 #[tokio::test]
 async fn a_bundle_is_handed_back_as_an_attachment_and_a_plan_is_not() {
-    let (addr, _pool) = a_console().await;
+    let (addr, _assets) = a_console().await;
     let client = reqwest::Client::new();
 
     // A zip does not execute in a browser, so serving one is inert — but it is
@@ -153,7 +182,7 @@ async fn a_bundle_is_handed_back_as_an_attachment_and_a_plan_is_not() {
 
 #[tokio::test]
 async fn an_asset_nobody_has_is_a_not_found_rather_than_a_hang() {
-    let (addr, _pool) = a_console().await;
+    let (addr, _assets) = a_console().await;
 
     let fetched = reqwest::Client::new()
         .get(format!("http://{addr}/assets/{}", assets::digest(b"never uploaded")))
@@ -168,7 +197,7 @@ async fn an_asset_nobody_has_is_a_not_found_rather_than_a_hang() {
 async fn a_relayed_request_is_not_relayed_again() {
     // Without this, three stations that each think the other has an asset would
     // forward one request round between them until something timed out.
-    let (addr, _pool) = a_console().await;
+    let (addr, _assets) = a_console().await;
 
     let fetched = reqwest::Client::new()
         .get(format!("http://{addr}/assets/{}", assets::digest(PNG)))
@@ -358,7 +387,7 @@ async fn fixture_types(pool: &sqlx::SqlitePool) -> Vec<pult_schema::types::fixtu
 
 #[tokio::test]
 async fn importing_a_gdtf_patches_the_show_with_the_fixture_it_describes() {
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
     let client = reqwest::Client::new();
 
     let posted = client
@@ -377,7 +406,7 @@ async fn importing_a_gdtf_patches_the_show_with_the_fixture_it_describes() {
     // The engine writes through a channel, so give it a moment to land.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    let types = fixture_types(&pool).await;
+    let types = fixture_types(assets.pool()).await;
     assert_eq!(types.len(), 1);
     assert_eq!(types[0].name, "Test RGBW Mover");
     assert_eq!(types[0].id.to_string(), body["fixture_type_id"].as_str().unwrap());
@@ -389,7 +418,7 @@ async fn importing_a_gdtf_patches_the_show_with_the_fixture_it_describes() {
 async fn the_file_itself_is_kept_so_the_row_is_a_reading_of_it_rather_than_a_replacement() {
     use pult_schema::types::fixture::FixtureTypeSource;
 
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
     let bytes = a_gdtf("rgbw-two-mode");
     let client = reqwest::Client::new();
     client
@@ -401,18 +430,18 @@ async fn the_file_itself_is_kept_so_the_row_is_a_reading_of_it_rather_than_a_rep
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    let types = fixture_types(&pool).await;
+    let types = fixture_types(assets.pool()).await;
     let FixtureTypeSource::Gdtf { asset, .. } = &types[0].source else {
         panic!("an imported type says where it came from: {:?}", types[0].source);
     };
-    let stored = assets::get(&pool, asset).await.unwrap().expect("the archive was kept");
+    let stored = assets.get(asset).await.unwrap().expect("the archive was kept");
     assert_eq!(stored.bytes, bytes, "byte for byte, so a later reader gets more out of it");
     assert_eq!(stored.mime, assets::GDTF_MIME);
 }
 
 #[tokio::test]
 async fn importing_the_same_fixture_again_updates_the_row_rather_than_making_a_second() {
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
     let client = reqwest::Client::new();
     for _ in 0..2 {
         let posted = client
@@ -427,7 +456,7 @@ async fn importing_the_same_fixture_again_updates_the_row_rather_than_making_a_s
     }
 
     assert_eq!(
-        fixture_types(&pool).await.len(),
+        fixture_types(assets.pool()).await.len(),
         1,
         "the file's own id is the row's, so every fixture patched to it follows the revision",
     );
@@ -435,7 +464,7 @@ async fn importing_the_same_fixture_again_updates_the_row_rather_than_making_a_s
 
 #[tokio::test]
 async fn a_body_that_is_not_a_gdtf_is_refused_and_leaves_nothing_behind() {
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
     let client = reqwest::Client::new();
 
     let posted = client
@@ -449,9 +478,9 @@ async fn a_body_that_is_not_a_gdtf_is_refused_and_leaves_nothing_behind() {
     assert!(posted.text().await.unwrap().contains("not a GDTF"));
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert!(fixture_types(&pool).await.is_empty(), "a refused import stores nothing");
+    assert!(fixture_types(assets.pool()).await.is_empty(), "a refused import stores nothing");
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM assets")
-        .fetch_one(&*pool)
+        .fetch_one(assets.pool())
         .await
         .unwrap();
     assert_eq!(count, 0, "and no asset either");
@@ -459,7 +488,7 @@ async fn a_body_that_is_not_a_gdtf_is_refused_and_leaves_nothing_behind() {
 
 #[tokio::test]
 async fn an_imported_type_exports_as_the_file_it_arrived_in() {
-    let (addr, _pool) = a_console().await;
+    let (addr, _assets) = a_console().await;
     let bytes = a_gdtf("rgbw-two-mode");
     let client = reqwest::Client::new();
 
@@ -495,7 +524,7 @@ async fn a_type_this_console_made_for_itself_still_exports_as_something_openable
         FixtureType, ParameterDefinition, ParameterKind, ParameterValue,
     };
 
-    let (addr, _pool, engine) = a_console_and_its_engine().await;
+    let (addr, _assets, engine) = a_console_and_its_engine().await;
     let fixture_type = FixtureType {
         id: Uuid::new_v4(),
         name: "Hand Made".into(),
@@ -548,7 +577,7 @@ async fn a_type_this_console_made_for_itself_still_exports_as_something_openable
 
 #[tokio::test]
 async fn asking_for_a_fixture_type_nobody_has_is_a_not_found() {
-    let (addr, _pool) = a_console().await;
+    let (addr, _assets) = a_console().await;
     let missing = Uuid::new_v4();
     let answer = reqwest::Client::new()
         .get(format!("http://{addr}/api/export/gdtf/{missing}"))
@@ -626,24 +655,24 @@ async fn importing_an_mvr_patches_the_rig_it_draws() {
     use pult_schema::types::fixture::Fixture;
     use pult_schema::types::scene::{Layer, SceneClass, SceneObject, SceneObjectKind, Symbol};
 
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
 
     let body = post_mvr(&addr, a_small_rig()).await;
     assert_eq!(body["warnings"].as_array().unwrap().len(), 0, "{:?}", body["warnings"]);
     assert!(body["missing"].as_array().unwrap().is_empty());
 
-    let layers: Vec<Layer> = pult_schema::db::get_all(&pool).await.unwrap();
+    let layers: Vec<Layer> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     assert_eq!(layers.len(), 2, "a layer per layer");
 
-    let classes: Vec<SceneClass> = pult_schema::db::get_all(&pool).await.unwrap();
+    let classes: Vec<SceneClass> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     assert_eq!(classes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["Overhead"]);
 
-    let symbols: Vec<Symbol> = pult_schema::db::get_all(&pool).await.unwrap();
+    let symbols: Vec<Symbol> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0].geometry.len(), 1, "the symbol carries its mesh");
     assert_eq!(symbols[0].geometry[0].file_name, "truss-3m.glb");
 
-    let mut objects: Vec<SceneObject> = pult_schema::db::get_all(&pool).await.unwrap();
+    let mut objects: Vec<SceneObject> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     objects.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(
         objects.iter().map(|o| (o.name.as_str(), o.kind)).collect::<Vec<_>>(),
@@ -656,7 +685,7 @@ async fn importing_an_mvr_patches_the_rig_it_draws() {
     assert_eq!(truss.symbol, Some(symbols[0].id), "and it instances the symbol");
     assert_eq!(truss.class, Some(classes[0].id));
 
-    let mut fixtures: Vec<Fixture> = pult_schema::db::get_all(&pool).await.unwrap();
+    let mut fixtures: Vec<Fixture> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     fixtures.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(
         fixtures.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
@@ -687,10 +716,10 @@ async fn importing_an_mvr_patches_the_rig_it_draws() {
 async fn a_mesh_is_stored_under_its_hash_and_findable_by_the_name_the_file_used() {
     use pult_schema::types::scene::NamedAsset;
 
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
     post_mvr(&addr, a_small_rig()).await;
 
-    let mut named: Vec<NamedAsset> = pult_schema::db::get_all(&pool).await.unwrap();
+    let mut named: Vec<NamedAsset> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     named.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(
         named.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(),
@@ -711,7 +740,7 @@ async fn importing_the_same_drawing_again_updates_it_rather_than_doubling_it() {
     use pult_schema::types::fixture::Fixture;
     use pult_schema::types::scene::SceneObject;
 
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
 
     let first = post_mvr(&addr, a_small_rig()).await;
     assert!(first["created"].as_u64().unwrap() > 0);
@@ -721,8 +750,8 @@ async fn importing_the_same_drawing_again_updates_it_rather_than_doubling_it() {
     assert_eq!(second["created"], 0, "nothing new the second time");
     assert_eq!(second["updated"], first["created"], "everything matched by its own uuid");
 
-    let fixtures: Vec<Fixture> = pult_schema::db::get_all(&pool).await.unwrap();
-    let objects: Vec<SceneObject> = pult_schema::db::get_all(&pool).await.unwrap();
+    let fixtures: Vec<Fixture> = pult_schema::db::get_all(assets.pool()).await.unwrap();
+    let objects: Vec<SceneObject> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     assert_eq!(fixtures.len(), 2, "two fixtures, not four");
     assert_eq!(objects.len(), 2);
 }
@@ -735,7 +764,7 @@ async fn importing_the_same_drawing_again_updates_it_rather_than_doubling_it() {
 async fn a_fixture_whose_gdtf_is_missing_gets_a_placeholder_and_a_warning() {
     use pult_schema::types::fixture::{Fixture, FixtureType};
 
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
 
     let body = post_mvr(
         &addr,
@@ -753,12 +782,12 @@ async fn a_fixture_whose_gdtf_is_missing_gets_a_placeholder_and_a_warning() {
         "{warnings:?}",
     );
 
-    let types: Vec<FixtureType> = pult_schema::db::get_all(&pool).await.unwrap();
+    let types: Vec<FixtureType> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     let placeholder = types.iter().find(|t| t.name == "Test RGBW Mover").unwrap();
     assert_eq!(placeholder.manufacturer, "Acme");
     assert!(placeholder.parameters.is_empty(), "it does not invent what the file does not say");
 
-    let fixtures: Vec<Fixture> = pult_schema::db::get_all(&pool).await.unwrap();
+    let fixtures: Vec<Fixture> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     let mover = fixtures.iter().find(|f| f.name == "Mover 1").unwrap();
     assert_eq!(mover.fixture_type_id, placeholder.id, "the fixture is still patched");
     assert_eq!(
@@ -775,7 +804,7 @@ async fn a_fixture_whose_gdtf_is_missing_gets_a_placeholder_and_a_warning() {
 async fn a_fixture_the_new_drawing_drops_is_listed_and_left_alone() {
     use pult_schema::types::fixture::Fixture;
 
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
     post_mvr(&addr, a_small_rig()).await;
 
     // The same drawing with the floor light taken out of it.
@@ -814,7 +843,7 @@ async fn a_fixture_the_new_drawing_drops_is_listed_and_left_alone() {
         "it says what went: {missing:?}",
     );
 
-    let fixtures: Vec<Fixture> = pult_schema::db::get_all(&pool).await.unwrap();
+    let fixtures: Vec<Fixture> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     assert!(
         fixtures.iter().any(|f| f.name == "Dimmer 1"),
         "and leaves it exactly where it was",
@@ -825,7 +854,7 @@ async fn a_fixture_the_new_drawing_drops_is_listed_and_left_alone() {
 async fn a_body_that_is_not_an_mvr_is_refused_and_leaves_nothing_behind() {
     use pult_schema::types::scene::Layer;
 
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
 
     let posted = reqwest::Client::new()
         .post(format!("http://{addr}/api/import/mvr"))
@@ -836,7 +865,7 @@ async fn a_body_that_is_not_an_mvr_is_refused_and_leaves_nothing_behind() {
         .unwrap();
 
     assert_eq!(posted.status(), reqwest::StatusCode::BAD_REQUEST);
-    let layers: Vec<Layer> = pult_schema::db::get_all(&pool).await.unwrap();
+    let layers: Vec<Layer> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     assert!(layers.is_empty(), "a refused file leaves no rows");
 }
 
@@ -850,7 +879,7 @@ async fn a_rig_exported_and_imported_again_is_the_same_rig() {
     use pult_schema::types::fixture::Fixture;
     use pult_schema::types::scene::{Layer, SceneObject};
 
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
     post_mvr(&addr, a_small_rig()).await;
 
     let exported = reqwest::get(format!("http://{addr}/api/export/mvr")).await.unwrap();
@@ -859,7 +888,7 @@ async fn a_rig_exported_and_imported_again_is_the_same_rig() {
     assert!(!bytes.is_empty());
 
     // A fresh show, and the export read into it.
-    let (second_addr, second_pool) = a_console().await;
+    let (second_addr, second_assets) = a_console().await;
     let report = post_mvr(&second_addr, bytes.clone()).await;
     assert_eq!(report["warnings"].as_array().unwrap().len(), 0, "{:?}", report["warnings"]);
 
@@ -869,15 +898,15 @@ async fn a_rig_exported_and_imported_again_is_the_same_rig() {
     for (what, first, second) in [
         (
             "fixtures",
-            sorted::<Fixture>(&pool).await,
-            sorted::<Fixture>(&second_pool).await,
+            sorted::<Fixture>(assets.pool()).await,
+            sorted::<Fixture>(second_assets.pool()).await,
         ),
         (
             "scene objects",
-            sorted::<SceneObject>(&pool).await,
-            sorted::<SceneObject>(&second_pool).await,
+            sorted::<SceneObject>(assets.pool()).await,
+            sorted::<SceneObject>(second_assets.pool()).await,
         ),
-        ("layers", sorted::<Layer>(&pool).await, sorted::<Layer>(&second_pool).await),
+        ("layers", sorted::<Layer>(assets.pool()).await, sorted::<Layer>(second_assets.pool()).await),
     ] {
         same(&first, &second, what);
     }
@@ -907,10 +936,10 @@ where
 async fn an_export_of_one_layer_carries_only_what_is_in_it() {
     use pult_schema::types::scene::Layer;
 
-    let (addr, pool) = a_console().await;
+    let (addr, assets) = a_console().await;
     post_mvr(&addr, a_small_rig()).await;
 
-    let layers: Vec<Layer> = pult_schema::db::get_all(&pool).await.unwrap();
+    let layers: Vec<Layer> = pult_schema::db::get_all(assets.pool()).await.unwrap();
     let floor = layers.iter().find(|l| l.name == "Floor").unwrap();
 
     let bytes = reqwest::get(format!("http://{addr}/api/export/mvr?layers={}", floor.id))

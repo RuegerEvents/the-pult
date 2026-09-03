@@ -5,7 +5,7 @@
 # backend as well, a station of its own, following the first one's show.
 #
 # The show lives in .demo/ and is rebuilt from nothing on every run, so this never
-# touches a real showfile. Pass --keep to carry the last run's show over.
+# touches a real show. Pass --keep to carry the last run's show over.
 #
 #   scripts/demo.sh              a fresh show, seeded with something to look at
 #   scripts/demo.sh --keep       carry on from where the last run left off
@@ -54,13 +54,18 @@ SYNC_PORT=${SYNC_PORT:-7701}
 # Not 1883: a demo should not fight a real broker that happens to be installed.
 BROKER_PORT=${BROKER_PORT:-11883}
 # The second station is a whole console, so it needs its own three ports and its
-# own showfile — a follower keeps its own copy of the show.
+# own show bundle — a follower keeps its own copy of the show.
 PORT_2=${PORT_2:-7710}
 SYNC_PORT_2=${SYNC_PORT_2:-7711}
 BROKER_PORT_2=${BROKER_PORT_2:-11884}
 DEMO_DIR="$ROOT/.demo"
-SHOWFILE="$DEMO_DIR/demo.db"
-SHOWFILE_2="$DEMO_DIR/demo-2.db"
+SHOW="$DEMO_DIR/demo.pult"
+SHOW_2="$DEMO_DIR/demo-2.pult"
+# A station's id lives with the machine now, not with the show. So the demo has to
+# say where each of its two stations keeps one, or both would take — and overwrite —
+# the identity of the console this operator actually uses.
+IDENTITY="$DEMO_DIR/station.node"
+IDENTITY_2="$DEMO_DIR/station-2.node"
 
 KEEP=0
 SEED=1
@@ -215,9 +220,9 @@ fi
 # Started before the nodes, so its mDNS browser is listening when they announce
 # themselves. The other order works too, but only once a node re-announces.
 
-# start_station <showfile> <port> <sync-port> <broker-port> <log>
+# start_station <show> <identity> <port> <sync-port> <broker-port> <log>
 start_station() {
-  local showfile=$1 port=$2 sync_port=$3 broker_port=$4 log=$5
+  local show=$1 identity=$2 port=$3 sync_port=$4 broker_port=$5 log=$6
   # Two logs, and they are not the same log. The station writes its own per-run
   # file into PULT_LOG_DIR — the one the System Log panel points at, and the one
   # each station keeps separately, which is why the env var exists at all. The
@@ -225,7 +230,9 @@ start_station() {
   # cannot: a panic, and anything said before the subscriber was built.
   PULT_LOG_DIR="$DEMO_DIR/logs-$port" \
   "$ROOT/target/$PROFILE/pult-backend" \
-    --showfile "$showfile" \
+    --show "$show" \
+    --identity "$identity" \
+    --shows-dir "$DEMO_DIR/shows" \
     --port "$port" \
     --sync-port "$sync_port" \
     --openhaunt-broker-port "$broker_port" \
@@ -246,7 +253,7 @@ start_station() {
 }
 
 echo "starting the backend on port ${PORT}"
-start_station "$SHOWFILE" "$PORT" "$SYNC_PORT" "$BROKER_PORT" "$DEMO_DIR/backend.log"
+start_station "$SHOW" "$IDENTITY" "$PORT" "$SYNC_PORT" "$BROKER_PORT" "$DEMO_DIR/backend.log"
 
 # ── Simulated devices ─────────────────────────────────────────────────────────
 
@@ -305,13 +312,13 @@ fi
 # ── The second station ────────────────────────────────────────────────────────
 #
 # Started after the show exists, so it has something to be handed when it joins.
-# It is an ordinary console — its own showfile, its own identity, no idea it is
+# It is an ordinary console — its own bundle, its own identity, no idea it is
 # sharing a machine — which is what makes the sync visible: edit on one, watch it
 # land on the other.
 
 if [ "$TWO" = 1 ]; then
   echo "starting a second station on port ${PORT_2}"
-  start_station "$SHOWFILE_2" "$PORT_2" "$SYNC_PORT_2" "$BROKER_PORT_2" "$DEMO_DIR/backend-2.log"
+  start_station "$SHOW_2" "$IDENTITY_2" "$PORT_2" "$SYNC_PORT_2" "$BROKER_PORT_2" "$DEMO_DIR/backend-2.log"
 
   echo "pairing the two stations"
   if ! node "$ROOT/scripts/demo-session.mjs" "$PORT" "$PORT_2"; then
@@ -352,7 +359,7 @@ cat <<EOF
   ──────────────────────────────────────────────────────────────
 
   backend    :$PORT (ws), :$SYNC_PORT (sync), :$BROKER_PORT (mqtt)
-  showfile   .demo/demo.db
+  show       .demo/demo.pult
   logs       .demo/*.log, and each station's own in .demo/logs-<port>/ —
              or the System Log panel, which is the same lines without a terminal
 EOF
@@ -365,7 +372,7 @@ if [ "$TWO" = 1 ]; then
   second station
     $URL/?port=$PORT_2
     :$PORT_2 (ws), :$SYNC_PORT_2 (sync), :$BROKER_PORT_2 (mqtt)
-    showfile .demo/demo-2.db
+    show     .demo/demo-2.pult
 
   Open both tabs side by side: an edit on one appears on the other, each shows up
   in the other's Stations panel, and a value moved in the programmer on one is

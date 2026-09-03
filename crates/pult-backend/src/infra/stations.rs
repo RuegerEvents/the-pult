@@ -100,8 +100,8 @@ struct Probe {
     ///
     /// **Absolute**, resolved once by the reporter. A mount point is absolute, so a
     /// relative path matches none of them and the volume comes out as nothing at all
-    /// — and a relative showfile is the ordinary case, not a corner one: `demo.sh`
-    /// passes `.demo/demo.db` and a console started from its own directory passes a
+    /// — and a relative path is the ordinary case, not a corner one: `demo.sh`
+    /// passes `.demo/demo.pult` and a console started from its own directory passes a
     /// bare name. There is a test that would have let this through as a plausible
     /// zero.
     showfile: std::path::PathBuf,

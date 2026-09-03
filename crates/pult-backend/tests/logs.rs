@@ -22,7 +22,7 @@ use pult_schema::ws::{LogLevel, LogLine, LogSource};
 
 /// A station with a log of its own and nothing else running.
 async fn a_station(capture: LogLevel, publish: LogLevel) -> Running {
-    let showfile = std::env::temp_dir().join(format!("pult-logs-{}.db", uuid::Uuid::new_v4()));
+    let show = std::env::temp_dir().join(format!("pult-logs-{}.pult", uuid::Uuid::new_v4()));
     let log = logging::detached(LogOptions {
         capture,
         publish,
@@ -34,7 +34,8 @@ async fn a_station(capture: LogLevel, publish: LogLevel) -> Running {
     pult_backend::start(Config {
         port: 0,
         sync_port: 0,
-        showfile: showfile.to_string_lossy().into_owned(),
+        show: Some(show.clone()),
+        identity: Some(show.with_extension("node")),
         log: Some(log),
         ..Config::default()
     })

@@ -525,7 +525,7 @@ pub fn generate_gdtf(fixture_type: &FixtureType) -> GdtfFile {
 /// The kept archive where there is one — an imported fixture exports as the file it
 /// arrived in, which is what makes a round trip through this console lossless.
 pub async fn export(
-    pool: &sqlx::SqlitePool,
+    assets: &crate::infra::assets::AssetStore,
     fixture_type: &FixtureType,
 ) -> anyhow::Result<(Vec<u8>, String)> {
     let name = format!(
@@ -535,7 +535,7 @@ pub async fn export(
     );
 
     if let FixtureTypeSource::Gdtf { asset, .. } = &fixture_type.source {
-        if let Some(stored) = crate::infra::assets::get(pool, asset).await? {
+        if let Some(stored) = assets.get(asset).await? {
             return Ok((stored.bytes, name));
         }
         // The row says a file, and the store does not have it — this station joined

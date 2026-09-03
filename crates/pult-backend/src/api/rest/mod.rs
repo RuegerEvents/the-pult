@@ -7,8 +7,6 @@
 //! `/api/config` is the third thing here, and the smallest: it is how a page that
 //! has just been loaded finds out what it loaded from.
 
-use std::sync::Arc;
-
 use axum::{
     body::Bytes,
     extract::{FromRef, Path, State},
@@ -19,7 +17,6 @@ use axum::{
 };
 use pult_schema::events::operation::NodeId;
 use serde_json::json;
-use sqlx::SqlitePool;
 use tracing::debug;
 
 use crate::{engine::EngineHandle, infra, infra::assets, state::AppState};
@@ -47,7 +44,7 @@ impl FromRef<AppState> for ConfigState {
 /// — it is the whole surface these two routes need, and a test can build it.
 #[derive(Clone)]
 pub struct AssetState {
-    pub pool: Arc<SqlitePool>,
+    pub assets: assets::AssetStore,
     pub engine: EngineHandle,
     pub node_id: NodeId,
     /// One conversation with the GDTF Share for the whole station: the session is a
@@ -58,7 +55,7 @@ pub struct AssetState {
 impl FromRef<AppState> for AssetState {
     fn from_ref(state: &AppState) -> Self {
         AssetState {
-            pool: state.pool.clone(),
+            assets: state.assets.clone(),
             engine: state.engine.clone(),
             node_id: state.node_id,
             share: state.share.clone(),
@@ -121,7 +118,9 @@ async fn install_plugin(
         .map_err(|e| bad_request(&format!("{e:#}")))?;
     let manifest = info.manifest;
 
-    let sha256 = assets::put(&state.pool, assets::BUNDLE_MIME, &body)
+    let sha256 = state
+        .assets
+        .put(assets::BUNDLE_MIME, &body)
         .await
         .map_err(|e| bad_request(&e.to_string()))?;
 
@@ -303,7 +302,7 @@ async fn import_gdtf_bytes(
     let was_there = replaced(fixture_type_id);
 
     let report =
-        infra::interop::apply::apply(plan, &state.pool, &state.engine, user_for_writes(headers))
+        infra::interop::apply::apply(plan, &state.assets, &state.engine, user_for_writes(headers))
             .await
             .map_err(|error| {
                 (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
@@ -361,7 +360,7 @@ async fn import_mvr(
         .map_err(|error| bad_request(&error.to_string()))?;
 
     let report =
-        infra::interop::apply::apply(plan, &state.pool, &state.engine, user_for_writes(&headers))
+        infra::interop::apply::apply(plan, &state.assets, &state.engine, user_for_writes(&headers))
             .await
             .map_err(|error| {
                 (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
@@ -430,14 +429,14 @@ async fn export_mvr(
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     for want in &export.wanted {
         if let Some(sha) = &want.asset {
-            if let Ok(Some(stored)) = assets::get(&state.pool, sha).await {
+            if let Ok(Some(stored)) = state.assets.get(sha).await {
                 files.insert(want.name.clone(), stored.bytes);
                 continue;
             }
         }
         if let Some(id) = want.fixture_type {
             if let Some(fixture_type) = fixture_types.iter().find(|t| t.id == id) {
-                if let Ok((bytes, _)) = infra::interop::gdtf::export(&state.pool, fixture_type).await
+                if let Ok((bytes, _)) = infra::interop::gdtf::export(&state.assets, fixture_type).await
                 {
                     files.insert(want.name.clone(), bytes);
                 }
@@ -480,7 +479,7 @@ async fn export_gdtf(
         return Err((StatusCode::NOT_FOUND, "no such fixture type").into_response());
     };
 
-    let (bytes, filename) = infra::interop::gdtf::export(&state.pool, &fixture_type)
+    let (bytes, filename) = infra::interop::gdtf::export(&state.assets, &fixture_type)
         .await
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response())?;
 
@@ -654,7 +653,7 @@ async fn upload(
         .trim()
         .to_string();
 
-    match assets::put(&state.pool, &mime, &body).await {
+    match state.assets.put(&mime, &body).await {
         Ok(sha) => Ok(Json(json!({ "sha256": sha, "mime": mime, "byte_len": body.len() }))),
         Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
     }
@@ -665,7 +664,7 @@ async fn download(
     Path(sha): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if let Ok(Some(asset)) = assets::get(&state.pool, &sha).await {
+    if let Ok(Some(asset)) = state.assets.get(&sha).await {
         return serve(asset);
     }
 
@@ -678,7 +677,7 @@ async fn download(
     // Somebody uploaded this on another console. Every station publishes where its
     // HTTP API is, so the ones worth asking are the other rows in `stations`.
     let peers = assets::peer_addresses(&state.engine, state.node_id.0).await;
-    match assets::fetch_from_peers(&state.pool, &sha, &peers).await {
+    match assets::fetch_from_peers(&state.assets, &sha, &peers).await {
         Ok(fetched) => match fetched.asset() {
             Some(asset) => serve(asset),
             // Whether nobody had it or nobody could be reached, this station does

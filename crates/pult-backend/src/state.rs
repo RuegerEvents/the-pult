@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
 use pult_schema::events::operation::NodeId;
-use sqlx::SqlitePool;
 
 use crate::{
     config::Config,
@@ -17,7 +14,10 @@ use crate::{
 #[allow(dead_code, reason = "shared state held for handlers that do not read it yet")]
 pub struct AppState {
     pub engine: EngineHandle,
-    pub pool: Arc<SqlitePool>,
+    /// Where this show's bytes are. A store rather than the pool it used to be: an
+    /// asset is a file in the bundle now and a row in the database, and every caller
+    /// needs both halves.
+    pub assets: crate::infra::assets::AssetStore,
     pub sync: SyncHandle,
     pub session: SessionHandle,
     pub devices: DeviceHandle,

@@ -18,8 +18,28 @@ pub struct Config {
     pub port: u16,
     #[serde(default = "default_sync_port")]
     pub sync_port: u16,
-    #[serde(default = "default_showfile")]
-    pub showfile: String,
+    /// The show to open: a `Name.pult` bundle directory.
+    ///
+    /// `None` is a console with **no show open** — which is a real state and the one
+    /// a console started with no arguments comes up in. Everything runs: the engine,
+    /// the sync layer, the HTTP server serving the welcome screen. What it runs
+    /// against is an in-memory database nothing is written to, and the asset store is
+    /// what says no, since it is the only part with nowhere to put anything.
+    #[serde(default)]
+    pub show: Option<std::path::PathBuf>,
+    /// Where this station's own id is kept.
+    ///
+    /// `None` falls back to `PULT_IDENTITY` and then to the config directory. Here as
+    /// well as in the environment for the reason `plugin_data` is: an environment
+    /// variable is one per process, and two stations inside one program have to be
+    /// told separately.
+    #[serde(default)]
+    pub identity: Option<std::path::PathBuf>,
+    /// Where the shows this console makes for itself go, and what the welcome screen
+    /// lists. `None` takes the station preference, and then the platform's data
+    /// directory.
+    #[serde(default)]
+    pub shows_dir: Option<std::path::PathBuf>,
     /// Seeds for the `outputs` collection, applied only to a show that has none.
     #[serde(default)]
     pub artnet: Vec<SocketAddr>,
@@ -29,7 +49,7 @@ pub struct Config {
     /// Port for the MQTT broker this node runs for its OpenHaunt devices.
     #[serde(default = "default_broker_port")]
     pub openhaunt_broker_port: u16,
-    /// Use this station id instead of the one recorded beside the showfile.
+    /// Use this station id instead of the one this machine has recorded.
     #[serde(default)]
     pub node_id: Option<Uuid>,
     /// Directories to load WASM plugins from: each is one plugin's directory or
@@ -64,7 +84,6 @@ pub struct Config {
 fn default_bind() -> IpAddr { IpAddr::V4(Ipv4Addr::UNSPECIFIED) }
 fn default_port() -> u16 { 7700 }
 fn default_sync_port() -> u16 { 7701 }
-fn default_showfile() -> String { "show.db".to_owned() }
 fn default_broker_port() -> u16 { 1883 }
 
 impl Default for Config {
@@ -73,7 +92,9 @@ impl Default for Config {
             bind: default_bind(),
             port: default_port(),
             sync_port: default_sync_port(),
-            showfile: default_showfile(),
+            show: None,
+            identity: None,
+            shows_dir: None,
             artnet: Vec::new(),
             sacn: None,
             openhaunt_broker_port: default_broker_port(),

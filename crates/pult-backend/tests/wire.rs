@@ -21,11 +21,12 @@ use pult_schema::{
 };
 
 async fn a_station() -> Running {
-    let showfile = std::env::temp_dir().join(format!("pult-wire-{}.db", uuid::Uuid::new_v4()));
+    let show = std::env::temp_dir().join(format!("pult-wire-{}.pult", uuid::Uuid::new_v4()));
     pult_backend::start(Config {
         port: 0,
         sync_port: 0,
-        showfile: showfile.to_string_lossy().into_owned(),
+        show: Some(show.clone()),
+        identity: Some(show.with_extension("node")),
         ..Config::default()
     })
     .await

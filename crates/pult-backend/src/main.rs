@@ -17,8 +17,19 @@ struct Args {
     port: u16,
     #[arg(long, default_value_t = 7701)]
     sync_port: u16,
-    #[arg(long, default_value = "show.db")]
-    showfile: String,
+    /// The show to open: a `Name.pult` bundle directory, made if it is not there.
+    /// Left out, the console starts with no show open and serves the welcome screen.
+    #[arg(long, value_name = "BUNDLE")]
+    show: Option<std::path::PathBuf>,
+    /// Where this station's own id is kept. Defaults to `PULT_IDENTITY` and then to
+    /// the configuration directory — it belongs to the machine now, not to the show,
+    /// so a copied bundle no longer clones the station that made it.
+    #[arg(long, value_name = "FILE")]
+    identity: Option<std::path::PathBuf>,
+    /// Where the shows this console makes for itself go, and what the welcome screen
+    /// lists. Defaults to the station preference and then to the data directory.
+    #[arg(long, value_name = "DIR")]
+    shows_dir: Option<std::path::PathBuf>,
     /// Send Art-Net to this address, e.g. 10.0.0.5 or 255.255.255.255:6454.
     /// The port defaults to 6454. Repeat the flag to feed several nodes. Off unless
     /// given: a console should not put packets on someone's network because it
@@ -34,7 +45,7 @@ struct Args {
     /// only when this node is the one driving them.
     #[arg(long, default_value_t = 1883)]
     openhaunt_broker_port: u16,
-    /// Use this station id instead of the one recorded beside the showfile. For
+    /// Use this station id instead of the one this machine has recorded. For
     /// moving a station's identity to different hardware, and for tests.
     #[arg(long, value_name = "UUID")]
     node_id: Option<uuid::Uuid>,
@@ -79,7 +90,9 @@ async fn main() -> Result<()> {
     let running = pult_backend::start(Config {
         port: args.port,
         sync_port: args.sync_port,
-        showfile: args.showfile,
+        show: args.show,
+        identity: args.identity,
+        shows_dir: args.shows_dir,
         artnet: args.artnet,
         sacn: args.sacn,
         openhaunt_broker_port: args.openhaunt_broker_port,

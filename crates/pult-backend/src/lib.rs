@@ -34,7 +34,7 @@ use crate::{
     infra::identity,
     infra::plugins::PluginManager,
     infra::session::SessionManager,
-    infra::showfile,
+    infra::showfile::{self, bundle::Bundle},
     infra::stations::{prune_stale, StationReporter, REPORT_INTERVAL},
     infra::sync::SyncManager,
     state::AppState,
@@ -77,24 +77,44 @@ pub struct Running {
 /// `port: 0` station has to know its own port before it can tell its peers where
 /// to fetch assets from.
 pub async fn start(config: Config) -> Result<Running> {
-    let pool = Arc::new(showfile::open(&config.showfile).await?);
-    // Opened after `open` has migrated the file, and never used for reading.
-    let write_pool = match showfile::open_for_writing(&config.showfile).await {
-        Ok(second) => Some(Arc::new(second)),
-        Err(e) => {
-            // Not fatal: the writer falls back to sharing the read pool, which is how
-            // it behaves for an in-memory show anyway. A console that cannot open a
-            // second handle to its own showfile should still open the show.
-            tracing::warn!("[start] could not open a second showfile handle: {e}");
-            None
-        }
+    // A console with no show open is a real state, and the one it comes up in when
+    // nobody named a show: everything below runs, against a database that is never
+    // written anywhere. See `Config::show`.
+    let bundle = match &config.show {
+        Some(path) => Some(Bundle::open_or_create(path)?),
+        None => None,
     };
-    // Recorded beside the showfile, so an output that names this station still
-    // belongs to it tomorrow.
+    let pool = Arc::new(match &bundle {
+        Some(bundle) => showfile::open(&bundle.db_path()).await?,
+        None => showfile::open_in_memory().await?,
+    });
+    // Opened after `open` has migrated the file, and never used for reading.
+    let write_pool = match &bundle {
+        None => None,
+        Some(bundle) => match showfile::open_for_writing(&bundle.db_path()).await {
+            Ok(second) => Some(Arc::new(second)),
+            Err(e) => {
+                // Not fatal: the writer falls back to sharing the read pool, which is
+                // how it behaves for an in-memory show anyway. A console that cannot
+                // open a second handle to its own showfile should still open the show.
+                tracing::warn!("[start] could not open a second showfile handle: {e}");
+                None
+            }
+        },
+    };
+    // The bytes, which are files in the bundle, and the rows that describe them. A
+    // console with no show open has nowhere to put any, and this is what says so.
+    let assets = crate::infra::assets::AssetStore::new(
+        bundle.as_ref().map(|bundle| bundle.assets_dir()),
+        pool.clone(),
+    );
+    // With the machine rather than with the show: a folder is a thing somebody
+    // copies, and an id that travelled with it would make the second machine to open
+    // the show a second claimant of the first one's outputs.
     let node_id = config
         .node_id
         .map(NodeId)
-        .unwrap_or_else(|| identity::load_or_create(&config.showfile));
+        .unwrap_or_else(|| identity::load_or_create(config.identity.as_deref()));
 
     // Stamped on the log as early as there is an answer, because everything from
     // here down is worth attributing — a port that will not bind and a showfile
@@ -199,8 +219,13 @@ pub async fn start(config: Config) -> Result<Running> {
         sync_mgr.peer_links(),
         frame_costs,
         // The disk figure is about the volume the show is written to, not the root
-        // one: a show that cannot be saved is what it exists to see coming.
-        std::path::PathBuf::from(&config.showfile),
+        // one: a show that cannot be saved is what it exists to see coming. A console
+        // with no show open reports on the volume its shows would go to.
+        bundle
+            .as_ref()
+            .map(|bundle| bundle.path().to_path_buf())
+            .or_else(|| shows_dir(&config))
+            .unwrap_or_else(std::env::temp_dir),
     );
     tokio::spawn(reporter.run());
 
@@ -262,8 +287,8 @@ pub async fn start(config: Config) -> Result<Running> {
             ws_registry: None,
         },
         config.plugin_dirs.clone(),
-        // The asset store a carried bundle lives in.
-        Some(pool.clone()),
+        // Where a carried bundle's bytes live.
+        Some(assets.clone()),
         config.plugin_data.clone(),
         node_id,
     );
@@ -273,7 +298,7 @@ pub async fn start(config: Config) -> Result<Running> {
 
     let state = AppState {
         engine: operator_handle.clone(),
-        pool,
+        assets: assets.clone(),
         sync: sync_handle,
         session: session_handle,
         devices: device_handle,
@@ -364,6 +389,21 @@ pub async fn start(config: Config) -> Result<Running> {
         updates: broadcast,
         serve,
     })
+}
+
+/// Where this console keeps the shows nobody gave it a path for.
+///
+/// Three layers, most specific winning: what the caller was told, the station's own
+/// preference, then the platform's data directory. The directory is made if it is not
+/// there, and a console that cannot make it simply has nowhere to list — which the
+/// welcome screen says, rather than refusing to come up.
+pub fn shows_dir(config: &Config) -> Option<std::path::PathBuf> {
+    let named = config
+        .shows_dir
+        .clone()
+        .or_else(|| infra::preferences::load().shows_dir)
+        .or_else(showfile::bundle::default_shows_dir)?;
+    showfile::bundle::ensure_dir(&named)
 }
 
 /// Turn the `--artnet` / `--sacn` seeds into `outputs` entries, but only on a show

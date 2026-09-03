@@ -216,10 +216,12 @@ CREATE TABLE IF NOT EXISTS oplog_floor (
     pruned_through_seq INTEGER NOT NULL
 );
 
+-- The metadata only: the bytes live in `assets/<sha256>` in the bundle beside this
+-- file. Keeping them here made every VACUUM, every backup and every version snapshot
+-- carry the rig's whole mesh library.
 CREATE TABLE IF NOT EXISTS assets (
     sha256     TEXT NOT NULL PRIMARY KEY,
     mime       TEXT NOT NULL,
     byte_len   INTEGER NOT NULL,
-    bytes      BLOB NOT NULL,
     created_at TEXT NOT NULL
 );

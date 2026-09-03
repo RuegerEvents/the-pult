@@ -26,7 +26,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pult_schema::{
@@ -38,7 +37,6 @@ use pult_schema::{
     },
 };
 use serde_json::Value;
-use sqlx::SqlitePool;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -175,8 +173,9 @@ struct Loaded {
 pub struct PluginManager {
     dirs: Vec<PathBuf>,
     engine: EngineHandle,
-    /// The showfile, for reaching the asset store a bundle lives in.
-    pool: Option<Arc<SqlitePool>>,
+    /// Where a carried bundle's bytes are. `None` for a station with no asset
+    /// store at all, which is what a test constructs.
+    assets: Option<crate::infra::assets::AssetStore>,
     /// Where this station's plugin data lives, when it was told; `None` falls back
     /// to `PULT_PLUGIN_DATA` and then to the config directory.
     station_data: Option<PathBuf>,
@@ -239,7 +238,7 @@ impl PluginManager {
         broadcast: UpdateBroadcast,
         rpc_deps: LocalRpcDeps,
         dirs: Vec<PathBuf>,
-        pool: Option<Arc<SqlitePool>>,
+        assets: Option<crate::infra::assets::AssetStore>,
         station_data: Option<PathBuf>,
         node_id: NodeId,
     ) -> (Self, PluginsHandle) {
@@ -265,7 +264,7 @@ impl PluginManager {
             Self {
                 dirs,
                 engine,
-                pool,
+                assets,
                 station_data,
                 node_id,
                 broadcast,
@@ -871,8 +870,8 @@ impl PluginManager {
 
     /// The bundle's bytes from the local store, without going to the network.
     async fn bundle_bytes(&self, sha256: &str) -> Option<Vec<u8>> {
-        let pool = self.pool.as_ref()?;
-        crate::infra::assets::get(pool, sha256).await.ok().flatten().map(|asset| asset.bytes)
+        let assets = self.assets.as_ref()?;
+        assets.get(sha256).await.ok().flatten().map(|asset| asset.bytes)
     }
 
     /// A station appeared, or published where it serves. Ask it for whatever
@@ -938,7 +937,7 @@ impl PluginManager {
         if !self.fetching.insert(sha256.to_string()) {
             return; // already on its way
         }
-        let (Some(pool), sha) = (self.pool.clone(), sha256.to_string()) else {
+        let (Some(assets), sha) = (self.assets.clone(), sha256.to_string()) else {
             return;
         };
         let engine = self.engine.clone();
@@ -966,7 +965,7 @@ impl PluginManager {
                 // again: the message has to be *this* attempt's, or a retry that
                 // ends in "nobody has it" would report the previous attempt's
                 // "could not reach", which is the wrong thing entirely.
-                let again = match crate::infra::assets::fetch_from_peers(&pool, &sha, &peers).await
+                let again = match crate::infra::assets::fetch_from_peers(&assets, &sha, &peers).await
                 {
                     // What comes back is hashed before it is stored, in the asset
                     // store itself — so nothing here has to trust a peer's answer.

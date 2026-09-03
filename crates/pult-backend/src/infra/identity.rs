@@ -5,14 +5,19 @@
 //! naming the station that sends it: after a restart the station had a new id, the
 //! saved output belonged to nobody, and it silently stopped sending.
 //!
-//! The id is stored beside the showfile rather than inside it, because it belongs
-//! to *this station* and not to the show. Copying a showfile to another machine
-//! must not clone the identity — two stations sharing an id would both claim the
-//! same outputs and would break the vector clock's tie-break, which resolves
-//! concurrent writes by comparing node ids and needs them to differ.
+//! It belongs to *this station* and not to the show, so it is not in the show. It
+//! used to be beside it — `show.db.node` — which was already the right idea and the
+//! wrong place, and a show became a folder is what made that plain: a folder is a
+//! thing an operator drags onto a stick, and if the id travelled with it the second
+//! machine to open the show would claim the first one's outputs and break the vector
+//! clock's tie-break, which resolves concurrent writes by comparing node ids and
+//! needs them to differ.
 //!
-//! Beside the showfile rather than somewhere machine-wide, because two backends on
-//! one machine are two stations, and they each have their own showfile.
+//! So it lives with the machine's own configuration, beside `preferences.toml`.
+//! Two stations on one machine is still an ordinary thing — it is what
+//! `scripts/demo.sh --two` does — and each is *told* where its own is, by
+//! `Config::identity` or `PULT_IDENTITY`. A path rather than an inference from the
+//! show, because the show no longer implies one.
 
 use std::path::{Path, PathBuf};
 
@@ -20,9 +25,17 @@ use pult_schema::events::operation::NodeId;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-/// Where the id for a given showfile lives: `show.db` → `show.db.node`.
-pub fn identity_path(showfile: &str) -> PathBuf {
-    PathBuf::from(format!("{showfile}.node"))
+/// Where this station's id lives when nobody said.
+///
+/// `PULT_IDENTITY` names it outright, which is how a second station on one machine
+/// and every test get one of their own — and why it is an environment variable *and*
+/// a `Config` field: an env var is one per process, and two stations inside one
+/// program have to be told separately.
+pub fn default_path() -> Option<PathBuf> {
+    if let Some(named) = std::env::var_os("PULT_IDENTITY") {
+        return Some(PathBuf::from(named));
+    }
+    Some(crate::infra::preferences::config_dir()?.join("the-pult").join("node"))
 }
 
 /// This station's id: the one already recorded, or a new one written down.
@@ -30,13 +43,19 @@ pub fn identity_path(showfile: &str) -> PathBuf {
 /// Never fails. A station that cannot persist its identity still has to start —
 /// losing output ownership on the next restart is bad, and refusing to open the
 /// show at all is worse.
-pub fn load_or_create(showfile: &str) -> NodeId {
-    let path = identity_path(showfile);
+pub fn load_or_create(path: Option<&Path>) -> NodeId {
+    let Some(path) = path.map(PathBuf::from).or_else(default_path) else {
+        warn!("[identity] nowhere to keep this station's id; it will be a new station next time");
+        return NodeId::new();
+    };
     if let Some(id) = read(&path) {
         return id;
     }
 
     let id = NodeId::new();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     match std::fs::write(&path, id.0.to_string()) {
         Ok(()) => info!("[identity] this station is {} ({})", id.0, path.display()),
         Err(e) => warn!(
@@ -66,10 +85,10 @@ fn read(path: &Path) -> Option<NodeId> {
 mod tests {
     use super::*;
 
-    /// A unique showfile path in a temporary directory, never actually created.
-    fn a_showfile(name: &str) -> (tempdir::Dir, String) {
+    /// A path in a temporary directory, never actually created.
+    fn an_identity(name: &str) -> (tempdir::Dir, PathBuf) {
         let dir = tempdir::Dir::new();
-        let path = dir.path().join(name).to_string_lossy().into_owned();
+        let path = dir.path().join(name);
         (dir, path)
     }
 
@@ -100,51 +119,65 @@ mod tests {
     fn a_station_keeps_its_id_across_restarts() {
         // Each call is one process start. This is the regression: an output that
         // named its station stopped sending after a restart, silently.
-        let (_dir, showfile) = a_showfile("show.db");
+        let (_dir, path) = an_identity("node");
 
-        let first = load_or_create(&showfile);
-        let second = load_or_create(&showfile);
+        let first = load_or_create(Some(&path));
+        let second = load_or_create(Some(&path));
 
         assert_eq!(first, second);
     }
 
     #[test]
-    fn two_showfiles_on_one_machine_are_two_stations() {
-        // Two backends on one machine is the ordinary two-node setup, and the
-        // vector clock's tie-break needs their ids to differ.
-        let (_dir, one) = a_showfile("one.db");
-        let (_other, two) = a_showfile("two.db");
+    fn two_stations_on_one_machine_are_two_stations() {
+        // The ordinary two-node setup, and the vector clock's tie-break needs their
+        // ids to differ. They are told apart by being *told*, since neither the show
+        // nor the machine distinguishes them any more.
+        let (_dir, one) = an_identity("one");
+        let (_other, two) = an_identity("two");
 
-        assert_ne!(load_or_create(&one), load_or_create(&two));
+        assert_ne!(load_or_create(Some(&one)), load_or_create(Some(&two)));
     }
 
     #[test]
-    fn the_id_lives_beside_the_showfile_and_not_inside_it() {
-        // Copying a showfile to another machine must not clone the identity.
-        let (_dir, showfile) = a_showfile("show.db");
-        let id = load_or_create(&showfile);
+    fn a_copied_show_does_not_clone_the_station_that_made_it() {
+        // The reason it moved out of the bundle. Two stations sharing an id would
+        // both claim the same outputs, and the clock's tie-break would have nothing
+        // to break the tie with.
+        let (_dir, path) = an_identity("node");
+        let id = load_or_create(Some(&path));
 
-        let sidecar = identity_path(&showfile);
-        assert!(sidecar.exists());
-        assert!(!std::path::Path::new(&showfile).exists(), "the showfile itself is untouched");
-        assert_eq!(std::fs::read_to_string(&sidecar).unwrap().trim(), id.0.to_string());
+        assert!(path.exists());
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), id.0.to_string());
+    }
+
+    #[test]
+    fn a_directory_that_is_not_there_yet_is_made() {
+        // The first run of a fresh install: nothing under the config directory
+        // exists, and a station that would not write its id there would be a new
+        // station every morning.
+        let dir = tempdir::Dir::new();
+        let path = dir.path().join("deep").join("deeper").join("node");
+
+        let id = load_or_create(Some(&path));
+
+        assert_eq!(id, load_or_create(Some(&path)));
     }
 
     #[test]
     fn a_corrupt_identity_is_replaced_rather_than_fatal() {
-        let (_dir, showfile) = a_showfile("show.db");
-        std::fs::write(identity_path(&showfile), "not a uuid at all").unwrap();
+        let (_dir, path) = an_identity("node");
+        std::fs::write(&path, "not a uuid at all").unwrap();
 
-        let id = load_or_create(&showfile);
+        let id = load_or_create(Some(&path));
 
-        assert_eq!(id, load_or_create(&showfile), "and the replacement sticks");
+        assert_eq!(id, load_or_create(Some(&path)), "and the replacement sticks");
     }
 
     #[test]
     fn a_station_that_cannot_write_its_id_still_starts() {
         // A read-only or missing directory. The station runs; it just will not be
         // the same station tomorrow, which is logged.
-        let id = load_or_create("/no/such/directory/show.db");
+        let id = load_or_create(Some(std::path::Path::new("/no/such/directory/node")));
         assert_ne!(id.0, uuid::Uuid::nil());
     }
 }

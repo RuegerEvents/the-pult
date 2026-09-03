@@ -33,7 +33,7 @@ fn own_cache() -> PathBuf {
 
 struct Station {
     running: pult_backend::Running,
-    showfile: String,
+    show: PathBuf,
 }
 
 impl Station {
@@ -43,10 +43,8 @@ impl Station {
 
     async fn start_with_dirs(plugin_dirs: Vec<PathBuf>) -> Station {
         own_cache();
-        let showfile = std::env::temp_dir()
-            .join(format!("pult-roster-{}.db", uuid::Uuid::new_v4()))
-            .to_string_lossy()
-            .into_owned();
+        let show = std::env::temp_dir()
+            .join(format!("pult-roster-{}.pult", uuid::Uuid::new_v4()));
         let running = pult_backend::start(Config {
             // Loopback, not the default 0.0.0.0. A station's published
             // http_addr is what a peer fetches a bundle from, and "0.0.0.0" is
@@ -55,13 +53,14 @@ impl Station {
             bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             port: 0,
             sync_port: 0,
-            showfile: showfile.clone(),
+            show: Some(show.clone()),
+            identity: Some(show.with_extension("node")),
             plugin_dirs,
             ..Config::default()
         })
         .await
         .expect("station starts");
-        Station { running, showfile }
+        Station { running, show }
     }
 
     /// Put a package in the show's roster.
@@ -134,7 +133,7 @@ impl Station {
 
     fn stop(self) {
         self.running.serve.abort();
-        let _ = std::fs::remove_file(&self.showfile);
+        let _ = std::fs::remove_dir_all(&self.show);
     }
 }
 

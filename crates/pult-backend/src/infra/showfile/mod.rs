@@ -3,19 +3,44 @@ use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 use std::str::FromStr;
 use tracing::info;
 
+pub mod bundle;
 pub mod oplog;
 pub mod order;
 
 #[cfg(test)]
 mod tests;
 
-pub async fn open(path: &str) -> Result<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(&format!("sqlite:{path}?mode=rwc"))?
+pub async fn open(path: &std::path::Path) -> Result<SqlitePool> {
+    let opts = SqliteConnectOptions::from_str(&format!("sqlite:{}?mode=rwc", path.display()))?
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .foreign_keys(true);
     let pool = SqlitePool::connect_with(opts).await?;
     run_migrations(&pool).await?;
+    reclaim_if_it_is_worth_it(&pool).await;
     Ok(pool)
+}
+
+/// Give the free pages back when there are enough of them to notice.
+///
+/// SQLite never shrinks a file on its own: a show that imported a rig and had it
+/// deleted again keeps the pages, and the only thing that gives them back is a
+/// `VACUUM`, which rewrites the whole database and cannot run while anything else is
+/// using it. At open there is nothing else using it.
+///
+/// A quarter is the threshold because a `VACUUM` costs about as long as a copy of the
+/// file, and doing it at every start to reclaim a few kilobytes would be a console
+/// that takes longer to open the smaller the show gets. Failure is a warning and
+/// nothing else — a show that cannot be compacted still opens.
+async fn reclaim_if_it_is_worth_it(pool: &SqlitePool) {
+    let free: i64 = sqlx::query_scalar("PRAGMA freelist_count").fetch_one(pool).await.unwrap_or(0);
+    let pages: i64 = sqlx::query_scalar("PRAGMA page_count").fetch_one(pool).await.unwrap_or(0);
+    if pages == 0 || free <= pages / 4 {
+        return;
+    }
+    info!("[showfile] {free} of {pages} pages are free; compacting");
+    if let Err(e) = sqlx::query("VACUUM").execute(pool).await {
+        tracing::warn!("[showfile] could not compact: {e}");
+    }
 }
 
 /// A second pool to an already-open showfile, for the writer task and nothing else.
@@ -28,8 +53,8 @@ pub async fn open(path: &str) -> Result<SqlitePool> {
 ///
 /// Migrations are not run again: this opens a file that `open` has already brought up
 /// to date, and running them twice is work at best and a race at worst.
-pub async fn open_for_writing(path: &str) -> Result<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(&format!("sqlite:{path}?mode=rwc"))?
+pub async fn open_for_writing(path: &std::path::Path) -> Result<SqlitePool> {
+    let opts = SqliteConnectOptions::from_str(&format!("sqlite:{}?mode=rwc", path.display()))?
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .foreign_keys(true);
     // One, because there is one writer by construction and a second connection here
@@ -37,11 +62,16 @@ pub async fn open_for_writing(path: &str) -> Result<SqlitePool> {
     Ok(sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect_with(opts).await?)
 }
 
-/// Open a migrated in-memory showfile. Test-only.
+/// Open a migrated in-memory showfile.
 ///
 /// The pool is capped at one connection: every SQLite `:memory:` connection gets
 /// its own private database, so a larger pool would hand out empty ones.
-#[cfg(test)]
+///
+/// Two callers, and they are not both tests. Every in-crate test wants one. So does
+/// a console with **no show open** — the engine, the sync layer and the HTTP server
+/// all run, because a welcome screen is served over the same socket the show would
+/// be, and what they run against is a database that is never written to disk. The
+/// asset store is what says no in that state, since nothing else has to.
 pub async fn open_in_memory() -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true);
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -101,7 +131,10 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 /// 1. The first stamp. Everything before it is unstamped and refused on sight.
 /// 2. `Fixture::position` became a `Transform` — a position, a rotation and a signed
 ///    scale, where it had been a point or a point and a direction.
-const SCHEMA_GENERATION: i64 = 2;
+/// 3. A show became a folder, and the assets moved out of the file into `assets/`
+///    beside it. The `bytes` column is gone, so a generation 2 file's rows claim
+///    assets whose bytes nothing can find.
+pub(super) const SCHEMA_GENERATION: i64 = 3;
 
 /// Say plainly that a showfile is from another build, instead of panicking somewhere
 /// deep in a generated `from_columns`.

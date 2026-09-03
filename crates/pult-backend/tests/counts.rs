@@ -43,11 +43,14 @@ use pult_schema::{
 use uuid::Uuid;
 
 async fn a_station() -> Running {
-    let showfile = std::env::temp_dir().join(format!("pult-counts-{}.db", Uuid::new_v4()));
+    let show = std::env::temp_dir().join(format!("pult-counts-{}.pult", Uuid::new_v4()));
     pult_backend::start(Config {
         port: 0,
         sync_port: 0,
-        showfile: showfile.to_string_lossy().into_owned(),
+        show: Some(show.clone()),
+        // Told, rather than taken from the machine: two stations in one test binary
+        // sharing an id would break the vector clock's tie-break.
+        identity: Some(show.with_extension("node")),
         ..Config::default()
     })
     .await

@@ -19,11 +19,10 @@
 use pult_schema::lifecycle::Lifecycle;
 use pult_schema::path::{Path, PathSegment};
 use serde::Serialize;
-use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::engine::EngineHandle;
-use crate::infra::assets;
+use crate::infra::assets::AssetStore;
 
 /// Everything an import wants to happen, worked out before any of it does.
 #[derive(Default)]
@@ -93,7 +92,7 @@ pub enum ApplyError {
 /// Store the assets, then make the writes, all under one gesture.
 pub async fn apply(
     plan: ImportPlan,
-    pool: &SqlitePool,
+    assets: &AssetStore,
     engine: &EngineHandle,
     user_id: Uuid,
 ) -> Result<ImportReport, ApplyError> {
@@ -101,7 +100,8 @@ pub async fn apply(
     // one twice is a no-op and one left behind by a failed import is bytes nothing
     // points at rather than a row nothing explains.
     for (mime, bytes) in &plan.assets {
-        assets::put(pool, mime, bytes)
+        assets
+            .put(mime, bytes)
             .await
             .map_err(|error| ApplyError::Asset(mime.clone(), error.to_string()))?;
     }

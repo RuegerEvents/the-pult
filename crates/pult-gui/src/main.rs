@@ -17,7 +17,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 
 use clap::Parser;
 use pult_backend::{logging::LogHandle, Config};
-use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 #[derive(Parser, Clone)]
 #[command(about = "the-pult lighting console", version)]
@@ -28,13 +28,15 @@ struct Args {
     port: u16,
     #[arg(long, default_value_t = 7701)]
     sync_port: u16,
-    /// Defaults to a `show.db` in this application's data directory, so opening
-    /// the app twice from two folders does not mean two different shows.
-    #[arg(long)]
-    showfile: Option<String>,
+    /// The show to open: a `Name.pult` bundle directory. Left out, the console
+    /// comes up with no show open and the window shows the welcome screen — which
+    /// is what a desktop app started from the dock should do, since it has no
+    /// meaningful working directory to find a show in.
+    #[arg(long, value_name = "BUNDLE")]
+    show: Option<std::path::PathBuf>,
     #[arg(long, default_value_t = 1883)]
     openhaunt_broker_port: u16,
-    /// Use this station id instead of the one recorded beside the showfile.
+    /// Use this station id instead of the one this machine has recorded.
     #[arg(long, value_name = "UUID")]
     node_id: Option<uuid::Uuid>,
 }
@@ -60,14 +62,10 @@ fn main() {
                 .min_inner_size(900.0, 600.0)
                 .build()?;
 
-            let showfile = match args.showfile.clone() {
-                Some(path) => path,
-                None => default_showfile(app.handle())?,
-            };
             let args = args.clone();
             let log = log.clone();
             tauri::async_runtime::spawn(async move {
-                match start(&args, showfile, log).await {
+                match start(&args, log).await {
                     Ok(url) => open(&window, &url),
                     Err(e) => fail(&window, &e.to_string()),
                 }
@@ -79,12 +77,12 @@ fn main() {
 }
 
 /// Bring a station up and say where it ended up listening.
-async fn start(args: &Args, showfile: String, log: LogHandle) -> anyhow::Result<String> {
+async fn start(args: &Args, log: LogHandle) -> anyhow::Result<String> {
     let running = pult_backend::start(Config {
         bind: Ipv4Addr::UNSPECIFIED.into(),
         port: free_or_any(args.port).await,
         sync_port: free_or_any(args.sync_port).await,
-        showfile,
+        show: args.show.clone(),
         openhaunt_broker_port: args.openhaunt_broker_port,
         node_id: args.node_id,
         log: Some(log),
@@ -133,13 +131,4 @@ fn fail(window: &WebviewWindow, message: &str) {
         "window.showError({})",
         serde_json::to_string(message).unwrap_or_else(|_| "\"unknown error\"".into())
     ));
-}
-
-/// `~/Library/Application Support/…/show.db` and its equivalents. A console
-/// started from the dock has no meaningful working directory, so a relative
-/// `show.db` would put a different show behind every launcher.
-fn default_showfile(app: &tauri::AppHandle) -> anyhow::Result<String> {
-    let dir = app.path().app_data_dir()?;
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("show.db").to_string_lossy().into_owned())
 }

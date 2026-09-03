@@ -47,19 +47,10 @@ async fn a_station() -> Option<(Running, PathBuf)> {
     let dir = probe_dir()?;
     let _ = station_store_file();
 
-    let showfile = std::env::temp_dir().join(format!("pult-probe-{}.db", uuid::Uuid::new_v4()));
-    let running = pult_backend::start(Config {
-        port: 0,
-        sync_port: 0,
-        plugin_data: Some(station_store_file().clone()),
-        showfile: showfile.to_string_lossy().into_owned(),
-        plugin_dirs: vec![dir],
-        ..Config::default()
-    })
-    .await
-    .expect("station starts");
+    let show = std::env::temp_dir().join(format!("pult-probe-{}.pult", uuid::Uuid::new_v4()));
+    let running = start_with(&show, vec![dir]).await;
     wait_until_running(&running).await;
-    Some((running, showfile))
+    Some((running, show))
 }
 
 async fn wait_until_running(running: &Running) {
@@ -126,7 +117,7 @@ macro_rules! station_or_skip {
 
 #[tokio::test]
 async fn what_a_plugin_writes_it_reads_back() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
 
     // Nothing yet, and that is an answer rather than an error: a cache's first
     // run is not a failure.
@@ -145,12 +136,12 @@ async fn what_a_plugin_writes_it_reads_back() {
     assert_eq!(get(&running, "local", "reads-back").await, json!({ "n": 1 }));
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 #[tokio::test]
 async fn keys_are_listed_by_prefix_and_forgotten_on_request() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
 
     for key in ["macro/one", "macro/two", "other"] {
         set(&running, "carried", key, json!(key)).await.expect("the write is taken");
@@ -177,12 +168,12 @@ async fn keys_are_listed_by_prefix_and_forgotten_on_request() {
         .expect("deleting nothing is fine");
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 #[tokio::test]
 async fn a_store_the_manifest_did_not_declare_cannot_be_touched() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
 
     // Declaring the store is the permission, so this is refused before
     // anything is read or written — and it is refused by name, because an
@@ -197,12 +188,12 @@ async fn a_store_the_manifest_did_not_declare_cannot_be_touched() {
     assert!(err.contains("declares no store"), "reads are refused too: {err}");
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 #[tokio::test]
 async fn a_store_is_bounded_and_a_refused_write_changes_nothing() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
 
     // `small` is declared with room for two keys and 64 bytes.
     set(&running, "small", "a", json!("x")).await.expect("first fits");
@@ -220,14 +211,14 @@ async fn a_store_is_bounded_and_a_refused_write_changes_nothing() {
     assert_eq!(get(&running, "small", "a").await, json!("x"), "and left it as it was");
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 /// The default: a plugin's write is the plugin's, and an operator's undo takes
 /// back the operator's own last change rather than the plugin's bookkeeping.
 #[tokio::test]
 async fn an_ordinary_store_write_is_not_the_operators() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
     let user = uuid::Uuid::new_v4();
 
     // Something of the operator's own to go back to.
@@ -275,14 +266,14 @@ async fn an_ordinary_store_write_is_not_the_operators() {
     );
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 /// The opt-in: a store the manifest declared `undoable` is the operator's, and
 /// Ctrl-Z means what they saved.
 #[tokio::test]
 async fn a_store_that_says_so_undoes_like_any_edit() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
     let user = uuid::Uuid::new_v4();
 
     probe_as(
@@ -312,14 +303,14 @@ async fn a_store_that_says_so_undoes_like_any_edit() {
     );
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 /// The rule falls out of attribution rather than being a second one: a write
 /// nobody asked for has no operator to attribute it to, whatever the store says.
 #[tokio::test]
 async fn an_undoable_store_written_with_nobody_behind_it_is_still_not_undoable() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
 
     // No ctx, so no user — the shape of a timer, or of `init`.
     set(&running, "deliberate", "by-nobody", json!(1)).await.expect("the write is taken");
@@ -331,7 +322,7 @@ async fn an_undoable_store_written_with_nobody_behind_it_is_still_not_undoable()
     );
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 fn path_names_plugin_data(path: &[PathSegment]) -> bool {
@@ -342,7 +333,7 @@ fn path_names_plugin_data(path: &[PathSegment]) -> bool {
 /// second station in the same session never sees it.
 #[tokio::test]
 async fn station_scoped_data_stays_on_the_machine() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
 
     set(&running, "local", "stays-put", json!("mine")).await.expect("the write is taken");
     set(&running, "carried", "shared", json!("ours")).await.expect("the write is taken");
@@ -364,31 +355,22 @@ async fn station_scoped_data_stays_on_the_machine() {
     );
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 /// And it does not belong to the show that happened to be open when it was
 /// written, which is the whole reason it is a separate file.
 #[tokio::test]
 async fn station_scoped_data_outlives_the_show_it_was_written_under() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
     set(&running, "local", "outlives", json!("still here")).await.expect("the write is taken");
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 
     // A different show, on the same machine, with the same station store.
     let dir = probe_dir().expect("the probe is built");
-    let other = std::env::temp_dir().join(format!("pult-probe-other-{}.db", uuid::Uuid::new_v4()));
-    let running = pult_backend::start(Config {
-        port: 0,
-        sync_port: 0,
-        plugin_data: Some(station_store_file().clone()),
-        showfile: other.to_string_lossy().into_owned(),
-        plugin_dirs: vec![dir],
-        ..Config::default()
-    })
-    .await
-    .expect("station starts");
+    let other = std::env::temp_dir().join(format!("pult-probe-other-{}.pult", uuid::Uuid::new_v4()));
+    let running = start_with(&other, vec![dir]).await;
     wait_until_running(&running).await;
 
     assert_eq!(
@@ -400,7 +382,7 @@ async fn station_scoped_data_outlives_the_show_it_was_written_under() {
     assert_eq!(get(&running, "carried", "shared").await, Value::Null);
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&other);
+    let _ = std::fs::remove_dir_all(&other);
 }
 
 /// The property that keeps a plugin from filling the oplog.
@@ -412,7 +394,7 @@ async fn station_scoped_data_outlives_the_show_it_was_written_under() {
 /// folding two would lose a row.
 #[tokio::test]
 async fn repeated_writes_in_one_call_collapse_in_the_log() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
     let user = uuid::Uuid::new_v4();
 
     probe_as(
@@ -453,7 +435,7 @@ async fn repeated_writes_in_one_call_collapse_in_the_log() {
     assert_eq!(rows, 3, "one more row for the second gesture");
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 /// Removing a plugin does not delete what it remembered.
@@ -471,17 +453,17 @@ async fn data_outlives_the_plugin_that_wrote_it() {
         }
     };
     let _ = station_store_file();
-    let showfile = std::env::temp_dir().join(format!("pult-probe-{}.db", uuid::Uuid::new_v4()));
+    let show = std::env::temp_dir().join(format!("pult-probe-{}.pult", uuid::Uuid::new_v4()));
 
     // The plugin is here, and writes something.
-    let running = start_with(&showfile, vec![dir.clone()]).await;
+    let running = start_with(&show, vec![dir.clone()]).await;
     wait_until_running(&running).await;
     set(&running, "carried", "outlives", json!("the macro")).await.expect("the write is taken");
     running.serve.abort();
 
     // Now it is gone — no plugin directory at all — and the show still carries
     // what it wrote, under the id of the plugin that is no longer installed.
-    let running = start_with(&showfile, vec![]).await;
+    let running = start_with(&show, vec![]).await;
     let rows = running
         .engine
         .get(vec![PathSegment::Key("plugin_data".into())])
@@ -499,7 +481,7 @@ async fn data_outlives_the_plugin_that_wrote_it() {
     running.serve.abort();
 
     // And when it comes back, it reads what it left.
-    let running = start_with(&showfile, vec![dir.clone()]).await;
+    let running = start_with(&show, vec![dir.clone()]).await;
     wait_until_running(&running).await;
     assert_eq!(
         get(&running, "carried", "outlives").await,
@@ -522,7 +504,7 @@ async fn data_outlives_the_plugin_that_wrote_it() {
     std::fs::write(&manifest, text.replace(r#"version = "0.1.0""#, r#"version = "9.9.9""#))
         .expect("the manifest is rewritten");
 
-    let running = start_with(&showfile, vec![upgraded.clone()]).await;
+    let running = start_with(&show, vec![upgraded.clone()]).await;
     wait_until_running(&running).await;
     assert_eq!(
         get(&running, "carried", "outlives").await,
@@ -532,7 +514,7 @@ async fn data_outlives_the_plugin_that_wrote_it() {
 
     running.serve.abort();
     let _ = std::fs::remove_dir_all(&upgraded);
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 // ── Being told ────────────────────────────────────────────────────────────────
@@ -558,7 +540,7 @@ async fn changes_on(running: &Running, token: u64, n: usize) -> Vec<Value> {
 /// read, which for a value it is holding in memory is never.
 #[tokio::test]
 async fn an_undo_reaches_the_plugin_whose_store_it_took_back() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
     let user = uuid::Uuid::new_v4();
 
     let token = probe(&running, "watch", json!({ "store": "deliberate" }))
@@ -601,7 +583,7 @@ async fn an_undo_reaches_the_plugin_whose_store_it_took_back() {
     );
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 /// A station store is this machine's file and this plugin is its only writer, so
@@ -609,7 +591,7 @@ async fn an_undo_reaches_the_plugin_whose_store_it_took_back() {
 /// an error, the way `data.subscribe` answers a plugin with no data permission.
 #[tokio::test]
 async fn a_station_store_has_nothing_to_report() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
 
     let token = probe(&running, "watch", json!({ "store": "local" }))
         .await
@@ -626,14 +608,14 @@ async fn a_station_store_has_nothing_to_report() {
     assert_eq!(undeclared, 0, "and a store this plugin has no business in is the same");
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 /// Unsubscribing stops it, which is what makes a subscription something a plugin
 /// can put down rather than something it acquires for the life of the station.
 #[tokio::test]
 async fn a_watch_that_was_put_down_says_nothing_more() {
-    let (running, showfile) = station_or_skip!();
+    let (running, show) = station_or_skip!();
 
     let token = probe(&running, "watch", json!({ "store": "carried" }))
         .await
@@ -656,15 +638,18 @@ async fn a_watch_that_was_put_down_says_nothing_more() {
     assert_eq!(mine, 1, "only the write from before it was put down: {all}");
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
-async fn start_with(showfile: &PathBuf, plugin_dirs: Vec<PathBuf>) -> Running {
+async fn start_with(show: &PathBuf, plugin_dirs: Vec<PathBuf>) -> Running {
     pult_backend::start(Config {
         port: 0,
         sync_port: 0,
         plugin_data: Some(station_store_file().clone()),
-        showfile: showfile.to_string_lossy().into_owned(),
+        show: Some(show.clone()),
+        // Told, rather than taken from the machine: a test must not write its
+        // station's id into the operator's own configuration directory.
+        identity: Some(show.with_extension("node")),
         plugin_dirs,
         ..Config::default()
     })

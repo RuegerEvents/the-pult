@@ -105,6 +105,13 @@ pub struct Preferences {
     /// further: a station cannot publish what it never captured.
     #[serde(default = "default_peer_log_level")]
     pub peer_log_level: String,
+    /// Where this console keeps the shows nobody gave it a path for.
+    ///
+    /// A station preference and not show data, which barely needs arguing: it is a
+    /// question about this machine's disk. `None` is the platform's data directory,
+    /// which is what an operator who never thinks about this gets.
+    #[serde(default)]
+    pub shows_dir: Option<PathBuf>,
     /// What to log in to the GDTF Share as.
     ///
     /// A station preference and never show data, for the reason a plugin credential is
@@ -145,6 +152,7 @@ impl Default for Preferences {
             log_level: default_log_level(),
             peer_log_level: default_peer_log_level(),
             plugins: std::collections::BTreeMap::new(),
+            shows_dir: None,
             gdtf_share: None,
         }
     }

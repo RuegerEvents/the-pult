@@ -38,14 +38,17 @@ async fn a_station_runs_the_reference_plugins() {
         return;
     }
 
-    let showfile = std::env::temp_dir().join(format!("pult-plugin-test-{}.db", uuid::Uuid::new_v4()));
+    let show = std::env::temp_dir().join(format!("pult-plugin-test-{}.pult", uuid::Uuid::new_v4()));
     // Its own store as well: without one this station opens the *developer's*
     // `plugin-data.db` and writes whatever the reference plugins remember into it.
     let store = std::env::temp_dir().join(format!("pult-plugin-store-{}.db", uuid::Uuid::new_v4()));
     let running = pult_backend::start(Config {
         port: 0,
         sync_port: 0,
-        showfile: showfile.to_string_lossy().into_owned(),
+        show: Some(show.clone()),
+        // Told, rather than taken from the machine: a test must not write its
+        // station's id into the operator's own configuration directory.
+        identity: Some(show.with_extension("node")),
         plugin_dirs: vec![dir],
         plugin_data: Some(store.clone()),
         ..Config::default()
@@ -375,7 +378,7 @@ async fn a_station_runs_the_reference_plugins() {
     assert!(missing.is_err());
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
     let _ = std::fs::remove_file(&store);
 }
 
@@ -399,12 +402,15 @@ async fn a_plugin_built_against_an_earlier_api_still_runs() {
         panic!("PULT_OLD_API_PLUGINS must name a plugin directory built against an older API");
     };
 
-    let showfile =
-        std::env::temp_dir().join(format!("pult-oldapi-{}.db", uuid::Uuid::new_v4()));
+    let show =
+        std::env::temp_dir().join(format!("pult-oldapi-{}.pult", uuid::Uuid::new_v4()));
     let running = pult_backend::start(Config {
         port: 0,
         sync_port: 0,
-        showfile: showfile.to_string_lossy().into_owned(),
+        show: Some(show.clone()),
+        // Told, rather than taken from the machine: a test must not write its
+        // station's id into the operator's own configuration directory.
+        identity: Some(show.with_extension("node")),
         plugin_dirs: vec![PathBuf::from(dir)],
         ..Config::default()
     })
@@ -439,7 +445,7 @@ async fn a_plugin_built_against_an_earlier_api_still_runs() {
     }
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
 }
 
 /// The worked example for stores: this console remembers which model it talks
@@ -467,12 +473,15 @@ async fn the_language_plugin_remembers_which_model_this_console_uses() {
     let store =
         std::env::temp_dir().join(format!("pult-nl-prefs-{}.db", uuid::Uuid::new_v4()));
 
-    let showfile = std::env::temp_dir().join(format!("pult-nl-{}.db", uuid::Uuid::new_v4()));
+    let show = std::env::temp_dir().join(format!("pult-nl-{}.pult", uuid::Uuid::new_v4()));
     let start = || async {
         let running = pult_backend::start(Config {
             port: 0,
             sync_port: 0,
-            showfile: showfile.to_string_lossy().into_owned(),
+            show: Some(show.clone()),
+        // Told, rather than taken from the machine: a test must not write its
+        // station's id into the operator's own configuration directory.
+        identity: Some(show.with_extension("node")),
             plugin_dirs: vec![dir.clone()],
             plugin_data: Some(store.clone()),
             ..Config::default()
@@ -531,6 +540,6 @@ async fn the_language_plugin_remembers_which_model_this_console_uses() {
     );
 
     running.serve.abort();
-    let _ = std::fs::remove_file(&showfile);
+    let _ = std::fs::remove_dir_all(&show);
     let _ = std::fs::remove_file(&store);
 }
