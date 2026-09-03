@@ -468,6 +468,32 @@ describe('the rig in three dimensions', () => {
 		);
 	});
 
+	it('draws a slanted beam on until its whole end ring is under the floor', async () => {
+		const { drawnLength } = await import('./stage.js');
+		const lens = 0.1;
+		const spread = Math.tan((7 * Math.PI) / 180);
+		// Straight down, the square cut is level with the floor and nothing is added.
+		expect(drawnLength(6, { x: 0, y: -1, z: 0 }, spread, lens)).toBeCloseTo(6, 6);
+		// At an angle, the end ring's highest point must be at or under the floor —
+		// checked against the geometry rather than against a number.
+		for (const degrees of [15, 45, 70]) {
+			const theta = (degrees * Math.PI) / 180;
+			const direction = { x: Math.sin(theta), y: -Math.cos(theta), z: 0 };
+			const height = 6;
+			const throwToFloor = height / Math.cos(theta);
+			const drawn = drawnLength(throwToFloor, direction, spread, lens);
+			expect(drawn).toBeGreaterThan(throwToFloor);
+			const radius = lens + drawn * spread;
+			const centreY = height + drawn * direction.y;
+			const highest = centreY + radius * Math.sin(theta);
+			expect(highest).toBeLessThanOrEqual(1e-6);
+			// And only just: the beam is not run on further than that needs.
+			expect(highest).toBeGreaterThan(-1e-3);
+		}
+		// A beam pointing at the sky has no floor to be cut by and is left alone.
+		expect(drawnLength(12, { x: 0, y: 1, z: 0 }, spread, lens)).toBe(12);
+	});
+
 	it('gives a beam pointing at the sky a length rather than an infinity', async () => {
 		const { throwDistance } = await import('./stage.js');
 		expect(Number.isFinite(throwDistance({ x: 0, y: 2, z: 0 }, { x: 0, y: 1, z: 0 }))).toBe(true);

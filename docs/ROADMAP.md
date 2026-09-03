@@ -3157,13 +3157,25 @@ every `controls.setLookAt` survived unchanged.
 
 **The beam is not geometry.** One instanced open-ended cylinder for the whole rig, and
 the cone is vertex displacement — the far ring scaled by `tan(angle)` times the throw
-in the vertex shader, so a zoom costs one float in a buffer. Four terms multiply for
-brightness (side-on, down-the-barrel, falloff, and a power term on the silhouette so a
-cylinder stops reading as a tube), all additive blending in one fragment shader with
-no post-processing chain. Colour is scaled in HSV, **value only**, so a dim beam keeps
-its hue rather than crushing towards grey. Haze is fbm noise in world space with time
-as the third axis; value noise rather than simplex, because three octaves of it is a
-dozen lines somebody can check.
+in the vertex shader, so a zoom costs one float in a buffer. Brightness is the tube's
+own surface normal against the view, raised to a power that falls with how end-on the
+beam is seen — so side-on the edges fade to nothing and down the barrel the whole disc
+lights up, one term for both — times an attenuation in metres that is steeper for a
+wider beam, all additive blending in one fragment shader with no post-processing chain.
+Colour is scaled in HSV, **value only**, so a dim beam keeps its hue rather than
+crushing towards grey. Haze is turbulence in world space with time as the third axis,
+floored at the beam's own intensity; value noise rather than simplex, because four
+octaves of it is a dozen lines somebody can check.
+
+The first shader landed here got the silhouette wrong and it was visible at once: it
+took the term from the beam's *axis* against the eye, which is the same for every pixel
+across the beam and so cannot make the edge differ from the middle, and drew flat,
+hard-edged, faceted cones. It also wrote the strength into alpha, which additive
+blending multiplies the colour by, so everything was squared into a ghost; started
+every beam from a point rather than the lens; and multiplied by smooth noise, which
+took light away in blobs. The fix is the paragraph above, checked against a
+standalone page rendering five beams from four camera positions rather than against
+the demo, whose one lamp from front of house was too little to judge a shader by.
 
 **Haze is show data**, seeded from a station preference the way `home_fade_ms` is: how
 hazy the room is is a fact about the room rather than about the screen looking at it.

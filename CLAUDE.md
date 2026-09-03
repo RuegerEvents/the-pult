@@ -682,15 +682,32 @@ removed both by construction. `Rig3D.svelte` owns its renderer, scene, camera an
 `camera-controls` **per panel**, because two `rig` tiles can be open at once.
 
 `frontend/src/lib/beam.ts` is the beam: one instanced open-ended cylinder for the whole
-rig, and the cone is vertex displacement, so a zoom costs one float in a buffer.
-Brightness is four terms multiplied (side-on, down-the-barrel, falloff, and a power
-term on the silhouette so a cylinder stops reading as a tube), all additive blending in
-one fragment shader with no post-processing. Colour dims in **HSV, value only** — a
-scaled RGB drags a saturated colour towards grey on the way down, which no dimmer does.
-Haze is fbm noise in world space with **time as the third axis**, and its two knobs are
-`Show::haze_density` and `haze_turbulence`: show data, because how hazy the room is is a
-fact about the room, seeded from a station preference the way `home_fade_ms` is. It
-reaches no lamp.
+rig, and the cone is vertex displacement, so a zoom costs one float in a buffer. What
+makes it read as light rather than as a tube is **the tube's own surface normal against
+the view**: the middle faces the camera and is bright, the edge is perpendicular and
+goes to nothing, and the power on that term falls with how end-on the beam is seen, so
+looking down the barrel lights the whole disc — the flare — with no second term. The
+normal is worked out in the vertex shader for the cone it just made and interpolated,
+never from screen-space derivatives, which are flat per triangle and draw the strips.
+Attenuation is along the throw in metres and steeper for a wider beam. The fragment's
+alpha is **one**: additive blending scales the colour by it, and writing the strength
+there as well squares every beam into a ghost. The first version of this shader got
+every one of those wrong at once — a silhouette term taken from the beam's *axis*,
+which is the same for every pixel across the beam — and drew flat, hard-edged,
+faceted cones. Colour dims in **HSV, value only** — a scaled RGB drags a saturated
+colour towards grey on the way down, which no dimmer does. Haze is turbulence (the
+absolute value of signed noise, four octaves) in world space with **time as the third
+axis**, floored at the beam's own intensity so it adds folds rather than taking light
+away; its two knobs are `Show::haze_density` and `haze_turbulence`: show data, because
+how hazy the room is is a fact about the room, seeded from a station preference the
+way `home_fade_ms` is. It reaches no lamp.
+
+**The floor cuts the beam, not the cone's own end.** A cone cut square to its axis at
+the axis's floor hit is level with the floor only when the beam is vertical; aimed at an
+angle, the uphill half of the end ring stands in the air above the spot it is lighting.
+`drawnLength` in `stage.ts` runs the cone on until its whole end ring is under the deck,
+and the fade over the floor does the cutting. The pool spotlight takes the beam's own
+half-angle, so the spot on the floor is exactly as wide as the beam that makes it.
 
 **A strobe is drawn and never evaluated.** A strobe channel carries a *rate*: the
 console sends the byte and the fixture does the flashing. So `pult-render` has nothing

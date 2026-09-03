@@ -450,3 +450,32 @@ export function throwDistance(from: Vec3, direction: Vec3, floorY = 0): number {
 	if (direction.y >= -1e-3) return 12;
 	return Math.min(40, Math.max(0.5, (from.y - floorY) / -direction.y));
 }
+
+/**
+ * How long to *draw* a beam whose axis meets the floor after `length` metres.
+ *
+ * The drawn beam is a cone cut square to its own axis, and a square cut at the
+ * axis's floor hit is level with the floor only when the beam is vertical. Aimed at
+ * an angle, the cut tilts with it: the downhill half of the end ring is under the
+ * deck and the uphill half stands in the air, ending in a visible slanted edge above
+ * the spot it is lighting. So the cone is run on until its whole end ring is below
+ * the floor, and the floor — the shader's fade over the deck and the deck's own
+ * depth — does the cutting, which is the only cut that is level with it.
+ *
+ * The highest point of the end ring sits `r · sin θ` above the ring's centre, θ being
+ * the beam's angle from the vertical and `r` the ring's radius, which itself grows
+ * with the length by `spread` per metre. Solving for the extra run that puts the
+ * centre that far under the floor gives the closed form below. A beam grazing the
+ * floor so flat that it widens faster than it descends has no such length, and gets
+ * the longest throw drawn at all.
+ */
+export function drawnLength(length: number, direction: Vec3, spread: number, lens: number): number {
+	const d = normalise(direction);
+	if (d.y >= -1e-3) return length;
+	const sinTheta = Math.hypot(d.x, d.z);
+	const tanTheta = sinTheta / -d.y;
+	const room = 1 - spread * tanTheta;
+	if (room <= 1e-3) return 40;
+	const extra = ((lens + length * spread) * tanTheta) / room;
+	return Math.min(40, length + extra);
+}

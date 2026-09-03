@@ -12,8 +12,9 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
-- **Beams that read as light.** The 3D rig view draws a real volumetric beam: its
-  brightness depends on where you stand, it fades out over the deck rather than
+- **Beams that read as light.** The 3D rig view draws a real volumetric beam: bright
+  in the middle and nothing at the edge, flaring when you look into the lens, starting
+  at the width of the lens rather than at a point, fading out over the deck rather than
   clipping through it, and a dim beam keeps its hue instead of going grey. The beam
   angle is the one the fixture's own GDTF measured. How hazy the room is is a setting
   on the show, seeded from a station preference, so everyone opening the file sees the

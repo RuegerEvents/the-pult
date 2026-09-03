@@ -46,6 +46,7 @@
 	import {
 		aimAt,
 		beamDirection,
+		drawnLength,
 		fixtureOutput,
 		fixturePoint,
 		fohCamera,
@@ -54,7 +55,7 @@
 		wrapDegrees,
 		travelOf
 	} from '$lib/stage.js';
-	import { beamGeometry, beamMaterial, dimKeepingHue, strobeGate } from '$lib/beam.js';
+	import { beamGeometry, beamMaterial, dimKeepingHue, strobeGate, LENS_RADIUS } from '$lib/beam.js';
 	import {
 		bearingFromPoint,
 		bearingOnFloor,
@@ -468,7 +469,9 @@
 			scratchColour.setRGB(beam.output.r, beam.output.g, beam.output.b);
 			colours.setXYZ(i, scratchColour.r, scratchColour.g, scratchColour.b);
 			levels.setX(i, level);
-			lengths.setX(i, beam.length);
+			// Run on past the axis's floor hit, so the floor cuts the beam rather than
+			// the cone's own square end standing half in the air on a slanted throw.
+			lengths.setX(i, drawnLength(beam.length, beam.direction, beam.spread, LENS_RADIUS));
 			spreads.setX(i, beam.spread);
 
 			if (level > brightestLevel) {
@@ -524,6 +527,9 @@
 			built.pool.target.updateMatrixWorld();
 			built.pool.color.setRGB(beam.output.r, beam.output.g, beam.output.b);
 			built.pool.distance = Math.max(1, beam.length * 2.2);
+			// The pool is exactly as wide as the beam that makes it: a spotlight's
+			// angle is its half-angle, and the spread is the tangent of ours.
+			built.pool.angle = Math.atan(beam.spread);
 		}
 		// Driven to zero rather than unmounted. The light count must not change.
 		built.pool.intensity = brightestLevel * 14;
