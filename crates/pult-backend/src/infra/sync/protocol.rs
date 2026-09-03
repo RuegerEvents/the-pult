@@ -18,7 +18,11 @@ use pult_schema::{
 // 5 added LogLines and LogRaise, so the booth can read the roof station's log.
 // Deliberately not carried on SyncedBroadcast: a log line is not show state, has
 // no vector clock and no author, and must not be replicated, persisted or undone.
-pub const PROTOCOL_VERSION: u32 = 5;
+// 6 added OutputWatch and OutputTraffic, so a console can see what a peer's wire is
+// carrying. Asked for rather than published, for the reason a raised log is: a
+// universe image at 40 Hz crossing the link for a panel nobody has open is a stream
+// the show's own network is paying for.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -106,6 +110,22 @@ pub enum SyncMessage {
     /// that went away.
     LogRaise {
         level: Option<pult_schema::ws::LogLevel>,
+    },
+    /// Ask the peer on the other end of *this* connection to draw one of its outputs.
+    ///
+    /// `focuses` is the whole ask and replaces whatever was there, empty meaning
+    /// "nobody, stop" — the same shape as [`SyncMessage::LogRaise`] and for the same
+    /// reason: an ask recomputed from who is watching cannot be left half-withdrawn,
+    /// and one that lives on the connection needs nothing to expire it.
+    OutputWatch {
+        output_id: Uuid,
+        focuses: Vec<Option<String>>,
+    },
+    /// What one of the sender's outputs is putting on the wire, for a station that
+    /// asked. One way and unacknowledged, like a log line, and never relayed: the
+    /// station that drew it is connected to everyone who could want it.
+    OutputTraffic {
+        view: pult_schema::types::output::OutputView,
     },
     Heartbeat {
         seq: u64,

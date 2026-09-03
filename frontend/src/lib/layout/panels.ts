@@ -32,6 +32,7 @@ import ShowPanel from '$lib/components/ShowPanel.svelte';
 import StationsPanel from '$lib/components/StationsPanel.svelte';
 import SystemPanel from '$lib/components/SystemPanel.svelte';
 import ValuesPanel from '$lib/components/programmer/ValuesPanel.svelte';
+import WirePanel from '$lib/components/wire/WirePanel.svelte';
 import PlanPanel from '$lib/components/stage/PlanPanel.svelte';
 import RigPanel from '$lib/components/stage/RigPanel.svelte';
 import LayersPanel from '$lib/components/stage/LayersPanel.svelte';
@@ -75,6 +76,10 @@ export const PANELS = {
 	patch: { title: 'Patch', component: PatchPanel, fills: false, editable: true },
 	flows: { title: 'Flows', component: FlowEditor, fills: true, editable: true },
 	outputs: { title: 'Outputs', component: OutputsPanel, fills: false },
+	// Where an output is configured is the panel above; this is what it is actually
+	// putting on the wire. Asked for while somebody is looking rather than published,
+	// so a console with it shut costs the station nothing.
+	wire: { title: 'On the wire', component: WirePanel, fills: false },
 	stations: { title: 'Stations', component: StationsPanel, fills: false },
 	// The other half of the pair: Stations is who is here, this is what it costs —
 	// per station, per output connector, and per browser, which is the figure that

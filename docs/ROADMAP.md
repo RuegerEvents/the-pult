@@ -2993,6 +2993,91 @@ is also where the MQTT bytes this task could not count honestly would come from.
 are better done there than bolted on here. What was blocking `performance-tests` was
 the browser figure, and that exists now.
 
+### 50. What actually leaves the console (done)
+
+The third of the three panels task 48 opened, and the one that had to answer nothing
+new: *Stations* is who is here, *System* is what it costs, and **On the wire** is
+which bytes went. A DMX sheet per universe, and the messages a node was sent.
+
+**Asked for, never published — and the entry already knew why.** A universe image is
+512 bytes forty times a second. Task 49 settled the same question for browser stats:
+continuous figures stay where they are and only the exception crosses. So a view of a
+connector's traffic exists **while somebody is watching and not otherwise**.
+`infra/connectors/viewers.rs` holds who is looking, `output.watch` and
+`output.unwatch` are the RPCs, and a connector nobody is watching is never asked —
+the manager's view arm sleeps for an hour rather than waking ten times a second to
+find out that nobody is there. Nothing expires: the ask is recomputed from who is
+here, so a tab that vanishes stops the drawing as surely as one that closes.
+
+That left one question the entry raised and did not answer: snapshot on demand, or
+diff at panel rate. **Both, in the simplest form each can take.** The rate is 100 ms,
+because ten a second reads as live and forty does not read at all; and a drawn view
+that has not changed is not sent, so a settled rig with the panel open costs nothing.
+The comparison excludes the stamp, or every redraw would be news.
+
+**The pluggable half.** A connector describes its
+own traffic in **shapes rather than protocols**: `OutputPlugin::observe(focus)` answers
+`Vec<OutputSection>`, each carrying a `SectionBody` — `Universes` or `Messages` today
+— and `frontend/src/lib/components/wire/views.ts` is the one place a shape becomes a
+component. So an output whose traffic carries universes gets the DMX sheet for
+nothing; one that looks like neither adds a variant, a component and one line in that
+table, and no panel changes. A shape this build has never heard of draws as itself
+rather than vanishing, which is the rule the layout tree already follows for a panel
+id it does not know and the geometry loader for a mesh it cannot read. And `observe`
+defaults to `None`, so a connector that does not describe itself says so and the
+panel prints that rather than an empty sheet.
+
+`focus` is opaque the whole way through — it is named in the connector's own terms, a
+universe number or a node's serial — because a field per protocol is exactly what a
+seam meant to carry a protocol nobody has written yet cannot have. The one place a
+universe is spelled as a focus string is `universeFocus`, beside the sheet that asks
+for one.
+
+**A peer's output is asked for down the link**, because only the station holding a
+socket can say what went through it. `SyncMessage::OutputWatch` carries the whole ask
+and empty is the withdrawal; `OutputTraffic` carries the answer back. Protocol version
+6, and the same shape `LogRaise`/`LogLines` already had. A peer's ask lands in the
+*same* `Viewers` table a browser's does, with the peer standing in for a session — so
+a connector cannot tell a booth across the room from a tab on this machine, and there
+is one unwind rather than two.
+
+Three things worth holding on to.
+
+**The DMX family pays nothing for being watched.** `UniverseCache::observe` reads the
+images the dedup was already keeping, because skipping an unchanged universe needs
+them anyway. Art-Net, sACN and the sACN a gateway is fed all answer through it, so a
+sheet reads the same whichever carried the universe — and watching costs nothing on
+the frame path, which is what makes it safe to offer on a rig that is already busy.
+
+**A keep-alive is not movement.** The cache now records when a universe last *changed*
+as well as when it was last *sent*, because the two differ by design: a settled
+universe goes out every 800 ms and has not changed in an hour. A sheet that read the
+send as movement would report every idle universe as busy, which is the failure mode
+of every DMX tester that only has one timestamp.
+
+**What is not free is a ring.** Discrete messages have to be kept to be shown, so
+`OutputPlugin::watched` tells a connector whether anybody is reading at all. OpenHaunt
+keeps its port commands only while somebody is, and throws away what it held when the
+last viewer goes — it was a picture of what happened while somebody was looking, and
+nobody was. Two rings then, the connector's and `frontend/src/lib/wire.ts`'s, and
+**both count what they dropped**: the station's drains on every look, the browser's is
+bounded by what a person can read, and neither loses a message silently, for the
+reason the system log makes a gap in `seq` visible.
+
+One thing this panel makes visible rather than fixes. Task 49 found that
+`OutputConfig::universes` claims to be a filter and only `OutputCoverage::of` ever
+calls `carries()` — the connectors render every universe in the patch and send every
+one the dedup has not settled. **The sheet's universe chips are now where an operator
+sees that**: an output restricted to universe 1 lists every universe in the show. Left
+unfixed here for the reason task 49 left it: changing which universes reach a wire is a
+change to what reaches lamps, and it wants its own decision. It has an entry now.
+
+```
+cargo test -p pult-backend --lib connectors   # the registry, the cache, and who is drawn for
+cargo test -p pult-backend --test wire        # two stations, and a console watching the other's wire
+cd frontend && npm test                       # what a browser makes of the batches
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -3041,11 +3126,15 @@ than — what that peer keeps for itself. The two panels below inherit that shap
 rather than re-deciding it, and the browser-reports-on-itself path the stats panel
 needs already works: `log.report` is it.
 
-**One of those two panels is now built**, as task 49: the System panel reads
+**Both of those panels are now built**, as tasks 49 and 50. The System panel reads
 `frame_costs` and puts the browsers beside them, and it answered the open question
 the entry carried — a browser's *continuous* figures stay LOCAL to the station
 serving the page, and only the exception crosses, as the `warn` line task 48's
-path already carries everywhere. outputs-viewer inherits both shapes.
+path already carries everywhere. The wire viewer inherited both shapes without
+re-deciding either, and added the one thing it had to settle for itself: a
+connector describes its own traffic in *shapes*, so a new output that carries
+universes gets the sheet for nothing and one that looks like nothing here adds a
+component and one line in a table. **So the block task 48 opened is closed.**
 
 **Then measure**, with the instruments built and a real rig to point them at.
 The browser half of the stats panel was the instrument that decided this, because
@@ -3059,14 +3148,16 @@ stops each being decided on taste. Note that all three of rig-viewer-fidelity's
 arrows are now behind it: gdtf-import gave it the beam angle, mvr-import a rig
 worth drawing, and performance-tests answers whether instancing is needed.
 
-1. **outputs-viewer** — what actually leaves the console, per universe and per
-   node. → none, and it closes the block task 48 opened
-2. **performance-tests** — 5000 fixtures, and whether the console is still
+1. **performance-tests** — 5000 fixtures, and whether the console is still
    comfortable. → none, now that both its blockers are gone: task 49 built the
    browser figure it had no other way to look at, and task 47 made an imported rig
    the thing measured. Its own two runs at 505 fixtures came out 50% apart, which
    is still the first thing this item has to fix about the instrument before it
    measures anything with it
+2. **universe-routing** — `OutputConfig::universes` says it is a filter and no
+   connector reads it. A decision rather than a feature: either `carries` gates
+   the send, or the field stops claiming to. → none, and the wire viewer is now
+   where an operator sees it
 3. **rig-viewer-fidelity** — beams that read as light, and the two live defects
    in the code it rewrites. → performance-tests, the last of its three arrows
    still ahead of it; gdtf-import and mvr-import landed as tasks 45 and 47
@@ -3074,7 +3165,7 @@ worth drawing, and performance-tests answers whether instancing is needed.
    parallel-render question that task 29 answered "no" against a tick that no
    longer exists. → performance-tests, which says which of those is on the path
    of a real show. Partitioning across stations is the fourth question here and
-   stays unnumbered: it is worth asking only if item 2 finds a rig one station
+   stays unnumbered: it is worth asking only if item 1 finds a rig one station
    cannot carry
 5. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
    frontend proxy comes from; the wire stays generic. → none
@@ -3489,26 +3580,42 @@ piece of hardware that is a different thing again. Its two questions survive, th
 address-mapping one under show-control and the connector-or-plugin one under
 control-transports.
 
+### Outputs
+
+#### universe-routing
+
+**`OutputConfig::universes` documents itself as "which universes to send", and no
+connector has ever read it.** `carries()` is the predicate for the field and
+**only `OutputCoverage::of` calls it**: the connectors render every universe in the
+patch and put on the wire every one the dedup has not settled. So an output
+restricted to universe 1 transmits all seven, and the Outputs panel's coverage
+warnings describe a routing nobody implements.
+
+Found by task 49's throughput figure — an sACN output configured for one universe
+reporting two and a half universes' worth of packet per frame — and left there
+deliberately, because changing which universes reach a wire is a change to what
+reaches lamps and wants its own decision rather than a drive-by fix inside an
+instrument.
+
+- **The decision is which way to make it honest**, and they are not the same size.
+  Gating the send in `render` (or in each connector's loop over its universes)
+  makes the field mean what it says, and makes a two-output split — this Art-Net
+  node carries 1–4, that one carries 5–8 — work, which is an ordinary way to
+  build a rig and currently does not work. Deleting the field is a schema change
+  and admits that every output carries everything.
+- **`OutputCoverage` already believes the first answer**, which is the argument for
+  it: the gap warnings, the "Add sACN output for universe 1" button and the panel's
+  whole model of coverage are written against a filter that exists. Deleting the
+  field means rewriting all of that to say something weaker.
+- **The trap is the dedup cache.** `UniverseCache` is per connector and keyed by
+  universe number, so filtering at the send is safe; filtering earlier, in `render`,
+  would change what the *evaluation* costs per output and make two outputs on one
+  station render the patch twice. Task 43's split says which half that lands in.
+- **Task 50 made it visible**, which is what an instrument is for: the wire viewer's
+  universe chips list what a connector is actually carrying, so an output restricted
+  to one universe now shows every universe in the show to anybody who looks.
+
 ### Observability
-
-#### outputs-viewer
-
-A live view of what leaves the console: a DMX sheet per universe, OpenHaunt
-messages per node. The dedup caches in `connectors::dmx` already hold the current
-universe images; OpenHaunt sends are discrete messages worth a ring buffer.
-
-- LOCAL state on the owning station, with the viewer subscribing cross-station.
-  The latency numbers set the precedent: a link property is published by whoever
-  measured it.
-- **Task 49 sharpened that, and this item should take the same answer.** A
-  browser's figures are LOCAL to the station serving the page precisely because
-  they are *continuous*: a stream crossing the sync link for ever, on the network
-  carrying the show, for something nobody is reading. What replicates is the
-  exception. A universe image at 40 Hz is the same shape of question and the same
-  answer — so the cross-station version of this panel is a thing asked for while
-  somebody is looking, the way `log.watch` is, rather than a thing published.
-- 40 Hz times 512 bytes should not hit the WebSocket unthrottled. Snapshot on
-  demand, or diff at panel rate.
 
 #### station-clock-offset
 

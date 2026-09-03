@@ -10,6 +10,8 @@ use anyhow::Result;
 use tokio::net::UdpSocket;
 use uuid::Uuid;
 
+use pult_schema::types::output::{OutputSection, SectionBody};
+
 use super::{
     dmx::{render, Patch, SequenceCounter, UniverseCache, UNIVERSE_SIZE, REFRESH_AFTER},
     Frame, Frames, OutputPlugin, SendFuture,
@@ -74,6 +76,20 @@ impl OutputPlugin for ArtNetOutput {
             }
             Ok(frame)
         })
+    }
+
+    /// The universes as they last went out, read off the dedup cache.
+    ///
+    /// Nothing is kept for a viewer's sake: the images are here because skipping an
+    /// unchanged universe needs them. Which is why watching an Art-Net output costs
+    /// nothing at all on the frame path — the reason a viewer can be offered on a rig
+    /// that is already busy.
+    fn observe(&mut self, focus: Option<&str>) -> Option<Vec<OutputSection>> {
+        Some(vec![OutputSection {
+            title: format!("Art-Net to {}", self.target),
+            note: None,
+            body: SectionBody::Universes(self.sent.observe(focus, std::time::Instant::now())),
+        }])
     }
 }
 

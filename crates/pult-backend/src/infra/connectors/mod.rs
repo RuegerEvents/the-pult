@@ -20,7 +20,10 @@ use pult_schema::{
     path::PathSegment,
     types::{
         fixture::{Fixture, FixtureType},
-        output::{OutputConfig, OutputCoverage, OutputKind, OutputStatus, OutputStatuses},
+        output::{
+            OutputConfig, OutputCoverage, OutputKind, OutputSection, OutputStatus, OutputStatuses,
+            OutputView,
+        },
         programmer::ProgrammerValue,
         station::FrameCost,
     },
@@ -33,12 +36,23 @@ pub mod artnet;
 pub mod dmx;
 pub mod openhaunt;
 pub mod sacn;
+pub mod viewers;
 
 use crate::{
     engine::EngineHandle,
     infra::devices::{DeviceDirectory, DeviceHandle},
 };
 use dmx::Patch;
+pub use viewers::{Ask, Viewers};
+
+/// How often a viewer is drawn while somebody is watching.
+///
+/// The panel's rate, not the wire's. Art-Net draws at 40 Hz and a universe is 512
+/// bytes; a viewer that kept up with that would be putting 20 kB a second per
+/// universe through a WebSocket for a picture no eye can read at that speed. Ten a
+/// second looks live and costs a fiftieth of it — and an unchanged view is not sent
+/// at all, so a settled rig with the panel open costs nothing.
+pub const VIEW_MS: u64 = 100;
 
 /// What an OpenHaunt output needs to reach adopted nodes.
 type Devices = Option<(watch::Receiver<DeviceDirectory>, DeviceHandle)>;
@@ -130,6 +144,28 @@ pub trait OutputPlugin: Send {
     /// How often this protocol wants a frame of its own.
     fn frames(&self) -> Frames {
         Frames::ON_CHANGE_ONLY
+    }
+
+    /// Somebody opened, or closed, a viewer on this connector.
+    ///
+    /// Told rather than left to work out, because a connector that has to *keep* what
+    /// it said in order to show it — a ring of discrete messages — can only afford to
+    /// keep it while somebody is reading. A connector whose answer is already lying
+    /// around, as the DMX family's is in its dedup cache, has nothing to do here.
+    fn watched(&mut self, _watching: bool) {}
+
+    /// What this connector is putting on the wire, drawn for a viewer.
+    ///
+    /// Called at [`VIEW_MS`] and only while watched, never on the frame path. `focus`
+    /// is whatever the viewer asked to look at, in this connector's own terms — a
+    /// universe number, a node's serial — and is opaque to everything between here
+    /// and the panel, which is what lets a connector nobody has written yet name the
+    /// parts of its own traffic.
+    ///
+    /// `None` is the honest answer for a connector that does not describe itself, and
+    /// the panel says so rather than showing an empty sheet.
+    fn observe(&mut self, _focus: Option<&str>) -> Option<Vec<OutputSection>> {
+        None
     }
 }
 
@@ -280,6 +316,26 @@ impl Running {
     }
 }
 
+/// What the manager needs in order to be looked at.
+///
+/// Straight onto the update broadcast rather than through the engine, for the reason
+/// a log line goes that way: a picture of a wire is not show state, and queueing a
+/// diagnostic behind whatever the console is busy with is wrong exactly when somebody
+/// is reading it.
+struct Watching {
+    viewers: Viewers,
+    updates: crate::engine::UpdateBroadcast,
+    /// Woken when an ask moves, so a station with no viewer open never ticks.
+    wake: watch::Receiver<u64>,
+    /// The last view published per `(output, focus)`, so an unchanged one is not sent
+    /// again. This is the whole of "diff at panel rate": a settled rig redraws to the
+    /// same bytes, and the same bytes are not news.
+    last: HashMap<(Uuid, Option<String>), serde_json::Value>,
+    /// Which connectors have been told somebody is reading them.
+    told: std::collections::HashSet<Uuid>,
+    drawn_at: std::time::Instant,
+}
+
 /// Owns the output plugins and feeds them.
 pub struct OutputManager {
     node_id: NodeId,
@@ -298,6 +354,12 @@ pub struct OutputManager {
     /// reporter to publish. A watch, so nothing on the frame path takes a lock and
     /// nothing is written to replicated state per frame.
     frame_costs: watch::Sender<Vec<FrameCost>>,
+    /// Who is watching this station's connectors, and what they last saw.
+    ///
+    /// `None` where nothing can watch — which is every test that is about frames
+    /// rather than about looking at them, and is why the manager's constructor did
+    /// not change shape.
+    watching: Option<Watching>,
     /// The last thing the engine said was driving the rig.
     ///
     /// Held across frames, and that is the whole of what this change did here: a
@@ -325,11 +387,34 @@ impl OutputManager {
                 addressed: Vec::new(),
                 coverage: None,
                 patch: None,
+                watching: None,
                 frame_costs,
             },
             OutputHandle(tx),
             costs_rx,
         )
+    }
+
+    /// Let somebody look at what these connectors are putting on the wire.
+    ///
+    /// Set after construction rather than taken as an argument because a station is
+    /// not the only thing that runs an output manager: every test of what a frame
+    /// costs builds one with no browser anywhere near it, and none of them had to
+    /// learn about viewers to go on passing.
+    pub fn watchable(
+        mut self,
+        viewers: Viewers,
+        updates: crate::engine::UpdateBroadcast,
+    ) -> Self {
+        self.watching = Some(Watching {
+            wake: viewers.subscribe(),
+            viewers,
+            updates,
+            last: HashMap::new(),
+            told: Default::default(),
+            drawn_at: std::time::Instant::now(),
+        });
+        self
     }
 
     /// Seed a plugin without going through a configuration. Test-only: it is how a
@@ -360,6 +445,13 @@ impl OutputManager {
                 .next_frame_at()
                 .unwrap_or_else(|| std::time::Instant::now() + std::time::Duration::from_secs(3600));
 
+            // Far off when nobody is watching, which is almost always: a station whose
+            // Outputs viewer nobody has open must not wake ten times a second to
+            // decide that nobody has it open.
+            let next_view = self.next_view_at().unwrap_or_else(|| {
+                std::time::Instant::now() + std::time::Duration::from_secs(3600)
+            });
+
             tokio::select! {
                 biased;
                 cmd = self.rx.recv() => {
@@ -379,6 +471,17 @@ impl OutputManager {
                 _ = tokio::time::sleep_until(next_frame.into()) => {
                     self.draw_due_frames().await;
                 }
+                // Somebody opened a viewer, or closed one. Nothing is drawn here —
+                // the loop simply comes round again with a deadline instead of an
+                // hour, and the connector is told whether it is being read.
+                changed = wait_for_viewers(self.watching.as_mut()) => {
+                    if changed {
+                        self.tell_connectors_who_is_watching();
+                    }
+                }
+                _ = tokio::time::sleep_until(next_view.into()) => {
+                    self.draw_views().await;
+                }
             }
         }
         info!("[output] stopped");
@@ -387,6 +490,92 @@ impl OutputManager {
     /// The soonest any connector wants a frame.
     fn next_frame_at(&self) -> Option<std::time::Instant> {
         self.running.values().filter_map(|output| output.next_frame).min()
+    }
+
+    /// When the next view is due, if anybody is waiting for one.
+    fn next_view_at(&self) -> Option<std::time::Instant> {
+        let watching = self.watching.as_ref()?;
+        watching
+            .viewers
+            .any_on(self.node_id)
+            .then(|| watching.drawn_at + std::time::Duration::from_millis(VIEW_MS))
+    }
+
+    /// Tell each connector whether anybody is reading it.
+    ///
+    /// Recomputed from who is actually watching rather than counted up and down: a
+    /// browser that vanishes mid-look is `Viewers::forget` and this same pass, and
+    /// there is no tally left over to be wrong.
+    fn tell_connectors_who_is_watching(&mut self) {
+        let Some(watching) = &mut self.watching else { return };
+        let wanted: std::collections::HashSet<Uuid> = watching
+            .viewers
+            .asks_of(self.node_id)
+            .into_iter()
+            .filter(|(_, ask)| !ask.is_empty())
+            .map(|(output, _)| output)
+            .collect();
+        for (id, output) in self.running.iter_mut() {
+            let before = watching.told.contains(id);
+            let now = wanted.contains(id);
+            if before != now {
+                output.plugin.watched(now);
+                if now {
+                    watching.told.insert(*id);
+                } else {
+                    watching.told.remove(id);
+                    watching.last.retain(|(output, _), _| output != id);
+                }
+            }
+        }
+    }
+
+    /// Draw what every watched connector is putting on the wire, and push what has
+    /// changed.
+    ///
+    /// Once per distinct focus, because two operators looking at two universes of one
+    /// output are two questions with two answers — and the connector is the only
+    /// thing that knows how to tell them apart.
+    async fn draw_views(&mut self) {
+        let Some(watching) = &mut self.watching else { return };
+        watching.drawn_at = std::time::Instant::now();
+        let at_ms = pult_schema::types::sequence::now_ms();
+        let asks = watching.viewers.asks_of(self.node_id);
+        let mut alive: std::collections::HashSet<(Uuid, Option<String>)> = Default::default();
+
+        for (output_id, ask) in asks {
+            let Some(output) = self.running.get_mut(&output_id) else { continue };
+            for focus in ask {
+                let Some(sections) = output.plugin.observe(focus.as_deref()) else { continue };
+                let view = OutputView {
+                    node_id: self.node_id,
+                    output_id,
+                    focus: focus.clone(),
+                    at_ms,
+                    sections,
+                };
+                let key = (output_id, focus);
+                alive.insert(key.clone());
+                let Ok(value) = serde_json::to_value(&view) else { continue };
+                // The stamp is not part of the comparison: a view that is the same
+                // picture a tenth of a second later is the same picture.
+                let mut without_stamp = value.clone();
+                if let Some(object) = without_stamp.as_object_mut() {
+                    object.remove("at_ms");
+                }
+                if watching.last.get(&key) == Some(&without_stamp) {
+                    continue;
+                }
+                watching.last.insert(key, without_stamp);
+                let path = vec![PathSegment::Key("output_traffic".into())];
+                // Nobody subscribed is nobody sent to, the same as the log: this is
+                // the broadcast the WebSocket filters by subscription.
+                let _ = watching.updates.0.send((path, value));
+            }
+        }
+        // What is no longer asked for is no longer remembered, or a viewer reopened
+        // on the same universe would sit blank until something moved.
+        watching.last.retain(|key, _| alive.contains(key));
     }
 
     /// Take a new picture of what is driving the rig, and put it on every wire at once.
@@ -598,6 +787,17 @@ impl OutputManager {
             let path = vec![PathSegment::Key("output_status".into())];
             let _ = self.engine.set(path, Lifecycle::Local, json).await;
         }
+    }
+}
+
+/// Wait for the set of viewers to change, or for ever where nothing can watch.
+///
+/// For ever rather than returning, so the `select!` above has one fewer branch to be
+/// enabled and disabled — a station with no viewers simply never wakes on this arm.
+async fn wait_for_viewers(watching: Option<&mut Watching>) -> bool {
+    match watching {
+        Some(watching) => watching.wake.changed().await.is_ok(),
+        None => std::future::pending().await,
     }
 }
 

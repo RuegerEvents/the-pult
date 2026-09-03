@@ -12,6 +12,28 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **A panel that shows what actually leaves the console.** *On the wire* is the sheet
+  a DMX universe went out as, and the messages a node was sent — where the Outputs
+  panel is where an output is configured and the System panel says how many bytes went,
+  this one says *which* bytes. Every universe a connector carries is listed with how
+  many of its channels are above zero and whether anything in it has moved recently,
+  and clicking one shows all 512. It works on another station's outputs too: only the
+  console holding the socket can say what went through it, so the question crosses the
+  network and that station answers it.
+- **It costs nothing when nobody is looking at it.** A universe is 512 bytes forty
+  times a second, so a console that published that continuously would be spending the
+  show's own network on a picture nobody is reading. Instead a connector is asked only
+  while a panel is open on it, ten times a second rather than forty, and an answer that
+  has not changed is not sent again — so a rig sitting still is free to watch. Closing
+  the panel stops it, and so does closing the tab, losing the browser, or unplugging
+  the station that was asking.
+- **A new kind of output brings its own view with it.** A connector describes its own
+  traffic in shapes rather than in protocols — whole universes, or discrete messages —
+  so anything that carries universes gets the DMX sheet for nothing, and anything that
+  does not adds one component and one line in a table with no panel changing. A shape
+  a console has never heard of is drawn as itself rather than quietly left out, and a
+  connector that does not describe what it sends says so.
+
 - **A System panel, and it can see the browsers too.** What every machine is costing,
   in one place, with a sparkline beside each figure for what the panel has watched
   since it was opened. What each output connector's frames took is finally shown at

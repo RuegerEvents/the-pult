@@ -1384,6 +1384,8 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
             sync: None,
             caller: None,
             clients: None,
+            node_id: pult_schema::events::operation::NodeId::new(),
+            viewers: Default::default(),
             ws_registry: None,
         };
         async move {

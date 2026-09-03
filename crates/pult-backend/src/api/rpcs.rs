@@ -129,6 +129,23 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     // One object rather than a dozen named arguments, because nobody types this — it
     // is a page describing itself every couple of seconds, not a verb for the command
     // line — and a shape that grows a field should not grow a signature.
+    // What is actually on the wire. Asked for rather than published, for the reason
+    // `log.watch` is: a universe image is 512 bytes forty times a second, and a
+    // station broadcasting that to browsers nobody has looked at — or across the
+    // link carrying the show — would be paying for a picture nobody is reading.
+    // `nodeId` may be a peer's: the ask crosses the sync link and that station's
+    // connector answers it, since only the station holding a socket can say what
+    // went through it.
+    LocalRpcMeta {
+        method: "output.watch",
+        args_schema: r#"[{"name":"outputId","type":"string","optional":false},{"name":"nodeId","type":"string","optional":true},{"name":"focus","type":"string","optional":true}]"#,
+        doc: "Watch what an output is putting on the wire while this client is looking.",
+    },
+    LocalRpcMeta {
+        method: "output.unwatch",
+        args_schema: r#"[{"name":"outputId","type":"string","optional":false},{"name":"nodeId","type":"string","optional":true}]"#,
+        doc: "Stop watching an output; the connector stops drawing when nobody is.",
+    },
     LocalRpcMeta {
         method: "client.report",
         args_schema: r#"[{"name":"stats","type":"object","optional":false}]"#,
@@ -162,6 +179,12 @@ pub struct LocalRpcDeps {
     /// about itself: how much has been sent to it. `None` where there is no HTTP
     /// server behind these deps, which is what a test constructs.
     pub ws_registry: Option<crate::api::ws::SubscriptionRegistry>,
+    /// Which station this is, so an ask about an output can be told apart from an
+    /// ask about a peer's — the first goes to a connector here, the second down a
+    /// link.
+    pub node_id: pult_schema::events::operation::NodeId,
+    /// Who is watching what an output is putting on the wire.
+    pub viewers: crate::infra::connectors::Viewers,
     /// What the browsers on this station are saying about themselves.
     ///
     /// `None` where there is no HTTP server behind these deps at all, which is what
@@ -352,6 +375,37 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             // anywhere else, and it must not be able to name one for itself.
             Ok(Value::String(key))
         }
+        "output.watch" | "output.unwatch" => {
+            let caller = deps.caller.ok_or_else(|| {
+                "watching is about one client looking, so it needs one".to_string()
+            })?;
+            let output_id: uuid::Uuid = serde_json::from_value(args["outputId"].clone())
+                .map_err(|e| format!("invalid outputId: {e}"))?;
+            // The station that holds the socket, defaulting to this one — which is
+            // what an output with no station of its own means anyway.
+            let node = match args.get("nodeId") {
+                Some(v) if !v.is_null() => pult_schema::events::operation::NodeId(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("invalid nodeId: {e}"))?,
+                ),
+                _ => deps.node_id,
+            };
+            let moved = if method == "output.watch" {
+                let focus = args["focus"].as_str().map(str::to_string);
+                deps.viewers.watch(node, output_id, caller, focus)
+            } else {
+                deps.viewers.unwatch(node, output_id, caller)
+            };
+            // A peer's connector only draws while it is asked to, so the new answer
+            // goes down the link — including the answer "nobody, stop". Nothing is
+            // sent for an ask that did not move.
+            if node != deps.node_id {
+                if let (Some(sync), Some(ask)) = (&deps.sync, moved) {
+                    sync.watch_peer_output(node, output_id, ask).await;
+                }
+            }
+            Ok(Value::Null)
+        }
         "selection.resolve" => {
             let group_id: uuid::Uuid = serde_json::from_value(args["groupId"].clone())
                 .map_err(|e| format!("invalid groupId: {e}"))?;
@@ -391,6 +445,7 @@ pub fn is_local_rpc(method: &str) -> bool {
         || method.starts_with("selection.")
         || method.starts_with("parameter.")
         || method.starts_with("log.")
+        || method.starts_with("output.")
         || method.starts_with("client.")
 }
 
@@ -516,6 +571,8 @@ mod tests {
             sync: None,
             caller: None,
             clients: None,
+            node_id: pult_schema::events::operation::NodeId::new(),
+            viewers: Default::default(),
             ws_registry: None,
         };
         for meta in LOCAL_RPCS {
@@ -611,6 +668,8 @@ mod tests {
             sync: None,
             caller: None,
             clients: None,
+            node_id: pult_schema::events::operation::NodeId::new(),
+            viewers: Default::default(),
             ws_registry: None,
         };
         let ask = || {

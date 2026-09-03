@@ -14,6 +14,8 @@ use anyhow::Result;
 use tokio::net::UdpSocket;
 use uuid::Uuid;
 
+use pult_schema::types::output::{OutputSection, SectionBody};
+
 use super::{
     dmx::{render, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER, UNIVERSE_SIZE},
     Frame, Frames, OutputPlugin, SendFuture,
@@ -172,6 +174,19 @@ impl OutputPlugin for SacnOutput {
             }
             Ok(frame)
         })
+    }
+
+    /// The same reading of the same cache Art-Net answers with, so a sheet looks the
+    /// same whichever of the two carried the universe.
+    fn observe(&mut self, focus: Option<&str>) -> Option<Vec<OutputSection>> {
+        Some(vec![OutputSection {
+            title: match self.target {
+                Some(target) => format!("sACN to {target}"),
+                None => "sACN, a multicast group per universe".to_string(),
+            },
+            note: None,
+            body: SectionBody::Universes(self.sent.observe(focus, std::time::Instant::now())),
+        }])
     }
 }
 

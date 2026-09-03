@@ -15,7 +15,8 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::{
-    engine::{EngineCommand, EngineHandle},
+    engine::{EngineCommand, EngineHandle, UpdateBroadcast},
+    infra::connectors::Viewers,
     logging::{LogHandle, COALESCE_MS},
 };
 
@@ -59,6 +60,25 @@ impl Outstanding {
 
 pub struct PeerSender(pub mpsc::Sender<SyncMessage>);
 
+/// What a peer connection carries besides the show.
+///
+/// Both of these are diagnostics that cross a link **because somebody asked**, and
+/// both live on the connection: a station that goes away takes its asks with it, and
+/// nothing has to expire. Bundled rather than threaded separately because they arrive
+/// at the same place by the same route, and a fifth positional `Option<...>` through
+/// four signatures is how the wrong one gets passed.
+#[derive(Clone, Default)]
+pub struct Watched {
+    /// This station's log, so a peer that asked for more can be published to.
+    pub log: Option<LogHandle>,
+    /// Who is watching which output — a peer's ask is registered here under this
+    /// station's own id, so a connector cannot tell a browser from a booth.
+    pub viewers: Viewers,
+    /// Where a drawn view goes: to this station's own browsers, and out to whichever
+    /// peer asked for it. `None` in a test with no engine broadcast behind it.
+    pub updates: Option<UpdateBroadcast>,
+}
+
 /// Spawns an outbound peer connection task.
 /// Returns a `PeerSender` for sending messages and a `NodeId` for the remote peer.
 pub async fn spawn_outbound(
@@ -67,7 +87,7 @@ pub async fn spawn_outbound(
     session_id: Uuid,
     show_id: Uuid,
     engine: EngineHandle,
-    log: Option<LogHandle>,
+    watched: Watched,
     on_lost: mpsc::Sender<SyncCommand>,
 ) -> Result<(NodeId, PeerSender, Arc<LinkBytes>)> {
     let addr = stream.peer_addr()?;
@@ -123,7 +143,7 @@ pub async fn spawn_outbound(
             write_half,
             outgoing,
             engine,
-            log,
+            watched,
             our_node_id,
             peer_node_id,
             to_manager,
@@ -146,12 +166,12 @@ pub fn spawn_inbound(
     our_node_id: NodeId,
     leader: watch::Receiver<NodeId>,
     engine: EngineHandle,
-    log: Option<LogHandle>,
+    watched: Watched,
     on_connected: mpsc::Sender<(NodeId, PeerSender, Arc<LinkBytes>)>,
     on_lost: mpsc::Sender<SyncCommand>,
 ) {
     tokio::spawn(async move {
-        match handle_inbound(stream, our_node_id, leader, engine, log, on_connected, on_lost.clone())
+        match handle_inbound(stream, our_node_id, leader, engine, watched, on_connected, on_lost.clone())
             .await
         {
             Ok(peer_node_id) => {
@@ -167,7 +187,7 @@ async fn handle_inbound(
     our_node_id: NodeId,
     leader: watch::Receiver<NodeId>,
     engine: EngineHandle,
-    log: Option<LogHandle>,
+    watched: Watched,
     on_connected: mpsc::Sender<(NodeId, PeerSender, Arc<LinkBytes>)>,
     to_manager: mpsc::Sender<SyncCommand>,
 ) -> Result<NodeId> {
@@ -246,7 +266,7 @@ async fn handle_inbound(
         write_half,
         outgoing,
         engine,
-        log,
+        watched,
         our_node_id,
         peer_node_id,
         to_manager,
@@ -271,7 +291,7 @@ async fn run_peer_loop(
     mut write_half: Counted<tokio::net::tcp::OwnedWriteHalf>,
     mut outgoing: mpsc::Receiver<SyncMessage>,
     engine: EngineHandle,
-    log: Option<LogHandle>,
+    watched: Watched,
     our_node_id: NodeId,
     peer_node_id: NodeId,
     to_manager: mpsc::Sender<SyncCommand>,
@@ -283,10 +303,22 @@ async fn run_peer_loop(
     // The ask lives here, on the connection, and dies with it — which is the whole
     // of the unwind: a booth that closes its panel is a recomputed ask, a booth that
     // vanishes is a dropped connection, and neither needs a timer.
+    let log = watched.log.clone();
     let mut log_rx = log.as_ref().map(|l| l.subscribe());
     let mut log_asked: Option<pult_schema::ws::LogLevel> = None;
     let mut pending_lines: Vec<pult_schema::ws::LogLine> = Vec::new();
     let mut log_tick = tokio::time::interval(std::time::Duration::from_millis(COALESCE_MS));
+    // What this peer asked to see of our outputs. Registered in the same table a
+    // browser's ask goes in, with the peer standing in for a session, so the output
+    // manager draws for a booth across the room exactly as it draws for a tab here.
+    // Withdrawn as this loop exits, which is what makes a pulled cable stop a
+    // connector rather than leave it drawing for nobody.
+    let peer_as_viewer = peer_node_id.0;
+    let mut view_rx = watched
+        .updates
+        .as_ref()
+        .map(|updates| updates.subscribe_filtered(pult_schema::path::PathPattern::new("output_traffic")));
+    let mut watched_outputs: std::collections::HashSet<Uuid> = Default::default();
     let mut heartbeat_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut liveness_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut last_heard = tokio::time::Instant::now();
@@ -380,6 +412,44 @@ async fn run_peer_loop(
                         }
                         continue;
                     }
+                    // The same two shapes for outputs: an ask coming in, and an
+                    // answer coming back. Both live on this connection.
+                    SyncMessage::OutputWatch { output_id, focuses } => {
+                        debug!(
+                            "[sync] peer {} watches output {output_id} ({} focuses)",
+                            peer_node_id.0,
+                            focuses.len()
+                        );
+                        // Wholesale: this peer's whole ask for this output, so
+                        // dropping half of it is the same message as making it and
+                        // there is nothing left over on either side.
+                        if focuses.is_empty() {
+                            watched_outputs.remove(output_id);
+                        } else {
+                            watched_outputs.insert(*output_id);
+                        }
+                        watched.viewers.set(
+                            our_node_id,
+                            *output_id,
+                            peer_as_viewer,
+                            focuses.clone(),
+                        );
+                        continue;
+                    }
+                    SyncMessage::OutputTraffic { view } => {
+                        // Straight onto this station's own update broadcast, where a
+                        // browser subscribed to `output_traffic` picks it up without
+                        // knowing which station drew it — the view says.
+                        if let (Some(updates), Ok(value)) =
+                            (&watched.updates, serde_json::to_value(view))
+                        {
+                            let path = vec![pult_schema::path::PathSegment::Key(
+                                "output_traffic".into(),
+                            )];
+                            let _ = updates.0.send((path, value));
+                        }
+                        continue;
+                    }
                     _ => {}
                 }
                 // Leadership messages go to SyncManager, which owns that state.
@@ -435,6 +505,35 @@ async fn run_peer_loop(
                     break Err(e);
                 }
             }
+            // A view this station drew, on its way to the peer that asked for it.
+            //
+            // Read off the same broadcast the browsers read, so there is one place a
+            // view is produced and no second schedule to keep in step with the first.
+            // Only ours, and only what this peer asked for: a view drawn for a tab
+            // here must not cost the link anything.
+            view = next_view(&mut view_rx) => {
+                match view {
+                    Some(value) => {
+                        let ours = value.get("node_id")
+                            .and_then(|id| id.as_str())
+                            .and_then(|id| id.parse::<Uuid>().ok())
+                            == Some(our_node_id.0);
+                        let asked = value.get("output_id")
+                            .and_then(|id| id.as_str())
+                            .and_then(|id| id.parse::<Uuid>().ok())
+                            .is_some_and(|id| watched_outputs.contains(&id));
+                        if ours && asked {
+                            if let Ok(view) = serde_json::from_value(value) {
+                                let msg = SyncMessage::OutputTraffic { view };
+                                if let Err(e) = write_frame(&mut write_half, &msg).await {
+                                    break Err(e);
+                                }
+                            }
+                        }
+                    }
+                    None => view_rx = None,
+                }
+            }
             // Periodic heartbeat
             _ = heartbeat_tick.tick() => {
                 let beat = SyncMessage::Heartbeat { seq: heartbeat_seq };
@@ -459,7 +558,26 @@ async fn run_peer_loop(
     };
 
     reader.abort();
+    // Whatever this peer was watching, it is not watching any more. The connection
+    // held the ask and the connection has gone — which is the whole of the unwind,
+    // and why nothing here expires: a station that vanishes cannot leave a connector
+    // drawing for it.
+    watched.viewers.forget(peer_as_viewer);
     result
+}
+
+/// The next view this station drew, or nothing where there is no broadcast at all.
+///
+/// For ever rather than returning in that case, for the same reason [`next_log`]
+/// waits: a `select!` arm that resolves instantly is a busy loop.
+async fn next_view(
+    rx: &mut Option<futures::stream::BoxStream<'static, Value>>,
+) -> Option<Value> {
+    use futures::StreamExt;
+    match rx {
+        Some(stream) => stream.next().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The next line to consider publishing, or nothing once the log has gone.
@@ -499,6 +617,8 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
         SyncMessage::Heartbeat { .. } | SyncMessage::HeartbeatAck { .. } => {}
         // Both answered in run_peer_loop, which holds the connection's own ask.
         SyncMessage::LogLines { .. } | SyncMessage::LogRaise { .. } => {}
+        // The same: this connection holds the ask and the answer.
+        SyncMessage::OutputWatch { .. } | SyncMessage::OutputTraffic { .. } => {}
         SyncMessage::LeaderChanged { .. } | SyncMessage::SessionMembers { .. } => {
             // Handled in run_peer_loop, which can reach SyncManager.
         }

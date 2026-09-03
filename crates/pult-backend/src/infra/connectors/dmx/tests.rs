@@ -585,3 +585,72 @@ fn a_virtual_channel_occupies_nothing() {
     assert_eq!(universes[0].channels[0], 255);
     assert!(universes[0].channels[1..].iter().all(|c| *c == 0));
 }
+
+// ── What a viewer reads off the dedup cache ───────────────────────────────────
+
+fn a_universe(number: u16, channels: &[(usize, u8)]) -> Universe {
+    let mut universe = Universe::new(number);
+    for (at, value) in channels {
+        universe.channels[*at] = *value;
+    }
+    universe
+}
+
+#[test]
+fn a_viewer_reads_the_images_the_dedup_was_already_keeping() {
+    let mut cache = UniverseCache::default();
+    let now = std::time::Instant::now();
+    cache.needs_send(&a_universe(1, &[(0, 255), (5, 128)]), now, REFRESH_AFTER);
+    cache.needs_send(&a_universe(4, &[]), now, REFRESH_AFTER);
+
+    let traffic = cache.observe(Some("4"), now);
+    assert_eq!(
+        traffic.universes.iter().map(|u| u.universe).collect::<Vec<_>>(),
+        vec![1, 4],
+        "every universe this connector carries, in order, whichever is being looked at"
+    );
+    assert_eq!(traffic.universes[0].live_channels, 2);
+    assert_eq!(traffic.universes[1].live_channels, 0);
+
+    let focused = traffic.focused.expect("the universe that was asked for");
+    assert_eq!(focused.universe, 4);
+    assert_eq!(focused.channels.len(), UNIVERSE_SIZE);
+
+    let first = cache.observe(Some("1"), now).focused.unwrap();
+    assert_eq!(first.channels[0], 255);
+    assert_eq!(first.channels[5], 128);
+}
+
+#[test]
+fn asking_for_nothing_shows_the_first_universe_rather_than_a_blank_sheet() {
+    let mut cache = UniverseCache::default();
+    let now = std::time::Instant::now();
+    cache.needs_send(&a_universe(7, &[(0, 1)]), now, REFRESH_AFTER);
+
+    assert_eq!(cache.observe(None, now).focused.unwrap().universe, 7);
+    assert_eq!(
+        cache.observe(Some("99"), now).focused.unwrap().universe,
+        7,
+        "and a universe this output does not carry falls back rather than going blank"
+    );
+}
+
+#[test]
+fn a_keep_alive_is_not_a_change() {
+    let mut cache = UniverseCache::default();
+    let began = std::time::Instant::now();
+    let settled = a_universe(1, &[(0, 200)]);
+    cache.needs_send(&settled, began, REFRESH_AFTER);
+
+    // A second later, the same bytes go out again because the keep-alive is due.
+    let later = began + std::time::Duration::from_secs(1);
+    assert!(cache.needs_send(&settled, later, REFRESH_AFTER), "the refresh is due");
+
+    let traffic = cache.observe(None, later);
+    assert_eq!(traffic.universes[0].sent_ms_ago, 0, "it has just been sent");
+    assert!(
+        traffic.universes[0].changed_ms_ago >= 1000,
+        "and has not changed in a second — a sheet that read the send as movement would \
+         report every idle universe as busy"
+    );
+}

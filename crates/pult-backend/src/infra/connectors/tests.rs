@@ -214,6 +214,194 @@ async fn statuses(engine: &EngineHandle) -> OutputStatuses {
     serde_json::from_value(value).unwrap()
 }
 
+/// A plugin that describes itself, and remembers whether anybody was looking.
+///
+/// The stand-in for a connector with a viewer of its own — which is what the seam has
+/// to carry, since the whole point of describing traffic by *shape* is that a
+/// protocol nobody has written yet can be watched.
+struct Describer {
+    /// What it says it is doing, changed by the test to make a view move.
+    saying: Arc<std::sync::Mutex<String>>,
+    /// How many times it has been asked, and whether it was told anybody is reading.
+    looks: Arc<AtomicUsize>,
+    watched: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl OutputPlugin for Describer {
+    fn name(&self) -> &'static str {
+        "describer"
+    }
+
+    fn send<'a>(&'a mut self, _p: &'a Patch, _c: &'a [Uuid], _n: u64) -> SendFuture<'a> {
+        Box::pin(async move { Ok(Frame::default()) })
+    }
+
+    fn watched(&mut self, watching: bool) {
+        self.watched.store(watching, Ordering::SeqCst);
+    }
+
+    fn observe(&mut self, focus: Option<&str>) -> Option<Vec<OutputSection>> {
+        self.looks.fetch_add(1, Ordering::SeqCst);
+        Some(vec![OutputSection {
+            title: format!("focus {}", focus.unwrap_or("none")),
+            note: None,
+            body: pult_schema::types::output::SectionBody::Messages(
+                pult_schema::types::output::MessageTraffic {
+                    messages: vec![pult_schema::types::output::OutputMessage {
+                        at_ms: 0,
+                        to: "somewhere".into(),
+                        what: self.saying.lock().unwrap().clone(),
+                        detail: String::new(),
+                    }],
+                    dropped: 0,
+                },
+            ),
+        }])
+    }
+}
+
+/// The manager, with somebody able to watch it.
+fn a_watchable_manager(
+    node_id: NodeId,
+    engine: EngineHandle,
+) -> (OutputManager, OutputHandle, Viewers, crate::engine::UpdateBroadcast) {
+    let (manager, handle, _costs) = OutputManager::new(node_id, engine, None);
+    let viewers = Viewers::default();
+    let updates = crate::engine::UpdateBroadcast::new();
+    (manager.watchable(viewers.clone(), updates.clone()), handle, viewers, updates)
+}
+
+fn a_describer() -> (Describer, Arc<std::sync::Mutex<String>>, Arc<AtomicUsize>, Arc<std::sync::atomic::AtomicBool>) {
+    let saying = Arc::new(std::sync::Mutex::new("first".to_string()));
+    let looks = counter();
+    let watched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    (
+        Describer { saying: saying.clone(), looks: looks.clone(), watched: watched.clone() },
+        saying,
+        looks,
+        watched,
+    )
+}
+
+/// The next view pushed at the browsers, or nothing within the time given.
+async fn next_view(
+    rx: &mut tokio::sync::broadcast::Receiver<(pult_schema::path::Path, serde_json::Value)>,
+    within: std::time::Duration,
+) -> Option<pult_schema::types::output::OutputView> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        match tokio::time::timeout(left, rx.recv()).await {
+            Ok(Ok((path, value))) => {
+                if path.first() == Some(&PathSegment::Key("output_traffic".into())) {
+                    return serde_json::from_value(value).ok();
+                }
+            }
+            Ok(Err(_)) => return None,
+            Err(_) => return None,
+        }
+    }
+}
+
+// ── Being looked at ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_connector_nobody_is_watching_is_never_asked() {
+    let node_id = NodeId::new();
+    let (mut manager, handle, _viewers, _updates) =
+        a_watchable_manager(node_id, an_engine().await);
+    let (describer, _saying, looks, watched) = a_describer();
+    manager.preload(an_output(OutputKind::Artnet, None), Box::new(describer));
+    tokio::spawn(manager.run());
+
+    push_a_patch(&handle, a_dimmer_patch(1.0)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    assert_eq!(count(&looks), 0, "drawing a view for nobody is the cost this design refuses");
+    assert!(!watched.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn watching_starts_the_drawing_and_letting_go_stops_it() {
+    let node_id = NodeId::new();
+    let (mut manager, _handle, viewers, updates) = a_watchable_manager(node_id, an_engine().await);
+    let output = an_output(OutputKind::Artnet, None);
+    let id = output.id;
+    let (describer, saying, looks, watched) = a_describer();
+    manager.preload(output, Box::new(describer));
+    let mut rx = updates.0.subscribe();
+    tokio::spawn(manager.run());
+
+    let alice = Uuid::new_v4();
+    viewers.watch(node_id, id, alice, Some("3".into()));
+
+    let view = next_view(&mut rx, std::time::Duration::from_secs(1))
+        .await
+        .expect("a view within a second of asking");
+    assert_eq!(view.output_id, id);
+    assert_eq!(view.focus.as_deref(), Some("3"));
+    assert_eq!(view.sections[0].title, "focus 3", "the focus reaches the connector as asked");
+    assert!(watched.load(Ordering::SeqCst), "and the connector was told somebody is reading");
+
+    let while_watched = count(&looks);
+    viewers.forget(alice);
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let after = count(&looks);
+    assert!(after > 0);
+    *saying.lock().unwrap() = "second".into();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(count(&looks), after, "nobody is looking, so nothing is drawn");
+    assert!(while_watched > 0);
+    assert!(!watched.load(Ordering::SeqCst), "and the connector was told to stop keeping it");
+}
+
+#[tokio::test]
+async fn a_view_that_has_not_changed_is_not_sent_again() {
+    let node_id = NodeId::new();
+    let (mut manager, _handle, viewers, updates) = a_watchable_manager(node_id, an_engine().await);
+    let output = an_output(OutputKind::Artnet, None);
+    let id = output.id;
+    let (describer, saying, _looks, _watched) = a_describer();
+    manager.preload(output, Box::new(describer));
+    let mut rx = updates.0.subscribe();
+    tokio::spawn(manager.run());
+
+    viewers.watch(node_id, id, Uuid::new_v4(), None);
+    let first = next_view(&mut rx, std::time::Duration::from_secs(1)).await;
+    assert!(first.is_some());
+
+    // Several draws pass and the connector says the same thing every time, which is
+    // what a settled rig looks like: the wire should stay quiet.
+    assert!(
+        next_view(&mut rx, std::time::Duration::from_millis(500)).await.is_none(),
+        "an unchanged view is not news, however often it is drawn"
+    );
+
+    *saying.lock().unwrap() = "something else".into();
+    let moved = next_view(&mut rx, std::time::Duration::from_secs(1)).await;
+    assert!(moved.is_some(), "and a changed one arrives without being asked for again");
+}
+
+#[tokio::test]
+async fn a_connector_that_does_not_describe_itself_says_so_by_saying_nothing() {
+    let node_id = NodeId::new();
+    let (mut manager, _handle, viewers, updates) = a_watchable_manager(node_id, an_engine().await);
+    let output = an_output(OutputKind::Artnet, None);
+    let id = output.id;
+    manager.preload(output, Box::new(Recorder { calls: counter(), fails: false }));
+    let mut rx = updates.0.subscribe();
+    tokio::spawn(manager.run());
+
+    viewers.watch(node_id, id, Uuid::new_v4(), None);
+    assert!(
+        next_view(&mut rx, std::time::Duration::from_millis(500)).await.is_none(),
+        "the default answer is nothing, and the panel says so rather than drawing an empty sheet"
+    );
+}
+
 // ── Feeding the plugins ───────────────────────────────────────────────────────
 
 #[tokio::test]

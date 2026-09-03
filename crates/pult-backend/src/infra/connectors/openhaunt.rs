@@ -20,6 +20,7 @@ use pult_schema::types::{
     effect::{Curve, Direction, Easing, RunningEffect, RunningFade, Shape},
     fixture::{Fixture, FixtureAddress, ParameterDirection, ParameterValue},
     openhaunt::PortEffectCapability,
+    output::{MessageTraffic, OutputMessage, OutputSection, SectionBody},
 };
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
@@ -62,6 +63,8 @@ pub struct OpenHauntOutput {
     /// Ports currently tracing a shape for themselves. A port leaving this set has to
     /// be told to stop before it is sent a value again, or it would keep tracing.
     offloaded: std::collections::BTreeSet<(String, u8)>,
+    /// What has been said to the nodes, for somebody watching.
+    said: MessageRing,
 }
 
 impl OpenHauntOutput {
@@ -82,6 +85,7 @@ impl OpenHauntOutput {
             was_online: BTreeMap::new(),
             last_sent_effect: BTreeMap::new(),
             offloaded: Default::default(),
+            said: MessageRing::default(),
         })
     }
 
@@ -185,6 +189,7 @@ impl OpenHauntOutput {
                     {
                         if self.last_sent_effect.get(&key) != Some(&payload) {
                             debug!("[openhaunt] {serial} port {port} traces {payload}");
+                            self.said.note(serial, port, "traces", &payload);
                             self.last_sent_effect.insert(key.clone(), payload.clone());
                             self.devices.set_effect(serial.to_string(), port, Some(payload));
                         }
@@ -196,6 +201,7 @@ impl OpenHauntOutput {
                 // 2. Not tracing, but it was: take the shape back before anything else.
                 if self.offloaded.remove(&key) {
                     debug!("[openhaunt] {serial} port {port} stops tracing");
+                    self.said.note(serial, port, "stops tracing", &serde_json::Value::Null);
                     self.last_sent_effect.remove(&key);
                     self.devices.set_effect(serial.to_string(), port, None);
                     // The node has gone back to whatever value it was left holding,
@@ -213,6 +219,7 @@ impl OpenHauntOutput {
                         let payload = transition_payload(fade);
                         if self.last_sent_effect.get(&key) != Some(&payload) {
                             debug!("[openhaunt] {serial} port {port} fades {payload}");
+                            self.said.note(serial, port, "fades", &payload);
                             self.last_sent_effect.insert(key.clone(), payload.clone());
                             // Where the fade is going is where the port will be when
                             // it lands, so recording it now means the arrival is not
@@ -233,6 +240,7 @@ impl OpenHauntOutput {
                     continue;
                 }
                 debug!("[openhaunt] {serial} port {port} <- {payload}");
+                self.said.note(serial, port, "value", &payload);
                 self.last_sent.insert(key, payload.clone());
                 self.devices.set_output(serial.to_string(), port, payload);
             }
@@ -331,6 +339,97 @@ impl OutputPlugin for OpenHauntOutput {
             frame.packets += packets;
             Ok(frame)
         })
+    }
+
+    /// A ring costs something per message, so it is kept only while it is read.
+    fn watched(&mut self, watching: bool) {
+        self.said.reading(watching);
+    }
+
+    /// Two sections, because this connector is two things.
+    ///
+    /// What a node is told about its ports is discrete and goes out when it changes;
+    /// what a gateway is fed is a universe forty times a second. A viewer that showed
+    /// one of them would be describing half of what left the station — and which half
+    /// depends on what somebody happens to have patched.
+    fn observe(&mut self, focus: Option<&str>) -> Option<Vec<OutputSection>> {
+        let gateways = self.sent.observe(focus, std::time::Instant::now());
+        let mut sections = vec![OutputSection {
+            title: "To the nodes".to_string(),
+            // Said here because nothing else can say it: these do not travel inside a
+            // frame, so they are absent from this connector's row in the System panel
+            // and a reader comparing the two would otherwise find them missing.
+            note: Some(
+                "Port commands, sent when they change. They travel over MQTT from the                  device manager rather than inside an output frame, so they are not in                  this connector's byte count."
+                    .to_string(),
+            ),
+            body: SectionBody::Messages(self.said.drain()),
+        }];
+        if !gateways.universes.is_empty() {
+            sections.push(OutputSection {
+                title: "sACN to the gateways".to_string(),
+                note: None,
+                body: SectionBody::Universes(gateways),
+            });
+        }
+        Some(sections)
+    }
+}
+
+/// The last few things said to nodes, kept while somebody is reading them.
+///
+/// Off by default and empty when off, which is the whole design: a rig of two hundred
+/// relays says something every time one of them moves, and keeping that for a viewer
+/// nobody has open would be a cost paid for ever against a benefit paid never. The
+/// ring is bounded, and what it throws away it counts — a silent hole in a diagnostic
+/// is worse than a visible one, which is the same rule the log's `seq` gap follows.
+#[derive(Default)]
+pub struct MessageRing {
+    reading: bool,
+    messages: std::collections::VecDeque<OutputMessage>,
+    dropped: u64,
+}
+
+/// How many messages are held between two looks. At a tenth of a second apart, a rig
+/// would have to move two thousand ports a second to overflow it.
+const RING: usize = 200;
+
+impl MessageRing {
+    /// Somebody opened a viewer, or closed one. Closing throws away what was held:
+    /// it is a picture of what happened while somebody was looking, and nobody was.
+    fn reading(&mut self, on: bool) {
+        self.reading = on;
+        if !on {
+            self.messages.clear();
+            self.dropped = 0;
+        }
+    }
+
+    fn note(&mut self, serial: &str, port: u8, what: &str, detail: &serde_json::Value) {
+        if !self.reading {
+            return;
+        }
+        if self.messages.len() >= RING {
+            self.messages.pop_front();
+            self.dropped += 1;
+        }
+        self.messages.push_back(OutputMessage {
+            at_ms: pult_schema::types::sequence::now_ms(),
+            to: format!("{serial} port {port}"),
+            what: what.to_string(),
+            detail: if detail.is_null() { String::new() } else { detail.to_string() },
+        });
+    }
+
+    /// What has been said since the last look, and nothing twice.
+    ///
+    /// Drained rather than kept, because the connector's ring is bounded by what it
+    /// can afford and the reader's by what it can read: the panel keeps the history.
+    fn drain(&mut self) -> MessageTraffic {
+        MessageTraffic {
+            messages: self.messages.drain(..).collect(),
+            dropped: std::mem::take(&mut self.dropped),
+        }
     }
 }
 

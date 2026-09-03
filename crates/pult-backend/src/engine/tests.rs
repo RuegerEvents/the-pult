@@ -3191,6 +3191,8 @@ mod groups {
             sync: None,
             caller: None,
             clients: None,
+            node_id: pult_schema::events::operation::NodeId::new(),
+            viewers: Default::default(),
             ws_registry: None,
         }
     }

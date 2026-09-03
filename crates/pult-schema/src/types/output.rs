@@ -190,6 +190,137 @@ impl OutputCoverage {
     }
 }
 
+
+// ── What is actually on the wire ──────────────────────────────────────────────
+
+/// What one connector says it is putting on a wire, for somebody watching.
+///
+/// A view is **asked for, never published**. A universe image is 512 bytes forty
+/// times a second, and a station that broadcast that continuously — to its browsers
+/// or, worse, across the sync link — would be putting a stream nobody is reading on
+/// the network that is carrying the show. So this exists only while a viewer is
+/// open on this output, is drawn at the panel's rate rather than the wire's, and is
+/// not sent again when it has not changed.
+///
+/// It carries where it came from, because it travels alone: one push is one
+/// connector's answer, and a panel watching two stations' outputs at once files each
+/// by `(node_id, output_id)` without being told separately what it is looking at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OutputView {
+    pub node_id: NodeId,
+    pub output_id: Uuid,
+    /// What part of this connector's traffic was asked for, in the connector's own
+    /// terms — a universe number, a node's serial, whatever it named in its own
+    /// sections. Opaque here on purpose: the seam has to carry a connector nobody
+    /// has written yet, and a field per protocol is exactly what that forbids.
+    pub focus: Option<String>,
+    /// Console milliseconds when the connector was asked.
+    pub at_ms: u64,
+    /// What this connector's traffic is made of, in the order a panel should stack
+    /// it. Several, because one connector is not always one shape of thing: an
+    /// OpenHaunt output tells nodes about their ports *and* feeds sACN to the
+    /// gateways among them, and a viewer that could show only one of those would be
+    /// lying about half of what left the station.
+    pub sections: Vec<OutputSection>,
+}
+
+/// One part of a connector's traffic, named and shaped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OutputSection {
+    /// What to call it in the panel. The connector's words, since it is the only
+    /// thing that knows what it is doing.
+    pub title: String,
+    /// A sentence under the title where one is worth having, for the thing a
+    /// connector knows and a viewer cannot infer — that per-port commands do not
+    /// travel inside a frame, say.
+    pub note: Option<String>,
+    pub body: SectionBody,
+}
+
+/// The shapes a viewer knows how to draw.
+///
+/// Tagged by **shape rather than by protocol**, which is the whole of what makes a
+/// new output cheap: one that carries whole universes gets the DMX sheet for
+/// nothing, and one that says discrete things gets the message list. A connector
+/// whose traffic looks like neither adds a variant here and a component beside the
+/// others in the frontend's registry, and touches no panel — and until it does, a
+/// shape an older console has never heard of is drawn as itself rather than
+/// silently missing, the same rule a layout follows for a panel id it does not know.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "shape", content = "of", rename_all = "camelCase")]
+#[ts(export)]
+pub enum SectionBody {
+    Universes(UniverseTraffic),
+    Messages(MessageTraffic),
+}
+
+/// Whole universes of channel data: Art-Net, sACN, and the sACN a gateway is fed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UniverseTraffic {
+    /// Every universe this connector carries, whether or not it is being looked at.
+    /// Cheap, and it is what the viewer offers to look at next.
+    pub universes: Vec<UniverseSummary>,
+    /// The 512 bytes of the one being looked at. Only one, because the sheet shows
+    /// one and forty of them at panel rate is a megabyte a second for a picture
+    /// nobody can read.
+    pub focused: Option<UniverseFrame>,
+}
+
+/// A universe, without its bytes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UniverseSummary {
+    pub universe: u16,
+    /// How many of the 512 are not at zero. The one figure that says at a glance
+    /// whether a universe is carrying a rig or carrying nothing.
+    pub live_channels: u16,
+    /// Since this universe's image last actually *changed*, which is not the same as
+    /// since it was last sent: the DMX family re-sends a settled universe on its
+    /// keep-alive, and a viewer that showed only the send would report every idle
+    /// universe as busy.
+    pub changed_ms_ago: u32,
+    pub sent_ms_ago: u32,
+}
+
+/// One universe as it went out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UniverseFrame {
+    pub universe: u16,
+    /// 512 channels, one byte each, channel 1 first.
+    pub channels: Vec<u8>,
+}
+
+/// Discrete things said, rather than a picture of a state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MessageTraffic {
+    /// Oldest first, and **drained**: what a connector has said since the viewer last
+    /// looked. The panel keeps the history, because the connector's ring is bounded
+    /// by what it can afford and the reader's by what it can read.
+    pub messages: Vec<OutputMessage>,
+    /// How many were thrown away because the ring filled between two looks. Said
+    /// rather than swallowed, for the reason the log counts a gap: a silent hole in
+    /// a diagnostic is worse than a visible one.
+    pub dropped: u64,
+}
+
+/// One thing a connector said to something.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OutputMessage {
+    pub at_ms: u64,
+    /// Who it went to: a node's serial, an address, whatever names the far end.
+    pub to: String,
+    /// What kind of thing it was, in a word or two — the column a reader scans.
+    pub what: String,
+    /// The payload, as text. The connector decides how much of it is worth showing.
+    pub detail: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

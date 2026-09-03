@@ -12,6 +12,7 @@ use pult_schema::types::{
         driving, emitters_of, Emitter, Fixture, FixtureAddress, FixtureType, ParameterDirection,
         ParameterValue,
     },
+    output::{UniverseFrame, UniverseSummary, UniverseTraffic},
     programmer::ProgrammerValue,
 };
 use uuid::Uuid;
@@ -337,7 +338,20 @@ pub const REFRESH_AFTER: std::time::Duration = std::time::Duration::from_millis(
 /// flooding one wire and not another.
 #[derive(Default)]
 pub struct UniverseCache {
-    sent: Vec<(u16, [u8; UNIVERSE_SIZE], std::time::Instant)>,
+    sent: Vec<Sent>,
+}
+
+/// One universe as it was last put on the wire.
+struct Sent {
+    number: u16,
+    channels: [u8; UNIVERSE_SIZE],
+    at: std::time::Instant,
+    /// When these bytes last became *different* bytes, which is not when they were
+    /// last sent: a settled universe goes out on the keep-alive every 800 ms and has
+    /// not changed in an hour. The viewer shows both, because "is anything moving in
+    /// universe 4" and "is universe 4 still being fed" are different questions and
+    /// only one of them is answered by the send.
+    changed_at: std::time::Instant,
 }
 
 impl UniverseCache {
@@ -349,21 +363,64 @@ impl UniverseCache {
         now: std::time::Instant,
         refresh_after: std::time::Duration,
     ) -> bool {
-        match self.sent.iter_mut().find(|(n, _, _)| *n == universe.number) {
-            Some((_, channels, last)) => {
-                let changed = *channels != universe.channels;
-                if changed || now.duration_since(*last) >= refresh_after {
-                    *channels = universe.channels;
-                    *last = now;
+        match self.sent.iter_mut().find(|sent| sent.number == universe.number) {
+            Some(sent) => {
+                let changed = sent.channels != universe.channels;
+                if changed || now.duration_since(sent.at) >= refresh_after {
+                    sent.channels = universe.channels;
+                    sent.at = now;
+                    if changed {
+                        sent.changed_at = now;
+                    }
                     true
                 } else {
                     false
                 }
             }
             None => {
-                self.sent.push((universe.number, universe.channels, now));
+                self.sent.push(Sent {
+                    number: universe.number,
+                    channels: universe.channels,
+                    at: now,
+                    changed_at: now,
+                });
                 true
             }
+        }
+    }
+
+    /// What this connector last put on the wire, for somebody watching.
+    ///
+    /// Read off the dedup cache and nothing else, which is the point: the images are
+    /// already here because skipping an unchanged universe needs them, so a viewer
+    /// costs one pass over what the connector was keeping anyway and **nothing at all
+    /// on the frame path**. Every DMX-family connector answers through here, so a
+    /// sheet reads the same whichever protocol carried it.
+    pub fn observe(&self, focus: Option<&str>, now: std::time::Instant) -> UniverseTraffic {
+        let since = |then: std::time::Instant| now.saturating_duration_since(then).as_millis() as u32;
+        let mut universes: Vec<&Sent> = self.sent.iter().collect();
+        universes.sort_by_key(|sent| sent.number);
+
+        // What was asked for, or the lowest-numbered universe when nothing was: a
+        // sheet that opens blank until somebody picks a universe is a sheet that
+        // looks broken on the rig where there is only one.
+        let wanted: Option<u16> = focus.and_then(|f| f.parse().ok());
+        let focused = wanted
+            .and_then(|number| universes.iter().find(|sent| sent.number == number))
+            .or_else(|| universes.first())
+            .map(|sent| UniverseFrame { universe: sent.number, channels: sent.channels.to_vec() });
+
+        UniverseTraffic {
+            universes: universes
+                .iter()
+                .map(|sent| UniverseSummary {
+                    universe: sent.number,
+                    live_channels: sent.channels.iter().filter(|byte| **byte != 0).count() as u16,
+                    changed_ms_ago: since(sent.changed_at),
+                    sent_ms_ago: since(sent.at),
+                })
+                .collect(),
+            focused,
         }
     }
 }

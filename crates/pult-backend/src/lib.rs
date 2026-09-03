@@ -63,6 +63,11 @@ pub struct Running {
     pub log: Option<crate::logging::LogHandle>,
     /// Which of this station's clients are watching which peer's log.
     pub log_watchers: crate::logging::Watchers,
+    /// Who is watching what this station's outputs — or a peer's — are putting on
+    /// the wire.
+    pub viewers: crate::infra::connectors::Viewers,
+    /// Where a view is pushed at the browsers, and where one from a peer arrives.
+    pub updates: crate::engine::UpdateBroadcast,
     pub serve: JoinHandle<Result<()>>,
 }
 
@@ -95,6 +100,11 @@ pub async fn start(config: Config) -> Result<Running> {
     let http_addr = listener.local_addr()?;
 
     let log_watchers = crate::logging::Watchers::default();
+    // Who is looking at what leaves this station. Owned here rather than by the
+    // output manager, because both ends of the question reach it: a browser asks
+    // through an RPC, and a peer asks down a sync link, and the connector cannot
+    // tell them apart.
+    let viewers = crate::infra::connectors::Viewers::default();
 
     let (engine_tx, engine_rx) = mpsc::channel::<EngineCommand>(256);
     let engine_handle = EngineHandle(engine_tx);
@@ -111,6 +121,9 @@ pub async fn start(config: Config) -> Result<Running> {
 
     let (mut engine, broadcast) =
         ShowEngine::new_with_rx(node_id, engine_rx, pool.clone(), Some(sync_handle.clone()));
+    // Now that the broadcast exists, a peer link can carry a view both ways: an ask
+    // arriving, and a drawn view going back to whoever asked.
+    sync_mgr.watching_outputs(viewers.clone(), broadcast.clone());
 
     // Every node browses for OpenHaunt devices; only the one leading the session
     // adopts or commands any of them.
@@ -127,6 +140,7 @@ pub async fn start(config: Config) -> Result<Running> {
         engine_handle.clone(),
         Some((device_directory, device_handle.clone())),
     );
+    let output_mgr = output_mgr.watchable(viewers.clone(), broadcast.clone());
     tokio::spawn(output_mgr.run());
     engine.set_output(output);
 
@@ -204,6 +218,11 @@ pub async fn start(config: Config) -> Result<Running> {
             // needs a caller, and this one never has any.
             caller: None,
             clients: Some(clients.clone()),
+            node_id,
+            // A plugin can ask what a wire is carrying the same way a browser can —
+            // but not "while it is looking", having nothing to stop looking with,
+            // which is what the missing `caller` above already says.
+            viewers: viewers.clone(),
             // A plugin has no socket either, so there is nothing to count for one.
             ws_registry: None,
         },
@@ -232,6 +251,7 @@ pub async fn start(config: Config) -> Result<Running> {
         ws_registry: SubscriptionRegistry::default(),
         broadcast: broadcast.clone(),
         log_watchers: log_watchers.clone(),
+        viewers: viewers.clone(),
         clients: clients.clone(),
         config: config.clone(),
         http_port: http_addr.port(),
@@ -305,6 +325,8 @@ pub async fn start(config: Config) -> Result<Running> {
         sync: sync_handle_for_running,
         log: config.log.clone(),
         log_watchers,
+        viewers,
+        updates: broadcast,
         serve,
     })
 }

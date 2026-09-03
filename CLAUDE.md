@@ -657,6 +657,72 @@ is why anything printing one prints the other. And a connector that emitted noth
 window reports **nothing rather than zero**, since zero would read as "instant" when the
 truth is that nothing happened.
 
+## What is on the wire, and a connector says what its own traffic looks like
+
+**Stations is who is here, System is what it costs, and *On the wire* is what left.**
+The `wire` panel shows the bytes themselves: the sheet a DMX universe went out as, the
+messages a node was sent. Which is the third of the three panels task 48 opened, and it
+inherits both answers rather than re-deciding them.
+
+**A view is asked for, never published.** A universe image is 512 bytes forty times a
+second; a station that broadcast that to its browsers — or, worse, across the link
+carrying the show — would be paying continuously for a picture nobody is reading. So
+opening the panel is `output.watch`, closing it is `output.unwatch`,
+`infra/connectors/viewers.rs` holds who is looking, and a connector nobody is watching
+is **never asked**: the manager's view arm sleeps for an hour rather than waking ten
+times a second to find out that nobody is there. **Nothing expires** — the ask is
+recomputed from who is actually here, so a tab that vanishes stops the drawing as surely
+as one that closes politely. And a drawn view that has not changed is not sent again,
+which is what "diff at panel rate" comes to: a settled rig with the panel open costs
+nothing.
+
+**A peer's output is asked for down the link**, because only the station holding a
+socket can say what went through it. `SyncMessage::OutputWatch` carries the whole ask
+and empty is the withdrawal; `OutputTraffic` carries the answer back. Exactly the shape
+`LogRaise`/`LogLines` already had, at protocol version 6 — and a peer's ask lands in the
+same `Viewers` table a browser's does, with the peer standing in for a session, so a
+connector cannot tell a booth across the room from a tab on this machine.
+
+**A connector describes its own traffic, in shapes rather than in protocols.**
+`OutputPlugin::observe(focus)` answers `Vec<OutputSection>`, each carrying a
+`SectionBody` — `Universes` or `Messages` today — and
+`frontend/src/lib/components/wire/views.ts` is the one place a shape becomes a
+component. That is the whole of what makes a new output cheap. One whose traffic
+carries universes gets the DMX sheet for **nothing**. One that looks like neither adds
+a variant in `pult-schema`, a component beside the others, and one line in that table —
+no panel changes and nothing enumerates outputs anywhere. A shape this build has never
+heard of draws as itself rather than vanishing, the rule the layout tree already follows
+for a panel id it does not know. And the default answer is `None`, so a connector that
+does not describe itself says so and the panel prints that rather than an empty sheet.
+
+**`focus` is opaque all the way through**, and named in the connector's own terms — a
+universe number, a node's serial. A field per protocol is exactly what a seam meant to
+carry a protocol nobody has written yet cannot have. The one place a universe is spelled
+as a focus string is `universeFocus` in `frontend/src/lib/wire.ts`, beside the sheet
+that asks for one.
+
+**The DMX family pays nothing for being watched.** `UniverseCache::observe` reads the
+images the dedup was already keeping, so Art-Net, sACN and the sACN a gateway is fed all
+answer the same way and a sheet reads the same whichever carried the universe. It
+reports **when a universe last changed as well as when it was last sent**, because a
+keep-alive is not movement: a sheet that read the send as movement would report every
+idle universe as busy. What is not free is a ring of discrete messages, which is why
+`OutputPlugin::watched` tells a connector whether anybody is reading at all — OpenHaunt
+keeps its port commands only while somebody is, and throws away what it held when the
+last viewer goes.
+
+**Two rings, and neither loses a message silently.** The connector's is bounded by what
+it can afford between two looks and hands over what it has *drained*; `wire.ts`'s is
+bounded by what a person can read, and is what turns a sequence of batches back into a
+log. Both count what they dropped and the panel prints the total, for the reason the
+system log makes a gap in `seq` visible rather than leaving a hole nobody can see.
+
+```
+cargo test -p pult-backend --lib connectors   # the registry, the cache, and what is drawn for whom
+cargo test -p pult-backend --test wire        # two stations, and a console watching the other's wire
+cd frontend && npm test                       # what a browser makes of the batches
+```
+
 ## Releases
 
 Tagging `v*` builds all four products for Linux x86_64 and aarch64, macOS arm64

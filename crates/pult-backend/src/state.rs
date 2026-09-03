@@ -31,6 +31,8 @@ pub struct AppState {
     /// Which browsers are watching which peer's log. Consulted whenever a session
     /// comes or goes, so an ask never outlives the person making it.
     pub log_watchers: crate::logging::Watchers,
+    /// Who is watching what an output is putting on the wire.
+    pub viewers: crate::infra::connectors::Viewers,
     /// What the browsers this station is serving say they are costing themselves.
     /// LOCAL: a page belongs to the station holding its socket and to no other.
     pub clients: crate::infra::clients::ClientRegistry,

@@ -17,7 +17,7 @@ use crate::engine::EngineHandle;
 pub mod protocol;
 pub mod peer;
 
-use peer::{spawn_inbound, spawn_outbound, PeerSender};
+use peer::{spawn_inbound, spawn_outbound, PeerSender, Watched};
 use pult_schema::types::station::{PeerLink, PeerLinks};
 use protocol::SyncMessage;
 
@@ -69,6 +69,12 @@ pub enum SyncCommand {
     /// nothing — which is the unwind. Nothing expires, because the ask lives on the
     /// connection and a connection that ends takes it with it.
     RaisePeerLog { node_id: NodeId, level: Option<pult_schema::ws::LogLevel> },
+    /// Ask one peer to draw what one of its outputs is putting on the wire.
+    ///
+    /// `focuses` is the whole ask, and empty is the withdrawal — the same shape as
+    /// [`SyncCommand::RaisePeerLog`], recomputed from who is watching rather than
+    /// counted up and down.
+    WatchPeerOutput { node_id: NodeId, output_id: Uuid, focuses: Vec<Option<String>> },
     /// Drop all peer connections (called on session Leave).
     DisconnectAll,
     Stop,
@@ -132,6 +138,19 @@ impl SyncHandle {
         let _ = self.0.send(SyncCommand::RaisePeerLog { node_id, level }).await;
     }
 
+    /// Ask one peer to draw one of its outputs, or with an empty ask to stop.
+    ///
+    /// Same rule as a raised log: a peer that is not connected is simply not told,
+    /// because an ask that outlived its connection is an ask that no longer exists.
+    pub async fn watch_peer_output(
+        &self,
+        node_id: NodeId,
+        output_id: Uuid,
+        focuses: Vec<Option<String>>,
+    ) {
+        let _ = self.0.send(SyncCommand::WatchPeerOutput { node_id, output_id, focuses }).await;
+    }
+
     /// How many peers this station is connected to.
     pub async fn peer_count(&self) -> usize {
         let (tx, rx) = oneshot::channel();
@@ -189,9 +208,10 @@ pub struct SyncManager {
     self_tx: mpsc::Sender<SyncCommand>,
     /// Link latencies, measured here and published by the station reporter.
     links: watch::Sender<PeerLinks>,
-    /// This station's log, so each peer connection can publish from it. `None`
-    /// where no subscriber was installed, which is every test that does not care.
-    log: Option<crate::logging::LogHandle>,
+    /// The diagnostics a peer connection can carry: this station's log, and who is
+    /// watching what its outputs are putting on the wire. Both cross a link only
+    /// because somebody asked, and both live on the connection that asked.
+    watched: Watched,
 }
 
 impl SyncManager {
@@ -213,7 +233,7 @@ impl SyncManager {
         let (links, _) = watch::channel(PeerLinks::default());
         let mgr = SyncManager {
             node_id,
-            log,
+            watched: Watched { log, ..Watched::default() },
             leader,
             listener: Some(listener),
             engine,
@@ -236,6 +256,21 @@ impl SyncManager {
         self.links.subscribe()
     }
 
+    /// Let a peer ask this station what its outputs are putting on the wire, and let
+    /// this station's browsers see what a peer answers.
+    ///
+    /// Set after `bind` because the update broadcast does not exist until the engine
+    /// does, and the engine needs this manager's handle — which is a cycle a
+    /// constructor argument cannot break.
+    pub fn watching_outputs(
+        &mut self,
+        viewers: crate::infra::connectors::Viewers,
+        updates: crate::engine::UpdateBroadcast,
+    ) {
+        self.watched.viewers = viewers;
+        self.watched.updates = Some(updates);
+    }
+
     /// Be told when this node is promoted to leader.
     pub fn on_promotion(&mut self, tx: mpsc::Sender<NodeId>) {
         self.promoted = Some(tx);
@@ -246,7 +281,7 @@ impl SyncManager {
         let connected_tx = self.connected_tx.clone();
         let node_id = self.node_id;
         let engine = self.engine.clone();
-        let log = self.log.clone();
+        let watched = self.watched.clone();
         let leader = self.leader.subscribe();
         let on_lost = self.self_tx.clone();
 
@@ -261,7 +296,7 @@ impl SyncManager {
                             node_id,
                             leader.clone(),
                             engine.clone(),
-                            log.clone(),
+                            watched.clone(),
                             connected_tx.clone(),
                             on_lost.clone(),
                         );
@@ -357,6 +392,13 @@ impl SyncManager {
                     let _ = sender.0.try_send(SyncMessage::LogRaise { level });
                 }
             }
+            SyncCommand::WatchPeerOutput { node_id, output_id, focuses } => {
+                if let Some(sender) = self.peers.get(&node_id) {
+                    // Dropped rather than queued if the link is full, for the reason a
+                    // raised log is: a diagnostic must never be what holds up a show.
+                    let _ = sender.0.try_send(SyncMessage::OutputWatch { output_id, focuses });
+                }
+            }
             SyncCommand::ConnectPeer { addrs, session_id, show_id, reply } => {
                 // Spawned, never awaited *here*. Dialling asks this node's own engine
                 // for its clock and its missed operations, and the engine reaches
@@ -374,7 +416,7 @@ impl SyncManager {
                 let node_id = self.node_id;
                 let engine = self.engine.clone();
                 let on_lost = self.self_tx.clone();
-                let log = self.log.clone();
+                let watched = self.watched.clone();
                 let connected = self.connected_tx.clone();
                 tokio::spawn(async move {
                     let Some((addr, stream)) = dial(&addrs).await else {
@@ -382,7 +424,7 @@ impl SyncManager {
                         return;
                     };
                     match spawn_outbound(
-                        stream, node_id, session_id, show_id, engine, log, on_lost,
+                        stream, node_id, session_id, show_id, engine, watched, on_lost,
                     )
                     .await
                     {

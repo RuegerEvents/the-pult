@@ -224,6 +224,14 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // page, so a page that has gone leaves none — the sweep in `infra::clients` is
     // only for the other way of going quiet, which is not hanging up.
     state.clients.forget(session_id).await;
+    // And whatever it was watching leave the console. Same rule as the raised log:
+    // recomputed from who is here, so a tab that closes stops a connector drawing
+    // for it — here, or on the peer that was drawing on its behalf.
+    for ((node_id, output_id), ask) in state.viewers.forget(session_id) {
+        if node_id != state.node_id {
+            state.sync.watch_peer_output(node_id, output_id, ask).await;
+        }
+    }
     send_task.abort();
     broadcast_task.abort();
     debug!("WebSocket session {session_id} disconnected");
@@ -330,6 +338,8 @@ async fn handle_client_message(
                     engine: state.engine.clone(),
                     log: state.config.log.clone(),
                     log_watchers: state.log_watchers.clone(),
+                    node_id: state.node_id,
+                    viewers: state.viewers.clone(),
                     sync: Some(state.sync.clone()),
                     // Which browser is asking, so a watch can end when it does.
                     caller: Some(session_id),
