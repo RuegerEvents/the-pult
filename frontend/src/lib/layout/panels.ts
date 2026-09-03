@@ -30,6 +30,7 @@ import SettingsPanel from '$lib/components/SettingsPanel.svelte';
 import SpeedMastersPanel from '$lib/components/SpeedMastersPanel.svelte';
 import ShowPanel from '$lib/components/ShowPanel.svelte';
 import StationsPanel from '$lib/components/StationsPanel.svelte';
+import SystemPanel from '$lib/components/SystemPanel.svelte';
 import ValuesPanel from '$lib/components/programmer/ValuesPanel.svelte';
 import PlanPanel from '$lib/components/stage/PlanPanel.svelte';
 import RigPanel from '$lib/components/stage/RigPanel.svelte';
@@ -75,6 +76,10 @@ export const PANELS = {
 	flows: { title: 'Flows', component: FlowEditor, fills: true, editable: true },
 	outputs: { title: 'Outputs', component: OutputsPanel, fills: false },
 	stations: { title: 'Stations', component: StationsPanel, fills: false },
+	// The other half of the pair: Stations is who is here, this is what it costs —
+	// per station, per output connector, and per browser, which is the figure that
+	// exists nowhere else because a console is a browser evaluating a rig.
+	system: { title: 'System', component: SystemPanel, fills: false },
 	plugins: { title: 'Plugins', component: PluginsPanel, fills: false, editable: true },
 	show: { title: 'Show', component: ShowPanel, fills: false },
 	session: { title: 'Session', component: SessionPanel, fills: false },

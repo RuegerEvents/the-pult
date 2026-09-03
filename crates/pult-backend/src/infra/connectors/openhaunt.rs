@@ -86,11 +86,12 @@ impl OpenHauntOutput {
     }
 
     /// Unicast every universe a gateway is listening for, to that gateway.
+    /// Answers what it spent evaluating, and what it put on the wire doing it.
     async fn feed_the_gateways(
         &mut self,
         patch: &Patch,
         now_ms: u64,
-    ) -> Result<std::time::Duration> {
+    ) -> Result<(std::time::Duration, u64, u32)> {
         let gateways: Vec<(String, u16, SocketAddr)> = self
             .directory
             .borrow()
@@ -104,7 +105,7 @@ impl OpenHauntOutput {
             })
             .collect();
         if gateways.is_empty() {
-            return Ok(std::time::Duration::ZERO);
+            return Ok((std::time::Duration::ZERO, 0, 0));
         }
 
         let now = std::time::Instant::now();
@@ -112,6 +113,8 @@ impl OpenHauntOutput {
         // the same however many nodes are waiting for them.
         let universes = render(patch, now_ms);
         let evaluating = now.elapsed();
+        let mut bytes = 0u64;
+        let mut packets = 0u32;
         for universe in universes {
             let listening: Vec<&SocketAddr> = gateways
                 .iter()
@@ -135,9 +138,11 @@ impl OpenHauntOutput {
             );
             for addr in listening {
                 self.socket.send_to(&packet, addr).await?;
+                bytes += packet.len() as u64;
+                packets += 1;
             }
         }
-        Ok(evaluating)
+        Ok((evaluating, bytes, packets))
     }
 
     /// Send each port whatever is the least it needs to hear.
@@ -313,8 +318,17 @@ impl OutputPlugin for OpenHauntOutput {
             self.drive_the_ports(patch, now_ms);
             // The ports are worked out here and only queued, so this whole call is
             // evaluating. What the gateways cost is measured inside their own render.
-            let mut frame = Frame { evaluating: began.elapsed() };
-            frame.evaluating += self.feed_the_gateways(patch, now_ms).await?;
+            let mut frame = Frame::evaluated(began.elapsed());
+            // What leaves here is the sACN this station sends to gateway nodes. The
+            // per-port commands a node itself is given travel over MQTT from the
+            // device manager, on its own schedule and not inside any frame, so they
+            // are not in this figure — which the panel says. That omission is small by
+            // construction: a three-second fade is one message to a node that can run
+            // it, not a hundred and twenty.
+            let (evaluating, bytes, packets) = self.feed_the_gateways(patch, now_ms).await?;
+            frame.evaluating += evaluating;
+            frame.bytes += bytes;
+            frame.packets += packets;
             Ok(frame)
         })
     }

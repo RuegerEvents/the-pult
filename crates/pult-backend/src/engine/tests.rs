@@ -3190,6 +3190,8 @@ mod groups {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            clients: None,
+            ws_registry: None,
         }
     }
 

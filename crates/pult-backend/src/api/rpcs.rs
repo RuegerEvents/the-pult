@@ -29,7 +29,10 @@ use serde_json::Value;
 
 use crate::{
     engine::EngineHandle,
-    infra::{devices::DeviceHandle, session::SessionHandle},
+    // `short_id` is the client registry's, so the eight characters on a browser's log
+    // line and the eight on its row in the System panel are the same eight rather
+    // than two implementations that agree today.
+    infra::{clients::short_id, devices::DeviceHandle, session::SessionHandle},
 };
 
 /// What one RPC looks like from outside: enough for a command line to offer
@@ -119,6 +122,18 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"level","type":"string","optional":false},{"name":"message","type":"string","optional":false},{"name":"count","type":"number","optional":true}]"#,
         doc: "Report something that went wrong in a browser into the station's log.",
     },
+    // The other half of what a browser can say about itself: numbers rather than
+    // sentences. A page is a console evaluating a rig at frame rate against a clock
+    // it had to estimate, and nothing else on this station can measure any of that.
+    //
+    // One object rather than a dozen named arguments, because nobody types this — it
+    // is a page describing itself every couple of seconds, not a verb for the command
+    // line — and a shape that grows a field should not grow a signature.
+    LocalRpcMeta {
+        method: "client.report",
+        args_schema: r#"[{"name":"stats","type":"object","optional":false}]"#,
+        doc: "What a browser is costing itself: frame rate, evaluator time, memory, clock offset. Answers the key it landed under.",
+    },
 ];
 
 /// What dispatching needs to reach. Cheap to clone: a few channel handles.
@@ -143,17 +158,22 @@ pub struct LocalRpcDeps {
     /// For the calls that answer a question about the show. Reads only — anything
     /// here that wanted to write would be an entity command instead.
     pub engine: EngineHandle,
+    /// The sockets this station is serving, for the one thing a page cannot measure
+    /// about itself: how much has been sent to it. `None` where there is no HTTP
+    /// server behind these deps, which is what a test constructs.
+    pub ws_registry: Option<crate::api::ws::SubscriptionRegistry>,
+    /// What the browsers on this station are saying about themselves.
+    ///
+    /// `None` where there is no HTTP server behind these deps at all, which is what
+    /// a test constructs. A plugin's deps carry one and still cannot report: the call
+    /// needs a `caller`, and a plugin has no browser to be.
+    pub clients: Option<crate::infra::clients::ClientRegistry>,
 }
 
 fn no_log() -> String {
     "this station has no log; it was started without one".to_string()
 }
 
-/// The short form of a session id, which is as much identity as a page has and
-/// enough to tell two tablets apart in a log.
-fn short_id(id: uuid::Uuid) -> String {
-    id.simple().to_string().chars().take(8).collect()
-}
 
 /// Read a level argument, which may be absent but must not be nonsense.
 fn level_arg(args: &Value, name: &str) -> Result<Option<pult_schema::ws::LogLevel>, String> {
@@ -299,6 +319,39 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             log.emit(level, "browser", source, message);
             Ok(Value::Null)
         }
+        "client.report" => {
+            let caller = deps.caller.ok_or_else(|| {
+                "client.report is a browser describing itself, so it needs one".to_string()
+            })?;
+            let clients = deps
+                .clients
+                .as_ref()
+                .ok_or_else(|| "this station is not serving browsers".to_string())?;
+            let stats: pult_schema::types::client::ClientStats =
+                serde_json::from_value(args["stats"].clone())
+                    .map_err(|e| format!("invalid stats: {e}"))?;
+            // Trimmed for the same reason a reported message is: a browser is not a
+            // trusted length, and this one ends up on every panel showing the station.
+            let stats = pult_schema::types::client::ClientStats {
+                label: stats.label.chars().take(120).collect(),
+                ..stats
+            };
+            // What this station has sent down that socket since the page last
+            // reported — the one figure here the page cannot honestly supply, because
+            // no browser API says how many bytes arrived on a WebSocket. Drained
+            // here, on the page's own schedule, so the window is the gap between two
+            // of its reports.
+            let sent_bytes = deps
+                .ws_registry
+                .as_ref()
+                .map(|registry| registry.take_sent_bytes(caller))
+                .unwrap_or(0);
+            let key = clients.report(caller, stats, sent_bytes).await;
+            // Answering the key it wrote under is the whole of how a page knows
+            // which row in the panel is itself: a browser is not told its session id
+            // anywhere else, and it must not be able to name one for itself.
+            Ok(Value::String(key))
+        }
         "selection.resolve" => {
             let group_id: uuid::Uuid = serde_json::from_value(args["groupId"].clone())
                 .map_err(|e| format!("invalid groupId: {e}"))?;
@@ -338,6 +391,7 @@ pub fn is_local_rpc(method: &str) -> bool {
         || method.starts_with("selection.")
         || method.starts_with("parameter.")
         || method.starts_with("log.")
+        || method.starts_with("client.")
 }
 
 /// What a fixture's parameters are putting out, right now.
@@ -461,6 +515,8 @@ mod tests {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            clients: None,
+            ws_registry: None,
         };
         for meta in LOCAL_RPCS {
             assert!(is_local_rpc(meta.method), "{} is not routed here", meta.method);
@@ -554,6 +610,8 @@ mod tests {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            clients: None,
+            ws_registry: None,
         };
         let ask = || {
             dispatch("parameter.value", serde_json::json!({ "fixtureId": fixture_id }), &deps)

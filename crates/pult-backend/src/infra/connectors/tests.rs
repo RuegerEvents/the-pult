@@ -77,7 +77,7 @@ impl OutputPlugin for Sampler {
                     self.levels.lock().unwrap().push(level);
                 }
             }
-            Ok(Frame { evaluating: began.elapsed() })
+            Ok(Frame::evaluated(began.elapsed()))
         })
     }
 }

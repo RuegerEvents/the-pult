@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use chrono::Utc;
 use pult_schema::{
@@ -18,7 +20,7 @@ use crate::{
 };
 
 use super::{
-    protocol::{read_frame, write_frame, SyncMessage, PROTOCOL_VERSION},
+    protocol::{read_frame, write_frame, Counted, LinkBytes, SyncMessage, PROTOCOL_VERSION},
     SyncCommand,
 };
 
@@ -67,10 +69,15 @@ pub async fn spawn_outbound(
     engine: EngineHandle,
     log: Option<LogHandle>,
     on_lost: mpsc::Sender<SyncCommand>,
-) -> Result<(NodeId, PeerSender)> {
+) -> Result<(NodeId, PeerSender, Arc<LinkBytes>)> {
     let addr = stream.peer_addr()?;
     let (tx, outgoing) = mpsc::channel::<SyncMessage>(64);
-    let (mut read_half, mut write_half) = stream.into_split();
+    // Wrapped before the split, so both halves count into one pair — and so the
+    // handshake below is in the figure like everything after it.
+    let bytes = Arc::new(LinkBytes::default());
+    let (read_half, write_half) = stream.into_split();
+    let mut read_half = Counted::new(read_half, bytes.clone());
+    let mut write_half = Counted::new(write_half, bytes.clone());
 
     // Send Hello
     write_frame(
@@ -130,7 +137,7 @@ pub async fn spawn_outbound(
         let _ = on_lost.send(SyncCommand::PeerLost(peer_node_id)).await;
     });
 
-    Ok((peer_node_id, PeerSender(tx)))
+    Ok((peer_node_id, PeerSender(tx), bytes))
 }
 
 /// Handles an inbound peer connection (we are the server side).
@@ -140,7 +147,7 @@ pub fn spawn_inbound(
     leader: watch::Receiver<NodeId>,
     engine: EngineHandle,
     log: Option<LogHandle>,
-    on_connected: mpsc::Sender<(NodeId, PeerSender)>,
+    on_connected: mpsc::Sender<(NodeId, PeerSender, Arc<LinkBytes>)>,
     on_lost: mpsc::Sender<SyncCommand>,
 ) {
     tokio::spawn(async move {
@@ -161,13 +168,16 @@ async fn handle_inbound(
     leader: watch::Receiver<NodeId>,
     engine: EngineHandle,
     log: Option<LogHandle>,
-    on_connected: mpsc::Sender<(NodeId, PeerSender)>,
+    on_connected: mpsc::Sender<(NodeId, PeerSender, Arc<LinkBytes>)>,
     to_manager: mpsc::Sender<SyncCommand>,
 ) -> Result<NodeId> {
     let addr = stream.peer_addr()?;
     // Read the leader at handshake time, not at startup.
     let leader_node_id = *leader.borrow();
-    let (mut read_half, mut write_half) = stream.into_split();
+    let bytes = Arc::new(LinkBytes::default());
+    let (read_half, write_half) = stream.into_split();
+    let mut read_half = Counted::new(read_half, bytes.clone());
+    let mut write_half = Counted::new(write_half, bytes.clone());
 
     // Wait for Hello
     let (peer_node_id, peer_clock) = match read_frame(&mut read_half).await? {
@@ -229,7 +239,7 @@ async fn handle_inbound(
 
     let (tx, outgoing) = mpsc::channel::<SyncMessage>(64);
     let sender = PeerSender(tx);
-    let _ = on_connected.send((peer_node_id, sender)).await;
+    let _ = on_connected.send((peer_node_id, sender, bytes.clone())).await;
 
     let result = run_peer_loop(
         read_half,
@@ -257,8 +267,8 @@ pub const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_se
 pub const PEER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(16);
 
 async fn run_peer_loop(
-    mut read_half: tokio::net::tcp::OwnedReadHalf,
-    mut write_half: tokio::net::tcp::OwnedWriteHalf,
+    mut read_half: Counted<tokio::net::tcp::OwnedReadHalf>,
+    mut write_half: Counted<tokio::net::tcp::OwnedWriteHalf>,
     mut outgoing: mpsc::Receiver<SyncMessage>,
     engine: EngineHandle,
     log: Option<LogHandle>,

@@ -14,10 +14,10 @@ use pult_schema::{
     types::{
         fixture::Fixture,
         output::OutputConfig,
-        station::{FrameCost, Station},
+        station::{FrameCost, MachineStats, Station},
     },
 };
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Components, Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::watch;
 use tracing::debug;
 
@@ -36,6 +36,33 @@ pub struct StationReporter {
     /// Refreshed in place: CPU percentage is a difference between two samples, so
     /// the same `System` has to live across ticks or every reading is zero.
     system: System,
+    /// The machine's interfaces, for the same reason and in the same way: `received`
+    /// and `transmitted` are since the previous refresh, so this has to live across
+    /// ticks or every window looks like the first one.
+    ///
+    /// The whole machine rather than this process, which is the point of it — and the
+    /// one figure on the row that is not about the console. There is no portable way
+    /// to ask what one process is putting on a wire, and the console already counts
+    /// its own three legs for itself: its connectors, its peer links, and its
+    /// browsers. This is the cable, and the gap between the two is everything else
+    /// the box is doing.
+    networks: Networks,
+    /// When the interfaces were last read.
+    net_window_from: std::time::Instant,
+    /// The volumes, for the one that holds the showfile. Refreshed rather than rebuilt
+    /// so a mount that comes and goes is noticed without re-enumerating every tick.
+    disks: Disks,
+    /// Where the showfile lives, so the disk figure is about the disk that matters:
+    /// a show that cannot be saved is the failure this is meant to see coming.
+    ///
+    /// **Absolute**, resolved once here. A mount point is absolute, so a relative path
+    /// matches none of them and the volume comes out as nothing at all — and a
+    /// relative showfile is the ordinary case, not a corner one: `demo.sh` passes
+    /// `.demo/demo.db` and a console started from its own directory passes a bare
+    /// name. There is a test that would have let this through as a plausible zero.
+    showfile: std::path::PathBuf,
+    /// Thermal sensors, where the machine exposes any.
+    components: Components,
     hostname: String,
     started: std::time::Instant,
     /// Peer latencies, measured by the peer loops and published alongside.
@@ -59,6 +86,7 @@ impl StationReporter {
         http_addr: String,
         links: watch::Receiver<pult_schema::types::station::PeerLinks>,
         frames: watch::Receiver<Vec<FrameCost>>,
+        showfile: std::path::PathBuf,
     ) -> Self {
         StationReporter {
             node_id,
@@ -66,6 +94,11 @@ impl StationReporter {
             sync_addr,
             http_addr,
             system: System::new(),
+            networks: Networks::new_with_refreshed_list(),
+            net_window_from: std::time::Instant::now(),
+            disks: Disks::new_with_refreshed_list(),
+            showfile: absolute(showfile),
+            components: Components::new_with_refreshed_list(),
             hostname: System::host_name().unwrap_or_else(|| "console".to_string()),
             started: std::time::Instant::now(),
             links,
@@ -124,10 +157,30 @@ impl StationReporter {
             ProcessRefreshKind::nothing().with_cpu().with_memory(),
         );
         self.system.refresh_memory();
+        // The whole machine, as against the process above. Both, because the pair is
+        // what means something: a console at 4% on a machine at 96% is not a
+        // comfortable console, it is one about to be starved by something else.
+        self.system.refresh_cpu_usage();
 
         let process = sysinfo::get_current_pid().ok().and_then(|pid| self.system.process(pid));
         let cpu_percent = process.map(|p| p.cpu_usage()).unwrap_or(0.0);
         let mem_used = process.map(|p| p.memory()).unwrap_or(0);
+
+        // Both ways, over every interface that is not loopback. On a laptop running
+        // `demo.sh` the console's own traffic to itself would otherwise be counted
+        // twice — once sent, once received — and swamp what the figure is for.
+        self.networks.refresh(true);
+        let (net_received, net_sent) = self
+            .networks
+            .iter()
+            .filter(|(name, _)| !is_loopback(name))
+            .fold((0u64, 0u64), |(rx, tx), (_, data)| {
+                (rx + data.received(), tx + data.transmitted())
+            });
+        let net_window_ms = self.net_window_from.elapsed().as_millis() as u32;
+        self.net_window_from = std::time::Instant::now();
+
+        let machine = self.measure_machine();
 
         let fixtures: Vec<Fixture> = self.read("fixtures").await;
         let outputs: Vec<OutputConfig> = self.read("outputs").await;
@@ -157,7 +210,54 @@ impl StationReporter {
             // show is settled drained nothing and says so with `None` rather than
             // repeating whatever it last managed to measure.
             frame_costs: self.frames.borrow().clone(),
+            machine,
+            net_received,
+            net_sent,
+            net_window_ms,
             last_seen: Utc::now(),
+        }
+    }
+
+    /// What the machine is doing, whoever is doing it.
+    ///
+    /// Read here rather than anywhere else because this task already refreshes a
+    /// `System` every couple of seconds and these come off the same sample. Nothing
+    /// in it is about the console.
+    fn measure_machine(&mut self) -> MachineStats {
+        self.disks.refresh(true);
+        self.components.refresh(true);
+
+        let load = System::load_average();
+        // The volume the showfile is on, found by the longest mount point that is a
+        // prefix of it — which is how nested mounts resolve, and why the longest wins
+        // rather than the first that matches.
+        let disk = self
+            .disks
+            .iter()
+            .filter(|disk| self.showfile.starts_with(disk.mount_point()))
+            .max_by_key(|disk| disk.mount_point().as_os_str().len());
+
+        MachineStats {
+            cpu_percent: self.system.global_cpu_usage(),
+            cores: self.system.cpus().len() as u32,
+            mem_used: self.system.used_memory(),
+            swap_used: self.system.used_swap(),
+            swap_total: self.system.total_swap(),
+            load_1: load.one as f32,
+            load_5: load.five as f32,
+            load_15: load.fifteen as f32,
+            uptime_s: System::uptime(),
+            disk_free: disk.map(|d| d.available_space()).unwrap_or(0),
+            disk_total: disk.map(|d| d.total_space()).unwrap_or(0),
+            // The warmest sensor rather than one named: what a machine calls its
+            // packages differs per platform and per vendor, and the question being
+            // asked — is this box too hot — is answered by the highest of them.
+            cpu_temperature_c: self
+                .components
+                .iter()
+                .filter_map(|c| c.temperature())
+                .filter(|t| t.is_finite())
+                .max_by(|a, b| a.total_cmp(b)),
         }
     }
 
@@ -178,6 +278,39 @@ impl StationReporter {
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default()
     }
+}
+
+/// The absolute form of a path that may not exist yet.
+///
+/// `canonicalize` is no good on its own: a showfile is often being created, and
+/// canonicalizing a path to a file that is not there yet fails. So the *directory* is
+/// resolved — it exists, or the station could not write there at all — and the file
+/// name is put back on the end. A path that resolves to nothing falls back to itself,
+/// which finds no volume and reports no disk, which is the honest answer.
+fn absolute(path: std::path::PathBuf) -> std::path::PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let resolved = match parent {
+        Some(dir) => dir.canonicalize().ok(),
+        None => std::env::current_dir().ok(),
+    };
+    match (resolved, path.file_name()) {
+        (Some(dir), Some(name)) => dir.join(name),
+        (Some(dir), None) => dir,
+        _ => path,
+    }
+}
+
+/// Is this interface the machine talking to itself?
+///
+/// Named rather than matched on a flag, because `sysinfo` does not offer one and the
+/// names are stable across the platforms this console is built for: `lo` on Linux,
+/// `lo0` on macOS, and a name containing "loopback" on Windows.
+fn is_loopback(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == "lo" || name == "lo0" || name.contains("loopback")
 }
 
 /// Drop the rows of stations that have stopped talking.
@@ -217,6 +350,38 @@ mod tests {
             evaluating_max_ms: 2.0,
             frames,
             window_ms: 1000,
+            bytes: 0,
+            packets: 0,
+        }
+    }
+
+    /// A mount point is absolute, so a relative showfile path matches no volume and
+    /// the disk figure comes out as a plausible zero. That is the ordinary case rather
+    /// than a corner one — `demo.sh` passes `.demo/demo.db` — so it is pinned here.
+    mod resolving_the_showfile {
+        use super::*;
+
+        #[test]
+        fn a_relative_showfile_is_resolved_against_the_working_directory() {
+            let resolved = absolute(std::path::PathBuf::from("demo.db"));
+            assert!(resolved.is_absolute(), "or it matches no mount point at all");
+            assert!(resolved.ends_with("demo.db"));
+        }
+
+        #[test]
+        fn a_showfile_that_does_not_exist_yet_still_resolves() {
+            // Canonicalizing the file itself would fail here; the directory is what
+            // is resolved, and a station is always able to write to it.
+            let dir = std::env::temp_dir();
+            let resolved = absolute(dir.join("no-such-show.db"));
+            assert!(resolved.is_absolute());
+            assert!(resolved.ends_with("no-such-show.db"));
+        }
+
+        #[test]
+        fn an_absolute_one_is_left_alone() {
+            let given = std::path::PathBuf::from("/opt/shows/tonight.db");
+            assert_eq!(absolute(given.clone()), given);
         }
     }
 
@@ -250,6 +415,7 @@ mod tests {
                 "127.0.0.1:7700".into(),
                 links,
                 frames,
+                std::path::PathBuf::from("."),
             );
             (handle, reporter, frames_tx)
         }
@@ -258,6 +424,38 @@ mod tests {
             let rows = engine.get(vec![PathSegment::Key("stations".into())]).await.unwrap();
             let rows: Vec<Station> = serde_json::from_value(rows).unwrap();
             rows.into_iter().next().expect("the reporter published a row")
+        }
+
+        /// The machine half, against the machine actually running the test.
+        ///
+        /// Deliberately loose: a CI container's temperature sensor and its load
+        /// average are not this repository's to guarantee. What is asserted is that
+        /// the figures a machine *must* be able to answer are answered, so a platform
+        /// where `sysinfo` quietly returns nothing is a failing test rather than a
+        /// panel full of zeroes nobody questions.
+        #[tokio::test]
+        async fn a_station_reports_what_the_machine_is_doing_and_not_only_itself() {
+            let (engine, mut reporter, _frames) = a_reporter().await;
+
+            // Twice: a CPU percentage is a difference between two samples, so the
+            // first reading of one is zero on every platform.
+            reporter.publish().await;
+            reporter.publish().await;
+
+            let row = published_row(&engine).await;
+            assert!(row.machine.cores > 0, "a machine has at least one core");
+            assert!(row.machine.mem_used > 0, "and is using some memory");
+            assert!(
+                row.machine.mem_used >= row.mem_used,
+                "the machine's use includes this process's",
+            );
+            assert!(row.machine.uptime_s > 0, "and has been up for some time");
+            assert!(
+                row.machine.uptime_s >= row.uptime_s,
+                "for at least as long as this backend has",
+            );
+            assert!(row.machine.disk_total > 0, "the showfile is on a real volume");
+            assert!(row.machine.disk_free <= row.machine.disk_total);
         }
 
         #[tokio::test]

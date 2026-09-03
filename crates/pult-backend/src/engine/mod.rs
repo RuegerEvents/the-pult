@@ -10,6 +10,7 @@ use pult_schema::{
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
     types::{
+        client::ClientStatsMap,
         devices::DevicesState,
         fixture::{
             home_value, output_parameters, Fixture, FixtureType, ParameterDirection,
@@ -72,6 +73,7 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     ("output_status", || serde_json::to_value(OutputStatuses::default()).unwrap_or_default()),
     ("output_coverage", || serde_json::to_value(OutputCoverage::default()).unwrap_or_default()),
     ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
+    ("clients", || serde_json::to_value(ClientStatsMap::default()).unwrap_or_default()),
     ("plugins", || serde_json::to_value(PluginsState::default()).unwrap_or_default()),
 ];
 

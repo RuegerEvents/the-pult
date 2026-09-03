@@ -99,6 +99,11 @@ pub async fn start(config: Config) -> Result<Running> {
     let (engine_tx, engine_rx) = mpsc::channel::<EngineCommand>(256);
     let engine_handle = EngineHandle(engine_tx);
 
+    // What the browsers on this station say they are costing themselves. LOCAL, and
+    // owned here rather than by the engine: a page's row is written by a report and
+    // removed by a disconnect, neither of which is a change to the show.
+    let clients = crate::infra::clients::ClientRegistry::new(engine_handle.clone());
+
     let (mut sync_mgr, sync_handle, sync_addr) =
         SyncManager::bind(node_id, config.sync_port, engine_handle.clone(), config.log.clone())
             .await?;
@@ -144,6 +149,9 @@ pub async fn start(config: Config) -> Result<Running> {
         peer_http_addr,
         sync_mgr.peer_links(),
         frame_costs,
+        // The disk figure is about the volume the show is written to, not the root
+        // one: a show that cannot be saved is what it exists to see coming.
+        std::path::PathBuf::from(&config.showfile),
     );
     tokio::spawn(reporter.run());
 
@@ -160,6 +168,11 @@ pub async fn start(config: Config) -> Result<Running> {
             }
         }
     });
+
+    // And the browsers' own rows, swept for the ones that went quiet without hanging
+    // up. Not the leader's job and it could not be: a browser is on one station's
+    // socket and no other station has ever heard of it.
+    tokio::spawn(crate::infra::clients::sweep(clients.clone(), REPORT_INTERVAL * 5));
 
     let (session_mgr, session_handle) = SessionManager::new(
         node_id,
@@ -186,8 +199,13 @@ pub async fn start(config: Config) -> Result<Running> {
             log_watchers: log_watchers.clone(),
             sync: Some(sync_handle.clone()),
             // A plugin has no browser behind it, so it cannot watch a peer's log
-            // "while it is looking" — there is nothing to stop looking.
+            // "while it is looking" — there is nothing to stop looking. Which is
+            // also why carrying the client registry here costs nothing: reporting
+            // needs a caller, and this one never has any.
             caller: None,
+            clients: Some(clients.clone()),
+            // A plugin has no socket either, so there is nothing to count for one.
+            ws_registry: None,
         },
         config.plugin_dirs.clone(),
         // The asset store a carried bundle lives in.
@@ -214,6 +232,7 @@ pub async fn start(config: Config) -> Result<Running> {
         ws_registry: SubscriptionRegistry::default(),
         broadcast: broadcast.clone(),
         log_watchers: log_watchers.clone(),
+        clients: clients.clone(),
         config: config.clone(),
         http_port: http_addr.port(),
     };

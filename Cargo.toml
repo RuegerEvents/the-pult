@@ -86,7 +86,12 @@ futures = "0.3"
 toml = "0.8"
 
 # System statistics, for the station view
-sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+# Beyond `system`: the station row carries what the *machine* is doing — its
+# interfaces, its disk and its temperature — beside what this console is costing.
+# `systemstat` covers the same ground and was not taken: this crate was already
+# here for CPU and memory, and a second one would be a second thing to keep
+# working on four release targets.
+sysinfo = { version = "0.39", default-features = false, features = ["system", "network", "disk", "component"] }
 
 # mDNS discovery
 mdns-sd = "0.13"

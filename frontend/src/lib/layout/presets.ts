@@ -52,10 +52,16 @@ export const PRESETS: Preset[] = [
 	{
 		key: 'setup',
 		name: 'Setup',
+		// A grid rather than three columns, so the two diagnostic panels sit next to
+		// each other: what is being sent, beside what sending it costs. Underneath,
+		// who is in the session beside what the show is.
 		tree: split(
-			'Row',
-			[tabs(['outputs']), tabs(['stations']), tabs(['show', 'session'])],
-			[0.36, 0.34, 0.3]
+			'Column',
+			[
+				split('Row', [tabs(['outputs']), tabs(['system'])], [0.5, 0.5]),
+				split('Row', [tabs(['stations']), tabs(['show', 'session'])], [0.5, 0.5])
+			],
+			[0.5, 0.5]
 		)
 	},
 	{

@@ -154,6 +154,11 @@ impl SyncHandle {
 
 // ── SyncManager ───────────────────────────────────────────────────────────────
 
+/// A peer that finished its handshake: who it is, how to send to it, and the byte
+/// counters wrapped around its socket.
+type PeerArrival = (NodeId, PeerSender, std::sync::Arc<protocol::LinkBytes>);
+type PeerArrivals = mpsc::Receiver<PeerArrival>;
+
 pub struct SyncManager {
     node_id: NodeId,
     /// Who the session leader is. A watch rather than a copy: the accept loop runs in
@@ -164,9 +169,18 @@ pub struct SyncManager {
     engine: EngineHandle,
     rx: mpsc::Receiver<SyncCommand>,
     /// Peers that finished their handshake, from either direction.
-    connected_rx: mpsc::Receiver<(NodeId, PeerSender)>,
-    connected_tx: mpsc::Sender<(NodeId, PeerSender)>,
+    connected_rx: PeerArrivals,
+    connected_tx: mpsc::Sender<PeerArrival>,
     peers: HashMap<NodeId, PeerSender>,
+    /// What has crossed each peer's socket since the window was last closed.
+    ///
+    /// Kept beside the sender rather than inside `PeerLink`, because the counters are
+    /// written by the connection's own tasks and the link is a published reading of
+    /// them. The window is closed on a tick below, on the station reporter's schedule,
+    /// so what a panel shows is a rate over a window and not a total since boot.
+    link_bytes: HashMap<NodeId, std::sync::Arc<protocol::LinkBytes>>,
+    /// When the byte counters were last taken.
+    bytes_window_from: std::time::Instant,
     /// Everyone in the session, as last published by the leader. Includes this node.
     members: Vec<NodeId>,
     /// Told when this node takes over as leader, so the session can start advertising.
@@ -207,6 +221,8 @@ impl SyncManager {
             connected_rx,
             connected_tx,
             peers: HashMap::new(),
+            link_bytes: HashMap::new(),
+            bytes_window_from: std::time::Instant::now(),
             members: vec![node_id],
             promoted: None,
             self_tx: tx.clone(),
@@ -261,6 +277,12 @@ impl SyncManager {
     }
 
     async fn event_loop(&mut self) {
+        // The same window the station reporter publishes on, so a rate read off a
+        // `PeerLink` and a rate read off a `FrameCost` beside it cover the same
+        // couple of seconds and can be compared.
+        let mut bytes_window =
+            tokio::time::interval(crate::infra::stations::REPORT_INTERVAL);
+        bytes_window.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 cmd = self.rx.recv() => {
@@ -271,14 +293,49 @@ impl SyncManager {
                 }
                 // A peer finished its handshake, dialled or accepted.
                 connected = self.connected_rx.recv() => {
-                    if let Some((peer_id, sender)) = connected {
+                    if let Some((peer_id, sender, bytes)) = connected {
                         info!("[sync] registered peer {}", peer_id.0);
                         self.peers.insert(peer_id, sender);
+                        self.link_bytes.insert(peer_id, bytes);
                         self.publish_members();
                     }
                 }
+                _ = bytes_window.tick() => self.close_bytes_window(),
             }
         }
+    }
+
+    /// Take what has crossed each link and publish it as the window just ended.
+    ///
+    /// Written into the existing `PeerLink` rather than replacing it, because the two
+    /// halves of that row are measured on different schedules: latency comes from a
+    /// heartbeat being answered, throughput from this tick. A link that has gone quiet
+    /// keeps its latency and reports no bytes, which is exactly what happened.
+    fn close_bytes_window(&mut self) {
+        let elapsed = self.bytes_window_from.elapsed();
+        self.bytes_window_from = std::time::Instant::now();
+        let taken: Vec<(NodeId, u64, u64)> = self
+            .link_bytes
+            .iter()
+            .map(|(node_id, bytes)| {
+                let (sent, received) = bytes.take();
+                (*node_id, sent, received)
+            })
+            .collect();
+        if taken.is_empty() {
+            return;
+        }
+        self.links.send_modify(|links| {
+            for (node_id, sent, received) in taken {
+                let link = links.entry(node_id.0.to_string()).or_insert_with(|| PeerLink {
+                    node_id: Some(node_id),
+                    ..Default::default()
+                });
+                link.sent_bytes = sent;
+                link.received_bytes = received;
+                link.window_ms = elapsed.as_millis() as u32;
+            }
+        });
     }
 
     async fn handle_command(&mut self, cmd: SyncCommand) {
@@ -329,8 +386,8 @@ impl SyncManager {
                     )
                     .await
                     {
-                        Ok((peer_id, sender)) => {
-                            let _ = connected.send((peer_id, sender)).await;
+                        Ok((peer_id, sender, bytes)) => {
+                            let _ = connected.send((peer_id, sender, bytes)).await;
                             let _ = reply.send(Ok(addr));
                         }
                         Err(e) => {
@@ -357,21 +414,25 @@ impl SyncManager {
             }
             SyncCommand::PeerLatency { node_id, rtt, unanswered } => {
                 self.links.send_modify(|links| {
-                    links.insert(
-                        node_id.0.to_string(),
-                        PeerLink {
-                            node_id: Some(node_id),
-                            rtt_ms: Some(rtt.as_secs_f32() * 1000.0),
-                            measured_at: Some(chrono::Utc::now()),
-                            unanswered,
-                        },
-                    );
+                    // The latency half only. Replacing the row whole here would wipe
+                    // the byte counters that `close_bytes_window` writes on its own
+                    // schedule, and a heartbeat is more frequent than that window — so
+                    // throughput would read zero almost always.
+                    let link = links.entry(node_id.0.to_string()).or_insert_with(|| PeerLink {
+                        node_id: Some(node_id),
+                        ..Default::default()
+                    });
+                    link.node_id = Some(node_id);
+                    link.rtt_ms = Some(rtt.as_secs_f32() * 1000.0);
+                    link.measured_at = Some(chrono::Utc::now());
+                    link.unanswered = unanswered;
                 });
             }
             SyncCommand::PeerLost(node_id) => {
                 self.links.send_modify(|links| {
                     links.remove(&node_id.0.to_string());
                 });
+                self.link_bytes.remove(&node_id);
                 if self.peers.remove(&node_id).is_some() {
                     info!("[sync] lost peer {}", node_id.0);
                 }

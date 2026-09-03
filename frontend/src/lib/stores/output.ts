@@ -25,6 +25,7 @@ import { derived, readable, type Readable } from 'svelte/store';
 import { drivingTheRig } from '../driving.js';
 import { loadEvaluator, setDriving, unpack, watch } from '../evaluator.js';
 import type { ParameterValue } from '../generated/index.js';
+import { FrameMeter } from '../stats.js';
 import { consoleNow } from '../ws/clock.js';
 import { collection } from './show.js';
 
@@ -117,6 +118,17 @@ const driving = derived(
 );
 
 /**
+ * What this loop is costing, for the System panel and for the station's log.
+ *
+ * Measured here rather than in a loop of its own, because this is where the cost
+ * actually is: a browser is a console evaluating a rig in wasm on every animation
+ * frame, and a second loop started to measure that would keep a page rendering purely
+ * to prove it can. Which means a page drawing nothing measures nothing — and says so,
+ * rather than reporting a frame rate of zero.
+ */
+export const frameMeter = new FrameMeter();
+
+/**
  * The rig, evaluated once per animation frame.
  *
  * Frame rate rather than the console's old forty a second, which is the improvement:
@@ -127,6 +139,8 @@ export const output: Readable<Showing> = readable<Showing>(NOTHING_YET, (set) =>
 	let frame: number | null = null;
 	let stopDriving: (() => void) | undefined;
 	let live = true;
+	/** The last frame's timestamp, so a frame can be measured as the gap to it. */
+	let previousAt: number | null = null;
 
 	loadEvaluator().then((instance) => {
 		if (!live || !instance) return;
@@ -139,17 +153,34 @@ export const output: Readable<Showing> = readable<Showing>(NOTHING_YET, (set) =>
 
 		const draw = () => {
 			frame = requestAnimationFrame(draw);
+			// The gap to the previous frame, which is what an operator sees. The first
+			// frame after a subscription has no gap to measure and is not counted.
+			const startedAt = performance.now();
+			const sinceLast = previousAt === null ? null : startedAt - previousAt;
+			previousAt = startedAt;
+
+			// A frame is a frame whether or not there was anything to evaluate in it:
+			// the page is being served frames and that rate is what an operator sees.
+			// The evaluating half is what varies, and it is zero here honestly.
+			const measure = (evaluatingMs: number, parameters: number) => {
+				if (sinceLast !== null) frameMeter.frame(sinceLast, evaluatingMs, parameters);
+			};
+
 			const at = consoleNow();
 			if (at === null) {
 				set(NOTHING_YET);
+				measure(0, 0);
 				return;
 			}
 			const keys = currentOrder();
 			if (keys.length === 0) {
 				set({ at, value: () => null });
+				measure(0, 0);
 				return;
 			}
-			set(reading(at, keys, instance.evaluate(at)));
+			const packed = instance.evaluate(at);
+			measure(performance.now() - startedAt, keys.length);
+			set(reading(at, keys, packed));
 		};
 		frame = requestAnimationFrame(draw);
 	});
@@ -157,6 +188,9 @@ export const output: Readable<Showing> = readable<Showing>(NOTHING_YET, (set) =>
 	return () => {
 		live = false;
 		if (frame !== null) cancelAnimationFrame(frame);
+		// The next subscriber starts a new loop, and the gap across the pause between
+		// them is not a frame anybody waited for.
+		previousAt = null;
 		stopDriving?.();
 	};
 });

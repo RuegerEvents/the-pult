@@ -54,6 +54,29 @@ type Devices = Option<(watch::Receiver<DeviceDirectory>, DeviceHandle)>;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Frame {
     pub evaluating: std::time::Duration,
+    /// What this frame actually put on the wire, in bytes and in packets.
+    ///
+    /// Counted by the connector rather than inferred from the patch, because the two
+    /// are not the same number: the DMX family skips a universe whose image has not
+    /// changed and is not yet due a refresh, so a settled rig sends a fraction of what
+    /// its universe count suggests. What the panel shows has to be what left.
+    ///
+    /// The protocol's own payload, without the UDP and IP headers under it.
+    pub bytes: u64,
+    pub packets: u32,
+}
+
+impl Frame {
+    /// A frame that has evaluated and not yet sent anything.
+    pub fn evaluated(evaluating: std::time::Duration) -> Self {
+        Frame { evaluating, bytes: 0, packets: 0 }
+    }
+
+    /// One packet, as it goes out.
+    pub fn sent(&mut self, bytes: usize) {
+        self.bytes += bytes as u64;
+        self.packets += 1;
+    }
 }
 
 /// What one call to [`OutputPlugin::send`] returns.
@@ -177,6 +200,8 @@ struct Running {
     max_us: u64,
     evaluating_total_us: u64,
     evaluating_max_us: u64,
+    bytes: u64,
+    packets: u32,
 }
 
 impl Running {
@@ -198,6 +223,8 @@ impl Running {
             max_us: 0,
             evaluating_total_us: 0,
             evaluating_max_us: 0,
+            bytes: 0,
+            packets: 0,
         }
     }
 
@@ -210,6 +237,8 @@ impl Running {
         self.max_us = self.max_us.max(whole_us);
         self.evaluating_total_us += evaluating_us;
         self.evaluating_max_us = self.evaluating_max_us.max(evaluating_us);
+        self.bytes += frame.bytes;
+        self.packets += frame.packets;
     }
 
     /// Close the window and start a new one.
@@ -223,6 +252,8 @@ impl Running {
         let max_us = std::mem::take(&mut self.max_us);
         let evaluating_total_us = std::mem::take(&mut self.evaluating_total_us);
         let evaluating_max_us = std::mem::take(&mut self.evaluating_max_us);
+        let bytes = std::mem::take(&mut self.bytes);
+        let packets = std::mem::take(&mut self.packets);
         if frames == 0 {
             return None;
         }
@@ -236,6 +267,8 @@ impl Running {
             evaluating_max_ms: evaluating_max_us as f32 / 1000.0,
             frames,
             window_ms: elapsed.as_millis() as u32,
+            bytes,
+            packets,
         })
     }
 

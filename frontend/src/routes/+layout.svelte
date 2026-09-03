@@ -15,6 +15,8 @@
 	import { focusConsole } from '$lib/stores/plugins.js';
 	import { restoreLayout } from '$lib/stores/layout.js';
 	import { reportBrowserErrors } from '$lib/errors.js';
+	import { reportBrowserStats } from '$lib/stats.js';
+	import { frameMeter } from '$lib/stores/output.js';
 	import LayoutBar from '$lib/components/layout/LayoutBar.svelte';
 	import UserBar from '$lib/components/UserBar.svelte';
 	import '$lib/styles/tokens.css';
@@ -47,6 +49,10 @@
 	// panel — and a peer console, and the run's file — can see them. A panel that
 	// throws is otherwise invisible to everything but this tab's devtools.
 	reportBrowserErrors(client);
+	// And what it is costing itself, every couple of seconds, whether or not anybody
+	// has the System panel open. A browser worth knowing about is precisely the one
+	// with nobody in front of it, so this cannot be something a panel opts into.
+	reportBrowserStats(client, frameMeter);
 
 	/**
 	 * Ctrl-Z anywhere that is not a text field.

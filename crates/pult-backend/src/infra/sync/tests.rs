@@ -867,6 +867,10 @@ async fn a_station_row_reaches_the_other_console() {
         computes_fixtures: 0,
         total_fixtures: 0,
         frame_costs: Vec::new(),
+        machine: Default::default(),
+        net_received: 0,
+        net_sent: 0,
+        net_window_ms: 0,
         last_seen: Utc::now(),
     };
     one.engine
@@ -913,6 +917,10 @@ async fn each_station_reports_its_own_frame_cost_and_not_the_others() {
         computes_fixtures: 0,
         total_fixtures: 0,
         frame_costs: vec![cost],
+        machine: Default::default(),
+        net_received: 0,
+        net_sent: 0,
+        net_window_ms: 0,
         last_seen: Utc::now(),
     };
 
@@ -926,6 +934,8 @@ async fn each_station_reports_its_own_frame_cost_and_not_the_others() {
         evaluating_max_ms: max_ms / 4.0,
         frames: 80,
         window_ms: 2_000,
+            bytes: 0,
+            packets: 0,
     };
     let busy = cost(7.9, 31.0);
     let idle = cost(0.4, 0.9);
@@ -1373,6 +1383,8 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            clients: None,
+            ws_registry: None,
         };
         async move {
             crate::api::rpcs::dispatch(

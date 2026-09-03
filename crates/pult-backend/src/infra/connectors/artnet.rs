@@ -59,7 +59,7 @@ impl OutputPlugin for ArtNetOutput {
             // Timed on its own: rendering is where every parameter of every patched
             // fixture is worked out, and putting the bytes on the wire is the rest.
             let universes = render(patch, now_ms);
-            let frame = Frame { evaluating: now.elapsed() };
+            let mut frame = Frame::evaluated(now.elapsed());
             for universe in universes {
                 if !self.sent.needs_send(&universe, now, REFRESH_AFTER) {
                     continue;
@@ -67,6 +67,10 @@ impl OutputPlugin for ArtNetOutput {
                 let sequence = self.sequence.next(universe.number);
                 let packet = art_dmx(universe.number, sequence, &universe.channels);
                 self.socket.send_to(&packet, self.target).await?;
+                // Counted after the send rather than before it: a universe skipped by
+                // the dedup above never reached the wire, and the whole point of the
+                // figure is that a settled rig costs less than a moving one.
+                frame.sent(packet.len());
             }
             Ok(frame)
         })

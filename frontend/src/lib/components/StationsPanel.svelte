@@ -1,4 +1,17 @@
 <script lang="ts">
+	/**
+	 * Who is in the session, and how this console reaches them.
+	 *
+	 * Half of a pair. This one is the *network*: which machines are here, which is
+	 * leading, where each is reached, and what the link to it measures. What every
+	 * machine is *costing* — CPU, memory, uptime, and what its output frames took —
+	 * is the System panel, because those are the figures you read against a browser's
+	 * and against each other, not against a sync address.
+	 *
+	 * Latency is in both, deliberately: it is the one figure that answers both
+	 * questions, and it is measured from here either way.
+	 */
+
 	import { onMount } from 'svelte';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import type { PeerLink, Station } from '$lib/generated/index.js';
@@ -36,18 +49,6 @@
 		if (!link || link.rtt_ms === null) return 'not connected';
 		const rtt = `${link.rtt_ms.toFixed(1)} ms`;
 		return link.unanswered > 0 ? `${rtt} · ${link.unanswered} missed` : rtt;
-	}
-
-	const memPercent = (station: Station) =>
-		station.mem_total === 0 ? 0 : (station.mem_used / station.mem_total) * 100;
-
-	const megabytes = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
-
-	function uptime(station: Station): string {
-		const s = station.uptime_s;
-		if (s < 60) return `${s}s`;
-		if (s < 3600) return `${Math.floor(s / 60)}m`;
-		return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 	}
 
 	/// Every station computes every fixture today, so this is all-or-nothing until
@@ -97,8 +98,8 @@
 			<table class="rack">
 				<thead>
 					<tr>
-						<th>Station</th><th>Role</th><th>Latency</th><th>CPU</th><th>Memory</th>
-						<th>Up</th><th>Outputs</th><th>Fixtures</th><th>Heard</th>
+						<th>Station</th><th>Role</th><th>Latency</th><th>Outputs</th>
+						<th>Fixtures</th><th>Heard</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -117,11 +118,6 @@
 								{/if}
 							</td>
 							<td class="num">{latency(station)}</td>
-							<td class="num">{station.cpu_percent.toFixed(1)}%</td>
-							<td class="num" title="{megabytes(station.mem_used)} of {megabytes(station.mem_total)}">
-								{memPercent(station).toFixed(1)}%
-							</td>
-							<td class="num">{uptime(station)}</td>
 							<td>
 								{#if station.output_plugins.length === 0}
 									<span class="dim">none</span>
@@ -151,7 +147,8 @@
 			{/if}
 			<p class="note">
 				Latency is measured from this station, so each console shows its own view of the
-				network rather than a shared one.
+				network rather than a shared one. What these machines are <em>costing</em> — CPU,
+				memory, and what their output frames took — is the System panel.
 			</p>
 		{/if}
 	</section>

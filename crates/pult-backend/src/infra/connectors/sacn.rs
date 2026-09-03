@@ -152,7 +152,7 @@ impl OutputPlugin for SacnOutput {
             // Timed on its own: rendering is where every parameter of every patched
             // fixture is worked out, and putting the bytes on the wire is the rest.
             let universes = render(patch, now_ms);
-            let frame = Frame { evaluating: now.elapsed() };
+            let mut frame = Frame::evaluated(now.elapsed());
             for universe in universes {
                 if !self.sent.needs_send(&universe, now, REFRESH_AFTER) {
                     continue;
@@ -167,6 +167,8 @@ impl OutputPlugin for SacnOutput {
                     &universe.channels,
                 );
                 self.socket.send_to(&packet, self.destination(universe.number)).await?;
+                // After the send: a universe the dedup skipped never reached the wire.
+                frame.sent(packet.len());
             }
             Ok(frame)
         })

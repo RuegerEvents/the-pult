@@ -228,6 +228,94 @@ cargo test -p pult-backend --test logs        # two stations over a real sync li
 PULT_LOG_DIR=/somewhere cargo run -p pult-backend   # where this run's file goes
 ```
 
+## What it costs, and the browser is one of the machines
+
+**Stations is who is here; System is what it costs.** The first panel is the network —
+leader, addresses, the link measured from here. The second is processor, memory,
+uptime, a line per output connector out of `Station::frame_costs`, and the browsers.
+Latency is in both deliberately, being the one figure that answers both questions.
+
+**A browser is not a station and must not appear in `stations`.** That collection is
+one row per node, written by the node about itself and replicated; a tab that closes
+has to leave nothing behind. `clients` is a LOCAL path instead — a map keyed by the
+*short* session id, the same eight characters `LogSource::Browser` carries, so a
+warning in the log and a row in the panel are the same tab. `infra/clients.rs` owns it:
+the page reports over `client.report`, the socket's own disconnect takes the row away,
+and a sweep at ninety seconds takes what is left of a page that stopped talking without
+hanging up — ninety rather than sixty because a browser throttles a backgrounded tab's
+timers to about one a minute, and pruning at the throttle would flicker the tablet at
+the back of the room in and out of the list.
+
+**The figures are LOCAL and the exception replicates.** A fault is occasional and a
+frame rate is every second: a row per browser per report crossing the sync link for
+ever is a stream nobody reads on the network carrying the show. So the continuous
+figures stay with the station serving the page, the way `peers` does, and a window
+under 20 fps or with one frame over 100 ms becomes a `warn` through the `log.report`
+path task 48 already carries everywhere. `struggling()` in `frontend/src/lib/stats.ts`
+is that rule, and the panel *calls* it rather than restating it — a second copy drifted
+immediately and had the banner claiming a log line that was never written.
+
+**Measured in the loop that already exists.** `stores/output.ts` evaluates the rig once
+per animation frame, so the frame time and the evaluating half are taken there. A
+second `requestAnimationFrame` loop would keep a page rendering purely to prove that it
+can, which is the wrong thing to do to the tablet being diagnosed. So **a page drawing
+nothing measures nothing** and says so — `frames` is `None` and the panel prints
+"drawing nothing", for the reason an idle connector carries no `FrameCost` at all. The
+figure is the *gap between frames*, not the work inside one: a page served a frame
+every 200 ms is stuttering however cheap its own work was.
+
+Two more things worth holding on to. The clock offset is **read** from the estimate
+`ws/clock.ts` already maintains, never measured again — a second estimate of one
+quantity is a second answer to it. And a page **cannot name its own key**: the station
+fills in `session` and stamps `at_ms`, so `client.report` answers the key it landed
+under, which is the only way a browser learns its own session id.
+
+Sparklines are the reader's memory. Nothing on the wire carries a series — every report
+is one closed window — so `frontend/src/lib/trace.ts` keeps the last sixty readings the
+tile witnessed and the panel says so rather than implying a record. A trace dedupes by
+the window's *stamp*, because a station that has gone quiet is still being rendered with
+its last figure and would otherwise draw a flat line that reads as steady work.
+
+**A station row says what the console costs *and* what the machine costs.**
+`cpu_percent` and `mem_used` are this process, deliberately — a console sharing a box
+should report its own share. `MachineStats` beside them is the box: global CPU, memory
+and swap, load average, the machine's uptime as against the backend's, free space on
+**the volume the showfile is on**, and the warmest sensor there is. Never sum the two;
+read them as a pair, because a station at 4% on a machine at 96% is about to be starved
+by something nobody is watching. `sysinfo`'s `network`, `disk` and `component` features
+supply it — no second crate, since it was already here.
+
+**A process CPU percentage is of one core; the machine's is of all of them.** So the
+panel labels both ("15.2% of a core" against "6.4% of 18 cores") and states the
+comparison outright. The pair only earns its place if it can be compared, and unlabelled
+it reads backwards.
+
+One trap, and it is not a corner case: **a relative showfile path matches no mount
+point**, so the disk reads a plausible zero. `demo.sh` passes `.demo/demo.db`. The path
+is absolutised in `StationReporter::new` by resolving the *directory* and re-joining the
+file name — canonicalizing the file fails when the show is about to be created.
+
+**Network throughput is four figures, not one**, and the panel keeps them apart. Three
+are what the console is responsible for — what each connector put on the wire (counted
+in `Frame`, *after* the dedup, so a settled rig honestly costs less than a moving one);
+what crossed each peer link (`protocol::Counted` wraps the `TcpStream` before it is
+split, so the handshake and the heartbeats are in the figure and no call site had to
+remember); and what the station sent each browser (counted in the socket's send task,
+because a page cannot see its own socket). The fourth is what the machine's interfaces
+carried, which includes everything else the box is doing and must never be read as the
+console's own. `sysinfo` supplies that with its `network` feature — no second crate,
+since it was already here for CPU and memory.
+
+Two traps. **Loopback is excluded** or a demo talking to itself counts every byte
+twice. And **`PeerLatency` writes only its own half of a `PeerLink`**: it fires per
+heartbeat, more often than the byte window closes, so replacing the row whole wipes the
+counters and throughput reads zero almost always.
+
+```
+cargo test -p pult-backend --lib clients   # the map, the sweep, who may write a row
+cd frontend && npm test                    # the meter, the traces, what counts as struggling
+```
+
 ## Lifecycle System
 
 Every field in the data model has one of three lifecycles:

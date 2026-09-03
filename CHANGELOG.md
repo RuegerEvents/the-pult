@@ -12,6 +12,40 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **A System panel, and it can see the browsers too.** What every machine is costing,
+  in one place, with a sparkline beside each figure for what the panel has watched
+  since it was opened. What each output connector's frames took is finally shown at
+  all — the console has measured that since 0.1.0 and nothing displayed it. And the
+  number nobody had before it: a console is a browser working out
+  what the rig is doing on every frame it draws, so the machine struggling in a room
+  where every station is comfortable can be the tablet at the back of it. Each browser
+  now reports its own frame rate, the time it spends in that arithmetic, how many
+  parameters it is watching, its memory, and how far its clock is from the station's —
+  which is the one figure that says whether anything else it is showing can be
+  trusted. A page drawing nothing says so rather than reporting a frame rate of zero.
+- **What the machine is doing, not only what the console is doing.** Every station
+  already said what the pult process was costing; it now says what the box around it
+  is costing too — processor across every core, memory and swap, load average, how
+  long the machine has been up as against how long the console has, free space on the
+  drive the show is actually saved to, and how warm it is where the machine will say.
+  The two are shown side by side and never added together, because the useful reading
+  is the comparison: a console using 4% of a machine that is at 96% is not comfortable,
+  it is about to be starved by something nobody is watching. A card says so in words
+  when the machine is short of processor, memory or disk.
+- **What is on the wire, in four figures rather than one.** What each output
+  connector is actually sending — after the skip that leaves an unchanged universe
+  alone, so a settled rig honestly reads lighter than a moving one; what the link to
+  each peer is carrying, both ways; what the station is sending each browser, which is
+  the cost of somebody watching a busy panel; and what the machine's own network
+  interfaces are carrying, which includes everything else on the box. Kept apart on
+  purpose: a console whose own traffic is a fraction of its machine's has a network
+  problem that is not the console's, and one where the two agree has found its own.
+- **A browser that cannot keep up says so where every console can read it.** A page
+  under 20 frames a second, or one that stalls for more than a tenth of a second in a
+  single frame, writes a warning into the station's log, which reaches the other
+  consoles like any other line. Its continuous figures stay with the station serving
+  it — a frame rate every second is not worth putting on the show's network, and the
+  moment it goes wrong is.
 - **The console can show its own log.** A System Log panel, because until now the log
   went to a stdout that does not exist under the desktop app, under a packaged `.app`,
   or in a browser — and any browser on the network is a whole console here. A plugin
@@ -185,6 +219,12 @@ bracketed form — so every release needs one and it has to be spelled that way.
   version floor exists to guarantee.
 
 ### Changed
+
+- **The Stations panel is now about who is here rather than what it costs.** Which
+  machines are in the session, which is leading, where each is reached and what the
+  link to it measures. Processor, memory and uptime moved to the new System panel,
+  beside the frame costs and the browsers they are read against. Latency is in both.
+  The built-in Setup layout is a grid rather than three columns, to hold the new tile.
 
 - **BREAKING: where a fixture is, is now a transform.** A position was a point, or a
   point and a direction; it is now a position, a rotation and a scale, relative to

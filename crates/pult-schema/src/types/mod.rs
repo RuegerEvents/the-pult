@@ -7,6 +7,7 @@ pub mod effect;
 pub mod show;
 pub mod session;
 pub mod station;
+pub mod client;
 pub mod devices;
 pub mod openhaunt;
 pub mod output;
@@ -36,7 +37,8 @@ pub use output::{
     OutputConfig, OutputConfigCreate, OutputConfigPatch, OutputCoverage, OutputGap, OutputKind,
     OutputStatus, OutputStatuses,
 };
-pub use station::{PeerLink, PeerLinks, Station, StationCreate, StationPatch};
+pub use station::{FrameCost, MachineStats, PeerLink, PeerLinks, Station, StationCreate, StationPatch};
+pub use client::{BrowserFrames, ClientStats, ClientStatsMap};
 pub use stage::{StagePlan, StagePlanCreate, StagePlanPatch};
 pub use programmer::{
     programmer_entry_id, ProgrammerValue, ProgrammerValueCreate, ProgrammerValuePatch,

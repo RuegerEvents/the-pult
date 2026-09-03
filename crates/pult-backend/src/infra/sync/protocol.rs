@@ -115,6 +115,100 @@ pub enum SyncMessage {
     },
 }
 
+/// What has crossed one peer link, each way.
+///
+/// Counted around the socket rather than at the twelve places that write a frame,
+/// which is the difference between a figure and a figure with holes in it: the
+/// handshake, the catch-up batches, the heartbeats and a raised log all go through
+/// the same bytes, and none of them has to remember to say so.
+///
+/// Atomics rather than a lock, because both halves of a connection are written from
+/// their own task and the station reporter reads them from a third every couple of
+/// seconds. Relaxed ordering: these are counters for a person to read, and a byte
+/// landing in this window or the next one is not a question anybody can answer.
+#[derive(Debug, Default)]
+pub struct LinkBytes {
+    pub sent: std::sync::atomic::AtomicU64,
+    pub received: std::sync::atomic::AtomicU64,
+}
+
+impl LinkBytes {
+    /// Take what has accumulated and start again, as `(sent, received)`.
+    pub fn take(&self) -> (u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.sent.swap(0, Relaxed), self.received.swap(0, Relaxed))
+    }
+}
+
+/// A stream that counts what goes through it.
+///
+/// Wrapped around the `TcpStream` *before* it is split, so both halves count into the
+/// same pair and nothing downstream changes: `write_frame` and `read_frame` take an
+/// `AsyncWrite` and an `AsyncRead` and do not care what is underneath.
+///
+/// `S: Unpin` rather than a pin projection, which is what lets this be forty lines and
+/// no new dependency. Every stream it is used on — a `TcpStream` and its halves — is
+/// `Unpin`, and a wrapper that only counts has no self-referential state to protect.
+///
+/// It counts what the socket accepted, which is the honest place to count. The
+/// four-byte length prefix is in the figure because it is on the wire; the TCP, IP and
+/// Ethernet headers under all of it are not, so a cable carries a little more than
+/// this says.
+pub struct Counted<S> {
+    inner: S,
+    bytes: std::sync::Arc<LinkBytes>,
+}
+
+impl<S> Counted<S> {
+    pub fn new(inner: S, bytes: std::sync::Arc<LinkBytes>) -> Self {
+        Counted { inner, bytes }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Counted<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let polled = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let std::task::Poll::Ready(Ok(n)) = &polled {
+            self.bytes.sent.fetch_add(*n as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        polled
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Counted<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &polled {
+            let read = buf.filled().len().saturating_sub(before);
+            self.bytes.received.fetch_add(read as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        polled
+    }
+}
+
 /// Frames are length-prefixed JSON. JSON handles all serde types cleanly (untagged enums,
 /// serde_json::Value, heterogeneous maps) without bincode's deserialize_any restrictions.
 pub async fn write_frame(w: &mut (impl AsyncWrite + Unpin), msg: &SyncMessage) -> Result<()> {

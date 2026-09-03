@@ -13,8 +13,8 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Showfile (SQLite) | Working. Load and save are registry-driven and enumerate no entity types. |
 | WebSocket API | Working. Path-pattern subscribe, set, call, and broadcast fan-out. |
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
-| Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness and latency, vector-clock conflict resolution, and leader failover. Stations publish themselves and are visible in the UI. |
-| Frontend | Working for show, session, sequences, cues, patch, the programmer, effects and speed masters. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. Panels that can change the show open read-only behind an Edit toggle and are sized for a finger. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. |
+| Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness and latency, vector-clock conflict resolution, and leader failover. Stations publish themselves and are visible in the UI, with what each machine and each link is costing since task 49. |
+| Frontend | Working for show, session, sequences, cues, patch, the programmer, effects and speed masters. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. Panels that can change the show open read-only behind an Edit toggle and are sized for a finger. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. Since task 49 a page also reports what it is itself costing — frame rate, evaluator time, clock offset — which the System panel shows beside every station's. |
 | Playback engine | Working, and no longer a tick. Playback decides *what is driving* each parameter — fades and effects anchored on the cue's `went_at` — and publishes the descriptions; nothing stores what they are worth. A pass happens when the show changes, so a fade in progress costs the engine nothing. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Each holds the last patch it was pushed and draws its own frames out of it at its protocol's rate, evaluating rather than being handed values. Configured from the `outputs` collection and editable while the show is up, with per-output status and per-connector frame cost in the UI. Flags only seed an empty showfile. |
 | Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. Since task 47 it draws the *drawing* too: trusses and objects out of an MVR, from their own meshes, with a Layers panel to show and hide parts of it. Every beam is still one cone at one angle; the geometry and the beam angle a GDTF import brings are stored and not yet drawn. Nothing can be moved or placed in either view yet. |
@@ -2084,7 +2084,7 @@ per-request timeout on writes that were only ever waiting their turn. A `huge` s
 takes 43 s in release, 119 s in debug. `--keep` exists so nobody pays it twice.
 
 **A station publishes what its own tick costs**, in the `stations` row beside
-`cpu_percent` — which answers `system-stats-panel`'s open question (extend the row,
+`cpu_percent` — which answered `system-stats-panel`'s open question (extend the row,
 or a new LOCAL stats collection?) in favour of the row, on the grounds that a station
 is already the sole authority on its own numbers there. Accumulated into relaxed
 atomics by the engine and drained by the reporter every couple of seconds, so a
@@ -2759,8 +2759,9 @@ still prints it, as `plugin=<id>` at the end of the line, so a terminal and
 `log.report` RPC, deduped and rate-limited so a panel throwing every frame is one line
 and a count rather than five thousand lines that push out everything explaining why.
 They cross to peers like any other line, because the tablet at the back of the room is
-the console nobody is watching. That also gives system-stats-panel the precedent it
-needs: a browser reporting on itself to the station now has a working path.
+the console nobody is watching. That also gave system-stats-panel the precedent it
+needed: a browser reporting on itself to the station now has a working path, and
+task 49 used exactly it.
 
 **Ordering is honest rather than exact.** Each line carries the emitting station's own
 `seq` and clock. `(node_id, seq)` is what lets the browser merge the `log.tail` backlog
@@ -2790,6 +2791,207 @@ cargo test -p pult-backend --lib logging      # the ring, the levels, the file
 cargo test -p pult-backend --test logs        # two stations over a real sync link
 cd frontend && npm test                       # merge, gaps, and the report throttle
 ```
+
+### 49. What the console costs, what the machine costs, and what is on the wire (done)
+
+Task 44 gave a station the ability to say what its own output frames cost and put the
+figures on the `stations` row, where **nothing in the frontend read them**. And the
+number that was missing entirely was the browser's: since the engine lost its tick a
+console *is* a page evaluating a rig in wasm on every animation frame against a clock
+it had to estimate, and no instrument anywhere could see one. The machine struggling in
+a room where every station is comfortable is the tablet at the back of it.
+
+**The panel split into two panels rather than growing.** The Stations panel was already
+a table of nine columns mixing two questions — who is in the session, and what each
+machine costs — and the browsers had to go somewhere. So `stations` keeps the network:
+hostname, leader, sync address, outputs, fixture share, heard-ago. The new `system`
+panel takes what each machine costs — the console's own processor and memory, the
+machine's around it, what is on the wire, and a line per output connector — and puts
+the browsers underneath them. **Latency is deliberately in both**, because it is the one figure that
+answers both questions. The Setup preset became a 2×2 grid to hold the extra tile:
+outputs beside system, stations beside show and session.
+
+**A browser is not a station and must not appear in `stations`.** That collection is one
+row per node, written by the node about itself and replicated; a tab that closes has to
+leave nothing behind. So `clients` is a new LOCAL path, a map keyed by the *short*
+session id — the same eight characters `LogSource::Browser` already carries, so a
+warning in the System Log and a row in the System panel are recognisably the same tab.
+
+**The open question the entry carried was whether a browser's figures replicate, and
+the answer is no — but the exception does.** Task 48 answered the neighbouring question
+for a *log line* with "yes, at a quieter threshold". A fault is occasional and a frame
+rate is every second, and that difference is the whole of it: a row per browser per
+report crossing the sync link for ever is a stream nobody reads, on the same network as
+the Art-Net. So the continuous figures stay with the station serving the page, the way
+`peers` does, and what crosses is the *exception* — a window under 20 fps, or one frame
+over 100 ms, becomes a `warn` through the `log.report` path that already reaches every
+console. The useful property survives at the moment it is useful.
+
+**Measured in the loop that already exists.** `stores/output.ts` evaluates the rig once
+per animation frame, so the frame time and the evaluating half are taken there rather
+than in a loop of this task's own — a second `requestAnimationFrame` loop would keep a
+page rendering purely to prove that it can, which is exactly the wrong thing to do to
+the tablet being diagnosed. The consequence is that **a page drawing nothing measures
+nothing**, and says so: `frames` is `None`, and the panel prints "drawing nothing"
+rather than a frame rate of zero, for the same reason an idle connector carries no
+`FrameCost` at all.
+
+The frame figure is the **gap between frames**, not the work done inside one. A page
+whose own work takes 2 ms and which is nonetheless served a frame every 200 ms is a
+page that is stuttering, and only the gap says so.
+
+**The clock offset is read, not re-measured.** `ws/clock.ts` already maintains an
+estimate the page is evaluating against, and this reports that one. A second estimate of
+the same quantity would be a second answer to it, and the panel is meant to show what
+the page is actually using — which is also the figure that says whether anything else it
+shows can be trusted, since a page that has placed itself wrongly draws every fade out
+by exactly that much, plausibly.
+
+**And a figure gets a line, kept by whoever is looking at it.** Every report is one
+*closed window* and nothing on the wire carries a series — a growing series on a
+replicated row being the one thing this entry said a row cannot hold. So the history is
+the reader's: `frontend/src/lib/trace.ts` keeps the last sixty readings the tile
+actually witnessed, two minutes at the report interval, and draws a sparkline beside
+each connector's mean frame and each browser's frame rate. A line therefore starts empty
+when the tile is opened and covers only what that tile saw, which the panel says out
+loud rather than implying a record it does not have.
+
+Two rules in there that the obvious implementation gets wrong. A trace deduplicates by
+the *window's stamp* rather than by value, because a station that has gone quiet is
+still being rendered with its last figure — taking every render as a reading would draw
+a flat line, which reads as a machine steadily working rather than one that has stopped
+talking. And a sparkline is scaled **from zero**, not from its own lowest point: these
+are costs and rates, and a frame time bouncing between 4.0 and 4.1 ms has to read as
+flat rather than as an alarming sawtooth. A browser's line is drawn against 60 fps
+rather than against its own best, which is what makes two browsers' lines comparable.
+
+Three things that had to be decided rather than assumed.
+
+**A page cannot name its own key.** The station fills in `session` and stamps `at_ms`
+rather than believing what arrived: a browser's clock is the thing in question here, and
+a tab that could name its own key could write over another tab's row. There is a test
+that says so. Which leaves the page not knowing which row is itself — so `client.report`
+**answers the key it landed under**, and that is the only way a browser learns its own
+session id.
+
+**A row is a reading, so it is dropped when it stops being one.** Unlike task 48's log
+raise — which could be left to expire with its connection, because it is an *ask* — a
+client row is the last thing a page said, and a socket can stay open long after the page
+stopped saying anything. So a disconnect is the usual end of a row and a sweep is the
+other, at **ninety seconds** rather than sixty: a browser throttles a backgrounded tab's
+timers to roughly one a minute, and pruning at the throttle would make the tablet at the
+back of the room flicker out of the list and back on alternate sweeps.
+
+**Reporting is not something a panel opts into.** Every page reports every two seconds
+whether or not anybody has the System panel open anywhere, because the browser worth
+knowing about is precisely the one with nobody in front of it. One WebSocket message per
+browser per two seconds, matching `REPORT_INTERVAL` so a station row and a client row
+are the same age.
+
+**And what is on the wire, which is four figures and not one.** The entry listed
+network throughput among what was missing, and the word turns out to name four
+different things measured in four different places — so the panel shows them apart
+rather than adding them up:
+
+- **What each connector put out**, counted in `Frame` at the point the packet is
+  handed to the socket. *After* the dedup, which is the whole value of it: the DMX
+  family skips a universe whose image has not changed and is not yet due a refresh,
+  so a settled rig sends a fraction of what its universe count suggests, and a figure
+  derived from the patch would hide exactly the optimisation it is there to show.
+- **What crossed each peer link**, counted around the socket rather than at the twelve
+  places that write a frame. `protocol::Counted` wraps the `TcpStream` before it is
+  split, so the handshake, the catch-up batches, the heartbeats and a raised log are
+  all in the figure and none of them had to remember to say so. `S: Unpin` rather than
+  a pin projection, which is what let it be forty lines and no new dependency.
+- **What the station sent each browser**, counted in the socket's own send task. This
+  is the one figure a page cannot supply — no browser API says how many bytes arrived
+  on a WebSocket — so it sits beside `session` and `at_ms` as something the station
+  fills in, over the window between two of that page's reports.
+- **What the machine's interfaces carried**, which is not the console at all.
+
+**And the machine itself, which is the other half of every figure on the row.**
+`cpu_percent` and `mem_used` are *this process* and deliberately so — a console sharing
+a box with something else should report what it is costing, not what the box is. The
+sentence that finishes is `MachineStats`: global CPU across every core, memory and swap
+in use, the load average, how long the machine has been up as against how long this
+backend has, free space on **the volume the showfile is written to**, and the warmest
+sensor the machine exposes. The pair is the point. A station at 4% on a machine at 96%
+is not a comfortable station; it is one about to be starved by something nobody is
+looking at, and until now no console could say so about itself.
+
+**A process percentage and a machine percentage are not the same unit**, and putting
+them side by side is how you find that out. `sysinfo` reports a process's CPU as a
+share of *one core* — a multi-threaded console can exceed 100% — and the machine's as a
+share of all of them, so an unlabelled 15.2% beside an unlabelled 6.4% reads as the
+console using more than the box it is in. The panel says "of a core" and "of 18 cores"
+and spells the comparison out in words: *this console is 0.8% of it*. The whole value
+of publishing the pair is that comparison, so an axis it is silently wrong on would
+have been worse than not publishing it.
+
+Three of those were chosen for what ends a show rather than what slows one. A full
+disk is a show that cannot be saved. Swap in use on a console is a fade that will
+stutter. And a temperature is the honest answer for a station in a truss-mounted case
+in a roof void, which is a thermal question long before it is a processing one — the
+warmest sensor rather than one named, because what a machine calls its packages differs
+per platform and per vendor while the question does not.
+
+That is where `systemstat` was looked at and not taken: `sysinfo` is already a
+dependency, already refreshed by this reporter every window, and has all of it behind
+`network`, `disk` and `component` features that were simply switched off. A second
+crate for figures the first one already had would have been a second thing to keep
+working on four release targets.
+
+**A relative showfile path resolves to no volume at all.** A mount point is absolute,
+so `starts_with` matches none of them and the disk figure comes out as a plausible
+zero — and a relative showfile is the ordinary case rather than a corner one, since
+`demo.sh` passes `.demo/demo.db` and a console started from its own directory passes a
+bare name. The path is absolutised once, in the reporter's constructor, by resolving
+the *directory* and putting the file name back: canonicalizing the file itself fails
+when the show is about to be created, which is exactly when a console is started. The
+test that caught it is the one that asserts the machine answers at all, which is the
+argument for asserting that rather than trusting a platform layer to be non-empty.
+
+Two traps in it. **Loopback has to come out**, or a laptop running `demo.sh` counts
+every byte it sends itself twice, once each way, and swamps the figure. And
+**`PeerLatency` must not replace the link row whole** — it fires per heartbeat, more
+often than the byte window closes, so the obvious `insert` wipes the counters and
+throughput reads zero almost always. The two halves of a `PeerLink` are measured on
+different schedules and each writes only its own.
+
+One hole, named rather than hidden: the per-port commands an OpenHaunt node is given
+travel over MQTT from the device manager, on its own schedule and inside nobody's
+frame, so they are not in the output figure. Small by construction — a three-second
+fade is one message to a node that can run it, not a hundred and twenty — and the
+panel says so.
+
+**And the figure found a bug on its first evening, which is the argument for having
+it.** An sACN output configured for universe 1 alone reported 55 kB/s at 35 frames a
+second, which is about two and a half universes' worth of packet per frame and not
+one. `OutputConfig::universes` documents itself as "which universes to send" and
+`carries()` is the predicate for it — and **only `OutputCoverage::of` ever calls it**.
+The connectors render every universe in the patch and send every one that the dedup
+has not settled, so an output restricted to one universe is transmitting all seven,
+and the Outputs panel's coverage warnings describe a routing nobody implements. Left
+unfixed here deliberately: this task is an instrument, and changing which universes
+reach a wire is a change to what reaches lamps. It wants its own entry and its own
+decision — whether `carries` should gate the send, or whether the field should stop
+claiming to.
+
+```
+cargo test -p pult-backend --lib clients   # the map, the sweep, and who may write a row
+cargo test -p pult-schema client           # a frame rate read off its window
+cd frontend && npm test                    # the meter, the traces, and what counts as struggling
+```
+
+What is left of the entry's list is **sync backlog** and **broker stats**. Network
+throughput is done and then some — four figures rather than the one the entry imagined
+— and WebSocket client counts are the Browsers section, which counts them by listing
+them. The two remaining are a figure each and neither was blocking anything: a backlog
+is a depth on the sync channel and belongs with `station-clock-offset`, which is
+already reading that link; broker stats belong to the OpenHaunt device manager, which
+is also where the MQTT bytes this task could not count honestly would come from. Both
+are better done there than bolted on here. What was blocking `performance-tests` was
+the browser figure, and that exists now.
 
 ## What is next
 
@@ -2839,9 +3041,16 @@ than — what that peer keeps for itself. The two panels below inherit that shap
 rather than re-deciding it, and the browser-reports-on-itself path the stats panel
 needs already works: `log.report` is it.
 
+**One of those two panels is now built**, as task 49: the System panel reads
+`frame_costs` and puts the browsers beside them, and it answered the open question
+the entry carried — a browser's *continuous* figures stay LOCAL to the station
+serving the page, and only the exception crosses, as the `warn` line task 48's
+path already carries everywhere. outputs-viewer inherits both shapes.
+
 **Then measure**, with the instruments built and a real rig to point them at.
-The browser half of the stats panel is the instrument that decides this, because
-performance-tests doubts the browser and has no other way to look at one.
+The browser half of the stats panel was the instrument that decided this, because
+performance-tests doubts the browser and had no other way to look at one. It now
+exists, so that arrow is satisfied.
 
 **Then act on what it found**, as one piece of work rather than three. The viewer
 rewrite, disk off the actor, per-source admission and the parallel-render
@@ -2850,77 +3059,74 @@ stops each being decided on taste. Note that all three of rig-viewer-fidelity's
 arrows are now behind it: gdtf-import gave it the beam angle, mvr-import a rig
 worth drawing, and performance-tests answers whether instancing is needed.
 
-1. **system-stats-panel** — the browser's half is the figure that does not exist:
-   frame rate, evaluator time per frame, clock offset. The station's half is a
-   read of `frame_costs`, which task 44 publishes and nothing displays. → none,
-   and it is what makes item 3 able to see a browser
-2. **outputs-viewer** — what actually leaves the console, per universe and per
+1. **outputs-viewer** — what actually leaves the console, per universe and per
    node. → none, and it closes the block task 48 opened
-3. **performance-tests** — 5000 fixtures, and whether the console is still
-   comfortable. → system-stats-panel, for the browser figure. Task 47 removed the
-   other blocker: an imported rig can be the thing measured now, and its own two
-   runs at 505 fixtures came out 50% apart, which is the first thing this item has
-   to fix about the instrument before it measures anything with it
-4. **rig-viewer-fidelity** — beams that read as light, and the two live defects
+2. **performance-tests** — 5000 fixtures, and whether the console is still
+   comfortable. → none, now that both its blockers are gone: task 49 built the
+   browser figure it had no other way to look at, and task 47 made an imported rig
+   the thing measured. Its own two runs at 505 fixtures came out 50% apart, which
+   is still the first thing this item has to fix about the instrument before it
+   measures anything with it
+3. **rig-viewer-fidelity** — beams that read as light, and the two live defects
    in the code it rewrites. → performance-tests, the last of its three arrows
    still ahead of it; gdtf-import and mvr-import landed as tasks 45 and 47
-5. **engine-admission** — disk off the actor, per-source admission, and the
+4. **engine-admission** — disk off the actor, per-source admission, and the
    parallel-render question that task 29 answered "no" against a tick that no
    longer exists. → performance-tests, which says which of those is on the path
    of a real show. Partitioning across stations is the fourth question here and
-   stays unnumbered: it is worth asking only if item 3 finds a rig one station
+   stays unnumbered: it is worth asking only if item 2 finds a rig one station
    cannot carry
-6. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
+5. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
    frontend proxy comes from; the wire stays generic. → none
-7. **showfile-management** — versioning, save-as, autosave, backup. → none, and
+6. **showfile-management** — versioning, save-as, autosave, backup. → none, and
    what blocks it is a decision rather than code: a checkpoint is either
    session-wide agreed or explicitly per-station, and everything else follows
-8. **showfile-assets-folder** — a folder with an assets directory, or one file.
+7. **showfile-assets-folder** — a folder with an assets directory, or one file.
    → decided with showfile-management, not separately
-9. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+8. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
    plugin over introspection, which is what introspection is for. → none, and
    much better now that gdtf-import has landed and put a real patch in the show
-10. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+9. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
    themselves dynamic. → rig-viewer-fidelity, for anything that happens in 3D
-11. **voice-input** — speech to the command line, grammar first and NL on parse
+10. **voice-input** — speech to the command line, grammar first and NL on parse
    failure. → none
-12. **nl-show-context** — what relative syntax cannot reach, and whether it is
+11. **nl-show-context** — what relative syntax cannot reach, and whether it is
    worth the permission it costs. → voice-input, which is what shows which
    utterances actually arrive
-13. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+12. **control-transports** — MIDI and OSC as ports, in and out, with nothing
    above them decided. Was open-control-interfaces until 2026-09-02, when the
    three things people send over those ports turned out to want separate
    entries. → none
-14. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+13. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
    audio import. The biggest item here and the one the spec is most opinionated
    about. → none technically
-15. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+14. **llm-cost-overview** — token and cost accounting out of the NL plugin.
    → none
-16. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+15. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
    frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
    from performance-tests, which are what decide it
-17. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+16. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-18. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+17. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
    → a real TS plugin wanting to exist
-19. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+18. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
    stage manager's Go arriving at the lights, and this console sending its own
    to sound and video. → control-transports
-20. **surface-layer** — a bound physical thing, which is what the transports are
+19. **surface-layer** — a bound physical thing, which is what the transports are
    not: one event type under every surface, plus the two questions (where a
    headless surface's selection lives, where a fader's gesture begins and ends)
    that decide whether any of the three below is a week or a month.
    → control-transports for the MIDI half, nothing for the USB half
-21. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+20. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
    is what proves the layer before anybody spends a weekend on USB captures.
    → surface-layer
-22. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+21. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
    it can be estimated at all. → surface-layer
-23. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+22. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
    undocumented and to be read off the device. → surface-layer, and
    midi-surfaces for the binding model
 
-Items 19 to 23 were added on 2026-09-02 and sit at the end rather than being
+Items 18 to 22 were added on 2026-09-02 and sit at the end rather than being
 placed, because three of them are blocked on hardware being in the room and not
 on anything in this repository. Any of those can move up the day the hardware is
 on the desk. **show-control is the exception and the one with a case for moving
@@ -2931,7 +3137,7 @@ One thing does not belong to any phase. The `<T.SpotLight>` mounted inside `{#if
 beam.output.level > 0.01}` recompiles every material in the scene when a fade
 crosses 1%, which is a fade from black, and the fix is one line. It is written up
 under rig-viewer-fidelity because that is where the context is, and it should not
-wait for item 5.
+wait for item 4.
 
 ### Plugins
 
@@ -3294,58 +3500,15 @@ universe images; OpenHaunt sends are discrete messages worth a ring buffer.
 - LOCAL state on the owning station, with the viewer subscribing cross-station.
   The latency numbers set the precedent: a link property is published by whoever
   measured it.
+- **Task 49 sharpened that, and this item should take the same answer.** A
+  browser's figures are LOCAL to the station serving the page precisely because
+  they are *continuous*: a stream crossing the sync link for ever, on the network
+  carrying the show, for something nobody is reading. What replicates is the
+  exception. A universe image at 40 Hz is the same shape of question and the same
+  answer — so the cross-station version of this panel is a thing asked for while
+  somebody is looking, the way `log.watch` is, rather than a thing published.
 - 40 Hz times 512 bytes should not hit the WebSocket unthrottled. Snapshot on
   demand, or diff at panel rate.
-
-#### system-stats-panel
-
-The Stations panel (task 10) has CPU, memory and uptime. Missing: network
-throughput, sync backlog, WebSocket client counts, broker stats.
-
-- **Frame cost is done and the shape question is answered.** Task 44 put it on
-  the `Station` row as `Vec<FrameCost>`, one entry per connector, each with the
-  mean, the worst, the evaluating half of each and the frame count for the
-  window, on the grounds that a station is already the sole authority on its own
-  numbers there. So extend the row rather than adding a LOCAL collection, unless
-  something arrives that a row genuinely cannot hold. A ring buffer of recent
-  frames would be that.
-- What is left is the panel: nothing in the frontend reads `frame_costs` yet.
-  Absent has to render as absent, because a settled connector is not an instant
-  one, and a station with two connectors shows two rows rather than an average.
-- Sample rates for the rest. `REPORT_INTERVAL` is two seconds and everything on
-  the row shares it.
-- **The browser's load belongs here too, not just the backend's.** Since task 44
-  a console *is* a browser evaluating a rig at frame rate in wasm, and that is a
-  real cost on a real machine. A tablet at the back of the room can be the thing
-  that is struggling while every station is comfortable.
-  - What a browser can honestly report about itself: frame rate and dropped
-    frames from `requestAnimationFrame` deltas, time spent in the evaluator per
-    frame, how many parameters it is evaluating, `performance.memory` where the
-    browser offers it, and its measured clock offset from the station, which is
-    the one number that says whether what it is showing can be trusted at all.
-  - Where it lives: a browser is not a station and must not appear in `stations`.
-    A LOCAL collection keyed by WebSocket session is the obvious shape, published
-    by the client and owned by the station it is connected to, which also makes
-    it disappear correctly when the tab closes.
-  - Open: does a client's report replicate to peers, so any console can see that
-    the tablet is struggling, or is it LOCAL to the station serving it? Seeing it
-    from anywhere is the useful version and costs a row per client per session.
-    **Task 48 answered the same question for a log line with "yes, at a quieter
-    threshold"** — a browser's fault reaches its station over `log.report` and
-    crosses to peers like any other line — so the precedent is there, and the
-    thing to decide here is whether a *continuous* figure deserves the same
-    treatment as an *occasional* one. A fault is rare and a frame rate is every
-    second, which is the whole difference.
-  - And a browser reporting on itself is no longer hypothetical: `log.report`
-    exists, is rate-limited, and works. This item wants the same path for
-    numbers rather than sentences — worth checking whether the throttle in
-    `frontend/src/lib/logs.ts` generalises or whether a sampled figure wants its
-    own shape.
-  - **The clock offset is the one figure that has grown a second consumer.** It
-    is listed above as something a browser can honestly report; `station-clock-offset`
-    below now wants the same number between *stations*, for a reason that is not
-    diagnostic at all. Whatever this panel displays should read the same
-    estimate rather than making a second one.
 
 #### station-clock-offset
 
@@ -3448,11 +3611,13 @@ What to measure, roughly in the order the answers matter.
   That is the largest exercise of the write path in the repo and it is a real
   measurement, not overhead to be tolerated. Patching 5000 fixtures is something
   somebody does, and so is taking a cue that touches all of them at once.
-- **The browser.** No figure exists at all, because `--measure` deliberately
-  stops the dev server and the sims so they are not taking the CPU being
-  measured. Which is why system-stats-panel now sits ahead of this item rather
-  than behind it: the browser reporting on itself is the instrument, and there
-  is no other one.
+- **The browser.** `--measure` deliberately stops the dev server and the sims so
+  they are not taking the CPU being measured, so nothing it prints says anything
+  about a page. Task 49 built the instrument instead: a browser reports its own
+  frame rate, evaluator time and parameter count to the station it is on, and the
+  System panel shows it. What is left for this item is pointing that instrument at
+  a rig big enough to hurt, and deciding what `--measure` should do about a
+  browser it is not allowed to start.
 - **An imported rig, not only a generated one.** gdtf-import and mvr-import have
   landed, so a real plan with real fixture types can be the thing measured. Worth doing both: the generated rig is the one whose shape
   can be dialled, and an imported one is the only check that the generated shape
@@ -3525,8 +3690,9 @@ Open questions.
   answer from an M-series laptop.
 - What does the tablet at the back of the room have to manage? A browser is a
   whole console by design, and the weakest one in the building is the real
-  target. That is the same argument system-stats-panel makes, and this is the
-  item that gives it a number.
+  target. That is the same argument task 49 made, and this is the item that gives
+  it a number: the figures exist now, and nobody has yet put a rig in front of
+  them big enough to find the ceiling.
 
 #### engine-admission
 
