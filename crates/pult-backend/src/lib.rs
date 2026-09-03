@@ -78,6 +78,17 @@ pub struct Running {
 /// to fetch assets from.
 pub async fn start(config: Config) -> Result<Running> {
     let pool = Arc::new(showfile::open(&config.showfile).await?);
+    // Opened after `open` has migrated the file, and never used for reading.
+    let write_pool = match showfile::open_for_writing(&config.showfile).await {
+        Ok(second) => Some(Arc::new(second)),
+        Err(e) => {
+            // Not fatal: the writer falls back to sharing the read pool, which is how
+            // it behaves for an in-memory show anyway. A console that cannot open a
+            // second handle to its own showfile should still open the show.
+            tracing::warn!("[start] could not open a second showfile handle: {e}");
+            None
+        }
+    };
     // Recorded beside the showfile, so an output that names this station still
     // belongs to it tomorrow.
     let node_id = config
@@ -107,7 +118,23 @@ pub async fn start(config: Config) -> Result<Running> {
     let viewers = crate::infra::connectors::Viewers::default();
 
     let (engine_tx, engine_rx) = mpsc::channel::<EngineCommand>(256);
-    let engine_handle = EngineHandle(engine_tx);
+    // A queue per source class in front of that channel, so a plugin in a write loop
+    // or a peer replaying twenty minutes of oplog cannot crowd out the operator whose
+    // fader is waiting. See `engine::admission`.
+    let admission = crate::engine::admission::start(engine_tx);
+    use crate::engine::admission::Source;
+
+    // The console's own machinery: playback, flows, devices, the reporter, the
+    // pruner. Frequent, cheap, and nobody is watching its latency.
+    let engine_handle = EngineHandle::for_source(&admission, Source::Station);
+    // A person at a desk or a tablet. The one class whose latency is felt.
+    let operator_handle = EngineHandle::for_source(&admission, Source::Operator);
+    // Another station replaying what this one missed: bulk, and latency-insensitive
+    // by nature, since it is replaying the past.
+    let peer_handle = EngineHandle::for_source(&admission, Source::Peer);
+    // A guest. The class most likely to be a runaway loop, and the one whose flood
+    // must land on itself.
+    let plugin_handle_engine = EngineHandle::for_source(&admission, Source::Plugin);
 
     // What the browsers on this station say they are costing themselves. LOCAL, and
     // owned here rather than by the engine: a page's row is written by a report and
@@ -115,12 +142,20 @@ pub async fn start(config: Config) -> Result<Running> {
     let clients = crate::infra::clients::ClientRegistry::new(engine_handle.clone());
 
     let (mut sync_mgr, sync_handle, sync_addr) =
-        SyncManager::bind(node_id, config.sync_port, engine_handle.clone(), config.log.clone())
+        SyncManager::bind(node_id, config.sync_port, peer_handle.clone(), config.log.clone())
             .await?;
     info!("peer sync on {sync_addr}");
 
     let (mut engine, broadcast) =
-        ShowEngine::new_with_rx(node_id, engine_rx, pool.clone(), Some(sync_handle.clone()));
+        ShowEngine::new_with_write_pool(
+            node_id,
+            engine_rx,
+            pool.clone(),
+            // Its own connection to the same file. WAL lets it hold a group commit
+            // open without a peer's catch-up read queueing behind it.
+            write_pool,
+            Some(sync_handle.clone()),
+        );
     // Now that the broadcast exists, a peer link can carry a view both ways: an ask
     // arriving, and a drawn view going back to whoever asked.
     sync_mgr.watching_outputs(viewers.clone(), broadcast.clone());
@@ -203,12 +238,12 @@ pub async fn start(config: Config) -> Result<Running> {
     // Plugins come up last of the managers: they see a station that already
     // plays back and syncs, which is also the state a hot reload lands in.
     let (plugin_mgr, plugin_handle) = PluginManager::new(
-        engine_handle.clone(),
+        plugin_handle_engine.clone(),
         broadcast.clone(),
         crate::api::rpcs::LocalRpcDeps {
             session: session_handle.clone(),
             devices: device_handle.clone(),
-            engine: engine_handle.clone(),
+            engine: operator_handle.clone(),
             log: config.log.clone(),
             log_watchers: log_watchers.clone(),
             sync: Some(sync_handle.clone()),
@@ -237,7 +272,7 @@ pub async fn start(config: Config) -> Result<Running> {
     let sync_handle_for_running = sync_handle.clone();
 
     let state = AppState {
-        engine: engine_handle.clone(),
+        engine: operator_handle.clone(),
         pool,
         sync: sync_handle,
         session: session_handle,

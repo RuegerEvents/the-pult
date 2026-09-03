@@ -3078,6 +3078,259 @@ cargo test -p pult-backend --test wire        # two stations, and a console watc
 cd frontend && npm test                       # what a browser makes of the batches
 ```
 
+### 51. What it actually costs at five thousand, and a beam that reads as light (done)
+
+Three items at once — performance-tests, rig-viewer-fidelity and engine-admission —
+because the last two are answers to the first, and doing them apart is how each gets
+decided on taste instead of on a number. One task rather than three, on the same
+reasoning: they were one piece of work and the decisions cross between them.
+
+**The instrument was wrong first, and that was the whole blocker.** `demo-measure.mjs`
+slept a second, slept four more, read `stations` once and printed whatever window
+happened to be sitting in the row. One sample of one two-second window, caught at an
+arbitrary phase against the station's own reporting tick — and the window it printed
+could still be half full of the cue-taking the script does to get the show moving.
+Two runs at 505 fixtures came out fifty per cent apart, and that is why.
+
+The fix is three things. Take several windows and report the **median with the spread
+beside it**. Discard the first. And, before any of that, **wait for the cue-taking to
+go quiet** rather than sleeping a guessed constant — quiet is the real end of the
+burst on any rig size, where a constant is right only for the one it was measured on.
+That last one mattered most: it took the frame spread from 92% to 8%, the CPU spread
+from 2332% to 14%, and two consecutive runs from 50% apart to **3.4%** apart. The
+instrument now prints how much it disagrees with itself, and refuses to be compared
+when that is over a quarter.
+
+One thing it found on the way, and it is worth writing down because it looked exactly
+like a regression. The script reported **300 browser updates during a run**, against
+the zero task 44 promised. Nothing was wrong with the console: taking a cue writes
+`live_fades` per captured fixture, three hundred of them on a 505-fixture rig, and the
+script zeroed its counter the instant the last `goNext` returned while those
+broadcasts were still flushing. A second station connected to the same running show
+saw zero. The measurement was counting its own setup.
+
+**What five thousand fixtures actually cost.** In release, `--size 5000`:
+
+| | 505 fixtures | 5000 fixtures |
+|---|---|---|
+| frame | 0.89 ms (±8%) | **4.77 ms** (±8%) |
+| evaluating | 0.71 ms (81%) | 4.50 ms (**94%**) |
+| assembling | 0.00 ms | 0.00 ms |
+| socket | 0.17 ms (19%) | 0.27 ms (6%) |
+| rate | 36 Hz | 29 Hz |
+| browser updates in 10 s | 0 | 0 |
+
+**The entry's own prediction was wrong in the way that mattered.** It said "per-universe
+assembly and 59 socket writes are the part of the frame that does not shrink", and
+expected the station to be fine and the browser not to be. Assembly and the socket are
+**6% of the frame** at five thousand. The third figure — assembly against the socket
+write, added by hand exactly as the entry suggested — is what shows that, and it turned
+the whole prediction over. Evaluating is 94%, and it is *sublinear*: ten times the rig
+for six and a half times the cost.
+
+So the two questions this was measured for are answered, and neither the way it was
+guessed:
+
+- **Rayon over fixtures inside a connector's frame** is the only lever with anything
+  under it. Everything else is noise beside 94%. But at 19% of a 25 ms budget it is
+  not urgent, which is the more useful half of the answer.
+- **Instancing the fixture bodies** does not have to be decided yet, so it is not.
+  The viewer went imperative, which buys the option without presuming it.
+
+The one figure that is not comfortable is the **rate**: 29 Hz where DMX wants 40, on a
+frame that is using a fifth of its budget. That is not frame cost, and it is written
+up as `connector-frame-rate`, which is now the item this measurement most argues for.
+
+**Threlte is gone, and the two live defects went with it.** Three files, 844 lines,
+and the hard part was already imperative: gizmo picking and dragging were hand-written
+raycasting before this. What the declarative layer actually supplied was a canvas, a
+render loop, hover events and an HTML overlay. What it also supplied was both defects
+this entry carried — `<T.ConeGeometry args={...}>` had reactive `args`, so a geometry
+was rebuilt per fixture per frame; and a `<T.SpotLight>` inside `{#if level > 0.01}`
+changed the scene's light count as a fade crossed 1%, recompiling every material in
+the scene on the most ordinary thing a console does. **Both are gone by construction
+rather than by fix**, which is what the entry predicted for the first and not the
+second.
+
+`camera-controls` stays as a direct dependency: only the Threlte wrapper went, and
+every `controls.setLookAt` survived unchanged.
+
+**The beam is not geometry.** One instanced open-ended cylinder for the whole rig, and
+the cone is vertex displacement — the far ring scaled by `tan(angle)` times the throw
+in the vertex shader, so a zoom costs one float in a buffer. Four terms multiply for
+brightness (side-on, down-the-barrel, falloff, and a power term on the silhouette so a
+cylinder stops reading as a tube), all additive blending in one fragment shader with
+no post-processing chain. Colour is scaled in HSV, **value only**, so a dim beam keeps
+its hue rather than crushing towards grey. Haze is fbm noise in world space with time
+as the third axis; value noise rather than simplex, because three octaves of it is a
+dozen lines somebody can check.
+
+**Haze is show data**, seeded from a station preference the way `home_fade_ms` is: how
+hazy the room is is a fact about the room rather than about the screen looking at it.
+It reaches no lamp. Note the cost, which is the `home_fade_ms` cost and deliberate:
+SQLite cannot add a NOT NULL column without a default, so `add_missing_columns` adds it
+nullable and the required-column check then refuses an older showfile, plainly. No
+`SCHEMA_GENERATION` bump — a showfile is not a migration target.
+
+**Strobe cost almost nothing, because the entry was out of date.** `ParameterKind::Shutter`
+and `ParameterKind::Strobe` already existed, and `attributes.rs` already mapped
+`Shutter1`, `Shutter1Strobe`, `StrobeFrequency` and `StrobeRate` in both directions with
+tests. All that was missing was the drawing. And the drawing is the *only* place it
+could go: a strobe channel carries a **rate**, the console sends the byte and the
+fixture does the flashing, so `pult-render` has nothing to work out and needs no corpus
+case. The square wave is in `beam.ts` because it is a fact about the picture.
+
+**The disk is off the actor, and the batch has no constant in it.** `persist`,
+`oplog::append` and `order::save` were awaited inside the actor's command arm against a
+pool of one connection, so one operator's edit waited behind another's fsync. A queue
+where each reply waits for its *own* fsync would serialise them just as thoroughly, so
+the writer commits a **group**: while a commit is in flight everything that arrives
+queues up, and when it lands they all go into the next one. That is the whole rule —
+no window in milliseconds and no batch size, because a constant would have to be right
+for somebody else's disk. On a fast disk with one operator it degenerates to one write
+per commit and adds no latency.
+
+A command still replies only when its write is durable: the actor hands its receipts to
+a task that answers the caller when they land. The non-goal held — no new durability
+guarantee, and none taken away.
+
+**Moving the write off the actor's thread was not enough, and the first attempt proved
+it.** While the actor still `await`ed each write before reading its next command, the
+writer never held more than one submission and had nothing to group, so a
+five-thousand-row import was five thousand commits. Coalescing inside the batch did
+nothing at all until the actor stopped waiting, which is the useful lesson: the disk
+being on another task and the disk being out of the critical path are different things.
+
+**The oplog is the exception and stays awaited.** Entity state is read from memory, so a
+create that has not reached the disk is still visible to the next `Get` — which is what
+makes deferring it safe. The oplog is read *back from the file*: undo is a query over it,
+the History panel reads it, and a peer catching up is served `oplog::since` from SQLite.
+Deferring it raced a user's own Ctrl-Z against their own write, and **seven tests said so
+immediately**. Worth knowing for showfile-management, which proposes keeping the show in
+memory until an explicit save: that proposal has the same problem and a larger version of
+it, since undo, history and catch-up all read persisted state today.
+
+**And the write path had a quadratic in it that none of this was about.** `persist_order`
+rewrote the *whole* collection order after every create — a DELETE and N INSERTs, N times,
+which is about 12.5 million inserts to patch 5000 fixtures. Seeding that rig took over two
+minutes; with `order::append` doing the one row a create actually needs it takes 78
+seconds, and 2000 fixtures went from 21.9 s to 6.3 s. The comment on `order::save` said
+creates are human-paced, which is true of an operator and false of an MVR import.
+
+**And the larger quadratic was not the disk at all.** With the order writes fixed, seeding
+5000 fixtures still took 78 seconds where everything on the persistence path accounted for
+three. The cost was `broadcast_after_set`: a create has to broadcast the *collection*,
+because a subscriber watching `fixtures` is watching the collection and a pattern matched
+against `fixtures/__create` reaches nobody — so every created fixture deep-cloned every
+fixture already in the show, as JSON.
+
+Coalescing it is what fixed it, and the first attempt at that is worth recording because it
+barely worked. "Flush when the queue is empty" sounds sufficient and is not: a client with
+sixty-four writes in flight empties the queue between almost every one of them, so it still
+flushed per row and bought a factor of two. A **ceiling in time** is what was wanted —
+`COLLECTION_FLUSH_EVERY`, fifty milliseconds — which is twenty a second, faster than anybody
+reads a list filling up, and a bound that holds however the queue happens to behave. It is a
+ceiling on a burst rather than a delay on a write: an idle console has not flushed for far
+longer than that, so a single create still goes out at once.
+
+| | before | after |
+|---|---|---|
+| 2000 fixtures | 21.9 s | **1.01 s** |
+| 5000 fixtures | over 120 s | **3.40 s** |
+| 5000 with 300 cues | over 120 s | **6.19 s** |
+
+One trap, and it hangs rather than slows. **An owed broadcast has to be able to wake the
+engine loop.** The last write of a burst marks the collection, the flush is not yet due,
+and the actor blocks on whatever the show wants next — on a settled station, never. So the
+sleep is shortened to what is left of the interval and the wake branch flushes. Two tests
+caught it, one of them by never finishing.
+
+Twenty-fold, and linear again. The lesson worth keeping is the order the two were found in:
+the disk was the obvious suspect and was real but minor, and the expensive thing was a
+broadcast nobody was reading. **Measuring which is which is why the instrument came first.**
+
+Two things it needed. A **second pool** to the same file, because the showfile is WAL
+and a peer's catch-up read must not queue behind a commit or land inside one; a show
+in memory shares the one pool instead, since every `sqlite::memory:` connection is a
+different database. And `order::save` stays **outside** the batch — it opens its own
+transaction and SQLite has no nested `BEGIN` — which is free, because an order changes
+when something is created or moved and never when a value does.
+
+**Per-source admission is a queue per class, in front of the engine rather than inside
+it.** Plugins, browsers and catching-up peers shared one 256-deep channel with no
+priority, so the way to make an operator's fader stop responding was for somebody's
+plugin to be busy. Now each of Operator, Station, Peer and Plugin has its own bounded
+queue and a router forwards in weighted turns. The engine still reads one channel and
+still knows nothing about where a command came from, so `EngineCommand` is unchanged
+and none of the 44 `.0` call sites had to learn a new shape.
+
+The weights are **turns, not priorities**. Strict priority starves, and a peer replaying
+twenty minutes of oplog would never finish while anybody was programming. And a full
+queue makes its own senders wait rather than dropping — `OutputHandle::push` drops
+because a skipped frame is redrawn a fortieth of a second later, and a skipped write is
+gone.
+
+**Three counts became gates, and milliseconds did not.** Task 43 explains why a timing
+threshold on a shared runner flaps, and a flapping gate gets disabled. These do not
+flap: a running show pushes **zero** fixture updates at a browser; a drag of sixty
+frames is **one** row in the history; and a settled rig reports **no** universe as
+having changed. A fourth candidate, engine messages per cue take, was left out because
+its honest bound varies with sequence and capture count, and a gate whose threshold is
+arguable gets loosened until it means nothing.
+
+The third one caught something on the way, and the diagnosis is the useful part. It
+failed at 9 changed universes — and reported **the same 9** when the observation window
+was tripled from four seconds to twelve. A count that does not grow with the window is
+one event, not a leak: the rig coming up. So the first second of views is discarded, for
+exactly the reason the measurement discards its first window, and the dedup was never
+wrong.
+
+**A regression that was not one, and what it found.** With all of the above in place the
+full suite came back 1121 passed and 7 failed, against 1123 and none on `main`, every
+failure in `tests/roster.rs` and every one a station that "never accepted a connection
+in 30s". Three structural suspects were lined up — the coalesced collection broadcast,
+the admission router as an extra hop, the deferred write receipts — and all three were
+wrong. Roster alone passed, which was worse than useless: it passed alone on the branch
+and failed alone on the branch, one run in three, and only a full-suite run against a
+full-suite run said anything at all.
+
+What the failing stations were doing was `Disks::new_with_refreshed_list()`, on the
+runtime thread, in `StationReporter::new`, for **six and a half seconds** — and on `main`
+for a third of one. Same code, same `sysinfo`. The difference was the *directory the
+binary sat in*: on macOS the first enumeration of the volumes goes through a
+`dispatch_once` in `FSMountGetVolumeUUID` that reads the executable's own directory as
+a bundle, `_CFBundleReadDirectory` over every file in it, and the repository's
+`target/debug/deps` held 645,585 files and 181 GB where the `main` worktree's held
+4,739. `main`'s own roster binary copied into that directory took the same six seconds;
+the branch's copied into an empty one took a quarter of one. The branch, built into a
+clean target directory, passed the whole suite: **1128 and none**.
+
+Two things are worth keeping from it. The comparison was not like for like — a worktree
+is a fresh target directory, and a fresh target directory was the variable — so the rule
+is the same target directory on both sides, or the same disk under both binaries. And a
+synchronous constructor that asks the operating system questions was a defect on `main`
+too, one that a fast machine with a tidy build directory never showed: a station that
+blocks its own runtime for the length of a sensor read spends a test's connect budget
+before the test begins, and a budget that is barely enough on this machine is none at all
+on a slower one. The probe is a thread now, and the reporter reads its latest answer off
+a `watch`; the first row waits for the first reading, and no row after it waits for
+anything. No test's budget was raised.
+
+**What is left, deliberately.** 3D placement went to `scene-editing`, where it belongs:
+moving things is a new capability rather than fidelity, and it changes the show rather
+than the picture. Instancing the fixture bodies waits for a reason to exist. And
+`--measure-browser` is its own mode rather than part of `--measure`, because a page
+drawing five thousand fixtures competes for exactly the CPU that run holds still — the
+two sets of figures must not be read side by side, and it says so where they are printed.
+
+```
+scripts/demo.sh --measure --release --size 5000    # what a frame costs, with its spread
+scripts/demo.sh --size 5000 --cues 60 --slice 0.02 # one axis at a time
+scripts/demo.sh --measure-browser --release --size 5000   # the page's own figures
+cargo test -p pult-backend --test counts           # the three that are gates
+cd frontend && npm test                            # the evaluator corpus and the helpers
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -3136,99 +3389,104 @@ connector describes its own traffic in *shapes*, so a new output that carries
 universes gets the sheet for nothing and one that looks like nothing here adds a
 component and one line in a table. **So the block task 48 opened is closed.**
 
-**Then measure**, with the instruments built and a real rig to point them at.
-The browser half of the stats panel was the instrument that decided this, because
-performance-tests doubts the browser and had no other way to look at one. It now
-exists, so that arrow is satisfied.
+**Then measure, then act on what it found** — and **both of those are now done**,
+together, as task 51. Measuring first turned out to matter more than the plan
+allowed for: the instrument itself was untrustworthy, two runs at 505 fixtures
+disagreeing by 50%, and nothing measured with it could have been read. Fixing that
+is most of why the task exists.
 
-**Then act on what it found**, as one piece of work rather than three. The viewer
-rewrite, disk off the actor, per-source admission and the parallel-render
-question are all answers to the same measurement, and doing them together is what
-stops each being decided on taste. Note that all three of rig-viewer-fidelity's
-arrows are now behind it: gdtf-import gave it the beam angle, mvr-import a rig
-worth drawing, and performance-tests answers whether instancing is needed.
+What it found overturned the prediction this section was ordered around. The worry
+was that assembly and 59 socket writes would be the part of the frame that does not
+shrink; at 5000 fixtures they are **6% of it**, and evaluating is 94%. So the
+parallel-render question got its answer (rayon is the only lever) *and* its
+priority (nothing is short of frame, so not yet), the viewer went imperative without
+having to decide instancing at all, and the item that came out of it is one nobody
+had written down: the connector draws at 29 Hz where DMX wants 40, on a frame using
+a fifth of its budget.
 
-1. **performance-tests** — 5000 fixtures, and whether the console is still
-   comfortable. → none, now that both its blockers are gone: task 49 built the
-   browser figure it had no other way to look at, and task 47 made an imported rig
-   the thing measured. Its own two runs at 505 fixtures came out 50% apart, which
-   is still the first thing this item has to fix about the instrument before it
-   measures anything with it
-2. **universe-routing** — `OutputConfig::universes` says it is a filter and no
+Items 1, 3 and 4 were built together as task 51 and have left this list. What they
+answered changes what is worth doing next, so the top of it is now:
+
+1. **universe-routing** — `OutputConfig::universes` says it is a filter and no
    connector reads it. A decision rather than a feature: either `carries` gates
    the send, or the field stops claiming to. → none, and the wire viewer is now
    where an operator sees it
-3. **rig-viewer-fidelity** — beams that read as light, and the two live defects
-   in the code it rewrites. → performance-tests, the last of its three arrows
-   still ahead of it; gdtf-import and mvr-import landed as tasks 45 and 47
-4. **engine-admission** — disk off the actor, per-source admission, and the
-   parallel-render question that task 29 answered "no" against a tick that no
-   longer exists. → performance-tests, which says which of those is on the path
-   of a real show. Partitioning across stations is the fourth question here and
-   stays unnumbered: it is worth asking only if item 1 finds a rig one station
-   cannot carry
-5. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
+2. **connector-frame-rate** — a new entry, and task 51 is what found it. At 5000
+   fixtures the Art-Net connector draws at **29 Hz** where `Frames::DMX` asks for
+   40, on a frame that costs 4.77 ms of a 25 ms budget. So the rate is not being
+   held back by what a frame costs, and nothing yet says what it *is* being held
+   back by — the scheduler, the sleep, or the manager's loop. → none, and the
+   instrument to answer it already prints the figure
+3. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
+   measured evaluating at **94%** of an output frame at 5000 fixtures, which is
+   the answer the question was waiting for, and `pult-render` is pure and takes
+   no locks. What the same measurement also says is that it is **not urgent**: the
+   frame is at 19% of budget. → none, and it should not be done until something
+   is actually short of frame
+4. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
    frontend proxy comes from; the wire stays generic. → none
-6. **showfile-management** — versioning, save-as, autosave, backup. → none, and
+5. **showfile-management** — versioning, save-as, autosave, backup. → none, and
    what blocks it is a decision rather than code: a checkpoint is either
    session-wide agreed or explicitly per-station, and everything else follows
-7. **showfile-assets-folder** — a folder with an assets directory, or one file.
+6. **showfile-assets-folder** — a folder with an assets directory, or one file.
    → decided with showfile-management, not separately
-8. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+7. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
    plugin over introspection, which is what introspection is for. → none, and
    much better now that gdtf-import has landed and put a real patch in the show
-9. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
-   themselves dynamic. → rig-viewer-fidelity, for anything that happens in 3D
-10. **voice-input** — speech to the command line, grammar first and NL on parse
+8. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+   themselves dynamic. → none: the viewer landed as task 51
+9. **voice-input** — speech to the command line, grammar first and NL on parse
    failure. → none
-11. **nl-show-context** — what relative syntax cannot reach, and whether it is
+10. **nl-show-context** — what relative syntax cannot reach, and whether it is
    worth the permission it costs. → voice-input, which is what shows which
    utterances actually arrive
-12. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+11. **control-transports** — MIDI and OSC as ports, in and out, with nothing
    above them decided. Was open-control-interfaces until 2026-09-02, when the
    three things people send over those ports turned out to want separate
    entries. → none
-13. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+12. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
    audio import. The biggest item here and the one the spec is most opinionated
    about. → none technically
-14. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+13. **llm-cost-overview** — token and cost accounting out of the NL plugin.
    → none
-15. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+14. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
    frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
-   from performance-tests, which are what decide it
-16. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+   from task 51, which measured a connector's frame at 4.77 ms for 5000 fixtures —
+   the number a WASM boundary now has to be compared against
+15. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-17. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+16. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
    → a real TS plugin wanting to exist
-18. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+17. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
    stage manager's Go arriving at the lights, and this console sending its own
    to sound and video. → control-transports
-19. **surface-layer** — a bound physical thing, which is what the transports are
+18. **surface-layer** — a bound physical thing, which is what the transports are
    not: one event type under every surface, plus the two questions (where a
    headless surface's selection lives, where a fader's gesture begins and ends)
    that decide whether any of the three below is a week or a month.
    → control-transports for the MIDI half, nothing for the USB half
-20. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+19. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
    is what proves the layer before anybody spends a weekend on USB captures.
    → surface-layer
-21. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+20. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
    it can be estimated at all. → surface-layer
-22. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+21. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
    undocumented and to be read off the device. → surface-layer, and
    midi-surfaces for the binding model
 
-Items 18 to 22 were added on 2026-09-02 and sit at the end rather than being
+Items 17 to 21 were added on 2026-09-02 and sit at the end rather than being
 placed, because three of them are blocked on hardware being in the room and not
 on anything in this repository. Any of those can move up the day the hardware is
 on the desk. **show-control is the exception and the one with a case for moving
 up now**: it needs a MIDI port and nothing else, and a stage manager pressing Go
 is a more common way for this console to be driven than any surface in the list.
 
-One thing does not belong to any phase. The `<T.SpotLight>` mounted inside `{#if
-beam.output.level > 0.01}` recompiles every material in the scene when a fade
-crosses 1%, which is a fade from black, and the fix is one line. It is written up
-under rig-viewer-fidelity because that is where the context is, and it should not
-wait for item 4.
+The `<T.SpotLight>` recompiling every material as a fade crossed 1% used to be
+called out here as the one thing not belonging to any phase. It is gone, and not by
+being fixed: task 51 removed the declarative layer that made it possible, so there is
+no light count for a fade to change. The reactive-`args` geometry rebuild beside it
+went the same way, which is what that entry predicted for one of them and not the
+other.
 
 ### Plugins
 
@@ -3352,122 +3610,25 @@ effect whose rate is an effect.
 
 ### Visualisation
 
-#### rig-viewer-fidelity
+#### rig-viewer-remainder
 
-The 3D rig viewer draws a beam as a `ConeGeometry` wearing a flat additive
-material (`frontend/src/lib/components/stage/Rig3D.svelte`). That is enough to
-say where a light is pointing and not enough to look like light. Prior art read
-in full on 2026-09-01: ASLS Studio's visualizer (`src/plugins/visualizer/`, about
-2.7k lines), which is this problem solved a level up. It is GPL-3.0 and we are
-MIT, so what travels is the technique, not the code.
+What task 51's viewer rewrite deliberately did not do. The beam, the haze, the strobe,
+the infinite grid, the gizmo `depthTest` and the camera-transition cancel all landed;
+these did not.
 
-What they do, in the order it matters to us.
-
-- The beam is not geometry. One 100 m open-ended cylinder, instanced, and the
-  beam angle is vertex displacement: the far ring is scaled by `tan(angle)` in
-  the vertex shader. Zoom costs a float in an attribute and nothing is rebuilt.
-- Brightness depends on where you stand. Four terms multiply together: how
-  side-on the beam is seen, how near the camera is to looking down the barrel, an
-  inverse-square-ish falloff along its length, and a power term on the silhouette
-  so a cylinder stops reading as a tube.
-- Haze is four octaves of 3D simplex noise sampled in world space with *time as
-  the third axis*, so it drifts. Density and turbulence are the two knobs.
-- The beam smoothsteps out over the last centimetre above the deck instead of
-  clipping through it.
-- Colour is scaled in HSV, value only, so a dim beam keeps its hue rather than
-  crushing towards grey the way scaling RGB does.
-- Base, yoke and head are three `InstancedMesh`es sharing one material, with
-  per-fixture state in `InstancedBufferAttribute`s, and the model articulates:
-  the yoke swings on pan, the head nods on tilt.
-- Selection is one per-instance float that an `onBeforeCompile` patch turns into
-  emissive. No material swap and no extra draw call.
-
-Two things about them are worth not copying. Their README credits the
-`postprocessing` library and there is no `EffectComposer` anywhere in their
-`src/`; every bit of glow is additive blending in one fragment shader, which is
-the cheaper lesson. And their fixture bodies are pure black, so the render cannot
-tell you what is hanging up there. Our emissive body tinted by its own output is
-the better call and should survive whatever else changes.
-
-**What task 45 removed from this entry.** The beam angle is no longer unavailable:
-`FixturePhysical::beam_angle_deg` carries what the file measured, and
-`FixtureType::geometry` carries the parts a body articulates on — a base, an axis
-per turning part outermost first, and the beam — with an offset each, in metres and
-in this console's axes. So the yoke-and-head articulation above and the real cone
-are now a rendering job with the data already in the show, rather than a rendering
-job waiting on an import.
-
-Two defects in ours turned up while comparing, and both are still there.
-Corrected on 2026-09-02: an earlier version of this entry said the second one
-went with the task 44 rewire, and it did not. Both are still in
-`Rig3D.svelte`.
-
-- **A geometry per fixture per frame.** `<T.ConeGeometry args={[beam.length *
-  0.12, beam.length, ...]}>` has reactive `args`, so Threlte rebuilds the
-  geometry whenever the throw changes. Dragging a beam spot allocates a fresh
-  cone per fixture per frame, and since task 44 the throw is re-evaluated every
-  animation frame, so a fade does it too.
-- **Every material recompiled at 1%.** The `<T.SpotLight>` is inside `{#if
-  beam.output.level > 0.01}`, so crossing that threshold changes the scene's
-  light count, which changes three.js's program cache key and recompiles every
-  material mid-fade. It fires on the most ordinary thing a console does, a fade
-  from black, and the fix is one line: keep the light mounted and drive its
-  intensity to zero, so the count is constant.
-
-They were briefly split into an item of their own on 2026-09-02 and folded back
-the same day, and the reason is worth keeping. **The first one is deleted by the
-work above rather than fixed by it**: the beam stops being geometry, so there are
-no reactive `args` left to rebuild. Fixing it separately is writing code this
-entry throws away. The second is a one-line fix that the rewrite may or may not
-subsume, depending on whether the floor pool survives as a real light or becomes
-part of the beam shader, so it is worth doing whenever somebody is next in the
-file rather than waiting for anything here.
-
-What does *not* depend on any of this is the three cheap wins at the end of the
-open questions. They touch the gizmos, the camera and the grid, not the beam,
-and nothing above deletes them.
-
-Open questions.
-
-- ~~Beam angle has nowhere to come from.~~ Answered by task 45: `FixtureType`
-  carries a beam angle out of the file and `stage.ts` reads it. What is left of the
-  question is the drawing rather than the data — `Rig3D.svelte` still draws every
-  beam at `length * 0.12`, a 6.8° half-angle, so a wash still looks like a beam.
-- Where does haze live? A station preference seeded into the show the way
-  `home_fade_ms` is, or a per-browser view setting? How hazy the room is is a
-  fact about the room, which argues for the show, but two operators on two
-  tablets may reasonably want different pictures.
-- Instancing against the derived `beams` array, which performance-tests should
-  decide rather than taste. Every frame rebuilds a
-  `Quaternion`, an `Euler` and a `Color` per fixture, sixty times a second now
-  rather than forty, since the viewer draws its own frames rather than waiting to
-  be pushed values. Instanced attributes are the fix, and they sit badly with
-  Threlte's declarative `#each` and with picking, which raycasts against
-  per-fixture objects. Does the viewer drop to imperative three.js inside one
-  Threlte component, and what happens to the gizmos if it does?
-- What is already done for you. The evaluator is in the page: `stores/output.ts`
-  registers what a panel is showing and evaluates all of it in one wasm crossing
-  per frame, 200 parameters in about 17 µs, and `Showing.at` is `null` while the
-  browser cannot place itself on the station's clock. A beam that is drawn is a
-  beam that was evaluated for the moment it is drawn at, which is what this item
-  wanted.
-- Their singletons do not survive the move. `SceneManager`, `Controls` and
-  `AnimationManager` are module-level globals over shared mutable buffers, fine
-  for one viewport and broken in our tiled workspace, where two `rig` panels can
-  be open at once. Anything we take has to be per-panel.
-- Placement, as opposed to aiming. They have `TransformControls` with a 0.5 m
-  translate snap, keyboard modes, and multi-select through a bounding-box group
-  so a whole truss moves together. We have pan, tilt and spot gizmos for aiming a
-  head and nothing for rigging one in 3D. Same change or its own?
-- Strobe needs a `ParameterKind` before it can be rendered at all; theirs is a
-  square wave against the animation clock driving the intensity attribute. Out of
-  scope here, or the reason to do that schema work once?
-- Three cheap wins need no design and could go in ahead of the rest.
-  `depthTest: false` on our existing gizmo rings so they are never buried inside
-  a fixture body. Cancelling a `follow` camera transition on any pointer or wheel
-  input. And an infinite grid shader, with `fwidth` line antialiasing, two scales
-  and a distance fade, to replace the fixed `GridHelper`, which aliases badly
-  past about 40 m and stops at the edge of the plan.
+- **Instancing the fixture bodies.** The beams are one `InstancedMesh`; the bodies are
+  individual meshes reused between frames. Task 51 measured evaluating at 94% of the
+  *station's* frame and left the browser's own body-drawing cost unasked, because
+  going imperative bought the option without needing to spend it. Ask it with
+  `--measure-browser` against a 5000-fixture rig before writing anything.
+- **Picking, if the bodies are instanced.** The raycast is against per-fixture objects
+  today. Instanced picking means either an id buffer or a manual intersection, and it
+  is the reason instancing is not free.
+- **A `SpotLight` per fixture.** There is one, following the brightest, because a scene
+  with thousands of real lights does not render. Whether the floor pools should instead
+  be part of the beam shader is open.
+- **Placement.** Moving a fixture or a truss in 3D is `scene-editing`, not this: it
+  changes the show rather than the picture, so it needs gestures, snap and multi-select.
 
 ### Showfiles
 
@@ -3670,174 +3831,46 @@ was left open deliberately on 2026-09-02 rather than guessed at.
 
 ### Performance
 
-#### performance-tests
+#### connector-frame-rate
 
-The target is a number, and it is **5000 fixtures with the show still feeling
-immediate**: a cue taken without a visible stutter, an output frame inside its
-budget, and a rig panel holding its frame rate on a machine somebody would
-actually put in a booth. Nothing has been measured above 2005.
+**At 5000 fixtures the Art-Net connector draws at 29 Hz, and `Frames::DMX` asks for
+40.** Task 51 measured the frame itself at 4.77 ms against a 25 ms budget, so this is
+not a connector that has run out of time to draw in — it is one that is not being
+asked often enough. Nothing yet says why.
 
-**The instrument mostly exists.** `scripts/demo.sh --measure --release --size
-huge` seeds 2000 fixtures across 24 universes, drives every sequence to a cue
-with an effect running, seeds an Art-Net output at loopback so there is a frame
-to measure at all, and prints what one cost. It reads the station's own published
-`frame_costs` over the same WebSocket a browser uses, so the figure printed is
-the figure the Stations panel shows and the figure a peer sees. Where it is
-wrong, it is wrong everywhere, which is the property worth having.
+- Where to look, roughly in order: the manager's `next_frame` scheduling, which is
+  `from + period` off the *start* of the last frame rather than off its end; whatever
+  `tokio::time::sleep` actually grants at these intervals; and whether the send future
+  is holding the loop for longer than the frame it reports.
+- The instrument already prints it. `--measure` shows the Hz per connector beside the
+  frame cost, so this is a question that can be asked and answered without building
+  anything first.
+- **It matters more than the frame cost does.** A rig drawing at 29 Hz is a rig whose
+  fades are being sampled 29 times a second, and that is visible on a slow fade across
+  a big wash in a way that 4.77 ms against 25 ms is not.
 
-What that instrument said on 2026-09-02 at 2005 fixtures, in release: 2.86 ms per
-output frame at 34 Hz, of which evaluating is 2.60 ms and putting it on the wire
-0.26 ms, against a 25 ms budget. And zero updates to a connected browser across
-four seconds of a running fade.
+#### parallel-render
 
-**The naive extrapolation, which is the thing to go and disprove.** Evaluating
-looks linear in the rig, so 5000 fixtures is around 6.5 ms of a 25 ms frame:
-comfortable. 5000 six-channel heads is about 59 universes rather than 24, and
-per-universe assembly and 59 socket writes are the part of the frame that does
-not shrink. So the prediction is that the station is fine and the *browser* is
-not, and the point of the work is to find out where that prediction is wrong
-rather than to confirm it.
+Rayon over fixtures inside a connector's frame. Answered "no" twice before, and both
+answers were against a world that no longer exists: task 29 refused it at 0.07 ms of a
+35 ms tick, and there is no tick.
 
-What to measure, roughly in the order the answers matter.
+Task 51 is the measurement it was waiting for. Evaluating is **94% of an output frame**
+at 5000 fixtures — 4.50 ms of 4.77 — and it is the only part of the frame with anything
+under it, since assembly and the socket together are 6%. `pult-render` is pure, takes no
+locks and touches no OS, so it is embarrassingly parallel across fixtures, and a
+connector's thread is already off the engine, so this costs nothing architecturally.
 
-- **A bigger preset.** `--size` takes small, big and huge today, at 5, 500 and
-  2000. Either a fourth name or `--size <n>`, and `<n>` is more useful here
-  because the shape of the curve is the answer, not one point on it. Whether the
-  cue count and the slice share scale with the rig or stay put has to be decided
-  deliberately: 300 cues times 5000 fixtures is a million and a half captures,
-  which measures JSON rather than lighting, and task 43 already made that mistake
-  once on purpose to see what it looked like.
-- **Where the frame goes at 5000.** The evaluating and emitting halves are
-  already published separately, and that split is what saved the last round of
-  this work from being spent on the wrong half. A third figure, per-universe
-  assembly against the socket write, is probably what this round needs, and it
-  should be added the way the reading/computing/applying split was: temporarily,
-  by hand, and then permanently if it turns out to be the one that matters.
-- **The write path, not only the frame.** Seeding 2000 fixtures takes about 43
-  seconds in release through the WebSocket API, pipelined through a window of 64.
-  That is the largest exercise of the write path in the repo and it is a real
-  measurement, not overhead to be tolerated. Patching 5000 fixtures is something
-  somebody does, and so is taking a cue that touches all of them at once.
-- **The browser.** `--measure` deliberately stops the dev server and the sims so
-  they are not taking the CPU being measured, so nothing it prints says anything
-  about a page. Task 49 built the instrument instead: a browser reports its own
-  frame rate, evaluator time and parameter count to the station it is on, and the
-  System panel shows it. What is left for this item is pointing that instrument at
-  a rig big enough to hurt, and deciding what `--measure` should do about a
-  browser it is not allowed to start.
-- **An imported rig, not only a generated one.** gdtf-import and mvr-import have
-  landed, so a real plan with real fixture types can be the thing measured. Worth doing both: the generated rig is the one whose shape
-  can be dialled, and an imported one is the only check that the generated shape
-  resembles a rig anybody hangs. The two numbers wanted are the evaluator crossing per frame
-  (`stores/output.ts` evaluates 200 parameters in about 17 µs, so 5000 fixtures'
-  worth of a rig panel is roughly 2.5 ms of a 16.7 ms frame at 60 Hz, if it is
-  linear) and everything the viewer does around it, which is where the doubt
-  actually is.
+**And the same measurement says not yet.** 4.77 ms is 19% of the budget. Nothing is
+short of frame, and a rig that is not short of frame does not need its evaluator
+parallelised — it needs whatever is holding the rate down, which is
+`connector-frame-rate` above.
 
-**How this meets the two items either side of it.**
-
-- **engine-admission.** If a cue over 5000 fixtures stalls behind a plugin's
-  write loop or a peer's catch-up, per-source admission is the fix and this is
-  what proves it. If it stalls on an fsync, the writer task is. If it stalls on
-  neither, engine-admission is still worth doing and stops being urgent.
-- **Threads, which have been answered "no" twice and deserve asking again.** Task
-  29 rejected parallelising the render because it was 0.07 ms of a 35 ms tick,
-  and task 44 removed the field the other half of that proposal wanted cheaper
-  writes for. But evaluating is now **91% of an output frame** rather than 0.2%
-  of a tick, and it is embarrassingly parallel across fixtures: `pult-render` is
-  pure, takes no locks and touches no OS. So rayon over fixtures inside a
-  connector's frame is a genuinely different question from the one that was
-  refused, and 5000 fixtures is where it gets asked. Measure before deciding, and
-  note that a connector's thread is already off the engine, so this costs nothing
-  architecturally.
-- **rig-viewer-fidelity.** The viewer rebuilds a `Quaternion`, an `Euler` and a
-  `Color` per fixture per frame. At 5000 fixtures that stops being untidy and
-  starts being the frame budget. But it also still allocates a cone per fixture
-  per frame and recompiles every material when a fade crosses 1%, and both of
-  those are in code that entry rewrites. So measure the **evaluator crossing**
-  hard, because that figure survives whatever the viewer becomes, and treat what
-  the current beam drawing costs as the disposable half. The one question this
-  measurement should still settle for that entry is instancing, which is a
-  question about 5000 `Quaternion`s and not about the cone. Whether the viewer has to go imperative and
-  instanced, which is that item's hardest open question, is a decision this
-  measurement should make rather than leave to taste.
-
-**This is where the acting phase begins.** rig-viewer-fidelity and
-engine-admission both sit immediately after this item and are both answers to it,
-which is deliberate: the viewer's instancing question and the engine's
-parallel-render question are the same kind of question, and neither should be
-settled on taste. Whatever this measures, those two are what it is measured for.
-
-**Not a CI gate, and task 43 explains why.** Two identical `huge` runs varied by
-more than a percentage point of CPU and fifteen milliseconds of tick. A threshold
-in milliseconds on a shared runner flaps, a flapping gate gets disabled, and a
-disabled gate is worse than none. So this is a script somebody runs before a
-release and records the numbers from.
-
-What *could* be a gate is a figure that does not flap, and task 44 produced
-exactly one: **zero updates to a connected browser during a four-second fade on a
-2000-fixture rig.** Counts of messages, of allocations, of universes touched, of
-oplog rows written are machine-independent, and a regression in any of them is
-the kind of thing that used to be found in a theatre. Worth finding the two or
-three that are worth asserting on, and asserting on those instead of on
-milliseconds.
-
-Open questions.
-
-- Is 5000 the right number, or is the honest target "as many as one Art-Net
-  network can carry"? 59 universes is already past what a single 100 Mbit segment
-  is comfortable with, which makes this partly a networking question rather than
-  a CPU one.
-- Does the target mean 5000 on one station, or 5000 across a session? Splitting a
-  rig between consoles is the partitioning question below, and if the answer to
-  this item is "one station cannot", that question stops being hypothetical.
-- Which machine is the target? A figure with no machine attached means nothing,
-  and "a machine somebody would put in a booth" needs naming: the release
-  workflow builds for four targets and an aarch64 Linux box is a very different
-  answer from an M-series laptop.
-- What does the tablet at the back of the room have to manage? A browser is a
-  whole console by design, and the weakest one in the building is the real
-  target. That is the same argument task 49 made, and this is the item that gives
-  it a number: the figures exist now, and nobody has yet put a rig in front of
-  them big enough to find the ceiling.
-
-#### engine-admission
-
-What survives of a plan called tick-isolation, which was written against the
-architecture task 44 left behind. It is worth reading that history before picking
-this up, because most of what it proposed is now unnecessary rather than
-optimised: the typed `PlaybackView` existed to make a per-tick read of the show
-cheap and there is no per-tick read; batching per-tick writes has no per-tick
-writes to batch; and playback on its own thread became a loop inside each output
-connector, which already had one. The engine has no periodic work left except the
-sampling flow `Watch` nodes need, and that is proportional to what is watched.
-
-Two things survive, and they are worth doing on their own terms.
-
-- **Disk off the actor.** `persist`, `oplog::append` and `order::save` are
-  awaited inside the actor's command arm against a pool of `max_connections(1)`,
-  so one operator's edit waits behind another's fsync. Lower priority than it
-  looked, since the disk is no longer anywhere near the show, but it is still an
-  operator waiting on a disk. The fix is a single writer task with an ordered
-  queue: still ordered, still durable, no longer between a command and its reply.
-- **Per-source admission.** Plugins reach the engine through the same
-  `EngineHandle` a browser does (`host_impls.rs:207`), into one 256-deep channel
-  with no priority. A plugin in a write loop, a browser fetching the whole show
-  and a peer catching up all queue together. Give each source its own budget so
-  no one of them can crowd out an operator. This is the largest thing left here,
-  and nothing since has touched it.
-
-`OutputHandle::push` is the model for both: a `try_send` that drops when the
-consumer is behind, documented as "Never blocks the engine" in
-`connectors/mod.rs:82`. Frames keep leaving whatever the engine is doing.
-
-One non-goal from the original plan still holds: no new durability guarantee, and
-a write that was acknowledged before still is. The other, no parallel render, has
-stopped being obvious. It was written when evaluating was 0.07 ms of the engine's
-tick; it is now 2.60 ms of a connector's 2.86 ms frame, which is somebody else's
-thread but is still the frame. performance-tests is where that gets asked again,
-and it is also what says whether either half of this item is on the path of a
-real show or merely untidy.
+- Worth doing the day something is actually short of frame, and worth *not* doing
+  before then.
+- Evaluating came out **sublinear** in the rig between 505 and 5000 fixtures — ten
+  times the rig for six and a half times the cost — so the extrapolation past 5000 is
+  not the obvious one either. Measure again before assuming.
 
 #### Partitioning computation across stations
 

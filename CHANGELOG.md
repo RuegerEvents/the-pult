@@ -12,6 +12,66 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **Beams that read as light.** The 3D rig view draws a real volumetric beam: its
+  brightness depends on where you stand, it fades out over the deck rather than
+  clipping through it, and a dim beam keeps its hue instead of going grey. The beam
+  angle is the one the fixture's own GDTF measured. How hazy the room is is a setting
+  on the show, seeded from a station preference, so everyone opening the file sees the
+  room the designer lit.
+- **Strobe and shutter are drawn.** A strobing fixture flashes in the rig view and a
+  closed shutter puts its beam out. Both parameters already existed and already came
+  in and out of a GDTF; nothing had ever shown them.
+- **`--size <n>` measures any rig.** `scripts/demo.sh --size 5000` seeds whatever
+  count is asked for, with `--cues` and `--slice` as separate axes so one thing moves
+  at a time. `--measure-browser` is a new mode that opens a headless page and prints
+  what the *browser* costs, kept apart from `--measure` because a page drawing the rig
+  competes for exactly the CPU that run is holding still.
+- **A frame is reported in three parts.** Evaluating, assembling universes, and the
+  socket write, where it used to be two. At 5000 fixtures this is what shows that
+  assembly and the socket are 6% of a frame and evaluating is 94% — the opposite of
+  what was expected.
+
+### Changed
+
+- **The showfile is written off the engine's own thread, in batches.** One operator's
+  edit no longer waits behind another operator's disk. A write is still acknowledged
+  only once it is durable; what changed is that a group of them share one commit,
+  sized by whatever arrived while the last one was in flight rather than by any
+  constant.
+- **Plugins, browsers and peers each have their own queue into the engine.** They
+  shared one, so a plugin in a write loop or a peer catching up after an absence could
+  make an operator's fader stop responding. Each class now gets its own bounded queue
+  and a share of the turns.
+- **The rig view no longer uses Threlte.** It draws directly, which removed two
+  defects rather than fixing them: a geometry was being rebuilt for every fixture on
+  every frame of every fade, and every material in the scene was being recompiled
+  whenever a fade crossed 1% of full. The grid is now infinite and antialiased instead
+  of stopping at 40 metres, gizmo rings can no longer hide inside the fixture they
+  belong to, and touching the view cancels a camera move in progress.
+
+### Fixed
+
+- **Patching a large rig was quadratic, twice over.** Creating a fixture rewrote the
+  whole collection's stored order *and* re-sent every fixture in the show to every
+  connected browser. Both are now done once per burst instead of once per fixture.
+  Seeding 2000 fixtures went from 21.9 seconds to 1.0, and 5000 with a full cue stack
+  from over two minutes to 6.2. The same path is what an MVR import uses, so importing a
+  real drawing gets the same twentyfold.
+- **`--measure` disagreed with itself by 50%.** It read a single reporting window at an
+  arbitrary moment, which could still be half full of the cues it had just taken to get
+  the show moving. It now waits for that to go quiet, takes several windows, discards
+  the first, and prints the spread beside the median so a reader can see how much the
+  number could have come out different. Two consecutive runs now agree to within 3.4%.
+- **A station stood still while it read the machine.** The reporter enumerated the
+  volumes and the thermal sensors on the runtime's own thread, and the first of those
+  can take seconds on a Mac — as long as the operating system needs to read the
+  directory the executable sits in. For that long the station accepted no connection
+  and ran no timer. The reading happens on a thread of its own now, so a station answers
+  the moment it starts however slow the machine's probes are, and a row carries the
+  latest reading rather than waiting for the next one.
+
+### Added
+
 - **A panel that shows what actually leaves the console.** *On the wire* is the sheet
   a DMX universe went out as, and the messages a node was sent — where the Outputs
   panel is where an output is configured and the System panel says how many bytes went,

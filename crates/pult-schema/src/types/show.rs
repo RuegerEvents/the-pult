@@ -55,6 +55,25 @@ pub struct Show {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub home_fade_ms: u32,
+    /// How much haze the rig view draws the beams through, 0 to 1.
+    ///
+    /// Show data rather than a per-browser view setting, and this one was argued
+    /// both ways. How hazy the room is is a fact about the room: a designer who has
+    /// lit a piece for a hazy house wants the next person opening the file to see
+    /// what they saw, and two operators disagreeing about it are disagreeing about
+    /// the drawing rather than about their own screens. A station preference decides
+    /// what a *new* show starts with, the way `home_fade_ms` does.
+    ///
+    /// It reaches no lamp. Nothing here changes what leaves the console.
+    #[serde(default = "default_haze_density")]
+    #[pult(lifecycle = PERSISTED)]
+    pub haze_density: f32,
+    /// How much the haze moves, 0 to 1. Separate from density because a still,
+    /// heavy haze and a thin, churning one are different rooms, and one number
+    /// cannot say which.
+    #[serde(default = "default_haze_turbulence")]
+    #[pult(lifecycle = PERSISTED)]
+    pub haze_turbulence: f32,
 }
 
 /// What a show keeps unless somebody says otherwise: five hundred changes, which is
@@ -92,6 +111,33 @@ pub fn clamp_home_fade_ms(ms: u32) -> u32 {
     ms.min(HOME_FADE_MS_MAX)
 }
 
+/// Enough haze to see a beam without the room looking like a fire. A visualiser with
+/// none at all draws lights that illuminate nothing, which is the more misleading
+/// picture of the two.
+pub const HAZE_DENSITY_DEFAULT: f32 = 0.35;
+/// Slow drift. Fast enough that the air is visibly alive, slow enough that nobody
+/// reads it as smoke being pumped.
+pub const HAZE_TURBULENCE_DEFAULT: f32 = 0.25;
+
+fn default_haze_density() -> f32 {
+    HAZE_DENSITY_DEFAULT
+}
+
+fn default_haze_turbulence() -> f32 {
+    HAZE_TURBULENCE_DEFAULT
+}
+
+/// A haze figure somebody asked for, brought inside what the shader will do. Applied
+/// where the value is used, for the same reason as [`clamp_history_depth`] — and with
+/// one extra reason here: these cross into a shader, where a NaN out of a hand-edited
+/// showfile paints the whole view black rather than failing anywhere findable.
+pub fn clamp_haze(value: f32) -> f32 {
+    if value.is_nan() {
+        return 0.0;
+    }
+    value.clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +147,20 @@ mod tests {
         assert_eq!(clamp_home_fade_ms(0), 0, "snapping is allowed and is the default");
         assert_eq!(clamp_home_fade_ms(3_000), 3_000);
         assert_eq!(clamp_home_fade_ms(u32::MAX), HOME_FADE_MS_MAX);
+    }
+
+    #[test]
+    fn haze_is_brought_inside_what_the_shader_will_do() {
+        assert_eq!(clamp_haze(0.0), 0.0, "no haze at all is a legitimate room");
+        assert_eq!(clamp_haze(0.35), 0.35);
+        assert_eq!(clamp_haze(4.0), 1.0);
+        assert_eq!(clamp_haze(-1.0), 0.0);
+    }
+
+    #[test]
+    fn a_nan_haze_reads_as_none_rather_than_painting_the_view_black() {
+        // A hand-edited showfile is the way this arrives. `clamp` alone returns the
+        // NaN back, which reaches the shader and takes the whole picture with it.
+        assert_eq!(clamp_haze(f32::NAN), 0.0);
     }
 }

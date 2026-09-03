@@ -932,6 +932,7 @@ async fn each_station_reports_its_own_frame_cost_and_not_the_others() {
         max_ms,
         evaluating_mean_ms: mean_ms / 4.0,
         evaluating_max_ms: max_ms / 4.0,
+        assembling_mean_ms: mean_ms / 8.0,
         frames: 80,
         window_ms: 2_000,
             bytes: 0,

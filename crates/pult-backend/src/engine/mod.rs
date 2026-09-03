@@ -34,6 +34,18 @@ use crate::{
     model::flows::{FlowEffect, FlowGraph, Flows, InputEvent},
 };
 
+/// How often a collection may be broadcast whole while a burst of writes is arriving.
+///
+/// A create has to send the collection, and the collection is the whole rig. At five
+/// thousand fixtures that is an expensive thing to serialise, and doing it per created
+/// row is what made patching a rig cost 89 seconds against 3 for everything else on the
+/// path. Fifty milliseconds is twenty a second: faster than anybody reads a list filling
+/// up, and 1/64th of what an import used to pay.
+///
+/// It is a *ceiling on a burst*, not a delay on a write. An idle console has not flushed
+/// for far longer than this, so one write still goes out at once.
+const COLLECTION_FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+
 // ── In-memory show state ──────────────────────────────────────────────────────
 
 /// The whole show, held as JSON keyed by entity table.
@@ -346,6 +358,15 @@ pub enum EngineCommand {
 pub struct EngineHandle(pub mpsc::Sender<EngineCommand>);
 
 impl EngineHandle {
+    /// The same engine, reached through one source class's own queue.
+    ///
+    /// Which is what keeps a plugin in a write loop from crowding out an operator:
+    /// the flood fills the plugin's queue and the router still gives the operator's
+    /// its turns. See `engine::admission`.
+    pub fn for_source(admission: &admission::Admission, source: admission::Source) -> Self {
+        EngineHandle(admission.sender(source))
+    }
+
     pub async fn set(
         &self,
         path: Path,
@@ -570,6 +591,35 @@ pub struct ShowEngine {
     rx: mpsc::Receiver<EngineCommand>,
     broadcast: UpdateBroadcast,
     pool: Arc<SqlitePool>,
+    /// The disk, off this actor. Every persisted write goes here and the reply waits
+    /// for the group commit rather than for its own fsync — see `engine::writer`.
+    writer: writer::WriteHandle,
+    /// Durability receipts for the writes this command has enqueued.
+    ///
+    /// The actor does not wait for the disk; it collects what it is owed and hands the
+    /// lot to a task that answers the caller when they land. So an acknowledged write
+    /// is still on the disk, and the *next* command is no longer behind this one's
+    /// fsync — which is what lets the writer group anything at all.
+    pending_writes: Vec<tokio::sync::oneshot::Receiver<Result<(), String>>>,
+    /// Collections whose whole contents a subscriber still has to be sent.
+    ///
+    /// A create or a delete has to broadcast the *collection*, because a subscriber
+    /// watching `fixtures` is watching the collection and a pattern matched against
+    /// `fixtures/__create` reaches nobody. Doing that per row meant deep-cloning every
+    /// fixture as JSON once per created fixture — 89 seconds to patch five thousand,
+    /// where the whole rest of the write path was three. So the collection is marked
+    /// here and sent once the command queue is empty: one broadcast per burst instead
+    /// of one per row, which is the rule `push_output` already follows and for the same
+    /// reason.
+    dirty_collections: std::collections::BTreeSet<String>,
+    /// When a collection was last broadcast whole.
+    ///
+    /// An empty queue turned out to be a poor test on its own: a client with sixty-four
+    /// writes in flight empties it between almost every one, so "flush when idle" still
+    /// flushed per row. This bounds it in time instead — a burst sends the collection at
+    /// a readable rate rather than a per-row one, and an idle console still sends a
+    /// single write's collection at once, because the last flush is long past.
+    flushed_at: std::time::Instant,
     sync: Option<SyncHandle>,
     commands: CommandTable,
     playback: Playback,
@@ -656,10 +706,38 @@ impl ShowEngine {
         (engine, EngineHandle(tx), broadcast)
     }
 
+    /// The same, with the writer given its own pool.
+    ///
+    /// `start` passes a second pool to the showfile so a group commit does not sit in
+    /// front of a peer's catch-up read. A test passes none and the writer shares this
+    /// one, which is right for an in-memory show: every `sqlite::memory:` connection
+    /// is its own database, so a second pool there would be a second, empty show.
+    pub fn new_with_write_pool(
+        node_id: NodeId,
+        rx: mpsc::Receiver<EngineCommand>,
+        pool: Arc<SqlitePool>,
+        write_pool: Option<Arc<SqlitePool>>,
+        sync: Option<SyncHandle>,
+    ) -> (Self, UpdateBroadcast) {
+        let writer = writer::start(write_pool.unwrap_or_else(|| pool.clone()));
+        Self::build(node_id, rx, pool, writer, sync)
+    }
+
     pub fn new_with_rx(
         node_id: NodeId,
         rx: mpsc::Receiver<EngineCommand>,
         pool: Arc<SqlitePool>,
+        sync: Option<SyncHandle>,
+    ) -> (Self, UpdateBroadcast) {
+        let writer = writer::start(pool.clone());
+        Self::build(node_id, rx, pool, writer, sync)
+    }
+
+    fn build(
+        node_id: NodeId,
+        rx: mpsc::Receiver<EngineCommand>,
+        pool: Arc<SqlitePool>,
+        writer: writer::WriteHandle,
         sync: Option<SyncHandle>,
     ) -> (Self, UpdateBroadcast) {
         let broadcast = UpdateBroadcast::new();
@@ -671,6 +749,10 @@ impl ShowEngine {
             rx,
             broadcast: broadcast.clone(),
             pool,
+            writer,
+            pending_writes: Vec::new(),
+            dirty_collections: Default::default(),
+            flushed_at: std::time::Instant::now() - COLLECTION_FLUSH_EVERY,
             sync,
             commands: build_command_table(),
             playback: Playback::default(),
@@ -705,7 +787,31 @@ impl ShowEngine {
             // what it is worth. What is left is a follow cue coming due, a *Watch* node
             // wanting a sample, and work left over from the last command — so a station
             // running a show with neither of those sleeps until somebody speaks to it.
-            let wake = tokio::time::sleep(self.next_wake());
+            // Anything a create or a delete made stale goes out now, before this
+            // loop blocks — but only once there is nothing left queued, so a burst
+            // costs one broadcast rather than one per row. `is_empty` is the whole
+            // test: while a rig is being patched the queue is never empty, and the
+            // moment it is, the last state is the one worth sending.
+            if !self.dirty_collections.is_empty()
+                && self.rx.is_empty()
+                && self.flushed_at.elapsed() >= COLLECTION_FLUSH_EVERY
+            {
+                self.flush_collections();
+            }
+
+            // A collection still owed a broadcast has to be able to wake this loop, or
+            // the ceiling above becomes a hole: the last write of a burst marks the
+            // collection, the flush is not due yet, and the loop then blocks on
+            // whatever the show happens to want next — which on an idle station is a
+            // long time and on a settled one is never. So the sleep is shortened to
+            // whatever is left of the interval.
+            let owed = (!self.dirty_collections.is_empty())
+                .then(|| COLLECTION_FLUSH_EVERY.saturating_sub(self.flushed_at.elapsed()));
+            let until = match owed {
+                Some(left) => self.next_wake().min(left),
+                None => self.next_wake(),
+            };
+            let wake = tokio::time::sleep(until);
 
             // `biased` so a burst of commands — opening a showfile, a peer catching us
             // up — drains before any of it is acted on, rather than each write dragging
@@ -714,6 +820,10 @@ impl ShowEngine {
                 biased;
                 cmd = self.rx.recv() => cmd,
                 _ = wake => {
+                    // Possibly the only reason this woke.
+                    if !self.dirty_collections.is_empty() {
+                        self.flush_collections();
+                    }
                     self.push_output_config().await;
                     let moved = self.playback_pass().await;
                     // The output side hears about the show whether or not playback had
@@ -791,7 +901,34 @@ impl ShowEngine {
                             }
                         }
                     }
-                    let _ = reply.send(result);
+                    // The caller waits for the disk; the actor does not. Everything
+                    // this command enqueued is handed to a task that answers when it
+                    // is durable, so the acknowledgement means exactly what it always
+                    // meant while the next command is already being read. That is what
+                    // gives the writer a group to commit: before this, the actor sat
+                    // on each fsync and the writer never held more than one.
+                    let receipts = std::mem::take(&mut self.pending_writes);
+                    if receipts.is_empty() {
+                        let _ = reply.send(result);
+                    } else {
+                        tokio::spawn(async move {
+                            let mut outcome = result;
+                            for receipt in receipts {
+                                let landed = match receipt.await {
+                                    Ok(landed) => landed,
+                                    Err(_) => Err("the showfile writer stopped".to_string()),
+                                };
+                                // The first failure is the one reported; a later one is
+                                // the same commit failing again.
+                                if outcome.is_ok() {
+                                    if let Err(e) = landed {
+                                        outcome = Err(BackendError::Showfile(anyhow::anyhow!(e)));
+                                    }
+                                }
+                            }
+                            let _ = reply.send(outcome);
+                        });
+                    }
                 }
                 EngineCommand::Undo { user_id, redo, reply } => {
                     let done = self.take_back(user_id, redo).await;
@@ -1275,7 +1412,7 @@ impl ShowEngine {
 
     /// Log a write this node made itself.
     async fn log_local_write(
-        &self,
+        &mut self,
         path: &Path,
         value: &serde_json::Value,
         lifecycle: Lifecycle,
@@ -2080,7 +2217,10 @@ impl ShowEngine {
         let id = entity_id(meta, &entity, path)?;
         self.persist(meta, &entity).await?;
         self.state.insert_entity(table, id, entity);
-        self.persist_order(meta, table).await;
+        // Appended rather than rewritten. A create puts one id at the end, and asking
+        // for the whole collection's order back is what made importing a rig cost
+        // O(n²) — see `order::append`.
+        self.append_order(meta, table, id).await;
         Ok(())
     }
 
@@ -2156,22 +2296,58 @@ impl ShowEngine {
     /// Order is show data, so it goes to disk alongside the entities. A failure here
     /// is logged rather than failing the write: losing the order of a list is not a
     /// reason to reject the fixture that was just patched.
-    async fn persist_order(&self, meta: &'static EntityMeta, table: &str) {
+    /// One created entity's place at the end of its collection.
+    async fn append_order(&mut self, meta: &'static EntityMeta, table: &str, id: Uuid) {
         if meta.is_singleton || meta.upsert_one.is_none() {
             return;
         }
-        if let Err(e) = order::save(&self.pool, table, self.state.ids(table)).await {
-            warn!("[engine] could not save {table} order: {e}");
+        if let Some(receipt) = self
+            .writer
+            .submit(vec![writer::WriteJob::OrderAppend { table: table.to_string(), id }])
+            .await
+        {
+            self.pending_writes.push(receipt);
+        }
+    }
+
+    async fn persist_order(&mut self, meta: &'static EntityMeta, table: &str) {
+        if meta.is_singleton || meta.upsert_one.is_none() {
+            return;
+        }
+        // Through the writer like everything else, so the order lands behind the
+        // entity write it belongs to rather than racing it on another task.
+        let ids = self.state.ids(table).to_vec();
+        if let Some(receipt) = self
+            .writer
+            .submit(vec![writer::WriteJob::Order { table: table.to_string(), ids }])
+            .await
+        {
+            self.pending_writes.push(receipt);
         }
     }
 
     async fn persist(
-        &self,
+        &mut self,
         meta: &'static EntityMeta,
         entity: &serde_json::Value,
     ) -> Result<(), BackendError> {
-        if let Some(upsert_one) = meta.upsert_one {
-            upsert_one(self.pool.as_ref().clone(), entity.clone()).await?;
+        if meta.upsert_one.is_none() {
+            return Ok(());
+        }
+        // Enqueued, not awaited. The receipt is collected and the caller is answered
+        // when it lands, so an acknowledged write is still durable — but the actor
+        // moves on, which is the only way a burst of writes can share one commit.
+        //
+        // The consequence to know: memory takes the value before the disk has
+        // confirmed it, where this used to be the other way round. A disk that refuses
+        // now means an error reaching the caller *after* the value is in the show
+        // rather than instead of it. `persist_order` has always behaved that way, on
+        // the grounds that losing a list's order is not a reason to reject the fixture
+        // that was just patched.
+        if let Some(receipt) =
+            self.writer.submit(vec![writer::WriteJob::Upsert { meta, entity: entity.clone() }]).await
+        {
+            self.pending_writes.push(receipt);
         }
         Ok(())
     }
@@ -2313,11 +2489,24 @@ impl ShowEngine {
 
     /// Note a replicated write in the operation log, so a peer that reconnects can be
     /// told what it missed. Local writes never leave this node and are not logged.
-    async fn log_operation(&self, op: &Operation) {
+    async fn log_operation(&mut self, op: &Operation) {
         if op.lifecycle == Lifecycle::Local {
             return;
         }
-        if let Err(e) = oplog::append(&self.pool, op).await {
+        // **Awaited, unlike every other write here**, and this is not an oversight.
+        //
+        // Entity state is read from memory, so a create that has not reached the disk
+        // is still fully visible to the next `Get` — which is what makes deferring it
+        // safe. The oplog is the exception: undo is a *query over it*, the History
+        // panel reads it back, and a peer catching up is served `oplog::since` from
+        // SQLite. Defer this one and a user's own Ctrl-Z races their write, which is
+        // what seven tests said the moment it was tried.
+        //
+        // It costs little. This is one INSERT with no collection rewrite behind it,
+        // and the expensive write on the create path — the order — is what moved.
+        if let Err(e) =
+            self.writer.write(vec![writer::WriteJob::Oplog { op: Box::new(op.clone()) }]).await
+        {
             warn!("[engine] could not write to the oplog: {e}");
             return;
         }
@@ -2336,7 +2525,7 @@ impl ShowEngine {
     /// __create/__delete paths broadcast the updated parent collection so frontends
     /// subscribed to e.g. "cues" see the change without re-fetching.
     /// All other paths broadcast the path/value pair as-is.
-    fn broadcast_after_set(&self, path: &Path, value: serde_json::Value) {
+    fn broadcast_after_set(&mut self, path: &Path, value: serde_json::Value) {
         // A create, a delete, or a field of a singleton: send the whole thing.
         //
         // A subscriber watching `show` is watching the show, and a pattern is matched
@@ -2358,12 +2547,26 @@ impl ShowEngine {
             _ => None,
         };
         if let Some(key) = whole {
-            let col_path = vec![PathSegment::Key(key.into())];
+            // Marked, not sent. Flushed when the queue drains — see
+            // `dirty_collections`, and `flush_collections` below.
+            self.dirty_collections.insert(key.to_string());
+        } else {
+            let _ = self.broadcast.0.send((path.clone(), value));
+        }
+    }
+
+    /// Send every collection that a create or a delete has made stale.
+    ///
+    /// Called when the command queue is empty, so a single write is broadcast at once
+    /// and a burst of five thousand is broadcast once. A subscriber cannot tell the
+    /// difference except in how much less it is sent.
+    fn flush_collections(&mut self) {
+        self.flushed_at = std::time::Instant::now();
+        for key in std::mem::take(&mut self.dirty_collections) {
+            let col_path = vec![PathSegment::Key(key)];
             if let Some(col_val) = self.state.get_by_path(&col_path) {
                 let _ = self.broadcast.0.send((col_path, col_val));
             }
-        } else {
-            let _ = self.broadcast.0.send((path.clone(), value));
         }
     }
 
@@ -2575,7 +2778,9 @@ fn entity_id(
         })
 }
 
+pub mod admission;
 pub mod undo;
+pub mod writer;
 
 
 

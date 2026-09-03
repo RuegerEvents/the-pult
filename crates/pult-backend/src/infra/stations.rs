@@ -19,7 +19,7 @@ use pult_schema::{
 };
 use sysinfo::{Components, Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::watch;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::engine::EngineHandle;
 
@@ -33,12 +33,55 @@ pub struct StationReporter {
     sync_addr: std::net::SocketAddr,
     /// Where this station serves HTTP, so a peer can fetch an asset from it.
     http_addr: String,
+    /// The latest reading of the machine and of this process, from the thread that
+    /// takes them. `None` until the first one has landed.
+    samples: watch::Receiver<Option<Sample>>,
+    hostname: String,
+    started: std::time::Instant,
+    /// Peer latencies, measured by the peer loops and published alongside.
+    links: watch::Receiver<pult_schema::types::station::PeerLinks>,
+    /// What each output connector's frames have cost, over the window the output
+    /// manager most recently closed.
+    ///
+    /// A watch rather than an accumulator shared with a lock, and for the same reason
+    /// `links` is one: the manager is a single task that already owns these counters,
+    /// so it can close a window and publish it without anything on the frame path
+    /// taking a lock. Nothing here is a replicated write per frame — the figures ride
+    /// on the station row this reporter already publishes.
+    frames: watch::Receiver<Vec<FrameCost>>,
+}
+
+/// One reading of the machine and of this process, taken at one moment.
+#[derive(Clone, Debug, Default)]
+struct Sample {
+    cpu_percent: f32,
+    mem_used: u64,
+    mem_total: u64,
+    net_received: u64,
+    net_sent: u64,
+    net_window_ms: u32,
+    machine: MachineStats,
+}
+
+/// What has to be asked of the operating system, and the handles it is asked through.
+///
+/// **On a thread of its own, never on the runtime.** Every call in here blocks, and
+/// two of them block for longer than a console can afford to stand still. Reading the
+/// thermal sensors takes about a second on a Mac. Enumerating the volumes takes, the
+/// first time in a process, however long the operating system needs to read the
+/// directory the executable sits in — it does that once, as a bundle lookup, and
+/// against a `target/debug/deps` of six hundred thousand files it took six seconds.
+/// On the runtime thread that was six seconds in which the station accepted no
+/// connection, ran no timer and answered nobody, and every test that started a
+/// station on a loaded machine found the console "never accepted a connection".
+/// Here it is six seconds before the first row carries a disk figure.
+struct Probe {
     /// Refreshed in place: CPU percentage is a difference between two samples, so
-    /// the same `System` has to live across ticks or every reading is zero.
+    /// the same `System` has to live across readings or every one is zero.
     system: System,
     /// The machine's interfaces, for the same reason and in the same way: `received`
     /// and `transmitted` are since the previous refresh, so this has to live across
-    /// ticks or every window looks like the first one.
+    /// readings or every window looks like the first one.
     ///
     /// The whole machine rather than this process, which is the point of it — and the
     /// one figure on the row that is not about the console. There is no portable way
@@ -55,27 +98,144 @@ pub struct StationReporter {
     /// Where the showfile lives, so the disk figure is about the disk that matters:
     /// a show that cannot be saved is the failure this is meant to see coming.
     ///
-    /// **Absolute**, resolved once here. A mount point is absolute, so a relative path
-    /// matches none of them and the volume comes out as nothing at all — and a
-    /// relative showfile is the ordinary case, not a corner one: `demo.sh` passes
-    /// `.demo/demo.db` and a console started from its own directory passes a bare
-    /// name. There is a test that would have let this through as a plausible zero.
+    /// **Absolute**, resolved once by the reporter. A mount point is absolute, so a
+    /// relative path matches none of them and the volume comes out as nothing at all
+    /// — and a relative showfile is the ordinary case, not a corner one: `demo.sh`
+    /// passes `.demo/demo.db` and a console started from its own directory passes a
+    /// bare name. There is a test that would have let this through as a plausible
+    /// zero.
     showfile: std::path::PathBuf,
     /// Thermal sensors, where the machine exposes any.
     components: Components,
-    hostname: String,
-    started: std::time::Instant,
-    /// Peer latencies, measured by the peer loops and published alongside.
-    links: watch::Receiver<pult_schema::types::station::PeerLinks>,
-    /// What each output connector's frames have cost, over the window the output
-    /// manager most recently closed.
+}
+
+impl Probe {
+    fn new(showfile: std::path::PathBuf) -> Self {
+        Probe {
+            system: System::new(),
+            networks: Networks::new_with_refreshed_list(),
+            net_window_from: std::time::Instant::now(),
+            disks: Disks::new_with_refreshed_list(),
+            showfile,
+            components: Components::new_with_refreshed_list(),
+        }
+    }
+
+    fn read(&mut self) -> Sample {
+        // Only this process, not every process on the machine: a console sharing a
+        // box with something else should report what *it* is costing.
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from(0))]),
+            true,
+            ProcessRefreshKind::nothing().with_cpu().with_memory(),
+        );
+        self.system.refresh_memory();
+        // The whole machine, as against the process above. Both, because the pair is
+        // what means something: a console at 4% on a machine at 96% is not a
+        // comfortable console, it is one about to be starved by something else.
+        self.system.refresh_cpu_usage();
+
+        let process = sysinfo::get_current_pid().ok().and_then(|pid| self.system.process(pid));
+        let cpu_percent = process.map(|p| p.cpu_usage()).unwrap_or(0.0);
+        let mem_used = process.map(|p| p.memory()).unwrap_or(0);
+
+        // Both ways, over every interface that is not loopback. On a laptop running
+        // `demo.sh` the console's own traffic to itself would otherwise be counted
+        // twice — once sent, once received — and swamp what the figure is for.
+        self.networks.refresh(true);
+        let (net_received, net_sent) = self
+            .networks
+            .iter()
+            .filter(|(name, _)| !is_loopback(name))
+            .fold((0u64, 0u64), |(rx, tx), (_, data)| {
+                (rx + data.received(), tx + data.transmitted())
+            });
+        let net_window_ms = self.net_window_from.elapsed().as_millis() as u32;
+        self.net_window_from = std::time::Instant::now();
+
+        Sample {
+            cpu_percent,
+            mem_used,
+            mem_total: self.system.total_memory(),
+            net_received,
+            net_sent,
+            net_window_ms,
+            machine: self.machine(),
+        }
+    }
+
+    /// What the machine is doing, whoever is doing it.
     ///
-    /// A watch rather than an accumulator shared with a lock, and for the same reason
-    /// `links` is one: the manager is a single task that already owns these counters,
-    /// so it can close a window and publish it without anything on the frame path
-    /// taking a lock. Nothing here is a replicated write per frame — the figures ride
-    /// on the station row this reporter already publishes.
-    frames: watch::Receiver<Vec<FrameCost>>,
+    /// Read here rather than anywhere else because this thread already refreshes a
+    /// `System` every couple of seconds and these come off the same sample. Nothing
+    /// in it is about the console.
+    fn machine(&mut self) -> MachineStats {
+        self.disks.refresh(true);
+        self.components.refresh(true);
+
+        let load = System::load_average();
+        // The volume the showfile is on, found by the longest mount point that is a
+        // prefix of it — which is how nested mounts resolve, and why the longest wins
+        // rather than the first that matches.
+        let disk = self
+            .disks
+            .iter()
+            .filter(|disk| self.showfile.starts_with(disk.mount_point()))
+            .max_by_key(|disk| disk.mount_point().as_os_str().len());
+
+        MachineStats {
+            cpu_percent: self.system.global_cpu_usage(),
+            cores: self.system.cpus().len() as u32,
+            mem_used: self.system.used_memory(),
+            swap_used: self.system.used_swap(),
+            swap_total: self.system.total_swap(),
+            load_1: load.one as f32,
+            load_5: load.five as f32,
+            load_15: load.fifteen as f32,
+            uptime_s: System::uptime(),
+            disk_free: disk.map(|d| d.available_space()).unwrap_or(0),
+            disk_total: disk.map(|d| d.total_space()).unwrap_or(0),
+            // The warmest sensor rather than one named: what a machine calls its
+            // packages differs per platform and per vendor, and the question being
+            // asked — is this box too hot — is answered by the highest of them.
+            cpu_temperature_c: self
+                .components
+                .iter()
+                .filter_map(|c| c.temperature())
+                .filter(|t| t.is_finite())
+                .max_by(|a, b| a.total_cmp(b)),
+        }
+    }
+}
+
+/// Start the thread that reads the machine, and hand back where its readings land.
+///
+/// A plain thread rather than `spawn_blocking`: it lives as long as the station does,
+/// and a blocking-pool slot held for ever is a thread with extra steps. It stops when
+/// nobody is left to read it — the reporter dropping its receiver is the only signal,
+/// and the thread sees it at its next reading.
+fn spawn_probe(showfile: std::path::PathBuf) -> watch::Receiver<Option<Sample>> {
+    let (tx, rx) = watch::channel(None);
+    let spawned = std::thread::Builder::new()
+        .name("station-probe".into())
+        .spawn(move || {
+            let mut probe = Probe::new(showfile);
+            loop {
+                let began = std::time::Instant::now();
+                if tx.send(Some(probe.read())).is_err() {
+                    return;
+                }
+                // One reading per report interval where a reading is quicker than
+                // that, and back to back where it is not — never the two added.
+                std::thread::sleep(REPORT_INTERVAL.saturating_sub(began.elapsed()));
+            }
+        });
+    if let Err(e) = spawned {
+        // The sender went with the closure, so every read below answers with nothing
+        // and the row carries zeroes, which the panel already knows to read as such.
+        warn!("[stations] could not start the thread that reads the machine: {e}");
+    }
+    rx
 }
 
 impl StationReporter {
@@ -93,12 +253,7 @@ impl StationReporter {
             engine,
             sync_addr,
             http_addr,
-            system: System::new(),
-            networks: Networks::new_with_refreshed_list(),
-            net_window_from: std::time::Instant::now(),
-            disks: Disks::new_with_refreshed_list(),
-            showfile: absolute(showfile),
-            components: Components::new_with_refreshed_list(),
+            samples: spawn_probe(absolute(showfile)),
             hostname: System::host_name().unwrap_or_else(|| "console".to_string()),
             started: std::time::Instant::now(),
             links,
@@ -149,38 +304,16 @@ impl StationReporter {
     }
 
     async fn measure(&mut self) -> Station {
-        // Only this process, not every process on the machine: a console sharing a
-        // box with something else should report what *it* is costing.
-        self.system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from(0))]),
-            true,
-            ProcessRefreshKind::nothing().with_cpu().with_memory(),
-        );
-        self.system.refresh_memory();
-        // The whole machine, as against the process above. Both, because the pair is
-        // what means something: a console at 4% on a machine at 96% is not a
-        // comfortable console, it is one about to be starved by something else.
-        self.system.refresh_cpu_usage();
-
-        let process = sysinfo::get_current_pid().ok().and_then(|pid| self.system.process(pid));
-        let cpu_percent = process.map(|p| p.cpu_usage()).unwrap_or(0.0);
-        let mem_used = process.map(|p| p.memory()).unwrap_or(0);
-
-        // Both ways, over every interface that is not loopback. On a laptop running
-        // `demo.sh` the console's own traffic to itself would otherwise be counted
-        // twice — once sent, once received — and swamp what the figure is for.
-        self.networks.refresh(true);
-        let (net_received, net_sent) = self
-            .networks
-            .iter()
-            .filter(|(name, _)| !is_loopback(name))
-            .fold((0u64, 0u64), |(rx, tx), (_, data)| {
-                (rx + data.received(), tx + data.transmitted())
-            });
-        let net_window_ms = self.net_window_from.elapsed().as_millis() as u32;
-        self.net_window_from = std::time::Instant::now();
-
-        let machine = self.measure_machine();
+        // The first row waits for the first reading, so a station never describes a
+        // machine it has not looked at. Every row after that carries the latest
+        // reading there is, however long the next one is taking: the cadence is this
+        // task's and not the probe's, so a slow sensor cannot make a station look as
+        // though it had stopped talking. A probe that could not start leaves the
+        // reading empty, and the row says zero the way it always did.
+        if self.samples.borrow().is_none() {
+            let _ = self.samples.changed().await;
+        }
+        let sample = self.samples.borrow().clone().unwrap_or_default();
 
         let fixtures: Vec<Fixture> = self.read("fixtures").await;
         let outputs: Vec<OutputConfig> = self.read("outputs").await;
@@ -192,9 +325,9 @@ impl StationReporter {
             is_leader: !self.is_follower().await,
             sync_addr: self.sync_addr.to_string(),
             http_addr: self.http_addr.clone(),
-            cpu_percent,
-            mem_used,
-            mem_total: self.system.total_memory(),
+            cpu_percent: sample.cpu_percent,
+            mem_used: sample.mem_used,
+            mem_total: sample.mem_total,
             uptime_s: self.started.elapsed().as_secs(),
             output_plugins: outputs
                 .iter()
@@ -210,54 +343,11 @@ impl StationReporter {
             // show is settled drained nothing and says so with `None` rather than
             // repeating whatever it last managed to measure.
             frame_costs: self.frames.borrow().clone(),
-            machine,
-            net_received,
-            net_sent,
-            net_window_ms,
+            machine: sample.machine,
+            net_received: sample.net_received,
+            net_sent: sample.net_sent,
+            net_window_ms: sample.net_window_ms,
             last_seen: Utc::now(),
-        }
-    }
-
-    /// What the machine is doing, whoever is doing it.
-    ///
-    /// Read here rather than anywhere else because this task already refreshes a
-    /// `System` every couple of seconds and these come off the same sample. Nothing
-    /// in it is about the console.
-    fn measure_machine(&mut self) -> MachineStats {
-        self.disks.refresh(true);
-        self.components.refresh(true);
-
-        let load = System::load_average();
-        // The volume the showfile is on, found by the longest mount point that is a
-        // prefix of it — which is how nested mounts resolve, and why the longest wins
-        // rather than the first that matches.
-        let disk = self
-            .disks
-            .iter()
-            .filter(|disk| self.showfile.starts_with(disk.mount_point()))
-            .max_by_key(|disk| disk.mount_point().as_os_str().len());
-
-        MachineStats {
-            cpu_percent: self.system.global_cpu_usage(),
-            cores: self.system.cpus().len() as u32,
-            mem_used: self.system.used_memory(),
-            swap_used: self.system.used_swap(),
-            swap_total: self.system.total_swap(),
-            load_1: load.one as f32,
-            load_5: load.five as f32,
-            load_15: load.fifteen as f32,
-            uptime_s: System::uptime(),
-            disk_free: disk.map(|d| d.available_space()).unwrap_or(0),
-            disk_total: disk.map(|d| d.total_space()).unwrap_or(0),
-            // The warmest sensor rather than one named: what a machine calls its
-            // packages differs per platform and per vendor, and the question being
-            // asked — is this box too hot — is answered by the highest of them.
-            cpu_temperature_c: self
-                .components
-                .iter()
-                .filter_map(|c| c.temperature())
-                .filter(|t| t.is_finite())
-                .max_by(|a, b| a.total_cmp(b)),
         }
     }
 
@@ -348,6 +438,7 @@ mod tests {
             max_ms: 8.0,
             evaluating_mean_ms: 1.0,
             evaluating_max_ms: 2.0,
+            assembling_mean_ms: 0.5,
             frames,
             window_ms: 1000,
             bytes: 0,

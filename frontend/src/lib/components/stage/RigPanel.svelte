@@ -7,9 +7,8 @@
 	 * other way about.
 	 */
 
-	import { Canvas } from '@threlte/core';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
-	import { collection } from '$lib/stores/show.js';
+	import { collection, show as showStore } from '$lib/stores/show.js';
 	import { selection } from '$lib/stores/selection.js';
 	import { shownPlanId } from '$lib/stores/stage.js';
 	import Rig3D from './Rig3D.svelte';
@@ -73,16 +72,18 @@
 		{#if $fixtures.length === 0}
 			<p class="empty">Patch a fixture and place it, and it will turn up in here.</p>
 		{:else}
-			<Canvas>
-				<Rig3D
-					bind:this={rig}
-					fixtures={$fixtures}
-					types={$types}
-					plan={plan?.visible ? plan : null}
-					planUrl={plan?.visible ? planUrl : null}
-					{follow}
-				/>
-			</Canvas>
+			<!-- No `Canvas` wrapper any more: the viewer owns its own renderer, so
+			     that two rig panels open at once are two renderers rather than a
+			     fight over one. -->
+			<Rig3D
+				bind:this={rig}
+				fixtures={$fixtures}
+				types={$types}
+				plan={plan?.visible ? plan : null}
+				planUrl={plan?.visible ? planUrl : null}
+				show={$showStore}
+				{follow}
+			/>
 		{/if}
 	</div>
 </div>
@@ -94,7 +95,7 @@
 	.count { color: #777; font-size: 12px; }
 	.toggle { display: flex; align-items: center; gap: 5px; color: #888; font-size: 12px; cursor: pointer; }
 
-	.canvas { flex: 1; min-height: 0; background: #101010; display: grid; }
+	.canvas { flex: 1; min-height: 0; background: #101010; position: relative; }
 	.empty { color: #777; font-size: 13px; margin: auto; }
 
 	.ghost { background: none; border: 1px solid var(--line-strong); border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }

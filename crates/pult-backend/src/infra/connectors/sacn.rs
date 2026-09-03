@@ -159,6 +159,10 @@ impl OutputPlugin for SacnOutput {
                 if !self.sent.needs_send(&universe, now, REFRESH_AFTER) {
                     continue;
                 }
+                // Assembling and sending, timed apart, for the reason Art-Net does
+                // it: both are per universe and one figure over the pair cannot say
+                // which of them a bigger rig is actually spending its frame on.
+                let building = std::time::Instant::now();
                 let sequence = self.sequence.next(universe.number);
                 let packet = e131_data_packet(
                     &self.cid,
@@ -168,6 +172,7 @@ impl OutputPlugin for SacnOutput {
                     DEFAULT_PRIORITY,
                     &universe.channels,
                 );
+                frame.assembled(building.elapsed());
                 self.socket.send_to(&packet, self.destination(universe.number)).await?;
                 // After the send: a universe the dedup skipped never reached the wire.
                 frame.sent(packet.len());

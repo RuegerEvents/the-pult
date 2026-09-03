@@ -23,7 +23,9 @@
 			created_at: new Date().toISOString(),
 			editing_cue: null,
 			history_depth: prefs?.historyDepth ?? 500,
-			home_fade_ms: prefs?.homeFadeMs ?? 0
+			home_fade_ms: prefs?.homeFadeMs ?? 0,
+			haze_density: prefs?.hazeDensity ?? 0.35,
+			haze_turbulence: prefs?.hazeTurbulence ?? 0.25
 		});
 	}
 

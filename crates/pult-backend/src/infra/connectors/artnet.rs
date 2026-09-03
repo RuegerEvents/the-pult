@@ -66,8 +66,13 @@ impl OutputPlugin for ArtNetOutput {
                 if !self.sent.needs_send(&universe, now, REFRESH_AFTER) {
                     continue;
                 }
+                // Assembling and sending, timed apart. Both are per universe and
+                // neither shrinks when the evaluator gets faster, so one figure over
+                // the pair could not say which of them to work on.
+                let building = std::time::Instant::now();
                 let sequence = self.sequence.next(universe.number);
                 let packet = art_dmx(universe.number, sequence, &universe.channels);
+                frame.assembled(building.elapsed());
                 self.socket.send_to(&packet, self.target).await?;
                 // Counted after the send rather than before it: a universe skipped by
                 // the dedup above never reached the wire, and the whole point of the

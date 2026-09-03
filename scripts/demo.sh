@@ -17,13 +17,29 @@
 #                                and a plugin-shipped Programmer Monitor
 #   scripts/demo.sh --size big   a bigger rig: small (the default) is the
 #                                hand-made show, big adds 500 fixtures and a
-#                                stack of cues, huge adds 2000 and three plans
+#                                stack of cues, huge adds 2000 and three plans.
+#                                --size <n> is any count, since the shape of the
+#                                curve is the answer and not one point on it
+#   scripts/demo.sh --cues <n>   how many cues the generated stack has, held
+#                                apart from the rig size so one axis moves at a
+#                                time
+#   scripts/demo.sh --slice <f>  what fraction of the rig each cue captures.
+#                                Left alone, --size <n> holds the captures per
+#                                cue at huge's count rather than its fraction,
+#                                so the stack costs the same as the rig grows
 #   scripts/demo.sh --measure    seed, run the show, print what an output frame
 #                                costs on this machine, and stop. No sims, no
 #                                frontend — they would be competing for the CPU
 #                                being measured. Combine with --size and
 #                                --release, which is the only way the figures
 #                                mean anything next to somebody else's.
+#   scripts/demo.sh --measure-browser
+#                                the other half: seed, open a headless page at
+#                                the rig, and print what the *browser* costs.
+#                                Its own mode because a browser competes for the
+#                                CPU that --measure is holding still, so the two
+#                                sets of figures must not be read side by side.
+#                                Needs playwright: npm --prefix frontend i -D playwright
 #
 # Ports can be overridden: PORT, SYNC_PORT, BROKER_PORT — and PORT_2, SYNC_PORT_2,
 # BROKER_PORT_2 for the second station.
@@ -52,7 +68,10 @@ SIMS=1
 TWO=0
 PLUGINS=0
 SIZE=small
+CUES=
+SLICE=
 MEASURE=0
+MEASURE_BROWSER=0
 OUTPUT_FLAGS=()
 PROFILE=debug
 # A while loop rather than `for arg`, because --size takes a value.
@@ -63,8 +82,11 @@ while [ $# -gt 0 ]; do
     --no-sims) SIMS=0 ;;
     --two) TWO=1 ;;
     --plugins) PLUGINS=1 ;;
-    --size) shift; SIZE=${1:-}; [ -n "$SIZE" ] || { echo "--size needs one of small, big, huge" >&2; exit 2; } ;;
+    --size) shift; SIZE=${1:-}; [ -n "$SIZE" ] || { echo "--size needs small, big, huge or a count" >&2; exit 2; } ;;
+    --cues) shift; CUES=${1:-}; [ -n "$CUES" ] || { echo "--cues needs a count" >&2; exit 2; } ;;
+    --slice) shift; SLICE=${1:-}; [ -n "$SLICE" ] || { echo "--slice needs a fraction" >&2; exit 2; } ;;
     --measure) MEASURE=1 ;;
+    --measure-browser) MEASURE_BROWSER=1 ;;
     --release) PROFILE=release ;;
     # The comment block at the top of this file is the help text, so the two
     # cannot drift apart. Printed up to the first line that is not a comment.
@@ -78,7 +100,7 @@ done
 # dev server would both be taking CPU from the thing being measured, and the answer
 # wanted is a number rather than a window, so this mode starts one station, seeds it,
 # reads it and stops.
-if [ "$MEASURE" = 1 ]; then
+if [ "$MEASURE" = 1 ] || [ "$MEASURE_BROWSER" = 1 ]; then
   SIMS=0
   TWO=0
   # And something to measure. What has a deadline is the *output frame*, so a station
@@ -251,7 +273,10 @@ fi
 
 if [ "$SEED" = 1 ] && [ "$KEEP" = 0 ]; then
   echo "seeding a show"
-  if ! node "$ROOT/scripts/demo-seed.mjs" "$PORT" --size "$SIZE"; then
+  SEED_ARGS=(--size "$SIZE")
+  [ -n "$CUES" ] && SEED_ARGS+=(--cues "$CUES")
+  [ -n "$SLICE" ] && SEED_ARGS+=(--slice "$SLICE")
+  if ! node "$ROOT/scripts/demo-seed.mjs" "$PORT" "${SEED_ARGS[@]}"; then
     echo "  (seeding failed — the demo still runs, just empty)" >&2
   fi
 fi
@@ -265,6 +290,15 @@ fi
 if [ "$MEASURE" = 1 ]; then
   echo "measuring the ${SIZE} show"
   node "$ROOT/scripts/demo-measure.mjs" "$PORT" --label "$SIZE" --build "$PROFILE"
+  exit 0
+fi
+
+# The browser's half. A separate mode rather than part of --measure: a page drawing
+# a rig competes for exactly the CPU the station figures are being held still to
+# measure, so the two must not be read as one set of numbers. This one says so.
+if [ "$MEASURE_BROWSER" = 1 ]; then
+  echo "measuring a browser on the ${SIZE} show"
+  node "$ROOT/scripts/demo-measure-browser.mjs" "$PORT" --label "$SIZE" --build "$PROFILE"
   exit 0
 fi
 

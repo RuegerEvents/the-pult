@@ -91,6 +91,8 @@ fn a_show() -> Show {
         editing_cue: None,
         history_depth: pult_schema::types::show::HISTORY_DEPTH_DEFAULT,
         home_fade_ms: 0,
+        haze_density: pult_schema::types::show::HAZE_DENSITY_DEFAULT,
+        haze_turbulence: pult_schema::types::show::HAZE_TURBULENCE_DEFAULT,
     }
 }
 

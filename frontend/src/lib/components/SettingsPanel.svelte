@@ -61,6 +61,30 @@
 		prefs = stored;
 	}
 
+	async function setShowHaze(field: 'haze_density' | 'haze_turbulence', value: number) {
+		if (!show) return;
+		trouble = null;
+		await data.show[field].set(clampedHaze(value));
+	}
+
+	async function setConsoleHaze(
+		field: 'hazeDensity' | 'hazeTurbulence',
+		value: number
+	) {
+		trouble = null;
+		const stored = await writePreferences({ [field]: clampedHaze(value) });
+		if (!stored) {
+			trouble = 'This console could not write its settings down.';
+			return;
+		}
+		prefs = stored;
+	}
+
+	/// Brought inside what the shader will do, here as well as on the station, so a
+	/// slider cannot send something the rig view has to defend itself against.
+	const clampedHaze = (value: number) =>
+		Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+
 	const clamped = (value: number) =>
 		Math.round(Math.min(prefs?.historyDepthMax ?? 10_000, Math.max(prefs?.historyDepthMin ?? 10, value)));
 
@@ -136,6 +160,51 @@
 				a sequence taken off, a selection sent home. Zero snaps. Show data rather than a
 				console setting, because two stations fading one rig home over different times is
 				not a preference but a disagreement the audience can watch.
+			</p>
+
+			<div class="row">
+				<label for="show-haze">Haze</label>
+				{#if $unlocked}
+					<input
+						id="show-haze"
+						class="input"
+						type="number"
+						min="0"
+						max="1"
+						step="0.05"
+						value={show.haze_density}
+						onchange={(e) => setShowHaze('haze_density', e.currentTarget.valueAsNumber)}
+					/>
+				{:else}
+					<span class="value">{show.haze_density}</span>
+				{/if}
+				<span class="unit">density</span>
+			</div>
+
+			<div class="row">
+				<label for="show-haze-turbulence">Haze moves</label>
+				{#if $unlocked}
+					<input
+						id="show-haze-turbulence"
+						class="input"
+						type="number"
+						min="0"
+						max="1"
+						step="0.05"
+						value={show.haze_turbulence}
+						onchange={(e) =>
+							setShowHaze('haze_turbulence', e.currentTarget.valueAsNumber)}
+					/>
+				{:else}
+					<span class="value">{show.haze_turbulence}</span>
+				{/if}
+				<span class="unit">turbulence</span>
+			</div>
+			<p class="note">
+				How much haze the rig view draws beams through, and how fast it drifts. Show data
+				because how hazy the room is is a fact about the room rather than about the screen
+				looking at it — a designer who lit a piece for a hazy house wants the next person
+				opening the file to see what they saw. It reaches no lamp.
 			</p>
 		{/if}
 	</section>

@@ -26,9 +26,8 @@
 	},
 	"dependencies": {
 		"@sveltejs/adapter-static": "^3.0.10",
-		"@threlte/core": "^8.6.0",
-		"@threlte/extras": "^9.21.1",
 		"@xyflow/svelte": "^1.6.5",
+		"camera-controls": "^3.1.2",
 		"pdfjs-dist": "^6.2.108",
 		"three": "^0.185.1"
 	}

@@ -4,7 +4,7 @@
 // this drifts out of date it will fail loudly rather than quietly doing the wrong
 // thing. Run by scripts/demo.sh.
 //
-//   node scripts/demo-seed.mjs <port> [--size small|big|huge]
+//   node scripts/demo-seed.mjs <port> [--size small|big|huge|<n>] [--cues <n>] [--slice <f>]
 //
 // `small` is the hand-made demo: five fixtures, three cues, two flows, and nothing
 // running. It is the default, and it is what every existing invocation gets.
@@ -13,6 +13,17 @@
 // fixtures, a stack of cues over several sequences, and an effect left running so
 // the station is actually ticking. They exist to be measured rather than looked at:
 // see `scripts/demo.sh --measure`.
+//
+// `--size <n>` is any rig size, because the shape of the curve is the answer and not
+// one point on it. The cue stack and the slice are separate axes — `--cues` and
+// `--slice` — so a run can grow the rig while holding what the stack costs, or the
+// other way about. Which matters: three hundred cues over five thousand fixtures at
+// a tenth each is a hundred and fifty thousand captures, and past some point that
+// measures JSON and SQLite rather than lighting.
+//
+// The default keeps the stack's cost flat as the rig grows. `--size <n>` alone holds
+// captures per cue at `huge`'s absolute number rather than its fraction, so the
+// frame cost is what changes between two runs and not the size of the show.
 
 import zlib from 'node:zlib';
 
@@ -45,8 +56,12 @@ const STEEPER = { x: 156.0375, y: 0, z: 180 };
 const argv = process.argv.slice(2);
 let port = '7700';
 let size = 'small';
+let askedCues = null;
+let askedSlice = null;
 for (let i = 0; i < argv.length; i++) {
 	if (argv[i] === '--size') size = argv[++i];
+	else if (argv[i] === '--cues') askedCues = Number(argv[++i]);
+	else if (argv[i] === '--slice') askedSlice = Number(argv[++i]);
 	else if (!argv[i].startsWith('--')) port = argv[i];
 }
 
@@ -66,11 +81,64 @@ const PRESETS = {
 	huge: { heads: 2000, cues: 300, sequences: 12, sliceShare: 0.1, plans: 3 }
 };
 
-if (!(size in PRESETS)) {
-	console.error(`  unknown size "${size}" — one of ${Object.keys(PRESETS).join(', ')}`);
+/**
+ * How many fixtures each cue captures in the `huge` preset: 0.1 of 2000.
+ *
+ * This is the number held constant when a size is given as a count, rather than the
+ * fraction it came from. A fraction held constant makes the cue stack grow with the
+ * rig, and then a run at 5000 is measuring a show four times the size of the one at
+ * 1250 in two ways at once — which is exactly the confusion `--size <n>` exists to
+ * avoid.
+ */
+const CAPTURES_PER_CUE = 200;
+
+/** A rig of `n`, shaped like the presets but at whatever size was asked for. */
+function sized(n) {
+	return {
+		heads: n,
+		// Held rather than scaled. A stack is a stack: an evening has a few hundred
+		// cues in it whether the rig is fifty lamps or five thousand.
+		cues: 300,
+		sequences: 12,
+		sliceShare: Math.min(1, CAPTURES_PER_CUE / n),
+		// Three plans is what `huge` draws, and drawing is not what a sized run is
+		// measuring. Kept so the two are comparable.
+		plans: 3
+	};
+}
+
+let preset;
+if (size in PRESETS) {
+	preset = PRESETS[size];
+} else if (Number.isFinite(Number(size)) && Number(size) > 0) {
+	preset = sized(Math.floor(Number(size)));
+} else {
+	console.error(
+		`  unknown size "${size}" — one of ${Object.keys(PRESETS).join(', ')}, or a fixture count`
+	);
 	process.exit(2);
 }
-const preset = PRESETS[size];
+
+// The two axes, applied over whatever the size decided. Given explicitly they win,
+// which is how the curve gets taken along one axis at a time.
+if (preset && askedCues !== null) {
+	if (!Number.isFinite(askedCues) || askedCues < 0) {
+		console.error(`  --cues wants a count, not "${askedCues}"`);
+		process.exit(2);
+	}
+	preset = { ...preset, cues: Math.floor(askedCues) };
+}
+if (preset && askedSlice !== null) {
+	if (!Number.isFinite(askedSlice) || askedSlice <= 0 || askedSlice > 1) {
+		console.error(`  --slice wants a fraction between 0 and 1, not "${askedSlice}"`);
+		process.exit(2);
+	}
+	preset = { ...preset, sliceShare: askedSlice };
+}
+if (!preset && (askedCues !== null || askedSlice !== null)) {
+	console.error('  --cues and --slice need a generated rig: pass --size big, huge or a count');
+	process.exit(2);
+}
 
 // A big seed puts many writes in flight at once, so an individual one can sit in the
 // engine's queue for a while through no fault of its own. The timeout has to be long
@@ -611,11 +679,19 @@ try {
 	const plans = await seedPlans(preset.plans, across * 1.2 * 1.1);
 
 	const took = ((Date.now() - began) / 1000).toFixed(1);
+	// The slice is printed as both a fraction and a count. The count is what actually
+	// decides the write path's cost, and it is the one a reader comparing two runs at
+	// different sizes has to be able to see.
+	const perCue = Math.max(1, Math.round(preset.heads * preset.sliceShare));
 	console.log(
 		`  seeded ${size}: ${patched.length + generated.length} fixtures, ` +
 			`${cues.length + generatedCues.length} cues, ` +
 			`${1 + generatedSequences.length} sequences (${generatedSequences.length} running), ` +
 			`${plans} plans, in ${took}s`
+	);
+	console.log(
+		`  each cue captures ${perCue} fixtures (slice ${preset.sliceShare.toFixed(3)}), ` +
+			`${(generatedCues.length * perCue).toLocaleString()} captures in all`
 	);
 	process.exit(0);
 } catch (error) {

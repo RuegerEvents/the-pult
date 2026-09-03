@@ -18,6 +18,25 @@ pub async fn open(path: &str) -> Result<SqlitePool> {
     Ok(pool)
 }
 
+/// A second pool to an already-open showfile, for the writer task and nothing else.
+///
+/// The showfile is WAL, which allows one writer alongside readers. That is what lets
+/// `engine::writer` hold a transaction open for the length of a group commit without
+/// a peer's catch-up read queueing behind it — or, worse, landing *inside* it and
+/// reading a row that has not committed yet. With a single shared pool capped at one
+/// connection, both of those would happen.
+///
+/// Migrations are not run again: this opens a file that `open` has already brought up
+/// to date, and running them twice is work at best and a race at worst.
+pub async fn open_for_writing(path: &str) -> Result<SqlitePool> {
+    let opts = SqliteConnectOptions::from_str(&format!("sqlite:{path}?mode=rwc"))?
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .foreign_keys(true);
+    // One, because there is one writer by construction and a second connection here
+    // would be a second writer racing it for SQLite's write lock.
+    Ok(sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect_with(opts).await?)
+}
+
 /// Open a migrated in-memory showfile. Test-only.
 ///
 /// The pool is capped at one connection: every SQLite `:memory:` connection gets

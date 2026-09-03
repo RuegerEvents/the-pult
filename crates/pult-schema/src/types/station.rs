@@ -198,6 +198,17 @@ pub struct FrameCost {
     pub evaluating_mean_ms: f32,
     /// The worst single evaluating half in the window.
     pub evaluating_max_ms: f32,
+    /// Mean time spent assembling universes, of the half that was not evaluating.
+    ///
+    /// So a frame reads as three parts rather than two: evaluating, assembling, and
+    /// whatever is left, which is the socket. The split was added when the rig sizes
+    /// being measured grew past the point where one "emitting" figure could say which
+    /// half of emitting to work on — assembly and the socket writes are both per
+    /// universe, and they do not respond to the same fixes.
+    ///
+    /// Defaulted, so a peer on an older build still deserialises.
+    #[serde(default)]
+    pub assembling_mean_ms: f32,
     /// How many frames the window contained. Never zero: a connector that emitted
     /// nothing carries no entry at all rather than an entry of zeroes.
     pub frames: u32,
@@ -456,6 +467,7 @@ mod tests {
             max_ms: 31.0,
             evaluating_mean_ms: 2.4,
             evaluating_max_ms: 9.0,
+            assembling_mean_ms: 1.1,
             frames: 80,
             window_ms: 2000,
             bytes: 0,

@@ -560,6 +560,24 @@ async fn set_preferences(Json(body): Json<serde_json::Value>) -> Result<Json<ser
     if let Some(ms) = number("homeFadeMs")? {
         asked.home_fade_ms = ms;
     }
+    // Haze is a fraction rather than a count, so it reads as a float. Out-of-range
+    // values are brought back by `sane()` below rather than refused: a slider that
+    // sent 1.0000001 should not be an error.
+    let fraction = |field: &str| -> Result<Option<f32>, Response> {
+        match body.get(field) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(v) => v
+                .as_f64()
+                .map(|v| Some(v as f32))
+                .ok_or_else(|| bad_request(&format!("{field} has to be a number"))),
+        }
+    };
+    if let Some(value) = fraction("hazeDensity")? {
+        asked.haze_density = value;
+    }
+    if let Some(value) = fraction("hazeTurbulence")? {
+        asked.haze_turbulence = value;
+    }
 
     // The Share login. Named as a pair, so setting one without the other is a
     // half-credential nothing can use; `null` clears it, which is how somebody logs
@@ -604,6 +622,8 @@ fn as_json(prefs: &infra::preferences::Preferences) -> serde_json::Value {
         "historyDepthMax": pult_schema::types::show::HISTORY_DEPTH_MAX,
         "homeFadeMs": prefs.home_fade_ms,
         "homeFadeMsMax": pult_schema::types::show::HOME_FADE_MS_MAX,
+        "hazeDensity": prefs.haze_density,
+        "hazeTurbulence": prefs.haze_turbulence,
         // The user, and whether there is a password — never the password. A settings
         // form needs both of those and an onlooker can use neither.
         "gdtfShare": prefs.gdtf_share.as_ref().map(|each| json!({

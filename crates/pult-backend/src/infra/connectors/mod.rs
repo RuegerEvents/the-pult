@@ -68,6 +68,18 @@ type Devices = Option<(watch::Receiver<DeviceDirectory>, DeviceHandle)>;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Frame {
     pub evaluating: std::time::Duration,
+    /// Of the part that was not evaluating, how much was *assembling* — turning what
+    /// the patch is doing into the sheet of bytes a universe goes out as — rather
+    /// than handing that sheet to a socket.
+    ///
+    /// The third figure, and it exists because the first two stopped being enough.
+    /// Evaluating looks linear in the rig; assembly and the socket writes are per
+    /// universe, and a rig of five thousand six-channel heads is around fifty-nine
+    /// universes against twenty-four. So the half that does not shrink with a faster
+    /// evaluator had to be split before anybody could say which part of it to work
+    /// on. A connector that does not divide its frame this way leaves it zero, which
+    /// reads as "did no assembling worth naming" exactly as `evaluating` does.
+    pub assembling: std::time::Duration,
     /// What this frame actually put on the wire, in bytes and in packets.
     ///
     /// Counted by the connector rather than inferred from the patch, because the two
@@ -83,7 +95,15 @@ pub struct Frame {
 impl Frame {
     /// A frame that has evaluated and not yet sent anything.
     pub fn evaluated(evaluating: std::time::Duration) -> Self {
-        Frame { evaluating, bytes: 0, packets: 0 }
+        Frame { evaluating, assembling: std::time::Duration::ZERO, bytes: 0, packets: 0 }
+    }
+
+    /// Add to what this frame spent assembling universes.
+    ///
+    /// Added to rather than set, because a connector assembles once per universe and
+    /// the figure wanted is the whole frame's worth.
+    pub fn assembled(&mut self, took: std::time::Duration) {
+        self.assembling += took;
     }
 
     /// One packet, as it goes out.
@@ -236,6 +256,7 @@ struct Running {
     max_us: u64,
     evaluating_total_us: u64,
     evaluating_max_us: u64,
+    assembling_total_us: u64,
     bytes: u64,
     packets: u32,
 }
@@ -259,6 +280,7 @@ impl Running {
             max_us: 0,
             evaluating_total_us: 0,
             evaluating_max_us: 0,
+            assembling_total_us: 0,
             bytes: 0,
             packets: 0,
         }
@@ -273,6 +295,7 @@ impl Running {
         self.max_us = self.max_us.max(whole_us);
         self.evaluating_total_us += evaluating_us;
         self.evaluating_max_us = self.evaluating_max_us.max(evaluating_us);
+        self.assembling_total_us += frame.assembling.as_micros() as u64;
         self.bytes += frame.bytes;
         self.packets += frame.packets;
     }
@@ -288,6 +311,7 @@ impl Running {
         let max_us = std::mem::take(&mut self.max_us);
         let evaluating_total_us = std::mem::take(&mut self.evaluating_total_us);
         let evaluating_max_us = std::mem::take(&mut self.evaluating_max_us);
+        let assembling_total_us = std::mem::take(&mut self.assembling_total_us);
         let bytes = std::mem::take(&mut self.bytes);
         let packets = std::mem::take(&mut self.packets);
         if frames == 0 {
@@ -301,6 +325,7 @@ impl Running {
             max_ms: max_us as f32 / 1000.0,
             evaluating_mean_ms: mean(evaluating_total_us),
             evaluating_max_ms: evaluating_max_us as f32 / 1000.0,
+            assembling_mean_ms: mean(assembling_total_us),
             frames,
             window_ms: elapsed.as_millis() as u32,
             bytes,

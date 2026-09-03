@@ -148,7 +148,9 @@ CREATE TABLE IF NOT EXISTS show (
     name TEXT NOT NULL,
     created_at TEXT NOT NULL,
     history_depth INTEGER NOT NULL,
-    home_fade_ms INTEGER NOT NULL
+    home_fade_ms INTEGER NOT NULL,
+    haze_density REAL NOT NULL,
+    haze_turbulence REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS speed_masters (

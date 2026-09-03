@@ -17,7 +17,10 @@
 
 use std::path::PathBuf;
 
-use pult_schema::types::show::{clamp_history_depth, clamp_home_fade_ms, HISTORY_DEPTH_DEFAULT};
+use pult_schema::types::show::{
+    clamp_haze, clamp_history_depth, clamp_home_fade_ms, HAZE_DENSITY_DEFAULT,
+    HAZE_TURBULENCE_DEFAULT, HISTORY_DEPTH_DEFAULT,
+};
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -72,6 +75,16 @@ pub struct Preferences {
     /// a preference but a disagreement the audience can watch. This is what *this*
     /// desk starts a new show with, and after that it stops mattering.
     pub home_fade_ms: u32,
+    /// What a newly created show starts its haze at, density then turbulence.
+    ///
+    /// Same shape as `home_fade_ms` above and for the same reason: how hazy the room
+    /// is is show data, because it is a fact about the room rather than about the
+    /// screen looking at it. This is what *this* desk starts a new show with.
+    ///
+    /// A station in an office and a station in a theatre reasonably disagree about
+    /// the default, which is the whole argument for it being a preference at all.
+    pub haze_density: f32,
+    pub haze_turbulence: f32,
     /// What this station keeps in its own log: the panel, the ring and the file.
     ///
     /// A station preference and never show data, like `oplog_retention_minutes`
@@ -126,6 +139,8 @@ impl Default for Preferences {
             history_depth: HISTORY_DEPTH_DEFAULT,
             // Snapping, which is what a programmer clear has always done.
             home_fade_ms: 0,
+            haze_density: HAZE_DENSITY_DEFAULT,
+            haze_turbulence: HAZE_TURBULENCE_DEFAULT,
             oplog_retention_minutes: OPLOG_RETENTION_MINUTES_DEFAULT,
             log_level: default_log_level(),
             peer_log_level: default_peer_log_level(),
@@ -169,6 +184,8 @@ impl Preferences {
             .oplog_retention_minutes
             .clamp(OPLOG_RETENTION_MINUTES_MIN, OPLOG_RETENTION_MINUTES_MAX);
         self.home_fade_ms = clamp_home_fade_ms(self.home_fade_ms);
+        self.haze_density = clamp_haze(self.haze_density);
+        self.haze_turbulence = clamp_haze(self.haze_turbulence);
         // A level nobody can spell is the default rather than a refusal to start:
         // a typo in a diagnostic setting must not keep a console off the air.
         self.log_level = self.capture_level().as_str().to_string();

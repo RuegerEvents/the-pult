@@ -295,6 +295,20 @@ point**, so the disk reads a plausible zero. `demo.sh` passes `.demo/demo.db`. T
 is absolutised in `StationReporter::new` by resolving the *directory* and re-joining the
 file name — canonicalizing the file fails when the show is about to be created.
 
+**And the probing is a thread, never the runtime.** Every `sysinfo` call blocks, and two
+of them block for longer than a console can stand still: the thermal sensors take about
+a second on a Mac, and the first enumeration of the volumes takes as long as the
+operating system needs to read the directory the executable sits in — it does that once
+per process, as a bundle lookup, and against a `target/debug/deps` of six hundred
+thousand files it took six seconds. On the runtime thread that was six seconds in which
+the station accepted no connection and ran no timer; in a test binary, where every task
+of a station shares one thread, it was every test that started a station on a loaded
+machine failing with "never accepted a connection". So `StationReporter` owns none of
+the handles. A `station-probe` thread does, and hands each reading over a `watch` the
+way `links` and `frames` already arrive. The first row waits for the first reading, and
+every row after it carries the latest there is — a slow sensor changes what a row says
+and never when it is said.
+
 **Network throughput is four figures, not one**, and the panel keeps them apart. Three
 are what the console is responsible for — what each connector put on the wire (counted
 in `Frame`, *after* the dedup, so a settled rig honestly costs less than a moving one);
@@ -314,6 +328,85 @@ counters and throughput reads zero almost always.
 ```
 cargo test -p pult-backend --lib clients   # the map, the sweep, who may write a row
 cd frontend && npm test                    # the meter, the traces, what counts as struggling
+```
+
+## The disk is off the actor, and every source has its own queue
+
+**A group commit, with no constant in it.** `persist`, `oplog::append` and
+`order::save` were awaited inside the engine actor against a pool of one connection, so
+one operator's edit waited behind another's fsync. `engine/writer.rs` is a single
+writer task with an ordered queue, and it commits a *group*: while a commit is in
+flight everything that arrives queues up, and when it lands they all go into the next
+one. That is the whole rule — no window in milliseconds and no batch size, because a
+constant would have to be right for somebody else's disk, and on a fast one with a
+single operator the batch degenerates to one write per commit.
+
+A command still replies only when its write is **durable** — the actor hands its
+receipts to a task that answers the caller when they land, rather than sitting on the
+fsync itself. Nothing about what an acknowledgement means has changed; what changed is
+that the *next* command is no longer behind this one's disk, which is the only way the
+writer can ever hold a group to commit.
+
+**The oplog is awaited, and it is the one exception.** Entity state is read from
+memory — `Get` resolves against `ShowState` and never against SQLite — so a create that
+has not reached the disk is still fully visible to the next read. The oplog is not like
+that: undo is a *query over it*, the History panel reads it back, and a peer catching up
+is served `oplog::since` from the file. Deferring it makes a user's own Ctrl-Z race their
+own write, which is exactly what seven tests said the moment it was tried. It costs
+little, being one INSERT.
+
+**And one write on the create path used to be quadratic.** `order::save` rewrites a whole
+collection, and the engine asked for one after *every* create — about 12.5 million
+inserts to patch 5000 fixtures, which is why seeding a rig that size took over two
+minutes. `order::append` is the O(1) case a create actually needs, and `save` is kept for
+a reorder or a delete, neither of which can be one row. The comment that used to say
+"creates are human-paced" was true of an operator and false of an MVR import, which is
+the case that matters.
+
+**A create broadcasts its collection, and that is bounded in time.** A subscriber
+watching `fixtures` is watching the collection, and a pattern matched against
+`fixtures/__create` reaches nobody — so a create has to send the whole thing. Sent per
+row, that deep-cloned every fixture in the show once per created fixture, which cost 89
+seconds to patch five thousand against three for the entire persistence path. So
+`broadcast_after_set` marks the collection and `flush_collections` sends it at most every
+`COLLECTION_FLUSH_EVERY`. Note what did *not* work: flushing whenever the command queue is
+empty, because a client with sixty-four writes in flight empties it between almost every
+one. A ceiling in time holds however the queue behaves, and it is a ceiling on a *burst*
+rather than a delay on a write — an idle console has not flushed for far longer, so one
+create still goes out at once.
+
+**And an owed broadcast has to be able to wake the loop**, or the ceiling becomes a hole.
+The last write of a burst marks the collection, the flush is not yet due, and the actor
+then blocks on whatever the show wants next — which on an idle station is a long time and
+on a settled one is never. So `next_wake` is shortened to whatever is left of the
+interval, and the wake branch flushes. Getting this wrong hangs a delete rather than
+slowing it, which is how a test found it.
+
+**A disk that refuses is now reported after the fact, not instead of the write.**
+`persist` used to gate the in-memory insert on the disk succeeding. It no longer can, so
+a failure reaches the caller as an error while the value is already in the show.
+`persist_order` has always behaved that way, on the grounds that losing a list's order is
+not a reason to reject the fixture that was just patched.
+
+Two things it needs. A **second pool** to the same file, since the showfile is WAL and a
+peer's catch-up read must not queue behind a commit or land inside one; a show in memory
+shares the one pool instead, because every `sqlite::memory:` connection is a different
+database. And `order::save` stays **outside** the batch — it opens its own transaction
+and SQLite has no nested `BEGIN` — which costs nothing, since an order changes when
+something is created or moved and never when a value does.
+
+**Admission is in front of the engine, not inside it.** `engine/admission.rs` holds a
+bounded queue per source class — Operator, Station, Peer, Plugin — and a router forwards
+into the engine's one channel in weighted turns. So a plugin in a write loop fills its
+own queue and nothing else, and the engine still reads one channel and still knows
+nothing about where a command came from. The weights are **turns, not priorities**:
+strict priority starves, and a peer replaying twenty minutes of oplog would never finish
+while anybody was programming. A full queue makes its own senders wait rather than
+dropping, unlike `OutputHandle::push` — a skipped frame is redrawn a fortieth of a
+second later, and a skipped write is gone.
+
+```
+cargo test -p pult-backend --lib engine      # the writer, the router, the show
 ```
 
 ## Lifecycle System
@@ -581,6 +674,29 @@ Consequence worth holding on to: **a geometric selection term reads a world posi
 so `evaluate` takes the scene objects as well as the fixtures. A light on a truss is
 where the truss put it.
 
+**The rig view is plain three.js, and the beam is not geometry.** No Threlte: the
+declarative layer was where two defects lived — a `ConeGeometry` with reactive `args`
+rebuilt per fixture per frame, and a `SpotLight` mounted inside an `{#if}` that changed
+the scene's light count mid-fade and recompiled every material — and removing it
+removed both by construction. `Rig3D.svelte` owns its renderer, scene, camera and
+`camera-controls` **per panel**, because two `rig` tiles can be open at once.
+
+`frontend/src/lib/beam.ts` is the beam: one instanced open-ended cylinder for the whole
+rig, and the cone is vertex displacement, so a zoom costs one float in a buffer.
+Brightness is four terms multiplied (side-on, down-the-barrel, falloff, and a power
+term on the silhouette so a cylinder stops reading as a tube), all additive blending in
+one fragment shader with no post-processing. Colour dims in **HSV, value only** — a
+scaled RGB drags a saturated colour towards grey on the way down, which no dimmer does.
+Haze is fbm noise in world space with **time as the third axis**, and its two knobs are
+`Show::haze_density` and `haze_turbulence`: show data, because how hazy the room is is a
+fact about the room, seeded from a station preference the way `home_fade_ms` is. It
+reaches no lamp.
+
+**A strobe is drawn and never evaluated.** A strobe channel carries a *rate*: the
+console sends the byte and the fixture does the flashing. So `pult-render` has nothing
+to work out and needs no corpus case, and `strobeGate` lives in `beam.ts` because the
+square wave is a fact about the picture rather than about the rig.
+
 **The browser draws the drawing.** `frontend/src/lib/geometry.ts` loads a mesh once
 per sha and clones it per object, because a rig with ninety-five truss sections
 instances five symbols. Three rules live there: a `.3ds` is Z-up and is turned in that
@@ -636,9 +752,30 @@ at loopback so there is a frame to measure at all, and prints what one cost — 
 stops, with no sims and no dev server, because both would be taking the CPU being
 measured. `--release` with it, or the figures mean nothing next to anybody else's.
 
+`--size` also takes a plain count, because the shape of the curve is the answer and not
+one point on it, and `--cues` and `--slice` are separate axes so one thing moves at a
+time. Left alone, `--size <n>` holds the *captures per cue* at `huge`'s count rather
+than its fraction — a fraction held constant grows the cue stack with the rig, and then
+two runs differ in two ways at once.
+
+**The instrument says how much it disagrees with itself.** It takes several reporting
+windows, discards the first, and prints the median with the full spread beside it. It
+also waits for the cue-taking it does to get the show moving to go **quiet** before it
+starts: those writes are three hundred per-fixture broadcasts on a 505-fixture rig, and
+counting them made the frame spread 92% and made a running show look as though it were
+pushing values. Quiet rather than a slept constant, which is only ever right for the rig
+it was measured on.
+
+**A browser is measured separately, and the figures must not be read side by side.**
+`--measure-browser` opens a headless page (Playwright, an optional devDependency) and
+reads what it reports through `client.report`. Its own mode because a page drawing the
+rig competes for exactly the CPU `--measure` is holding still.
+
 ```
 scripts/demo.sh --size huge                        # 2000 fixtures, 300 cues, three plans
-scripts/demo.sh --measure --release --size huge    # seed it, read it, print it, stop
+scripts/demo.sh --size 5000 --cues 60 --slice 0.02 # one axis at a time
+scripts/demo.sh --measure --release --size 5000    # seed it, read it, print it, stop
+scripts/demo.sh --measure-browser --release --size 5000
 ```
 
 **A station knows what its own output frames cost** and publishes them in the
@@ -647,10 +784,13 @@ Stations panel shows and the ones a peer sees. **One entry per connector**, beca
 their rates and their costs are their own: Art-Net drawing at 40 Hz beside an OpenHaunt
 node that was told about a fade once are not two samples of one number.
 
-Two figures per connector rather than one, because a frame has two halves that scale
-differently — evaluating, and putting it on the wire. That is not a hypothetical: a
-two-figure split is what showed that evaluating was 0.2% of what a *tick* used to cost,
-and finding what the other 99.8% was still needed a counter added by hand.
+**Three figures per connector rather than one**, because a frame has parts that scale
+differently: evaluating, assembling universes, and the socket write. Evaluating is
+linear-ish in the rig; the other two are per universe, and a rig of 5000 six-channel
+heads is about 59 universes against 24. Splitting them is what answered the question
+this was built for, and the answer was the opposite of the prediction: at 5000 fixtures
+**evaluating is 94% of the frame and assembly plus socket is 6%**, where the worry had
+been that the per-universe half was the one that would not shrink.
 
 What it is *not*: what the process costs. That is `cpu_percent`, in the same row, which
 is why anything printing one prints the other. And a connector that emitted nothing in a
@@ -763,3 +903,10 @@ quietly when it has not.
 
 Both the Rust build and `svelte-check` are kept at zero warnings, so a new one is
 visible rather than buried.
+
+**Counts are gates; milliseconds are not.** `cargo test -p pult-backend --test counts`
+asserts three machine-independent figures: a running show pushes **zero** fixture
+updates at a browser, a drag of sixty frames is **one** row in the history, and a
+settled rig reports **no** universe as changed. A timing threshold on a shared runner
+flaps, a flapping gate gets disabled, and a disabled gate is worse than none — so what
+`--measure` prints is read by a person before a release and asserted on by nobody.

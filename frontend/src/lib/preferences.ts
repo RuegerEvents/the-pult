@@ -21,6 +21,9 @@ export type Preferences = {
 	/** What a newly created show starts its home fade time at, in milliseconds. */
 	homeFadeMs: number;
 	homeFadeMsMax: number;
+	/** What a newly created show starts its haze at. Both 0 to 1. */
+	hazeDensity: number;
+	hazeTurbulence: number;
 };
 
 const url = () => `${backendOrigin(window.location)}/api/preferences`;
@@ -44,7 +47,9 @@ export async function readPreferences(): Promise<Preferences | null> {
  * than assuming. Only what is named changes; the rest is left alone.
  */
 export async function writePreferences(
-	change: Partial<Pick<Preferences, 'historyDepth' | 'homeFadeMs'>>
+	change: Partial<
+		Pick<Preferences, 'historyDepth' | 'homeFadeMs' | 'hazeDensity' | 'hazeTurbulence'>
+	>
 ): Promise<Preferences | null> {
 	try {
 		const response = await fetch(url(), {
