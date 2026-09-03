@@ -15,7 +15,10 @@ use pult_schema::{
 // peer that reconnects can be told what it missed instead of being sent the show.
 // 4 put the responder's clock in HelloAck, so catch-up runs both ways and the two
 // sides converge whichever of them was behind.
-pub const PROTOCOL_VERSION: u32 = 4;
+// 5 added LogLines and LogRaise, so the booth can read the roof station's log.
+// Deliberately not carried on SyncedBroadcast: a log line is not show state, has
+// no vector clock and no author, and must not be replicated, persisted or undone.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -83,6 +86,26 @@ pub enum SyncMessage {
         /// what they are.
         #[serde(flatten)]
         authorship: Authorship,
+    },
+    /// Log lines from the sender, at whatever it is currently publishing.
+    ///
+    /// One way and unacknowledged: a log that a peer must confirm having read is a
+    /// log that can hold up the show. Lines carry the *sender's* `seq` and clock,
+    /// which is what lets the receiving browser dedupe them exactly and notice a
+    /// gap, and they are never relayed onward — every station is connected to every
+    /// other, so a relay would only duplicate.
+    LogLines {
+        node_id: NodeId,
+        lines: Vec<pult_schema::ws::LogLine>,
+    },
+    /// Ask the peer on the other end of *this* connection to publish more.
+    ///
+    /// `None` withdraws the ask. The receiver clamps it to its own capture level —
+    /// it cannot send what it never kept — and the raise lives and dies with this
+    /// connection, so nothing has to expire and nothing is left raised by a console
+    /// that went away.
+    LogRaise {
+        level: Option<pult_schema::ws::LogLevel>,
     },
     Heartbeat {
         seq: u64,

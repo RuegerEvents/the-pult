@@ -173,6 +173,14 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 
     state.ws_registry.remove_session(session_id);
+    // Whatever this browser had a peer raised to, it no longer wants. This is the
+    // whole of the unwind: nothing expires, because an ask is recomputed from who
+    // is actually here whenever that changes — and a browser closing its tab is
+    // exactly that change. A peer this station is no longer connected to is simply
+    // not told, which is right: its raise died with the connection.
+    for (node_id, level) in state.log_watchers.forget_session(session_id) {
+        state.sync.raise_peer_log(pult_schema::events::operation::NodeId(node_id), level).await;
+    }
     send_task.abort();
     broadcast_task.abort();
     debug!("WebSocket session {session_id} disconnected");
@@ -277,6 +285,11 @@ async fn handle_client_message(
                     session: state.session.clone(),
                     devices: state.devices.clone(),
                     engine: state.engine.clone(),
+                    log: state.config.log.clone(),
+                    log_watchers: state.log_watchers.clone(),
+                    sync: Some(state.sync.clone()),
+                    // Which browser is asking, so a watch can end when it does.
+                    caller: Some(session_id),
                 };
                 crate::api::rpcs::dispatch(&method, args, &deps).await
                     .map(|v| ServerMessage::CallResult { request_id: request_id.clone(), result: Some(v), error: None })

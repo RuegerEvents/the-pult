@@ -12,6 +12,26 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **The console can show its own log.** A System Log panel, because until now the log
+  went to a stdout that does not exist under the desktop app, under a packaged `.app`,
+  or in a browser — and any browser on the network is a whole console here. A plugin
+  saying something about itself went to the same nowhere, which was the strongest
+  reason to build this first: it was the audience with no way round it. The panel
+  filters by level, by plugin, and by text, follows the tail, and says out loud when
+  lines were dropped rather than quietly skipping them. Each run is also written to a
+  file beside the station's preferences, so the crash somebody went looking for is
+  still readable next time the console comes up.
+- **A peer's log, from the booth.** Every station puts its warnings and errors on the
+  session by default, so a console in the roof reports its trouble to the desk without
+  anybody climbing to it — and nobody's `debug` crosses the network that is carrying
+  the show. Clicking a peer's chip asks that station for more while somebody is
+  watching, and letting go puts it back; a console asks only as far as what that
+  station is keeping for itself, and no console can change what another one writes
+  down. Two settings, `log_level` and `peer_log_level`, in the station's preferences.
+- **A browser says when it breaks.** An exception inside a panel now reaches the
+  station's log instead of dying in a tab nobody has open — folded into one line and a
+  count when it happens every frame — so a tablet at the back of the room that has
+  stopped working says so where somebody will see it.
 - **A whole rig, from the drawing.** MVR — My Virtual Rig — read and written. Import
   one and the fixtures arrive patched, at the addresses and in the modes the drawing
   gives them, where the drawing puts them; so do the trusses and the objects around

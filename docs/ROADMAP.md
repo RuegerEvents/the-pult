@@ -2677,6 +2677,120 @@ either view yet, fixture bodies are still markers, and gobo images are still not
 extracted. Those are `scene-editing` and `gdtf-share-panel-polish`, both of which this
 task's asset pipeline is what was blocking.
 
+### 48. The console shows its own log (done)
+
+`tracing` wrote to stdout and nothing captured it, so **on every way of running this
+that is not a terminal, the log did not exist**: `pult-gui` wrote to a stdout nobody
+was looking at, a packaged `.app` had nowhere to write it at all, and a browser on the
+network — which is a whole console by design — had no access to any machine's stdout.
+Plugins were logging into that void too. `wit/pult-plugin.wit`'s `logging.log` promises
+an author that their message "lands in the station's log", and it did, and the log was
+nowhere. That was the argument for doing this first: it is the audience with no
+workaround.
+
+**A line is a function of what is driving it, and the log is the exception.** Almost
+everything else in this console is evaluated on demand; a log is an append-only stream
+of things that already happened. So the shape had to be found rather than inherited,
+and the one open question at the top of the entry — where the lines live — had a wrong
+answer that looked obvious. A LOCAL ring in `ShowState` beside `output_status` would
+have been uniform with every other LOCAL path, and it would have **rewritten and
+rebroadcast the entire buffer as JSON on every line**.
+
+What it turned out not to need was a new protocol shape either. `UpdateBroadcast`
+(`engine/mod.rs`) is a plain `broadcast::Sender<(Path, Value)>` in `AppState`, and
+`ws_registry.broadcast_update` matches *any* path against a session's subscription
+patterns — neither requires the path to exist in `ShowState`. So appends ride the
+existing `Update` message on the `logs` path, gathered for `COALESCE_MS` so a burst of
+two hundred lines is two messages, and pushed **without going through the engine
+actor** — which is the property that matters, because queueing diagnostics behind
+whatever the console is busy with is exactly wrong at the moment somebody is reading
+them. The backlog comes from a `log.tail` station RPC. A browser with the panel closed
+subscribes to nothing and costs nothing, so task 44's "no updates to a browser during a
+fade" is still true.
+
+**The subscriber cannot be built inside the station.** `tracing_subscriber::init` is
+once per *process* and a station is a library a process may start more than one of —
+`tests/stores.rs` and `tests/plugins.rs` each run three. So `logging::install` builds
+the whole subscriber, `fmt` layer and `EnvFilter` unchanged, with the capture layer
+beside them, and hands back a `LogHandle` that both binaries put in `Config` as a
+`#[serde(skip)]` field. A station given none simply has no log, which is what every
+existing test wanted and why none of them changed. `logging::detached` is the same
+thing with nothing feeding it, for a process that already has a subscriber.
+
+That split found a real bug on the way. `start` was reading preferences and setting the
+levels from them **per station**, which silently overwrote whatever the caller had
+asked for. Preferences are one file per machine and `install` is the one call per
+process; that is where the two line up, and `detached` gets exactly the levels it was
+given.
+
+**Two levels, not one, and the second was the user's idea rather than the entry's.**
+`log_level` is what this station keeps — the ring, the panel, the file. `peer_log_level`
+is what it puts on the sync link, `warn` by default. So a peer's warnings and errors
+always arrive without anyone asking, and nobody's `debug` crosses the network that is
+also carrying the show. A booth watching the roof station can ask for more
+(`SyncMessage::LogRaise`, protocol 5), and:
+
+**A raise is clamped to what the peer itself captures.** If the roof is keeping `info`,
+its `debug` events are dropped by its own layer before anything could forward them, so
+no ask can produce them. Reaching *past* that would mean one console changing what
+another keeps in its ring and writes to its file, which is not a thing a log panel
+should be able to do. `publish_level_for` is the whole rule and is in one place,
+because it fails silently in both directions: too low and an escalation shows nothing,
+too high and a station publishes what it never kept.
+
+**And nothing expires.** The first draft of this called the raise "per-connection state
+that must unwind correctly" and assumed a TTL and a renewal timer. Reading the code
+said otherwise: `ws_registry.remove_session` already fires when a browser goes, so the
+ask is recomputed from who is actually watching and the peer is told the new answer —
+including "nobody". A booth that dies takes its TCP connection with it, and the sync
+layer's dead-link timeout reaps that. There is nothing to expire because nothing
+outlives its connection, and the timer that was nearly built would have been a second
+mechanism for a problem the first one already solved.
+
+**A source is a field, not a prefix.** `host_impls.rs` used to interpolate
+`[plugin:<id>]` into the message text. It now records `plugin = %id` as a `tracing`
+field, which `LogSource` lifts into `Station | Plugin(id) | Browser(session)`, so the
+panel's per-plugin filter reads a field rather than parsing text — a message that
+merely contains a bracket cannot defeat it, and there is a test that says so. `fmt`
+still prints it, as `plugin=<id>` at the end of the line, so a terminal and
+`.demo/backend.log` lose nothing but the position.
+
+**The browser reports itself.** `window.onerror` and `unhandledrejection` go through a
+`log.report` RPC, deduped and rate-limited so a panel throwing every frame is one line
+and a count rather than five thousand lines that push out everything explaining why.
+They cross to peers like any other line, because the tablet at the back of the room is
+the console nobody is watching. That also gives system-stats-panel the precedent it
+needs: a browser reporting on itself to the station now has a working path.
+
+**Ordering is honest rather than exact.** Each line carries the emitting station's own
+`seq` and clock. `(node_id, seq)` is what lets the browser merge the `log.tail` backlog
+with the live stream — they overlap by construction — and it is what makes a dropped
+line *visible*: the panel says "1,204 lines from roof-2 did not arrive" instead of
+quietly skipping them. Across stations the merge is by `at_ms`, which is only as close
+as their skew allows, and finding that out is what opened the `station-clock-offset`
+entry below.
+
+Two traps worth keeping.
+
+**Two runs of the integration test are not one.** Three of the five failed under
+`cargo test` and passed in isolation, and the failures were fixed sleeps: the raise is
+asynchronous, so a test that says "raise, sleep 200 ms, assert" is asserting on how
+fast the machine is. They poll now. The negative assertion needed the same treatment
+in reverse and one thing more — after a withdrawal the withdrawal is *in flight*, and
+lines said in that window should still arrive, so the test asserts "goes quiet and
+stays quiet for three rounds" rather than "is quiet at once".
+
+**A tail's limit applies after the level, not before it.** Asking for the last two
+`warn` lines out of a ring holding six `debug` ones has to walk back past them, or the
+panel shows nothing and looks broken. There is a test for that, because the natural
+implementation gets it wrong.
+
+```
+cargo test -p pult-backend --lib logging      # the ring, the levels, the file
+cargo test -p pult-backend --test logs        # two stations over a real sync link
+cd frontend && npm test                       # merge, gaps, and the report throttle
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -2715,12 +2829,15 @@ brings the rig around it: positions as transforms, trusses, layers, and meshes t
 browser draws. Everything below is now measured against, or drawn from, a rig
 somebody actually hung — which was the whole reason for putting this first.
 
-**Then the console can be seen at all.** Three panels that share one open
-question — where a per-station diagnostic lives, and whether it reaches a peer —
-so the decision gets made once across the three of them. The log panel leads
-because it is the only one whose audience has no workaround: `logging.log`
-promises a plugin author a log and writes it to a stdout that does not exist
-under `pult-gui`, under a packaged `.app`, or in a browser.
+**Then the console can be seen at all.** Three panels that shared one open
+question — where a per-station diagnostic lives, and whether it reaches a peer.
+**That question is now answered**, by task 48 and once for all three: a
+diagnostic is not `ShowState`, it rides the existing `Update` broadcast on a path
+of its own without going through the engine, and it reaches a peer at a *separate,
+quieter threshold* that a watching console can raise as far as — and no further
+than — what that peer keeps for itself. The two panels below inherit that shape
+rather than re-deciding it, and the browser-reports-on-itself path the stats panel
+needs already works: `log.report` is it.
 
 **Then measure**, with the instruments built and a real rig to point them at.
 The browser half of the stats panel is the instrument that decides this, because
@@ -2733,80 +2850,77 @@ stops each being decided on taste. Note that all three of rig-viewer-fidelity's
 arrows are now behind it: gdtf-import gave it the beam angle, mvr-import a rig
 worth drawing, and performance-tests answers whether instancing is needed.
 
-1. **system-logs-panel** — the console cannot show its own log, and on a desktop
-   app or a tablet there is nowhere else for it to be. → none, and it leads the
-   block because its audience is the one with no workaround
-2. **system-stats-panel** — the browser's half is the figure that does not exist:
+1. **system-stats-panel** — the browser's half is the figure that does not exist:
    frame rate, evaluator time per frame, clock offset. The station's half is a
    read of `frame_costs`, which task 44 publishes and nothing displays. → none,
-   and it is what makes item 6 able to see a browser
-3. **outputs-viewer** — what actually leaves the console, per universe and per
-   node. → none, and it closes the block 3 and 4 open
-4. **performance-tests** — 5000 fixtures, and whether the console is still
+   and it is what makes item 3 able to see a browser
+2. **outputs-viewer** — what actually leaves the console, per universe and per
+   node. → none, and it closes the block task 48 opened
+3. **performance-tests** — 5000 fixtures, and whether the console is still
    comfortable. → system-stats-panel, for the browser figure. Task 47 removed the
    other blocker: an imported rig can be the thing measured now, and its own two
    runs at 505 fixtures came out 50% apart, which is the first thing this item has
    to fix about the instrument before it measures anything with it
-5. **rig-viewer-fidelity** — beams that read as light, and the two live defects
+4. **rig-viewer-fidelity** — beams that read as light, and the two live defects
    in the code it rewrites. → performance-tests, the last of its three arrows
    still ahead of it; gdtf-import and mvr-import landed as tasks 45 and 47
-6. **engine-admission** — disk off the actor, per-source admission, and the
+5. **engine-admission** — disk off the actor, per-source admission, and the
    parallel-render question that task 29 answered "no" against a tick that no
    longer exists. → performance-tests, which says which of those is on the path
    of a real show. Partitioning across stations is the fourth question here and
-   stays unnumbered: it is worth asking only if item 6 finds a rig one station
+   stays unnumbered: it is worth asking only if item 3 finds a rig one station
    cannot carry
-7. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
+6. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
    frontend proxy comes from; the wire stays generic. → none
-8. **showfile-management** — versioning, save-as, autosave, backup. → none, and
-    what blocks it is a decision rather than code: a checkpoint is either
-    session-wide agreed or explicitly per-station, and everything else follows
-9. **showfile-assets-folder** — a folder with an assets directory, or one file.
-    → decided with showfile-management, not separately
-10. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
-    plugin over introspection, which is what introspection is for. → none, and
-    much better now that gdtf-import has landed and put a real patch in the show
-11. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
-    themselves dynamic. → rig-viewer-fidelity, for anything that happens in 3D
-12. **voice-input** — speech to the command line, grammar first and NL on parse
-    failure. → none
-13. **nl-show-context** — what relative syntax cannot reach, and whether it is
-    worth the permission it costs. → voice-input, which is what shows which
-    utterances actually arrive
-14. **control-transports** — MIDI and OSC as ports, in and out, with nothing
-    above them decided. Was open-control-interfaces until 2026-09-02, when the
-    three things people send over those ports turned out to want separate
-    entries. → none
-15. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
-    audio import. The biggest item here and the one the spec is most opinionated
-    about. → none technically
-16. **llm-cost-overview** — token and cost accounting out of the NL plugin.
-    → none
-17. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
-    frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
-    from performance-tests, which are what decide it
-18. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
-    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-19. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
-    → a real TS plugin wanting to exist
-20. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
-    stage manager's Go arriving at the lights, and this console sending its own
-    to sound and video. → control-transports
-21. **surface-layer** — a bound physical thing, which is what the transports are
-    not: one event type under every surface, plus the two questions (where a
-    headless surface's selection lives, where a fader's gesture begins and ends)
-    that decide whether any of the three below is a week or a month.
-    → control-transports for the MIDI half, nothing for the USB half
-22. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
-    is what proves the layer before anybody spends a weekend on USB captures.
-    → surface-layer
-23. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
-    it can be estimated at all. → surface-layer
-24. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
-    undocumented and to be read off the device. → surface-layer, and
-    midi-surfaces for the binding model
+7. **showfile-management** — versioning, save-as, autosave, backup. → none, and
+   what blocks it is a decision rather than code: a checkpoint is either
+   session-wide agreed or explicitly per-station, and everything else follows
+8. **showfile-assets-folder** — a folder with an assets directory, or one file.
+   → decided with showfile-management, not separately
+9. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+   plugin over introspection, which is what introspection is for. → none, and
+   much better now that gdtf-import has landed and put a real patch in the show
+10. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+   themselves dynamic. → rig-viewer-fidelity, for anything that happens in 3D
+11. **voice-input** — speech to the command line, grammar first and NL on parse
+   failure. → none
+12. **nl-show-context** — what relative syntax cannot reach, and whether it is
+   worth the permission it costs. → voice-input, which is what shows which
+   utterances actually arrive
+13. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+   above them decided. Was open-control-interfaces until 2026-09-02, when the
+   three things people send over those ports turned out to want separate
+   entries. → none
+14. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+   audio import. The biggest item here and the one the spec is most opinionated
+   about. → none technically
+15. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+   → none
+16. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+   frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
+   from performance-tests, which are what decide it
+17. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+   → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
+18. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+   → a real TS plugin wanting to exist
+19. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+   stage manager's Go arriving at the lights, and this console sending its own
+   to sound and video. → control-transports
+20. **surface-layer** — a bound physical thing, which is what the transports are
+   not: one event type under every surface, plus the two questions (where a
+   headless surface's selection lives, where a fader's gesture begins and ends)
+   that decide whether any of the three below is a week or a month.
+   → control-transports for the MIDI half, nothing for the USB half
+21. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+   is what proves the layer before anybody spends a weekend on USB captures.
+   → surface-layer
+22. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+   it can be estimated at all. → surface-layer
+23. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+   undocumented and to be read off the device. → surface-layer, and
+   midi-surfaces for the binding model
 
-Items 20 to 24 were added on 2026-09-02 and sit at the end rather than being
+Items 19 to 23 were added on 2026-09-02 and sit at the end rather than being
 placed, because three of them are blocked on hardware being in the room and not
 on anything in this repository. Any of those can move up the day the hardware is
 on the desk. **show-control is the exception and the one with a case for moving
@@ -3216,72 +3330,73 @@ throughput, sync backlog, WebSocket client counts, broker stats.
   - Open: does a client's report replicate to peers, so any console can see that
     the tablet is struggling, or is it LOCAL to the station serving it? Seeing it
     from anywhere is the useful version and costs a row per client per session.
+    **Task 48 answered the same question for a log line with "yes, at a quieter
+    threshold"** — a browser's fault reaches its station over `log.report` and
+    crosses to peers like any other line — so the precedent is there, and the
+    thing to decide here is whether a *continuous* figure deserves the same
+    treatment as an *occasional* one. A fault is rare and a frame rate is every
+    second, which is the whole difference.
+  - And a browser reporting on itself is no longer hypothetical: `log.report`
+    exists, is rate-limited, and works. This item wants the same path for
+    numbers rather than sentences — worth checking whether the throttle in
+    `frontend/src/lib/logs.ts` generalises or whether a sampled figure wants its
+    own shape.
+  - **The clock offset is the one figure that has grown a second consumer.** It
+    is listed above as something a browser can honestly report; `station-clock-offset`
+    below now wants the same number between *stations*, for a reason that is not
+    diagnostic at all. Whatever this panel displays should read the same
+    estimate rather than making a second one.
 
-#### system-logs-panel
+#### station-clock-offset
 
-Nothing in the console shows the console's own log. `tracing` writes to stdout,
-in `pult-backend/src/main.rs` and `pult-gui/src/main.rs` alike, filtered by an
-`EnvFilter` built once at startup with `pult_backend=debug` and whatever
-`RUST_LOG` says. Nothing captures it, and `scripts/demo.sh` redirecting each
-component into `.demo/*.log` is the only place a line is ever kept.
+**Two stations do not agree on what time it is, and every fade is anchored in an
+absolute millisecond.** Found while building task 48, whose merged log needed to
+interleave two stations' lines and could only do it to within their skew — but the
+log is the harmless version of this. The load-bearing one is that
+`live_fades`, `live_effects` and a cue's `went_at` are all anchored in *unix*
+milliseconds, and `Sequence::off`, the browser and every connector evaluate them
+against their own `now_ms()`.
 
-**Which means that on every way of running this that is not a terminal, the log
-does not exist.** `cargo run -p pult-gui` writes to a stdout nobody is looking
-at, a packaged `.app` from the release workflow has nowhere to write it at all,
-and a browser on the network, which is a whole console by design, has no access
-to the station's stdout on any machine. A rig is consoles in racks and tablets in
-the room.
+`types/sequence.rs` says "two stations still agree because they agree on the anchors
+they replicate, not on their clocks". That sentence is only true if the clocks agree:
+`now_ms()` is the wall clock read once at first use plus elapsed, so **station B
+evaluating station A's fade runs it out by exactly B's skew from A**. Silently, and
+each individual value looks plausible — which is the same failure
+`frontend/src/lib/ws/clock.ts` exists to prevent in the browser, between stations,
+unaddressed. A show LAN with no route to the internet is normal for an isolated
+Art-Net network, and nothing is disciplining those clocks at all.
 
-**And plugins are already logging into it.** `wit/pult-plugin.wit`'s
-`logging.log` says its message "lands in the station's log, prefixed with the
-plugin id", and `host_impls.rs:799` puts it through `tracing` with
-`[plugin:<id>]` in front. So a plugin author debugging a plugin is debugging into
-a void unless they happened to start the station from a shell. That is the
-strongest argument for the panel, because it is the audience with no workaround.
+**The open question is PTP against the estimator already in the building**, and it
+was left open deliberately on 2026-09-02 rather than guessed at.
 
-**Not the History panel.** That is the oplog: who changed what, per person,
-undoable, replicated, pruned on its own retention. This is diagnostics, per
-station, not replicated, nobody's to undo, and hundreds of lines a second at
-`debug`. Two panels, and this says so because "we have a history panel" is the
-obvious wrong answer.
-
-What made it worth writing down: task 44 ended with two failures whose only trace
-was a `WARN`, one of them the address bug at the end of it. The join now answers
-for itself, but a peer lost
-mid-show, an output whose socket would not bind, a node that stopped answering, a
-showfile migration that complained, all of them are lines nobody sees. The cases
-that matter are exactly the ones where the console *keeps working*, because a
-crash at least announces itself.
-
-Open questions.
-
-- **Where do the lines live?** Not the oplog, for the reasons above. A LOCAL ring
-  buffer published like `output_status` is the obvious shape, but LOCAL state is
-  replaced whole on every write and this is an append-only stream. Replacing a
-  thousand-line buffer per line is not a mechanism, it is a mistake. Does this
-  want a subscribe-only stream over the WebSocket instead, which is a new shape
-  in the protocol and should be resisted until it is plainly needed?
-- **Kept where, and for how long?** In memory only, or a file beside
-  `preferences.toml`? A file survives the crash that is the reason somebody went
-  looking; memory does not. `.demo/*.log` is the shape of the file version and it
-  is per run, which is probably right.
-- **What level, and who chooses?** `pult_backend=debug` is loud, a line per write
-  and a heartbeat every five seconds per peer, and a panel showing all of it is
-  unreadable. A `log_level` station preference is the obvious home, this
-  machine's business the way `oplog_retention_minutes` is. Changing it while the
-  show is up means `tracing_subscriber::reload`, since the filter is built once
-  at startup. Worth it, or is a restart acceptable for a diagnostic setting?
-- **Does a peer's log reach this console?** Reading the roof station's log from
-  the booth is the useful version, and it is the same argument system-stats-panel
-  makes about a browser reporting its own load. It is also a great deal of
-  traffic, and a question about what a log line carries: a path, a hostname,
-  whatever a plugin chose to say.
-- **Filtering by plugin is nearly free**, because the prefix is already there.
-  Worth making a first-class filter rather than a search box, given who needs it.
-- **The browser's own errors.** A console is a browser, and an exception inside a
-  panel is invisible to the operator and to the station. Same panel, or out of
-  scope? It is the same question system-stats-panel asks about frame rate and
-  evaluator time, and the two should probably be answered together.
+- **The RTT estimator.** `infra/sync/peer.rs`'s heartbeats already measure the round
+  trip to each peer (`Outstanding::answered`), which is exactly the input
+  `clock.ts` uses. A per-peer offset out of that is single-digit milliseconds on a
+  LAN, needs no daemon, no privilege and no per-platform story, and would reuse an
+  estimator this repo has already written once and holds to a corpus.
+- **PTP (IEEE 1588).** Tens of microseconds in software, sub-microsecond with
+  hardware timestamping. The complication is that **a console cannot steer the OS
+  clock without privilege**, so what it would actually do with PTP's answer is hold
+  an offset and apply it in software — the same *shape* as the estimator, at much
+  higher cost. `ptp4l` is Linux-and-root; macOS has no general daemon (its PTP lives
+  inside the AVB audio stack); Windows client support is thin.
+- **So the question is what needs the precision**, and the honest answer may be
+  "nothing here". An output frame is 25 ms and a fade is seconds. Where PTP earns its
+  keep is sub-millisecond determinism against *other departments* — SMPTE, audio,
+  video frame alignment — which is timecode-workflow, and that entry already names
+  the OpenHaunt clock topic as its prior art. If this is decided for the estimator,
+  say so there too, because that is the item that will want to reopen it.
+- **What it costs to be wrong is asymmetric.** The estimator is a week and can be
+  replaced; PTP is a dependency and a deployment story. Doing the estimator first
+  does not foreclose PTP, and it makes the size of the problem visible: publish the
+  measured offset per peer in the `stations` row beside `cpu_percent` and
+  `frame_costs`, and a rig will say how bad its own skew actually is.
+- **And the same rule as `clock.ts`: say nothing until you have one.** A station that
+  has not yet estimated an offset must not apply a plausible wrong number; it should
+  be visibly without one, the way `consoleNow()` answers `null` and panels show a gap.
+- Task 48's merged log is **already correct whatever this decides** — a line carries
+  its own station's `seq` and clock, deduping is exact, and only the cross-station
+  interleave is approximate. It gets better for free the day an offset exists.
 
 ### Performance
 

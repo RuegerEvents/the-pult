@@ -196,6 +196,12 @@ fi
 # start_station <showfile> <port> <sync-port> <broker-port> <log>
 start_station() {
   local showfile=$1 port=$2 sync_port=$3 broker_port=$4 log=$5
+  # Two logs, and they are not the same log. The station writes its own per-run
+  # file into PULT_LOG_DIR — the one the System Log panel points at, and the one
+  # each station keeps separately, which is why the env var exists at all. The
+  # redirect below stays because it catches what the capture layer structurally
+  # cannot: a panic, and anything said before the subscriber was built.
+  PULT_LOG_DIR="$DEMO_DIR/logs-$port" \
   "$ROOT/target/$PROFILE/pult-backend" \
     --showfile "$showfile" \
     --port "$port" \
@@ -313,7 +319,8 @@ cat <<EOF
 
   backend    :$PORT (ws), :$SYNC_PORT (sync), :$BROKER_PORT (mqtt)
   showfile   .demo/demo.db
-  logs       .demo/*.log
+  logs       .demo/*.log, and each station's own in .demo/logs-<port>/ —
+             or the System Log panel, which is the same lines without a terminal
 EOF
 
 if [ "$TWO" = 1 ]; then

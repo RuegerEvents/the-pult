@@ -46,6 +46,19 @@ pub struct Config {
     /// — cannot each have their own that way.
     #[serde(default)]
     pub plugin_data: Option<std::path::PathBuf>,
+    /// The console's own log, if this process installed one.
+    ///
+    /// Filled in by whoever called [`crate::logging::install`], which is `main` in
+    /// both binaries — `tracing_subscriber`'s `init` is once per process, and a
+    /// station is a library a process may start more than one of, so the subscriber
+    /// cannot be built in here. A station given `None` simply has no log to show,
+    /// which is what every test wants.
+    ///
+    /// Skipped by serde because a handle is not data. Config is never read from a
+    /// file, so nothing is lost by that; if it ever is, this field is the one that
+    /// must not come back from one.
+    #[serde(skip)]
+    pub log: Option<crate::logging::LogHandle>,
 }
 
 fn default_bind() -> IpAddr { IpAddr::V4(Ipv4Addr::UNSPECIFIED) }
@@ -67,6 +80,7 @@ impl Default for Config {
             node_id: None,
             plugin_dirs: Vec::new(),
             plugin_data: None,
+            log: None,
         }
     }
 }

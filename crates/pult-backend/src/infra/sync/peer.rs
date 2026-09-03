@@ -12,7 +12,10 @@ use tokio::{
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::engine::{EngineCommand, EngineHandle};
+use crate::{
+    engine::{EngineCommand, EngineHandle},
+    logging::{LogHandle, COALESCE_MS},
+};
 
 use super::{
     protocol::{read_frame, write_frame, SyncMessage, PROTOCOL_VERSION},
@@ -62,6 +65,7 @@ pub async fn spawn_outbound(
     session_id: Uuid,
     show_id: Uuid,
     engine: EngineHandle,
+    log: Option<LogHandle>,
     on_lost: mpsc::Sender<SyncCommand>,
 ) -> Result<(NodeId, PeerSender)> {
     let addr = stream.peer_addr()?;
@@ -112,6 +116,7 @@ pub async fn spawn_outbound(
             write_half,
             outgoing,
             engine,
+            log,
             our_node_id,
             peer_node_id,
             to_manager,
@@ -134,11 +139,14 @@ pub fn spawn_inbound(
     our_node_id: NodeId,
     leader: watch::Receiver<NodeId>,
     engine: EngineHandle,
+    log: Option<LogHandle>,
     on_connected: mpsc::Sender<(NodeId, PeerSender)>,
     on_lost: mpsc::Sender<SyncCommand>,
 ) {
     tokio::spawn(async move {
-        match handle_inbound(stream, our_node_id, leader, engine, on_connected, on_lost.clone()).await {
+        match handle_inbound(stream, our_node_id, leader, engine, log, on_connected, on_lost.clone())
+            .await
+        {
             Ok(peer_node_id) => {
                 let _ = on_lost.send(SyncCommand::PeerLost(peer_node_id)).await;
             }
@@ -152,6 +160,7 @@ async fn handle_inbound(
     our_node_id: NodeId,
     leader: watch::Receiver<NodeId>,
     engine: EngineHandle,
+    log: Option<LogHandle>,
     on_connected: mpsc::Sender<(NodeId, PeerSender)>,
     to_manager: mpsc::Sender<SyncCommand>,
 ) -> Result<NodeId> {
@@ -227,6 +236,7 @@ async fn handle_inbound(
         write_half,
         outgoing,
         engine,
+        log,
         our_node_id,
         peer_node_id,
         to_manager,
@@ -251,12 +261,22 @@ async fn run_peer_loop(
     mut write_half: tokio::net::tcp::OwnedWriteHalf,
     mut outgoing: mpsc::Receiver<SyncMessage>,
     engine: EngineHandle,
-    _our_node_id: NodeId,
+    log: Option<LogHandle>,
+    our_node_id: NodeId,
     peer_node_id: NodeId,
     to_manager: mpsc::Sender<SyncCommand>,
 ) -> Result<()> {
     let mut heartbeat_seq: u64 = 0;
     let mut outstanding = Outstanding::default();
+    // What this peer has asked us to publish, and what we have gathered to send it.
+    //
+    // The ask lives here, on the connection, and dies with it — which is the whole
+    // of the unwind: a booth that closes its panel is a recomputed ask, a booth that
+    // vanishes is a dropped connection, and neither needs a timer.
+    let mut log_rx = log.as_ref().map(|l| l.subscribe());
+    let mut log_asked: Option<pult_schema::ws::LogLevel> = None;
+    let mut pending_lines: Vec<pult_schema::ws::LogLine> = Vec::new();
+    let mut log_tick = tokio::time::interval(std::time::Duration::from_millis(COALESCE_MS));
     let mut heartbeat_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut liveness_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut last_heard = tokio::time::Instant::now();
@@ -329,6 +349,29 @@ async fn run_peer_loop(
                     }
                     continue;
                 }
+                // The log messages are answered here for the same reason a heartbeat
+                // is: the ask is per connection, and this is the only place that
+                // holds one.
+                match &msg {
+                    SyncMessage::LogRaise { level } => {
+                        log_asked = *level;
+                        debug!(
+                            "[sync] peer {} asked for log at {:?}",
+                            peer_node_id.0,
+                            level.map(|l| l.as_str())
+                        );
+                        continue;
+                    }
+                    SyncMessage::LogLines { lines, .. } => {
+                        if let Some(log) = &log {
+                            for line in lines {
+                                log.accept_from_peer(line.clone());
+                            }
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
                 // Leadership messages go to SyncManager, which owns that state.
                 match &msg {
                     SyncMessage::LeaderChanged { new_leader_node_id } => {
@@ -354,6 +397,33 @@ async fn run_peer_loop(
                     continue;
                 }
                 handle_incoming(msg, &engine, peer_node_id).await;
+            }
+            // Our own lines, gathered for this peer at whatever it is entitled to.
+            line = next_log(&mut log_rx) => {
+                match line {
+                    Some(line) => {
+                        // Only ever our own. A peer's line reached us from the
+                        // station that wrote it, which is also connected to
+                        // everyone else, so relaying it would only duplicate it.
+                        let ours = line.node_id == our_node_id.0;
+                        let wanted = log
+                            .as_ref()
+                            .is_some_and(|l| line.level.passes(l.publish_level_for(log_asked)));
+                        if ours && wanted {
+                            pending_lines.push(line);
+                        }
+                    }
+                    // The station is going away and took its log with it.
+                    None => log_rx = None,
+                }
+            }
+            // One message for a burst rather than one per line.
+            _ = log_tick.tick(), if !pending_lines.is_empty() => {
+                let lines = std::mem::take(&mut pending_lines);
+                let msg = SyncMessage::LogLines { node_id: our_node_id, lines };
+                if let Err(e) = write_frame(&mut write_half, &msg).await {
+                    break Err(e);
+                }
             }
             // Periodic heartbeat
             _ = heartbeat_tick.tick() => {
@@ -382,6 +452,30 @@ async fn run_peer_loop(
     result
 }
 
+/// The next line to consider publishing, or nothing once the log has gone.
+///
+/// A connection with no log waits forever rather than returning, so its `select!`
+/// arm never fires and never spins. `broadcast::Receiver::recv` is cancel-safe,
+/// which is what lets this sit in a `select!` at all — unlike `read_frame` above.
+/// A listener that fell behind is skipped rather than reported: the browser notices
+/// the jump in `seq` and says how many lines went missing, which is a better place
+/// to say it than a log line about the log.
+async fn next_log(
+    rx: &mut Option<tokio::sync::broadcast::Receiver<pult_schema::ws::LogLine>>,
+) -> Option<pult_schema::ws::LogLine> {
+    use tokio::sync::broadcast::error::RecvError;
+    match rx {
+        Some(rx) => loop {
+            match rx.recv().await {
+                Ok(line) => return Some(line),
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => return None,
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
 async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: NodeId) {
     match msg {
         SyncMessage::StateSnapshot { state } => {
@@ -393,6 +487,8 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
         }
         // Heartbeat is answered in run_peer_loop, which holds the write half.
         SyncMessage::Heartbeat { .. } | SyncMessage::HeartbeatAck { .. } => {}
+        // Both answered in run_peer_loop, which holds the connection's own ask.
+        SyncMessage::LogLines { .. } | SyncMessage::LogRaise { .. } => {}
         SyncMessage::LeaderChanged { .. } | SyncMessage::SessionMembers { .. } => {
             // Handled in run_peer_loop, which can reach SyncManager.
         }

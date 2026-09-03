@@ -16,9 +16,8 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use clap::Parser;
-use pult_backend::Config;
+use pult_backend::{logging::LogHandle, Config};
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser, Clone)]
 #[command(about = "the-pult lighting console", version)]
@@ -41,13 +40,12 @@ struct Args {
 }
 
 fn main() {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::from_default_env()
-                .add_directive("pult_backend=debug".parse().expect("a valid directive")),
-        )
-        .init();
+    // The desktop app is the strongest case for the capture layer: it writes to a
+    // stdout nobody is looking at, and a packaged `.app` has nowhere to write one at
+    // all. Installed before tauri, because it needs no runtime and the window that
+    // will show the log has to be able to reach a log that already exists.
+    let log = pult_backend::logging::install(pult_backend::logging::LogOptions::default())
+        .expect("the log could not be set up");
 
     let args = Args::parse();
 
@@ -67,8 +65,9 @@ fn main() {
                 None => default_showfile(app.handle())?,
             };
             let args = args.clone();
+            let log = log.clone();
             tauri::async_runtime::spawn(async move {
-                match start(&args, showfile).await {
+                match start(&args, showfile, log).await {
                     Ok(url) => open(&window, &url),
                     Err(e) => fail(&window, &e.to_string()),
                 }
@@ -80,7 +79,7 @@ fn main() {
 }
 
 /// Bring a station up and say where it ended up listening.
-async fn start(args: &Args, showfile: String) -> anyhow::Result<String> {
+async fn start(args: &Args, showfile: String, log: LogHandle) -> anyhow::Result<String> {
     let running = pult_backend::start(Config {
         bind: Ipv4Addr::UNSPECIFIED.into(),
         port: free_or_any(args.port).await,
@@ -88,6 +87,7 @@ async fn start(args: &Args, showfile: String) -> anyhow::Result<String> {
         showfile,
         openhaunt_broker_port: args.openhaunt_broker_port,
         node_id: args.node_id,
+        log: Some(log),
         ..Config::default()
     })
     .await?;

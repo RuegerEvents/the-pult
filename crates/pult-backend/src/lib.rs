@@ -12,6 +12,7 @@ pub mod engine;
 pub mod error;
 pub mod handle;
 pub mod infra;
+pub mod logging;
 pub mod model;
 pub mod state;
 
@@ -55,6 +56,13 @@ pub struct Running {
     pub node_id: NodeId,
     pub engine: EngineHandle,
     pub plugins: crate::infra::plugins::PluginsHandle,
+    /// The link to this station's peers, for a caller that wants to join one
+    /// without going through discovery — which is what the tests want.
+    pub sync: crate::infra::sync::SyncHandle,
+    /// This station's log, where it was given one.
+    pub log: Option<crate::logging::LogHandle>,
+    /// Which of this station's clients are watching which peer's log.
+    pub log_watchers: crate::logging::Watchers,
     pub serve: JoinHandle<Result<()>>,
 }
 
@@ -72,17 +80,28 @@ pub async fn start(config: Config) -> Result<Running> {
         .map(NodeId)
         .unwrap_or_else(|| identity::load_or_create(&config.showfile));
 
+    // Stamped on the log as early as there is an answer, because everything from
+    // here down is worth attributing — a port that will not bind and a showfile
+    // that complains both happen in the next few lines, and a line carrying the nil
+    // uuid is a line no peer's panel can place.
+    if let Some(log) = &config.log {
+        log.set_node_id(node_id.0);
+    }
+
     // Bound first: `--port 0` is a real case for a second console on one machine,
     // and the station row published below has to carry the port that was given
     // out rather than the zero that was asked for.
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(config.bind, config.port)).await?;
     let http_addr = listener.local_addr()?;
 
+    let log_watchers = crate::logging::Watchers::default();
+
     let (engine_tx, engine_rx) = mpsc::channel::<EngineCommand>(256);
     let engine_handle = EngineHandle(engine_tx);
 
     let (mut sync_mgr, sync_handle, sync_addr) =
-        SyncManager::bind(node_id, config.sync_port, engine_handle.clone()).await?;
+        SyncManager::bind(node_id, config.sync_port, engine_handle.clone(), config.log.clone())
+            .await?;
     info!("peer sync on {sync_addr}");
 
     let (mut engine, broadcast) =
@@ -163,6 +182,12 @@ pub async fn start(config: Config) -> Result<Running> {
             session: session_handle.clone(),
             devices: device_handle.clone(),
             engine: engine_handle.clone(),
+            log: config.log.clone(),
+            log_watchers: log_watchers.clone(),
+            sync: Some(sync_handle.clone()),
+            // A plugin has no browser behind it, so it cannot watch a peer's log
+            // "while it is looking" — there is nothing to stop looking.
+            caller: None,
         },
         config.plugin_dirs.clone(),
         // The asset store a carried bundle lives in.
@@ -172,6 +197,7 @@ pub async fn start(config: Config) -> Result<Running> {
     );
     tokio::spawn(plugin_mgr.run());
     let plugin_handle_for_running = plugin_handle.clone();
+    let sync_handle_for_running = sync_handle.clone();
 
     let state = AppState {
         engine: engine_handle.clone(),
@@ -187,9 +213,49 @@ pub async fn start(config: Config) -> Result<Running> {
         node_id,
         ws_registry: SubscriptionRegistry::default(),
         broadcast: broadcast.clone(),
+        log_watchers: log_watchers.clone(),
         config: config.clone(),
         http_port: http_addr.port(),
     };
+
+    // The log to the browsers: gathered for a moment, then pushed as one `Update`.
+    //
+    // Straight onto the update broadcast rather than through the engine, because a
+    // log line is not show state — putting it through the actor would queue
+    // diagnostics behind whatever the console is busy with, which is exactly when
+    // somebody is reading them. It rides the existing `Update` message, so no
+    // protocol shape was added and a browser subscribes to `logs` the way it
+    // subscribes to `devices`.
+    if let Some(log) = config.log.clone() {
+        let broadcast = broadcast.clone();
+        tokio::spawn(async move {
+            let mut lines = log.subscribe();
+            let mut tick =
+                tokio::time::interval(std::time::Duration::from_millis(logging::COALESCE_MS));
+            let mut pending: Vec<pult_schema::ws::LogLine> = Vec::new();
+            loop {
+                tokio::select! {
+                    line = lines.recv() => match line {
+                        Ok(line) => pending.push(line),
+                        // A reader that fell behind says so by the jump in `seq`,
+                        // which the panel shows as a count of what it missed.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
+                    _ = tick.tick(), if !pending.is_empty() => {
+                        let batch = std::mem::take(&mut pending);
+                        let path = vec![pult_schema::path::PathSegment::Key("logs".into())];
+                        if let Ok(value) = serde_json::to_value(batch) {
+                            // Nobody subscribed is nobody sent to: a browser with the
+                            // panel closed costs nothing, which is what keeps task
+                            // 44's "no updates during a fade" true.
+                            let _ = broadcast.0.send((path, value));
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
@@ -217,6 +283,9 @@ pub async fn start(config: Config) -> Result<Running> {
         node_id,
         engine: engine_handle,
         plugins: plugin_handle_for_running,
+        sync: sync_handle_for_running,
+        log: config.log.clone(),
+        log_watchers,
         serve,
     })
 }

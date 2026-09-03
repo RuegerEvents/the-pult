@@ -43,7 +43,7 @@ async fn a_node() -> Node {
     let engine = EngineHandle(tx);
 
     let (manager, sync, addr) =
-        SyncManager::bind(id, 0, engine.clone()).await.expect("bind an ephemeral sync port");
+        SyncManager::bind(id, 0, engine.clone(), None).await.expect("bind an ephemeral sync port");
     let sync_mgr_links = manager.peer_links();
     tokio::spawn(manager.run());
 
@@ -1367,6 +1367,12 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
             session: crate::infra::session::SessionHandle(tokio::sync::mpsc::channel(1).0),
             devices: crate::infra::devices::DeviceHandle(tokio::sync::mpsc::channel(1).0),
             engine: node.engine.clone(),
+            // Nothing here asks about the log, and a station without one is a
+            // real configuration rather than a test fiction.
+            log: None,
+            log_watchers: Default::default(),
+            sync: None,
+            caller: None,
         };
         async move {
             crate::api::rpcs::dispatch(

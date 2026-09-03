@@ -19,6 +19,7 @@ import DevicesPanel from '$lib/components/DevicesPanel.svelte';
 import EffectsPanel from '$lib/components/effects/EffectsPanel.svelte';
 import FlowEditor from '$lib/components/flow/FlowEditor.svelte';
 import HistoryPanel from '$lib/components/HistoryPanel.svelte';
+import SystemLogPanel from '$lib/components/SystemLogPanel.svelte';
 import OutputsPanel from '$lib/components/OutputsPanel.svelte';
 import PatchPanel from '$lib/components/PatchPanel.svelte';
 import PluginsPanel from '$lib/components/PluginsPanel.svelte';
@@ -83,6 +84,9 @@ export const PANELS = {
 	// rather than to the show.
 	effects: { title: 'Effects', component: EffectsPanel, fills: false },
 	history: { title: 'History', component: HistoryPanel, fills: false },
+	// Not the History panel: that is the oplog, this is diagnostics. `fills`,
+	// because a log wants every line it can get rather than a fixed block.
+	logs: { title: 'System log', component: SystemLogPanel, fills: true },
 	settings: { title: 'Settings', component: SettingsPanel, fills: false, editable: true }
 } as const satisfies Record<string, PanelMeta>;
 

@@ -63,6 +63,12 @@ pub enum SyncCommand {
     SetMembers(Vec<NodeId>),
     /// Query who this node currently believes leads the session.
     Leader { reply: oneshot::Sender<NodeId> },
+    /// Ask one peer to publish its log at `level`, or `None` to withdraw the ask.
+    ///
+    /// Sent whenever the set of browsers watching that peer changes, including to
+    /// nothing — which is the unwind. Nothing expires, because the ask lives on the
+    /// connection and a connection that ends takes it with it.
+    RaisePeerLog { node_id: NodeId, level: Option<pult_schema::ws::LogLevel> },
     /// Drop all peer connections (called on session Leave).
     DisconnectAll,
     Stop,
@@ -117,6 +123,22 @@ impl SyncHandle {
         let _ = self.0.send(SyncCommand::SetLeader(node_id)).await;
     }
 
+    /// Ask one peer to publish its log at `level`, or `None` to withdraw the ask.
+    ///
+    /// Called whenever the browsers watching that peer change, including to none.
+    /// A peer that is not connected is simply not told, which is correct: a raise
+    /// that outlived its connection is a raise that no longer exists.
+    pub async fn raise_peer_log(&self, node_id: NodeId, level: Option<pult_schema::ws::LogLevel>) {
+        let _ = self.0.send(SyncCommand::RaisePeerLog { node_id, level }).await;
+    }
+
+    /// How many peers this station is connected to.
+    pub async fn peer_count(&self) -> usize {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.0.send(SyncCommand::PeerCount { reply: tx }).await;
+        rx.await.unwrap_or(0)
+    }
+
     pub async fn disconnect_all(&self) {
         let _ = self.0.send(SyncCommand::DisconnectAll).await;
     }
@@ -153,6 +175,9 @@ pub struct SyncManager {
     self_tx: mpsc::Sender<SyncCommand>,
     /// Link latencies, measured here and published by the station reporter.
     links: watch::Sender<PeerLinks>,
+    /// This station's log, so each peer connection can publish from it. `None`
+    /// where no subscriber was installed, which is every test that does not care.
+    log: Option<crate::logging::LogHandle>,
 }
 
 impl SyncManager {
@@ -162,6 +187,7 @@ impl SyncManager {
         node_id: NodeId,
         sync_port: u16,
         engine: EngineHandle,
+        log: Option<crate::logging::LogHandle>,
     ) -> Result<(Self, SyncHandle, SocketAddr)> {
         let listener = TcpListener::bind(format!("0.0.0.0:{sync_port}")).await?;
         let addr = listener.local_addr()?;
@@ -173,6 +199,7 @@ impl SyncManager {
         let (links, _) = watch::channel(PeerLinks::default());
         let mgr = SyncManager {
             node_id,
+            log,
             leader,
             listener: Some(listener),
             engine,
@@ -203,6 +230,7 @@ impl SyncManager {
         let connected_tx = self.connected_tx.clone();
         let node_id = self.node_id;
         let engine = self.engine.clone();
+        let log = self.log.clone();
         let leader = self.leader.subscribe();
         let on_lost = self.self_tx.clone();
 
@@ -217,6 +245,7 @@ impl SyncManager {
                             node_id,
                             leader.clone(),
                             engine.clone(),
+                            log.clone(),
                             connected_tx.clone(),
                             on_lost.clone(),
                         );
@@ -264,6 +293,13 @@ impl SyncManager {
                 };
                 self.fan_out(msg);
             }
+            SyncCommand::RaisePeerLog { node_id, level } => {
+                if let Some(sender) = self.peers.get(&node_id) {
+                    // Dropped rather than queued if the link is full: an ask about
+                    // logging must never be what holds up a show's replication.
+                    let _ = sender.0.try_send(SyncMessage::LogRaise { level });
+                }
+            }
             SyncCommand::ConnectPeer { addrs, session_id, show_id, reply } => {
                 // Spawned, never awaited *here*. Dialling asks this node's own engine
                 // for its clock and its missed operations, and the engine reaches
@@ -281,13 +317,17 @@ impl SyncManager {
                 let node_id = self.node_id;
                 let engine = self.engine.clone();
                 let on_lost = self.self_tx.clone();
+                let log = self.log.clone();
                 let connected = self.connected_tx.clone();
                 tokio::spawn(async move {
                     let Some((addr, stream)) = dial(&addrs).await else {
                         let _ = reply.send(Err(format!("nothing answered at any of {addrs:?}")));
                         return;
                     };
-                    match spawn_outbound(stream, node_id, session_id, show_id, engine, on_lost).await
+                    match spawn_outbound(
+                        stream, node_id, session_id, show_id, engine, log, on_lost,
+                    )
+                    .await
                     {
                         Ok((peer_id, sender)) => {
                             let _ = connected.send((peer_id, sender)).await;

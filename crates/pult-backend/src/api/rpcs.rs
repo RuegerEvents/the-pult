@@ -90,16 +90,89 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"fixtureId","type":"string","optional":false},{"name":"parameterKind","type":"object","optional":true}]"#,
         doc: "What a fixture's parameters are putting out right now; one when named, all of them when not.",
     },
+    // The console's own log. Reads and diagnostics, so RPCs rather than commands
+    // for the reason `parameter.value` is one: none of this is anybody's to undo,
+    // and a log that wrote history every time somebody looked at it would be a
+    // strange thing indeed.
+    LocalRpcMeta {
+        method: "log.tail",
+        args_schema: r#"[{"name":"limit","type":"number","optional":true},{"name":"level","type":"string","optional":true}]"#,
+        doc: "The recent log, oldest first, with this station's levels and where the file is.",
+    },
+    LocalRpcMeta {
+        method: "log.setLevel",
+        args_schema: r#"[{"name":"level","type":"string","optional":true},{"name":"peerLevel","type":"string","optional":true}]"#,
+        doc: "Set what this station keeps in its log, and what it publishes to peers.",
+    },
+    LocalRpcMeta {
+        method: "log.watch",
+        args_schema: r#"[{"name":"nodeId","type":"string","optional":false},{"name":"level","type":"string","optional":false}]"#,
+        doc: "Ask a peer to publish its log at this level while this client is watching.",
+    },
+    LocalRpcMeta {
+        method: "log.unwatch",
+        args_schema: r#"[{"name":"nodeId","type":"string","optional":false}]"#,
+        doc: "Stop watching a peer's log; the peer drops back when nobody else is.",
+    },
+    LocalRpcMeta {
+        method: "log.report",
+        args_schema: r#"[{"name":"level","type":"string","optional":false},{"name":"message","type":"string","optional":false},{"name":"count","type":"number","optional":true}]"#,
+        doc: "Report something that went wrong in a browser into the station's log.",
+    },
 ];
 
-/// What dispatching needs to reach. Cheap to clone: three channel handles.
+/// What dispatching needs to reach. Cheap to clone: a few channel handles.
 #[derive(Clone)]
 pub struct LocalRpcDeps {
     pub session: SessionHandle,
     pub devices: DeviceHandle,
+    /// The console's own log, where this process installed one.
+    pub log: Option<crate::logging::LogHandle>,
+    /// Who is watching which peer's log. Kept beside the log rather than in it,
+    /// because it is about this station's *clients* and not about its lines.
+    pub log_watchers: crate::logging::Watchers,
+    /// The link to the peers, for the one thing here that reaches one: telling a
+    /// peer what to publish.
+    pub sync: Option<crate::infra::sync::SyncHandle>,
+    /// The WebSocket session that asked, where one did.
+    ///
+    /// `None` for a plugin, which has no browser behind it — so `log.watch` and
+    /// `log.report`, the two calls whose whole meaning is "while *this* client is
+    /// here", say so rather than pretending. Every other call ignores it.
+    pub caller: Option<uuid::Uuid>,
     /// For the calls that answer a question about the show. Reads only — anything
     /// here that wanted to write would be an entity command instead.
     pub engine: EngineHandle,
+}
+
+fn no_log() -> String {
+    "this station has no log; it was started without one".to_string()
+}
+
+/// The short form of a session id, which is as much identity as a page has and
+/// enough to tell two tablets apart in a log.
+fn short_id(id: uuid::Uuid) -> String {
+    id.simple().to_string().chars().take(8).collect()
+}
+
+/// Read a level argument, which may be absent but must not be nonsense.
+fn level_arg(args: &Value, name: &str) -> Result<Option<pult_schema::ws::LogLevel>, String> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let text = v.as_str().ok_or_else(|| format!("{name} should be a level, as a string"))?;
+            pult_schema::ws::LogLevel::parse(text)
+                .map(Some)
+                .ok_or_else(|| format!("no such level: {text}"))
+        }
+    }
+}
+
+/// Tell a peer what to publish now that who is watching it has changed.
+async fn raise_peer(deps: &LocalRpcDeps, node_id: uuid::Uuid, level: Option<pult_schema::ws::LogLevel>) {
+    if let Some(sync) = &deps.sync {
+        sync.raise_peer_log(pult_schema::events::operation::NodeId(node_id), level).await;
+    }
 }
 
 /// Answer one station RPC. `Err` is a message for whoever asked, so it is a
@@ -136,6 +209,95 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                 _ => None,
             };
             what_is_it_doing(&deps.engine, fixture_id, kind).await
+        }
+        "log.tail" => {
+            let log = deps.log.as_ref().ok_or_else(no_log)?;
+            let limit = args["limit"].as_u64().unwrap_or(1_000).min(5_000) as usize;
+            let level = level_arg(&args, "level")?;
+            serde_json::to_value(serde_json::json!({
+                "lines": log.tail(limit, level),
+                // The panel's header is built from these: which station this is,
+                // what it is keeping, what it is telling its peers, and where the
+                // rest of the log went when it scrolled out of the ring.
+                "nodeId": log.node_id(),
+                "captureLevel": log.capture_level(),
+                "publishLevel": log.publish_level(),
+                "file": log.file_path().map(|p| p.display().to_string()),
+                "raised": deps.log_watchers.raised(),
+            }))
+            .map_err(|e| e.to_string())
+        }
+        "log.setLevel" => {
+            let log = deps.log.as_ref().ok_or_else(no_log)?;
+            let mut prefs = crate::infra::preferences::load();
+            if let Some(level) = level_arg(&args, "level")? {
+                log.set_capture_level(level);
+                prefs.log_level = level.as_str().to_string();
+            }
+            if let Some(level) = level_arg(&args, "peerLevel")? {
+                prefs.peer_log_level = level.as_str().to_string();
+            }
+            // Re-read through `sane`, which is what applies the rule that a station
+            // never promises its peers more than it keeps for itself.
+            let prefs = prefs.sane();
+            log.set_capture_level(prefs.capture_level());
+            log.set_publish_level(prefs.peer_level());
+            // A level that cannot be written down still takes effect for this run;
+            // the panel said what it said, and refusing the change because the disk
+            // is read-only would be the wrong half to give up on.
+            if let Err(e) = crate::infra::preferences::save(&prefs) {
+                tracing::warn!("could not write the log level to preferences: {e}");
+            }
+            Ok(serde_json::json!({
+                "captureLevel": log.capture_level(),
+                "publishLevel": log.publish_level(),
+            }))
+        }
+        "log.watch" => {
+            let caller = deps.caller.ok_or_else(|| {
+                "log.watch is about one client watching, so it needs one".to_string()
+            })?;
+            let node_id: uuid::Uuid = serde_json::from_value(args["nodeId"].clone())
+                .map_err(|e| format!("invalid nodeId: {e}"))?;
+            let level = level_arg(&args, "level")?.unwrap_or(pult_schema::ws::LogLevel::Debug);
+            if let Some(level) = deps.log_watchers.watch(node_id, caller, level) {
+                raise_peer(deps, node_id, level).await;
+            }
+            Ok(Value::Null)
+        }
+        "log.unwatch" => {
+            let caller = deps.caller.ok_or_else(|| "nobody is watching".to_string())?;
+            let node_id: uuid::Uuid = serde_json::from_value(args["nodeId"].clone())
+                .map_err(|e| format!("invalid nodeId: {e}"))?;
+            if let Some(level) = deps.log_watchers.unwatch(node_id, caller) {
+                raise_peer(deps, node_id, level).await;
+            }
+            Ok(Value::Null)
+        }
+        "log.report" => {
+            let log = deps.log.as_ref().ok_or_else(no_log)?;
+            let level = level_arg(&args, "level")?.unwrap_or(pult_schema::ws::LogLevel::Error);
+            let message = args["message"].as_str().unwrap_or_default();
+            if message.is_empty() {
+                return Err("nothing to report".to_string());
+            }
+            // The browser has already deduped and rate-limited; `count` is how many
+            // times the thing it is reporting happened. Said here rather than
+            // repeated, so a panel erroring every frame is one line and a number.
+            let count = args["count"].as_u64().unwrap_or(1);
+            let message = if count > 1 {
+                format!("{message} (×{count})")
+            } else {
+                message.to_string()
+            };
+            // Truncated, because a stack trace is not a log line and a browser is
+            // not a trusted length.
+            let message: String = message.chars().take(4_000).collect();
+            let source = pult_schema::ws::LogSource::Browser(
+                deps.caller.map(short_id).unwrap_or_else(|| "?".into()),
+            );
+            log.emit(level, "browser", source, message);
+            Ok(Value::Null)
         }
         "selection.resolve" => {
             let group_id: uuid::Uuid = serde_json::from_value(args["groupId"].clone())
@@ -175,6 +337,7 @@ pub fn is_local_rpc(method: &str) -> bool {
         || method.starts_with("device.")
         || method.starts_with("selection.")
         || method.starts_with("parameter.")
+        || method.starts_with("log.")
 }
 
 /// What a fixture's parameters are putting out, right now.
@@ -292,6 +455,12 @@ mod tests {
             session: SessionHandle(session_tx),
             devices: DeviceHandle(device_tx),
             engine: EngineHandle(engine_tx),
+            // Nothing here asks about the log, and a station without one is a
+            // real configuration rather than a test fiction.
+            log: None,
+            log_watchers: Default::default(),
+            sync: None,
+            caller: None,
         };
         for meta in LOCAL_RPCS {
             assert!(is_local_rpc(meta.method), "{} is not routed here", meta.method);
@@ -379,6 +548,12 @@ mod tests {
             session: SessionHandle(tokio::sync::mpsc::channel(1).0),
             devices: DeviceHandle(tokio::sync::mpsc::channel(1).0),
             engine: handle.clone(),
+            // Nothing here asks about the log, and a station without one is a
+            // real configuration rather than a test fiction.
+            log: None,
+            log_watchers: Default::default(),
+            sync: None,
+            caller: None,
         };
         let ask = || {
             dispatch("parameter.value", serde_json::json!({ "fixtureId": fixture_id }), &deps)

@@ -172,6 +172,62 @@ curl -X POST http://localhost:7700/api/import/mvr \
 curl -o rig.mvr http://localhost:7700/api/export/mvr
 ```
 
+## The console keeps its own log, and a peer's
+
+**A diagnostic is not the oplog.** The History panel is who changed what — attributed,
+undoable, replicated, pruned on its own retention. The **System Log panel** is the
+other thing: per station, nobody's to undo, hundreds of lines a second at `debug`, and
+the only place a plugin author can read what `logging.log` promised them. `tracing`
+still writes to stdout exactly as it did; a capture layer sits beside the `fmt` one and
+keeps what it is told.
+
+**It is installed from `main`, never from `start`.** `tracing_subscriber::init` is once
+per *process* and a station is a library a process may start more than one of, so
+`pult_backend::logging::install` builds the whole subscriber and hands back a
+`LogHandle` that both binaries put in `Config` as a `#[serde(skip)]` field. A station
+given none simply has no log, which is what every test wants. `logging::detached` is the
+same handle with nothing feeding it, for a process that already has a subscriber — and
+it takes the levels it is given, because **preferences are read by `install` and not by
+`start`**: doing it per station would overwrite what the caller asked for.
+
+**Appends ride the existing `Update` message.** A LOCAL ring in `ShowState` would
+rewrite and rebroadcast the whole buffer per line, so lines go straight onto
+`UpdateBroadcast` on the `logs` path, coalesced on a 100 ms tick — no new protocol
+shape, no `ShowState` entry, and **no hop through the engine actor**, because queueing
+diagnostics behind whatever the console is busy with is wrong exactly when somebody is
+reading them. The backlog is the `log.tail` RPC. A browser without the panel open
+subscribes to nothing and costs nothing.
+
+**Two levels, and a raise that cannot reach past a peer's own.** `log_level` is what a
+station keeps; `peer_log_level` (default `warn`) is what it puts on the sync link, so a
+peer's warnings always arrive and nobody's `debug` crosses the show's network. A
+console watching a peer asks for more with `SyncMessage::LogRaise` — clamped by
+`publish_level_for` to what that peer captures, since a station cannot publish what it
+never kept, and reaching past it would mean one console changing what another writes to
+its own ring and file. **Nothing expires**: the ask is recomputed from who is actually
+watching whenever a session comes or goes, and a console that vanishes takes its
+connection, and the raise with it.
+
+**A source is a field.** `LogSource` is `Station | Plugin(id) | Browser(session)`, so
+the per-plugin filter cannot be defeated by a message containing a bracket;
+`host_impls.rs` records `plugin = %id` rather than interpolating a prefix. A browser's
+own `window.onerror` reaches the station through `log.report`, deduped and rate-limited,
+and crosses to peers like any other line — the tablet at the back of the room is the
+console nobody is watching.
+
+**Ordering is honest, not exact.** Each line carries its emitting station's `seq` and
+clock: `(node_id, seq)` dedupes the backlog against the live stream and makes a dropped
+line *visible* ("1,204 lines did not arrive") rather than a silent hole. Across
+stations the merge is by `at_ms`, which is only as good as their skew — see
+`station-clock-offset` in the roadmap, which is a live correctness hole in fades and
+not only a cosmetic one in logs.
+
+```
+cargo test -p pult-backend --lib logging      # the ring, the levels, the file
+cargo test -p pult-backend --test logs        # two stations over a real sync link
+PULT_LOG_DIR=/somewhere cargo run -p pult-backend   # where this run's file goes
+```
+
 ## Lifecycle System
 
 Every field in the data model has one of three lifecycles:

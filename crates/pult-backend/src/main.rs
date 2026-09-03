@@ -9,7 +9,6 @@ use pult_backend::{
     infra::connectors::{artnet::ARTNET_PORT, sacn::SACN_PORT},
     Config,
 };
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser)]
 #[command(about = "pult-backend lighting console server", version)]
@@ -71,10 +70,10 @@ fn parse_target(value: &str, default_port: u16) -> Result<std::net::SocketAddr, 
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::from_default_env().add_directive("pult_backend=debug".parse()?))
-        .init();
+    // Builds the subscriber this binary used to build by hand, with a capture layer
+    // beside the `fmt` one so the console can show its own log. Levels come from
+    // preferences a moment later, once the station has read them.
+    let log = pult_backend::logging::install(pult_backend::logging::LogOptions::default())?;
 
     let args = Args::parse();
     let running = pult_backend::start(Config {
@@ -86,6 +85,7 @@ async fn main() -> Result<()> {
         openhaunt_broker_port: args.openhaunt_broker_port,
         node_id: args.node_id,
         plugin_dirs: args.plugin_dirs,
+        log: Some(log),
         ..Config::default()
     })
     .await?;

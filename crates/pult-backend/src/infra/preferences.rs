@@ -72,6 +72,26 @@ pub struct Preferences {
     /// a preference but a disagreement the audience can watch. This is what *this*
     /// desk starts a new show with, and after that it stops mattering.
     pub home_fade_ms: u32,
+    /// What this station keeps in its own log: the panel, the ring and the file.
+    ///
+    /// A station preference and never show data, like `oplog_retention_minutes`
+    /// beside it — what it encodes is how closely somebody is watching *this*
+    /// machine, which two stations in one session may legitimately answer
+    /// differently. `debug` is a line per write and a heartbeat every five seconds
+    /// per peer, so `info` is what a console runs at until somebody is chasing
+    /// something.
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    /// What this station puts on the sync link for its peers.
+    ///
+    /// Quieter than `log_level` on purpose. A rig is several consoles, and every
+    /// station's `debug` crossing the network that is also carrying the show is a
+    /// cost nobody agreed to — while a peer's warnings and errors are exactly what
+    /// the booth wants to see without going up a ladder. A console watching a peer
+    /// can ask it for more, and gets it up to that peer's own `log_level` and no
+    /// further: a station cannot publish what it never captured.
+    #[serde(default = "default_peer_log_level")]
+    pub peer_log_level: String,
     /// What to log in to the GDTF Share as.
     ///
     /// A station preference and never show data, for the reason a plugin credential is
@@ -83,6 +103,14 @@ pub struct Preferences {
     /// everything a settings form needs and nothing an onlooker can use.
     #[serde(default)]
     pub gdtf_share: Option<ShareCredentials>,
+}
+
+fn default_log_level() -> String {
+    crate::logging::CAPTURE_LEVEL_DEFAULT.as_str().to_string()
+}
+
+fn default_peer_log_level() -> String {
+    crate::logging::PEER_LEVEL_DEFAULT.as_str().to_string()
 }
 
 /// A login for the GDTF Share.
@@ -99,6 +127,8 @@ impl Default for Preferences {
             // Snapping, which is what a programmer clear has always done.
             home_fade_ms: 0,
             oplog_retention_minutes: OPLOG_RETENTION_MINUTES_DEFAULT,
+            log_level: default_log_level(),
+            peer_log_level: default_peer_log_level(),
             plugins: std::collections::BTreeMap::new(),
             gdtf_share: None,
         }
@@ -106,6 +136,22 @@ impl Default for Preferences {
 }
 
 impl Preferences {
+    /// What this station keeps, with anything unspellable read as the default.
+    pub fn capture_level(&self) -> pult_schema::ws::LogLevel {
+        pult_schema::ws::LogLevel::parse(&self.log_level)
+            .unwrap_or(crate::logging::CAPTURE_LEVEL_DEFAULT)
+    }
+
+    /// What this station tells its peers, never louder than what it captures —
+    /// the same clamp [`crate::logging::LogHandle::publish_level_for`] applies to a
+    /// raise, because a publish level above the capture level would silently
+    /// publish nothing extra.
+    pub fn peer_level(&self) -> pult_schema::ws::LogLevel {
+        pult_schema::ws::LogLevel::parse(&self.peer_log_level)
+            .unwrap_or(crate::logging::PEER_LEVEL_DEFAULT)
+            .min(self.capture_level())
+    }
+
     /// This machine's overrides for one plugin, as JSON.
     pub fn plugin_config(&self, plugin_id: &str) -> serde_json::Value {
         self.plugins
@@ -123,6 +169,10 @@ impl Preferences {
             .oplog_retention_minutes
             .clamp(OPLOG_RETENTION_MINUTES_MIN, OPLOG_RETENTION_MINUTES_MAX);
         self.home_fade_ms = clamp_home_fade_ms(self.home_fade_ms);
+        // A level nobody can spell is the default rather than a refusal to start:
+        // a typo in a diagnostic setting must not keep a console off the air.
+        self.log_level = self.capture_level().as_str().to_string();
+        self.peer_log_level = self.peer_level().as_str().to_string();
         self
     }
 }

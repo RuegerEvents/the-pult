@@ -3184,6 +3184,12 @@ mod groups {
             session: SessionHandle(session_tx),
             devices: DeviceHandle(device_tx),
             engine: engine.clone(),
+            // Nothing here asks about the log, and a station without one is a
+            // real configuration rather than a test fiction.
+            log: None,
+            log_watchers: Default::default(),
+            sync: None,
+            caller: None,
         }
     }
 

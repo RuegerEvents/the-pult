@@ -14,6 +14,7 @@
 	import { isTextField, redo, shortcutFor, undo } from '$lib/stores/undo.js';
 	import { focusConsole } from '$lib/stores/plugins.js';
 	import { restoreLayout } from '$lib/stores/layout.js';
+	import { reportBrowserErrors } from '$lib/errors.js';
 	import LayoutBar from '$lib/components/layout/LayoutBar.svelte';
 	import UserBar from '$lib/components/UserBar.svelte';
 	import '$lib/styles/tokens.css';
@@ -42,6 +43,10 @@
 	// reconnect by the client itself — a socket that came back anonymous would keep
 	// working and quietly stop being undoable.
 	identifyOnConnect();
+	// And this browser's own faults into the station's log, where the System Log
+	// panel — and a peer console, and the run's file — can see them. A panel that
+	// throws is otherwise invisible to everything but this tab's devtools.
+	reportBrowserErrors(client);
 
 	/**
 	 * Ctrl-Z anywhere that is not a text field.

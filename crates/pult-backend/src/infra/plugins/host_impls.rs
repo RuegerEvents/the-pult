@@ -796,14 +796,22 @@ impl store::Host for PluginCtx {
 }
 
 impl logging::Host for PluginCtx {
+    /// A plugin's line, into the station's log — which now exists somewhere a
+    /// plugin author can read it, which it did not when this was written.
+    ///
+    /// `plugin` is a `tracing` field rather than a `[plugin:<id>]` prefix in the
+    /// text, so the panel's per-plugin filter reads a field that a message
+    /// containing a bracket cannot defeat. The `fmt` layer still prints it, as
+    /// `plugin=<id>` at the end of the line, so a terminal and `.demo/backend.log`
+    /// lose nothing but the position.
     async fn log(&mut self, level: types::LogLevel, message: String) -> wasmtime::Result<()> {
         let id = &self.plugin_id;
         match level {
-            types::LogLevel::Trace => tracing::trace!("[plugin:{id}] {message}"),
-            types::LogLevel::Debug => tracing::debug!("[plugin:{id}] {message}"),
-            types::LogLevel::Info => tracing::info!("[plugin:{id}] {message}"),
-            types::LogLevel::Warn => tracing::warn!("[plugin:{id}] {message}"),
-            types::LogLevel::Error => tracing::error!("[plugin:{id}] {message}"),
+            types::LogLevel::Trace => tracing::trace!(plugin = %id, "{message}"),
+            types::LogLevel::Debug => tracing::debug!(plugin = %id, "{message}"),
+            types::LogLevel::Info => tracing::info!(plugin = %id, "{message}"),
+            types::LogLevel::Warn => tracing::warn!(plugin = %id, "{message}"),
+            types::LogLevel::Error => tracing::error!(plugin = %id, "{message}"),
         }
         Ok(())
     }
