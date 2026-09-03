@@ -18,7 +18,6 @@ use crate::{engine::EngineHandle, infra::local_ipv4, infra::sync::SyncHandle};
 
 // ── SessionCommand ────────────────────────────────────────────────────────────
 
-#[allow(dead_code, reason = "Stop has no caller until the server shuts down gracefully")]
 pub enum SessionCommand {
     /// This node has become the session leader after the old one disappeared.
     Promote,
@@ -150,7 +149,13 @@ impl SessionManager {
             tokio::select! {
                 cmd = self.rx.recv() => {
                     match cmd {
-                        None | Some(SessionCommand::Stop) => break,
+                        // The channel closing and being told to stop are the same
+                        // thing here: this station is going away, and what it has to
+                        // do about that is stop claiming to be somewhere.
+                        None | Some(SessionCommand::Stop) => {
+                            self.stop_advertising();
+                            break;
+                        }
                         Some(cmd) => self.handle_command(cmd).await,
                     }
                 }
@@ -158,6 +163,13 @@ impl SessionManager {
                     if let Some(event) = event { self.handle_mdns_event(event).await; }
                 }
             }
+        }
+        // The daemon runs on a thread of its own, so dropping the manager is not
+        // enough to stop it. A console that opens three shows in a row would
+        // otherwise be three responders on the network, two of them answering for
+        // ports nothing is listening on.
+        if let Err(e) = self.mdns.shutdown() {
+            debug!("[session] mDNS shutdown: {e}");
         }
     }
 
@@ -225,12 +237,7 @@ impl SessionManager {
 
             SessionCommand::Leave => {
                 if self.state.is_advertising {
-                    let instance_name = format!("pult-{}", &self.node_id.0.to_string()[..8]);
-                    let fullname = format!("{instance_name}.{SERVICE_TYPE}");
-                    if let Err(e) = self.mdns.unregister(&fullname) {
-                        debug!("[session] mDNS unregister: {e}");
-                    }
-                    info!("[session] stopped advertising");
+                    self.stop_advertising();
                 } else if self.state.is_follower {
                     if let Some(id) = self.state.session_id {
                         info!("[session] leaving session {id}");
@@ -265,7 +272,26 @@ impl SessionManager {
                 self.push_state().await;
             }
 
+            // Handled in `run`, which is where breaking out of the loop is possible.
             SessionCommand::Stop => {}
+        }
+    }
+
+    /// Take this node's service off the network.
+    ///
+    /// Both an operator leaving a session and the station shutting down have to do
+    /// this, and the second is why the daemon is shut down too: opening a show is
+    /// this station stopping and another one starting in its place, and a browser
+    /// that went on finding the old one at the old port would offer to join a console
+    /// that is no longer there.
+    fn stop_advertising(&mut self) {
+        if self.state.is_advertising {
+            let instance_name = format!("pult-{}", &self.node_id.0.to_string()[..8]);
+            let fullname = format!("{instance_name}.{SERVICE_TYPE}");
+            if let Err(e) = self.mdns.unregister(&fullname) {
+                debug!("[session] mDNS unregister: {e}");
+            }
+            info!("[session] stopped advertising");
         }
     }
 

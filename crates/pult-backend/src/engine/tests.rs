@@ -3196,6 +3196,7 @@ mod groups {
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
             ws_registry: None,
+            shows: crate::ShowsHandle::detached(),
         }
     }
 

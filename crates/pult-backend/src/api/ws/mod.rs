@@ -345,6 +345,7 @@ async fn handle_client_message(
                     caller: Some(session_id),
                     clients: Some(state.clients.clone()),
                     ws_registry: Some(state.ws_registry.clone()),
+                    shows: state.shows.clone(),
                 };
                 crate::api::rpcs::dispatch(&method, args, &deps).await
                     .map(|v| ServerMessage::CallResult { request_id: request_id.clone(), result: Some(v), error: None })

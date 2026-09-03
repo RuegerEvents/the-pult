@@ -37,6 +37,10 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Hannes Rüger <hannes@rueger.events>"]
 license = "MIT"
+# Read by the console at build time (`env!("CARGO_PKG_REPOSITORY")`) and answered
+# over `/api/config`, so the welcome screen's links to the source, the issues and
+# the releases are built from one place rather than typed into the frontend.
+repository = "https://github.com/RuegerEvents/the-pult"
 
 [workspace.dependencies]
 # Async runtime

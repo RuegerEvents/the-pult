@@ -217,6 +217,10 @@ async fn a_console_with_preferences() -> String {
         node_id: NodeId(Uuid::new_v4()),
         http_port: 7700,
         sync_port: 7701,
+        // A console with no show open, which is what one started with no arguments
+        // is and what a page reads as "draw the welcome screen".
+        show: None,
+        shows_dir: None,
     };
     let app: Router = config_routes().with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -285,8 +285,13 @@ impl SyncManager {
         let leader = self.leader.subscribe();
         let on_lost = self.self_tx.clone();
 
-        // Accept loop in a separate task
-        tokio::spawn(async move {
+        // The accept loop runs beside the event loop rather than in a task of its
+        // own, and that is load-bearing rather than tidiness. A spawned task keeps
+        // the listener whatever happens to this one — so a station being stopped so
+        // that another can open a different show would leave its sync port bound,
+        // and the station taking its place would fail to bind and come up with no
+        // show at all. Selected here, the listener is dropped when this future is.
+        let accepting = async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, addr)) => {
@@ -306,9 +311,12 @@ impl SyncManager {
                     }
                 }
             }
-        });
+        };
 
-        self.event_loop().await;
+        tokio::select! {
+            _ = accepting => {}
+            _ = self.event_loop() => {}
+        }
     }
 
     async fn event_loop(&mut self) {

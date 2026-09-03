@@ -87,7 +87,10 @@ async fn main() -> Result<()> {
     let log = pult_backend::logging::install(pult_backend::logging::LogOptions::default())?;
 
     let args = Args::parse();
-    let running = pult_backend::start(Config {
+    // A `Console` rather than a bare station: a station is built around one showfile
+    // and cannot change it, so opening a show is this one stopping and another
+    // starting in its place. The console is the thing that outlives both.
+    let console = pult_backend::Console::start(Config {
         port: args.port,
         sync_port: args.sync_port,
         show: args.show,
@@ -103,5 +106,5 @@ async fn main() -> Result<()> {
     })
     .await?;
 
-    running.serve.await?
+    console.serve().await
 }

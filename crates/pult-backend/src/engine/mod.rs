@@ -675,6 +675,9 @@ pub struct ShowEngine {
     /// wrong, and at a threshold of a thousand appends against a delete that takes
     /// seconds, an overlap is reachable rather than theoretical.
     pruning: Arc<std::sync::atomic::AtomicBool>,
+    /// What to call this show if the file has no `show` row. From the bundle's
+    /// manifest; `None` for a station with no bundle open, which then seeds nothing.
+    seed_name: Option<String>,
 }
 
 /// How many appends between prunes.
@@ -771,6 +774,7 @@ impl ShowEngine {
             watch_sampled_at: std::time::Instant::now(),
             appends_since_prune: Default::default(),
             pruning: Default::default(),
+            seed_name: None,
         };
         (engine, broadcast)
     }
@@ -778,6 +782,14 @@ impl ShowEngine {
     /// Attach an output plugin manager. Call before `run`.
     pub fn set_output(&mut self, output: OutputHandle) {
         self.output = Some(output);
+    }
+
+    /// What to call this show if the file has no `show` row yet. Call before `run`.
+    ///
+    /// The bundle's `bundle.toml` knows the name the operator typed when they made
+    /// the folder, and nothing else does — a fresh `show.db` has no row at all.
+    pub fn set_seed_name(&mut self, name: impl Into<String>) {
+        self.seed_name = Some(name.into());
     }
 
     pub async fn run(mut self) {
@@ -2601,6 +2613,7 @@ impl ShowEngine {
             Err(e) => warn!("[engine] load_from_showfile: ShowState deserialization failed: {e}"),
         }
         self.seed_default_user().await;
+        self.seed_the_show().await;
         // A showfile that has been round a long tech week arrives past both
         // retentions, and this is the largest cut it will ever take.
         self.prune_the_log();
@@ -2661,6 +2674,57 @@ impl ShowEngine {
             vec![PathSegment::Key("users".into()), PathSegment::Key("__create".into())];
         if let Err(e) = self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await {
             warn!("[engine] could not seed the default user: {e}");
+            return;
+        }
+        self.record_write(&path, Lifecycle::Persisted);
+        self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none()).await;
+        self.broadcast_after_set(&path, value.clone());
+        if let Some(sync) = &self.sync {
+            sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
+        }
+    }
+
+    /// Give the show its row, if the file does not have one.
+    ///
+    /// Here rather than in the first browser to connect, which is where it used to be
+    /// — the Show panel had an *Initialize Show* button, so a station running headless
+    /// or reached first by a plugin had no show at all, and two browsers pressing it
+    /// would have made two. What a new show starts with comes from the bundle's name
+    /// and this station's preferences, both of which the engine can read and the page
+    /// cannot.
+    ///
+    /// The preferences are read *once*, here, and are show data from then on: a second
+    /// station opening the same show reads the same numbers rather than its own, which
+    /// is the whole reason `history_depth` and `home_fade_ms` are in the show.
+    ///
+    /// Unattributed, like the default user beside it: nobody asked for it, and an
+    /// operator pressing Ctrl-Z on a fresh show should reach their own first change.
+    async fn seed_the_show(&mut self) {
+        use pult_schema::types::show::Show;
+
+        let path: Path = vec![PathSegment::Key("show".into())];
+        if self.state.get_by_path(&path).is_some_and(|v| !v.is_null()) {
+            return;
+        }
+        // No name to seed with is a station with no bundle open: an in-memory show
+        // that nothing will ever read again, and giving it a row would be inventing a
+        // show nobody asked for.
+        let Some(name) = self.seed_name.clone() else { return };
+
+        let prefs = crate::infra::preferences::load();
+        let show = Show {
+            id: uuid::Uuid::new_v4(),
+            name,
+            created_at: chrono::Utc::now(),
+            editing_cue: None,
+            history_depth: prefs.history_depth,
+            home_fade_ms: prefs.home_fade_ms,
+            haze_density: prefs.haze_density,
+            haze_turbulence: prefs.haze_turbulence,
+        };
+        let Ok(value) = serde_json::to_value(&show) else { return };
+        if let Err(e) = self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await {
+            warn!("[engine] could not seed the show: {e}");
             return;
         }
         self.record_write(&path, Lifecycle::Persisted);

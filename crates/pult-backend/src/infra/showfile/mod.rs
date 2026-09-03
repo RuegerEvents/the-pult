@@ -6,6 +6,7 @@ use tracing::info;
 pub mod bundle;
 pub mod oplog;
 pub mod order;
+pub mod recent;
 
 #[cfg(test)]
 mod tests;

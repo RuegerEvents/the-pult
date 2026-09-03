@@ -188,6 +188,52 @@ impl Bundle {
         Ok(())
     }
 
+    /// Copy this show to a new bundle, which is what *Save as…* is.
+    ///
+    /// The copy is a **different show to the network**. Its `show.id` is replaced,
+    /// because two bundles carrying one id would find each other over mDNS, decide
+    /// they were the same show and merge — an operator who made a copy to try
+    /// something out would watch it land back on the original.
+    ///
+    /// The versions are not copied. A version is a moment in *this* show's history,
+    /// and carrying them over would say the copy had a past it never had. The assets
+    /// are copied, being the bytes the fixtures and plans point at.
+    ///
+    /// Only safe with the database closed, which is why the console does it between
+    /// stopping one station and starting the next.
+    pub fn copy_to(&self, to: &Path) -> Result<Bundle> {
+        let to = absolute(to);
+        if to.exists() {
+            bail!("{} already exists", to.display());
+        }
+        // Named after the folder it is going into, not after the show it came from:
+        // *Save as…* is somebody giving this show another name, and a copy that
+        // still called itself the original would be two shows with one name in the
+        // list and no way to tell them apart.
+        let copy = Bundle::create(&to, &name_from_path(&to))?;
+        let copied = || -> Result<()> {
+            for name in ["show.db", "show.db-wal", "show.db-shm"] {
+                let from = self.path.join(name);
+                if from.exists() {
+                    std::fs::copy(&from, to.join(name))?;
+                }
+            }
+            for entry in std::fs::read_dir(self.assets_dir())?.flatten() {
+                if entry.path().is_file() {
+                    std::fs::copy(entry.path(), copy.assets_dir().join(entry.file_name()))?;
+                }
+            }
+            Ok(())
+        };
+        if let Err(e) = copied() {
+            // Half a show is worse than none: an operator would open it and find a
+            // rig with no drawings in it.
+            let _ = std::fs::remove_dir_all(&to);
+            return Err(e);
+        }
+        Ok(copy)
+    }
+
     /// Everything a welcome screen wants to say about a show it has not opened.
     ///
     /// Read without the engine and without migrating anything: `show.db` is opened
@@ -255,6 +301,27 @@ impl Bundle {
         pool.close().await;
         Ok(())
     }
+}
+
+/// Make a copied show its own show: a new id, and the name it was copied under.
+///
+/// Two bundles with one `show.id` are two consoles claiming to be the same show:
+/// they find each other over mDNS, decide they are one session, and merge — so an
+/// operator who copied a show to try something out would watch it land back on the
+/// original. Save-as is the only thing that produces two of them, so this is where
+/// the new id is written.
+///
+/// Only safe with the station down, which is where the console calls it.
+pub async fn becomes_its_own_show(bundle: &Bundle) -> Result<uuid::Uuid> {
+    let pool = super::open(&bundle.db_path()).await?;
+    let id = uuid::Uuid::new_v4();
+    sqlx::query("UPDATE show SET id = ?, name = ?")
+        .bind(id.to_string())
+        .bind(bundle.seed_name())
+        .execute(&pool)
+        .await?;
+    pool.close().await;
+    Ok(id)
 }
 
 async fn count(pool: &sqlx::SqlitePool, table: &str) -> u64 {

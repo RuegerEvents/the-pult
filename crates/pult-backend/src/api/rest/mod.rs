@@ -27,6 +27,11 @@ pub struct ConfigState {
     pub node_id: NodeId,
     pub http_port: u16,
     pub sync_port: u16,
+    /// Which show this station has open, if it has one. `None` is the state a
+    /// console started with no arguments comes up in, and the whole of how a page
+    /// knows to draw the welcome screen instead of the workspace.
+    pub show: Option<crate::infra::showfile::bundle::Bundle>,
+    pub shows_dir: Option<std::path::PathBuf>,
 }
 
 impl FromRef<AppState> for ConfigState {
@@ -35,6 +40,8 @@ impl FromRef<AppState> for ConfigState {
             node_id: state.node_id,
             http_port: state.http_port,
             sync_port: state.config.sync_port,
+            show: state.shows.bundle.clone(),
+            shows_dir: state.shows.shows_dir.clone(),
         }
     }
 }
@@ -522,6 +529,19 @@ async fn config(State(state): State<ConfigState>) -> Json<serde_json::Value> {
         "syncPort": state.sync_port,
         "nodeId": state.node_id.0,
         "version": crate::VERSION,
+        // Which show, or none. A page compares this with the one it loaded under and
+        // reloads when they differ: opening a show is a new console for this tab,
+        // and that holds whether the tab is on this machine or is the tablet at the
+        // back of the room on somebody else's socket.
+        "show": state.show.as_ref().map(|bundle| json!({
+            "path": bundle.path(),
+            "name": bundle.seed_name(),
+        })),
+        "showsDir": state.shows_dir,
+        // Built into the binary from the crate's own metadata, so the welcome
+        // screen's links to the source, the issues and the releases are one string
+        // in `Cargo.toml` rather than three in a Svelte file.
+        "repository": option_env!("CARGO_PKG_REPOSITORY").unwrap_or_default(),
     }))
 }
 

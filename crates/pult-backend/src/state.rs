@@ -37,6 +37,9 @@ pub struct AppState {
     /// LOCAL: a page belongs to the station holding its socket and to no other.
     pub clients: crate::infra::clients::ClientRegistry,
     pub config: Config,
+    /// Where a show act goes, and what this station has open. The console does the
+    /// opening; a station can only say it was asked.
+    pub shows: crate::ShowsHandle,
     /// The port that was actually bound, which is not `config.port` when that was
     /// zero. This is the one a client is talking to.
     pub http_port: u16,

@@ -78,7 +78,7 @@ fn main() {
 
 /// Bring a station up and say where it ended up listening.
 async fn start(args: &Args, log: LogHandle) -> anyhow::Result<String> {
-    let running = pult_backend::start(Config {
+    let console = pult_backend::Console::start(Config {
         bind: Ipv4Addr::UNSPECIFIED.into(),
         port: free_or_any(args.port).await,
         sync_port: free_or_any(args.sync_port).await,
@@ -91,8 +91,17 @@ async fn start(args: &Args, log: LogHandle) -> anyhow::Result<String> {
     .await?;
 
     // `localhost` rather than the address it is bound to: this is the loopback
-    // name every platform's webview is willing to load over plain HTTP.
-    Ok(format!("http://localhost:{}", running.http_addr.port()))
+    // name every platform's webview is willing to load over plain HTTP. The port is
+    // read before the console is handed off to its own task, and it does not move
+    // afterwards: a switch reuses the port the OS gave out, so the address in the
+    // title bar stays the one an operator typed into the tablet.
+    let url = format!("http://localhost:{}", console.http_addr().port());
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = console.serve().await {
+            tracing::error!("[gui] the console stopped: {e}");
+        }
+    });
+    Ok(url)
 }
 
 /// The port if it is free, and any port if it is not.

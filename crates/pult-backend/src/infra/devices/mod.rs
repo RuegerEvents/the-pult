@@ -904,21 +904,26 @@ impl DeviceManager {
 /// The mdns-sd receiver is blocking, so it gets its own thread and forwards over a
 /// channel — the same shape `SessionManager` uses. Every node browses, follower or
 /// not: seeing what is on the network costs nothing and is worth showing.
-pub fn spawn_mdns_browser(devices: DeviceHandle) {
+pub fn spawn_mdns_browser(devices: DeviceHandle) -> Option<ServiceDaemon> {
     let daemon = match ServiceDaemon::new() {
         Ok(d) => d,
         Err(e) => {
             warn!("[devices] cannot create mDNS daemon: {e}");
-            return;
+            return None;
         }
     };
     let receiver = match daemon.browse(SERVICE_TYPE) {
         Ok(r) => r,
         Err(e) => {
             warn!("[devices] mDNS browse failed: {e}");
-            return;
+            return None;
         }
     };
+    // Handed back so a station being stopped can take its responder off the network.
+    // The daemon runs on a thread of its own, so nothing about dropping this station
+    // reaches it — and a console that has opened three shows would otherwise be three
+    // browsers on the same segment, two of them nobody is reading.
+    let handle = daemon.clone();
 
     let (tx, mut rx) = mpsc::channel::<ServiceEvent>(64);
     std::thread::spawn(move || {
@@ -940,6 +945,8 @@ pub fn spawn_mdns_browser(devices: DeviceHandle) {
             }
         }
     });
+
+    Some(handle)
 }
 
 fn device_event(event: ServiceEvent) -> Option<DeviceEvent> {

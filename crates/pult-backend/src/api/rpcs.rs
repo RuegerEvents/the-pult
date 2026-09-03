@@ -146,6 +146,36 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"outputId","type":"string","optional":false},{"name":"nodeId","type":"string","optional":true}]"#,
         doc: "Stop watching an output; the connector stops drawing when nobody is.",
     },
+    // Opening a show is not a change to the show, which is what makes these RPCs
+    // rather than commands: nothing about which showfile this console has open is in
+    // anybody's undo stack, and a peer must not be told to change shows because
+    // somebody here did. They answer `{ok: true}` and the socket then closes, because
+    // the act is this station stopping and another one starting in its place.
+    LocalRpcMeta {
+        method: "show.new",
+        args_schema: r#"[{"name":"name","type":"string","optional":false},{"name":"demo","type":"string","optional":true},{"name":"thenJoin","type":"string","optional":true}]"#,
+        doc: "Make a new show in the shows directory and open it.",
+    },
+    LocalRpcMeta {
+        method: "show.open",
+        args_schema: r#"[{"name":"path","type":"string","optional":false}]"#,
+        doc: "Open the show bundle at this path.",
+    },
+    LocalRpcMeta {
+        method: "show.close",
+        args_schema: "[]",
+        doc: "Close the open show; the console lands on the welcome screen.",
+    },
+    LocalRpcMeta {
+        method: "show.saveAs",
+        args_schema: r#"[{"name":"name","type":"string","optional":false}]"#,
+        doc: "Copy this show under a new name and open the copy. The copy is a new show to the network.",
+    },
+    LocalRpcMeta {
+        method: "show.list",
+        args_schema: "[]",
+        doc: "The shows this console can offer: where they live, which were opened recently, and what is in the shows directory.",
+    },
     LocalRpcMeta {
         method: "client.report",
         args_schema: r#"[{"name":"stats","type":"object","optional":false}]"#,
@@ -185,6 +215,8 @@ pub struct LocalRpcDeps {
     pub node_id: pult_schema::events::operation::NodeId,
     /// Who is watching what an output is putting on the wire.
     pub viewers: crate::infra::connectors::Viewers,
+    /// Where a show act goes, and what this station has open.
+    pub shows: crate::ShowsHandle,
     /// What the browsers on this station are saying about themselves.
     ///
     /// `None` where there is no HTTP server behind these deps at all, which is what
@@ -406,6 +438,10 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             }
             Ok(Value::Null)
         }
+        "show.new" | "show.open" | "show.close" | "show.saveAs" => {
+            open_a_show(method, &args, &deps.shows).await
+        }
+        "show.list" => list_shows(&deps.shows).await,
         "selection.resolve" => {
             let group_id: uuid::Uuid = serde_json::from_value(args["groupId"].clone())
                 .map_err(|e| format!("invalid groupId: {e}"))?;
@@ -440,13 +476,129 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
 
 /// Does this method name belong to the station rather than to an entity?
 pub fn is_local_rpc(method: &str) -> bool {
-    method.starts_with("session.")
+    method.starts_with("show.")
+        || method.starts_with("session.")
         || method.starts_with("device.")
         || method.starts_with("selection.")
         || method.starts_with("parameter.")
         || method.starts_with("log.")
         || method.starts_with("output.")
         || method.starts_with("client.")
+}
+
+/// The four acts that change which show this console has open.
+///
+/// Each answers `{ok: true}` and *then* the station stops — the caller is told the
+/// act was taken, not that it finished, because finishing it means closing the
+/// socket the answer would have gone down. The client sees a disconnect and a
+/// reconnect, which is what it already does whenever a station goes away.
+///
+/// Takes the shows handle rather than the whole of [`LocalRpcDeps`], which is the
+/// whole of what it touches — and is what lets a test drive the same arm a browser
+/// reaches without standing up a browser to do it.
+pub async fn open_a_show(
+    method: &str,
+    args: &Value,
+    shows: &crate::ShowsHandle,
+) -> Result<Value, String> {
+    use crate::infra::showfile::bundle;
+
+    let asked = match method {
+        "show.close" => crate::ShowSwitch::Close,
+        "show.open" => {
+            let path = args["path"].as_str().unwrap_or_default();
+            if path.is_empty() {
+                return Err("which show?".into());
+            }
+            // Opened here rather than after the restart, so a path that is not a show
+            // is refused while somebody is still looking at the dialog they typed it
+            // into — instead of taking the console down and bringing it back with
+            // nothing open and an error in the log.
+            let bundle = bundle::Bundle::open(path).map_err(|e| format!("{e:#}"))?;
+            crate::ShowSwitch::Open { path: bundle.path().to_path_buf(), then_join: None }
+        }
+        "show.new" => {
+            let name = args["name"].as_str().unwrap_or("Untitled Show").to_string();
+            let dir = shows
+                .shows_dir
+                .clone()
+                .ok_or_else(|| "this console has nowhere to keep shows".to_string())?;
+            let path = bundle::free_path_in(&dir, &name);
+            bundle::Bundle::create(&path, &name).map_err(|e| format!("{e:#}"))?;
+            let then_join = match args.get("thenJoin") {
+                Some(v) if !v.is_null() => Some(
+                    serde_json::from_value::<uuid::Uuid>(v.clone())
+                        .map_err(|e| format!("invalid thenJoin: {e}"))?,
+                ),
+                _ => None,
+            };
+            crate::ShowSwitch::Open { path, then_join }
+        }
+        "show.saveAs" => {
+            let name = args["name"].as_str().unwrap_or_default().trim().to_string();
+            if name.is_empty() {
+                return Err("what should the copy be called?".into());
+            }
+            let open = shows
+                .bundle
+                .as_ref()
+                .ok_or_else(|| "there is no show open to copy".to_string())?;
+            // Beside the show it is a copy of, when that is where the show lives —
+            // an operator working out of a folder on a stick expects the copy on the
+            // stick, not in the console's own shows directory.
+            let dir = open
+                .path()
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .or_else(|| shows.shows_dir.clone())
+                .ok_or_else(|| "this console has nowhere to keep shows".to_string())?;
+            crate::ShowSwitch::SaveAs { path: bundle::free_path_in(&dir, &name) }
+        }
+        other => return Err(format!("unknown method: {other}")),
+    };
+
+    shows.ask(asked).await?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// What this console can offer to open.
+///
+/// Three answers in one, because a welcome screen shows all three at once: where new
+/// shows go, what was opened recently, and what is actually in that directory. A
+/// recent entry whose folder has gone is listed with `missing` set rather than
+/// dropped — a show on a stick that is not plugged in is exactly the row somebody is
+/// looking for.
+pub async fn list_shows(shows: &crate::ShowsHandle) -> Result<Value, String> {
+    use crate::infra::showfile::{bundle, recent};
+
+    let mut recents = Vec::new();
+    for entry in recent::load().shows {
+        let summary = match bundle::Bundle::open(&entry.path) {
+            Ok(bundle) => serde_json::to_value(bundle.summary().await).unwrap_or_default(),
+            Err(_) => serde_json::json!({
+                "path": entry.path,
+                "name": bundle::name_from_path(&entry.path),
+                "missing": true,
+            }),
+        };
+        let mut summary = summary;
+        summary["lastOpened"] = serde_json::json!(entry.last_opened);
+        recents.push(summary);
+    }
+
+    let mut in_dir = Vec::new();
+    if let Some(dir) = &shows.shows_dir {
+        for bundle in bundle::bundles_in(dir) {
+            in_dir.push(serde_json::to_value(bundle.summary().await).unwrap_or_default());
+        }
+    }
+
+    Ok(serde_json::json!({
+        "showsDir": shows.shows_dir,
+        "open": shows.bundle.as_ref().map(|b| b.path()),
+        "recent": recents,
+        "inDir": in_dir,
+    }))
 }
 
 /// What a fixture's parameters are putting out, right now.
@@ -574,6 +726,7 @@ mod tests {
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
             ws_registry: None,
+            shows: crate::ShowsHandle::detached(),
         };
         for meta in LOCAL_RPCS {
             assert!(is_local_rpc(meta.method), "{} is not routed here", meta.method);
@@ -671,6 +824,7 @@ mod tests {
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
             ws_registry: None,
+            shows: crate::ShowsHandle::detached(),
         };
         let ask = || {
             dispatch("parameter.value", serde_json::json!({ "fixtureId": fixture_id }), &deps)
