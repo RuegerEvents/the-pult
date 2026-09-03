@@ -12,6 +12,18 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **A show is a folder, and Save is a version.** A showfile is now `Name.pult/` — the
+  database, the assets as files, and a snapshot per saved version — with `.pultz` as
+  the single file that travels. ⌘S takes a version; the Show panel lists them with who
+  took each one and restores any this station holds. Save as, export, import, and
+  autosave every fifteen minutes with a rolling window.
+- **A welcome screen.** Started with no arguments the console comes up with no show
+  open and offers recent shows, the shows folder, sessions on the network, a `.pultz`
+  to import, and four demo shows it makes for itself: Haunt, Theatre, Club and
+  Festival. `--show` and `--demo` skip it.
+- **A stock catalogue.** The rig view can draw F34 truss, stage decks, wall panels and
+  flats without being given a mesh, so a console that has never imported a drawing
+  still has a room to hang lights in.
 - **Beams that read as light.** The 3D rig view draws a real volumetric beam: bright
   in the middle and nothing at the edge, flaring when you look into the lens, starting
   at the width of the lens rather than at a point, fading out over the deck rather than
@@ -34,6 +46,12 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Changed
 
+- A station's identity moved out of the showfile and onto the machine
+  (`--identity`, `PULT_IDENTITY`, or the configuration directory), so copying a show
+  no longer clones the console that made it.
+- Opening a showfile compacts it when more than a quarter of the file is free.
+- `--showfile <file>` is now `--show <bundle>`. Showfiles are generation 3; a file
+  from an older build is refused by name, as before.
 - **The showfile is written off the engine's own thread, in batches.** One operator's
   edit no longer waits behind another operator's disk. A write is still acknowledged
   only once it is durable; what changed is that a group of them share one commit,

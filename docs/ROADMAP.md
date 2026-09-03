@@ -1667,9 +1667,10 @@ rewritten. And the History panel shows its oldest entry as a boundary: the rows
 past it are deleted rather than merely unlisted, and a list that simply ended
 would read as a bug.
 
-Left open: nothing vacuums the showfile, so SQLite keeps the freed pages and the
-file stays at its high-water mark — a `showfile-management` question, and not what
-this was paying down. **A station running a build without this change can
+Left open at the time: nothing vacuumed the showfile, so SQLite kept the freed pages
+and the file stayed at its high-water mark — a `showfile-management` question, and not
+what this was paying down. **Closed by task 52**, which vacuums on open when more than
+a quarter of the file is free: opening is the one moment nothing else is using it. **A station running a build without this change can
 short-change a peer from a pruned showfile**, since it serves catch-up without
 consulting a floor it does not know about; a session should not mix builds across
 it.
@@ -3218,9 +3219,11 @@ create that has not reached the disk is still visible to the next `Get` — whic
 makes deferring it safe. The oplog is read *back from the file*: undo is a query over it,
 the History panel reads it, and a peer catching up is served `oplog::since` from SQLite.
 Deferring it raced a user's own Ctrl-Z against their own write, and **seven tests said so
-immediately**. Worth knowing for showfile-management, which proposes keeping the show in
+immediately**. Worth knowing for showfile-management, which proposed keeping the show in
 memory until an explicit save: that proposal has the same problem and a larger version of
-it, since undo, history and catch-up all read persisted state today.
+it, since undo, history and catch-up all read persisted state today. **Task 52 took the
+proposal off the table for exactly this reason** — Save is a checkpoint, the crash
+journal keeps writing, and a version is a copy of a file that is always current.
 
 **And the write path had a quadratic in it that none of this was about.** `persist_order`
 rewrote the *whole* collection order after every create — a DELETE and N INSERTs, N times,
@@ -3343,6 +3346,129 @@ cargo test -p pult-backend --test counts           # the three that are gates
 cd frontend && npm test                            # the evaluator corpus and the helpers
 ```
 
+### 52. A show is a folder, Save is a version, and the console opens onto a welcome screen
+
+`showfile-management` and `showfile-assets-folder` together, because the second was
+never a separate question — the entry said so — and both fall out of the same four
+decisions, taken with the user on 2026-09-03.
+
+**1. A showfile is a folder bundle, `Name.pult/`.** `bundle.toml`, `show.db`,
+`assets/<sha256>` and `versions/<id>.db`. The assets left the database because a
+version is a copy of `show.db`, and a copy carrying a 256 MB fixture archive would
+cost that per save; as files, fifty versions of a show hold one copy of each mesh.
+A `.pultz` — the folder zipped — is the travelling form, because a folder does not go
+in an email and on some platforms is not one thing at all.
+
+**2. A version is a replicated row, and the snapshot is each station's own file.**
+This is the answer to the question the old entry called the hard part: *is a
+checkpoint session-wide agreed or per-station?* It is **both, and they are different
+objects**. The row is PERSISTED, so every station knows the version exists, who took
+it and when, and undoing the save undoes it everywhere — which is what Ctrl-Z after an
+accidental Save should do. The snapshot cannot replicate: it is a copy of *this*
+station's `show.db` at that instant, and a station that joined afterwards never held
+that state. So each station copies its own when a `versions` row lands, and publishes
+the LOCAL `versions_here` — which is the only way a panel can honestly say "not on
+this station" about a peer's version.
+
+The entry also guessed wrong about the mechanism. **Revert is not an oplog rewind.**
+The log is pruned on task 37's retention, so yesterday is not reachable through it and
+never will be; a version has to be a whole-file copy. The row keeps its `clock` all
+the same, because a future *diff between two versions* has to anchor on something, and
+a timestamp across machines with unsynchronised clocks is not it.
+
+**3. Four demo shows, generated in Rust at open time.** Haunt, Theatre, Club and
+Festival. The demo was a Node script driving a running station over the WebSocket,
+which is right for the *measurement* rigs and cannot be a button: somebody opening
+this console for the first time has no Node, no repository and no terminal.
+
+**4. With no show argument the console starts with no show open.** Which turned out to
+be a real state worth building rather than an absence: the engine, the sync layer and
+the HTTP server all run, against a database that is never written anywhere, and the
+asset store is the one part with nowhere to put anything — so it is the one part that
+says no. The welcome screen is served over the same socket the show would be.
+
+**Opening a show is this station stopping and another one starting in its place.** A
+station is built around one showfile from `start` down — the pools, the engine's
+state, the asset store, the plugins the roster asked for — so `Console` is the process
+around it: it keeps the configuration, pins the port the OS gave out so a `--port 0`
+console does not move every time somebody opens a show, and starts the next station.
+The `show.*` calls are RPCs rather than commands, because which showfile a console has
+open is nobody's to undo and must not be told to a peer; they answer `{ok: true}` and
+*then* the station stops, which the client sees as the disconnect it already handles.
+
+**The identity moved to the machine.** It was already meant not to travel with a show,
+and a folder is far easier to drag onto a stick than a file was. A station is now told
+where its id is — `Config::identity`, `PULT_IDENTITY`, or the config directory — so a
+copied bundle no longer clones the console that made it.
+
+### The traps
+
+**Three things held a resource past the station that owned it, and all three looked
+like a console that never came back.** `JoinHandle::abort` lands at the task's next
+suspension point, so the HTTP listener was still bound when its replacement tried to
+bind it — shutdown now *awaits* what it aborted. The sync accept loop was a spawned
+task holding its own listener, so it is selected beside the event loop and dies with
+it. And `axum::serve` hands each connection to a task of its own, which is not a child
+of the future that accepted it: aborting the server left every open WebSocket talking
+happily to a station that had stopped, with the page still saying "Connected" and
+subscribed to an engine that no longer existed. A station now tells its sockets it is
+going.
+
+**A snapshot has to contain its own row.** The copy waits on a `WriteJob::Barrier`
+rather than on the version's own receipt — the writer's queue is ordered, so a barrier
+submitted after the upsert lands after it. Getting that backwards makes every restore
+quietly forget the point it restored to. Shutdown waits for the checkpointer *after*
+the engine, too, since the engine holds the only handle and a `VACUUM INTO` aborted
+mid-copy leaves half a snapshot and a connection the pool close is about to wait on.
+
+**Restore always leaves an orphan, by construction.** The "Before restoring…" version
+is taken *after* the database being put back was written, so its row is not in that
+database. `versions::reconcile` reads the row back out of the snapshot's own `versions`
+table and re-creates it — otherwise the safety net an operator reaches for when the
+restore was a mistake is a file with nothing naming it.
+
+**Seeding a demo inside `start` made the console unreachable.** The listener is bound
+before the demo runs, so the port *accepted* and then answered nothing for as long as
+two hundred writes took — the worst of the three states a console can be in. Demos are
+seeded on a task beside the server.
+
+**A version's name must not carry a time.** The station would have to format it in UTC,
+and it would sit in the list beside its own row rendered in the reader's local time,
+disagreeing with itself by an hour or nine. `Version::named()` answers whether an
+operator gave it one; the browser decides what an unnamed one is shown as.
+
+**A copy is a new show to the network.** Two bundles carrying one `show.id` find each
+other over mDNS, decide they are one show and merge — so an operator who copied a show
+to try something out would watch it land back on the original. Save-as writes a new id.
+
+**And a demo that wrote its own rotations aimed three rigs at the back wall.** A
+fixture's own axis is −Y, so zero rotation *is* hanging, and `{90, 0, 0}` written
+meaning "hanging" is a quarter turn away from it. `Transform::facing` already existed
+and does the decomposition properly; the demos now say which way a light points as a
+direction and never write an angle. Found by the user looking at the result, which is
+the only way it could have been.
+
+### What came with it
+
+**A stock catalogue.** A `SceneObject` with no mesh draws an empty group, so a truss a
+console made for itself was invisible and its lights hung in the air. `pult-schema`'s
+`catalogue` names a handful of standard pieces — F34 in three lengths and a corner,
+stage decks, wall panels and flats — with their dimensions; `pult-codegen` emits the
+table to TypeScript so there is one of it; and `frontend/src/lib/stock.ts` draws them
+procedurally, one merged geometry per id however many are in the rig. The MVR importer
+deliberately never guesses one: a drawing's object says what it is with its mesh, and
+picking an `f34-2m` because the name said "truss" would put a measurement into
+somebody's rig that nobody measured.
+
+```
+cargo test -p pult-backend --test shows      # opening, saving, restoring, travelling
+cargo test -p pult-backend --lib demo        # every demo hangs together, and points down
+cargo test -p pult-schema --lib catalogue    # and the pieces are the sizes they are named for
+cd frontend && npm test                      # the reload rule, and what a card says
+cargo run -p pult-backend                    # → the welcome screen
+cargo run -p pult-backend -- --demo festival --show /tmp/F.pult
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -3353,7 +3479,7 @@ asked and what is true of the code today, so the questions do not get
 re-discovered from scratch every time somebody picks the item up. When one is
 built it becomes the next numbered task and leaves this list.
 
-Verified against the code on 2026-09-02 unless an entry says otherwise.
+Verified against the code on 2026-09-03 unless an entry says otherwise.
 
 ### The order
 
@@ -3416,7 +3542,8 @@ having to decide instancing at all, and the item that came out of it is one nobo
 had written down: the connector draws at 29 Hz where DMX wants 40, on a frame using
 a fifth of its budget.
 
-Items 1, 3 and 4 were built together as task 51 and have left this list. What they
+Items 1, 3 and 4 were built together as task 51, and showfile-management and
+showfile-assets-folder together as task 52. All five have left this list. What they
 answered changes what is worth doing next, so the top of it is now:
 
 1. **universe-routing** — `OutputConfig::universes` says it is a filter and no
@@ -3437,11 +3564,13 @@ answered changes what is worth doing next, so the top of it is now:
    is actually short of frame
 4. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
    frontend proxy comes from; the wire stays generic. → none
-5. **showfile-management** — versioning, save-as, autosave, backup. → none, and
-   what blocks it is a decision rather than code: a checkpoint is either
-   session-wide agreed or explicitly per-station, and everything else follows
-6. **showfile-assets-folder** — a folder with an assets directory, or one file.
-   → decided with showfile-management, not separately
+5. **camera-home-presets** — front, plan, section, three-quarter, and
+   focus-on-selection. The smallest of everything here and the one an operator
+   reaches for most often. Added 2026-09-03. → none: task 51's viewer owns its
+   own camera already
+6. **scene-editing** — and specifically a picker for task 52's stock catalogue
+   first, which is smaller than a gizmo and is what a console that has never
+   imported an MVR needs in order to have a room at all. → none
 7. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
    plugin over introspection, which is what introspection is for. → none, and
    much better now that gdtf-import has landed and put a real patch in the show
@@ -3485,6 +3614,13 @@ answered changes what is worth doing next, so the top of it is now:
 21. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
    undocumented and to be read off the device. → surface-layer, and
    midi-surfaces for the binding model
+22. **showfile-migrations** — so a show made in the beta still opens after it.
+   Added 2026-09-03, and the trigger is the beta rather than anything in the
+   code: until somebody is carrying real work in a showfile, refusing one from
+   another generation by name is the better trade. → the first beta
+23. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
+   2026-09-03. → none, and the sharpest question in it is whether an imported
+   `.pultz` should ask before running the plugins it carries
 
 Items 17 to 21 were added on 2026-09-02 and sit at the end rather than being
 placed, because three of them are blocked on hardware being in the room and not
@@ -3492,6 +3628,11 @@ on anything in this repository. Any of those can move up the day the hardware is
 on the desk. **show-control is the exception and the one with a case for moving
 up now**: it needs a MIDI port and nothing else, and a stage manager pressing Go
 is a more common way for this console to be driven than any surface in the list.
+
+Items 22 and 23 were added on 2026-09-03 and sit at the end for a different reason:
+neither is blocked on anything, and both are blocked on *time*. A migration path is
+worth nothing until there is a showfile worth migrating, and the gaps in how plugins
+travel are gaps rather than absences.
 
 The `<T.SpotLight>` recompiling every material as a fade crossed 1% used to be
 called out here as the one thing not belonging to any phase. It is gone, and not by
@@ -3642,50 +3783,84 @@ these did not.
 - **Placement.** Moving a fixture or a truss in 3D is `scene-editing`, not this: it
   changes the show rather than the picture, so it needs gestures, snap and multi-select.
 
+#### camera-home-presets
+
+Where the rig view looks from. Today the camera starts wherever `Rig3D.svelte` puts it
+and an operator flies back by hand every time they open the panel — on a tablet, with
+`camera-controls`, that is a slow way to answer "what does the front look like".
+
+- **The obvious four are free and cost no schema at all**: front of house, plan,
+  section, and a three-quarter. Buttons that animate the existing controls to a
+  computed position, framing the rig's own bounding box so they work on a five-fixture
+  demo and a two-hundred-head festival alike.
+- **A *saved* preset is the question.** Whose is it? A camera position is one operator
+  looking at one screen, which argues for `localStorage` beside the layout. But "the
+  designer's view" is a thing a team shares, which argues for show data beside
+  `layouts` — and layouts are already the precedent for exactly that split: the
+  arrangement is the show's, which one this browser is looking at is not.
+- **Two `rig` tiles can be open at once**, each with its own renderer and controls, so
+  a preset is applied to *a* view rather than to the panel. Whatever holds them cannot
+  assume one camera.
+- Focus-on-selection is the same machinery and probably the more used of the two: frame
+  what is selected rather than the whole rig.
+- Not a `stage_plans` question. That is the flat view, and it has its own framing.
+
 ### Showfiles
 
-#### showfile-management
+#### showfile-migrations
 
-Versioning, backup, automated backup to an external drive. Today there is one
-SQLite file, written on every PERSISTED write, with **no explicit save at all**:
-no `save` RPC, and nothing defers a write.
+Showfiles are **not** migrated, and `SCHEMA_GENERATION` refuses one from another
+generation by name rather than panicking somewhere deep in a generated
+`from_columns`. That is the right trade while the console is in development and
+nobody is carrying a season's work in one. It stops being the right trade the day
+somebody does — so this is the entry for that day, and the trigger is the first beta.
 
-- **Save should mean checkpoint, not flush.** The want is committed intent. Try
-  something in rehearsal and discard it, name a version, get back to the show as
-  it was at the end of yesterday. The want is *not* deferred durability. A show
-  that loses an evening's programming because nobody pressed Save is the worst
-  failure this console has, and it happens exactly where people forget, on a long
-  tech, late, everyone tired. So keep writing continuously as the crash journal
-  and let Save mark a point, rather than making the write wait for a keypress.
-- There is no performance case for deferring either. Task 44 took the tick off
-  the write path entirely, and operator edits happen at human rate.
-- **Revert-to-last-save wants the oplog, not a second history.** The log is
-  already per-node sequenced and already bounded by task 37's retention, so a
-  checkpoint is a marked seq and reverting is a rewind, the same machinery undo
-  uses.
-- The hard part, and the reason this cannot be a small change: **the show is
-  replicated live.** If one console defers or reverts while another saves, what
-  got saved? A checkpoint is either session-wide agreed or explicitly
-  per-station, and that decision drives everything else here.
-- Save-as, snapshots, autosave cadence, and what a "version" even is when the
-  show is also replicated live to peers.
-- Backup target configuration is a station preference; task 33's
-  `preferences.toml` is the home.
-- Restore: open a backup read-only, or roll the working file back?
-- Whether a backup is also an oplog prune point. Task 37 answered pruning on its
-  own; this only has to say how the two meet.
+- **What the refusal already gets right, and must keep.** Two things fail differently.
+  A *shape* change inside a JSON column is invisible to the columns and silently reads
+  as `None`, which only a stamp catches. A non-`Option` field added later leaves NULL
+  in every existing row and panics on open, which the file says itself and which
+  `a_required_column_nothing_filled_in` names. A migration path has to answer both, not
+  replace the check with hope.
+- **`add_missing_columns` is already half of it** — adding a field is free today. What
+  it cannot do is *fill one in*, and that is precisely what a migration is: a default
+  per added field, and a rewrite per changed shape.
+- **The version to migrate from is already written down.** `PRAGMA user_version` is the
+  stamp, so the shape is a chain of `2 → 3 → 4` steps rather than a matrix.
+- **A version snapshot is a showfile too**, and there may be fifty of them in a bundle.
+  Migrating on open means migrating one file; restoring an old snapshot means migrating
+  another, later, on a copy that is about to become the show. Decide whether a restore
+  migrates or refuses.
+- **Test it against real files, not synthetic ones.** The corpus that would make this
+  trustworthy is a `.pultz` per generation, checked in, opened by CI. Start collecting
+  them *before* the beta rather than reconstructing them afterwards.
+- What it is not: a promise that every future shape is reachable. A generation that
+  cannot be migrated should still refuse by name.
 
-#### showfile-assets-folder
+#### plugins-that-travel
 
-Assets are a blob table inside the SQLite file (task 13), addressed by sha256.
-The question is whether a showfile should be a *folder* with an assets directory
-instead, zipped on export, and what that does for dedup across versions.
+A show already carries its plugins — `plugin_packages` is a PERSISTED roster naming
+each bundle by sha256, the bytes live in the asset store, and a station that lacks one
+fetches it from a peer and verifies it (task 41). Task 52's `.pultz` export carries
+`assets/`, so the bytes go with the show now as well. So the *mechanism* exists, and
+what is left is the gaps in it — which is why this is an entry rather than a feature.
 
-- Content addressing already gives dedup, and versioned backups of a folder share
-  unchanged assets naturally through hardlinks or a store-once layout.
-- A single file is robust against half-copies; a folder is friendlier to rsync
-  and to looking inside. Export-as-zip can exist either way.
-- Decide it together with showfile-management, not separately.
+- **A `--plugins` directory beats the show and is not in the roster.** That is the dev
+  loop working as intended, and it means a plugin somebody is developing does not
+  travel with the showfile they are developing it against. Whether "install what I am
+  running into this show" should be a button is the question.
+- **An export does not know which assets the roster needs.** It copies the whole
+  `assets/` directory, which is correct and indiscriminate; a show whose plugin was
+  removed still carries its bundle. Related to whether anything ever garbage-collects
+  the store, which nothing does.
+- **Opening a showfile runs its plugins**, bounded by the sandbox and the manifest
+  permissions and nothing else. That is already a deliberate decision, and it gets
+  sharper the moment showfiles are things people email each other. Whether an imported
+  `.pultz` should ask before running what it carries is the real question here.
+- **Station-scoped plugin data deliberately does not travel** — it is beside
+  `preferences.toml`, and credentials live there. A plugin that arrives on a new
+  machine comes up unconfigured, which is right and should be *said* somewhere.
+- The `api` floor already handles the version half: a bundle records what it was built
+  against, and `scripts/check-api-compat.sh` proves an older one still runs.
 
 ### Interop
 
@@ -3724,6 +3899,15 @@ entities to edit and the views that draw them, so this is now unblocked.
 - Articulated fixture bodies are the visible payoff and are nearly free now:
   `FixtureType::geometry` carries the parts, which turn, and the beam angle, so
   `Rig3D.svelte` can lose its 0.12 constant and its single box per fixture.
+- **A picker for the stock catalogue is the smallest useful start.** Task 52 added
+  `SceneObject::catalogue` and the pieces to draw — F34 in three lengths and a corner,
+  decks, wall panels and flats — and the demos build rigs out of them. What is missing
+  is any way for a *person* to: there is no scene-object editor at all, so objects
+  arrive by MVR import and nothing else. A list of pieces and a click to place one is
+  a smaller thing than a gizmo and unblocks a console that has never imported anything.
+- A truss *run* is the unit an operator thinks in, not a section: task 52's demos build
+  one as a `Group` with sections parented to it, which is the shape a picker should
+  make too.
 
 #### mvr-xchange
 

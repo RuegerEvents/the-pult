@@ -73,6 +73,7 @@
 		visibleObjects
 	} from '$lib/stores/scene.js';
 	import { instance, load } from '$lib/geometry.js';
+	import { stockMesh } from '$lib/stock.js';
 	import { worldTransform } from '$lib/scene.js';
 	import { setValue } from '$lib/stores/programmer.js';
 	import { output as showing, watching } from '$lib/stores/output.js';
@@ -583,6 +584,15 @@
 				object.geometry.length > 0
 					? object.geometry
 					: ($symbols.find((s) => s.id === object.symbol)?.geometry ?? []);
+			// Nothing to load, but a name the console knows how to draw: a truss this
+			// station made for itself, or one out of a drawing that arrived without
+			// its meshes. An imported mesh wins where there is one — it is the truth
+			// about that object, and this is only what to draw when there is nothing
+			// better.
+			if (references.length === 0) {
+				const stock = stockMesh(object.catalogue);
+				if (stock) group.add(stock);
+			}
 			const world = worldTransform(object.transform, object.parent, $objectsById);
 			const mirrored = world.scale.x * world.scale.y * world.scale.z < 0;
 			Promise.all(references.map((r) => load(r.asset, r.file_name, $namedAssets)))

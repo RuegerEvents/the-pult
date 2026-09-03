@@ -383,6 +383,12 @@ impl<'a> Planner<'a> {
             class: object.classing.as_deref().and_then(|c| Uuid::parse_str(c.trim()).ok()),
             geometry,
             symbol,
+            // Never guessed from an import. A drawing's object says what it is with
+            // its mesh, and when the mesh did not come with the file the honest
+            // answer is that this console does not know how long that truss was —
+            // picking an `f34-2m` because the name said "truss" would be putting a
+            // measurement into somebody's rig that nobody measured.
+            catalogue: None,
         };
         let replaces = self.existing.scene_objects.iter().find(|each| each.id == id).map(|e| e.id);
         self.seen.insert(id);

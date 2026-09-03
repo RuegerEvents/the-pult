@@ -23,7 +23,7 @@ ends as the next numbered task.
   `transform.rs` is where a matrix becomes a position, a rotation and a **signed**
   scale — signed because a fifth of the trusses in a real Vectorworks file are
   mirrored, and no rotation is a reflection.
-- **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, SQLite showfiles, peer sync (mDNS + TCP), the WASM plugin runtime (`infra/plugins/`), fixture connectors. `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
+- **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, `Name.pult` showfile bundles, peer sync (mDNS + TCP), the WASM plugin runtime (`infra/plugins/`), fixture connectors. `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.
 - **`tools/openhaunt-node-sim`** — The node side of the OpenHaunt protocol, in software. A node *is* a `NodeConfig` — identity, module descriptor, and the ports it describes — so a JSON config file is the whole of what makes one node different from another. `configs/` holds worked examples of modules that are not in the catalogue at all.
@@ -409,6 +409,105 @@ second later, and a skipped write is gone.
 cargo test -p pult-backend --lib engine      # the writer, the router, the show
 ```
 
+## A show is a folder, and Save is a version
+
+A showfile is `Name.pult/` — `bundle.toml`, `show.db`, `assets/<sha256>` and
+`versions/<id>.db`. The assets are **files** because a version is a `VACUUM INTO` copy
+of `show.db`, and a copy carrying a 256 MB fixture archive would cost that per save; as
+files, fifty versions hold one copy of each mesh. `.pultz` is the folder zipped, which
+is the form that travels: a folder does not go in an email and on some platforms is not
+one thing at all.
+
+**The identity is the machine's, not the show's.** `Config::identity`, then
+`PULT_IDENTITY`, then the config directory. It was always meant not to travel with a
+show, and a folder is far easier to copy than a file was — two stations sharing an id
+would both claim the same outputs and break the vector clock's tie-break.
+
+**No show open is a real state**, and the one a console started with no arguments comes
+up in. The engine, the sync layer and the HTTP server all run against a database that
+is never written anywhere; the asset store is the one part with nowhere to put anything,
+so it is the one part that says no. The browser draws the welcome screen over the same
+socket the show would use.
+
+**Opening a show is this station stopping and another one starting in its place.** A
+station is built around one showfile from `start` down, so `Console` is the process
+around it: it keeps the configuration, pins the port the OS gave out so a `--port 0`
+console does not move, records `recent.toml`, and starts the next station. `show.new`,
+`show.open`, `show.close`, `show.saveAs`, `show.restore` and `show.list` are **RPCs**,
+because which showfile a console has open is nobody's to undo and must not be told to a
+peer; each answers `{ok: true}` and *then* the station stops, which a client sees as
+the disconnect it already handles. A page compares the show `/api/config` names with
+the one it loaded under and reloads when they differ — every store in it is holding the
+previous show's rig — and the tablet on another station's socket does the same.
+
+**Save is a point to come back to, not a flush.** Every PERSISTED write is already on
+the disk when it is acknowledged. `["versions", "__checkpoint"]` is the verb, beside
+`__by` and `__home`: the engine builds the row from its own clock and the caller's
+authorship and turns it into an ordinary `__create`, so history, the showfile and every
+peer see a create, and Ctrl-Z after an accidental Save deletes the row and takes the
+file with it.
+
+**The row replicates and the snapshot does not.** A snapshot is a copy of *this*
+station's `show.db`, and a station that joined afterwards never held that state — so
+each station copies its own when a `versions` row lands (its operator's, a peer's, or
+an undo's) and publishes the LOCAL `versions_here`, which is the only way a panel can
+honestly say "not on this station". Restore is refused while a peer is connected, since
+that peer would replay its newer operations straight back over it.
+
+Three orderings are load-bearing, and each was a bug first. The copy waits on a
+`WriteJob::Barrier` rather than the row's own receipt, so **the snapshot contains the
+version it is a snapshot of**. Shutdown waits for the checkpointer *after* the engine,
+which holds the only handle. And shutdown **awaits what it aborted** — `JoinHandle::abort`
+lands at the next suspension point, so a listener is still bound when its replacement
+tries to bind it. `axum::serve` needs more than that: it hands each connection to a task
+that is not a child of the one that accepted it, so a station tells its sockets it is
+going (`AppState::stopping`) or every open WebSocket goes on talking to an engine that
+has stopped, with the page still saying "Connected".
+
+**A restore always leaves an orphan, by construction.** The "Before restoring…" version
+is taken after the database being put back was written, so its row is not in it.
+`versions::reconcile` reads the row back out of the snapshot's own `versions` table.
+
+Autosave is the leader's, on `autosave_minutes`, only when the oplog has moved, trimming
+its own window to `autosave_keep`. `backup_dir` mirrors each snapshot and the assets it
+points at somewhere else, and failing to is a warning rather than a failed Save.
+
+**Four demo shows, in Rust.** Haunt, Theatre, Club and Festival, seeded through
+`EngineHandle` like anything else — so validation, the oplog and the seeded operator are
+what they are for a person; what they skip is the network, not the model. `--demo <id>`
+on both binaries and a card on the welcome screen. They are seeded **on a task**, not
+inside `start`: the listener is bound first, so awaiting two hundred writes there left
+the port accepting and answering nothing. `scripts/demo-seed.mjs` keeps the sized rigs,
+deliberately over the public API, because that one is the measurement instrument.
+
+**A demo never writes a rotation.** A fixture's own axis is −Y, so zero rotation *is*
+hanging, and `{90, 0, 0}` meaning "hanging" is a quarter turn away from it — which
+aimed three of the four rigs at the back wall. `Transform::facing(position, direction)`
+does the decomposition properly, and `demo/kit.rs` says which way a light points as a
+direction.
+
+**And the console can draw a room it was never given a mesh for.** A `SceneObject` with
+no geometry is an empty group, so a truss a console made for itself was invisible.
+`pult_schema::types::catalogue` names the pieces — F34 in three lengths and a corner,
+decks, wall panels, flats — with their dimensions; `pult-codegen` emits the table to
+TypeScript so there is one of it; `frontend/src/lib/stock.ts` draws them procedurally,
+one merged geometry per id however many are in the rig. An imported mesh always wins,
+and the MVR importer never guesses one: a drawing says what it is with its mesh, and
+picking an `f34-2m` because the name said "truss" would put a measurement into
+somebody's rig that nobody measured.
+
+**A showfile is still not a migration target.** `SCHEMA_GENERATION` is 3 and refuses a
+file from another generation by name. Opening also vacuums when more than a quarter of
+the file is free, which is the one moment nothing else is using it.
+
+```
+cargo test -p pult-backend --test shows    # opening, saving, restoring, travelling
+cargo test -p pult-backend --lib demo      # every demo hangs together, and points down
+cargo run -p pult-backend                  # → the welcome screen
+cargo run -p pult-backend -- --show Rig.pult --demo festival
+curl -o show.pultz http://localhost:7700/api/shows/export
+```
+
 ## Lifecycle System
 
 Every field in the data model has one of three lifecycles:
@@ -549,7 +648,8 @@ scripts/check-api-compat.sh                # an older plugin still runs here
 cargo run -p pult-codegen -- generate     # after any schema change
 scripts/build-evaluator.sh                # the browser's copy of the evaluator
 npm --prefix frontend run build           # once; the backend serves this
-cargo run -p pult-backend                 # then http://localhost:7700
+cargo run -p pult-backend                 # then http://localhost:7700 — the welcome screen
+cargo run -p pult-backend -- --show Rig.pult   # or straight into a show
 ```
 
 As a desktop app — the same station, in a window, still serving the network:
@@ -714,6 +814,10 @@ console sends the byte and the fixture does the flashing. So `pult-render` has n
 to work out and needs no corpus case, and `strobeGate` lives in `beam.ts` because the
 square wave is a fact about the picture rather than about the rig.
 
+**And a piece with no mesh is drawn from the catalogue.** `frontend/src/lib/stock.ts`
+turns `SceneObject::catalogue` into geometry — see *A show is a folder* — which is what
+lets a console that has never imported an MVR hang a rig on something.
+
 **The browser draws the drawing.** `frontend/src/lib/geometry.ts` loads a mesh once
 per sha and clones it per object, because a rig with ninety-five truss sections
 instances five symbols. Three rules live there: a `.3ds` is Z-up and is turned in that
@@ -759,8 +863,9 @@ scripts/demo.sh --help       # the other options
 It works in `.demo/`, which is gitignored, so it never touches a real showfile.
 Logs for each component land there too.
 
-**A show can be a size instead of a scene.** `--size small` is the hand-made demo
-and the default; `big` and `huge` add a generated rig on top — 500 or 2000 fixtures
+**A show can be a size instead of a scene.** `--size small` is the console's own Haunt
+demo, seeded in Rust at open time (`--demo haunt`), and the default; `--demo` takes any
+of the four; `big` and `huge` add a generated rig on top — 500 or 2000 fixtures
 across as many universes as they need, a cue stack over several sequences each
 capturing a slice of the rig, and effects left running so the station has something
 moving in it. They exist to be measured rather than looked at, and `--measure` is how:

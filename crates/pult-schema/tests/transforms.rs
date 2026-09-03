@@ -52,6 +52,7 @@ impl Placed {
             class: None,
             geometry: Vec::new(),
             symbol: None,
+            catalogue: None,
         }
     }
 }
@@ -116,6 +117,7 @@ fn a_parent_chain_that_loops_stops_rather_than_hangs() {
         class: None,
         geometry: Vec::new(),
         symbol: None,
+            catalogue: None,
     };
     let objects = vec![placed(a, b), placed(b, a)];
 

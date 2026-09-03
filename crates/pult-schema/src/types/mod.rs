@@ -18,6 +18,7 @@ pub mod speedmaster;
 pub mod user;
 pub mod layout;
 pub mod plugin;
+pub mod catalogue;
 pub mod group;
 pub mod version;
 
@@ -32,6 +33,7 @@ pub use speedmaster::{SpeedMaster, SpeedMasterCreate, SpeedMasterPatch};
 pub use user::{colour_for, User, UserCreate, UserPatch, USER_COLOURS};
 pub use show::{Show, ShowCreate, ShowPatch};
 pub use version::{Version, VersionCreate, VersionPatch};
+pub use catalogue::{piece, StockPiece, StockShape, CATALOGUE};
 pub use session::{DiscoveredSession, SessionState};
 pub use devices::{DeviceHealth, DevicesState, DiscoveredDevice};
 pub use openhaunt::{EffectCapability, PortEffectCapability};

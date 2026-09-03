@@ -189,6 +189,18 @@ pub struct SceneObject {
     /// one mesh rather than forty.
     #[pult(lifecycle = PERSISTED)]
     pub symbol: Option<Uuid>,
+    /// Or none of the above: a piece out of the console's own catalogue, named
+    /// rather than modelled — `"f34-2m"` is two metres of box truss and the browser
+    /// draws one.
+    ///
+    /// Last of the three, and a mesh that came with a drawing wins: it is the truth
+    /// about that object. This is what a console draws for a rig it made itself,
+    /// where until now there was nothing to draw and the lights hung in the air.
+    ///
+    /// See [`crate::types::catalogue`].
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub catalogue: Option<String>,
 }
 
 /// A drawing's layer: a name to show, hide and lock a part of the rig by.

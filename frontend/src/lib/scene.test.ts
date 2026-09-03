@@ -39,7 +39,8 @@ function asObject(placed: ChainCase['objects'][number]): SceneObject {
 		layer: null,
 		class: null,
 		geometry: [],
-		symbol: null
+		symbol: null,
+		catalogue: null
 	};
 }
 

@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use pult_schema::{
     path::PathSegment,
-    types::{Cue, Fixture, FixtureType, Sequence, SpeedMaster},
+    types::{scene::SceneObject, Cue, Fixture, FixtureType, Sequence, SpeedMaster},
 };
 
 use super::*;
@@ -86,9 +86,60 @@ async fn seeds_a_rig_that_hangs_together(demo: Demo) {
         }
     }
 
+    // Nothing floats. Every fixture hangs off something, and the thing it hangs off
+    // is either drawable or a handle whose children are — which is the difference
+    // between a rig view and a field of lights in the dark.
+    let objects: Vec<SceneObject> = read(&engine, "scene_objects").await;
+    let places: HashSet<_> = objects.iter().map(|object| object.id).collect();
+    assert!(!objects.is_empty(), "{} hangs its rig off nothing", demo.id());
+    let drawable = objects
+        .iter()
+        .filter(|object| object.catalogue.is_some())
+        .count();
+    assert!(drawable > 0, "{}: nothing in the room can be drawn", demo.id());
+    for object in &objects {
+        if let Some(parent) = object.parent {
+            assert!(places.contains(&parent), "{}: {} hangs off nothing", demo.id(), object.name);
+        }
+        if let Some(id) = &object.catalogue {
+            assert!(
+                pult_schema::types::piece(id).is_some(),
+                "{}: {} names {id}, which is not in the catalogue",
+                demo.id(),
+                object.name,
+            );
+        }
+    }
+
+    // And every light points *down*. The regression: a rotation written by hand
+    // meaning "hanging" was a quarter turn away from it, and three of the four demos
+    // aimed their whole rig at the back wall.
+    for fixture in &fixtures {
+        let Some(position) = &fixture.position else {
+            panic!("{}: {} was never placed", demo.id(), fixture.name);
+        };
+        let facing = position.facing_direction();
+        assert!(
+            facing.y < 0.0,
+            "{}: {} points upwards ({facing:?})",
+            demo.id(),
+            fixture.name,
+        );
+        if let Some(parent) = fixture.parent {
+            assert!(places.contains(&parent), "{}: {} hangs off nothing", demo.id(), fixture.name);
+        }
+    }
+
     let known_cues: HashSet<_> = cues.iter().map(|cue| cue.id).collect();
     for sequence in &sequences {
         assert!(!sequence.cue_ids.is_empty(), "{}: {} is empty", demo.id(), sequence.name);
+        // A stack of one is a look, not a stack. Every demo should have something to
+        // press Go on more than once.
+        assert!(
+            sequences.iter().map(|s| s.cue_ids.len()).sum::<usize>() >= 3,
+            "{} has almost nothing to run",
+            demo.id(),
+        );
         for cue in &sequence.cue_ids {
             assert!(
                 known_cues.contains(cue),

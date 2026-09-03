@@ -38,6 +38,7 @@ use crate::engine::EngineHandle;
 mod club;
 mod festival;
 mod haunt;
+mod kit;
 mod theatre;
 
 /// Which demo. The names are what `--demo` takes and what the welcome screen's cards

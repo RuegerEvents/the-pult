@@ -134,7 +134,8 @@ CREATE TABLE IF NOT EXISTS scene_objects (
     layer TEXT,
     class TEXT,
     geometry TEXT NOT NULL,
-    symbol TEXT
+    symbol TEXT,
+    catalogue TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sequences (

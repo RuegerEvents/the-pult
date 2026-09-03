@@ -12,74 +12,91 @@
 //! been running since the doors opened.
 
 use anyhow::Result;
-use pult_schema::{
-    lifecycle::Lifecycle,
-    path::PathSegment,
-    types::{
-        cue::ParameterCapture,
-        effect::{Curve, Direction, EffectSpec, Rate, Shape, Spread},
-        fixture::{ParameterKind, ParameterValue},
-        sequence::Sequence,
-        speedmaster::SpeedMaster,
-    },
+use pult_schema::types::{
+    cue::{Cue, ParameterCapture},
+    effect::{Curve, Direction, EffectSpec, Rate, Shape, Spread},
+    fixture::{ParameterKind, ParameterValue, Vec3},
+    scene::Transform,
+    speedmaster::SpeedMaster,
 };
 use uuid::Uuid;
 
 use super::{
-    haunt::{a_cue, a_fixture, a_type, aimed, capture, colour, dmx, intensity, pan, tilt},
-    id, now_ms, Seeder,
+    id,
+    kit::{
+        a_cue, a_fixture, a_piece, a_stack, a_type, aimed, capture, colour, facing, hue, intensity,
+        level, pan, strobe_rate, tilt, truss_run, Addresses,
+    },
+    now_ms, Seeder,
 };
-use pult_schema::types::fixture::Vec3;
-
-/// Straight down off a truss, which is where a head rests before anything aims it.
-const HANGING: Vec3 = Vec3 { x: 90.0, y: 0.0, z: 0.0 };
 
 pub async fn seed(into: &Seeder) -> Result<()> {
     into.name_the_show("Club").await?;
 
     let mover = a_type("Beam 7R", vec![intensity(), colour(), pan(), tilt()]);
     let wash = a_type("LED Wash", vec![intensity(), colour()]);
-    let strobe = a_type("Strobe", vec![intensity()]);
+    let strobe = a_type("Strobe", vec![intensity(), strobe_rate()]);
     for kind in [&mover, &wash, &strobe] {
         into.create("fixture_types", kind).await?;
     }
 
     // Two trusses, downstage and upstage, at different heights so the rig view is
-    // not a single flat row.
-    let mut next = 1u16;
-    for (row, (z, y)) in [(3.0f32, 6.0f32), (-3.0, 7.0)].into_iter().enumerate() {
+    // not a single flat row — and a riser across the back for the strobes, which in
+    // a club sit at floor level and look up.
+    let downstage =
+        truss_run(into, "Front truss", None, Vec3 { x: 0.0, y: 6.0, z: 3.0 }, 12.0).await?;
+    let upstage =
+        truss_run(into, "Back truss", None, Vec3 { x: 0.0, y: 7.0, z: -3.0 }, 12.0).await?;
+    for (n, x) in [-3.0f32, 0.0, 3.0].into_iter().enumerate() {
+        a_piece(
+            into,
+            &format!("Riser {}", n + 1),
+            "deck-2x1",
+            Transform {
+                position: Vec3 { x, y: 0.6, z: -5.0 },
+                ..Transform::default()
+            },
+            None,
+        )
+        .await?;
+    }
+
+    let mut addresses = Addresses::from(1);
+    for (row, truss) in [downstage, upstage].into_iter().enumerate() {
         for n in 0..4u16 {
             let x = -4.5 + 3.0 * n as f32;
-            let fixture = a_fixture(
+            let mut fixture = a_fixture(
                 &format!("Mover {}", row * 4 + n as usize + 1),
                 mover.id,
-                dmx(1, next),
-                aimed(x, y, z, HANGING),
+                addresses.take(mover.channel_count),
+                aimed(x, -0.3, 0.0, facing::DOWN),
             );
+            fixture.parent = Some(truss);
             into.create("fixtures", &fixture).await?;
-            next += mover.channel_count;
         }
         for n in 0..4u16 {
-            let x = -6.0 + 4.0 * n as f32;
-            let fixture = a_fixture(
+            let x = -5.0 + 3.4 * n as f32;
+            let mut fixture = a_fixture(
                 &format!("Wash {}", row * 4 + n as usize + 1),
                 wash.id,
-                dmx(1, next),
-                aimed(x, y, z, HANGING),
+                addresses.take(wash.channel_count),
+                // The washes are angled at the floor rather than straight down, so
+                // the two systems do not simply overlap.
+                aimed(x, -0.3, 0.6, if row == 0 { facing::DOWNSTAGE } else { facing::UPSTAGE }),
             );
+            fixture.parent = Some(truss);
             into.create("fixtures", &fixture).await?;
-            next += wash.channel_count;
         }
     }
     for n in 0..4u16 {
+        // On the deck, looking up and downstage at the room.
         let fixture = a_fixture(
             &format!("Strobe {}", n + 1),
             strobe.id,
-            dmx(1, next),
-            aimed(-6.0 + 4.0 * n as f32, 2.0, 0.0, HANGING),
+            addresses.take(strobe.channel_count),
+            aimed(-4.5 + 3.0 * n as f32, 0.9, -4.6, Vec3 { x: 0.0, y: -0.2, z: 1.0 }),
         );
         into.create("fixtures", &fixture).await?;
-        next += strobe.channel_count;
     }
 
     // Two tempos, because the argument for a speed master is that two things can run
@@ -113,107 +130,181 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     let washes = of("Wash");
     let strobes = of("Strobe");
 
-    // A tilt wave across the movers: one effect id, one phase per head, so the
-    // effects panel gathers them back into a single editable wave rather than eight
-    // unrelated sines. Spread is what turns the phase offsets into a wave rather than
-    // eight heads doing the same thing at different times for no reason.
-    let wave = id();
-    let mut tilt_wave = a_cue("Tilt wave", 1.0, Vec::new());
-    tilt_wave.fade_in_ms = 1_500;
-    for (n, fixture) in movers.iter().enumerate() {
-        tilt_wave
-            .captures
-            .push(capture(*fixture, ParameterKind::Intensity, ParameterValue::Float(1.0)));
-        tilt_wave.captures.push(ParameterCapture {
-            effect: Some(EffectSpec {
-                effect_id: wave,
-                curve: Curve::Shape(Shape::Sine),
-                rate: Rate::Master { id: half.id, multiplier: 1.0 },
-                low: ParameterValue::Float(0.25),
-                high: ParameterValue::Float(0.75),
-                width: 0.5,
-                direction: Direction::Forward,
-                phase: n as f32 / movers.len() as f32,
-                spread: Spread::Linear,
-                t0: None,
-            }),
-            ..capture(*fixture, ParameterKind::Tilt, ParameterValue::Float(0.5))
-        });
-    }
+    // ── The movers ────────────────────────────────────────────────────────────
+    //
+    // One effect id per look, one phase per head, so the effects panel gathers each
+    // back into a single editable wave rather than eight unrelated sines.
+    let shaped = |on: &[Uuid],
+                  kind: ParameterKind,
+                  shape,
+                  rate,
+                  low: ParameterValue,
+                  high: ParameterValue,
+                  width|
+     -> Vec<ParameterCapture> {
+        let effect = id();
+        let mut captures = Vec::new();
+        for (n, fixture) in on.iter().enumerate() {
+            captures.push(level(*fixture, 1.0));
+            captures.push(ParameterCapture {
+                effect: Some(EffectSpec {
+                    effect_id: effect,
+                    curve: Curve::Shape(shape),
+                    rate,
+                    low: low.clone(),
+                    high: high.clone(),
+                    width,
+                    direction: Direction::Forward,
+                    phase: n as f32 / on.len().max(1) as f32,
+                    spread: Spread::Linear,
+                    t0: None,
+                }),
+                ..capture(*fixture, kind.clone(), low.clone())
+            });
+        }
+        captures
+    };
 
-    // A colour chase across the washes, on the beat.
-    let chase = id();
-    let mut colour_chase = a_cue("Colour chase", 1.0, Vec::new());
-    colour_chase.fade_in_ms = 2_000;
-    for (n, fixture) in washes.iter().enumerate() {
-        colour_chase
-            .captures
-            .push(capture(*fixture, ParameterKind::Intensity, ParameterValue::Float(0.8)));
-        colour_chase.captures.push(ParameterCapture {
-            effect: Some(EffectSpec {
-                effect_id: chase,
-                curve: Curve::Shape(Shape::Sine),
-                rate: Rate::Master { id: beat.id, multiplier: 0.25 },
-                low: ParameterValue::rgb(1.0, 0.0, 0.4),
-                high: ParameterValue::rgb(0.0, 0.6, 1.0),
-                width: 0.5,
-                direction: Direction::Forward,
-                phase: n as f32 / washes.len() as f32,
-                spread: Spread::Linear,
-                t0: None,
-            }),
-            ..capture(*fixture, ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
-        });
-    }
+    let on_beat = |multiplier: f32| Rate::Master { id: beat.id, multiplier };
+    let on_half = |multiplier: f32| Rate::Master { id: half.id, multiplier };
+
+    let mover_looks = vec![
+        with_fade(
+            a_cue(
+                "Tilt wave",
+                1.0,
+                shaped(&movers, ParameterKind::Tilt, Shape::Sine, on_half(1.0),
+                       ParameterValue::Float(0.25), ParameterValue::Float(0.75), 0.5),
+            ),
+            1_500,
+        ),
+        with_fade(
+            a_cue(
+                "Pan sweep",
+                2.0,
+                shaped(&movers, ParameterKind::Pan, Shape::Triangle, on_half(0.5),
+                       ParameterValue::Float(0.2), ParameterValue::Float(0.8), 0.5),
+            ),
+            2_000,
+        ),
+        with_fade(
+            a_cue(
+                "Snap positions",
+                3.0,
+                shaped(&movers, ParameterKind::Pan, Shape::Square, on_beat(1.0),
+                       ParameterValue::Float(0.3), ParameterValue::Float(0.7), 0.5),
+            ),
+            0,
+        ),
+        // Not everything is an effect: a static look is a cue too, and it is what
+        // an operator drops to when the room needs to calm down.
+        with_fade(
+            a_cue(
+                "Centre",
+                4.0,
+                movers
+                    .iter()
+                    .flat_map(|fixture| {
+                        [
+                            level(*fixture, 0.6),
+                            capture(*fixture, ParameterKind::Pan, ParameterValue::Float(0.5)),
+                            capture(*fixture, ParameterKind::Tilt, ParameterValue::Float(0.5)),
+                        ]
+                    })
+                    .collect(),
+            ),
+            3_000,
+        ),
+        with_fade(
+            a_cue("Movers out", 5.0, movers.iter().map(|f| level(*f, 0.0)).collect()),
+            2_000,
+        ),
+    ];
+
+    let wash_looks = vec![
+        with_fade(
+            a_cue(
+                "Colour chase",
+                1.0,
+                shaped(&washes, ParameterKind::ColorRgb, Shape::Sine, on_beat(0.25),
+                       ParameterValue::rgb(1.0, 0.0, 0.4), ParameterValue::rgb(0.0, 0.6, 1.0), 0.5),
+            ),
+            2_000,
+        ),
+        with_fade(
+            a_cue(
+                "Warm",
+                2.0,
+                washes.iter().flat_map(|f| [level(*f, 0.7), hue(*f, 1.0, 0.55, 0.2)]).collect(),
+            ),
+            4_000,
+        ),
+        with_fade(
+            a_cue(
+                "Deep blue",
+                3.0,
+                washes.iter().flat_map(|f| [level(*f, 0.5), hue(*f, 0.05, 0.1, 0.9)]).collect(),
+            ),
+            4_000,
+        ),
+        with_fade(
+            a_cue(
+                "Level chase",
+                4.0,
+                shaped(&washes, ParameterKind::Intensity, Shape::SawDown, on_beat(1.0),
+                       ParameterValue::Float(0.05), ParameterValue::Float(1.0), 0.5),
+            ),
+            500,
+        ),
+    ];
 
     // And the strobes, stepping rather than sweeping: a square wave is a strobe that
     // is on or off, which is what a step list says and a sine cannot.
-    let steps = id();
-    let mut hits = a_cue("Strobe hits", 1.0, Vec::new());
-    for (n, fixture) in strobes.iter().enumerate() {
-        hits.captures.push(ParameterCapture {
-            effect: Some(EffectSpec {
-                effect_id: steps,
-                curve: Curve::Shape(Shape::Square),
-                rate: Rate::Master { id: beat.id, multiplier: 1.0 },
-                low: ParameterValue::Float(0.0),
-                high: ParameterValue::Float(1.0),
-                width: 0.2,
-                direction: Direction::Forward,
-                phase: n as f32 / strobes.len() as f32,
-                spread: Spread::Linear,
-                t0: None,
-            }),
-            ..capture(*fixture, ParameterKind::Intensity, ParameterValue::Float(0.0))
-        });
-    }
+    let strobe_looks = vec![
+        with_fade(
+            a_cue(
+                "Hits",
+                1.0,
+                shaped(&strobes, ParameterKind::Intensity, Shape::Square, on_beat(1.0),
+                       ParameterValue::Float(0.0), ParameterValue::Float(1.0), 0.2),
+            ),
+            0,
+        ),
+        // A strobe channel carries a *rate*: the console sends the byte and the
+        // fixture does the flashing, so there is nothing here for the evaluator to
+        // work out.
+        with_fade(
+            a_cue(
+                "Run them",
+                2.0,
+                strobes
+                    .iter()
+                    .flat_map(|f| {
+                        [
+                            level(*f, 1.0),
+                            capture(*f, ParameterKind::Strobe, ParameterValue::Float(0.6)),
+                        ]
+                    })
+                    .collect(),
+            ),
+            0,
+        ),
+        with_fade(
+            a_cue("Strobes out", 3.0, strobes.iter().map(|f| level(*f, 0.0)).collect()),
+            1_000,
+        ),
+    ];
 
-    // One sequence each, and each left *running*, so the show has something in it
-    // the moment it opens rather than waiting to be told to.
-    for (name, cue) in [("Movers", tilt_wave), ("Washes", colour_chase), ("Strobes", hits)] {
-        into.create("cues", &cue).await?;
-        let sequence = Sequence {
-            id: id(),
-            name: name.to_string(),
-            cue_ids: vec![cue.id],
-            active_cue_index: None,
-            went_at: None,
-        };
-        into.create("sequences", &sequence).await?;
-        // Through the sequence's own Go, not by writing `active_cue_index`: taking a
-        // cue is what anchors `went_at`, and an effect with no anchor renders
-        // nothing.
-        into.set(
-            vec![
-                PathSegment::Key("sequences".into()),
-                PathSegment::Id(sequence.id),
-                PathSegment::Key("goNext".into()),
-            ],
-            serde_json::json!({}),
-            Lifecycle::Synced,
-        )
-        .await?;
-    }
+    // Each left *running*, so the show has something in it the moment it opens
+    // rather than waiting to be told to.
+    a_stack(into, "Movers", mover_looks, true).await?;
+    a_stack(into, "Washes", wash_looks, true).await?;
+    a_stack(into, "Strobes", strobe_looks, true).await?;
 
     Ok(())
+}
+
+fn with_fade(mut cue: Cue, fade_in_ms: u32) -> Cue {
+    cue.fade_in_ms = fade_in_ms;
+    cue
 }
