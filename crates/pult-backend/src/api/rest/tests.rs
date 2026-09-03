@@ -21,6 +21,28 @@ async fn a_console() -> (String, OwnAssets) {
     (addr, assets)
 }
 
+/// What the asset routes need, plus what the two show routes need beside them.
+///
+/// One router serves both, so a test standing it up has to supply both — even though
+/// nothing in this module asks a show to travel.
+#[derive(Clone)]
+struct TestState {
+    assets: AssetState,
+    shows: ShowsState,
+}
+
+impl axum::extract::FromRef<TestState> for AssetState {
+    fn from_ref(state: &TestState) -> AssetState {
+        state.assets.clone()
+    }
+}
+
+impl axum::extract::FromRef<TestState> for ShowsState {
+    fn from_ref(state: &TestState) -> ShowsState {
+        state.shows.clone()
+    }
+}
+
 /// An asset store with a directory of its own, taken away when the test ends.
 ///
 /// The bytes are files in a bundle now, so a test that stores one has to have
@@ -61,7 +83,15 @@ async fn a_console_and_its_engine() -> (String, OwnAssets, crate::engine::Engine
         dir,
     };
 
-    let state = AssetState {
+    let state = TestState {
+        shows: ShowsState {
+            // Nothing here imports or exports a whole show; those routes have their
+            // own tests against a real bundle, and a console with no show open is
+            // the honest state for one that is only serving assets.
+            shows: crate::ShowsHandle::detached(),
+            assets: assets.store.clone(),
+        },
+        assets: AssetState {
         assets: assets.store.clone(),
         engine: handle.clone(),
         node_id: NodeId(Uuid::new_v4()),
@@ -69,6 +99,7 @@ async fn a_console_and_its_engine() -> (String, OwnAssets, crate::engine::Engine
         // Share anything, and a client that could reach the real one from a test
         // would be a test that goes to somebody else's server.
         share: infra::interop::share::ShareHandle::with_base("http://127.0.0.1:1", None),
+        },
     };
     let app: Router = routes().with_state(state);
 

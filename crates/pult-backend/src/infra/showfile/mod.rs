@@ -7,6 +7,7 @@ pub mod bundle;
 pub mod oplog;
 pub mod order;
 pub mod recent;
+pub mod travel;
 pub mod versions;
 
 #[cfg(test)]

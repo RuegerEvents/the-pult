@@ -590,3 +590,85 @@ async fn forget_the_row(bundle: &Path, id: uuid::Uuid) {
         .expect("the row goes");
     pool.close().await;
 }
+
+// ── Travelling ────────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_show_goes_out_as_one_file_and_comes_back_as_a_show() {
+    let dir = Dir::new();
+    let mut config = a_config(&dir);
+    config.show = Some(dir.path().join("Touring.pult"));
+    let console = Console::start(config).await.expect("a console starts");
+    let port = console.http_addr().port();
+    let shows = console.shows();
+    tokio::spawn(console.serve());
+
+    // Something in it that is bytes rather than rows, since the assets are the half
+    // that stopped living in the database.
+    let posted = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/assets"))
+        .header("content-type", "image/png")
+        .body(PNG.to_vec())
+        .send()
+        .await
+        .expect("the upload is taken");
+    assert!(posted.status().is_success());
+    let sha = posted.json::<Value>().await.unwrap()["sha256"].as_str().unwrap().to_string();
+
+    let exported = reqwest::get(format!("http://127.0.0.1:{port}/api/shows/export"))
+        .await
+        .expect("the export answers");
+    assert_eq!(
+        exported.headers()["content-type"],
+        "application/vnd.pult.show+zip",
+        "and it is offered as a file rather than as a page",
+    );
+    assert!(exported.headers()["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains("Touring.pultz"));
+    let zipped = exported.bytes().await.unwrap();
+
+    let imported: Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/api/shows/import"))
+        .body(zipped)
+        .send()
+        .await
+        .expect("the import answers")
+        .json()
+        .await
+        .expect("and answers JSON");
+    let back = PathBuf::from(imported["path"].as_str().expect("a path"));
+    assert!(back.join("assets").join(&sha).is_file(), "the drawing came with it");
+
+    // Importing is not opening: an operator who has just taken four shows off a
+    // stick has not asked to be moved into the last one.
+    assert_eq!(config_of(port).await["show"]["name"], "Touring");
+
+    // But the show it wrote is one this console will open — a different folder,
+    // under the shows directory rather than beside the original.
+    let original = PathBuf::from(config_of(port).await["show"]["path"].as_str().unwrap());
+    assert_ne!(back, original);
+    rpcs::open_a_show("show.open", &json!({ "path": back.clone() }), &shows)
+        .await
+        .expect("the imported show opens");
+
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if let Ok(response) = reqwest::get(format!("http://127.0.0.1:{port}/api/config")).await {
+            if let Ok(config) = response.json::<Value>().await {
+                if config["show"]["path"] == json!(back) {
+                    return;
+                }
+            }
+        }
+    }
+    panic!("the imported show never opened");
+}
+
+/// A one-pixel PNG header, so the test carries a type the store accepts.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89,
+];

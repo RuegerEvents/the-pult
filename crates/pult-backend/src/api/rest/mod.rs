@@ -46,6 +46,20 @@ impl FromRef<AppState> for ConfigState {
     }
 }
 
+/// What a show travelling in or out touches: where the show is, where new ones go,
+/// and the pool to copy the database through.
+#[derive(Clone)]
+pub struct ShowsState {
+    pub shows: crate::ShowsHandle,
+    pub assets: assets::AssetStore,
+}
+
+impl FromRef<AppState> for ShowsState {
+    fn from_ref(state: &AppState) -> Self {
+        ShowsState { shows: state.shows.clone(), assets: state.assets.clone() }
+    }
+}
+
 /// The part of the console an asset request touches: somewhere to keep bytes, and a
 /// way to find out which other stations exist. Narrower than [`AppState`] on purpose
 /// — it is the whole surface these two routes need, and a test can build it.
@@ -74,6 +88,7 @@ pub fn routes<S>() -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
     AssetState: FromRef<S>,
+    ShowsState: FromRef<S>,
 {
     Router::new()
         .route("/assets", post(upload))
@@ -98,6 +113,12 @@ where
         .route("/api/gdtf-share/status", get(share_status))
         .route("/api/gdtf-share/search", get(share_search))
         .route("/api/gdtf-share/import", post(share_import))
+        // A whole show, in and out. Routes rather than RPCs for the reason importing
+        // a rig is one: a show is tens of megabytes and does not go through a
+        // WebSocket frame — and a browser downloading one wants a file, which is a
+        // thing only an HTTP response can be.
+        .route("/api/shows/export", get(export_show))
+        .route("/api/shows/import", post(import_show))
         // Raw bytes rather than multipart: there is one file and its type is in the
         // header, so a form encoding would only be something else to get wrong.
         .layer(axum::extract::DefaultBodyLimit::max(assets::MAX_BYTES))
@@ -650,6 +671,59 @@ fn as_json(prefs: &infra::preferences::Preferences) -> serde_json::Value {
             "hasPassword": !each.password.is_empty(),
         })),
     })
+}
+
+/// Hand the open show back as a `.pultz`.
+///
+/// `?versions=1` includes the snapshots, which are one whole database each and are
+/// left out by default: somebody sending a show to a colleague is sending the show,
+/// not their afternoon's undo history.
+async fn export_show(
+    State(state): State<ShowsState>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    use crate::infra::showfile::travel;
+
+    let Some(bundle) = state.shows.bundle.clone() else {
+        return bad_request("there is no show open to export");
+    };
+    let versions = matches!(query.get("versions").map(String::as_str), Some("1") | Some("true"));
+
+    match travel::export(&bundle, state.assets.pool(), versions).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, travel::MIME.to_string()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}\"", travel::filename_for(&bundle)),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
+/// Take a `.pultz` and put the show in it where this console keeps shows.
+///
+/// It is *not* opened. Importing and opening are two acts — an operator who has just
+/// imported four shows off a stick has not asked to be moved into the last one — and
+/// the answer carries the path, which is what `show.open` takes.
+async fn import_show(State(state): State<ShowsState>, body: Bytes) -> Response {
+    use crate::infra::showfile::travel;
+
+    let Some(dir) = state.shows.shows_dir.clone() else {
+        return bad_request("this console has nowhere to keep shows");
+    };
+    match travel::import(&body, &dir) {
+        Ok(bundle) => Json(json!({
+            "path": bundle.path(),
+            "name": bundle.seed_name(),
+        }))
+        .into_response(),
+        Err(e) => bad_request(&format!("{e:#}")),
+    }
 }
 
 fn bad_request(why: &str) -> Response {
