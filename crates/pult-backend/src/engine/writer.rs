@@ -71,6 +71,15 @@ pub enum WriteJob {
     OrderAppend { table: String, id: Uuid },
     /// A replicated operation, for a peer that reconnects.
     Oplog { op: Box<Operation> },
+    /// Nothing at all, for a caller that only wants to know when the queue in front
+    /// of it has landed.
+    ///
+    /// The queue is ordered, so a receipt for a batch containing one of these is a
+    /// receipt for everything submitted before it. What wants that is a version:
+    /// copying the show before its own row is on the disk would give a snapshot that
+    /// does not contain the version it is a snapshot of, and every restore would
+    /// quietly forget the point it restored to.
+    Barrier,
 }
 
 /// A batch as it is handed over: the jobs, and who to tell when they are durable.
@@ -215,6 +224,9 @@ async fn commit(pool: &SqlitePool, batch: &[Submission]) -> Result<(), String> {
                     // opens no transaction of its own.
                     order::append(pool, table, *id).await.map_err(|e| e.to_string())
                 }
+                // Nothing to do is the whole of it: what a barrier is for is being
+                // in this batch at all.
+                WriteJob::Barrier => Ok(()),
                 WriteJob::Order { table, ids } => {
                     // Held back until the batch has committed; see the module note.
                     // Replacing rather than appending is what makes a burst of creates

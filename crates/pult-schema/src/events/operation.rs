@@ -37,8 +37,13 @@ impl std::fmt::Display for NodeId {
 }
 
 /// A Lamport-style vector clock for causal ordering of distributed operations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct VectorClock(pub HashMap<NodeId, u64>);
+///
+/// TS because a saved version carries the clock it was taken at — the one record of
+/// a past state that outlives the oplog's retention, and what a diff between two
+/// versions would have to anchor on. It is a map keyed by station id on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, ts_rs::TS)]
+#[ts(export)]
+pub struct VectorClock(#[ts(type = "Record<string, number>")] pub HashMap<NodeId, u64>);
 
 impl VectorClock {
     pub fn increment(&mut self, node: NodeId) -> u64 {

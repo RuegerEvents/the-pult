@@ -123,6 +123,18 @@ pub async fn since(pool: &SqlitePool, known: &VectorClock) -> Result<Vec<Operati
 
 /// How many operations the log holds. Used to decide whether catch-up is cheaper
 /// than a snapshot.
+/// The most recent moment anything was written, as this station recorded it.
+///
+/// What autosave asks "has anything happened since the last version". The newest
+/// timestamp rather than a count, because a count goes *down* when the log is pruned
+/// and would then read as "nothing happened" for as long as it took to climb back —
+/// which on a quiet show is the whole of the interval it was meant to be watching.
+///
+/// `None` for a log with nothing in it, which is a show nobody has touched.
+pub async fn newest(pool: &SqlitePool) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT MAX(timestamp) FROM oplog").fetch_one(pool).await?)
+}
+
 pub async fn len(pool: &SqlitePool) -> Result<u64> {
     let row = sqlx::query("SELECT COUNT(*) AS n FROM oplog").fetch_one(pool).await?;
     Ok(row.try_get::<i64, _>("n").unwrap_or(0).max(0) as u64)

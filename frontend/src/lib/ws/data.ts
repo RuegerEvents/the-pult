@@ -27,6 +27,7 @@ import type { StagePlan } from '../generated/StagePlan.js';
 import type { Station } from '../generated/Station.js';
 import type { Symbol } from '../generated/Symbol.js';
 import type { User } from '../generated/User.js';
+import type { Version } from '../generated/Version.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
 
@@ -119,6 +120,10 @@ export type SymbolEntity = PathProxy<Symbol> & {
 };
 
 export type UserEntity = PathProxy<User> & {
+  delete(): Promise<void>;
+};
+
+export type VersionEntity = PathProxy<Version> & {
   delete(): Promise<void>;
 };
 
@@ -410,6 +415,19 @@ export type UserCollection = {
   [n: number]: UserEntity;
 };
 
+export type VersionCollection = {
+  get(): Promise<Version[]>;
+  set(value: Version[]): Promise<void>;
+  subscribe(cb: (value: Version[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Version[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): VersionEntity;
+  nth(n: number): VersionEntity;
+  create(entity: Version): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  [n: number]: VersionEntity;
+};
+
 // ── DataRoot ─────────────────────────────────────────────────────────────────
 
 /** Typed root for the pult:data context. Every field maps to a live path proxy. */
@@ -437,6 +455,7 @@ export type DataRoot = {
   stations: StationCollection;
   symbols: SymbolCollection;
   users: UserCollection;
+  versions: VersionCollection;
 };
 
 /** Create the typed root proxy. The runtime proxy handles all DataRoot operations generically. */

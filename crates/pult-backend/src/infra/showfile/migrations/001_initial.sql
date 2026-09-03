@@ -185,6 +185,15 @@ CREATE TABLE IF NOT EXISTS users (
     colour TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS versions (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT,
+    created_at TEXT NOT NULL,
+    user_id TEXT,
+    automatic INTEGER NOT NULL,
+    clock TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS collection_order (
     table_name TEXT NOT NULL,
     entity_id  TEXT NOT NULL,
@@ -216,9 +225,6 @@ CREATE TABLE IF NOT EXISTS oplog_floor (
     pruned_through_seq INTEGER NOT NULL
 );
 
--- The metadata only: the bytes live in `assets/<sha256>` in the bundle beside this
--- file. Keeping them here made every VACUUM, every backup and every version snapshot
--- carry the rig's whole mesh library.
 CREATE TABLE IF NOT EXISTS assets (
     sha256     TEXT NOT NULL PRIMARY KEY,
     mime       TEXT NOT NULL,

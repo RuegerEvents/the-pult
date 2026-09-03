@@ -46,6 +46,13 @@ use crate::{
 /// for far longer than this, so one write still goes out at once.
 const COLLECTION_FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// What one write does to a saved version.
+enum VersionTouched {
+    Nothing,
+    Taken(Uuid),
+    Dropped(Uuid),
+}
+
 // ── In-memory show state ──────────────────────────────────────────────────────
 
 /// The whole show, held as JSON keyed by entity table.
@@ -87,6 +94,12 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
     ("clients", || serde_json::to_value(ClientStatsMap::default()).unwrap_or_default()),
     ("plugins", || serde_json::to_value(PluginsState::default()).unwrap_or_default()),
+    // Which saved versions this station holds a snapshot for. LOCAL because it is a
+    // fact about this machine's disk: a `versions` row replicates and the file it
+    // names does not, so a station that joined after a version was taken has the row
+    // and no file — and the panel can only say "not on this station" because the
+    // station says which ones are.
+    (crate::infra::showfile::versions::VERSIONS_HERE, || serde_json::json!([])),
 ];
 
 fn seed_local() -> BTreeMap<String, serde_json::Value> {
@@ -678,6 +691,9 @@ pub struct ShowEngine {
     /// What to call this show if the file has no `show` row. From the bundle's
     /// manifest; `None` for a station with no bundle open, which then seeds nothing.
     seed_name: Option<String>,
+    /// What turns a `versions` row into a file on this station's disk. `None` for a
+    /// station with no bundle open, which has nowhere to put one.
+    checkpointer: Option<crate::infra::showfile::versions::Checkpointer>,
 }
 
 /// How many appends between prunes.
@@ -775,6 +791,7 @@ impl ShowEngine {
             appends_since_prune: Default::default(),
             pruning: Default::default(),
             seed_name: None,
+            checkpointer: None,
         };
         (engine, broadcast)
     }
@@ -790,6 +807,15 @@ impl ShowEngine {
     /// the folder, and nothing else does — a fresh `show.db` has no row at all.
     pub fn set_seed_name(&mut self, name: impl Into<String>) {
         self.seed_name = Some(name.into());
+    }
+
+    /// Attach the thing that copies the show when a version is taken. Call before
+    /// `run`.
+    pub fn set_checkpointer(
+        &mut self,
+        checkpointer: crate::infra::showfile::versions::Checkpointer,
+    ) {
+        self.checkpointer = Some(checkpointer);
     }
 
     pub async fn run(mut self) {
@@ -873,7 +899,7 @@ impl ShowEngine {
                     // number rather than the verb. Which is the whole point: two
                     // stations each adding ten percent to whatever they happened to be
                     // showing would not end up holding the same value.
-                    let resolved = match self.resolve_verbs(path, value) {
+                    let resolved = match self.resolve_verbs(path, value, authorship.user_id) {
                         Ok(resolved) => resolved,
                         Err(e) => {
                             let _ = reply.send(Err(e));
@@ -898,12 +924,21 @@ impl ShowEngine {
                         // own, at 40 Hz, would pay for a read nobody will ever undo.
                         authorship.previous =
                             authorship.user_id.map(|_| self.value_before(&path)).unwrap_or(None);
+                        // Read before the write, because a delete says which version
+                        // it is deleting only by naming it — and by the time the write
+                        // has been applied, the row it named is gone.
+                        let touched_versions = self.version_touched_by(&path, &value);
                         result = self.apply_set(path.clone(), value.clone(), lifecycle).await;
                         if result.is_err() {
                             break;
                         }
                         self.state_version += 1;
                         self.record_write(&path, lifecycle);
+                        // A version's row has landed in memory; the file follows it
+                        // once the row is on the disk. Here rather than in the verb
+                        // above, because a version arriving from a peer, or a delete
+                        // arriving from an undo, has to reach the same place.
+                        self.checkpoint(touched_versions).await;
                         self.log_local_write(&path, &value, lifecycle, &authorship).await;
                         self.broadcast_after_set(&path, value.clone());
                         if lifecycle != Lifecycle::Local {
@@ -1614,6 +1649,7 @@ impl ShowEngine {
         &self,
         path: Path,
         value: serde_json::Value,
+        author: Option<Uuid>,
     ) -> Result<Vec<(Path, serde_json::Value)>, BackendError> {
         let by = || -> Result<f32, BackendError> {
             value
@@ -1626,6 +1662,48 @@ impl ShowEngine {
         };
 
         match path.as_slice() {
+            // Save. The row is built here rather than in the browser, because two of
+            // the four fields are the engine's own: the show's clock, and the moment
+            // the station reached the write. Turned into an ordinary `__create`, so
+            // history, the showfile and every peer see a create like any other — and
+            // Ctrl-Z after an accidental Save deletes the row, which takes the file
+            // with it.
+            [PathSegment::Key(table), PathSegment::Key(verb)]
+                if table == "versions" && verb == "__checkpoint" =>
+            {
+                let version = pult_schema::types::Version {
+                    id: Uuid::new_v4(),
+                    name: value
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .filter(|name| !name.trim().is_empty()),
+                    created_at: chrono::Utc::now(),
+                    user_id: author,
+                    automatic: value
+                        .get("automatic")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    clock: self.clock.clone(),
+                };
+                let created = vec![
+                    PathSegment::Key("versions".into()),
+                    PathSegment::Key("__create".into()),
+                ];
+                let row = serde_json::to_value(&version).map_err(|e| {
+                    BackendError::InvalidValue { path: path.clone(), reason: e.to_string() }
+                })?;
+                Ok(vec![(created, row)])
+            }
+            // Nothing else has a version to take.
+            [.., PathSegment::Key(verb)] if verb == "__checkpoint" => {
+                Err(BackendError::InvalidValue {
+                    path: path.clone(),
+                    reason: "only a show has versions; write to \
+                             [\"versions\", \"__checkpoint\"]"
+                        .into(),
+                })
+            }
             // The programmer, which may have to take the key to nudge it.
             [PathSegment::Key(table), PathSegment::Key(verb)]
                 if table == "programmer_values" && verb == "__by" =>
@@ -2437,10 +2515,18 @@ impl ShowEngine {
             debug!("[sync] dropping superseded write to {:?} from {}", op.path, op.node_id);
             return;
         }
+        // Read before the write for the reason the local path reads it before the
+        // write: a delete names the version it removes, and once the write has landed
+        // the row it named is gone.
+        let touched_versions = self.version_touched_by(&op.path, &op.value);
         if self.apply_set(op.path.clone(), op.value.clone(), op.lifecycle).await.is_ok() {
             self.log_operation(&op).await;
             self.path_clocks.insert(op.path.clone(), (op.clock, op.node_id));
             self.broadcast_after_set(&op.path, op.value);
+            // A peer saved, so this station saves too — its own showfile, which is
+            // the only thing it could honestly copy. That is what makes a version a
+            // point in the *show's* history rather than in one console's.
+            self.checkpoint(touched_versions).await;
         } else {
             warn!("failed to apply peer operation: {:?}", op.path);
         }
@@ -2681,6 +2767,62 @@ impl ShowEngine {
         self.broadcast_after_set(&path, value.clone());
         if let Some(sync) = &self.sync {
             sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
+        }
+    }
+
+    /// What this write is about to do to a saved version, read *before* it is
+    /// applied.
+    ///
+    /// A delete names the version it is removing and nothing else, so by the time the
+    /// write has landed the row is gone and there is nothing left to ask.
+    fn version_touched_by(&self, path: &Path, value: &serde_json::Value) -> VersionTouched {
+        if self.checkpointer.is_none() {
+            return VersionTouched::Nothing;
+        }
+        match path.as_slice() {
+            [PathSegment::Key(table), PathSegment::Key(action)]
+                if table == "versions" && action == "__create" =>
+            {
+                match value.get("id").and_then(|v| v.as_str()).and_then(|id| Uuid::parse_str(id).ok())
+                {
+                    Some(id) => VersionTouched::Taken(id),
+                    None => VersionTouched::Nothing,
+                }
+            }
+            [PathSegment::Key(table), seg, PathSegment::Key(action)]
+                if table == "versions" && action == "__delete" =>
+            {
+                match self.state.resolve_id("versions", seg) {
+                    Some(id) => VersionTouched::Dropped(id),
+                    None => VersionTouched::Nothing,
+                }
+            }
+            _ => VersionTouched::Nothing,
+        }
+    }
+
+    /// Copy the show, or throw the copy away.
+    ///
+    /// Reached by every kind of write, deliberately — an operator saving, a peer's
+    /// copy of the same save, an undo deleting one — because what makes a snapshot
+    /// right is the row existing on this station, and how the row got here is not
+    /// this station's business.
+    ///
+    /// The copy waits on a **barrier** rather than on the version's own receipt: the
+    /// writer's queue is ordered, so a barrier submitted now lands after the upsert
+    /// submitted a moment ago, and the snapshot therefore contains its own row.
+    /// Getting that backwards would make every restore quietly forget the point it
+    /// restored to.
+    async fn checkpoint(&mut self, touched: VersionTouched) {
+        let Some(checkpointer) = self.checkpointer.clone() else { return };
+        match touched {
+            VersionTouched::Nothing => {}
+            VersionTouched::Taken(id) => {
+                if let Some(receipt) = self.writer.submit(vec![writer::WriteJob::Barrier]).await {
+                    checkpointer.take(id, receipt);
+                }
+            }
+            VersionTouched::Dropped(id) => checkpointer.forget(id),
         }
     }
 

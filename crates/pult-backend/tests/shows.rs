@@ -204,16 +204,389 @@ async fn a_path_that_is_not_a_show_is_refused_while_somebody_is_still_looking_at
 }
 
 /// The `show` row's id, read without the engine.
+///
+/// Polled, because the engine seeds the row on the way up and a station is answering
+/// before that write is on the disk — which is the whole point of the writer being
+/// off the actor, and is a race a test has to wait out rather than assume away.
 async fn show_id(bundle: &Path) -> String {
+    use std::str::FromStr;
+    for _ in 0..200 {
+        let opts = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
+            "sqlite:{}?mode=ro",
+            bundle.join("show.db").display()
+        ))
+        .unwrap();
+        if let Ok(pool) = sqlx::SqlitePool::connect_with(opts).await {
+            let id: Option<String> =
+                sqlx::query_scalar("SELECT id FROM show").fetch_optional(&pool).await.ok().flatten();
+            pool.close().await;
+            if let Some(id) = id {
+                return id;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("{} never got a show row", bundle.display());
+}
+
+// ── Versions ──────────────────────────────────────────────────────────────────
+
+/// Take a version and wait for its file, which is written on a task of its own.
+async fn a_version(station: &pult_backend::Running, name: Option<&str>) -> uuid::Uuid {
+    use pult_schema::{lifecycle::Lifecycle, path::PathSegment};
+
+    let args = match name {
+        Some(name) => json!({ "name": name }),
+        None => json!({}),
+    };
+    station
+        .engine
+        .set(
+            vec![
+                PathSegment::Key("versions".into()),
+                PathSegment::Key("__checkpoint".into()),
+            ],
+            Lifecycle::Persisted,
+            args,
+        )
+        .await
+        .expect("the version is taken");
+
+    let versions = versions_of(station).await;
+    versions.last().expect("a version row").id
+}
+
+async fn versions_of(station: &pult_backend::Running) -> Vec<pult_schema::types::Version> {
+    use pult_schema::path::PathSegment;
+    let value = station
+        .engine
+        .get(vec![PathSegment::Key("versions".into())])
+        .await
+        .expect("the versions read");
+    let mut rows: Vec<pult_schema::types::Version> =
+        serde_json::from_value(value).unwrap_or_default();
+    rows.sort_by_key(|row| row.created_at);
+    rows
+}
+
+/// Wait until this station says it holds — or no longer holds — a snapshot.
+///
+/// `versions_here` rather than the file, deliberately, and it is the same
+/// distinction the panel makes. `VACUUM INTO` creates its file and *then* fills it,
+/// so a file that exists is not yet a database anybody can read; the station
+/// publishes what it holds only once the copy has finished.
+async fn wait_until_here(station: &pult_backend::Running, id: uuid::Uuid, present: bool) {
+    use pult_schema::path::PathSegment;
+    for _ in 0..200 {
+        let value = station
+            .engine
+            .get(vec![PathSegment::Key("versions_here".into())])
+            .await
+            .unwrap_or(Value::Null);
+        let here: Vec<uuid::Uuid> = serde_json::from_value(value).unwrap_or_default();
+        if here.contains(&id) == present {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("{id} was never {}", if present { "written" } else { "removed" });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_snapshot_contains_its_own_row() {
+    // The rule the whole checkpointer is arranged around. Copy the show before the
+    // version's row is durable and the snapshot does not contain the version it is a
+    // snapshot of — so every restore quietly forgets the point it restored to.
+    let dir = Dir::new();
+    let mut config = a_config(&dir);
+    let show = dir.path().join("Saved.pult");
+    config.show = Some(show.clone());
+    let station = pult_backend::start(config).await.expect("a station starts");
+
+    let id = a_version(&station, Some("Before act two")).await;
+    wait_until_here(&station, id, true).await;
+
+    let inside = versions_inside(&show.join("versions").join(format!("{id}.db"))).await;
+    assert!(
+        inside.iter().any(|row| row.id == id),
+        "the snapshot knows about itself: {inside:?}",
+    );
+    assert_eq!(inside[0].name.as_deref(), Some("Before act two"));
+
+    station.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_version_takes_its_file_with_it() {
+    // Which is what Ctrl-Z after an accidental Save has to do: the row is undone
+    // like any other create, and the file follows the row.
+    use pult_schema::{lifecycle::Lifecycle, path::PathSegment};
+
+    let dir = Dir::new();
+    let mut config = a_config(&dir);
+    let show = dir.path().join("Undone.pult");
+    config.show = Some(show.clone());
+    let station = pult_backend::start(config).await.expect("a station starts");
+
+    let id = a_version(&station, None).await;
+    wait_until_here(&station, id, true).await;
+    let file = show.join("versions").join(format!("{id}.db"));
+
+    station
+        .engine
+        .set(
+            vec![
+                PathSegment::Key("versions".into()),
+                PathSegment::Id(id),
+                PathSegment::Key("__delete".into()),
+            ],
+            Lifecycle::Persisted,
+            Value::Null,
+        )
+        .await
+        .expect("the version is dropped");
+
+    wait_until_here(&station, id, false).await;
+    assert!(!file.exists(), "the file goes with the row");
+    station.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_station_says_which_snapshots_it_actually_holds() {
+    // The row replicates and the file does not, so the panel can only say "not on
+    // this station" because the station publishes what it has.
+    use pult_schema::path::PathSegment;
+
+    let dir = Dir::new();
+    let mut config = a_config(&dir);
+    config.show = Some(dir.path().join("Here.pult"));
+    let station = pult_backend::start(config).await.expect("a station starts");
+
+    let id = a_version(&station, None).await;
+    let mut here: Vec<uuid::Uuid> = Vec::new();
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let value = station
+            .engine
+            .get(vec![PathSegment::Key("versions_here".into())])
+            .await
+            .unwrap_or(Value::Null);
+        here = serde_json::from_value(value).unwrap_or_default();
+        if here.contains(&id) {
+            break;
+        }
+    }
+    assert_eq!(here, vec![id]);
+
+    station.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_show_is_the_show_as_it_was() {
+    let dir = Dir::new();
+    let mut config = a_config(&dir);
+    let show = dir.path().join("Rewound.pult");
+    config.show = Some(show.clone());
+    let console = Console::start(config).await.expect("a console starts");
+    let port = console.http_addr().port();
+    let shows = console.shows();
+    let sync = console.sync();
+    let engine = console.engine().expect("a station is running");
+
+    // Something to lose, then a point to come back to, then losing it.
+    let id = {
+        let station_engine = console.engine().expect("a station is running");
+        rename_show(&station_engine, "Act One").await;
+        let id = a_version_through(&station_engine).await;
+        wait_until_taken(&station_engine, id).await;
+        rename_show(&station_engine, "Act Two").await;
+        id
+    };
+    tokio::spawn(console.serve());
+    assert_eq!(show_name(&show).await, "Act Two");
+
+    rpcs::restore_a_show(id, &shows, sync.as_ref(), &engine).await.expect("nobody else is here");
+
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if show_name(&show).await == "Act One" {
+            // And the point that was left behind is still reachable: the restore
+            // takes a version of what it is about to overwrite.
+            assert!(config_of(port).await["show"].is_object(), "and the console is up");
+            return;
+        }
+    }
+    panic!(
+        "the show never came back as it was; it says {:?}, the snapshot is {},          the console says {}",
+        show_name(&show).await,
+        show.join("versions").join(format!("{id}.db")).exists(),
+        config_of(port).await,
+    );
+}
+
+/// What the show calls itself, read off the file rather than out of the station:
+/// the point of a restore is what is on the disk afterwards.
+async fn show_name(bundle: &Path) -> String {
+    use std::str::FromStr;
+    let Ok(opts) = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
+        "sqlite:{}?mode=ro",
+        bundle.join("show.db").display()
+    )) else {
+        return String::new();
+    };
+    let Ok(pool) = sqlx::SqlitePool::connect_with(opts).await else { return String::new() };
+    let name: String =
+        sqlx::query_scalar("SELECT name FROM show").fetch_one(&pool).await.unwrap_or_default();
+    pool.close().await;
+    name
+}
+
+async fn rename_show(engine: &pult_backend::engine::EngineHandle, name: &str) {
+    use pult_schema::{lifecycle::Lifecycle, path::PathSegment};
+    engine
+        .set(
+            vec![PathSegment::Key("show".into()), PathSegment::Key("name".into())],
+            Lifecycle::Persisted,
+            json!(name),
+        )
+        .await
+        .expect("the show is renamed");
+}
+
+/// The same wait, for a caller that has an engine handle and not a `Running`.
+async fn wait_until_taken(engine: &pult_backend::engine::EngineHandle, id: uuid::Uuid) {
+    use pult_schema::path::PathSegment;
+    for _ in 0..200 {
+        let value = engine
+            .get(vec![PathSegment::Key("versions_here".into())])
+            .await
+            .unwrap_or(Value::Null);
+        let here: Vec<uuid::Uuid> = serde_json::from_value(value).unwrap_or_default();
+        if here.contains(&id) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("{id} was never written");
+}
+
+async fn a_version_through(engine: &pult_backend::engine::EngineHandle) -> uuid::Uuid {
+    use pult_schema::{lifecycle::Lifecycle, path::PathSegment};
+    engine
+        .set(
+            vec![
+                PathSegment::Key("versions".into()),
+                PathSegment::Key("__checkpoint".into()),
+            ],
+            Lifecycle::Persisted,
+            json!({}),
+        )
+        .await
+        .expect("the version is taken");
+    let value = engine
+        .get(vec![PathSegment::Key("versions".into())])
+        .await
+        .expect("the versions read");
+    let mut rows: Vec<pult_schema::types::Version> =
+        serde_json::from_value(value).unwrap_or_default();
+    rows.sort_by_key(|row| row.created_at);
+    rows.last().expect("a version").id
+}
+
+/// The `versions` rows a snapshot carries about itself.
+async fn versions_inside(file: &Path) -> Vec<pult_schema::types::Version> {
     use std::str::FromStr;
     let opts = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
         "sqlite:{}?mode=ro",
+        file.display()
+    ))
+    .unwrap();
+    let pool = sqlx::SqlitePool::connect_with(opts).await.expect("the snapshot opens");
+    let rows: Vec<pult_schema::types::Version> =
+        pult_schema::db::get_all(&pool).await.unwrap_or_default();
+    pool.close().await;
+    rows
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_snapshot_this_disk_holds_that_the_show_forgot_gets_its_row_back() {
+    // The case a restore always produces: the "Before restoring…" version is taken
+    // *after* the database that is about to be put back was written, so its row is
+    // not in that database. Without this, the safety net an operator reaches for
+    // when the restore was a mistake would be a file with nothing naming it.
+    let dir = Dir::new();
+    let mut config = a_config(&dir);
+    let show = dir.path().join("Orphan.pult");
+    config.show = Some(show.clone());
+
+    let station = pult_backend::start(config.clone()).await.expect("a station starts");
+    let id = a_version(&station, Some("Kept")).await;
+    wait_until_here(&station, id, true).await;
+    station.shutdown().await;
+
+    // Take the row out from under the show, leaving the file: what a restore does.
+    forget_the_row(&show, id).await;
+
+    let station = pult_backend::start(config).await.expect("it opens again");
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if versions_of(&station).await.iter().any(|row| row.id == id) {
+            station.shutdown().await;
+            return;
+        }
+    }
+    panic!("the snapshot on this disk never got its row back");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn both_stations_snapshot_one_save() {
+    // The row replicates; the file does not. Each station makes its own copy of its
+    // own showfile, which is the only thing either of them could honestly copy.
+    let dir = Dir::new();
+
+    let mut here = a_config(&dir);
+    here.show = Some(dir.path().join("Booth.pult"));
+    here.identity = Some(dir.path().join("booth.node"));
+    let booth = pult_backend::start(here).await.expect("a station starts");
+
+    let mut there = a_config(&dir);
+    there.show = Some(dir.path().join("Roof.pult"));
+    there.identity = Some(dir.path().join("roof.node"));
+    let roof = pult_backend::start(there).await.expect("the other starts");
+
+    roof.sync
+        .connect_peer(vec![booth.sync_addr], uuid::Uuid::new_v4(), uuid::Uuid::nil())
+        .await
+        .expect("the two stations connect");
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if booth.sync.peer_count().await > 0 && roof.sync.peer_count().await > 0 {
+            break;
+        }
+    }
+
+    let id = a_version(&booth, Some("Interval")).await;
+
+    wait_until_here(&booth, id, true).await;
+    wait_until_here(&roof, id, true).await;
+
+    roof.shutdown().await;
+    booth.shutdown().await;
+}
+
+/// Delete a `versions` row from a closed show, leaving its file behind.
+async fn forget_the_row(bundle: &Path, id: uuid::Uuid) {
+    use std::str::FromStr;
+    let opts = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
+        "sqlite:{}",
         bundle.join("show.db").display()
     ))
     .unwrap();
     let pool = sqlx::SqlitePool::connect_with(opts).await.expect("the show opens");
-    let id: String =
-        sqlx::query_scalar("SELECT id FROM show").fetch_one(&pool).await.expect("a show row");
+    sqlx::query("DELETE FROM versions WHERE id = ?")
+        .bind(id.to_string())
+        .execute(&pool)
+        .await
+        .expect("the row goes");
     pool.close().await;
-    id
 }

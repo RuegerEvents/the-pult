@@ -353,12 +353,15 @@ fn generate_sql_migration(workspace: &PathBuf) -> Result<()> {
 
     // Assets are bytes, not entity fields: a stage plan is a few megabytes and has
     // no business in the oplog. Content-addressed, so the id is the check.
+    //
+    // The metadata only. The bytes are files in the bundle's `assets/` directory,
+    // because a version snapshot is a copy of this file and one that carried the
+    // rig's whole mesh library would cost that per save.
     parts.push(concat!(
         "CREATE TABLE IF NOT EXISTS assets (\n",
         "    sha256     TEXT NOT NULL PRIMARY KEY,\n",
         "    mime       TEXT NOT NULL,\n",
         "    byte_len   INTEGER NOT NULL,\n",
-        "    bytes      BLOB NOT NULL,\n",
         "    created_at TEXT NOT NULL\n",
         ");"
     ).to_string());

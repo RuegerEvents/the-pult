@@ -112,6 +112,31 @@ pub struct Preferences {
     /// which is what an operator who never thinks about this gets.
     #[serde(default)]
     pub shows_dir: Option<PathBuf>,
+    /// How often the console takes a version of its own, in minutes. `0` is off.
+    ///
+    /// A station preference and not show data, which is the one thing about it worth
+    /// arguing: how often a *console* checkpoints is about this machine's disk, and
+    /// only the leader does it anyway, so two stations disagreeing costs nothing.
+    ///
+    /// Fifteen minutes because that is about how long a rewrite of one cue takes, and
+    /// an autosave that landed more often than an operator changes their mind would
+    /// bury the versions they took on purpose.
+    #[serde(default = "default_autosave_minutes")]
+    pub autosave_minutes: u32,
+    /// How many automatic versions are kept before the oldest is dropped.
+    ///
+    /// Twelve at the default interval is three hours, which covers a session. An
+    /// operator's own saves are never counted here and never dropped: they said to
+    /// keep those.
+    #[serde(default = "default_autosave_keep")]
+    pub autosave_keep: u32,
+    /// A second place to copy each version and the assets it points at.
+    ///
+    /// `None` and nothing happens, which is the default: a console must not start
+    /// writing to somebody's volume because it could. Failure to write there is a
+    /// warning in the system log and never a reason for Save to fail.
+    #[serde(default)]
+    pub backup_dir: Option<PathBuf>,
     /// What to log in to the GDTF Share as.
     ///
     /// A station preference and never show data, for the reason a plugin credential is
@@ -123,6 +148,24 @@ pub struct Preferences {
     /// everything a settings form needs and nothing an onlooker can use.
     #[serde(default)]
     pub gdtf_share: Option<ShareCredentials>,
+}
+
+/// Fifteen minutes: about how long a rewrite of one cue takes.
+pub const AUTOSAVE_MINUTES_DEFAULT: u32 = 15;
+/// Twelve, which at the default interval is three hours — a session.
+pub const AUTOSAVE_KEEP_DEFAULT: u32 = 12;
+/// A day. Past this an autosave is not a safety net for anything that happened in
+/// the room, and a console that took one a week would only look broken.
+pub const AUTOSAVE_MINUTES_MAX: u32 = 60 * 24;
+/// Two, below which the console is checkpointing faster than an operator can think.
+pub const AUTOSAVE_MINUTES_MIN: u32 = 2;
+
+fn default_autosave_minutes() -> u32 {
+    AUTOSAVE_MINUTES_DEFAULT
+}
+
+fn default_autosave_keep() -> u32 {
+    AUTOSAVE_KEEP_DEFAULT
 }
 
 fn default_log_level() -> String {
@@ -153,6 +196,9 @@ impl Default for Preferences {
             peer_log_level: default_peer_log_level(),
             plugins: std::collections::BTreeMap::new(),
             shows_dir: None,
+            autosave_minutes: AUTOSAVE_MINUTES_DEFAULT,
+            autosave_keep: AUTOSAVE_KEEP_DEFAULT,
+            backup_dir: None,
             gdtf_share: None,
         }
     }
@@ -192,6 +238,13 @@ impl Preferences {
             .oplog_retention_minutes
             .clamp(OPLOG_RETENTION_MINUTES_MIN, OPLOG_RETENTION_MINUTES_MAX);
         self.home_fade_ms = clamp_home_fade_ms(self.home_fade_ms);
+        // Zero stays zero: it is how autosave is turned off, and clamping it up to
+        // the minimum would turn a setting off into a setting nobody asked for.
+        if self.autosave_minutes != 0 {
+            self.autosave_minutes =
+                self.autosave_minutes.clamp(AUTOSAVE_MINUTES_MIN, AUTOSAVE_MINUTES_MAX);
+        }
+        self.autosave_keep = self.autosave_keep.clamp(1, 200);
         self.haze_density = clamp_haze(self.haze_density);
         self.haze_turbulence = clamp_haze(self.haze_turbulence);
         // A level nobody can spell is the default rather than a refusal to start:

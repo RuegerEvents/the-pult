@@ -116,6 +116,9 @@ pub enum ShowSwitch {
         then_join: Option<Uuid>,
     },
     Close,
+    Restore {
+        version: Uuid,
+    },
     SaveAs {
         path: std::path::PathBuf,
     },
@@ -239,6 +242,20 @@ impl Console {
             .unwrap_or_else(ShowsHandle::detached)
     }
 
+    /// The station currently running, for a caller that wants to act on the show
+    /// this console has open without a browser to act through.
+    ///
+    /// A *station's* handle: a switch stops that station and starts another, so a
+    /// handle taken before one is a handle to a console that is gone. Ask again.
+    pub fn engine(&self) -> Option<EngineHandle> {
+        self.running.as_ref().map(|running| running.engine.clone())
+    }
+
+    /// The link to this console's peers, for the same kind of caller.
+    pub fn sync(&self) -> Option<crate::infra::sync::SyncHandle> {
+        self.running.as_ref().map(|running| running.sync.clone())
+    }
+
     pub fn http_addr(&self) -> SocketAddr {
         self.running.as_ref().map(|r| r.http_addr).unwrap_or_else(|| {
             SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -284,6 +301,16 @@ impl Console {
                 then_join = join;
             }
             ShowSwitch::Close => self.config.show = None,
+            ShowSwitch::Restore { version } => match bundle.as_ref() {
+                Some(bundle) => {
+                    if let Err(e) = showfile::versions::restore(bundle, version) {
+                        // The show that was open is put back unchanged, which is the
+                        // honest failure: nothing was copied over it.
+                        warn!("[shows] could not restore that version: {e:#}");
+                    }
+                }
+                None => warn!("[shows] there is no show to restore into"),
+            },
             ShowSwitch::SaveAs { path } => match bundle.as_ref() {
                 Some(bundle) => match bundle.copy_to(&path) {
                     Ok(copy) => {
@@ -486,8 +513,22 @@ pub async fn start(config: Config) -> Result<Running> {
 
     // The bundle knows what a show with no row yet should be called, and nothing
     // else does. Told before the load, because the load is what seeds the row.
+    let mut checkpoint_task: Option<JoinHandle<()>> = None;
     if let Some(bundle) = &bundle {
         engine.set_seed_name(bundle.seed_name());
+        // What turns a `versions` row into a file on this station's disk. The read
+        // pool rather than the writer's: `VACUUM INTO` reads the whole database, and
+        // on the writer's single connection it would stand in front of every commit.
+        let (checkpointer, task) =
+            showfile::versions::start(bundle.clone(), pool.clone(), engine_handle.clone());
+        engine.set_checkpointer(checkpointer);
+        // Waited for rather than aborted, and waited for *after* the engine: the
+        // engine holds the only handle, so its stopping is what closes the queue, and
+        // the checkpointer then finishes the copy it is in the middle of. Aborting
+        // instead leaves a half-written snapshot and a `VACUUM INTO` still holding a
+        // connection the pool close is about to wait on — which looked like a console
+        // that never came back from opening a show.
+        checkpoint_task = Some(task);
     }
     engine_handle.0.send(EngineCommand::LoadFromShowfile).await?;
     let engine_task = tokio::spawn(engine.run());
@@ -495,6 +536,29 @@ pub async fn start(config: Config) -> Result<Running> {
     // The flags survive as a way to seed an empty showfile. Anything already
     // configured wins: a flag should not quietly add a second output every start.
     seed_outputs_from_flags(&engine_handle, node_id, &config).await;
+
+    // A snapshot on this disk that the show has forgotten gets its row put back —
+    // the case a restore leaves behind, and the one an operator reaches for when the
+    // restore turns out to have been a mistake. On a task, because the reconcile
+    // reads the show and there is no reason for the caller to wait for it.
+    if let Some(bundle) = bundle.clone() {
+        let engine = engine_handle.clone();
+        tasks.push(tokio::spawn(async move {
+            showfile::versions::reconcile(&bundle, &engine).await;
+        }));
+    }
+
+    // The console's own checkpoints. Only the leader takes them, for the reason only
+    // the leader prunes: two stations saving on different schedules would be twice
+    // the versions and none of them anybody's.
+    if bundle.is_some() {
+        tasks.push(tokio::spawn(autosave(
+            engine_handle.clone(),
+            sync_handle.clone(),
+            node_id,
+            pool.clone(),
+        )));
+    }
 
     // Every station publishes one row about itself, every couple of seconds, and
     // the latencies it has measured to the peers it is connected to.
@@ -685,11 +749,89 @@ pub async fn start(config: Config) -> Result<Running> {
         shows,
         switch: switch_rx,
         tasks,
-        asked_to_stop: vec![engine_task, session_task],
+        asked_to_stop: [Some(engine_task), checkpoint_task, Some(session_task)]
+            .into_iter()
+            .flatten()
+            .collect(),
         pools,
         devices_mdns,
         session: session_handle_for_running,
     })
+}
+
+/// Take a version every so often, if anything has changed since the last one.
+///
+/// *If anything has changed* is the whole of the rule, and it is read off the oplog's
+/// head rather than off a dirty flag: a console left running overnight on a show
+/// nobody is touching must not accumulate a version an hour, and a console being
+/// programmed must not miss one because the change was somebody else's.
+async fn autosave(
+    engine: EngineHandle,
+    sync: crate::infra::sync::SyncHandle,
+    node_id: NodeId,
+    pool: Arc<sqlx::SqlitePool>,
+) {
+    use pult_schema::{lifecycle::Lifecycle, path::PathSegment, types::Version};
+
+    let prefs = infra::preferences::load();
+    if prefs.autosave_minutes == 0 {
+        return;
+    }
+    let every = std::time::Duration::from_secs(prefs.autosave_minutes as u64 * 60);
+    let keep = prefs.autosave_keep as usize;
+    let mut ticker = tokio::time::interval(every);
+    // The first tick is immediate, and a version of a show nobody has touched yet is
+    // a version of nothing.
+    ticker.tick().await;
+    let mut last_seen: Option<String> = None;
+
+    loop {
+        ticker.tick().await;
+        if sync.leader().await != Some(node_id) {
+            continue;
+        }
+        let newest = showfile::oplog::newest(&pool).await.unwrap_or(None);
+        if newest.is_none() || newest == last_seen {
+            continue;
+        }
+        last_seen = newest;
+
+        let path = vec![
+            PathSegment::Key("versions".into()),
+            PathSegment::Key("__checkpoint".into()),
+        ];
+        if let Err(e) = engine
+            .set(path, Lifecycle::Persisted, serde_json::json!({ "automatic": true }))
+            .await
+        {
+            warn!("[versions] could not autosave: {e}");
+            continue;
+        }
+
+        // And trim the rolling window. Only the automatic ones: an operator's own
+        // saves are theirs, and a console that quietly dropped one would be a console
+        // nobody could trust a checkpoint to.
+        let versions: Vec<Version> = engine
+            .get(vec![PathSegment::Key("versions".into())])
+            .await
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        let mut automatic: Vec<&Version> =
+            versions.iter().filter(|version| version.automatic).collect();
+        automatic.sort_by_key(|version| version.created_at);
+        let too_many = automatic.len().saturating_sub(keep);
+        for version in automatic.into_iter().take(too_many) {
+            let path = vec![
+                PathSegment::Key("versions".into()),
+                PathSegment::Id(version.id),
+                PathSegment::Key("__delete".into()),
+            ];
+            if let Err(e) = engine.set(path, Lifecycle::Persisted, serde_json::Value::Null).await {
+                warn!("[versions] could not drop an old autosave: {e}");
+            }
+        }
+    }
 }
 
 /// Where this console keeps the shows nobody gave it a path for.

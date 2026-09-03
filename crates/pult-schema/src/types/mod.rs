@@ -19,6 +19,7 @@ pub mod user;
 pub mod layout;
 pub mod plugin;
 pub mod group;
+pub mod version;
 
 pub use fixture::{home_value, home_value_by_key, output_parameters, parameter_key, Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
@@ -30,6 +31,7 @@ pub use effect::{
 pub use speedmaster::{SpeedMaster, SpeedMasterCreate, SpeedMasterPatch};
 pub use user::{colour_for, User, UserCreate, UserPatch, USER_COLOURS};
 pub use show::{Show, ShowCreate, ShowPatch};
+pub use version::{Version, VersionCreate, VersionPatch};
 pub use session::{DiscoveredSession, SessionState};
 pub use devices::{DeviceHealth, DevicesState, DiscoveredDevice};
 pub use openhaunt::{EffectCapability, PortEffectCapability};
