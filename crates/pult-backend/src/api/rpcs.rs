@@ -634,16 +634,22 @@ pub async fn restore_a_show(
 }
 
 /// What to call the version taken just before a restore.
+///
+/// The name of the one being restored, where it has one — and *only* then. A version
+/// nobody named is shown by when it was taken, and a station has no business putting
+/// a time in a name: it would format in UTC, and sit in the list beside its own row
+/// rendered in the reader's local time, disagreeing with itself by an hour or nine.
+/// The row already says when, so the name does not have to.
 async fn restoring_from(engine: &EngineHandle, version: uuid::Uuid) -> String {
-    let label = engine
+    let named = engine
         .get(vec![PathSegment::Key("versions".into())])
         .await
         .ok()
         .and_then(|v| serde_json::from_value::<Vec<pult_schema::types::Version>>(v).ok())
         .and_then(|rows| rows.into_iter().find(|row| row.id == version))
-        .map(|row| row.label());
-    match label {
-        Some(label) => format!("Before restoring {label}"),
+        .and_then(|row| row.named().map(str::to_string));
+    match named {
+        Some(name) => format!("Before restoring “{name}”"),
         None => "Before restoring".to_string(),
     }
 }

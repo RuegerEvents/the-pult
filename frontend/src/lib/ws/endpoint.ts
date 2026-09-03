@@ -12,13 +12,33 @@
  * which station this is and what version it is running.
  */
 
-/** What `GET /api/config` says. Everything but `wsPath` is for display. */
+/** Which show a station has open, if it has one. */
+export type OpenShow = {
+	/** The bundle directory, absolute. What `show.open` takes. */
+	path: string;
+	/** What the folder calls itself. The show's own name arrives over the socket. */
+	name: string;
+};
+
+/**
+ * What `GET /api/config` says.
+ *
+ * `wsPath` is the only field the socket needs. `show` is the one that decides what
+ * this page *is*: `null` is a console with no show open, which draws the welcome
+ * screen instead of the workspace.
+ */
 export type BackendConfig = {
 	wsPath: string;
 	port: number;
 	syncPort: number;
 	nodeId: string;
 	version: string;
+	/** `null` when no show is open. */
+	show: OpenShow | null;
+	/** Where new shows go, or `null` if this console has nowhere to keep them. */
+	showsDir: string | null;
+	/** The project's own URL, built into the binary. The welcome screen's links. */
+	repository: string;
 };
 
 /** Where the socket has always been, and the only path this joins to an origin. */

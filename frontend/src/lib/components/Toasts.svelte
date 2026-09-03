@@ -61,6 +61,15 @@
 		color: #93c5fd;
 	}
 
+	/* Something worked. Rare on purpose — a console that congratulated itself on
+	   every write would be one nobody read. Save is the case it exists for: nothing
+	   else on screen changes, so without this there is no way to tell. */
+	.toast--success {
+		background: #0f2416;
+		border-color: #166534;
+		color: #86efac;
+	}
+
 	.toast-msg {
 		flex: 1;
 		word-break: break-word;

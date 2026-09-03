@@ -24,6 +24,10 @@ export type Preferences = {
 	/** What a newly created show starts its haze at. Both 0 to 1. */
 	hazeDensity: number;
 	hazeTurbulence: number;
+	/** How often this station takes a version of its own, in minutes. `0` is off. */
+	autosaveMinutes: number;
+	/** How many of those it keeps before the oldest is dropped. */
+	autosaveKeep: number;
 };
 
 const url = () => `${backendOrigin(window.location)}/api/preferences`;

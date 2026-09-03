@@ -98,6 +98,8 @@ pub struct Running {
     devices_mdns: Option<mdns_sd::ServiceDaemon>,
     /// For telling the session layer to take its service off the network.
     session: crate::infra::session::SessionHandle,
+    /// For telling every open WebSocket the same.
+    stopping: tokio::sync::watch::Sender<bool>,
 }
 
 /// What a show act asks the console to do next.
@@ -173,6 +175,11 @@ impl Running {
     /// nothing else is holding state that outlives the process. The pools are closed
     /// last, which checkpoints the WAL: a bundle about to be copied has to be whole.
     pub async fn shutdown(self) {
+        // The browsers first, because a socket left open would go on talking to an
+        // engine that is about to stop — and a page that is told lets go, reconnects
+        // onto whatever takes this station's place, and finds out what show it is
+        // now looking at.
+        let _ = self.stopping.send(true);
         // Asked rather than aborted: this is what flushes the writer's queue and
         // what takes the mDNS service off the network.
         let _ = self.engine.0.send(crate::engine::EngineCommand::Stop).await;
@@ -451,6 +458,9 @@ pub async fn start(config: Config) -> Result<Running> {
     // Where a show act goes. Small: these arrive one at a time from a person, and a
     // queue of them would be a queue of consoles to become.
     let (switch_tx, switch_rx) = mpsc::channel::<ShowSwitch>(4);
+    // And how every open socket is told this station is going away; see
+    // `AppState::stopping`.
+    let (stopping, stopping_rx) = tokio::sync::watch::channel(false);
     let shows = ShowsHandle {
         tx: switch_tx,
         bundle: bundle.clone(),
@@ -552,12 +562,21 @@ pub async fn start(config: Config) -> Result<Running> {
     // configured wins: a flag should not quietly add a second output every start.
     seed_outputs_from_flags(&engine_handle, node_id, &config).await;
 
-    // A demo, if one was asked for and the show has nothing in it. After the load
-    // and after the outputs, so a demo lands on a station that is already sending.
+    // A demo, if one was asked for and the show has nothing in it.
+    //
+    // On a task, and this is not a detail: seeding is a few hundred writes through
+    // the engine, and awaiting it here would hold the whole of `start` — including
+    // the line that begins serving HTTP. The listener is bound by then, so the port
+    // would *accept* and then answer nothing, which is the worst of the three states
+    // a console can be in. Seeded beside the server instead, and the rig fills in as
+    // it lands.
     if let Some(demo) = config.demo {
-        if let Err(e) = demo::seed(&engine_handle, demo).await {
-            warn!("[demo] could not seed {}: {e:#}", demo.id());
-        }
+        let engine = engine_handle.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(e) = demo::seed(&engine, demo).await {
+                warn!("[demo] could not seed {}: {e:#}", demo.id());
+            }
+        }));
     }
 
     // A snapshot on this disk that the show has forgotten gets its row put back —
@@ -694,6 +713,7 @@ pub async fn start(config: Config) -> Result<Running> {
         clients: clients.clone(),
         config: config.clone(),
         shows: shows.clone(),
+        stopping: stopping_rx,
         http_port: http_addr.port(),
     };
 
@@ -770,6 +790,7 @@ pub async fn start(config: Config) -> Result<Running> {
         serve,
         bundle,
         shows,
+        stopping,
         switch: switch_rx,
         tasks,
         asked_to_stop: [Some(engine_task), checkpoint_task, Some(session_task)]

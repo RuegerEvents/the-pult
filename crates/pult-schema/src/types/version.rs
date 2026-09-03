@@ -74,12 +74,13 @@ pub struct Version {
 }
 
 impl Version {
-    /// What to show for a version nobody named.
-    pub fn label(&self) -> String {
-        match &self.name {
-            Some(name) if !name.trim().is_empty() => name.clone(),
-            _ => self.created_at.format("%-d %b %H:%M").to_string(),
-        }
+    /// Whether an operator gave this one a name, or it is to be shown by its time.
+    ///
+    /// Only the *question* is here. Formatting the time is not: it would have to
+    /// pick a timezone, and the only right one is the reader's — which the station
+    /// is not. The browser does it.
+    pub fn named(&self) -> Option<&str> {
+        self.name.as_deref().map(str::trim).filter(|name| !name.is_empty())
     }
 }
 
@@ -103,11 +104,13 @@ mod tests {
     }
 
     #[test]
-    fn a_version_nobody_named_is_shown_by_when_it_was_taken() {
+    fn a_version_nobody_named_says_so_rather_than_inventing_one() {
         // Naming every checkpoint is work nobody does, and a console that demanded
-        // one would be a console nobody saved on.
-        assert_eq!(a_version(None).label(), "3 Sep 19:04");
-        assert_eq!(a_version(Some("  ")).label(), "3 Sep 19:04");
-        assert_eq!(a_version(Some("Before act two")).label(), "Before act two");
+        // one would be a console nobody saved on. What an unnamed one is *shown* as
+        // is the reader's business, because only the reader knows what time it is
+        // where they are.
+        assert_eq!(a_version(None).named(), None);
+        assert_eq!(a_version(Some("  ")).named(), None);
+        assert_eq!(a_version(Some("Before act two")).named(), Some("Before act two"));
     }
 }

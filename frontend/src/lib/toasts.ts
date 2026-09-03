@@ -1,6 +1,13 @@
 import { writable } from 'svelte/store';
 
-export type ToastLevel = 'error' | 'warning' | 'info';
+/**
+ * How loud a toast is.
+ *
+ * `success` is rare on purpose — a console that congratulated itself on every write
+ * would be one nobody read. It exists for Save, where nothing else on screen changes
+ * and there is otherwise no way to tell that anything happened.
+ */
+export type ToastLevel = 'error' | 'warning' | 'info' | 'success';
 
 export type Toast = {
 	id: string;

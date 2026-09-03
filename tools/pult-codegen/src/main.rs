@@ -244,6 +244,9 @@ fn generate_frontend_proxy(workspace: &PathBuf) -> Result<()> {
         // must not know a table by name.
         out.push_str("  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;\n");
         out.push_str("  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;\n");
+        out.push_str(
+            "  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;\n",
+        );
         out.push_str(&format!("  [n: number]: {n}Entity;\n"));
         out.push_str("};\n\n");
     }

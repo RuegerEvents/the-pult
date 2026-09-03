@@ -664,6 +664,10 @@ fn as_json(prefs: &infra::preferences::Preferences) -> serde_json::Value {
         "homeFadeMsMax": pult_schema::types::show::HOME_FADE_MS_MAX,
         "hazeDensity": prefs.haze_density,
         "hazeTurbulence": prefs.haze_turbulence,
+        // What this station saves for itself, so the Show panel can say so rather
+        // than leaving an operator to wonder whether anything is happening.
+        "autosaveMinutes": prefs.autosave_minutes,
+        "autosaveKeep": prefs.autosave_keep,
         // The user, and whether there is a password — never the password. A settings
         // form needs both of those and an onlooker can use neither.
         "gdtfShare": prefs.gdtf_share.as_ref().map(|each| json!({

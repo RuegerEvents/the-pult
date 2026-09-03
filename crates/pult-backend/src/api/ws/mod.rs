@@ -192,8 +192,23 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     });
 
-    // Handle incoming messages
-    while let Some(Ok(msg)) = stream.next().await {
+    // Handle incoming messages, until the browser goes or this station does.
+    //
+    // The second half is not belt and braces. `axum::serve` hands each connection to
+    // a task of its own, and those are not children of the future that accepted
+    // them — so aborting the server leaves every open WebSocket talking happily to a
+    // station that has stopped. Which is exactly the state a browser is in the
+    // instant somebody opens a different show: still "Connected", still subscribed,
+    // and pointed at an engine that no longer exists. It has to be *told*.
+    let mut stopping = state.stopping.clone();
+    loop {
+        let msg = tokio::select! {
+            incoming = stream.next() => match incoming {
+                Some(Ok(msg)) => msg,
+                _ => break,
+            },
+            _ = stopping.changed() => break,
+        };
         let text = match msg {
             Message::Text(t) => t,
             Message::Close(_) => break,

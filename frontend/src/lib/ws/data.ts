@@ -139,6 +139,7 @@ export type CueCollection = {
   create(entity: Cue): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: CueEntity;
 };
 
@@ -152,6 +153,7 @@ export type FixtureCollection = {
   create(entity: Fixture): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: FixtureEntity;
 };
 
@@ -165,6 +167,7 @@ export type FixtureTypeCollection = {
   create(entity: FixtureType): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: FixtureTypeEntity;
 };
 
@@ -178,6 +181,7 @@ export type FlowCollection = {
   create(entity: Flow): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: FlowEntity;
 };
 
@@ -191,6 +195,7 @@ export type FlowEdgeCollection = {
   create(entity: FlowEdge): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: FlowEdgeEntity;
 };
 
@@ -204,6 +209,7 @@ export type FlowNodeCollection = {
   create(entity: FlowNode): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: FlowNodeEntity;
 };
 
@@ -217,6 +223,7 @@ export type GroupCollection = {
   create(entity: Group): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: GroupEntity;
 };
 
@@ -230,6 +237,7 @@ export type LayerCollection = {
   create(entity: Layer): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: LayerEntity;
 };
 
@@ -243,6 +251,7 @@ export type LayoutCollection = {
   create(entity: Layout): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: LayoutEntity;
 };
 
@@ -256,6 +265,7 @@ export type NamedAssetCollection = {
   create(entity: NamedAsset): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: NamedAssetEntity;
 };
 
@@ -269,6 +279,7 @@ export type OutputConfigCollection = {
   create(entity: OutputConfig): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: OutputConfigEntity;
 };
 
@@ -282,6 +293,7 @@ export type PluginDatumCollection = {
   create(entity: PluginDatum): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: PluginDatumEntity;
 };
 
@@ -295,6 +307,7 @@ export type PluginPackageCollection = {
   create(entity: PluginPackage): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: PluginPackageEntity;
 };
 
@@ -308,6 +321,7 @@ export type ProgrammerValueCollection = {
   create(entity: ProgrammerValue): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: ProgrammerValueEntity;
 };
 
@@ -321,6 +335,7 @@ export type SceneClassCollection = {
   create(entity: SceneClass): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: SceneClassEntity;
 };
 
@@ -334,6 +349,7 @@ export type SceneObjectCollection = {
   create(entity: SceneObject): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: SceneObjectEntity;
 };
 
@@ -347,6 +363,7 @@ export type SequenceCollection = {
   create(entity: Sequence): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: SequenceEntity;
 };
 
@@ -360,6 +377,7 @@ export type SpeedMasterCollection = {
   create(entity: SpeedMaster): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: SpeedMasterEntity;
 };
 
@@ -373,6 +391,7 @@ export type StagePlanCollection = {
   create(entity: StagePlan): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: StagePlanEntity;
 };
 
@@ -386,6 +405,7 @@ export type StationCollection = {
   create(entity: Station): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: StationEntity;
 };
 
@@ -399,6 +419,7 @@ export type SymbolCollection = {
   create(entity: Symbol): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: SymbolEntity;
 };
 
@@ -412,6 +433,7 @@ export type UserCollection = {
   create(entity: User): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: UserEntity;
 };
 
@@ -425,6 +447,7 @@ export type VersionCollection = {
   create(entity: Version): Promise<void>;
   home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: VersionEntity;
 };
 

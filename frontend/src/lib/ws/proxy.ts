@@ -41,6 +41,15 @@ type LeafProxy<T> = {
 	 * its own, so a browser that is a frame behind still stores what is on stage.
 	 */
 	takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+	/**
+	 * Save: take a version of the show as it stands.
+	 *
+	 * `data.versions.checkpoint({ name })`, and a quick Save gives no name. A verb
+	 * rather than a create because two of the row's fields are the engine's own — the
+	 * show's clock, and the moment the station reached the write — and a browser that
+	 * made those up would be making up where the show stood.
+	 */
+	checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
 	get(): Promise<T>;
 	subscribe(cb: (value: T) => void, opts?: SubscribeOptions): () => void;
 };
@@ -92,6 +101,13 @@ export function createDataProxy<T>(
 			}
 			if (prop === 'takeHome') {
 				return (args: unknown) => client.set([...path, '__set_home'], args);
+			}
+			// Save. A verb rather than a create because two of the four fields on the
+			// row are the engine's own — the show's clock, and the moment the station
+			// reached the write — and a browser that made them up would be making up
+			// where the show stood.
+			if (prop === 'checkpoint') {
+				return (args: unknown) => client.set([...path, '__checkpoint'], args);
 			}
 			if (prop === 'get') {
 				return () => client.get(path);

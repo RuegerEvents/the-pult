@@ -2,9 +2,11 @@
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import { PultWsClient } from '$lib/ws/client.js';
-	import { backendOrigin, fetchConfig, wsUrl, type BackendConfig } from '$lib/ws/endpoint.js';
+	import { backendOrigin, wsUrl } from '$lib/ws/endpoint.js';
 	import { createRootProxy } from '$lib/ws/data.js';
-	import { setClientContext, setDataContext } from '$lib/ws/context.js';
+	import { setClientContext, setDataContext, setStationContext } from '$lib/ws/context.js';
+	import { watchStation } from '$lib/stores/station.js';
+	import ShowMenu from '$lib/components/ShowMenu.svelte';
 	import ConnectionStatus from '$lib/components/ConnectionStatus.svelte';
 	import ConnectingOverlay from '$lib/components/ConnectingOverlay.svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
@@ -34,6 +36,15 @@
 
 	setClientContext(client);
 	setDataContext(data);
+	// What the station says it is, asked again on every reconnect — because opening a
+	// show is this station stopping and another starting in its place, and the
+	// reconnect is the first moment there is anybody to ask. A tab that comes back to
+	// a different show reloads: see `$lib/shows.ts`.
+	const station = watchStation(
+		client,
+		browser ? backendOrigin(window.location) : 'http://localhost:7700'
+	);
+	setStationContext(station);
 	// One store per collection, shared by every panel: a tiled workspace can have the
 	// same fixtures on screen four times, and four deep subscriptions to them is
 	// four copies of every update forty times a second.
@@ -70,6 +81,15 @@
 			if (focusConsole()) event.preventDefault();
 			return;
 		}
+		// Ctrl/Cmd+S is Save, which on this console means "take a version" — there is
+		// nothing unsaved to flush. Taken from a text field too: an operator mid-rename
+		// pressing it means the show, and the browser's own Save-page dialog is never
+		// what they wanted.
+		if (event.key.toLowerCase() === 's' && (event.ctrlKey || event.metaKey)) {
+			event.preventDefault();
+			takeAVersion();
+			return;
+		}
 		const action = shortcutFor(event, isTextField(event.target));
 		if (!action) return;
 		event.preventDefault();
@@ -77,10 +97,18 @@
 		else redo();
 	}
 
+	/** Save: a checkpoint, with no name. The Show panel is where one is given a name. */
+	async function takeAVersion() {
+		if (!$station?.show) return;
+		try {
+			await data.versions.checkpoint({});
+			addToast('Version saved', 'success');
+		} catch (e) {
+			addToast(`Could not save a version: ${e}`);
+		}
+	}
+
 	let connected = $state(false);
-	/// What the station says it is. Nothing waits on it — it is the version in the
-	/// corner, not the socket — so a console still opens if it never arrives.
-	let station = $state<BackendConfig | null>(null);
 	/// Whether this browser has ever had the console, which decides what the cover
 	/// says: a first connection is being made, a later one has been lost.
 	let everConnected = $state(false);
@@ -112,7 +140,6 @@
 	});
 
 	onMount(() => {
-		fetchConfig(backendOrigin(window.location)).then((config) => (station = config));
 		client.onConnect = () => { connected = true; everConnected = true; };
 		client.onDisconnect = () => { connected = false; };
 		client.onError = (msg) => addToast(msg);
@@ -125,10 +152,13 @@
 
 <div class="shell">
 	<header class="topbar">
-		<span class="brand" title={station ? `station ${station.nodeId}` : address}>
-			the-pult{#if station}<span class="version">{station.version}</span>{/if}
+		<span class="brand" title={$station ? `station ${$station.nodeId}` : address}>
+			the-pult{#if $station}<span class="version">{$station.version}</span>{/if}
 		</span>
-		<LayoutBar />
+		{#if $station?.show}
+			<ShowMenu show={$station.show} />
+			<LayoutBar />
+		{/if}
 		<span class="spacer"></span>
 		<UserBar />
 		<ConnectionStatus {connected} />
