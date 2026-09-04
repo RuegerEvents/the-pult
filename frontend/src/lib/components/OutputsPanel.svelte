@@ -174,6 +174,7 @@
 								<input
 									class="text-input narrow"
 									placeholder="all"
+									title="Which universes this output carries. Empty is every one in the patch; a list is a routing, so two outputs can split a rig between two interfaces."
 									value={universeList(output)}
 									onchange={(e) =>
 										data.outputs

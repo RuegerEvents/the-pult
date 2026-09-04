@@ -563,6 +563,32 @@ async fn re_addressing_an_output_moves_it() {
 }
 
 #[tokio::test]
+async fn narrowing_and_widening_the_universes_takes_effect_while_the_show_is_up() {
+    // The configured filter reaching the connector at all, and an operator changing
+    // it at half past six being obeyed. `same_wire` counts `universes`, so the change
+    // rebuilds the plugin and the fresh dedup cache is what puts the first frame out.
+    let (receiver, addr) = a_receiver().await;
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    tokio::spawn(manager.run());
+    let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
+    output.universes = vec![9]; // the rig is on universe 3
+
+    handle.configure(vec![output.clone()]);
+    push_a_patch(&handle, a_dimmer_patch(1.0)).await;
+    let anything =
+        tokio::time::timeout(std::time::Duration::from_millis(150), recv(&receiver)).await;
+    assert!(anything.is_err(), "this node was configured for a universe nothing is patched to");
+
+    output.universes = vec![3];
+    handle.configure(vec![output]);
+    push_a_patch(&handle, a_dimmer_patch(1.0)).await;
+
+    let packet = recv(&receiver).await;
+    assert_eq!(packet[14], 3);
+    assert_eq!(packet[18], 255);
+}
+
+#[tokio::test]
 async fn an_art_net_output_with_no_address_is_refused_rather_than_guessed_at() {
     let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
     let engine = an_engine().await;

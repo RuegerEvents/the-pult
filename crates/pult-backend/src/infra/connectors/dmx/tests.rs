@@ -392,6 +392,82 @@ fn a_mode_with_two_breaks_writes_into_two_universes() {
     assert_eq!(universes[1].channels[99], 255, "the dimmer break, somewhere else entirely");
 }
 
+// ── What an output carries ────────────────────────────────────────────────────
+//
+// `OutputConfig::universes` documented itself as a filter for a year and no
+// connector read it, so an output restricted to universe 1 transmitted all seven.
+// These are the tests that the field means what it says, and that it means it at the
+// point where it is worth anything — before the rig is evaluated rather than after.
+
+#[test]
+fn an_output_renders_only_the_universes_it_carries() {
+    let ft = a_type(vec![dimmer()]);
+    let mut here = a_fixture(&ft, 1, 10);
+    let mut elsewhere = a_fixture(&ft, 5, 10);
+    holding(&mut here, "Intensity", ParameterValue::Float(1.0));
+    holding(&mut elsewhere, "Intensity", ParameterValue::Float(1.0));
+    let patch = patch(vec![here, elsewhere], vec![ft]);
+
+    let all = render(&patch, 0);
+    assert_eq!(all.iter().map(|u| u.number).collect::<Vec<_>>(), vec![1, 5]);
+
+    let restricted = render_carried(&patch, 0, &[1]);
+    assert_eq!(restricted.len(), 1, "the other universe is not built at all");
+    assert_eq!(restricted[0].number, 1);
+    assert_eq!(restricted[0].channels[9], 255, "and what it does carry is unchanged");
+}
+
+#[test]
+fn a_universe_nothing_carries_is_absent_rather_than_blank() {
+    let ft = a_type(vec![dimmer()]);
+    let fixture = a_fixture(&ft, 4, 1);
+
+    let rendered = render_carried(&patch(vec![fixture], vec![ft]), 0, &[1, 2]);
+
+    assert!(
+        rendered.is_empty(),
+        "a universe of zeroes would put a blackout on a wire that had been carrying \
+         somebody else's rig"
+    );
+}
+
+#[test]
+fn one_break_of_a_fixture_can_be_carried_and_the_other_not() {
+    // Which is the whole reason the filter is per universe rather than per fixture: a
+    // head with a separate dimmer break sits in two spans that need not be on one
+    // node, and each half goes out on the output that carries it.
+    let ft = a_modal_type(
+        vec![
+            ParameterDefinition::new(ParameterKind::Pan, ParameterValue::Float(0.0)),
+            ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0)),
+        ],
+        vec![DmxMode {
+            name: "Split".into(),
+            breaks: vec![1, 1],
+            channels: vec![channel("Pan", 0, vec![1]), channel("Intensity", 1, vec![1])],
+        }],
+    );
+    let mut fixture = a_modal_fixture(&ft, "Split", vec![(1, 5), (7, 100)]);
+    holding(&mut fixture, "Pan", ParameterValue::Float(1.0));
+    holding(&mut fixture, "Intensity", ParameterValue::Float(1.0));
+
+    let rendered = render_carried(&patch(vec![fixture], vec![ft]), 0, &[7]);
+
+    assert_eq!(rendered.len(), 1);
+    assert_eq!(rendered[0].number, 7);
+    assert_eq!(rendered[0].channels[99], 255, "the dimmer break, on the output that has it");
+}
+
+#[test]
+fn an_empty_list_still_means_every_universe() {
+    let ft = a_type(vec![dimmer()]);
+    let fixtures = vec![a_fixture(&ft, 1, 1), a_fixture(&ft, 9, 1)];
+    let patch = patch(fixtures, vec![ft]);
+
+    assert_eq!(render_carried(&patch, 0, &[]).len(), 2);
+    assert_eq!(render_carried(&patch, 0, &[]).len(), render(&patch, 0).len());
+}
+
 #[test]
 fn a_break_the_fixture_has_no_address_in_is_dropped_rather_than_guessed() {
     let ft = a_modal_type(

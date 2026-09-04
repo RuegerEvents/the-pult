@@ -101,6 +101,13 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Fixed
 
+- **An output's universe list did nothing.** Every output sent every universe in the
+  patch, whatever it was configured to carry, so the Outputs panel's coverage warnings
+  described a routing nobody implemented. The list is now obeyed by all three
+  connectors — and obeyed before the rig is evaluated rather than at the socket, so an
+  interface carrying four universes of fifty-nine costs a fifteenth of the frame rather
+  than all of it. Splitting a rig across two interfaces works, and the wire viewer no
+  longer offers universes an output is not carrying.
 - **The Theatre demo's booms were horizontal**, and the Club demo's washes hung in the
   air beside the truss. Booms stand up now, with their lanterns on sidearms, and
   everything in every demo is clamped under its bar at the same distance. The cyc

@@ -13,7 +13,7 @@ use uuid::Uuid;
 use pult_schema::types::output::{OutputSection, SectionBody};
 
 use super::{
-    dmx::{render, Patch, SequenceCounter, UniverseCache, UNIVERSE_SIZE, REFRESH_AFTER},
+    dmx::{render_carried, Patch, SequenceCounter, UniverseCache, UNIVERSE_SIZE, REFRESH_AFTER},
     Frame, Frames, OutputPlugin, SendFuture,
 };
 
@@ -27,6 +27,9 @@ const PROTOCOL_VERSION: u16 = 14;
 pub struct ArtNetOutput {
     socket: UdpSocket,
     target: SocketAddr,
+    /// The universes this node is here for. Empty is every one in the patch, which
+    /// is what a configuration that names none means and what `bind` leaves it at.
+    carried: Vec<u16>,
     sent: UniverseCache,
     sequence: SequenceCounter,
 }
@@ -37,7 +40,24 @@ impl ArtNetOutput {
         if target.ip().is_multicast() || is_broadcast(&target) {
             socket.set_broadcast(true)?;
         }
-        Ok(Self { socket, target, sent: UniverseCache::default(), sequence: SequenceCounter::default() })
+        Ok(Self {
+            socket,
+            target,
+            carried: Vec::new(),
+            sent: UniverseCache::default(),
+            sequence: SequenceCounter::default(),
+        })
+    }
+
+    /// Restrict this output to the universes its configuration names.
+    ///
+    /// Taken after construction rather than as an argument to `bind`, the way the
+    /// output manager takes its viewers: what a socket is bound to and what goes
+    /// through it are separate questions, and every test that is about the packet
+    /// format has no opinion on the second.
+    pub fn carrying(mut self, universes: Vec<u16>) -> Self {
+        self.carried = universes;
+        self
     }
 }
 
@@ -60,7 +80,7 @@ impl OutputPlugin for ArtNetOutput {
             let now = std::time::Instant::now();
             // Timed on its own: rendering is where every parameter of every patched
             // fixture is worked out, and putting the bytes on the wire is the rest.
-            let universes = render(patch, now_ms);
+            let universes = render_carried(patch, now_ms, &self.carried);
             let mut frame = Frame::evaluated(now.elapsed());
             for universe in universes {
                 if !self.sent.needs_send(&universe, now, REFRESH_AFTER) {

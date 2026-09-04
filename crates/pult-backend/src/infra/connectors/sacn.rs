@@ -17,7 +17,7 @@ use uuid::Uuid;
 use pult_schema::types::output::{OutputSection, SectionBody};
 
 use super::{
-    dmx::{render, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER, UNIVERSE_SIZE},
+    dmx::{render_carried, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER, UNIVERSE_SIZE},
     Frame, Frames, OutputPlugin, SendFuture,
 };
 
@@ -110,6 +110,8 @@ pub struct SacnOutput {
     /// what E1.31 is for; a concrete address is a receiver that cannot be reached
     /// by multicast.
     target: Option<SocketAddr>,
+    /// The universes this output carries. Empty is every one in the patch.
+    carried: Vec<u16>,
     sent: UniverseCache,
     sequence: SequenceCounter,
 }
@@ -123,9 +125,19 @@ impl SacnOutput {
             cid: *Uuid::new_v4().as_bytes(),
             source_name: "the-pult".to_string(),
             target,
+            carried: Vec::new(),
             sent: UniverseCache::default(),
             sequence: SequenceCounter::default(),
         })
+    }
+
+    /// Restrict this output to the universes its configuration names, the way
+    /// [`super::artnet::ArtNetOutput::carrying`] does — and it matters more here,
+    /// since multicast means a receiver already hears only the groups it joined and
+    /// the filter is about what this station spends rather than about what arrives.
+    pub fn carrying(mut self, universes: Vec<u16>) -> Self {
+        self.carried = universes;
+        self
     }
 
     fn destination(&self, universe: u16) -> SocketAddr {
@@ -153,7 +165,7 @@ impl OutputPlugin for SacnOutput {
             let now = std::time::Instant::now();
             // Timed on its own: rendering is where every parameter of every patched
             // fixture is worked out, and putting the bytes on the wire is the rest.
-            let universes = render(patch, now_ms);
+            let universes = render_carried(patch, now_ms, &self.carried);
             let mut frame = Frame::evaluated(now.elapsed());
             for universe in universes {
                 if !self.sent.needs_send(&universe, now, REFRESH_AFTER) {

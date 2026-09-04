@@ -55,6 +55,11 @@ pub struct OutputConfig {
     #[pult(lifecycle = PERSISTED)]
     pub target: Option<String>,
     /// Which universes to send. Empty means every universe in the patch.
+    ///
+    /// A routing rather than a label: the connector renders only these, so two
+    /// outputs can split a rig between two interfaces and each evaluates its own
+    /// half. Obeyed by every kind, an OpenHaunt output included — the sACN it feeds
+    /// its gateway nodes is a universe on a wire like any other.
     #[pult(lifecycle = PERSISTED)]
     pub universes: Vec<u16>,
     #[pult(lifecycle = PERSISTED)]
@@ -74,8 +79,20 @@ impl OutputConfig {
 
     /// Does this output carry the given universe?
     pub fn carries(&self, universe: u16) -> bool {
-        self.universes.is_empty() || self.universes.contains(&universe)
+        carries(&self.universes, universe)
     }
+}
+
+/// Does a universe list carry this universe? Empty means every one of them.
+///
+/// A free function as well as a method because the thing that has to *obey* the
+/// filter is a connector, and a connector is handed a wire and a list rather than a
+/// whole `OutputConfig` — it has no id, no name and no station to care about. One
+/// predicate rather than two, because the panel's coverage warnings and the socket
+/// disagreeing about which universes an output carries is precisely the defect this
+/// filter existed with for as long as nobody read it.
+pub fn carries(universes: &[u16], universe: u16) -> bool {
+    universes.is_empty() || universes.contains(&universe)
 }
 
 /// What one output has actually been doing.
@@ -149,10 +166,22 @@ impl OutputCoverage {
                 FixtureAddress::Dmx { .. } => None,
             })
             .collect();
+        // Every kind here is asked the same question in the same order — does an
+        // enabled output *carrying this universe* reach it — because the connectors
+        // now obey `universes` and a coverage answer that judged one kind by the
+        // filter and another by its existence would go back to describing a routing
+        // nobody implements.
         let dmx_carried = |universe: u16| {
             enabled.iter().any(|o| {
-                matches!(o.kind, OutputKind::Artnet | OutputKind::Sacn) && o.carries(universe)
-            }) || (nodes_driven && gateway_universes.contains(&universe))
+                o.carries(universe)
+                    && match o.kind {
+                        OutputKind::Artnet | OutputKind::Sacn => true,
+                        // A gateway node forwards the universe it was adopted on, so
+                        // an OpenHaunt output reaches a universe only where one of
+                        // them is listening for it.
+                        OutputKind::OpenHaunt => gateway_universes.contains(&universe),
+                    }
+            })
         };
 
         // Keyed so that every fixture on one universe lands in one gap, in a
@@ -408,6 +437,46 @@ mod tests {
 
         let driven = OutputCoverage::of(&[an_output(OutputKind::OpenHaunt)], &fixtures);
         assert!(driven.gaps.is_empty(), "the gateway forwards universe 5 once nodes are driven");
+    }
+
+    #[test]
+    fn a_restricted_openhaunt_output_reaches_only_the_gateways_it_carries() {
+        // The gateway half of an OpenHaunt output is sACN like any other, so it obeys
+        // the same field — and coverage has to be told the same thing the connector
+        // is, or the panel goes back to describing a routing nobody implements.
+        let fixtures = [
+            a_fixture("Gateway A", node("gate-a", Some(1))),
+            a_fixture("Gateway B", node("gate-b", Some(2))),
+            a_fixture("Spot", dmx(1)),
+            a_fixture("Wash", dmx(2)),
+        ];
+
+        let mut only_one = an_output(OutputKind::OpenHaunt);
+        only_one.universes = vec![1];
+        let coverage = OutputCoverage::of(&[only_one], &fixtures);
+
+        assert_eq!(coverage.gaps.len(), 1, "the nodes are driven; universe 2 is not carried");
+        assert_eq!(coverage.gaps[0].universe, Some(2));
+        assert_eq!(coverage.gaps[0].fixture_names, vec!["Wash"]);
+    }
+
+    #[test]
+    fn two_outputs_can_split_a_rig_between_them() {
+        let fixtures = [a_fixture("Spot", dmx(1)), a_fixture("Wash", dmx(5))];
+        let mut downstage = an_output(OutputKind::Artnet);
+        downstage.universes = vec![1, 2, 3, 4];
+        let mut upstage = an_output(OutputKind::Artnet);
+        upstage.universes = vec![5, 6, 7, 8];
+
+        assert!(
+            OutputCoverage::of(&[downstage.clone(), upstage], &fixtures).gaps.is_empty(),
+            "between them they carry everything"
+        );
+        assert_eq!(
+            OutputCoverage::of(&[downstage], &fixtures).gaps.len(),
+            1,
+            "and one of them alone leaves the other half unreached"
+        );
     }
 
     #[test]

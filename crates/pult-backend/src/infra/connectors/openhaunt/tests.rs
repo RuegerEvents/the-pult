@@ -398,6 +398,37 @@ async fn a_gateway_hears_nothing_about_a_universe_it_is_not_on() {
 }
 
 #[tokio::test]
+async fn a_restricted_output_does_not_feed_a_gateway_outside_its_universes() {
+    // A gateway listening on 5 and an output configured for 1: the node is adopted,
+    // is online, and is asking for a universe this output is not the one carrying.
+    // Which is an ordinary way to split a rig, and the reason the field is obeyed by
+    // the sACN half of this connector as well as by the two DMX ones.
+    let (socket, port) = a_gateway_socket().await;
+    let (devices, _received) = a_recording_device_handle();
+    let mut output = OpenHauntOutput::new(
+        directory(vec![("gate1", an_entry("127.0.0.1", DMX_OUT, Some(5), true))]),
+        devices,
+        port,
+    )
+    .await
+    .unwrap()
+    .carrying(vec![1]);
+
+    let gateway_type = a_module(DMX_OUT);
+    let gateway = a_node_fixture(&gateway_type, "gate1", Some(5));
+    let (dimmer, dimmer_type) = a_dmx_dimmer(5, 1.0);
+
+    output
+        .send(&patch(vec![gateway, dimmer], vec![gateway_type, dimmer_type]), &[], 0)
+        .await
+        .unwrap();
+
+    let anything =
+        tokio::time::timeout(std::time::Duration::from_millis(100), recv(&socket)).await;
+    assert!(anything.is_err(), "universe 5 is somebody else's output to carry");
+}
+
+#[tokio::test]
 async fn an_unchanged_universe_is_not_resent_to_a_gateway() {
     let (socket, port) = a_gateway_socket().await;
     let (devices, _received) = a_recording_device_handle();

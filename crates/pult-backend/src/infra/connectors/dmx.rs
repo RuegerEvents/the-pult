@@ -288,10 +288,45 @@ impl Patch {
 /// patched in: a parameter the mode does not place, one the device writes rather than
 /// reads, and one on an OpenHaunt node all have no channel to occupy.
 pub fn render(patch: &Patch, now_ms: u64) -> Vec<Universe> {
-    let mut universes: HashMap<u16, Universe> =
-        patch.universes.iter().map(|number| (*number, Universe::new(*number))).collect();
+    render_carried(patch, now_ms, &[])
+}
+
+/// The same, restricted to the universes one output carries.
+///
+/// `carried` is [`pult_schema::types::output::OutputConfig::universes`] and empty
+/// means all of them, which is what [`render`] passes.
+///
+/// **The filter is here rather than at the send**, and the entry that asked for this
+/// predicted the opposite. Gating the socket would make the field honest and leave
+/// every restricted output evaluating the whole rig — and task 51 measured evaluating
+/// at 94% of an output frame at five thousand fixtures. The ordinary reason to write
+/// this list down is to split a rig across two nodes; filtered at the send, both
+/// halves of the split cost what the undivided rig cost, which is to say the split
+/// buys nothing. Filtered here, an Art-Net node carrying four universes of
+/// fifty-nine evaluates a fifteenth of the rig.
+///
+/// Nothing is lost by moving it: two connectors on one station render the patch
+/// twice either way, since `send` is per plugin and always was. What the dedup cache
+/// would have made unsafe is filtering *after* it — a universe the wire never
+/// carried recorded as sent — and no path here does that. A universe the filter
+/// drops therefore never enters the cache at all, which is also what makes the wire
+/// viewer stop offering universes the connector is not carrying.
+pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Universe> {
+    let mut universes: HashMap<u16, Universe> = patch
+        .universes
+        .iter()
+        .filter(|number| pult_schema::types::output::carries(carried, **number))
+        .map(|number| (*number, Universe::new(*number)))
+        .collect();
 
     for parameter in &patch.placed {
+        // Nowhere for any of this parameter's bytes to go, so it is never evaluated.
+        // The map is the filter: every placed channel's universe came from a break
+        // that put that universe in `patch.universes`, so a miss here is the output
+        // not carrying it and nothing else.
+        if !parameter.channels.iter().any(|channel| universes.contains_key(&channel.universe)) {
+            continue;
+        }
         let fixture = &patch.fixtures[parameter.fixture];
         // Once, however many bytes it comes to: an RGBW head's colour is one
         // evaluation and four writes, not four of each.
@@ -305,8 +340,9 @@ pub fn render(patch: &Patch, now_ms: u64) -> Vec<Universe> {
         let value = value.as_ref().unwrap_or(&parameter.default);
 
         for channel in &parameter.channels {
-            let universe =
-                universes.entry(channel.universe).or_insert_with(|| Universe::new(channel.universe));
+            // A fixture with two breaks can have one of them on a universe this
+            // output carries and the other not, and only the carried half is written.
+            let Some(universe) = universes.get_mut(&channel.universe) else { continue };
             encode::write_channel(
                 &mut universe.channels,
                 channel.address,

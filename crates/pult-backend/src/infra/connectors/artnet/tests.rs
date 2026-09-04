@@ -151,25 +151,61 @@ async fn each_universe_gets_its_own_packet() {
     let (node, addr) = a_node().await;
     let mut output = ArtNetOutput::bind(addr).await.unwrap();
 
-    // Both fixtures before the patch is built: where a fixture's channels land is
-    // resolved once, when the patch arrives, the same as when it settles. A fixture
-    // pushed in afterwards occupies nothing.
+    output.send(&a_patch_across_two_universes(), &[], 0).await.unwrap();
+
+    let mut universes = vec![recv(&node).await[14], recv(&node).await[14]];
+    universes.sort();
+    assert_eq!(universes, vec![3, 9]);
+}
+
+/// A dimmer on universe 3 and a dimmer on universe 9.
+///
+/// Both fixtures before the patch is built: where a fixture's channels land is
+/// resolved once, when the patch arrives, the same as when it settles. A fixture
+/// pushed in afterwards occupies nothing.
+fn a_patch_across_two_universes() -> Patch {
     let built = a_dimmer_patch(1.0);
     let first = built.fixtures[0].clone();
     let mut second = first.clone();
     second.id = Uuid::new_v4();
     second.address = FixtureAddress::dmx(9, 1);
-    let patch = Patch::new(
-        vec![first, second],
-        built.fixture_types.into_values().collect(),
-        vec![],
+    Patch::new(vec![first, second], built.fixture_types.into_values().collect(), vec![])
+}
+
+#[tokio::test]
+async fn a_restricted_output_puts_only_its_own_universes_on_the_wire() {
+    let (node, addr) = a_node().await;
+    let mut output = ArtNetOutput::bind(addr).await.unwrap().carrying(vec![9]);
+
+    output.send(&a_patch_across_two_universes(), &[], 0).await.unwrap();
+
+    let packet = recv(&node).await;
+    assert_eq!(packet[14], 9, "the universe this node was configured for");
+    let mut buf = [0u8; 64];
+    let more =
+        tokio::time::timeout(std::time::Duration::from_millis(200), node.recv_from(&mut buf)).await;
+    assert!(
+        more.is_err(),
+        "and nothing else: an output restricted to one universe used to transmit all of \
+         them, which is what made the field a claim rather than a routing"
     );
+}
 
-    output.send(&patch, &[], 0).await.unwrap();
+#[tokio::test]
+async fn a_universe_this_output_does_not_carry_is_not_offered_to_a_viewer() {
+    // The dedup cache is what a viewer reads, and a filtered universe never reaches
+    // it — so the wire panel offers what this connector is actually carrying rather
+    // than every universe in the show.
+    let (_node, addr) = a_node().await;
+    let mut output = ArtNetOutput::bind(addr).await.unwrap().carrying(vec![9]);
 
-    let mut universes = vec![recv(&node).await[14], recv(&node).await[14]];
-    universes.sort();
-    assert_eq!(universes, vec![3, 9]);
+    output.send(&a_patch_across_two_universes(), &[], 0).await.unwrap();
+
+    let sections = output.observe(None).unwrap();
+    let SectionBody::Universes(traffic) = &sections[0].body else {
+        panic!("Art-Net carries universes")
+    };
+    assert_eq!(traffic.universes.iter().map(|u| u.universe).collect::<Vec<_>>(), vec![9]);
 }
 
 #[tokio::test]

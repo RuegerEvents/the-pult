@@ -16,7 +16,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness and latency, vector-clock conflict resolution, and leader failover. Stations publish themselves and are visible in the UI, with what each machine and each link is costing since task 49. |
 | Frontend | Working for show, session, sequences, cues, patch, the programmer, effects and speed masters. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. Panels that can change the show open read-only behind an Edit toggle and are sized for a finger. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. Since task 49 a page also reports what it is itself costing — frame rate, evaluator time, clock offset — which the System panel shows beside every station's. |
 | Playback engine | Working, and no longer a tick. Playback decides *what is driving* each parameter — fades and effects anchored on the cue's `went_at` — and publishes the descriptions; nothing stores what they are worth. A pass happens when the show changes, so a fade in progress costs the engine nothing. |
-| Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Each holds the last patch it was pushed and draws its own frames out of it at its protocol's rate, evaluating rather than being handed values. Configured from the `outputs` collection and editable while the show is up, with per-output status and per-connector frame cost in the UI. Flags only seed an empty showfile. |
+| Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Each holds the last patch it was pushed and draws its own frames out of it at its protocol's rate, evaluating rather than being handed values. Configured from the `outputs` collection and editable while the show is up, with per-output status and per-connector frame cost in the UI. Since task 57 an output's universe list is a routing it obeys — and obeys before it evaluates — so a rig can be split across two interfaces and each carries and costs its own half. Flags only seed an empty showfile. |
 | Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. Since task 47 it draws the *drawing* too: trusses and objects out of an MVR, from their own meshes, with a Layers panel to show and hide parts of it. Every beam is still one cone at one angle; the geometry and the beam angle a GDTF import brings are stored and not yet drawn. Nothing can be moved or placed in either view yet. |
 | Rig interchange | Working. MVR in and out: fixtures with their positions, trusses and objects with their meshes, layers and classes, all keyed by the uuid the file uses so a re-import updates the rig rather than doubling it. A fixture's place is a transform with a signed scale, relative to whatever it hangs off. What an import no longer mentions is reported, never deleted. No scene editing yet. |
 | Fixture definitions | Working. GDTF in and out, with modes, breaks, wheels, emitters, physical data and the geometry tree; the archive is kept whole and exports byte for byte. The GDTF Share is searchable and importable behind a station credential. A type the console derived from a node or somebody typed in is unchanged and still has an implicit mode. |
@@ -3764,6 +3764,69 @@ cargo test -p pult-backend --lib connectors::tests               # and when the 
 scripts/demo.sh --measure --release --size 5000                  # 40 Hz
 ```
 
+### 57. A universe list that is a routing
+
+`universe-routing`. `OutputConfig::universes` documented itself as "which universes to
+send" and no connector had ever read it. `carries()` was the predicate for the field
+and `OutputCoverage::of` was its only caller, so an output configured for universe 1
+transmitted all seven, and the Outputs panel's gap warnings, its "Add sACN output for
+universe 1" button and its whole model of coverage described a routing nobody
+implemented. Found by task 49's throughput figure — an sACN output configured for one
+universe reporting two and a half universes' worth of packet per frame — and made
+plainly visible by task 50, whose wire panel listed every universe in the show under an
+output carrying one of them.
+
+The entry asked which way to make it honest, gate the send or delete the field, and the
+answer is the first: **the field means what it says now, and it means it in `render`.**
+
+**Which is where the entry's own prediction was wrong.** It named the dedup cache as
+the trap and concluded that the filter belonged at the send, on the grounds that
+filtering in `render` "would change what the evaluation costs per output and make two
+outputs on one station render the patch twice". Two connectors on one station render
+the patch twice either way — `send` is per plugin and always was — and changing what
+the evaluation costs per output is not the trap, it is the entire benefit. Task 51
+measured evaluating at **94%** of an output frame at 5000 fixtures, and the ordinary
+reason to write a universe list down is to split a rig across two interfaces. Gated at
+the socket, both halves of that split cost what the undivided rig cost and the split
+buys nothing but tidiness. Gated in `render`, an Art-Net node carrying four universes
+of fifty-nine evaluates a fifteenth of the rig.
+
+`render_carried(patch, now_ms, carried)` builds only the universes the output carries
+and skips any parameter none of whose bytes have somewhere to go; `render` is it with
+an empty list. The cache concern was real but narrower than the entry read it: what
+would be unsafe is filtering *after* `UniverseCache::needs_send`, which would record a
+universe as sent that never reached the wire. Filtering before it means a universe the
+output does not carry never enters the cache at all — which is also what makes the wire
+viewer stop offering universes the connector is not carrying, since `observe` reads
+that cache and nothing else.
+
+**Every kind obeys it, an OpenHaunt output included.** Its gateway half unicasts sACN,
+which is a universe on a wire like any other, and a field honoured by two connectors
+out of three is the same defect in a smaller place. `OutputCoverage::of` was brought
+into line in the same move: it now asks one question of every kind — is there an enabled
+output *carrying this universe* — where it used to judge Art-Net and sACN by the filter
+and OpenHaunt by its mere existence.
+
+**One predicate, in one place.** `carries` is now a free function over a slice beside
+the method, because the thing that has to obey the filter is a connector, and a
+connector is handed a wire and a list rather than a whole `OutputConfig` — it has no id,
+no name and no station to care about. The panel's coverage warnings and the socket
+disagreeing about what an output carries is precisely the defect this field lived with
+for as long as nobody read it, and two implementations is how it would come back.
+
+Small things worth knowing. A connector takes its list *after* construction
+(`carrying`), the way `OutputManager::watchable` takes its viewers: what a socket is
+bound to and what goes through it are separate questions, and thirty tests about packet
+format have no opinion on the second. `same_wire` already counted `universes`, so
+editing the list at half past six rebuilds the plugin and the fresh dedup cache puts the
+first frame out at once. And the filter is per universe rather than per fixture, because
+a head with a separate dimmer break sits in two spans that need not be on one node.
+
+```
+cargo test -p pult-backend --lib connectors   # what each connector carries, and what it renders
+cargo test -p pult-schema --lib output        # and what coverage makes of it
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -3846,83 +3909,88 @@ compounded into the period. 40 Hz now. Worth holding on to: **the frame cost cou
 have found either**, because both live in the gaps between frames, and the Hz column
 had been printing the answer since task 51 with nobody able to say what it meant.
 
+**And universe-routing is task 57.** It went the way `OutputCoverage` already
+believed — the field is a routing and the connectors obey it — and the one thing worth
+carrying forward is that the entry's own reasoning about *where* to obey it was
+backwards. It ruled out filtering in `render` because that would change what the
+evaluation costs per output; changing what the evaluation costs per output is the whole
+benefit, at 94% of a frame, and a filter at the socket makes a two-interface split cost
+exactly what not splitting cost.
+
 Items 1, 3 and 4 were built together as task 51, and showfile-management and
 showfile-assets-folder together as task 52. All five have left this list. What they
 answered changes what is worth doing next, so the top of it is now:
 
-1. **universe-routing** — `OutputConfig::universes` says it is a filter and no
-   connector reads it. A decision rather than a feature: either `carries` gates
-   the send, or the field stops claiming to. → none, and the wire viewer is now
-   where an operator sees it
-2. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
+1. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
    measured evaluating at **94%** of an output frame at 5000 fixtures, which is
    the answer the question was waiting for, and `pult-render` is pure and takes
    no locks. What the same measurement also says is that it is **not urgent**: the
    frame is at 19% of budget, and task 56 gave it *more* headroom rather than
-   less. → none, and it should not be done until something is actually short of
-   frame
-3. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
+   less. Task 57 took the cheaper half of the same lever for the case that has
+   one: an output that carries part of the rig now evaluates part of the rig. → none,
+   and it should not be done until something is actually short of frame
+2. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
    frontend proxy comes from; the wire stays generic. → none
-4. **camera-home-presets** — front, plan, section, three-quarter, and
+3. **camera-home-presets** — front, plan, section, three-quarter, and
    focus-on-selection. The smallest of everything here and the one an operator
    reaches for most often. Added 2026-09-03. → none: task 51's viewer owns its
    own camera already
-5. **scene-editing** — and specifically a picker for task 52's stock catalogue
+4. **scene-editing** — and specifically a picker for task 52's stock catalogue
    first, which is smaller than a gizmo and is what a console that has never
    imported an MVR needs in order to have a room at all. → none
-6. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+5. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
    plugin over introspection, which is what introspection is for. → none, and
    much better now that gdtf-import has landed and put a real patch in the show
-7. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+6. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
    themselves dynamic. → none: the viewer landed as task 51
-8. **voice-input** — speech to the command line, grammar first and NL on parse
+7. **voice-input** — speech to the command line, grammar first and NL on parse
    failure. → none
-9. **nl-show-context** — what relative syntax cannot reach, and whether it is
+8. **nl-show-context** — what relative syntax cannot reach, and whether it is
    worth the permission it costs. → voice-input, which is what shows which
    utterances actually arrive
-10. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+9. **control-transports** — MIDI and OSC as ports, in and out, with nothing
    above them decided. Was open-control-interfaces until 2026-09-02, when the
    three things people send over those ports turned out to want separate
    entries. → none
-11. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+10. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
    audio import. The biggest item here and the one the spec is most opinionated
    about. → none technically
-12. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+11. **llm-cost-overview** — token and cost accounting out of the NL plugin.
    → none
-13. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+12. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
    frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
    from task 51, which measured a connector's frame at 4.77 ms for 5000 fixtures —
    the number a WASM boundary now has to be compared against, and task 56, which
    says the boundary has to survive being asked 40 times a second and not 29
-14. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+13. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-15. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+14. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
    → a real TS plugin wanting to exist
-16. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+15. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
    stage manager's Go arriving at the lights, and this console sending its own
    to sound and video. → control-transports
-17. **surface-layer** — a bound physical thing, which is what the transports are
+16. **surface-layer** — a bound physical thing, which is what the transports are
    not: one event type under every surface, plus the two questions (where a
    headless surface's selection lives, where a fader's gesture begins and ends)
    that decide whether any of the three below is a week or a month.
    → control-transports for the MIDI half, nothing for the USB half
-18. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+17. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
    is what proves the layer before anybody spends a weekend on USB captures.
    → surface-layer
-19. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+18. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
    it can be estimated at all. → surface-layer
-20. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+19. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
    undocumented and to be read off the device. → surface-layer, and
    midi-surfaces for the binding model
-21. **showfile-migrations** — so a show made in the beta still opens after it.
+20. **showfile-migrations** — so a show made in the beta still opens after it.
    Added 2026-09-03, and the trigger is the beta rather than anything in the
    code: until somebody is carrying real work in a showfile, refusing one from
    another generation by name is the better trade. → the first beta
-22. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
+21. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
    2026-09-03. → none, and the sharpest question in it is whether an imported
    `.pultz` should ask before running the plugins it carries
 
-Items 16 to 20 were added on 2026-09-02 and sit at the end rather than being
+Items 15 to 19 were added on 2026-09-02 and sit at the end rather than being
 placed, because three of them are blocked on hardware being in the room and not
 on anything in this repository. Any of those can move up the day the hardware is
 on the desk. **show-control is the exception and the one with a case for moving
@@ -3941,7 +4009,7 @@ actually running a show from. Task 53 already took the free wins — sixty a sec
 most, nothing drawn when nothing changed, only lit beams drawn — which is what turned
 a pinned GPU into an idle one on a dark stage.
 
-Items 21 and 22 were added on 2026-09-03 and sit at the end for a different reason:
+Items 20 and 21 were added on 2026-09-03 and sit at the end for a different reason:
 neither is blocked on anything, and both are blocked on *time*. A migration path is
 worth nothing until there is a showfile worth migrating, and the gaps in how plugins
 travel are gaps rather than absences.
@@ -4322,41 +4390,6 @@ piece of work. They are three: a transport, show control over it, and a bound
 piece of hardware that is a different thing again. Its two questions survive, the
 address-mapping one under show-control and the connector-or-plugin one under
 control-transports.
-
-### Outputs
-
-#### universe-routing
-
-**`OutputConfig::universes` documents itself as "which universes to send", and no
-connector has ever read it.** `carries()` is the predicate for the field and
-**only `OutputCoverage::of` calls it**: the connectors render every universe in the
-patch and put on the wire every one the dedup has not settled. So an output
-restricted to universe 1 transmits all seven, and the Outputs panel's coverage
-warnings describe a routing nobody implements.
-
-Found by task 49's throughput figure — an sACN output configured for one universe
-reporting two and a half universes' worth of packet per frame — and left there
-deliberately, because changing which universes reach a wire is a change to what
-reaches lamps and wants its own decision rather than a drive-by fix inside an
-instrument.
-
-- **The decision is which way to make it honest**, and they are not the same size.
-  Gating the send in `render` (or in each connector's loop over its universes)
-  makes the field mean what it says, and makes a two-output split — this Art-Net
-  node carries 1–4, that one carries 5–8 — work, which is an ordinary way to
-  build a rig and currently does not work. Deleting the field is a schema change
-  and admits that every output carries everything.
-- **`OutputCoverage` already believes the first answer**, which is the argument for
-  it: the gap warnings, the "Add sACN output for universe 1" button and the panel's
-  whole model of coverage are written against a filter that exists. Deleting the
-  field means rewriting all of that to say something weaker.
-- **The trap is the dedup cache.** `UniverseCache` is per connector and keyed by
-  universe number, so filtering at the send is safe; filtering earlier, in `render`,
-  would change what the *evaluation* costs per output and make two outputs on one
-  station render the patch twice. Task 43's split says which half that lands in.
-- **Task 50 made it visible**, which is what an instrument is for: the wire viewer's
-  universe chips list what a connector is actually carrying, so an output restricted
-  to one universe now shows every universe in the show to anybody who looks.
 
 ### Observability
 

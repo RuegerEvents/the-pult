@@ -1054,6 +1054,21 @@ carry a protocol nobody has written yet cannot have. The one place a universe is
 as a focus string is `universeFocus` in `frontend/src/lib/wire.ts`, beside the sheet
 that asks for one.
 
+**An output carries the universes it says it carries, and it filters where the
+evaluating is.** `OutputConfig::universes` is a routing rather than a label: empty is
+every universe in the patch, and a list means a two-interface split — this Art-Net node
+carries 1–4, that one 5–8 — that every connector obeys, the OpenHaunt one included,
+since the sACN it feeds its gateways is a universe on a wire like any other. The filter
+lives in `render_carried`, *before* the rig is evaluated rather than at the socket,
+because evaluating is 94% of an output frame at five thousand fixtures: gated at the
+send, both halves of a split cost what the undivided rig cost. Filtering before
+`UniverseCache::needs_send` is also what keeps the cache honest — a universe recorded as
+sent that never left would make the wire viewer describe traffic that does not exist.
+`carries` is one predicate in `pult-schema`, called by the connectors and by
+`OutputCoverage::of`, because the panel's coverage warnings and the socket disagreeing
+about what an output carries is exactly the defect this field lived with for as long as
+nobody read it.
+
 **The DMX family pays nothing for being watched.** `UniverseCache::observe` reads the
 images the dedup was already keeping, so Art-Net, sACN and the sACN a gateway is fed all
 answer the same way and a sheet reads the same whichever carried the universe. It

@@ -851,24 +851,32 @@ async fn wait_for_viewers(watching: Option<&mut Watching>) -> bool {
 /// await, and borrowing `&self` here would require the whole manager to be `Sync`,
 /// which a plugin is not and does not need to be.
 async fn build(devices: &Devices, config: &OutputConfig) -> Option<Box<dyn OutputPlugin>> {
+    // `universes` is handed to every kind that puts one on a wire, which is all
+    // three: an OpenHaunt output feeds sACN to the gateways among its nodes. A
+    // connector obeying the filter is what makes a two-node split — this Art-Net
+    // interface carries 1–4, that one 5–8 — mean anything.
     match config.kind {
         OutputKind::Artnet => {
             // No address is not a default to guess at — Art-Net has nowhere to go.
             let target = parse_target(config.target.as_deref()?, artnet::ARTNET_PORT)?;
-            bound(config, artnet::ArtNetOutput::bind(target).await)
+            let plugin = artnet::ArtNetOutput::bind(target).await;
+            bound(config, plugin.map(|o| o.carrying(config.universes.clone())))
         }
         OutputKind::Sacn => {
             let target = match config.target.as_deref() {
                 Some(addr) => Some(parse_target(addr, sacn::SACN_PORT)?),
                 None => None, // the per-universe multicast groups
             };
-            bound(config, sacn::SacnOutput::bind(target).await)
+            let plugin = sacn::SacnOutput::bind(target).await;
+            bound(config, plugin.map(|o| o.carrying(config.universes.clone())))
         }
         OutputKind::OpenHaunt => {
             let (directory, handle) = devices.clone()?;
             bound(
                 config,
-                openhaunt::OpenHauntOutput::new(directory, handle, sacn::SACN_PORT).await,
+                openhaunt::OpenHauntOutput::new(directory, handle, sacn::SACN_PORT)
+                    .await
+                    .map(|o| o.carrying(config.universes.clone())),
             )
         }
     }

@@ -206,6 +206,22 @@ async fn the_sequence_counter_advances_and_skips_zero() {
 }
 
 #[tokio::test]
+async fn a_restricted_output_leaves_the_universes_it_does_not_carry_to_somebody_else() {
+    let (receiver, addr) = a_receiver().await;
+    let mut output = SacnOutput::bind(Some(addr)).await.unwrap().carrying(vec![9]);
+
+    output.send(&a_dimmer_patch(3, 1.0), &[], 0).await.unwrap();
+
+    let anything =
+        tokio::time::timeout(std::time::Duration::from_millis(100), recv(&receiver)).await;
+    assert!(
+        anything.is_err(),
+        "universe 3 belongs to the other half of the split, and this output must be \
+         silent on it rather than a second source claiming it"
+    );
+}
+
+#[tokio::test]
 async fn a_fixture_on_a_node_puts_nothing_on_a_universe() {
     let (receiver, addr) = a_receiver().await;
     let mut output = SacnOutput::bind(Some(addr)).await.unwrap();

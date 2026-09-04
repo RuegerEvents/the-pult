@@ -30,7 +30,7 @@ use uuid::Uuid;
 use crate::{
     infra::{
         connectors::{
-            dmx::{render, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER},
+            dmx::{render_carried, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER},
             sacn::e131_data_packet,
             Frame, Frames, OutputPlugin, SendFuture,
         },
@@ -47,6 +47,10 @@ pub struct OpenHauntOutput {
     /// The port gateways are told to listen on. Fixed in the field; a parameter
     /// only so a test can have one that is not 5568.
     sacn_port: u16,
+    /// The universes this output feeds its gateways. Empty is every one they are
+    /// listening for. The ports themselves are reached by serial rather than by
+    /// universe and this says nothing about them.
+    carried: Vec<u16>,
     sent: UniverseCache,
     sequence: SequenceCounter,
     /// The last value sent for each port, keyed by (serial, port), so a relay is
@@ -79,6 +83,7 @@ impl OpenHauntOutput {
             socket: UdpSocket::bind("0.0.0.0:0").await?,
             cid: *Uuid::new_v4().as_bytes(),
             sacn_port,
+            carried: Vec::new(),
             sent: UniverseCache::default(),
             sequence: SequenceCounter::default(),
             last_sent: BTreeMap::new(),
@@ -87,6 +92,13 @@ impl OpenHauntOutput {
             offloaded: Default::default(),
             said: MessageRing::default(),
         })
+    }
+
+    /// Restrict the sACN half of this output to the universes its configuration
+    /// names, the same field and the same predicate the DMX connectors obey.
+    pub fn carrying(mut self, universes: Vec<u16>) -> Self {
+        self.carried = universes;
+        self
     }
 
     /// Unicast every universe a gateway is listening for, to that gateway.
@@ -115,7 +127,7 @@ impl OpenHauntOutput {
         let now = std::time::Instant::now();
         // Render once for the whole patch, not once per gateway: the universes are
         // the same however many nodes are waiting for them.
-        let universes = render(patch, now_ms);
+        let universes = render_carried(patch, now_ms, &self.carried);
         let evaluating = now.elapsed();
         let mut bytes = 0u64;
         let mut packets = 0u32;
