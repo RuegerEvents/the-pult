@@ -49,12 +49,18 @@
 		drawnLength,
 		fixtureOutput,
 		fixturePoint,
-		fohCamera,
 		planExtent,
 		throwDistance,
 		wrapDegrees,
 		travelOf
 	} from '$lib/stage.js';
+	import {
+		focusShot,
+		presetShot,
+		rigBounds,
+		type Shot,
+		type ViewPreset
+	} from '$lib/camera.js';
 	import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 	import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 	import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
@@ -167,13 +173,16 @@
 
 	// The opening view: worked out once, when there is first a rig to frame, and then
 	// left alone. Recomputing it as fixtures move would take the camera out of the
-	// operator's hands every time a cue changed something.
-	let home = $state(fohCamera([]));
+	// operator's hands every time a cue changed something. The buttons are how it is
+	// asked for again, which is the whole of `camera-home-presets`.
+	let home = $state(presetShot('front', rigBounds([], new Map())));
 	let framed = false;
 	$effect(() => {
 		if (framed || placed.length === 0) return;
 		framed = true;
-		home = untrack(() => fohCamera(placed));
+		home = untrack(() =>
+			presetShot('front', rigBounds(placed, $objectsById, { pieces: $visibleObjects }), aspect())
+		);
 	});
 
 	const floor = $derived(plan ? planExtent(plan) : { width: 20, depth: 14 });
@@ -1075,10 +1084,44 @@
 
 	// ── The camera ──────────────────────────────────────────────────────────────
 
-	/** Put the camera back where the view opened. */
-	export function goHome() {
-		const [px, py, pz] = home.position;
-		const [tx, ty, tz] = home.target;
+	/// What shape the tile is, which decides how far back a preset has to stand: a
+	/// portrait tablet needs more room for the same rig than a wide monitor does.
+	function aspect(): number {
+		const built = scene;
+		if (!built) return 16 / 9;
+		return built.camera.aspect > 0.01 ? built.camera.aspect : 16 / 9;
+	}
+
+	/** Take one of the four shots, framing everything the view draws. */
+	export function frame(preset: ViewPreset) {
+		if (!scene) return;
+		take(
+			presetShot(preset, rigBounds(placed, $objectsById, { pieces: $visibleObjects }), aspect())
+		);
+	}
+
+	/**
+	 * Frame what is selected, from where the camera already is.
+	 *
+	 * The more used of the two, and the one that has to leave the angle alone: an
+	 * operator who picked three heads wants those three heads, not a view swung round
+	 * to the front of them.
+	 */
+	export function frameSelection() {
+		const built = scene;
+		if (!built) return;
+		const chosen = placed.filter((f) => $selected.has(f.id));
+		if (chosen.length === 0) return;
+		const from = new THREE.Vector3();
+		built.camera.getWorldPosition(from);
+		// The selection and nothing else: no pieces of the drawing, and no floor.
+		const box = rigBounds(chosen, $objectsById, { pieces: [], margin: 0.6, toFloor: false });
+		take(focusShot(box, from, aspect()));
+	}
+
+	function take(shot: Shot) {
+		const [px, py, pz] = shot.position;
+		const [tx, ty, tz] = shot.target;
 		scene?.controls.setLookAt(px, py, pz, tx, ty, tz, true);
 	}
 

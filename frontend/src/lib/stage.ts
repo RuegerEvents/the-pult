@@ -355,27 +355,11 @@ const clamp = (v: number) => Math.min(1, Math.max(0, v));
 
 // ── The rig in three dimensions ───────────────────────────────────────────────
 
-/**
- * Where the camera starts: front of house, eye height, looking at the stage.
- *
- * The spec calls the FOH perspective "the primary operational perspective", so the
- * view opens there rather than somewhere neutral. How far back depends on how wide
- * the rig is — a festival stage seen from three metres is a wall.
- */
-export function fohCamera(fixtures: Fixture[]): { position: [number, number, number]; target: [number, number, number] } {
-	const bounds = fixtureBounds(fixtures, 0);
-	const width = Math.max(bounds.maxX - bounds.minX, 6);
-	const centreX = (bounds.minX + bounds.maxX) / 2;
-	// Far enough back that the whole width is comfortably inside a 50° lens, and
-	// never closer than the front row would be.
-	const back = Math.max(width * 1.4, 11);
-	return {
-		// Eye height, because that is where an operator actually stands. The view
-		// is meant to look like the room, not like a plan drawn in perspective.
-		position: [centreX, 1.7, bounds.maxZ + back],
-		target: [centreX, 1.8, (bounds.minZ + bounds.maxZ) / 2]
-	};
-}
+// Where the camera stands is in `camera.ts` now, with the other three places it can
+// stand and with focus-on-selection. The front of house view was the only one for as
+// long as it was also the only one anybody could ask for, and the spec still calls it
+// "the primary operational perspective" — so it is what the view opens at, and it is
+// what the Front button gives back.
 
 /**
  * Which way a fixture's beam leaves it, as a unit vector.

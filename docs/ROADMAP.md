@@ -17,7 +17,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Frontend | Working for show, session, sequences, cues, patch, the programmer, effects and speed masters. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. Panels that can change the show open read-only behind an Edit toggle and are sized for a finger. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. Since task 49 a page also reports what it is itself costing — frame rate, evaluator time, clock offset — which the System panel shows beside every station's. |
 | Playback engine | Working, and no longer a tick. Playback decides *what is driving* each parameter — fades and effects anchored on the cue's `went_at` — and publishes the descriptions; nothing stores what they are worth. A pass happens when the show changes, so a fade in progress costs the engine nothing. Since task 59 a fade has a shape as well as a length, asked for in the same three steps the times are — the capture, the cue, then the show's own default per group of parameter. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Each holds the last patch it was pushed and draws its own frames out of it at its protocol's rate, evaluating rather than being handed values. Configured from the `outputs` collection and editable while the show is up, with per-output status and per-connector frame cost in the UI. Since task 57 an output's universe list is a routing it obeys — and obeys before it evaluates — so a rig can be split across two interfaces and each carries and costs its own half. Flags only seed an empty showfile. |
-| Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. Since task 47 it draws the *drawing* too: trusses and objects out of an MVR, from their own meshes, with a Layers panel to show and hide parts of it. Every beam is still one cone at one angle; the geometry and the beam angle a GDTF import brings are stored and not yet drawn. Nothing can be moved or placed in either view yet. |
+| Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. Since task 47 it draws the *drawing* too: trusses and objects out of an MVR, from their own meshes, with a Layers panel to show and hide parts of it. Every beam is still one cone at one angle; the geometry and the beam angle a GDTF import brings are stored and not yet drawn. Nothing can be moved or placed in either view yet. Since task 60 the camera has five places to go — front, plan, section, three-quarter and whatever is selected — framed from the rig's own bounding box. |
 | Rig interchange | Working. MVR in and out: fixtures with their positions, trusses and objects with their meshes, layers and classes, all keyed by the uuid the file uses so a re-import updates the rig rather than doubling it. A fixture's place is a transform with a signed scale, relative to whatever it hangs off. What an import no longer mentions is reported, never deleted. No scene editing yet. |
 | Fixture definitions | Working. GDTF in and out, with modes, breaks, wheels, emitters, physical data and the geometry tree; the archive is kept whole and exports byte for byte. The GDTF Share is searchable and importable behind a station credential. A type the console derived from a node or somebody typed in is unchanged and still has an implicit mode. |
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
@@ -4021,6 +4021,64 @@ cargo test -p pult-codegen                      # the mirror still compiles
 cd frontend && npm test fade                    # the browser's copy of the same three steps
 ```
 
+### 60. Five places to look from
+
+`camera-home-presets`. The rig view opened wherever `fohCamera` put it and an operator
+flew back by hand, which on a tablet with `camera-controls` is a slow way to answer
+"what does the front look like". Four computed shots and a fifth that follows the
+selection, and **none of them costs any schema at all** — which is why this was at the
+top of the list rather than in it.
+
+**Framed from the rig's own box, and fitted to the tile.** `frontend/src/lib/camera.ts`
+is the arithmetic: a bounding box over the placed fixtures *and* the scene objects, and
+a distance worked out from the 50° lens. Both lens angles, not one — the horizontal
+half-angle of a perspective camera is `atan(tan(fov/2) · aspect)`, and the one that
+needs more room wins — so the same button frames a five-fixture demo and a
+two-hundred-head festival, on a portrait tablet and on a wide monitor.
+
+**`fohCamera` became the front preset**, rather than sitting beside it. Two buttons for
+nearly the same view is clutter, and worse, "where it opened" and "Front" being
+different places is exactly the confusion the presets exist to remove. So there is one
+front view, it is what the panel opens at, and it is what the button gives back — eye
+height and all, because the spec calls the house "the primary operational perspective"
+and it is meant to look like the room rather than like a plan drawn in perspective.
+
+Three of the four carry a decision worth writing down. **Plan is not exactly
+overhead**: a camera looking straight down has nothing to resolve its own roll, and the
+view rolls to whatever the maths picks, so it stands a couple of degrees off. **Section
+looks from stage left**, so the stage is on the left of the frame and the auditorium on
+the right, which is how a section is drawn. And the box **reaches the deck** for the
+rig — a rig hung at six metres over an empty floor is still a room with a floor in it,
+and a front view framing only the bar is a picture of a bar.
+
+A **hidden layer** is not framed, and that is the one place the box has to be told
+what to hold rather than reading the map it is given: `objectsById` is deliberately
+unfiltered, because a light hangs where its truss is whether or not the truss is being
+drawn, so composing a chain needs every object. Framing needs the *drawn* ones — a
+front view standing back for a truss nobody can see is standing back for empty air.
+
+**Focus is the one that leaves the angle alone.** It frames what is selected from where
+the camera already is, changing only the distance: an operator who picked three heads
+wants those three heads, not a view swung round to the front of them. It is also the
+one place the box must *not* reach the deck, since one head at six metres would
+otherwise be framed with six metres of air under it — so that is a parameter and both
+callers say which they mean.
+
+Two `rig` tiles can be open at once, each with its own renderer and controls, which the
+shape here already handles: a shot is a value the panel is handed rather than a camera
+anything in `camera.ts` holds, and the buttons call into one viewer through its own
+bound instance.
+
+**What is left is the saved preset, and its question now has an answer.** "The
+designer's view" is a thing a team shares, so it is show data beside `layouts` — the
+same split layouts already make, where the arrangement is the show's and which one this
+browser is looking at is not. It is not built because nobody has asked for one, and the
+four that cost nothing were always the part worth having first.
+
+```
+cd frontend && npm test camera     # the box, the fit, and the five shots
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -4115,72 +4173,70 @@ The viewer rewrite, the measurement and acting on what it found were built
 together as task 51, and showfile-management and showfile-assets-folder together
 as task 52; typed-plugin-sdk left as task 58.
 
-**fade-curves left on 2026-09-04**, as task 59, and it was never in this list at all:
-it was added the same day out of the user's own question and sat under *Programming
-model* unplaced. Worth noticing, because it belonged near the top — a mechanism the
-console has and no show can reach is a smaller job than anything below and a more
-visible one than most. It answered no question that changes the order, so the list is
-otherwise unmoved:
+**fade-curves and camera-home-presets left on 2026-09-04**, as tasks 59 and 60. The
+first was never in this list at all — it was added the same day out of the user's own
+question and sat under *Programming model* unplaced, which is worth noticing: it
+belonged near the top, because a mechanism the console has and no show can reach is a
+smaller job than anything below and a more visible one than most. The second was
+first here and was what its own entry said it was, a day's work with no schema in it.
+Neither answered a question that changes the order, so the rest of the list is
+unmoved:
 
-1. **camera-home-presets** — front, plan, section, three-quarter, and
-   focus-on-selection. The smallest of everything here and the one an operator
-   reaches for most often. Added 2026-09-03. → none: task 51's viewer owns its
-   own camera already
-2. **scene-editing** — and specifically a picker for task 52's stock catalogue
+1. **scene-editing** — and specifically a picker for task 52's stock catalogue
    first, which is smaller than a gizmo and is what a console that has never
    imported an MVR needs in order to have a room at all. → none
-3. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+2. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
    plugin over introspection, which is what introspection is for. → none, and
    much better now that gdtf-import has landed and put a real patch in the show
-4. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+3. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
    themselves dynamic. → none: the viewer landed as task 51
-5. **voice-input** — speech to the command line, grammar first and NL on parse
+4. **voice-input** — speech to the command line, grammar first and NL on parse
    failure. → none
-6. **nl-show-context** — what relative syntax cannot reach, and whether it is
+5. **nl-show-context** — what relative syntax cannot reach, and whether it is
    worth the permission it costs. → voice-input, which is what shows which
    utterances actually arrive
-7. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+6. **control-transports** — MIDI and OSC as ports, in and out, with nothing
    above them decided. Was open-control-interfaces until 2026-09-02, when the
    three things people send over those ports turned out to want separate
    entries. → none
-8. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+7. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
    audio import. The biggest item here and the one the spec is most opinionated
    about. → none technically
-9. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+8. **llm-cost-overview** — token and cost accounting out of the NL plugin.
    → none
-10. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+9. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
    frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
    from task 51, which measured a connector's frame at 4.77 ms for 5000 fixtures —
    the number a WASM boundary now has to be compared against, and task 56, which
    says the boundary has to survive being asked 40 times a second and not 29
-11. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+10. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-12. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+11. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
    → a real TS plugin wanting to exist
-13. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+12. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
    stage manager's Go arriving at the lights, and this console sending its own
    to sound and video. → control-transports
-14. **surface-layer** — a bound physical thing, which is what the transports are
+13. **surface-layer** — a bound physical thing, which is what the transports are
    not: one event type under every surface, plus the two questions (where a
    headless surface's selection lives, where a fader's gesture begins and ends)
    that decide whether any of the three below is a week or a month.
    → control-transports for the MIDI half, nothing for the USB half
-15. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+14. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
    is what proves the layer before anybody spends a weekend on USB captures.
    → surface-layer
-16. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+15. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
    it can be estimated at all. → surface-layer
-17. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+16. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
    undocumented and to be read off the device. → surface-layer, and
    midi-surfaces for the binding model
-18. **showfile-migrations** — so a show made in the beta still opens after it.
+17. **showfile-migrations** — so a show made in the beta still opens after it.
    Added 2026-09-03, and the trigger is the beta rather than anything in the
    code: until somebody is carrying real work in a showfile, refusing one from
    another generation by name is the better trade. → the first beta
-19. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
+18. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
    2026-09-03. → none, and the sharpest question in it is whether an imported
    `.pultz` should ask before running the plugins it carries
-20. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
+19. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
    measured evaluating at **94%** of an output frame at 5000 fixtures, which is
    the answer the question was waiting for, and `pult-render` is pure and takes
    no locks. The same measurement is why it sits here rather than at the top: the
@@ -4189,7 +4245,7 @@ otherwise unmoved:
    an output that carries part of the rig now evaluates part of the rig. → none,
    and it should not be done until something is actually short of frame
 
-Items 13 to 17 were added on 2026-09-02 and sit near the end rather than being
+Items 12 to 16 were added on 2026-09-02 and sit near the end rather than being
 placed, because three of them are blocked on hardware being in the room and not
 on anything in this repository. Any of those can move up the day the hardware is
 on the desk. **show-control is the exception and the one with a case for moving
@@ -4208,7 +4264,7 @@ actually running a show from. Task 53 already took the free wins — sixty a sec
 most, nothing drawn when nothing changed, only lit beams drawn — which is what turned
 a pinned GPU into an idle one on a dark stage.
 
-Items 18 and 19 were added on 2026-09-03 and sit near the end for a different
+Items 17 and 18 were added on 2026-09-03 and sit near the end for a different
 reason: neither is blocked on anything, and both are blocked on *time*. A
 migration path is worth nothing until there is a showfile worth migrating, and
 the gaps in how plugins travel are gaps rather than absences.
@@ -4383,28 +4439,6 @@ that reduce it.
   full-screen Retina display, where the tile count does finally exceed the cores.
 - Measure in a *headed* browser only: a hidden tab has no frames, and headless
   Chromium's GPU is software.
-
-#### camera-home-presets
-
-Where the rig view looks from. Today the camera starts wherever `Rig3D.svelte` puts it
-and an operator flies back by hand every time they open the panel — on a tablet, with
-`camera-controls`, that is a slow way to answer "what does the front look like".
-
-- **The obvious four are free and cost no schema at all**: front of house, plan,
-  section, and a three-quarter. Buttons that animate the existing controls to a
-  computed position, framing the rig's own bounding box so they work on a five-fixture
-  demo and a two-hundred-head festival alike.
-- **A *saved* preset is the question.** Whose is it? A camera position is one operator
-  looking at one screen, which argues for `localStorage` beside the layout. But "the
-  designer's view" is a thing a team shares, which argues for show data beside
-  `layouts` — and layouts are already the precedent for exactly that split: the
-  arrangement is the show's, which one this browser is looking at is not.
-- **Two `rig` tiles can be open at once**, each with its own renderer and controls, so
-  a preset is applied to *a* view rather than to the panel. Whatever holds them cannot
-  assume one camera.
-- Focus-on-selection is the same machinery and probably the more used of the two: frame
-  what is selected rather than the whole rig.
-- Not a `stage_plans` question. That is the flat view, and it has its own framing.
 
 ### Showfiles
 

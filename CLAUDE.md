@@ -942,6 +942,18 @@ and the photoreal frame is linear light, so the clear colour, the grid's grey an
 beams' gain are said in linear terms on that path only. Measure any of this in a
 *headed* browser only: a hidden tab has no animation frames.
 
+**Five places to look from, none of them stored.** Front, plan, section, three-quarter
+and focus-on-selection, worked out in `frontend/src/lib/camera.ts` from a box over the
+placed fixtures and the scene objects and a distance fitted to *both* lens angles — the
+horizontal one is `atan(tan(fov/2) · aspect)`, so the same button frames a five-fixture
+demo and a festival, on a tablet and on a monitor. Three decisions live there: plan
+stands a couple of degrees off vertical, because a camera looking straight down has
+nothing to resolve its own roll; section looks from stage left, so the stage is on the
+left of the frame the way a section is drawn; and the box reaches the deck for the rig
+and **not** for a selection, since one head at six metres framed with the floor in shot
+is six metres of air. Focus changes only the distance, never the angle. The front
+preset *is* where the view opens, so those are one place rather than two.
+
 **And a piece with no mesh is drawn from the catalogue.** `frontend/src/lib/stock.ts`
 turns `SceneObject::catalogue` into geometry — see *A show is a folder* — which is what
 lets a console that has never imported an MVR hang a rig on something.

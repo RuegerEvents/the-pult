@@ -12,6 +12,7 @@
 	import { selection } from '$lib/stores/selection.js';
 	import { shownPlanId } from '$lib/stores/stage.js';
 	import { RENDER_MODES, RESOLUTIONS, setView, view } from '$lib/stores/view.js';
+	import { VIEW_PRESETS } from '$lib/camera.js';
 	import Rig3D from './Rig3D.svelte';
 	import MvrButtons from './MvrButtons.svelte';
 
@@ -84,7 +85,25 @@
 		{/if}
 		<span class="count">{$selection.length} selected</span>
 		<button class="ghost" class:open={viewing} onclick={() => (viewing = !viewing)}>View</button>
-		<button class="ghost" onclick={() => rig?.goHome()}>Home</button>
+		<!-- Where to look from. Four computed places and one that follows what is
+		     selected, none of which is stored anywhere: a camera position worked out
+		     from the rig's own bounding box needs no schema and frames a five-fixture
+		     demo and a festival alike. -->
+		<div class="shots" role="group" aria-label="Where the view looks from">
+			{#each VIEW_PRESETS as preset (preset.value)}
+				<button class="shot" title={preset.blurb} onclick={() => rig?.frame(preset.value)}>
+					{preset.label}
+				</button>
+			{/each}
+			<button
+				class="shot"
+				title="Frame what is selected, from where you are looking now"
+				disabled={$selection.length === 0}
+				onclick={() => rig?.frameSelection()}
+			>
+				Focus
+			</button>
+		</div>
 	</nav>
 
 	{#if viewing}
@@ -164,6 +183,13 @@
 
 	.canvas { flex: 1; min-height: 0; background: #101010; position: relative; }
 	.empty { color: #777; font-size: 13px; margin: auto; }
+
+	.shots { display: flex; }
+	.shot { background: none; border: 1px solid var(--line-strong); color: #bbb; padding: 4px 9px; font: inherit; font-size: 12px; cursor: pointer; margin-left: -1px; }
+	.shot:first-child { border-radius: 3px 0 0 3px; margin-left: 0; }
+	.shot:last-child { border-radius: 0 3px 3px 0; }
+	.shot:hover:not(:disabled) { border-color: var(--line-input); color: #fff; }
+	.shot:disabled { color: #555; cursor: default; }
 
 	.ghost { background: none; border: 1px solid var(--line-strong); border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
 	.ghost:hover, .ghost.open { border-color: var(--line-input); color: #fff; }

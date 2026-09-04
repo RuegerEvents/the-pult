@@ -412,29 +412,6 @@ describe('guessing a scale', () => {
 });
 
 describe('the rig in three dimensions', () => {
-	it('opens at front of house looking at the stage', async () => {
-		const { fohCamera } = await import('./stage.js');
-		const rig = [
-			fixture({ position: at({ x: -4, y: 5, z: -2 }) }),
-			fixture({ position: at({ x: 4, y: 5, z: 1 }) })
-		];
-		const camera = fohCamera(rig);
-		expect(camera.position[1]).toBeCloseTo(1.7, 6);
-		// Downstage of everything, out in the house.
-		expect(camera.position[2]).toBeGreaterThan(1);
-		expect(camera.position[0]).toBeCloseTo(0, 6);
-	});
-
-	it('stands further back for a wider rig', async () => {
-		const { fohCamera } = await import('./stage.js');
-		const near = fohCamera([fixture({ position: at({ x: 0, y: 4, z: 0 }) })]);
-		const wide = fohCamera([
-			fixture({ position: at({ x: -20, y: 4, z: 0 }) }),
-			fixture({ position: at({ x: 20, y: 4, z: 0 }) })
-		]);
-		expect(wide.position[2]).toBeGreaterThan(near.position[2]);
-	});
-
 	it('points a fixture with no stated direction at the floor', async () => {
 		const { beamDirection } = await import('./stage.js');
 		expect(
