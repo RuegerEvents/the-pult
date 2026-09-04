@@ -10,6 +10,7 @@ use anyhow::Result;
 use pult_schema::types::{
     effect::{Curve, Direction, EffectSpec, Rate, Shape, Spread},
     fixture::{Fixture, ParameterKind, ParameterValue, Vec3},
+    mount::Mount,
     flow::{FlowNodeKind, TriggerAction, TriggerCondition, TriggerSource},
     speedmaster::SpeedMaster,
 };
@@ -17,8 +18,8 @@ use pult_schema::types::{
 use super::{
     id,
     kit::{
-        a_cue, a_fixture, a_stack, a_type, aimed, capture, colour, draw, facing, intensity, level,
-        pan, tilt, truss_run, Addresses,
+        a_clamped_fixture, a_cue, a_stack, a_type, capture, colour, draw, facing, intensity, level,
+        pan, tilt, truss_run, under, Addresses,
     },
     now_ms, Seeder,
 };
@@ -52,26 +53,30 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         ("Front right", 3.0, facing::DOWNSTAGE, front),
         ("Backlight", 0.0, facing::UPSTAGE, back),
     ] {
-        let mut fixture = a_fixture(
+        let mount = Mount::along(x);
+        let fixture = a_clamped_fixture(
             name,
             dimmer.id,
             addresses.take(dimmer.channel_count),
-            aimed(x, -0.3, 0.0, aim),
+            bar,
+            under(mount, aim),
+            mount,
         );
-        fixture.parent = Some(bar);
         into.create("fixtures", &fixture).await?;
     }
 
     for (name, x) in [("Head left", -2.5), ("Head right", 2.5)] {
-        let mut fixture = a_fixture(
+        let mount = Mount::along(x);
+        let fixture = a_clamped_fixture(
             name,
             spot.id,
             addresses.take(spot.channel_count),
+            back,
             // Hanging: a moving head rests pointing at the floor, and pan and tilt
             // are angles away from that.
-            aimed(x, -0.3, 0.0, facing::DOWN),
+            under(mount, facing::DOWN),
+            mount,
         );
-        fixture.parent = Some(back);
         into.create("fixtures", &fixture).await?;
     }
 

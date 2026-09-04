@@ -26,6 +26,7 @@ use pult_schema::types::{
     cue::{Cue, ParameterCapture},
     effect::{Curve, Direction, EffectSpec, Rate, Shape, Spread},
     fixture::{Fixture, FixtureType, ParameterKind, ParameterValue, Vec3},
+    mount::Mount,
     scene::{Layer, Transform},
     speedmaster::SpeedMaster,
 };
@@ -34,9 +35,9 @@ use uuid::Uuid;
 use super::{
     id,
     kit::{
-        a_cue, a_fixture, a_piece, a_stack, a_type_with_beam, aimed, boom, capture, colour,
-        facing, hue, intensity, level, on, pan, strobe_rate, tilt, truss_run, Addresses,
-        HUNG_BELOW,
+        a_clamped_fixture, a_cue, a_fixture, a_piece, a_stack, a_type_with_beam, aimed, boom,
+        capture, colour, facing, hue, intensity, level, on, pan, strobe_rate, tilt, truss_run,
+        under, Addresses,
     },
     now_ms, Seeder,
 };
@@ -184,13 +185,15 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             let definition = type_of(kind);
             let n = counts.entry(called(kind)).or_default();
             *n += 1;
-            let mut fixture = a_fixture(
+            let mount = Mount::along(-SPAN / 2.0 + step * (slot as f32 + 0.5));
+            let mut fixture = a_clamped_fixture(
                 &format!("{} {}", called(kind), n),
                 definition.id,
                 addresses.take(definition.channel_count),
-                aimed(-SPAN / 2.0 + step * (slot as f32 + 0.5), -HUNG_BELOW, 0.0, aim),
+                truss,
+                under(mount, aim),
+                mount,
             );
-            fixture.parent = Some(truss);
             fixture.layer = Some(layer);
             made.push((kind, fixture));
         }
@@ -241,16 +244,27 @@ pub async fn seed(into: &Seeder) -> Result<()> {
 
     // And six washes up each tower on sidearms, looking across the stage.
     for (t, (tower, handle)) in towers.iter().enumerate() {
-        let (side_name, aim, towards_centre) =
-            if t == 0 { ("SL", facing::FROM_LEFT, 0.45) } else { ("SR", facing::FROM_RIGHT, -0.45) };
+        // Clamped to the chord that faces centre stage. A tower is a run stood on its
+        // end, so its own X runs up the world's Y and `along` is the height up it —
+        // which is what makes the mount the same two degrees here as on a bar.
+        // The clamp goes on the chord facing centre stage, and the roll pushes the
+        // body out along it: a tower is a run turned a quarter about Z, so its local
+        // −Y is the world's +X.
+        let (side_name, aim, chord, roll) = if t == 0 {
+            ("SL", facing::FROM_LEFT, 0, 0.0)
+        } else {
+            ("SR", facing::FROM_RIGHT, 2, 180.0)
+        };
         for n in 0..6 {
-            let mut fixture = a_fixture(
+            let mount = Mount { chord, along: -2.4 + 0.96 * n as f32, roll };
+            let mut fixture = a_clamped_fixture(
                 &format!("Tower {side_name} {}", n + 1),
                 wash.id,
                 addresses.take(wash.channel_count),
-                on(handle, Vec3 { x: towards_centre, y: -2.4 + 0.96 * n as f32, z: 0.0 }, aim),
+                *tower,
+                on(handle, mount, aim),
+                mount,
             );
-            fixture.parent = Some(*tower);
             fixture.layer = Some(side);
             into.create("fixtures", &fixture).await?;
         }

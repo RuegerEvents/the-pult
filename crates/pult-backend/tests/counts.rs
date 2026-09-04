@@ -221,6 +221,81 @@ async fn one_gesture_is_one_row_however_many_writes_it_took() {
     );
 }
 
+/// The same, for the thing an operator drags far more often than a light: a truss.
+///
+/// A gizmo writes a placement per animation frame, and moving a bar across a stage is
+/// one act however many frames it took. The fixture case above is the mirror of this
+/// one, and the two are here rather than one because they go through different paths:
+/// a programmer value and a `scene_objects` transform.
+#[tokio::test]
+async fn a_dragged_truss_is_one_row() {
+    let station = a_station().await;
+    let who = Uuid::new_v4();
+    let gesture = Uuid::new_v4();
+
+    let truss = Uuid::new_v4();
+    station
+        .engine
+        .set(
+            vec![
+                PathSegment::Key("scene_objects".into()),
+                PathSegment::Key("__create".into()),
+            ],
+            Lifecycle::Persisted,
+            serde_json::json!({
+                "id": truss,
+                "name": "Downstage bar",
+                "kind": "Truss",
+                "transform": {
+                    "position": { "x": 0.0, "y": 6.0, "z": 0.0 },
+                    "rotation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+                    "scale": { "x": 1.0, "y": 1.0, "z": 1.0 }
+                },
+                "parent": null,
+                "layer": null,
+                "class": null,
+                "geometry": [],
+                "symbol": null,
+                "catalogue": "f34-3m",
+                "properties": {},
+                "locked": false
+            }),
+        )
+        .await
+        .expect("the truss is drawn");
+
+    for step in 0..60 {
+        station
+            .engine
+            .set_as(
+                who,
+                Some(gesture),
+                vec![
+                    PathSegment::Key("scene_objects".into()),
+                    PathSegment::Id(truss),
+                    PathSegment::Key("transform".into()),
+                ],
+                Lifecycle::Persisted,
+                serde_json::json!({
+                    "position": { "x": step as f32 / 60.0, "y": 6.0, "z": 0.0 },
+                    "rotation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+                    "scale": { "x": 1.0, "y": 1.0, "z": 1.0 }
+                }),
+            )
+            .await
+            .expect("the drag writes");
+    }
+
+    let history = station.engine.history(100).await;
+    let mine = history.iter().filter(|entry| entry.gesture == Some(gesture)).count();
+    assert_eq!(
+        mine, 1,
+        "dragging a truss across sixty frames became {mine} entries in the history. \
+         Moving a bar is one act and has to be one Ctrl-Z: if this grows, putting a \
+         truss back where it was becomes a key somebody holds down."
+    );
+}
+
 #[tokio::test]
 async fn a_settled_rig_changes_no_universes() {
     let station = a_station().await;

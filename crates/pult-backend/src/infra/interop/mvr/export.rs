@@ -22,6 +22,8 @@ use pult_mvr::model::{
 };
 use pult_mvr::MvrFile;
 use pult_schema::types::fixture::{Fixture, FixtureType};
+use pult_schema::stock::{stock_file_name, stock_symdef_name, stock_symdef_uuid};
+use pult_schema::types::catalogue::canonical_properties_of;
 use pult_schema::types::scene::{
     GeometryRef, Layer, NamedAsset, SceneClass, SceneObject, SceneObjectKind, Symbol, Transform,
 };
@@ -41,6 +43,16 @@ pub struct Rig<'a> {
 }
 
 /// A file this export wants in the archive, by the name it must have.
+///
+/// Three ways one arrives, and the caller fetches or makes each in turn: a mesh out
+/// of the asset store; a GDTF, which is the stored archive where the type came from
+/// one and a generated file otherwise; and a **catalogue piece**, which is neither
+/// stored nor fetched — [`pult_schema::stock::stock_glb`] makes it from the table.
+///
+/// That last one is why this task exists at all. MVR has no primitive — its
+/// `GeometryNode` is a file or a symbol instance — so a stock piece written without a
+/// mesh is an empty group, and a rig built here and opened in Vectorworks was a room
+/// full of nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wanted {
     pub name: String,
@@ -48,6 +60,19 @@ pub struct Wanted {
     pub asset: Option<String>,
     /// The fixture type a generated GDTF is for.
     pub fixture_type: Option<Uuid>,
+    /// The catalogue piece a generated mesh is for.
+    pub stock: Option<Stock>,
+}
+
+/// A catalogue piece, as an export names one.
+///
+/// The properties are **canonical** — the piece's declared keys, filled in and in
+/// order — because they go into the symdef's name and through that into its uuid, and
+/// two spellings of "a deck with 200 mm legs" would be two symbols for one piece.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stock {
+    pub id: String,
+    pub properties: String,
 }
 
 /// The scene, and the files that have to go beside it.
@@ -56,11 +81,18 @@ pub struct Export {
     pub wanted: Vec<Wanted>,
 }
 
-/// The layer a fixture nobody drew is exported in.
+/// The layer anything no layer claims is exported in.
 ///
 /// A rig can be patched here without ever having been in a drawing, and dropping
 /// those on the way out would hand somebody an MVR that is missing half their show.
-pub const PATCHED_HERE: &str = "Patched here";
+///
+/// It used to be called "Patched here", which was true of a fixture and a lie about a
+/// truss somebody drew — and once a person can draw one, that is a name they will
+/// read. The *name* changed and the uuid did not: it is still a v5 over the old
+/// string, so a re-import of an older export updates that layer rather than leaving a
+/// second one beside it.
+pub const UNLAYERED: &str = "Not on a layer";
+const UNLAYERED_SEED: &str = "Patched here";
 
 /// Build the scene, and say which files belong beside it.
 ///
@@ -73,6 +105,10 @@ pub fn plan_export(rig: &Rig, only: &BTreeSet<Uuid>) -> Export {
     let mut used_symbols: BTreeSet<Uuid> = BTreeSet::new();
     let mut used_classes: BTreeSet<Uuid> = BTreeSet::new();
     let mut used_types: BTreeSet<Uuid> = BTreeSet::new();
+    // One entry per *distinct* piece-and-properties, keyed by the symdef uuid the
+    // pair always has. Fifty identical truss sections instance one symbol and carry
+    // one mesh, which is the same bargain a drawing's own symdefs strike.
+    let mut used_stock: BTreeMap<Uuid, Stock> = BTreeMap::new();
 
     let mut layers: Vec<MvrLayer> = Vec::new();
     let mut ordered: Vec<&Layer> = rig.layers.iter().filter(|l| wants(l.id)).collect();
@@ -87,6 +123,7 @@ pub fn plan_export(rig: &Rig, only: &BTreeSet<Uuid>) -> Export {
             &mut used_symbols,
             &mut used_classes,
             &mut used_types,
+            &mut used_stock,
         );
         layers.push(MvrLayer {
             uuid: layer.id.to_string(),
@@ -99,12 +136,20 @@ pub fn plan_export(rig: &Rig, only: &BTreeSet<Uuid>) -> Export {
     // Anything the show has that no layer claims. Only when the whole rig is being
     // written: an export of two named layers is an export of two named layers.
     if only.is_empty() {
-        let loose =
-            child_list(rig, None, None, &specs, &mut used_symbols, &mut used_classes, &mut used_types);
+        let loose = child_list(
+            rig,
+            None,
+            None,
+            &specs,
+            &mut used_symbols,
+            &mut used_classes,
+            &mut used_types,
+            &mut used_stock,
+        );
         if loose.is_some() {
             layers.push(MvrLayer {
-                uuid: Uuid::new_v5(&Uuid::NAMESPACE_OID, PATCHED_HERE.as_bytes()).to_string(),
-                name: PATCHED_HERE.into(),
+                uuid: Uuid::new_v5(&Uuid::NAMESPACE_OID, UNLAYERED_SEED.as_bytes()).to_string(),
+                name: UNLAYERED.into(),
                 matrix: None,
                 children: loose,
             });
@@ -119,6 +164,7 @@ pub fn plan_export(rig: &Rig, only: &BTreeSet<Uuid>) -> Export {
             name: format!("{spec}.gdtf"),
             asset: kept_archive(fixture_type),
             fixture_type: Some(*id),
+            stock: None,
         });
     }
 
@@ -146,6 +192,27 @@ pub fn plan_export(rig: &Rig, only: &BTreeSet<Uuid>) -> Export {
             }),
         }));
     }
+    // And the catalogue's own, as symdefs carrying a generated mesh. Named so that a
+    // console reading this file back can tell what the piece *was* — see
+    // `pult_schema::stock::parse_stock_symdef` — and so that anybody else simply sees
+    // an ordinary symbol with an ordinary truss in it.
+    for (id, stock) in &used_stock {
+        let file_name = stock_file_name(&stock.id, &properties_of(stock));
+        wanted.push(Wanted {
+            name: file_name.clone(),
+            asset: None,
+            fixture_type: None,
+            stock: Some(stock.clone()),
+        });
+        aux.push(AuxItem::Symdef(Symdef {
+            uuid: id.to_string(),
+            name: stock_symdef_name(&stock.id, &properties_of(stock)),
+            children: Some(ChildList {
+                items: vec![ChildNode::Geometry3D(Geometry3D { file_name, matrix: None })],
+            }),
+        }));
+    }
+
     for id in &used_classes {
         let Some(class) = rig.classes.iter().find(|c| c.id == *id) else { continue };
         aux.push(AuxItem::Class(Class {
@@ -167,7 +234,7 @@ pub fn plan_export(rig: &Rig, only: &BTreeSet<Uuid>) -> Export {
     wanted.dedup_by(|a, b| a.name == b.name);
     // Anything a name maps to that this station does not hold is dropped rather than
     // written empty: a zero-byte mesh is worse than an object with no geometry.
-    wanted.retain(|w| w.asset.is_some() || w.fixture_type.is_some());
+    wanted.retain(|w| w.asset.is_some() || w.fixture_type.is_some() || w.stock.is_some());
     let _ = rig.named_assets;
 
     Export {
@@ -186,6 +253,7 @@ pub fn plan_export(rig: &Rig, only: &BTreeSet<Uuid>) -> Export {
 }
 
 /// Everything in one layer that hangs off `parent`, as MVR sees it.
+#[allow(clippy::too_many_arguments)]
 fn child_list(
     rig: &Rig,
     layer: Option<Uuid>,
@@ -194,6 +262,7 @@ fn child_list(
     symbols: &mut BTreeSet<Uuid>,
     classes: &mut BTreeSet<Uuid>,
     types: &mut BTreeSet<Uuid>,
+    stock: &mut BTreeMap<Uuid, Stock>,
 ) -> Option<ChildList> {
     let mut items: Vec<ChildNode> = Vec::new();
 
@@ -207,8 +276,12 @@ fn child_list(
         if let Some(id) = object.class {
             classes.insert(id);
         }
-        let children = child_list(rig, layer, Some(object.id), specs, symbols, classes, types);
-        items.push(as_child_node(object, children));
+        let instanced = stock_of(object).inspect(|(id, piece)| {
+            stock.insert(*id, piece.clone());
+        });
+        let children =
+            child_list(rig, layer, Some(object.id), specs, symbols, classes, types, stock);
+        items.push(as_child_node(object, children, instanced.map(|(id, _)| id)));
     }
 
     let mut fixtures: Vec<&Fixture> =
@@ -228,12 +301,16 @@ fn child_list(
     (!items.is_empty()).then_some(ChildList { items })
 }
 
-fn as_child_node(object: &SceneObject, children: Option<ChildList>) -> ChildNode {
+fn as_child_node(
+    object: &SceneObject,
+    children: Option<ChildList>,
+    stock: Option<Uuid>,
+) -> ChildNode {
     let inner = Object {
         uuid: object.id.to_string(),
         name: object.name.clone(),
         matrix: Some(matrix_of(&object.transform)),
-        geometries: geometries_of(&object.geometry, object.symbol),
+        geometries: geometries_of(&object.geometry, object.symbol.or(stock)),
         classing: object.class.map(|id| id.to_string()),
         children,
         ..Object::default()
@@ -304,11 +381,35 @@ fn as_geometry_node_inner(reference: &GeometryRef) -> GeometryNode {
     })
 }
 
+/// The symdef a catalogue piece is written as, where the object is one.
+///
+/// Only when there is nothing better: a mesh the drawing carried, or a symbol it
+/// instanced, is the truth about that object, and `catalogue` is last of the three —
+/// the same order the rig view draws them in.
+fn stock_of(object: &SceneObject) -> Option<(Uuid, Stock)> {
+    if !object.geometry.is_empty() || object.symbol.is_some() {
+        return None;
+    }
+    let id = object.catalogue.as_deref()?;
+    let properties = canonical_properties_of(id, &object.properties);
+    let name = stock_symdef_name(id, &properties);
+    Some((stock_symdef_uuid(&name), Stock { id: id.to_string(), properties: properties.to_string() }))
+}
+
+/// The properties back out of the string a [`Stock`] carries.
+///
+/// Kept as text on the way through so that two of them compare as one value; a
+/// `serde_json::Value` is not `Eq` and `Wanted` is compared in tests.
+fn properties_of(stock: &Stock) -> serde_json::Value {
+    serde_json::from_str(&stock.properties).unwrap_or(serde_json::Value::Null)
+}
+
 fn want_mesh(wanted: &mut Vec<Wanted>, reference: &GeometryRef) {
     wanted.push(Wanted {
         name: reference.file_name.clone(),
         asset: (!reference.asset.is_empty()).then(|| reference.asset.clone()),
         fixture_type: None,
+        stock: None,
     });
 }
 

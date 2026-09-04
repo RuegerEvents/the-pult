@@ -201,6 +201,27 @@ pub struct SceneObject {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub catalogue: Option<String>,
+    /// What a piece out of the catalogue was asked for: a deck's leg height, a
+    /// panel's finish. Declared per piece in [`crate::types::catalogue`], so the
+    /// keys are the piece's and an object carrying a key the piece never declared
+    /// is simply ignored rather than refused.
+    ///
+    /// An object out of a drawing has an empty map: a mesh somebody modelled says
+    /// what it is, and there is nothing here to ask it.
+    ///
+    /// A JSON column, the way `PluginPackage::config` is.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub properties: serde_json::Value,
+    /// Whether an operator can take hold of it.
+    ///
+    /// The show's rather than the browser's, unlike layer visibility: locking the
+    /// house rig so nobody drags it is a decision about the rig, and a lock only
+    /// one screen honoured would be no lock at all. A locked object is still drawn,
+    /// still pickable and still says what it is — what it has is no gizmo.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub locked: bool,
 }
 
 /// A drawing's layer: a name to show, hide and lock a part of the rig by.
@@ -328,6 +349,40 @@ pub fn by_id(objects: &[SceneObject]) -> HashMap<Uuid, &SceneObject> {
     objects.iter().map(|object| (object.id, object)).collect()
 }
 
+// ── And back down the chain ───────────────────────────────────────────────────
+
+/// The placement that undoes this one.
+///
+/// Composing it with the transform it came from gives the identity, which is the
+/// whole of what it is for: dragging a truss says where a thing has *got to* in
+/// world terms, and what has to be stored is where it is relative to its parent.
+///
+/// Worked out through the matrix rather than by negating the three fields, because
+/// negating them is only right when there is no rotation: the inverse of "moved two
+/// metres and then turned" is "turned back and then moved two metres in the turned
+/// frame", and −position is neither half of that.
+pub fn inverse(transform: &Transform) -> Transform {
+    from_matrix(invert(to_matrix(transform)))
+}
+
+/// Where something has to be written down, given where it has got to and where its
+/// parent is.
+///
+/// The other direction from [`world_transform`], and the reason it exists: a gizmo
+/// hands back a world placement, and a `SceneObject::transform` is relative to its
+/// parent. `parent_world` is the parent's *composed* placement — what
+/// `world_transform` answers for it — so a light on a section on a run needs one
+/// call rather than a walk.
+///
+/// With no parent this is the placement itself, which is what an object at the top
+/// of the drawing wants.
+pub fn local_of(world: &Transform, parent_world: Option<&Transform>) -> Transform {
+    match parent_world {
+        None => *world,
+        Some(parent) => from_matrix(multiply(invert(to_matrix(parent)), to_matrix(world))),
+    }
+}
+
 // ── The arithmetic ────────────────────────────────────────────────────────────
 
 /// A transform as a 4x4, column-vector convention: `world = M · local`.
@@ -387,6 +442,63 @@ fn multiply(a: Matrix4, b: Matrix4) -> Matrix4 {
             *cell = (0..4).map(|k| a[i][k] * b[k][j]).sum();
         }
     }
+    out
+}
+
+/// The inverse of an affine 4x4 whose bottom row is `0 0 0 1`.
+///
+/// The basis is inverted properly rather than transposed: a transform may carry a
+/// non-uniform or negative scale, and a transpose is the inverse of a rotation only.
+/// A basis that cannot be inverted — a scale of zero on some axis — gives the
+/// identity back, which leaves a thing where it was rather than sending it to
+/// infinity.
+fn invert(matrix: Matrix4) -> Matrix4 {
+    let mut basis = [[0.0f32; 3]; 3];
+    for (row, cells) in basis.iter_mut().enumerate() {
+        for (col, cell) in cells.iter_mut().enumerate() {
+            *cell = matrix[row][col];
+        }
+    }
+    let det = determinant(basis);
+    if det.abs() < 1e-12 {
+        let mut identity = [[0.0f32; 4]; 4];
+        for (n, row) in identity.iter_mut().enumerate() {
+            row[n] = 1.0;
+        }
+        return identity;
+    }
+    // The adjugate over the determinant.
+    let m = basis;
+    let cofactor = [
+        [
+            m[1][1] * m[2][2] - m[1][2] * m[2][1],
+            m[0][2] * m[2][1] - m[0][1] * m[2][2],
+            m[0][1] * m[1][2] - m[0][2] * m[1][1],
+        ],
+        [
+            m[1][2] * m[2][0] - m[1][0] * m[2][2],
+            m[0][0] * m[2][2] - m[0][2] * m[2][0],
+            m[0][2] * m[1][0] - m[0][0] * m[1][2],
+        ],
+        [
+            m[1][0] * m[2][1] - m[1][1] * m[2][0],
+            m[0][1] * m[2][0] - m[0][0] * m[2][1],
+            m[0][0] * m[1][1] - m[0][1] * m[1][0],
+        ],
+    ];
+
+    let mut out = [[0.0f32; 4]; 4];
+    for (row, cells) in cofactor.iter().enumerate() {
+        for (col, cell) in cells.iter().enumerate() {
+            out[row][col] = cell / det;
+        }
+    }
+    // And the translation, taken back through the inverted basis.
+    let t = [matrix[0][3], matrix[1][3], matrix[2][3]];
+    for row in 0..3 {
+        out[row][3] = -(0..3).map(|k| out[row][k] * t[k]).sum::<f32>();
+    }
+    out[3][3] = 1.0;
     out
 }
 

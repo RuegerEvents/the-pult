@@ -137,7 +137,7 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 /// 3. A show became a folder, and the assets moved out of the file into `assets/`
 ///    beside it. The `bytes` column is gone, so a generation 2 file's rows claim
 ///    assets whose bytes nothing can find.
-pub(super) const SCHEMA_GENERATION: i64 = 3;
+pub(super) const SCHEMA_GENERATION: i64 = 4;
 
 /// Say plainly that a showfile is from another build, instead of panicking somewhere
 /// deep in a generated `from_columns`.

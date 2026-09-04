@@ -128,3 +128,32 @@ describe('focusing on what is selected', () => {
 		expect(shot.position.every(Number.isFinite)).toBe(true);
 	});
 });
+
+describe('a catalogue piece in the frame', () => {
+	// Once a person can build a rig out of nothing but catalogue pieces, an origin is
+	// not enough: a three-metre bar counted as a point is a bar with a metre and a half
+	// of itself outside the frame.
+	const truss = (x: number, catalogue: string | null): SceneObject =>
+		({
+			id: `t${x}`,
+			transform: at({ x, y: 6, z: 0 }),
+			parent: null,
+			catalogue,
+			properties: null
+		}) as unknown as SceneObject;
+
+	it('counts its whole length, not its origin', () => {
+		const bounds = rigBounds([], new Map(), { pieces: [truss(0, 'f34-3m')], margin: 0 });
+
+		expect(bounds.max.x).toBeCloseTo(1.5, 6);
+		expect(bounds.min.x).toBeCloseTo(-1.5, 6);
+	});
+
+	it('still counts a mesh out of a drawing as its origin', () => {
+		// Its size is known only once it has loaded, and a frame that jumped when a
+		// download finished would be worse than one that is a shade tight.
+		const bounds = rigBounds([], new Map(), { pieces: [truss(0, null)], margin: 0 });
+
+		expect(bounds.max.x).toBeCloseTo(0, 6);
+	});
+});

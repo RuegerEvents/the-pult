@@ -608,6 +608,7 @@ impl DeviceManager {
             address: FixtureAddress::OpenHaunt { serial: serial.to_string(), universe },
             position: None,
             parent: None,
+            mount: None,
             layer: None,
             class: None,
             focus: None,

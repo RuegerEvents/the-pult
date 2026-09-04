@@ -211,6 +211,25 @@ pub struct Fixture {
     pub position: Option<Transform>,
     /// The object it hangs off — a truss, or a group of them.
     pub parent: Option<Uuid>,
+    /// What it is clamped to on that object, where it is clamped to anything.
+    ///
+    /// Two degrees rather than six: which chord, how far along it, and how far round.
+    /// A gizmo told only a `position` would have to offer three axes and a free
+    /// rotation, and any one of them would take the light off the truss.
+    ///
+    /// **This does not replace `position`, and both are written together.** A mount is
+    /// resolved against the parent piece's chords, and for an imported truss those
+    /// come off the mesh's own bounds — which the station never loads, because only
+    /// `frontend/src/lib/geometry.ts` measures a mesh. So the *browser* is the writer
+    /// for every parent, whether the piece came out of the catalogue or out of a
+    /// drawing, and what keeps its arithmetic equal to
+    /// [`crate::types::mount::Mount::transform`]'s is `testdata/mounts.json`.
+    ///
+    /// `None` for a light standing on the floor or hung off nothing, which is most of
+    /// what an imported drawing carries: MVR says where a fixture is and never what it
+    /// is hooked over.
+    #[serde(default)]
+    pub mount: Option<Mount>,
     /// Which layer of the drawing it belongs to.
     pub layer: Option<Uuid>,
     /// The class it is tagged with: "house rig", "touring".
@@ -728,6 +747,25 @@ pub struct MachineStats {
     pub cpu_temperature_c: Option<f32>,
 }
 
+/// Where a fixture is clamped on the piece it hangs off.
+///
+/// `along` is metres from the piece's own origin, which for every catalogue piece is
+/// its middle — so a light in the middle of a bar reads as zero whatever length of
+/// bar it turns out to be. `roll` is degrees about the chord, and it snaps to the
+/// quarter turns because that is what a hook clamp does: 0 hangs, 180 stands the
+/// fixture on top of the bar, 90 and 270 put it on either face.
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Mount {
+    /// Which of the parent piece's chords, by index. Out of range wraps rather than
+    /// refuses: a piece that lost a chord between two versions of this console should
+    /// leave the light on the truss.
+    pub chord: u8,
+    /// Metres along the chord from the piece's origin.
+    pub along: f32,
+    /// Degrees about the chord. Zero hangs.
+    pub roll: f32,
+}
+
 /// The name a file gave an asset, against the sha it is stored under.
 ///
 /// The asset store is content-addressed and has no names in it, and a mesh does have
@@ -1118,6 +1156,25 @@ pub struct SceneObject {
     /// See [`crate::types::catalogue`].
     #[serde(default)]
     pub catalogue: Option<String>,
+    /// What a piece out of the catalogue was asked for: a deck's leg height, a
+    /// panel's finish. Declared per piece in [`crate::types::catalogue`], so the
+    /// keys are the piece's and an object carrying a key the piece never declared
+    /// is simply ignored rather than refused.
+    ///
+    /// An object out of a drawing has an empty map: a mesh somebody modelled says
+    /// what it is, and there is nothing here to ask it.
+    ///
+    /// A JSON column, the way `PluginPackage::config` is.
+    #[serde(default)]
+    pub properties: serde_json::Value,
+    /// Whether an operator can take hold of it.
+    ///
+    /// The show's rather than the browser's, unlike layer visibility: locking the
+    /// house rig so nobody drags it is a decision about the rig, and a lock only
+    /// one screen honoured would be no lock at all. A locked object is still drawn,
+    /// still pickable and still says what it is — what it has is no gizmo.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 /// What an object in the rig is. MVR's own list, which is also the list an operator

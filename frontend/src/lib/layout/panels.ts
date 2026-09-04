@@ -36,6 +36,10 @@ import WirePanel from '$lib/components/wire/WirePanel.svelte';
 import PlanPanel from '$lib/components/stage/PlanPanel.svelte';
 import RigPanel from '$lib/components/stage/RigPanel.svelte';
 import LayersPanel from '$lib/components/stage/LayersPanel.svelte';
+import ObjectsPanel from '$lib/components/stage/ObjectsPanel.svelte';
+import ObjectPanel from '$lib/components/stage/ObjectPanel.svelte';
+import PiecesPanel from '$lib/components/stage/PiecesPanel.svelte';
+import ToolsPanel from '$lib/components/stage/ToolsPanel.svelte';
 
 export type PanelId = keyof typeof PANELS;
 
@@ -73,6 +77,18 @@ export const PANELS = {
 	plan: { title: 'Plan', component: PlanPanel, fills: true, editable: true },
 	rig: { title: '3D Rig', component: RigPanel, fills: true },
 	layers: { title: 'Layers', component: LayersPanel, fills: false, editable: true },
+	// The drawing itself, which the Layers panel only ever counted. A tree by parent,
+	// because a truss run is a handle with its sections under it — and the one way to
+	// reach a `Group`, which has no geometry and so cannot be clicked in the rig.
+	objects: { title: 'Objects', component: ObjectsPanel, fills: false, editable: true },
+	// The three the editor was built out of, and they are panels rather than sheets on
+	// the rig's own toolbar for one reason: a strip that opens above the canvas pushes
+	// the picture down, and the picture is what somebody is aiming a pointer at. What
+	// stayed on that toolbar is only what is about *looking* — where the camera stands
+	// and how the rig is drawn.
+	pieces: { title: 'Pieces', component: PiecesPanel, fills: false },
+	tools: { title: 'Rig tools', component: ToolsPanel, fills: false },
+	object: { title: 'Object', component: ObjectPanel, fills: false, editable: true },
 	patch: { title: 'Patch', component: PatchPanel, fills: false, editable: true },
 	flows: { title: 'Flows', component: FlowEditor, fills: true, editable: true },
 	outputs: { title: 'Outputs', component: OutputsPanel, fills: false },

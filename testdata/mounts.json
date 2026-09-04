@@ -1,0 +1,117 @@
+{
+  "about": [
+    "What a clamp comes to, read by two test suites:",
+    "crates/pult-schema/tests/mounts.rs and frontend/src/lib/mount.test.ts.",
+    "",
+    "A mount is which chord, how far along it, and how far round — two degrees, which",
+    "is what a hook clamp has. Resolving one into a placement happens on a station,",
+    "where a demo hangs a rig, and in a browser on every frame of a drag, so there are",
+    "two of it. This file is what holds them to each other.",
+    "",
+    "The browser is the *writer* for every parent, catalogue piece or imported mesh",
+    "alike, because resolving a mount on a drawing's truss means measuring its mesh",
+    "and the station never loads one. Which makes the agreement below the only thing",
+    "keeping a station's own arithmetic honest.",
+    "",
+    "`chords` are lines along +X in the piece's frame; `at.x` is always zero, because",
+    "`along` is measured from the piece's own origin. HUNG_BELOW is 205 mm — a hook",
+    "clamp plus the top of a body — which on an F34 puts a hung lantern 350 mm below",
+    "the bar, the figure every demo used before there were chords to hang off.",
+    "",
+    "`transforms` resolves a mount into a placement. `nearest` goes the other way: a",
+    "point in the piece's frame becomes the clamp closest to it, and how far off that",
+    "is — which is what decides whether a dragged light snaps onto the bar at all."
+  ],
+  "chordSets": {
+    "f34": [
+      { "at": { "x": 0.0, "y": -0.145, "z": -0.145 } },
+      { "at": { "x": 0.0, "y": -0.145, "z": 0.145 } },
+      { "at": { "x": 0.0, "y": 0.145, "z": -0.145 } },
+      { "at": { "x": 0.0, "y": 0.145, "z": 0.145 } }
+    ],
+    "pipe": [{ "at": { "x": 0.0, "y": 0.0, "z": 0.0 } }],
+    "none": []
+  },
+  "transforms": [
+    {
+      "name": "hung under the bottom chord, a metre and a half along",
+      "chords": "f34",
+      "mount": { "chord": 0, "along": 1.5, "roll": 0.0 },
+      "transform": {
+        "position": { "x": 1.5, "y": -0.35, "z": -0.145 },
+        "rotation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+        "scale": { "x": 1.0, "y": 1.0, "z": 1.0 }
+      }
+    },
+    {
+      "name": "half a turn stands it on top of the chord, looking up",
+      "chords": "f34",
+      "mount": { "chord": 0, "along": 0.0, "roll": 180.0 },
+      "transform": {
+        "position": { "x": 0.0, "y": 0.06, "z": -0.145 },
+        "rotation": { "x": 180.0, "y": 0.0, "z": 0.0 },
+        "scale": { "x": 1.0, "y": 1.0, "z": 1.0 }
+      }
+    },
+    {
+      "name": "a quarter turn on the top downstage chord puts it on the face",
+      "chords": "f34",
+      "mount": { "chord": 3, "along": -0.75, "roll": 90.0 },
+      "transform": {
+        "position": { "x": -0.75, "y": 0.145, "z": -0.06 },
+        "rotation": { "x": 90.0, "y": 0.0, "z": 0.0 },
+        "scale": { "x": 1.0, "y": 1.0, "z": 1.0 }
+      }
+    },
+    {
+      "name": "a pipe hangs from its own centre line",
+      "chords": "pipe",
+      "mount": { "chord": 0, "along": 2.0, "roll": 270.0 },
+      "transform": {
+        "position": { "x": 2.0, "y": 0.0, "z": 0.205 },
+        "rotation": { "x": 270.0, "y": 0.0, "z": 0.0 },
+        "scale": { "x": 1.0, "y": 1.0, "z": 1.0 }
+      }
+    },
+    {
+      "name": "a chord this piece has not got wraps rather than refusing",
+      "chords": "pipe",
+      "mount": { "chord": 7, "along": 0.0, "roll": 0.0 },
+      "transform": {
+        "position": { "x": 0.0, "y": -0.205, "z": 0.0 },
+        "rotation": { "x": 0.0, "y": 0.0, "z": 0.0 },
+        "scale": { "x": 1.0, "y": 1.0, "z": 1.0 }
+      }
+    }
+  ],
+  "nearest": [
+    {
+      "name": "a light already on the bar stays exactly where it is",
+      "chords": "f34",
+      "point": { "x": 1.5, "y": -0.35, "z": -0.145 },
+      "mount": { "chord": 0, "along": 1.5, "roll": 0.0 },
+      "distance": 0.0
+    },
+    {
+      "name": "one dragged below and a little upstage clamps to the near bottom chord",
+      "chords": "f34",
+      "point": { "x": 0.0, "y": -0.6, "z": -0.2 },
+      "mount": { "chord": 0, "along": 0.0, "roll": 0.0 },
+      "distance": 0.25598
+    },
+    {
+      "name": "one dragged out level with the bar rolls a quarter turn onto the face",
+      "chords": "f34",
+      "point": { "x": 0.0, "y": -0.145, "z": -0.4 },
+      "mount": { "chord": 0, "along": 0.0, "roll": 90.0 },
+      "distance": 0.05
+    },
+    {
+      "name": "a piece with no chords is nothing to clamp to",
+      "chords": "none",
+      "point": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "mount": { "chord": 0, "along": 0.0, "roll": 0.0 },
+      "distance": null
+    }
+  ]
+}

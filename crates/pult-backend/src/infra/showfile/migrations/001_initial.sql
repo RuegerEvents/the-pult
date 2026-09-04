@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS fixtures (
     address TEXT NOT NULL,
     position TEXT,
     parent TEXT,
+    mount TEXT,
     layer TEXT,
     class TEXT,
     focus TEXT,
@@ -136,7 +137,9 @@ CREATE TABLE IF NOT EXISTS scene_objects (
     class TEXT,
     geometry TEXT NOT NULL,
     symbol TEXT,
-    catalogue TEXT
+    catalogue TEXT,
+    properties TEXT NOT NULL,
+    locked INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sequences (

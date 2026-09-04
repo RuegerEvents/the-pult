@@ -40,8 +40,26 @@ export const PRESETS: Preset[] = [
 		name: 'Plan & Rig',
 		tree: split(
 			'Column',
-			[split('Row', [tabs(['plan']), tabs(['rig'])], [0.5, 0.5]), tabs(['values'])],
+			[split('Row', [tabs(['plan']), tabs(['rig'])], [0.5, 0.5]), tabs(['values', 'objects'])],
 			[0.68, 0.32]
+		)
+	},
+	{
+		key: 'scene',
+		name: 'Scene',
+		// Building a rig by hand, which is what everything in this column is for: the
+		// catalogue to drag from and the verbs to act with on the left, the drawing in
+		// the middle, and what is in it — as a list, and as the numbers for the one
+		// thing picked — on the right. The rig gets the width because it is the thing
+		// being aimed at.
+		tree: split(
+			'Row',
+			[
+				split('Column', [tabs(['pieces']), tabs(['tools'])], [0.55, 0.45]),
+				tabs(['rig', 'plan']),
+				split('Column', [tabs(['objects', 'layers']), tabs(['object'])], [0.55, 0.45])
+			],
+			[0.2, 0.55, 0.25]
 		)
 	},
 	{

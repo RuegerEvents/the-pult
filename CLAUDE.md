@@ -598,8 +598,12 @@ router's fallback, so **one binary is the whole console**. Two things follow:
 - **Any browser on the network is a console.** A tablet at `http://<station>:7700`
   gets the same app the desktop window does.
 
-In dev, Vite proxies `/ws`, `/assets` and `/api` through to `PULT_BACKEND`
-(default `http://localhost:7700`), so dev is same-origin too.
+In dev, Vite proxies `/ws`, `/assets`, `/stock` and `/api` through to `PULT_BACKEND`
+(default `http://localhost:7700`), so dev is same-origin too. **A prefix the station
+serves has to be listed there**, and the failure is quiet rather than loud: an unproxied
+prefix returns the SPA's own HTML rather than a 404, so a loader gets a page where its
+file should have been and falls back — which, when `/stock` was missing, drew every truss
+in the rig as `geometry.ts`'s placeholder cube in dev and nowhere else.
 
 A debug build reads `frontend/build` off the disk; a release build embeds it. If
 the directory is missing, `build.rs` leaves a placeholder page behind so a fresh
@@ -846,6 +850,91 @@ runs linear into a mark and stops dead reads as a fault. **A release takes the s
 curve too** — letting go of a mark is a move, and nothing above it can say otherwise.
 Seeded from a station preference the way `home_fade_ms` is.
 
+## A piece says where it connects, and a light says what it is clamped to
+
+Until a person could put a truss in a room, a stock piece was a shape the *browser*
+drew: `stock.ts` built cylinders from `catalogue.rs`'s dimensions, and that was the
+whole of what an `f34-2m` looked like. Which meant an exported MVR carried an **empty
+group** where the truss was — MVR has no primitive, its `GeometryNode` is a file or a
+symbol instance — so a rig built here and opened in Vectorworks was a room full of
+nothing. A from-scratch rig is *all* stock pieces, so that was the whole rig.
+
+**So the geometry is one implementation, on the station.** `pult_schema::stock::stock_glb(id,
+&properties)` is a pure function over the same table; `GET /stock/{id}.glb` serves it with a
+strong ETag over the bytes; `frontend/src/lib/stock.ts` loads it through `geometry.ts`'s
+cache like any other mesh, so a hundred truss sections are one download. The bytes drawn
+are the bytes exported. It is deliberately **not** an asset: the store refuses a write
+with no show open and the welcome screen still draws a rig, a generated mesh that
+outlived the code that made it would be a stale asset nobody could explain, and there is
+nothing here a peer holds that this station cannot make in a hundred microseconds.
+Determinism is a gate rather than a nicety — the ETag, the archive entry's name and the
+symdef's uuid all rest on it — so no map is iterated, every position is rounded to a
+micrometre, and the tests generate every piece twice.
+
+**A `.glb` goes out as a symdef, and comes back as the piece.** `stock_symdef_name` carries
+the piece id and its canonical properties, and `stock_symdef_uuid` is a v5 of that name;
+`parse_stock_symdef` checks the uuid against the name **before trusting it**, which is
+what stops a drawing that happens to name a symbol `pult-stock:f34-2m:{}` from having its
+own mesh thrown away. This console restores `catalogue` and stores no mesh; anybody else
+opens an ordinary symbol with a truss in it.
+
+**A connector is a point, an outward facing and a kind, and mating is the whole snapping
+rule.** Two joints mate when their points meet and their facings end up opposite — which
+is what a bolt does, and the reason the *rotation* falls out of the snap rather than
+being one more thing to get right. Like mates like: a deck edge never catches a truss end
+however close it is dragged. A corner is a **six-way box** — six `TrussEnd`s, one per
+face — which makes a spigot kind unnecessary, since a base plate is one truss end
+pointing up and a top plate one pointing down. **Free is worked out from the geometry,
+not from a field**: two pieces are joined when their joints are already mated, so a run
+of four sections offers a `+` at each end and nowhere in the middle, and goes on being
+right when somebody deletes a section out of the middle.
+
+**A light on a bar is clamped, and a clamp has two degrees.** `Fixture::mount` is
+`{chord, along, roll}` — which chord of the piece, how far along it, how far round it —
+and `crates/pult-schema/src/types/mount.rs` resolves one. Told only a `position`, a gizmo
+would have to offer three axes and a free rotation, and every one of the six would take
+the light off the truss.
+
+**The mount does not replace the position: the browser writes both, together.** Resolving
+a mount on a truss that came out of a drawing means knowing where its chords are, and
+those come off the mesh's own bounds — which only `geometry.ts` ever measures, because
+the station never loads a mesh. So the browser is the writer for *every* parent,
+catalogue piece or drawing alike, and `testdata/mounts.json` is what keeps its arithmetic
+equal to `Mount::transform`'s. `HUNG_BELOW` is 205 mm measured from the **chord**, which
+on an F34 is the same 350 mm below the bar's centre line every demo used before there
+were chords to hang off. A catalogue piece declares its four; anything else gets **one**,
+along the bottom of its bounds, which is the smallest guess available on purpose.
+
+**A re-import reads the clamp back off the geometry.** MVR has nowhere to say a light is
+clamped, only where it is — so where the parent is a catalogue piece and the light is
+sitting within a millimetre of where one of that piece's clamps would put it, that is
+what it is on. A millimetre because the number came out of this console's own arithmetic
+on the way out; anything looser would be inventing a clamp for a light somebody placed by
+hand.
+
+**Composing a chain now runs both ways.** `local_of(world, parent_world)` is the inverse
+of `world_transform`, in `scene.rs` and `scene.ts`, held together by the `inverses` half
+of `testdata/transforms.json` — and it is not `−position`: the inverse of "moved and then
+turned" is "turned back and then moved in the turned frame". Every drag in the editor
+crosses that seam, because a gizmo hands back a world placement and a
+`SceneObject::transform` is relative to its parent.
+
+**And the editor writes nothing the engine had to learn.** Place, duplicate,
+delete-with-children, the default `Stage` layer and every mount write are sequences of
+ordinary path writes inside one gesture (`stores/editor.ts` over `stores/gesture.ts`), so
+each is one Ctrl-Z. Two selections, deliberately separate: a `SelectionQuery` is a
+question about the *rig* and `at 50` means the fixtures it answers, so `selectedObjects`
+is its own store and a truss is never in that scope.
+
+`SCHEMA_GENERATION` is 4.
+
+```
+cargo test -p pult-schema                          # the corpora, the glb, the joints
+cargo test -p pult-backend --test mvr_corpus       # a from-scratch rig, out and back
+cargo test -p pult-backend --test counts           # a dragged truss is one history row
+curl -o truss.glb 'http://localhost:7700/stock/f34-3m.glb'
+```
+
 ## The rig is a drawing, and a place is a transform
 
 `Fixture::position` is an `Option<Transform>` — a position in metres, a rotation as
@@ -941,6 +1030,34 @@ keeps a plain field written through it and the render loop holds the object itse
 and the photoreal frame is linear light, so the clear colour, the grid's grey and the
 beams' gain are said in linear terms on that path only. Measure any of this in a
 *headed* browser only: a hidden tab has no animation frames.
+
+**And the rig view is an editor, but the editing is in panels beside it.** **Pieces** is
+the catalogue to drag from and the work plane a drop lands on; **Rig tools** is import
+and export, the gizmo's three modes, duplicate, delete and line-up; **Objects** is the
+drawing as a tree by parent — the only way to reach a `Group`, which has no geometry and
+so cannot be clicked; **Object** is what one piece is, in numbers. The *Scene* layout
+preset puts them round the rig. They are panels rather than sheets on the rig's own
+toolbar because a strip that opens above a canvas pushes the picture down, and the
+picture is what somebody is aiming a pointer at. What stayed on that toolbar is only what
+is about looking — and even the View settings hang *over* the canvas rather than above
+it. Two consequences: the gizmo's mode is a store, since the buttons and the viewer are
+now different panels; and the delete prompt is mounted at the root of the app, because it
+can be reached from three places and a modal owned by one of them is missing from the
+other two.
+
+**And the rig view is an editor.** A 2D view is not a second panel: it is this one with
+an **orthographic camera**, so there is one editor, one gizmo and one hit test — and
+ortho with the three-quarter preset is an axonometric nobody had to build. Plan and
+section default to it and the toggle is beside the presets. The gizmo is three's
+`TransformControls` attached to an operator-placed **pivot** rather than to an object,
+because four selected trusses have no single transform to drive and rotating them about
+the corner they meet at is almost always the move; each frame applies the pivot's delta,
+measured against where the drag *started*, since a per-frame delta accumulates rounding
+across a two-second drag. Its writes are coalesced to one per animation frame —
+`objectChange` fires per pointer event — and the free-joint list is a `$derived` rather
+than per-frame work, since finding one composes every visible piece's placement. A locked
+piece keeps its gizmo away and stays **pickable**: a piece you cannot select is a piece
+whose name and layer you cannot read.
 
 **Five places to look from, none of them stored.** Front, plan, section, three-quarter
 and focus-on-selection, worked out in `frontend/src/lib/camera.ts` from a box over the

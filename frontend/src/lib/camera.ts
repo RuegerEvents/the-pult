@@ -15,6 +15,7 @@
 import type { Fixture, SceneObject, Vec3 } from './generated/index.js';
 import { fixturePoint } from './stage.js';
 import { worldTransform } from './scene.js';
+import { piece, stockSize } from './stock.js';
 
 /** A box in metres, in world axes. */
 export type Bounds = { min: Vec3; max: Vec3 };
@@ -67,9 +68,17 @@ export type BoundsOptions = {
  * A box holding everything the rig view draws.
  *
  * Fixtures **and** scene objects, because a truss standing where no lantern hangs is
- * still part of what somebody wants in frame. A piece counts as its origin: the
- * catalogue knows how long a truss is and this does not, which the margin covers and
- * which is why it is generous.
+ * still part of what somebody wants in frame.
+ *
+ * A **catalogue** piece counts as its whole extent, because the table says how long it
+ * is — and once a person can build a rig out of nothing but catalogue pieces, an origin
+ * is not enough: a nine-metre bar counted as a point is a nine-metre bar with three
+ * metres of itself outside the frame. Its longest dimension is used in every direction,
+ * which is generous by up to that length on a turned piece and is the honest answer
+ * without composing a box through a rotation. Anything else still counts as its origin,
+ * which the margin covers: an imported mesh's size is known only once it has loaded, and
+ * a frame that jumped when a download finished would be worse than one that is a shade
+ * tight.
  */
 export function rigBounds(
 	fixtures: Fixture[],
@@ -82,7 +91,16 @@ export function rigBounds(
 		if (at) points.push(at);
 	}
 	for (const object of pieces ?? objects.values()) {
-		points.push(worldTransform(object.transform, object.parent, objects).position);
+		const at = worldTransform(object.transform, object.parent, objects).position;
+		const entry = piece(object.catalogue);
+		if (!entry) {
+			points.push(at);
+			continue;
+		}
+		const size = stockSize(entry, object.properties);
+		const reach = Math.max(size.x, size.y, size.z) / 2;
+		points.push({ x: at.x - reach, y: at.y - reach, z: at.z - reach });
+		points.push({ x: at.x + reach, y: at.y + reach, z: at.z + reach });
 	}
 	if (points.length === 0) return EMPTY;
 
@@ -221,10 +239,55 @@ export function focusShot(bounds: Bounds, from: Vec3, aspect = 16 / 9): Shot {
 	};
 }
 
+/**
+ * How much of the world an orthographic camera at this distance shows.
+ *
+ * The perspective presets work out a *distance* from the lens angle; an ortho camera
+ * has no lens angle, so what it needs instead is a frame. Same box, same padding, same
+ * two-questions rule — the tile's own shape decides whether the width or the height is
+ * the one that has to fit.
+ *
+ * The camera still stands where the preset put it, because the distance is what
+ * `camera-controls` orbits about and what a near/far plane is measured from. It just
+ * stops being what decides how much is on screen.
+ */
+export function orthoFrame(
+	bounds: Bounds,
+	aspect: number,
+	preset: ViewPreset = 'quarter'
+): { halfWidth: number; halfHeight: number } {
+	const s = sizeOf(bounds);
+	// Which two axes are across the frame depends on where the camera is standing. A
+	// plan sees the floor, a section sees the depth, and a three-quarter view sees no
+	// pair of axes at all — so that one gets the box's own radius, the same answer
+	// `presetShot` gives it.
+	const across = { front: s.x, plan: s.x, section: s.z, quarter: radiusOf(bounds) * 2 };
+	const up = { front: s.y, plan: s.z, section: s.y, quarter: radiusOf(bounds) * 2 };
+	const halfWidth = Math.max(across[preset] / 2, 0.5) * PADDING;
+	const halfHeight = Math.max(up[preset] / 2, 0.5) * PADDING;
+	// Whichever needs more room wins, so the same button frames a rig on a phone and
+	// on a projector — the rule `fitDistance` follows for the other camera.
+	const wanted = Math.max(halfWidth, halfHeight / Math.max(aspect, 0.1));
+	return { halfWidth: wanted, halfHeight: wanted / Math.max(aspect, 0.1) };
+}
+
+/**
+ * Which projection a preset opens in.
+ *
+ * A plan and a section are drawings and are read straight on: parallel lines stay
+ * parallel and a metre is a metre wherever it is on the page, which is the whole
+ * reason anybody draws them. The front and the three-quarter are pictures of a room.
+ * It is a *default*, not a rule — the toggle is beside the presets and stays wherever
+ * somebody puts it.
+ */
+export function projectionFor(preset: ViewPreset): 'perspective' | 'ortho' {
+	return preset === 'plan' || preset === 'section' ? 'ortho' : 'perspective';
+}
+
 /** What each preset is called, and what it answers. */
 export const VIEW_PRESETS: { value: ViewPreset; label: string; blurb: string }[] = [
 	{ value: 'front', label: 'Front', blurb: 'From the house, at eye height.' },
-	{ value: 'plan', label: 'Plan', blurb: 'Straight down, the way a plan is drawn.' },
-	{ value: 'section', label: 'Section', blurb: 'Across the stage from the side.' },
+	{ value: 'plan', label: 'Plan', blurb: 'Straight down, the way a plan is drawn. Opens flat.' },
+	{ value: 'section', label: 'Section', blurb: 'Across the stage from the side. Opens flat.' },
 	{ value: 'quarter', label: '¾', blurb: 'Off to one side and above.' }
 ];

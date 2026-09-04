@@ -58,6 +58,43 @@ export function byId(objects: SceneObject[]): Map<string, SceneObject> {
 }
 
 /**
+ * The placement that undoes this one.
+ *
+ * Worked out through the matrix rather than by negating the three fields, because
+ * negating them is only right when there is no rotation: the inverse of "moved two
+ * metres and then turned" is "turned back and then moved two metres in the turned
+ * frame", and −position is neither half of that.
+ */
+export function inverse(transform: Transform): Transform {
+	return fromMatrix(invert(toMatrix(transform)));
+}
+
+/**
+ * Where something has to be written down, given where it has got to and where its
+ * parent is.
+ *
+ * The other direction from `worldTransform`, and the reason it exists: a gizmo hands
+ * back a world placement and a `SceneObject.transform` is relative to its parent, so
+ * every drag in the editor crosses this seam. `parentWorld` is the parent's
+ * *composed* placement — what `worldTransform` answers for it.
+ */
+export function localOf(world: Transform, parentWorld: Transform | null): Transform {
+	if (!parentWorld) return world;
+	return fromMatrix(multiply(invert(toMatrix(parentWorld)), toMatrix(world)));
+}
+
+/** The parent chain of an object, composed — or `null` where it hangs off nothing. */
+export function parentWorld(
+	parent: string | null,
+	objects: Map<string, SceneObject>
+): Transform | null {
+	if (!parent) return null;
+	const object = objects.get(parent);
+	if (!object) return null;
+	return worldTransform(object.transform, object.parent, objects);
+}
+
+/**
  * The direction a transform points a fixture's own down axis.
  *
  * Negative zero is turned back into zero, and that is not tidiness: a fixture hanging
@@ -148,6 +185,56 @@ function multiply(a: Matrix4, b: Matrix4): Matrix4 {
 	return [0, 1, 2, 3].map((i) =>
 		[0, 1, 2, 3].map((j) => [0, 1, 2, 3].reduce((sum, k) => sum + a[i][k] * b[k][j], 0))
 	);
+}
+
+/**
+ * The inverse of an affine 4x4 whose bottom row is `0 0 0 1`.
+ *
+ * The basis is inverted properly rather than transposed: a transform may carry a
+ * non-uniform or negative scale, and a transpose is the inverse of a rotation only. A
+ * basis that cannot be inverted — a scale of zero on some axis — gives the identity
+ * back, which leaves a thing where it was rather than sending it to infinity.
+ */
+function invert(matrix: Matrix4): Matrix4 {
+	const m = [0, 1, 2].map((row) => [0, 1, 2].map((col) => matrix[row][col]));
+	const det = determinant(m);
+	const identity = [
+		[1, 0, 0, 0],
+		[0, 1, 0, 0],
+		[0, 0, 1, 0],
+		[0, 0, 0, 1]
+	];
+	if (Math.abs(det) < 1e-12) return identity;
+
+	// The adjugate over the determinant.
+	const cofactor = [
+		[
+			m[1][1] * m[2][2] - m[1][2] * m[2][1],
+			m[0][2] * m[2][1] - m[0][1] * m[2][2],
+			m[0][1] * m[1][2] - m[0][2] * m[1][1]
+		],
+		[
+			m[1][2] * m[2][0] - m[1][0] * m[2][2],
+			m[0][0] * m[2][2] - m[0][2] * m[2][0],
+			m[0][2] * m[1][0] - m[0][0] * m[1][2]
+		],
+		[
+			m[1][0] * m[2][1] - m[1][1] * m[2][0],
+			m[0][1] * m[2][0] - m[0][0] * m[2][1],
+			m[0][0] * m[1][1] - m[0][1] * m[1][0]
+		]
+	];
+
+	const out = identity.map((row) => [...row]);
+	for (let row = 0; row < 3; row++) {
+		for (let col = 0; col < 3; col++) out[row][col] = cofactor[row][col] / det;
+	}
+	// And the translation, taken back through the inverted basis.
+	const t = [matrix[0][3], matrix[1][3], matrix[2][3]];
+	for (let row = 0; row < 3; row++) {
+		out[row][3] = -[0, 1, 2].reduce((sum, k) => sum + out[row][k] * t[k], 0);
+	}
+	return out;
 }
 
 function determinant(m: number[][]): number {

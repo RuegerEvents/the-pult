@@ -16,6 +16,7 @@ use pult_schema::types::{
     cue::{Cue, ParameterCapture},
     effect::{Curve, Direction, EffectSpec, Rate, Shape, Spread},
     fixture::{ParameterKind, ParameterValue, Vec3},
+    mount::Mount,
     scene::Transform,
     speedmaster::SpeedMaster,
 };
@@ -24,8 +25,8 @@ use uuid::Uuid;
 use super::{
     id,
     kit::{
-        a_cue, a_fixture, a_piece, a_stack, a_type, aimed, capture, colour, facing, hue, intensity,
-        level, pan, strobe_rate, tilt, truss_run, Addresses, HUNG_BELOW,
+        a_clamped_fixture, a_cue, a_fixture, a_piece, a_stack, a_type, aimed, capture, colour, facing, hue, intensity,
+        level, pan, strobe_rate, tilt, truss_run, under, Addresses,
     },
     now_ms, Seeder,
 };
@@ -70,29 +71,29 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         for slot in 0..8u16 {
             let x = -5.25 + 1.5 * slot as f32;
             let n = row * 4 + usize::from(slot / 2) + 1;
-            let mut fixture = if slot % 2 == 0 {
-                a_fixture(
+            let mount = Mount::along(x);
+            let fixture = if slot % 2 == 0 {
+                a_clamped_fixture(
                     &format!("Mover {n}"),
                     mover.id,
                     addresses.take(mover.channel_count),
-                    aimed(x, -HUNG_BELOW, 0.0, facing::DOWN),
+                    truss,
+                    under(mount, facing::DOWN),
+                    mount,
                 )
             } else {
-                a_fixture(
+                // The washes are angled at the floor rather than straight down, so
+                // the two systems do not simply overlap.
+                let aim = if row == 0 { facing::DOWNSTAGE } else { facing::UPSTAGE };
+                a_clamped_fixture(
                     &format!("Wash {n}"),
                     wash.id,
                     addresses.take(wash.channel_count),
-                    // The washes are angled at the floor rather than straight down,
-                    // so the two systems do not simply overlap.
-                    aimed(
-                        x,
-                        -HUNG_BELOW,
-                        0.0,
-                        if row == 0 { facing::DOWNSTAGE } else { facing::UPSTAGE },
-                    ),
+                    truss,
+                    under(mount, aim),
+                    mount,
                 )
             };
-            fixture.parent = Some(truss);
             into.create("fixtures", &fixture).await?;
         }
     }

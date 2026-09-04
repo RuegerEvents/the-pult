@@ -7,6 +7,7 @@ pub mod handle;
 pub mod traits;
 pub mod events;
 pub mod types;
+pub mod stock;
 pub mod ws;
 pub mod sql;
 pub mod db;

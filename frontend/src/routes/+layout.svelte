@@ -10,6 +10,8 @@
 	import ConnectionStatus from '$lib/components/ConnectionStatus.svelte';
 	import ConnectingOverlay from '$lib/components/ConnectingOverlay.svelte';
 	import Toasts from '$lib/components/Toasts.svelte';
+	import DeletePrompt from '$lib/components/stage/DeletePrompt.svelte';
+	import { answerDelete, deleteAsk } from '$lib/stores/editor.js';
 	import { addToast } from '$lib/toasts.js';
 	import { initShowStores } from '$lib/stores/show.js';
 	import { identifyOnConnect } from '$lib/stores/user.js';
@@ -202,6 +204,19 @@
 {/if}
 
 <Toasts />
+
+<!-- "This bar has six lights on it." Mounted here rather than in a tile because a
+     modal belongs to the window: the verb can be reached from Rig tools, from the
+     Objects list and from the rig's own Delete key, and a prompt owned by one of
+     them would be missing from the other two. -->
+{#if $deleteAsk}
+	<DeletePrompt
+		name={$deleteAsk.name}
+		objects={$deleteAsk.objects}
+		fixtures={$deleteAsk.fixtures}
+		onanswer={answerDelete}
+	/>
+{/if}
 
 <style>
 	:global(*, *::before, *::after) {

@@ -93,6 +93,13 @@ where
     Router::new()
         .route("/assets", post(upload))
         .route("/assets/{sha}", get(download))
+        // The catalogue's own pieces, generated rather than stored. Beside the asset
+        // store and deliberately not in it: the store refuses a write with no show
+        // open and the welcome screen still draws a rig, a generated mesh that
+        // outlived the code that generated it would be a stale asset nobody could
+        // explain, and there is nothing here a peer has that this station cannot make
+        // for itself. It needs no state at all, which is why it takes none.
+        .route("/stock/{file}", get(stock))
         // Installing a plugin is the same shape of request as uploading a plan:
         // bytes in a body, too large for the WebSocket, and the answer is what
         // the show now says about it.
@@ -768,6 +775,62 @@ async fn upload(
         Ok(sha) => Ok(Json(json!({ "sha256": sha, "mime": mime, "byte_len": body.len() }))),
         Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
     }
+}
+
+/// One catalogue piece as a `.glb`.
+///
+/// `?p=<json>` is what the piece was asked for — a deck's leg height. It is brought
+/// to its canonical form before anything is generated, so a browser that spelled the
+/// defaults out and one that said nothing get the same bytes and the same ETag rather
+/// than two entries in the same cache.
+///
+/// The ETag is **strong** and is a digest of the bytes: the geometry changes when this
+/// console is upgraded and never otherwise, so `must-revalidate` with a conditional
+/// request is one small round trip on a page load and no download at all. Immutable
+/// caching would be wrong here in the way it is right for `/assets/{sha}` — the name
+/// is the piece, not the contents.
+async fn stock(
+    Path(file): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(id) = file.strip_suffix(".glb") else {
+        return (StatusCode::NOT_FOUND, "the catalogue is served as .glb").into_response();
+    };
+    // A malformed `p` is treated as nothing said rather than refused: the properties
+    // are a request about how to draw a deck, and a deck drawn at its default height
+    // is better than a rig with a hole in it.
+    let properties: serde_json::Value = params
+        .get("p")
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or(serde_json::Value::Null);
+
+    let Some(bytes) = pult_schema::stock::stock_glb(id, &properties) else {
+        return (StatusCode::NOT_FOUND, format!("this console has no {id} in its catalogue"))
+            .into_response();
+    };
+
+    let etag = format!("\"{}\"", assets::digest(&bytes));
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|given| given.split(',').any(|each| each.trim() == etag))
+    {
+        return StatusCode::NOT_MODIFIED.into_response();
+    }
+
+    let mut out = HeaderMap::new();
+    if let Ok(mime) = pult_schema::stock::GLB_MIME.parse() {
+        out.insert(header::CONTENT_TYPE, mime);
+    }
+    if let Ok(tag) = etag.parse() {
+        out.insert(header::ETAG, tag);
+    }
+    out.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("public, max-age=0, must-revalidate"),
+    );
+    (out, bytes).into_response()
 }
 
 async fn download(

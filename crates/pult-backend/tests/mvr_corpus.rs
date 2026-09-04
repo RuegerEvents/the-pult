@@ -282,3 +282,197 @@ fn every_real_file_survives_being_written_back_out() {
         assert_eq!(before, after, "{name}: the patch changed on the way out and back");
     }
 }
+
+/// A rig this console built for itself, written out and read back.
+///
+/// **Not `#[ignore]`d**, and that is the point: it needs no corpus, because the whole
+/// case is a rig made of catalogue pieces — which is what a console that has never
+/// imported anything has, and which until this task exported as a room full of empty
+/// groups. MVR has no primitive; its `GeometryNode` is a file or a symbol instance. So
+/// each piece goes out as a symdef carrying a generated `.glb`, named so that *this*
+/// console can tell what it was on the way back in and anybody else sees an ordinary
+/// truss.
+#[test]
+fn a_from_scratch_rig_survives_being_written_back_out() {
+    use pult_backend::infra::interop::mvr::{plan_export, Rig};
+    use pult_schema::stock::stock_glb;
+    use pult_schema::types::fixture::Vec3;
+    use pult_schema::types::mount::Mount;
+    use pult_schema::types::scene::Transform;
+    use std::collections::{BTreeMap, BTreeSet};
+    use uuid::Uuid;
+
+    let layer = Layer {
+        id: Uuid::new_v4(),
+        name: "Stage".into(),
+        locked: false,
+        sort_order: 0,
+    };
+
+    let piece = |name: &str, catalogue: &str, transform: Transform, properties: serde_json::Value| {
+        let entry = pult_schema::types::catalogue::piece(catalogue).expect("a listed piece");
+        SceneObject {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            kind: entry.kind,
+            transform,
+            parent: None,
+            layer: Some(layer.id),
+            class: None,
+            geometry: Vec::new(),
+            symbol: None,
+            catalogue: Some(catalogue.into()),
+            properties,
+            locked: false,
+        }
+    };
+    let at = |x: f32, y: f32, z: f32| Transform::at(Vec3 { x, y, z });
+
+    // A run with a corner in it, a tower on a base plate, decks at two heights and a
+    // pipe: every shape in the catalogue that a person would actually put in a room.
+    let scene_objects = vec![
+        piece("Bar 1", "f34-3m", at(-1.5, 6.0, 0.0), serde_json::Value::Null),
+        piece("Bar 2", "f34-3m", at(1.5, 6.0, 0.0), serde_json::Value::Null),
+        piece("Corner", "f34-corner", at(3.145, 6.0, 0.0), serde_json::Value::Null),
+        piece("Base", "f34-base", at(3.145, 0.0, 0.0), serde_json::Value::Null),
+        piece("Tower", "f34-2m", at(3.145, 1.09, 0.0), serde_json::Value::Null),
+        piece("Deck low", "deck-1x1", at(0.0, 0.2, -3.0), serde_json::json!({ "leg_height": 0.2 })),
+        piece("Deck high", "deck-1x1", at(1.0, 0.6, -3.0), serde_json::json!({ "leg_height": 0.6 })),
+        piece("Pipe", "pipe-2m", at(0.0, 3.0, 2.0), serde_json::Value::Null),
+    ];
+
+    let fixture_type = pult_schema::types::fixture::FixtureType {
+        id: Uuid::new_v4(),
+        name: "Profile".into(),
+        manufacturer: "Generic".into(),
+        ..Default::default()
+    };
+    // A light on each of the pieces something can hang off, mounted.
+    let fixtures: Vec<Fixture> = ["Bar 1", "Tower", "Pipe"]
+        .iter()
+        .enumerate()
+        .map(|(n, on)| {
+            let parent = scene_objects.iter().find(|o| o.name == *on).expect("a piece");
+            let chords = pult_schema::types::catalogue::piece(parent.catalogue.as_deref().unwrap())
+                .expect("a listed piece")
+                .chords;
+            let mount = Mount { chord: 0, along: 0.5, roll: 0.0 };
+            Fixture {
+                id: Uuid::new_v4(),
+                name: format!("Lantern {}", n + 1),
+                fixture_type_id: fixture_type.id,
+                position: Some(Transform::at(mount.point(chords))),
+                parent: Some(parent.id),
+                mount: Some(mount),
+                layer: Some(layer.id),
+                ..Fixture::default()
+            }
+        })
+        .collect();
+
+    let fixture_types = vec![fixture_type];
+    let layers = vec![layer];
+    let rig = Rig {
+        fixture_types: &fixture_types,
+        fixtures: &fixtures,
+        scene_objects: &scene_objects,
+        layers: &layers,
+        symbols: &[],
+        classes: &[],
+        named_assets: &[],
+    };
+
+    let export = plan_export(&rig, &BTreeSet::new());
+
+    // One file per *distinct* piece-and-properties: two three-metre bars are one mesh,
+    // and two decks at two leg heights are two.
+    let stock_files: Vec<&str> =
+        export.wanted.iter().filter(|w| w.stock.is_some()).map(|w| w.name.as_str()).collect();
+    assert_eq!(
+        stock_files.len(),
+        7,
+        "one glb per distinct piece and properties, got {stock_files:?}",
+    );
+
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for want in &export.wanted {
+        if let Some(stock) = &want.stock {
+            let properties: serde_json::Value =
+                serde_json::from_str(&stock.properties).expect("canonical properties");
+            let bytes = stock_glb(&stock.id, &properties).expect("a listed piece draws");
+            files.insert(want.name.clone(), bytes);
+        }
+        if let Some(id) = want.fixture_type {
+            let kind = fixture_types.iter().find(|t| t.id == id).expect("the type");
+            // The GDTF has to be *something* for the archive to be readable; the
+            // fixtures' round trip is what this case is about, not the definitions'.
+            let _ = kind;
+            files.insert(want.name.clone(), Vec::new());
+        }
+    }
+
+    let written = pult_backend::infra::interop::mvr::export::write(&export, files)
+        .expect("a from-scratch rig writes");
+    let again = plan_import(&written, &Existing::default()).expect("and reads back");
+    let back = rows(&again);
+
+    let objects: Vec<SceneObject> = back
+        .get("scene_objects")
+        .map(|values| values.iter().map(|v| serde_json::from_value((*v).clone()).unwrap()).collect())
+        .unwrap_or_default();
+
+    assert_eq!(objects.len(), scene_objects.len(), "an object went missing");
+    for was in &scene_objects {
+        let now = objects.iter().find(|o| o.id == was.id).expect("every object comes back by id");
+        assert_eq!(now.catalogue, was.catalogue, "{}: it stopped being a catalogue piece", was.name);
+        assert_eq!(
+            now.properties,
+            pult_schema::types::catalogue::canonical_properties_of(
+                was.catalogue.as_deref().unwrap(),
+                &was.properties,
+            ),
+            "{}: what it was asked for changed",
+            was.name,
+        );
+        assert!(now.geometry.is_empty(), "{}: the generated mesh was stored", was.name);
+        assert!(now.symbol.is_none(), "{}: it came back as a symbol", was.name);
+        assert_eq!(now.kind, was.kind, "{}: it changed kind", was.name);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(
+            near(now.transform.position.x, was.transform.position.x)
+                && near(now.transform.position.y, was.transform.position.y)
+                && near(now.transform.position.z, was.transform.position.z),
+            "{}: it moved to {:?}",
+            was.name,
+            now.transform.position,
+        );
+    }
+
+    // Nor is a generated mesh kept: the row says which piece it is and the bytes
+    // follow from that, so a stored copy would go stale the next time the geometry is
+    // improved.
+    assert!(
+        back.get("symbols").is_none_or(|rows| rows.is_empty()),
+        "a stock symdef came back as a symbol",
+    );
+    for (mime, _) in &again.assets {
+        assert_ne!(mime, pult_schema::stock::GLB_MIME, "a generated mesh was stored");
+    }
+
+    // And the fixtures come back where they were, still clamped.
+    let back_fixtures: Vec<Fixture> = back
+        .get("fixtures")
+        .map(|values| values.iter().map(|v| serde_json::from_value((*v).clone()).unwrap()).collect())
+        .unwrap_or_default();
+    assert_eq!(back_fixtures.len(), fixtures.len());
+    for was in &fixtures {
+        let now = back_fixtures.iter().find(|f| f.id == was.id).expect("by id");
+        assert_eq!(now.parent, was.parent, "{}: it came off its bar", was.name);
+        let (a, b) = (now.position.unwrap().position, was.position.unwrap().position);
+        assert!((a.y - b.y).abs() < 1e-3, "{}: it moved to {a:?}", was.name);
+        // MVR has nowhere to say a light is *clamped* to a bar, only where it is —
+        // so the clamp is read back off the geometry, and only where the parent is a
+        // piece this console knows the shape of.
+        assert_eq!(now.mount, was.mount, "{}: it stopped being clamped", was.name);
+    }
+}

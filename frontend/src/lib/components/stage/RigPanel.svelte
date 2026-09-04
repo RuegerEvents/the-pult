@@ -11,10 +11,11 @@
 	import { collection, show as showStore } from '$lib/stores/show.js';
 	import { selection } from '$lib/stores/selection.js';
 	import { shownPlanId } from '$lib/stores/stage.js';
-	import { RENDER_MODES, RESOLUTIONS, setView, view } from '$lib/stores/view.js';
+	import { GRIDS, RENDER_MODES, RESOLUTIONS, setView, view } from '$lib/stores/view.js';
 	import { VIEW_PRESETS } from '$lib/camera.js';
+	import { gizmoMode, isLocked, layers, objectsById, selectedObjects } from '$lib/stores/scene.js';
+	import { askToDelete } from '$lib/stores/editor.js';
 	import Rig3D from './Rig3D.svelte';
-	import MvrButtons from './MvrButtons.svelte';
 
 	const client = getClientContext();
 	const data = getDataContext();
@@ -34,10 +35,42 @@
 		return () => clearInterval(timer);
 	});
 
-	/// The view's own settings, in a small sheet off the toolbar. This screen's and
-	/// nobody else's: the haze is the show's and lives in Settings; the work light
-	/// and the resolution are about the machine in front of somebody.
+	/// The view's own settings, in a menu that hangs *over* the picture rather than a
+	/// sheet that pushes it down. Which is the whole of why it changed: a panel whose
+	/// toolbar reflows the canvas moves the thing somebody is aiming a pointer at, and
+	/// the next click lands somewhere else. This screen's and nobody else's — the haze
+	/// is the show's and lives in Settings.
 	let viewing = $state(false);
+
+	const held = $derived(
+		[...$selectedObjects]
+			.map((id) => $objectsById.get(id))
+			.filter((object): object is NonNullable<typeof object> => !!object)
+	);
+	/** Of those, the ones an operator may actually change. */
+	const editable = $derived(held.filter((object) => !isLocked(object, $layers)));
+
+	/**
+	 * The keys, on the canvas rather than on the window.
+	 *
+	 * A workspace has other panels in it and Delete means something different in each;
+	 * bound here, the rig's meaning of it applies while the rig has the focus. And
+	 * never while somebody is typing in a field, which is the one that catches people.
+	 *
+	 * The verbs themselves live in **Rig tools**; these call the same functions, so a
+	 * console with that panel shut still has the keys.
+	 */
+	function keys(event: KeyboardEvent) {
+		const typing =
+			event.target instanceof HTMLInputElement ||
+			event.target instanceof HTMLSelectElement ||
+			event.target instanceof HTMLTextAreaElement;
+		if (typing || editable.length === 0) return;
+		if (event.key === 'Delete' || event.key === 'Backspace') {
+			event.preventDefault();
+			askToDelete(editable);
+		}
+	}
 
 	// The same plan the plan panel is showing. A show with two rooms in it had the
 	// rig drawing the first one's floor under the second one's lights.
@@ -62,7 +95,6 @@
 			</label>
 		{/if}
 		<span class="spacer"></span>
-		<MvrButtons />
 		<!-- What a frame of this view costs, on the CPU and on the GPU. Read by hand
 		     rather than measured by a script: `scripts/demo.sh --measure` deliberately
 		     starts no browser, since one would be taking the CPU it is measuring. A
@@ -83,7 +115,10 @@
 				</span>
 			{/if}
 		{/if}
-		<span class="count">{$selection.length} selected</span>
+		<span class="count">
+			{$selection.length} selected{#if $selectedObjects.size > 0}, {$selectedObjects.size}
+				{$selectedObjects.size === 1 ? 'piece' : 'pieces'}{/if}
+		</span>
 		<button class="ghost" class:open={viewing} onclick={() => (viewing = !viewing)}>View</button>
 		<!-- Where to look from. Four computed places and one that follows what is
 		     selected, none of which is stored anywhere: a camera position worked out
@@ -106,8 +141,17 @@
 		</div>
 	</nav>
 
-	{#if viewing}
-		<div class="sheet">
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+	<div class="canvas" role="presentation" tabindex="0" onkeydown={keys}>
+		{#if viewing}
+		<div
+			class="sheet"
+			role="dialog"
+			tabindex="-1"
+			aria-label="How this screen draws the rig"
+			onpointerdown={(e) => e.stopPropagation()}
+			onwheel={(e) => e.stopPropagation()}
+		>
 			<div class="field modes" role="radiogroup" aria-label="How the rig is drawn">
 				{#each RENDER_MODES as mode (mode.value)}
 					<button
@@ -134,6 +178,29 @@
 				/>
 				<span class="reading">{Math.round($view.workLight * 100)}%</span>
 			</label>
+			<div class="field" role="group" aria-label="Projection">
+				<span>Projection</span>
+				{#each [['perspective', 'Perspective'], ['ortho', 'Flat']] as const as [value, label] (value)}
+					<button
+						class="mode"
+						class:on={$view.projection === value}
+						title={value === 'ortho'
+							? 'Straight on: parallel lines stay parallel and a metre is a metre wherever it is. What a plan and a section are.'
+							: 'A picture of the room.'}
+						onclick={() => setView({ projection: value })}
+					>
+						{label}
+					</button>
+				{/each}
+			</div>
+			<label class="field">
+				<span>Grid</span>
+				<select value={$view.grid} onchange={(e) => setView({ grid: Number(e.currentTarget.value) })}>
+					{#each GRIDS as choice (choice.value)}
+						<option value={choice.value}>{choice.label}</option>
+					{/each}
+				</select>
+			</label>
 			<label class="field">
 				<span>Resolution</span>
 				<select
@@ -148,13 +215,15 @@
 			<p class="note">
 				This screen's only. {RENDER_MODES.find((m) => m.value === $view.mode)?.blurb} The
 				work light is how bright the room is drawn with nothing on — 0% is a blackout,
-				100% is the house lights up. None of it reaches a lamp or the show; the haze is
-				the show's, in Settings.
+				100% is the house lights up. Flat is the same rig seen straight on, which is
+				what a plan and a section are; pressing one of those presets turns it on and
+				pressing the front or ¾ turns it off, and this switch overrides either. The grid
+				is what a dragged piece snaps to — hold Alt to ignore it. None of it reaches a
+				lamp or the show; the haze is the show's, in Settings.
 			</p>
 		</div>
-	{/if}
+		{/if}
 
-	<div class="canvas">
 		{#if $fixtures.length === 0}
 			<p class="empty">Patch a fixture and place it, and it will turn up in here.</p>
 		{:else}
@@ -169,6 +238,7 @@
 				planUrl={plan?.visible ? planUrl : null}
 				show={$showStore}
 				{follow}
+				gizmoMode={$gizmoMode}
 			/>
 		{/if}
 	</div>
@@ -176,7 +246,10 @@
 
 <style>
 	.rig { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-	.bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex: none; }
+	/* Wrapping, because the bar now carries the editor's verbs as well as the view's:
+	   a narrow tile clipped the presets off the end rather than putting them on a
+	   second line. */
+	.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex: none; }
 	.spacer { flex: 1; }
 	.count { color: #777; font-size: 12px; }
 	.toggle { display: flex; align-items: center; gap: 5px; color: #888; font-size: 12px; cursor: pointer; }
@@ -190,11 +263,14 @@
 	.shot:last-child { border-radius: 0 3px 3px 0; }
 	.shot:hover:not(:disabled) { border-color: var(--line-input); color: #fff; }
 	.shot:disabled { color: #555; cursor: default; }
+	.ghost:disabled { color: #555; cursor: default; border-color: var(--line); }
 
 	.ghost { background: none; border: 1px solid var(--line-strong); border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
 	.ghost:hover, .ghost.open { border-color: var(--line-input); color: #fff; }
 
-	.sheet { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex: none; background: #151515; }
+	/* Over the picture, not above it. A sheet that took its own row pushed the canvas
+	   down every time it opened, which moves the thing somebody is aiming at. */
+	.sheet { position: absolute; z-index: 25; top: 8px; right: 8px; width: min(24rem, calc(100% - 16px)); display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 4px; background: #16181c; box-shadow: 0 10px 30px rgb(0 0 0 / 55%); }
 	.field { display: flex; align-items: center; gap: 8px; color: #888; font-size: 12px; }
 	.field input[type='range'] { width: 140px; }
 	.modes { gap: 0; }

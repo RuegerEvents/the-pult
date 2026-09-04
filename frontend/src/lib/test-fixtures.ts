@@ -76,6 +76,7 @@ export function aFixture(over: Partial<Fixture> = {}): Fixture {
 		address: { Dmx: { mode: 'Default', breaks: [{ universe: 1, address: 1 }] } },
 		position: null,
 		parent: null,
+		mount: null,
 		layer: null,
 		class: null,
 		focus: null,

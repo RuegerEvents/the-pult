@@ -67,10 +67,12 @@
 					breaks: [{ universe: 1, address: nextFreeAddress(fixtures, 1, spanOf) }]
 				}
 			},
-			// Nowhere in particular, on no truss, in no layer: a fixture typed into the
-			// patch is not part of anybody's drawing until somebody places it.
+			// Nowhere in particular, on no truss, clamped to nothing, in no layer: a
+			// fixture typed into the patch is not part of anybody's drawing until
+			// somebody places it.
 			position: null,
 			parent: null,
+			mount: null,
 			layer: null,
 			class: null,
 			focus: null,

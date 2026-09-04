@@ -4079,6 +4079,254 @@ four that cost nothing were always the part worth having first.
 cd frontend && npm test camera     # the box, the fit, and the five shots
 ```
 
+### 61. A rig you can build
+
+`SceneObject::catalogue` and the pieces to draw arrived with task 52, and task 47 built
+the entities and the views before that. What was missing was any way for a **person** to
+put one in a room: objects arrived by MVR import and nothing else, so a console that had
+never imported anything had nowhere to hang a light. This is the editor — one task, the
+whole of it, which was the user's own choice over slicing it.
+
+**Two defects fell out of reading for it, and both are fixed.** A stock piece exported to
+MVR as an **empty group**: `as_child_node` wrote `GeometryRef`s and symdef instances and
+never read `catalogue`, and MVR has no primitive — `GeometryNode` is `Geometry3D(file) |
+Symbol(symdef)` — so a rig built here and opened in Vectorworks was a room full of
+nothing. A from-scratch rig is *all* stock pieces, so that was the whole rig. And the
+unlayered export fallback was called **"Patched here"**, which is true of a fixture and a
+lie about a truss somebody drew; the name is now "Not on a layer" and the uuid is
+unchanged — still a v5 over the old string — so a re-import of an older export updates
+that layer rather than leaving a second one beside it.
+
+Decided in a nine-round grill on 2026-09-04. The table is the entry's answers.
+
+| Question | Answer |
+|---|---|
+| What a 2D view is | An **orthographic camera in the rig panel**. One editor, one gizmo, one hit test. Projection is a toggle beside the presets; plan and section default to it. Ortho plus the ¾ preset is an axonometric for free. |
+| Stock geometry | **One implementation**: the station generates `.glb` from `catalogue.rs`, the browser loads it through `geometry.ts`. Exported bytes are drawn bytes. |
+| Where the bytes come from | `stock_glb(id, &properties)`, a **pure function called at runtime**. `GET /stock/{id}.glb`, strong ETag. No asset store, no replication, nothing to go stale. |
+| Format | `.glb` — the real corpus has 151 of them against 2 `.3ds`, and `GLTFLoader` was already here. |
+| Round trip | The symdef uuid is a v5 over a name carrying the piece id and its canonical properties. **This console restores `catalogue`**; anyone else sees an ordinary symdef with a mesh. |
+| Selecting objects | **Its own store** beside the fixture `SelectionQuery`, so `at 50` never has a truss in scope. |
+| Parented drags | **Invert once**, in `scene.rs` and `scene.ts`, with cases in `testdata/transforms.json`. |
+| Verbs | Place, move, rotate, **scale** (objects only), duplicate, delete, per-object **lock**, numeric entry. |
+| Runs and snap | A 0.5 m grid (per browser, Alt bypasses) **plus typed connectors** on every piece: like mates like, and the rotation comes out of the mating. A **`+` handle on every free joint**, opening a menu of what will go there — same-kind only, the piece already present first and holding the focus, so laying a run is one press and a row of Enters. |
+| Corner | A **six-way box corner**: six `TrussEnd`s, one per face. Which makes a spigot kind unnecessary — a base plate is one truss end pointing up, a top plate one pointing down. |
+| Fixture on truss | A stored **`Fixture::mount`** — `{chord, along, roll}`. Two degrees, which is what a clamp has. |
+| Meshed (MVR) truss | Snaps off the mesh's bounds as **one** chord. Truss-to-truss snapping stays catalogue-only. |
+| Properties | `SceneObject::properties`, **typed per piece in `catalogue.rs`**. A deck declares `leg_height`; an imported object has an empty map. |
+| Delete with children | **Ask**: delete them too, keep them where they are, or cancel. Counts named, one gesture either way. |
+| Duplicate | The subtree with fresh uuids, one grid step over, the copies patched after the rest. |
+| Multi pivot | **Operator-placed**, starting at the selection's centre, forgotten on reselect, shown for one object too. |
+| Placement | **Drag from the Pieces panel** onto the canvas, landing on a **work plane** whose height and depth that panel holds. |
+| Align | Distribute, space-by, align-to-axis; along the bar for co-mounted lights, world space otherwise. |
+| Where the editor lives | **Panels, not sheets on the rig's toolbar** — see below. |
+| Raster plan | The shown `StagePlan` is the rig view's floor already, and now carries its own turn and opacity — so an ortho plan is a tracing surface. |
+| Default layer | **"Stage"**, created inside the first placement's own gesture. |
+
+Out of scope and named: a pipe *across* a truss, snapping the pivot to features, a scale
+gizmo on fixtures, connectors declared on imported meshes.
+
+**A piece says where it connects, and that is the whole snapping rule.** `StockPiece`
+gained `connectors`, `chords` and `properties`. A `Connector` is a point, an outward
+facing and a `ConnectorKind`, and two of them mate when their points meet and their
+facings end up opposite — which is what a bolt does, and the reason the *rotation* comes
+out of the snap rather than being one more thing to get right by hand. Like mates like
+and nothing else, so a deck edge never catches a truss end however close it is dragged.
+`crates/pult-schema/tests/stock.rs` states that over the whole catalogue: every pair of
+like joints, every piece against every other.
+
+**Free is worked out from the geometry, not from a field.** Two pieces are joined when
+their joints are in the same place facing opposite ways, which is what the snap put them
+in — so a run of four sections offers a `+` at each end and nowhere in the middle, and it
+goes on being right when somebody deletes a section out of the middle. There is nothing
+to keep in sync because there is nothing kept.
+
+**The geometry moved to the station, and that is what fixed the export.** `stock_glb` is
+a pure function over the same table `stock.ts` used to draw cylinders from; `/stock/{id}.glb`
+serves it with a strong ETag over the bytes and `must-revalidate`, so a browser asks once
+and downloads when the console is upgraded. Deliberately **not** an asset: the store
+refuses a write with no show open and the welcome screen still draws a rig, a generated
+mesh that outlived the code that made it would be a stale asset nobody could explain, and
+there is nothing here a peer holds that this station cannot make in a hundred
+microseconds. Determinism is a gate — the ETag, the archive entry name and the symdef
+uuid all rest on it, so no map is iterated, every position is rounded to a micrometre,
+and the tests generate every piece twice.
+
+One trap it found, and it is a measurement rather than a taste: **a brace's end cap is
+square to its own axis**, so a zig-zag starting exactly at the end of a truss puts 7 mm
+of tube past it, and a "one metre" section measures 1.014 m. The bracing is held back
+half a brace from each end. Not cosmetic — the length is what a rig is set out from, and
+the bounds test is what caught it.
+
+**A light is clamped, and the browser is what writes that down.** `Mount { chord, along,
+roll }` is two degrees where a placement has six, and every one of the other four would
+take the light off the truss. It does *not* replace `position`: both are written
+together, because resolving a mount on an imported truss means measuring its mesh and
+only `geometry.ts` ever loads one. So the browser is the writer for every parent,
+catalogue piece or drawing alike, and `testdata/mounts.json` is what keeps its arithmetic
+equal to `Mount::transform`'s. `HUNG_BELOW` moved into the schema and became 205 mm —
+measured from the **chord** rather than from the bar's centre line, which on an F34 is the
+same 350 mm every demo used before there were chords to hang off.
+
+**And a re-import reads the clamp back off the geometry.** MVR has nowhere to say a light
+is clamped to a bar, only where it is. Where the parent is a catalogue piece and the light
+is sitting *exactly* where one of that piece's clamps would put it — a millimetre, because
+the number came out of this console's own arithmetic on the way out — that is what it is
+on. A truss out of a drawing gets none, because its chords come off its mesh and a station
+guessing there would be guessing.
+
+**A run is still the unit.** The demos' `kit::on` went through `Mount::transform`, which
+turned up the thing the old hand arithmetic was hiding: a boom's lantern was 450 mm out on
+a notional sidearm, and a mount has no sidearm — so it is clamped to the chord facing
+centre stage with a **roll** that pushes the body out along it. The demo test that says
+nothing hangs *inside* the bar it is on is what found the half of that which was wrong.
+
+**Two selections, and they must not be one.** A `SelectionQuery` is a question about the
+rig and `at 50` means the fixtures it answers; a truss in that scope would be a truss an
+operator could put at fifty percent by accident. So `selectedObjects` is its own store,
+clicking a light clears the pieces and clicking a piece clears the lights, and empty space
+clears both — which is the only gesture that can, since neither selection can speak for
+the other.
+
+**The gizmo is attached to a pivot, not to an object.** Four selected trusses have no
+single transform to drive, and rotating them about their own average centre is almost
+never the move where rotating them about the corner they meet at almost always is. So the
+pivot is operator-placed, starts at the selection's centre, and each frame of a drag
+applies the pivot's **delta** to every selected object — one rule for one object and for
+forty. The delta is measured against where the drag *started* rather than against last
+frame, because a per-frame delta accumulates rounding across a two-second drag and ends a
+rotation a degree from where the readout says.
+
+Two costs found while building it. `objectChange` fires per pointer event — well over a
+hundred a second on a trackpad — so the writes are coalesced to one per animation frame;
+a write per event is a socket doing nothing else for the length of the drag. And working
+out which joints are *free* composes every visible piece's placement and compares every
+joint against every other, which per frame would be the frame budget: it is a `$derived`,
+so it happens when the rig changes, which is when the answer can differ.
+
+**A locked piece is still pickable.** Lock takes away the gizmo and not the ability to
+click on something and read its name and its layer — a piece you cannot select is a piece
+you cannot find out about, which is not what anybody meant by locking the house rig.
+
+**The editor is panels, and that was the user's correction.** It was built the way the
+entry described it: a toolbar across the rig with Pieces, the object's numbers and the
+align strip opening out of it as sheets. Every one of those took a row *above* the
+canvas, so opening one pushed the picture down — and the picture is the thing somebody
+is aiming a pointer at, so the next click landed somewhere else. It is also what made
+the hand tests so awkward to write, which was the tell.
+
+So there are four panels now — **Pieces**, **Rig tools** (import and export, the gizmo's
+three modes, duplicate, delete, line up), **Objects** and **Object** — and the rig's own
+toolbar keeps only what is about *looking*: follow, the floor, what a frame cost, and
+where the camera stands. The View settings stayed on it and became a menu that hangs
+*over* the picture rather than a sheet above it. A **Scene** layout preset puts the five
+of them together. They read the same stores the viewer does, so each works with no rig
+tile open and with two.
+
+Two things followed from the split. The gizmo's mode became a store rather than the rig
+panel's own state — the buttons and the viewer are different panels now, and two rig
+tiles should no more be in two modes than at two work heights. And the delete prompt is
+mounted at the **root of the app**: it can be reached from Rig tools, from the Objects
+list and from the rig's Delete key, and a modal owned by any one of those would be
+missing from the other two.
+
+**`scene_objects` had no list, which is what the Objects panel is.** It was the one
+PERSISTED collection with no panel: Layers counted what was in each layer and never named
+it, so the only way to reach a piece was to click it — and a `Group` has no geometry at
+all, so a truss run's own handle could not be clicked on principle. It is a tree by
+parent, because a run is a handle with its sections under it, and an object whose parent
+has gone turns up at the top rather than nowhere.
+
+**The `+` opens a menu rather than repeating the piece.** It was "another of these",
+with the alternatives on the right button — which is right nine times in ten and wrong in
+a way that costs an undo the tenth: a run of truss is as often turned by a corner or
+stood on a plate as it is continued. The menu leads with the piece that is already there
+and gives it the focus, so the common case is still one press and a row of Enters. It is
+also checked **before** the move gizmo, because the two overlap — a joint is at the end
+of a piece and the translate arrow points that way, and the arrow is scaled in screen
+terms so it reaches the end at some zooms and past it at others. The knob stands 180 mm
+out along the joint's own facing, which both clears the arm and reads as "the next one
+goes here".
+
+**And a selected piece is outlined.** A truss is a line of tubes and a selected one was a
+slightly bluer line of tubes: nothing in the picture said where it *ended*, which is
+exactly what somebody about to drag it needs. It is drawn as the box it occupies — the
+same invisible box the pointer finds it by, so the extent is measured once and the
+outline cannot disagree with the hit test.
+
+**Three defects the tests could not have found, and a headed browser did.**
+
+*A truss is mostly holes.* Four chords and a zig-zag, and a click on the middle of one in
+plan goes straight between the chords and hits nothing — so picking a bar meant hitting a
+50 mm tube, which on a twelve-metre frame is three pixels. Every drawn piece now carries
+an invisible box for the pointer to find, sized off what was actually drawn rather than
+off the catalogue, so the deck's origin-at-the-top needs no second telling. It rests on
+one fact: three's `Raycaster` tests an object's *layers* and never its visibility, so an
+invisible mesh costs nothing to draw and is still found. And it has to be measured
+**before** it goes in the group — `Box3.setFromObject` answers in the parent's space, and
+measuring it afterwards put every box at twice its truss's own offset.
+
+*A handle that is drawn and cannot be pressed.* The gizmos are rebuilt every tick and a
+fresh `Object3D` has an identity `matrixWorld` until something updates it — normally the
+renderer. But this view draws only when something changed, so on a settled rig no frame
+follows, and a raycast then finds every handle at the origin. The pan and tilt rings have
+had this since task 51 and got away with it, because moving the pointer sets `hovered`
+and that marks the view dirty. `drawGizmos` now updates the two groups itself.
+
+*Every truss drew as a box — but only in dev.* `vite.config.ts` proxies the prefixes the
+station serves, and `/stock` was not one of them. An unproxied prefix does not 404 there:
+it returns the SPA's own HTML, so `GLTFLoader` got a page where a `.glb` should have been,
+failed, and `geometry.ts` handed out the placeholder cube it is supposed to hand out for a
+mesh it cannot read. The built frontend was right the whole time, which is why nothing
+caught it. A prefix the station serves has to be listed in that proxy or dev quietly draws
+something else.
+
+*And the gizmo could be pressed and would not drag.* The press handler runs in the
+**capture** phase on the element the canvas sits in, so it sees every press before
+`TransformControls`, which listens on the canvas itself — and a `stopPropagation` there
+means the gizmo never hears its own drag. Worse, a press on an arrow with nothing solid
+behind it fell through to "empty space", which cleared the selection and took the gizmo
+away mid-grab. It now stands aside when `gizmo.axis` is set, which is the gizmo's own
+hover state from the pointermove before: asking the thing that knows rather than
+raycasting the handles a second time.
+
+*And the stock mesh arrived after the effect that asked for it.* It used to be built
+synchronously; a download is not. The drawing effect re-runs whenever the rig changes, and
+its teardown cleared a `live` flag that the arriving mesh then checked — after which the
+object was already in `built.objects` and was never loaded again, so the truss was simply
+missing. The guard is now the *group*: it is removed only when the object goes, which is
+the thing actually being asked.
+
+**What a `+` builds is a sibling, not a group.** The entry proposed making a run out of a
+`Group` the way `kit::boom` does. It does not, and on purpose: a `Group` has no geometry,
+so it has no pick box and cannot be taken hold of — a run wrapped in one would be a run
+nobody could drag. Shift-clicking the sections and dragging moves them together, which is
+the same gesture with nothing to explain. A `Group` is still what an MVR import and the
+demos build, and making one pickable is what would have to come first.
+
+**Deleting asks a real question.** Not a confirmation: deleting a bar because it was the
+wrong length should not take six lanterns with it, and deleting a truss because the whole
+thing has gone should, and nobody can guess which. *Keep them where they are* writes each
+child the placement it had in the world and clears its mount, inside the same gesture as
+the delete — so either answer is one Ctrl-Z.
+
+**And a duplicate is patched after the rest, not on top of it.** There is no "unpatched"
+for an address to be, and two fixtures at one address is a rig where half the lights do
+the wrong thing and nothing says why. So a copy takes the next free address in its own
+universe, rolling into the next when one is full, and loses the numbers on its label,
+which are the operator's to decide. A fixture on an OpenHaunt node keeps its address,
+because that address is a *serial*: there is no next one.
+
+`SCHEMA_GENERATION` is 4.
+
+```
+cargo test -p pult-schema                          # the corpora, the glb, the joints
+cargo test -p pult-backend --test mvr_corpus       # a from-scratch rig, out and back
+cargo test -p pult-backend --test counts           # a dragged truss is one row
+cargo test -p pult-backend --lib demo              # every demo still points down
+cd frontend && npm test                            # inverses, mounts, snapping, the editor
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -4182,61 +4430,65 @@ first here and was what its own entry said it was, a day's work with no schema i
 Neither answered a question that changes the order, so the rest of the list is
 unmoved:
 
-1. **scene-editing** — and specifically a picker for task 52's stock catalogue
-   first, which is smaller than a gizmo and is what a console that has never
-   imported an MVR needs in order to have a room at all. → none
-2. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+**scene-editing left on 2026-09-04**, as task 61, and it took the whole thing rather
+than the picker its entry proposed as a first slice — the user's own call, and the right
+one: a picker without a gizmo places a truss nobody can then move. What it changed about
+the rest of this list is one entry. `mvr-xchange` said "out of scope while there is no
+scene to share", and there is one now: a console can build a rig from nothing and hand
+it to somebody else's software. It is unblocked, and it is where it was.
+
+1. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
    plugin over introspection, which is what introspection is for. → none, and
    much better now that gdtf-import has landed and put a real patch in the show
-3. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+2. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
    themselves dynamic. → none: the viewer landed as task 51
-4. **voice-input** — speech to the command line, grammar first and NL on parse
+3. **voice-input** — speech to the command line, grammar first and NL on parse
    failure. → none
-5. **nl-show-context** — what relative syntax cannot reach, and whether it is
+4. **nl-show-context** — what relative syntax cannot reach, and whether it is
    worth the permission it costs. → voice-input, which is what shows which
    utterances actually arrive
-6. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+5. **control-transports** — MIDI and OSC as ports, in and out, with nothing
    above them decided. Was open-control-interfaces until 2026-09-02, when the
    three things people send over those ports turned out to want separate
    entries. → none
-7. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+6. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
    audio import. The biggest item here and the one the spec is most opinionated
    about. → none technically
-8. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+7. **llm-cost-overview** — token and cost accounting out of the NL plugin.
    → none
-9. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+8. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
    frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
    from task 51, which measured a connector's frame at 4.77 ms for 5000 fixtures —
    the number a WASM boundary now has to be compared against, and task 56, which
    says the boundary has to survive being asked 40 times a second and not 29
-10. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+9. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-11. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+10. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
    → a real TS plugin wanting to exist
-12. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+11. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
    stage manager's Go arriving at the lights, and this console sending its own
    to sound and video. → control-transports
-13. **surface-layer** — a bound physical thing, which is what the transports are
+12. **surface-layer** — a bound physical thing, which is what the transports are
    not: one event type under every surface, plus the two questions (where a
    headless surface's selection lives, where a fader's gesture begins and ends)
    that decide whether any of the three below is a week or a month.
    → control-transports for the MIDI half, nothing for the USB half
-14. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+13. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
    is what proves the layer before anybody spends a weekend on USB captures.
    → surface-layer
-15. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+14. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
    it can be estimated at all. → surface-layer
-16. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+15. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
    undocumented and to be read off the device. → surface-layer, and
    midi-surfaces for the binding model
-17. **showfile-migrations** — so a show made in the beta still opens after it.
+16. **showfile-migrations** — so a show made in the beta still opens after it.
    Added 2026-09-03, and the trigger is the beta rather than anything in the
    code: until somebody is carrying real work in a showfile, refusing one from
    another generation by name is the better trade. → the first beta
-18. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
+17. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
    2026-09-03. → none, and the sharpest question in it is whether an imported
    `.pultz` should ask before running the plugins it carries
-19. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
+18. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
    measured evaluating at **94%** of an output frame at 5000 fixtures, which is
    the answer the question was waiting for, and `pult-render` is pure and takes
    no locks. The same measurement is why it sits here rather than at the top: the
@@ -4521,34 +4773,14 @@ it against real files for a week.
   channel is in its strobe band, which is a simplification an operator will eventually
   find.
 
-#### scene-editing
-
-The plan and rig views become an editor, in the spirit of Vectorworks: move and rotate
-trusses, fixtures and objects, parent a fixture to a truss, show, hide and lock layers,
-duplicate, snap to a grid, and place primitives and symbols. Task 47 built the
-entities to edit and the views that draw them, so this is now unblocked.
-
-- The gizmo pattern in `Rig3D.svelte` already does pan and tilt handles; move and rotate
-  are the same shape with a different write.
-- A drag has to be one Ctrl-Z, which the gesture machinery already does.
-- Articulated fixture bodies are the visible payoff and are nearly free now:
-  `FixtureType::geometry` carries the parts, which turn, and the beam angle, so
-  `Rig3D.svelte` can lose its 0.12 constant and its single box per fixture.
-- **A picker for the stock catalogue is the smallest useful start.** Task 52 added
-  `SceneObject::catalogue` and the pieces to draw — F34 in three lengths and a corner,
-  decks, wall panels and flats — and the demos build rigs out of them. What is missing
-  is any way for a *person* to: there is no scene-object editor at all, so objects
-  arrive by MVR import and nothing else. A list of pieces and a click to place one is
-  a smaller thing than a gizmo and unblocks a console that has never imported anything.
-- A truss *run* is the unit an operator thinks in, not a section: task 52's demos build
-  one as a `Group` with sections parented to it, which is the shape a picker should
-  make too.
-
 #### mvr-xchange
 
 The other half of MVR: a protocol for two consoles or a console and a previz to share a
-scene as it changes, rather than a file somebody exports. Out of scope while there is no
-scene to share.
+scene as it changes, rather than a file somebody exports.
+
+**Unblocked by task 61**, and the entry used to say why it was not: "out of scope while
+there is no scene to share". There is one now — a console can build a rig out of the
+catalogue with nothing imported, and hand it to somebody else's software.
 
 - It is mDNS discovery and a WebSocket, which this codebase has both of.
 - The open question is whether a shared scene is a *session* in this console's sense or

@@ -17,7 +17,12 @@ describe('what a screen draws the rig as', () => {
 
 	it('changes one setting and keeps the rest', () => {
 		const dark = parseView({ workLight: 0 }, { ...DEFAULT_VIEW, mode: 'photoreal' });
-		expect(dark).toEqual({ mode: 'photoreal', workLight: 0, resolution: 1.5 });
+		expect(dark).toEqual({ ...DEFAULT_VIEW, mode: 'photoreal', workLight: 0 });
+	});
+
+	it('keeps a projection it knows and refuses one it does not', () => {
+		expect(parseView({ projection: 'ortho' }).projection).toBe('ortho');
+		expect(parseView({ projection: 'fisheye' }).projection).toBe(DEFAULT_VIEW.projection);
 	});
 
 	it('brings the numbers inside what the view will do', () => {

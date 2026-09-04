@@ -377,6 +377,29 @@ impl FixtureEntity {
         self.at.field("parent")
     }
 
+    /// What it is clamped to on that object, where it is clamped to anything.
+    ///
+    /// Two degrees rather than six: which chord, how far along it, and how far round.
+    /// A gizmo told only a `position` would have to offer three axes and a free
+    /// rotation, and any one of them would take the light off the truss.
+    ///
+    /// **This does not replace `position`, and both are written together.** A mount is
+    /// resolved against the parent piece's chords, and for an imported truss those
+    /// come off the mesh's own bounds — which the station never loads, because only
+    /// `frontend/src/lib/geometry.ts` measures a mesh. So the *browser* is the writer
+    /// for every parent, whether the piece came out of the catalogue or out of a
+    /// drawing, and what keeps its arithmetic equal to
+    /// [`crate::types::mount::Mount::transform`]'s is `testdata/mounts.json`.
+    ///
+    /// `None` for a light standing on the floor or hung off nothing, which is most of
+    /// what an imported drawing carries: MVR says where a fixture is and never what it
+    /// is hooked over.
+    ///
+    /// PERSISTED.
+    pub fn mount(&self) -> Field<Option<Mount>> {
+        self.at.field("mount")
+    }
+
     /// Which layer of the drawing it belongs to.
     ///
     /// PERSISTED.
@@ -2634,6 +2657,33 @@ impl SceneObjectEntity {
     /// PERSISTED.
     pub fn catalogue(&self) -> Field<Option<String>> {
         self.at.field("catalogue")
+    }
+
+    /// What a piece out of the catalogue was asked for: a deck's leg height, a
+    /// panel's finish. Declared per piece in [`crate::types::catalogue`], so the
+    /// keys are the piece's and an object carrying a key the piece never declared
+    /// is simply ignored rather than refused.
+    ///
+    /// An object out of a drawing has an empty map: a mesh somebody modelled says
+    /// what it is, and there is nothing here to ask it.
+    ///
+    /// A JSON column, the way `PluginPackage::config` is.
+    ///
+    /// PERSISTED.
+    pub fn properties(&self) -> Field<serde_json::Value> {
+        self.at.field("properties")
+    }
+
+    /// Whether an operator can take hold of it.
+    ///
+    /// The show's rather than the browser's, unlike layer visibility: locking the
+    /// house rig so nobody drags it is a decision about the rig, and a lock only
+    /// one screen honoured would be no lock at all. A locked object is still drawn,
+    /// still pickable and still says what it is — what it has is no gizmo.
+    ///
+    /// PERSISTED.
+    pub fn locked(&self) -> Field<bool> {
+        self.at.field("locked")
     }
 }
 

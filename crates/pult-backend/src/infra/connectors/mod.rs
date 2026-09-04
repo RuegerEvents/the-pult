@@ -781,6 +781,7 @@ impl OutputManager {
                 address: address.clone(),
                 position: None,
                 parent: None,
+                mount: None,
                 layer: None,
                 class: None,
                 focus: None,

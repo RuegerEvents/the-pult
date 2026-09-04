@@ -8,6 +8,7 @@ use uuid::Uuid;
 use super::dmx_mode::{DmxBreak, DmxChannelLayout, DmxMode};
 use super::effect::{RunningEffect, RunningFade};
 use super::programmer::ProgrammerValue;
+use super::mount::Mount;
 use super::scene::Transform;
 use crate::PultSchema;
 
@@ -672,6 +673,26 @@ pub struct Fixture {
     /// The object it hangs off — a truss, or a group of them.
     #[pult(lifecycle = PERSISTED)]
     pub parent: Option<Uuid>,
+    /// What it is clamped to on that object, where it is clamped to anything.
+    ///
+    /// Two degrees rather than six: which chord, how far along it, and how far round.
+    /// A gizmo told only a `position` would have to offer three axes and a free
+    /// rotation, and any one of them would take the light off the truss.
+    ///
+    /// **This does not replace `position`, and both are written together.** A mount is
+    /// resolved against the parent piece's chords, and for an imported truss those
+    /// come off the mesh's own bounds — which the station never loads, because only
+    /// `frontend/src/lib/geometry.ts` measures a mesh. So the *browser* is the writer
+    /// for every parent, whether the piece came out of the catalogue or out of a
+    /// drawing, and what keeps its arithmetic equal to
+    /// [`crate::types::mount::Mount::transform`]'s is `testdata/mounts.json`.
+    ///
+    /// `None` for a light standing on the floor or hung off nothing, which is most of
+    /// what an imported drawing carries: MVR says where a fixture is and never what it
+    /// is hooked over.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub mount: Option<Mount>,
     /// Which layer of the drawing it belongs to.
     #[pult(lifecycle = PERSISTED)]
     pub layer: Option<Uuid>,

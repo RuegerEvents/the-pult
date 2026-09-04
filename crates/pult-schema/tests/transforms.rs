@@ -13,13 +13,26 @@
 use std::collections::HashMap;
 
 use pult_schema::types::fixture::Vec3;
-use pult_schema::types::scene::{by_id, world_transform, SceneObject, SceneObjectKind, Transform};
+use pult_schema::types::scene::{
+    by_id, inverse, local_of, world_transform, SceneObject, SceneObjectKind, Transform,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
 struct Corpus {
     chains: Vec<ChainCase>,
+    inverses: Vec<InverseCase>,
+}
+
+/// The other direction: where a thing has got to, what it is going under, and what
+/// therefore has to be written down.
+#[derive(Deserialize)]
+struct InverseCase {
+    name: String,
+    parent: Option<Transform>,
+    world: Transform,
+    local: Transform,
 }
 
 #[derive(Deserialize)]
@@ -53,6 +66,8 @@ impl Placed {
             geometry: Vec::new(),
             symbol: None,
             catalogue: None,
+            properties: serde_json::Value::Null,
+            locked: false,
         }
     }
 }
@@ -117,7 +132,9 @@ fn a_parent_chain_that_loops_stops_rather_than_hangs() {
         class: None,
         geometry: Vec::new(),
         symbol: None,
-            catalogue: None,
+        catalogue: None,
+        properties: serde_json::Value::Null,
+        locked: false,
     };
     let objects = vec![placed(a, b), placed(b, a)];
 
@@ -125,4 +142,47 @@ fn a_parent_chain_that_loops_stops_rather_than_hangs() {
 
     // Sixty-four steps of one metre each, and then it gives up.
     assert!(got.position.x > 0.0, "it walked and stopped: {got:?}");
+}
+
+/// The seam every drag crosses: a gizmo hands back a world placement, and what is
+/// stored is relative to the parent.
+#[test]
+fn every_placement_goes_back_under_its_parent_the_way_the_corpus_says() {
+    for case in corpus().inverses {
+        let got = local_of(&case.world, case.parent.as_ref());
+        same(&got, &case.local, &case.name);
+    }
+}
+
+/// And the round trip, which is the property the corpus cases are examples of:
+/// composing a chain and taking it back apart leaves the placement alone.
+#[test]
+fn composing_and_uncomposing_a_chain_leaves_a_placement_alone() {
+    for case in corpus().chains {
+        let objects: Vec<SceneObject> = case.objects.iter().map(Placed::object).collect();
+        let by = by_id(&objects);
+        let parent_world = case
+            .parent
+            .and_then(|id| by.get(&id).map(|object| world_transform(&object.transform, object.parent, &by)));
+
+        let back = local_of(&case.world, parent_world.as_ref());
+
+        same(&back, &case.local, &case.name);
+    }
+}
+
+/// A placement composed with its own inverse is nothing at all.
+#[test]
+fn an_inverse_undoes_the_placement_it_came_from() {
+    let placement = Transform {
+        position: Vec3 { x: 1.5, y: -2.0, z: 3.25 },
+        rotation: Vec3 { x: 15.0, y: -40.0, z: 70.0 },
+        scale: Vec3 { x: -1.0, y: 1.0, z: 1.0 },
+    };
+
+    let nothing = local_of(&placement, Some(&placement));
+
+    same(&nothing, &Transform::default(), "a placement under itself");
+    // And the inverse of the inverse is where it started.
+    same(&inverse(&inverse(&placement)), &placement, "twice inverted");
 }

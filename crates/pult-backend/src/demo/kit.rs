@@ -25,6 +25,7 @@ use pult_schema::types::{
         Vec3,
     },
     flow::{Flow, FlowEdge, FlowNode, FlowNodeKind},
+    mount::{Chord, Mount},
     scene::{euler_xyz_degrees_to_basis, SceneObject, SceneObjectKind, Transform},
     sequence::Sequence,
     dmx_mode::DmxBreak,
@@ -66,25 +67,41 @@ pub fn aimed(x: f32, y: f32, z: f32, direction: Vec3) -> Transform {
     Transform::facing(Vec3 { x, y, z }, direction)
 }
 
-/// How far below a bar's centre line a hung fixture sits, in metres.
+/// The chords of the runs [`truss_run`] and [`boom`] build.
 ///
-/// An F34 chord square is 290 mm, so a body clamped under one has its top about
-/// 150 mm below the bar's centre; 350 mm is that plus the clamp. One number for
-/// every demo, because the first Club hung its washes 300 mm below and 600 mm
-/// *beside* the bar, and what that drew was a row of lights floating next to a
-/// truss rather than hanging off it.
-pub const HUNG_BELOW: f32 = 0.35;
+/// A run is a `Group` with F34 sections parented to it at offsets **along X only**, so
+/// a chord — which is a line along X at some `(y, z)` — is the same line in the run's
+/// frame as it is in a section's. Which is exactly what lets a light be clamped to the
+/// *run* rather than to whichever section it happens to be over, and why every demo
+/// hangs its lights off the run.
+pub fn run_chords() -> &'static [Chord] {
+    catalogue::piece("f34-3m").expect("the catalogue has a three-metre length").chords
+}
 
-/// A fixture's transform *on something that has been turned*.
+/// A fixture clamped under a bar, aimed somewhere.
+///
+/// The mount says where the clamp is — which chord, how far along, how far round — and
+/// the aim says where the lantern looks; the placement follows from the two. There is
+/// no `HUNG_BELOW` here any more because there is nowhere left to put one: how far
+/// under the chord a body sits is [`pult_schema::types::mount::HUNG_BELOW`], and the
+/// arithmetic is [`Mount::point`], which the browser also runs on every frame of a
+/// drag.
+///
+/// For a run nothing has turned, which is every overhead bar in every demo.
+pub fn under(mount: Mount, direction: Vec3) -> Transform {
+    Transform::facing(mount.point(run_chords()), direction)
+}
+
+/// The same on something that has been turned — a boom, which is a run stood on end.
 ///
 /// A fixture's position is relative to what it hangs off, rotation included, so a
-/// lantern on a vertical boom — a run of truss stood on its end — has to be written
-/// in the boom's own frame, where a metre up the boom is a metre along its local X.
-/// The demos think in world terms: an offset from the run's centre and a direction
-/// to point in. This does the bookkeeping, so no show file hand-inverts a rotation.
+/// lantern on a vertical boom has to be written in the boom's own frame, where a metre
+/// up the boom is a metre along its local X. The mount is already in that frame; the
+/// *aim* is the part a demo thinks about in world terms, and undoing the run's own
+/// rotation is what this does — so no show file hand-inverts one.
 ///
 /// The parent is taken at unit scale, which every run here is.
-pub fn on(parent: &Transform, world_offset: Vec3, world_direction: Vec3) -> Transform {
+pub fn on(parent: &Transform, mount: Mount, world_direction: Vec3) -> Transform {
     let basis = euler_xyz_degrees_to_basis(parent.rotation);
     // A rotation's inverse is its transpose.
     let into_local = |v: Vec3| Vec3 {
@@ -92,7 +109,7 @@ pub fn on(parent: &Transform, world_offset: Vec3, world_direction: Vec3) -> Tran
         y: basis[0][1] * v.x + basis[1][1] * v.y + basis[2][1] * v.z,
         z: basis[0][2] * v.x + basis[1][2] * v.y + basis[2][2] * v.z,
     };
-    Transform::facing(into_local(world_offset), into_local(world_direction))
+    Transform::facing(mount.point(run_chords()), into_local(world_direction))
 }
 
 // ── Patching ──────────────────────────────────────────────────────────────────
@@ -166,6 +183,28 @@ pub fn a_fixture(
         address,
         position: Some(position),
         ..Fixture::default()
+    }
+}
+
+/// The same, clamped: the placement and the mount that produced it, written together.
+///
+/// **Both**, which is the rule the whole model rests on — see `Fixture::mount`. The
+/// mount is what an operator drags along the bar and rolls about the chord; the
+/// position is what everything else in the console reads, and a station that had only
+/// one of them would have to resolve the other, which it cannot do for a truss that
+/// came out of a drawing.
+pub fn a_clamped_fixture(
+    name: &str,
+    type_id: Uuid,
+    address: FixtureAddress,
+    parent: Uuid,
+    position: Transform,
+    mount: Mount,
+) -> Fixture {
+    Fixture {
+        parent: Some(parent),
+        mount: Some(mount),
+        ..a_fixture(name, type_id, address, position)
     }
 }
 
@@ -261,6 +300,8 @@ async fn run_of_sections(
         // The handle itself draws nothing: it is a place to take hold of, and the
         // sections under it are what there is to see.
         catalogue: None,
+        properties: serde_json::Value::Null,
+        locked: false,
     };
     into.create("scene_objects", &run).await?;
 
@@ -279,6 +320,8 @@ async fn run_of_sections(
                 geometry: Vec::new(),
                 symbol: None,
                 catalogue: Some(section.id.to_string()),
+                properties: serde_json::Value::Null,
+                locked: false,
             },
         )
         .await?;
@@ -307,6 +350,8 @@ pub async fn a_piece(
         geometry: Vec::new(),
         symbol: None,
         catalogue: Some(piece.id.to_string()),
+        properties: serde_json::Value::Null,
+        locked: false,
     };
     into.create("scene_objects", &object).await?;
     Ok(object.id)
@@ -516,15 +561,20 @@ mod tests {
             geometry: Vec::new(),
             symbol: None,
             catalogue: None,
+            properties: serde_json::Value::Null,
+            locked: false,
         };
         let objects = vec![boom.clone()];
-        let local = on(&handle, Vec3 { x: 0.45, y: 1.0, z: 0.0 }, facing::FROM_LEFT);
+        // A metre up the boom, clamped to the chord that faces centre stage.
+        let local = on(&handle, Mount::along(1.0), facing::FROM_LEFT);
         let world = world_transform(&local, Some(boom.id), &by_id(&objects));
 
         let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
         assert!(
-            near(world.position.x, -6.55) && near(world.position.y, 2.5) && near(world.position.z, 0.0),
-            "a metre up the boom on a sidearm landed at {:?}",
+            near(world.position.x, -6.65)
+                && near(world.position.y, 2.5)
+                && near(world.position.z, -0.145),
+            "a metre up the boom on a clamp landed at {:?}",
             world.position,
         );
         let back = world.facing_direction();
@@ -533,6 +583,18 @@ mod tests {
             near(back.x, facing::FROM_LEFT.x / length) && near(back.y, facing::FROM_LEFT.y / length),
             "aimed across the stage, points {back:?}",
         );
+    }
+
+    /// A lantern under an F34 hangs 350 mm below its centre line, which is the figure
+    /// every demo used before there were chords to hang off — 145 mm to the bottom
+    /// chord and 205 mm of clamp and body under it. The first Club demo hung its
+    /// washes 300 mm below and 600 mm *beside* the bar, and what that drew was a row
+    /// of lights floating next to a truss.
+    #[test]
+    fn a_lantern_hangs_where_it_always_did() {
+        let at = under(Mount::along(1.5), facing::DOWN);
+        assert!((at.position.y + 0.35).abs() < 1e-4, "hung at {:?}", at.position);
+        assert!((at.position.x - 1.5).abs() < 1e-4, "hung at {:?}", at.position);
     }
 
     /// Straight down is no rotation at all, which is the fact the whole module rests

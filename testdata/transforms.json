@@ -13,7 +13,14 @@
     "",
     "`chains` is the console's own half: a local placement, the objects above it, and",
     "where it therefore is. Angles are XYZ Euler degrees; a negative scale is a",
-    "reflection, which is the only way to say that a drawing mirrored something."
+    "reflection, which is the only way to say that a drawing mirrored something.",
+    "",
+    "`inverses` is the other direction: a placement in the world, the parent it is",
+    "going under, and what therefore has to be written down. A gizmo hands back a",
+    "world placement and a SceneObject::transform is relative to its parent, so",
+    "dragging anything at all crosses this seam — and it is not -position: the",
+    "inverse of \"moved and then turned\" is \"turned back and then moved in the",
+    "turned frame\"."
   ],
   "matrices": [
     {
@@ -191,6 +198,94 @@
         "position": {"x": 4.0, "y": 5.0, "z": 6.0},
         "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
         "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    }
+  ],
+  "inverses": [
+    {
+      "name": "with nothing above it, where it is is what is written down",
+      "parent": null,
+      "world": {
+        "position": {"x": 1.0, "y": 2.0, "z": 3.0},
+        "rotation": {"x": 10.0, "y": 20.0, "z": 30.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "local": {
+        "position": {"x": 1.0, "y": 2.0, "z": 3.0},
+        "rotation": {"x": 10.0, "y": 20.0, "z": 30.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "a light dragged along a bar is written as an offset from the bar",
+      "parent": {
+        "position": {"x": 0.0, "y": 6.0, "z": -4.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "world": {
+        "position": {"x": 2.0, "y": 6.0, "z": -4.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "local": {
+        "position": {"x": 2.0, "y": 0.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "and on a turned bar the offset is in the bar's own frame",
+      "parent": {
+        "position": {"x": 0.0, "y": 6.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 90.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "world": {
+        "position": {"x": 0.0, "y": 6.0, "z": -2.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "local": {
+        "position": {"x": 2.0, "y": 0.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": -90.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "a mirrored parent takes the reflection back out of the child",
+      "parent": {
+        "position": {"x": 0.0, "y": 6.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": -1.0, "y": 1.0, "z": 1.0}
+      },
+      "world": {
+        "position": {"x": -2.0, "y": 6.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": -1.0, "y": 1.0, "z": 1.0}
+      },
+      "local": {
+        "position": {"x": 2.0, "y": 0.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "name": "a scaled parent leaves the child scaled the other way",
+      "parent": {
+        "position": {"x": 1.0, "y": 2.0, "z": 3.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 2.0, "y": 2.0, "z": 2.0}
+      },
+      "world": {
+        "position": {"x": 3.0, "y": 2.0, "z": 3.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "local": {
+        "position": {"x": 1.0, "y": 0.0, "z": 0.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 0.5, "y": 0.5, "z": 0.5}
       }
     }
   ]

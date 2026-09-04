@@ -30,6 +30,15 @@ export const RENDER_MODES: { value: RenderMode; label: string; blurb: string }[]
 	{ value: 'photoreal', label: 'Photoreal', blurb: 'Beams summed in high dynamic range, tone-mapped and bloomed, so crossing beams roll off instead of clipping.' }
 ];
 
+/**
+ * Whether the rig is drawn in perspective or straight on.
+ *
+ * A 2D view is not a second panel here; it is this one with an orthographic camera.
+ * One editor, one gizmo, one hit test — and ortho with the three-quarter preset is an
+ * axonometric, which nobody had to build.
+ */
+export type Projection = 'perspective' | 'ortho';
+
 export type ViewSettings = {
 	mode: RenderMode;
 	/**
@@ -46,9 +55,48 @@ export type ViewSettings = {
 	 * over half as much.
 	 */
 	resolution: number;
+	projection: Projection;
+	/**
+	 * What a dragged piece snaps to, in metres. Zero is off.
+	 *
+	 * Half a metre, which is a truss bay and a deck edge and the unit a rig is
+	 * actually set out in. Alt bypasses it for the one time in twenty when somebody
+	 * means 1.37 m.
+	 */
+	grid: number;
+	/**
+	 * The height the work plane sits at, in metres: where a piece dragged onto a plan
+	 * or a three-quarter view lands.
+	 *
+	 * Zero is the deck. A bar goes in at six, and then everything else dropped goes in
+	 * beside it rather than on the floor under it.
+	 */
+	workHeight: number;
+	/**
+	 * And the depth it stands at when the view is looking along the floor, where a
+	 * horizontal plane is edge-on and would catch nothing.
+	 */
+	workDepth: number;
 };
 
-export const DEFAULT_VIEW: ViewSettings = { mode: 'real', workLight: 0.4, resolution: 1.5 };
+export const DEFAULT_VIEW: ViewSettings = {
+	mode: 'real',
+	workLight: 0.4,
+	resolution: 1.5,
+	projection: 'perspective',
+	grid: 0.5,
+	workHeight: 0,
+	workDepth: 0
+};
+
+/** What the sheet offers for the grid, and what to call it. */
+export const GRIDS: { value: number; label: string }[] = [
+	{ value: 0, label: 'Off' },
+	{ value: 0.1, label: '100 mm' },
+	{ value: 0.25, label: '250 mm' },
+	{ value: 0.5, label: '500 mm' },
+	{ value: 1, label: '1 m' }
+];
 
 /** The choices the panel offers for resolution, and what to call them. */
 export const RESOLUTIONS: { value: number; label: string }[] = [
@@ -66,10 +114,18 @@ const STORAGE_KEY = 'pult.view';
 export function parseView(value: unknown, fallback: ViewSettings = DEFAULT_VIEW): ViewSettings {
 	const given = (value && typeof value === 'object' ? value : {}) as Partial<ViewSettings>;
 	const mode = RENDER_MODES.some((m) => m.value === given.mode) ? (given.mode as RenderMode) : fallback.mode;
+	const projection =
+		given.projection === 'ortho' || given.projection === 'perspective'
+			? given.projection
+			: fallback.projection;
 	return {
 		mode,
 		workLight: finiteIn(given.workLight, 0, 1, fallback.workLight),
-		resolution: finiteIn(given.resolution, 0.5, 3, fallback.resolution)
+		resolution: finiteIn(given.resolution, 0.5, 3, fallback.resolution),
+		projection,
+		grid: finiteIn(given.grid, 0, 10, fallback.grid),
+		workHeight: finiteIn(given.workHeight, -10, 40, fallback.workHeight),
+		workDepth: finiteIn(given.workDepth, -60, 60, fallback.workDepth)
 	};
 }
 

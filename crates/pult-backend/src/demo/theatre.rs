@@ -13,6 +13,7 @@
 use anyhow::Result;
 use pult_schema::types::{
     fixture::{Fixture, FixtureType, ParameterKind, Vec3},
+    mount::Mount,
     group::{Group, SelectionClause, SelectionCombine, SelectionOrder, SelectionQuery,
             SelectionTerm},
     scene::Transform,
@@ -21,8 +22,8 @@ use pult_schema::types::{
 use super::{
     id,
     kit::{
-        a_cue, a_fixture, a_piece, a_stack, a_type, aimed, boom, capture, colour, facing,
-        intensity, level, on, sky, truss_run, Addresses, HUNG_BELOW,
+        a_clamped_fixture, a_cue, a_piece, a_stack, a_type, boom, capture, colour, facing,
+        intensity, level, on, sky, truss_run, under, Addresses,
     },
     Seeder,
 };
@@ -121,34 +122,39 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                     0.0
                 }
             };
-            let (parent, position) = match system.hang {
+            let (parent, mount, position) = match system.hang {
                 // Under the bar, on a clamp, spread over all but the last half metre
                 // at each end of it.
                 Hang::Bar(bar) => {
                     let (id, metres) = bars[bar];
-                    (id, aimed(spread(metres - 1.0), -HUNG_BELOW, 0.0, system.aim))
+                    let mount = Mount::along(spread(metres - 1.0));
+                    (id, mount, under(mount, system.aim))
                 }
-                // Up the boom on a sidearm towards centre stage, so the lantern is
-                // clamped to the face of the boom rather than drawn inside it. The
-                // offset and the aim are world terms; `on` puts them in the boom's
-                // own turned frame.
+                // Up the boom, clamped to the chord that faces centre stage rather
+                // than drawn inside it. A boom is a run stood on its end, so `along`
+                // is the height up it; the aim is a world term and `on` puts that in
+                // the boom's own turned frame.
                 Hang::Boom(index) => {
                     let (id, handle) = &booms[index];
-                    let towards_centre = if handle.position.x < 0.0 { 0.45 } else { -0.45 };
-                    (
-                        *id,
-                        on(handle, Vec3 { x: towards_centre, y: spread(2.2), z: 0.0 }, system.aim),
-                    )
+                    // A boom is a run turned a quarter about Z, so its local −Y is
+                    // the world's +X. The clamp goes on the chord facing centre
+                    // stage and the roll pushes the body out along it — which is
+                    // what keeps the lantern on the face of the boom instead of
+                    // inside it, the thing the first Theatre demo got wrong twice.
+                    let (chord, roll) = if handle.position.x < 0.0 { (0, 0.0) } else { (2, 180.0) };
+                    let mount = Mount { chord, along: spread(2.2), roll };
+                    (*id, mount, on(handle, mount, system.aim))
                 }
             };
 
-            let mut fixture = a_fixture(
+            let fixture = a_clamped_fixture(
                 &format!("{} {}", system.name, n + 1),
                 kind.id,
                 addresses.take(kind.channel_count),
+                parent,
                 position,
+                mount,
             );
-            fixture.parent = Some(parent);
             into.create("fixtures", &fixture).await?;
         }
     }
