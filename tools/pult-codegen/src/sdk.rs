@@ -378,6 +378,22 @@ fn doc_attrs(attrs: &[Attribute]) -> Vec<TokenStream> {
     attrs.iter().filter(|a| a.path().is_ident("doc")).map(|a| quote!(#a)).collect()
 }
 
+/// A *container's* attributes, minus a `#[serde(default)]` the mirror cannot answer.
+///
+/// The same rule [`field_attrs`] applies one level down, and it is needed here for the
+/// same reason: `#[serde(default)]` on a struct makes its derived `Deserialize`
+/// require `Default`, and a type whose `Default` is written by hand loses that derive
+/// on the way into the mirror. Keeping the attribute over a dropped derive is a
+/// generated crate that does not compile — which is a mirror nobody can build a plugin
+/// against, rather than the compile error at a plugin author's desk that the dropped
+/// derive is meant to be.
+fn container_attrs(attrs: &[Attribute], default_ok: bool) -> Vec<TokenStream> {
+    serde_attrs(attrs)
+        .into_iter()
+        .filter(|attr| default_ok || attr.to_string() != "# [serde (default)]")
+        .collect()
+}
+
 fn serde_attrs(attrs: &[Attribute]) -> Vec<TokenStream> {
     keep_attrs(attrs).into_iter().filter(|a| !a.to_string().starts_with("# [doc")).collect()
 }
@@ -470,7 +486,7 @@ fn render_schema(source: &Source, wanted: &BTreeSet<String>) -> Result<(String, 
             Item::Struct(s) => {
                 let ident = &s.ident;
                 let doc = doc_attrs(&s.attrs);
-                let attrs = serde_attrs(&s.attrs);
+                let attrs = container_attrs(&s.attrs, defaults.contains(name));
                 let derives = keep_derives(&s.attrs, defaults.contains(name));
                 let body = match &s.fields {
                     Fields::Named(named) => {
@@ -511,7 +527,7 @@ fn render_schema(source: &Source, wanted: &BTreeSet<String>) -> Result<(String, 
             Item::Enum(e) => {
                 let ident = &e.ident;
                 let doc = doc_attrs(&e.attrs);
-                let attrs = serde_attrs(&e.attrs);
+                let attrs = container_attrs(&e.attrs, defaults.contains(name));
                 let derives = keep_derives(&e.attrs, defaults.contains(name));
                 let variants: Vec<TokenStream> = e
                     .variants

@@ -93,6 +93,7 @@ fn a_show() -> Show {
         home_fade_ms: 0,
         haze_density: pult_schema::types::show::HAZE_DENSITY_DEFAULT,
         haze_turbulence: pult_schema::types::show::HAZE_TURBULENCE_DEFAULT,
+        fade_curves: pult_schema::types::show::FadeCurves::default(),
     }
 }
 
@@ -113,6 +114,7 @@ fn a_cue(name: &str, number: f64) -> Cue {
         // this said 3000 while nothing read it, and `an_intensity_cue(_, _, 0)` — a
         // cue asking to snap — would otherwise take three seconds to come down.
         fade_out_ms: 0,
+        easing: None,
         is_active: false,
     }
 }
@@ -1362,7 +1364,7 @@ fn an_intensity_cue(fixture_id: Uuid, level: f32, fade_in_ms: u32) -> Cue {
         fade_out_ms: 0,
         delay_in_ms: 0,
         effect: None,
-        easing: Easing::Linear,
+        easing: Some(Easing::Linear),
     }];
     cue
 }
@@ -2113,11 +2115,12 @@ mod watching_playback {
                 fade_out_ms: 0,
                 delay_in_ms: 0,
                 effect: None,
-                easing: Easing::Linear,
+                easing: Some(Easing::Linear),
             }],
             follow_mode: FollowMode::Manual,
             fade_in_ms: 0,
             fade_out_ms: 0,
+            easing: None,
             is_active: false,
         };
         h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
@@ -2210,11 +2213,12 @@ mod watching_playback {
                 fade_out_ms: 0,
                 delay_in_ms: 0,
                 effect: None,
-                easing: Easing::Linear,
+                easing: Some(Easing::Linear),
             }],
             follow_mode: FollowMode::Manual,
             fade_in_ms: 0,
             fade_out_ms: 0,
+            easing: None,
             is_active: false,
         };
         h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
@@ -2313,7 +2317,7 @@ mod watching_playback {
                 fade_out_ms: 0,
                 delay_in_ms: 0,
                 effect: None,
-                easing: Easing::Linear,
+                easing: Some(Easing::Linear),
             })
             .collect();
         let cue = Cue {
@@ -2324,6 +2328,7 @@ mod watching_playback {
             follow_mode: FollowMode::Manual,
             fade_in_ms: 800,
             fade_out_ms: 0,
+            easing: None,
             is_active: false,
         };
         h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();

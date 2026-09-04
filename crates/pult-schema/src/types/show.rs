@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use super::effect::Easing;
+use super::fixture::{parameter_key, ParameterKind};
 use crate::PultSchema;
 
 /// Top-level show metadata.
@@ -78,6 +80,126 @@ pub struct Show {
     #[serde(default = "default_haze_turbulence")]
     #[pult(lifecycle = PERSISTED)]
     pub haze_turbulence: f32,
+    /// What shape a fade has when neither the capture nor the cue says one.
+    ///
+    /// Show data for the reason `home_fade_ms` is, and the reason is the same one
+    /// again: two stations running one cue with the heads easing on one desk and
+    /// running linear on the other is not a preference but a disagreement the
+    /// audience can watch. A station's own preference decides what a *new* show
+    /// starts with.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub fade_curves: FadeCurves,
+}
+
+/// Which of a show's default curves a parameter takes.
+///
+/// A group rather than a kind. The answer is not per parameter — everything that
+/// moves a head wants the same shape as everything else that moves a head — and a
+/// show that had to say it once per gobo wheel is a show where nobody says it at
+/// all. The pair that earns the split is intensity against position: a dimmer has
+/// run linear since dimmers had handles, and a head that runs linear into a mark and
+/// stops dead reads as a fault rather than as a move. The other three are here so
+/// that [`FadeGroup::of_key`] is total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum FadeGroup {
+    Intensity,
+    Position,
+    Color,
+    Beam,
+    /// A relay, a raw channel, a name this console has never heard of. Mostly
+    /// parameters that cannot be interpolated at all, and switch at the halfway mark
+    /// whatever curve is over them.
+    Other,
+}
+
+impl FadeGroup {
+    /// The group a parameter *key* belongs to.
+    ///
+    /// Keyed by the string rather than by [`ParameterKind`] because the two callers
+    /// hold different halves of the same thing: a cue's capture knows its kind, and
+    /// a release letting go of a parameter knows only the key it is letting go of.
+    /// [`parameter_key`] is the bridge between them, which is what keeps this one
+    /// implementation rather than two that can disagree about a gobo wheel.
+    pub fn of_key(key: &str) -> Self {
+        // Indexed kinds are `Gobo:1`, `ColorWheel:2`, `Named:Fog output` — the group
+        // is decided by the name, never by which one of them it is.
+        match key.split(':').next().unwrap_or(key) {
+            "Intensity" => Self::Intensity,
+            "Pan" | "Tilt" => Self::Position,
+            "ColorRgb" | "ColorWheel" | "ColorTemperature" => Self::Color,
+            "Zoom" | "Focus" | "Iris" | "Shutter" | "Strobe" | "Gobo" | "GoboIndex"
+            | "GoboRotation" | "Prism" | "Frost" => Self::Beam,
+            _ => Self::Other,
+        }
+    }
+
+    /// The same question, asked with the kind in hand.
+    pub fn of_kind(kind: &ParameterKind) -> Self {
+        Self::of_key(&parameter_key(kind))
+    }
+}
+
+/// A show's default fade shapes, one per [`FadeGroup`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export)]
+pub struct FadeCurves {
+    pub intensity: Easing,
+    pub position: Easing,
+    pub color: Easing,
+    pub beam: Easing,
+    pub other: Easing,
+}
+
+impl Default for FadeCurves {
+    /// Linear everywhere except position.
+    ///
+    /// Which is the whole point of the field: a show that never opens this panel
+    /// gets dimmers that behave exactly as they always have, and heads that ease
+    /// into their marks. Every other group is left linear because none of them has
+    /// a shape an operator would recognise as wrong — a colour crossfading linearly
+    /// is what a colour crossfade looks like.
+    fn default() -> Self {
+        Self {
+            intensity: Easing::Linear,
+            position: Easing::EaseInOut,
+            color: Easing::Linear,
+            beam: Easing::Linear,
+            other: Easing::Linear,
+        }
+    }
+}
+
+impl FadeCurves {
+    /// This show's curve for one group.
+    pub fn for_group(&self, group: FadeGroup) -> Easing {
+        match group {
+            FadeGroup::Intensity => self.intensity,
+            FadeGroup::Position => self.position,
+            FadeGroup::Color => self.color,
+            FadeGroup::Beam => self.beam,
+            FadeGroup::Other => self.other,
+        }
+    }
+
+    /// The curve a parameter fades on when nothing above has said one.
+    pub fn for_key(&self, key: &str) -> Easing {
+        self.for_group(FadeGroup::of_key(key))
+    }
+
+    /// What a capture actually fades on: its own curve, then its cue's, then this.
+    ///
+    /// The same three steps, in the same order, that the fade *times* take — a
+    /// capture's own time wins, the cue's is next, and the show answers what is
+    /// left. Written once here because the alternative is playback, the cue editor
+    /// and anything asking what a cue is about to do each deciding it for
+    /// themselves, and a curve is exactly the sort of thing three readings of would
+    /// disagree about only on the cues nobody tested.
+    pub fn resolve(&self, capture: Option<Easing>, cue: Option<Easing>, key: &str) -> Easing {
+        capture.or(cue).unwrap_or_else(|| self.for_key(key))
+    }
 }
 
 /// What a show keeps unless somebody says otherwise: five hundred changes, which is
@@ -161,6 +283,59 @@ mod tests {
         assert_eq!(clamp_haze(0.35), 0.35);
         assert_eq!(clamp_haze(4.0), 1.0);
         assert_eq!(clamp_haze(-1.0), 0.0);
+    }
+
+    #[test]
+    fn a_key_belongs_to_the_group_its_name_says() {
+        assert_eq!(FadeGroup::of_key("Intensity"), FadeGroup::Intensity);
+        assert_eq!(FadeGroup::of_key("Pan"), FadeGroup::Position);
+        assert_eq!(FadeGroup::of_key("Tilt"), FadeGroup::Position);
+        assert_eq!(FadeGroup::of_key("ColorRgb"), FadeGroup::Color);
+        assert_eq!(FadeGroup::of_key("Zoom"), FadeGroup::Beam);
+        assert_eq!(FadeGroup::of_key("Switch:2"), FadeGroup::Other);
+    }
+
+    #[test]
+    fn an_indexed_kind_is_grouped_by_its_name_and_not_by_its_number() {
+        // Two gobo wheels are one group. The index is which wheel, not which sort of
+        // parameter, and grouping by the whole key would put `Gobo:2` under `Other`.
+        assert_eq!(FadeGroup::of_key("Gobo:1"), FadeGroup::Beam);
+        assert_eq!(FadeGroup::of_key("Gobo:2"), FadeGroup::Beam);
+        assert_eq!(FadeGroup::of_key("ColorWheel:1"), FadeGroup::Color);
+        assert_eq!(FadeGroup::of_kind(&ParameterKind::Gobo(3)), FadeGroup::Beam);
+        // Including one whose name somebody made up, which is what a node is allowed
+        // to describe: it has to land somewhere, and `Other` is where.
+        assert_eq!(FadeGroup::of_key("Named:Fog output"), FadeGroup::Other);
+    }
+
+    #[test]
+    fn a_new_show_eases_its_heads_and_leaves_its_dimmers_alone() {
+        let curves = FadeCurves::default();
+        assert_eq!(curves.for_key("Intensity"), Easing::Linear, "as dimmers always have");
+        assert_eq!(curves.for_key("Pan"), Easing::EaseInOut, "a move, not a jerk");
+        assert_eq!(curves.for_key("Tilt"), Easing::EaseInOut);
+        assert_eq!(curves.for_key("ColorRgb"), Easing::Linear);
+    }
+
+    #[test]
+    fn a_capture_wins_the_cue_and_the_cue_wins_the_show() {
+        let curves = FadeCurves::default();
+        assert_eq!(
+            curves.resolve(Some(Easing::Step), Some(Easing::Linear), "Pan"),
+            Easing::Step,
+            "what the capture says"
+        );
+        assert_eq!(
+            curves.resolve(None, Some(Easing::Linear), "Pan"),
+            Easing::Linear,
+            "then what the cue says"
+        );
+        assert_eq!(
+            curves.resolve(None, None, "Pan"),
+            Easing::EaseInOut,
+            "and the show answers what is left"
+        );
+        assert_eq!(curves.resolve(None, None, "Intensity"), Easing::Linear, "per group");
     }
 
     #[test]

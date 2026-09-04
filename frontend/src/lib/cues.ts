@@ -15,6 +15,8 @@ export type NewCue = {
 	captures?: Cue['captures'];
 	fadeInMs?: number;
 	fadeOutMs?: number;
+	/** The shape of its fades. Left out means the show's default per parameter. */
+	easing?: Cue['easing'];
 	followMode?: Cue['follow_mode'];
 	/** Where in the list it goes. Appended when this is not given. */
 	number?: number;
@@ -38,6 +40,7 @@ export async function createCue(
 		captures = [],
 		fadeInMs = DEFAULT_FADE_MS,
 		fadeOutMs = DEFAULT_FADE_MS,
+		easing = null,
 		followMode = 'Manual',
 		number,
 		after
@@ -54,6 +57,7 @@ export async function createCue(
 		follow_mode: followMode,
 		fade_in_ms: fadeInMs,
 		fade_out_ms: fadeOutMs,
+		easing,
 		is_active: false
 	};
 	await data.cues.create(cue);

@@ -5,7 +5,7 @@ use futures::stream::BoxStream;
 use pult_schema::{
     commands::CommandRegistration,
     events::operation::{Authorship, NodeId, Operation, VectorClock},
-    types::show::{clamp_history_depth, clamp_home_fade_ms, HISTORY_DEPTH_DEFAULT},
+    types::show::{clamp_history_depth, clamp_home_fade_ms, FadeCurves, HISTORY_DEPTH_DEFAULT},
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
     registry::EntityMeta,
@@ -1201,6 +1201,7 @@ impl ShowEngine {
         let masters: Vec<pult_schema::types::speedmaster::SpeedMaster> =
             self.read_collection("speed_masters");
         let home_fade_ms = self.home_fade_ms();
+        let fade_curves = self.fade_curves();
 
         // Read once per pass rather than per effect: every station has to place this
         // pass at one instant, and asking the clock twice inside one would put two
@@ -1216,6 +1217,7 @@ impl ShowEngine {
                 &programmer,
                 &masters,
                 home_fade_ms,
+                fade_curves,
             );
             self.playback.pass(wall_ms, &view)
         };
@@ -1598,6 +1600,22 @@ impl ShowEngine {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         clamp_home_fade_ms(ms.try_into().unwrap_or(u32::MAX))
+    }
+
+    /// What shape a fade has in this show when nothing above it says one.
+    ///
+    /// Read from the show on every pass for the same reason the home time above is:
+    /// a second console changing it takes effect here, and both stations then run
+    /// the cue with the same shape rather than each with its own. A row that cannot
+    /// be read is the defaults, which is what a show that has never been asked has.
+    fn fade_curves(&self) -> FadeCurves {
+        self.state
+            .get_by_path(&vec![
+                PathSegment::Key("show".into()),
+                PathSegment::Key("fade_curves".into()),
+            ])
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
     }
 
     /// What is at a path right now, for the oplog to remember.
@@ -2948,6 +2966,7 @@ impl ShowEngine {
             home_fade_ms: prefs.home_fade_ms,
             haze_density: prefs.haze_density,
             haze_turbulence: prefs.haze_turbulence,
+            fade_curves: prefs.fade_curves,
         };
         let Ok(value) = serde_json::to_value(&show) else { return };
         if let Err(e) = self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await {

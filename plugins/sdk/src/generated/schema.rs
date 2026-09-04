@@ -70,6 +70,17 @@ pub struct Cue {
     /// And on the way down. Zero is not "snap": it means this cue does not split its
     /// fade, and everything takes the in time in both directions.
     pub fade_out_ms: u32,
+    /// What shape this cue's captures fade on, unless one of them says its own.
+    /// `None` is the show's default for each parameter's group, which is what every
+    /// cue nobody has opened this control on means.
+    ///
+    /// One curve rather than one per direction, where the times are one each. A
+    /// split *time* is what a designer asks for constantly — a look that builds
+    /// slowly and snaps away — and a curve that eased on the way up and ran linear
+    /// on the way down is a distinction nobody has asked for, so it stays one until
+    /// somebody does.
+    #[serde(default)]
+    pub easing: Option<Easing>,
     /// True when this cue is currently being executed (output is active).
     pub is_active: bool,
 }
@@ -171,6 +182,16 @@ pub struct Emitter {
     /// light, so it is the complement of the colour it is named for.
     #[serde(default)]
     pub subtractive: bool,
+}
+
+/// A show's default fade shapes, one per [`FadeGroup`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FadeCurves {
+    pub intensity: Easing,
+    pub position: Easing,
+    pub color: Easing,
+    pub beam: Easing,
+    pub other: Easing,
 }
 
 /// A patched fixture instance — a specific unit in the rig.
@@ -788,10 +809,17 @@ pub struct ParameterCapture {
     /// `effect` key, and `captures` is one JSON column with nothing to alter.
     #[serde(default)]
     pub effect: Option<EffectSpec>,
-    /// The shape of this capture's own fade. Defaults to `Linear`, which is what
-    /// every fade did before there was a choice.
+    /// The shape of this capture's own fade. `None` means the cue's, which means the
+    /// show's default for this parameter's group — the same three steps the fade
+    /// *times* take, and resolved in one place,
+    /// [`crate::types::show::FadeCurves::resolve`].
+    ///
+    /// A capture stored before there was anything above it to inherit from says
+    /// `Linear` outright and keeps saying it, which is the honest reading: that show
+    /// ran linear, and a curve appearing in it because a default changed underneath
+    /// would be this console rewriting somebody's cue.
     #[serde(default)]
-    pub easing: Easing,
+    pub easing: Option<Easing>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1291,6 +1319,14 @@ pub struct Show {
     /// cannot say which.
     #[serde(default)]
     pub haze_turbulence: f32,
+    /// What shape a fade has when neither the capture nor the cue says one.
+    ///
+    /// Show data for the reason `home_fade_ms` is, and the reason is the same one
+    /// again: two stations running one cue with the heads easing on one desk and
+    /// running linear on the other is not a preference but a disagreement the
+    /// audience can watch. A station's own preference decides what a *new* show
+    /// starts with.
+    pub fade_curves: FadeCurves,
 }
 
 /// One named position on a wheel: a gobo, a colour, a prism facet.

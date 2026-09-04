@@ -12,9 +12,10 @@
 
 	import type { Cue, Easing, Sequence } from '$lib/generated/index.js';
 	import { createCue, DEFAULT_FADE_MS } from '$lib/cues.js';
-	import { formatValue, kindLabel } from '$lib/patch.js';
+	import { CURVE_LABELS, CURVES, curveForKey } from '$lib/fade.js';
+	import { formatValue, kindLabel, parameterKey } from '$lib/patch.js';
 	import { clear, entries, storeInto } from '$lib/stores/programmer.js';
-	import { collection, showData } from '$lib/stores/show.js';
+	import { collection, show, showData } from '$lib/stores/show.js';
 	import { addToast } from '$lib/toasts.js';
 	import { focusOnMount } from '$lib/actions.js';
 
@@ -63,10 +64,10 @@
 	 * with `fade_in_ms`, so leaving every row alone gives exactly the behaviour the
 	 * console had before there was anywhere to type these.
 	 */
-	type Timing = { fade: number; delay: number; easing: Easing };
+	type Timing = { fade: number; delay: number; easing: Easing | null };
 	let timing = $state<Record<string, Timing>>({});
 	const timingFor = (id: string): Timing =>
-		timing[id] ?? { fade: 0, delay: 0, easing: 'Linear' };
+		timing[id] ?? { fade: 0, delay: 0, easing: null };
 	function setTiming(id: string, patch: Partial<Timing>) {
 		timing = { ...timing, [id]: { ...timingFor(id), ...patch } };
 	}
@@ -74,6 +75,24 @@
 	/** Cue-level timing for a new cue. An existing one keeps its own. */
 	let cueFadeIn = $state(DEFAULT_FADE_MS);
 	let cueFadeOut = $state(DEFAULT_FADE_MS);
+	/** And its curve. `null` is the show's own default, per parameter. */
+	let cueEasing = $state<Easing | null>(null);
+
+	/**
+	 * What a row that says nothing will actually fade on, so the picker can name it
+	 * rather than saying "inherited" and leaving an operator to go and look.
+	 *
+	 * The show's default for that parameter, or this menu's cue-level pick where one
+	 * has been made — which is the same three steps the station resolves, minus the
+	 * capture's own, since that is what the picker is for.
+	 */
+	const inheritedCurve = (kind: Cue['captures'][number]['parameter_kind']): Easing =>
+		cueEasing ?? ($show ? curveForKey($show.fade_curves, parameterKey(kind)) : 'Linear');
+
+	/// And whose answer it is, because otherwise the inherited option and the explicit
+	/// one read identically and an operator cannot tell which they picked.
+	const inheritedFrom = (kind: Cue['captures'][number]['parameter_kind']) =>
+		`${CURVE_LABELS[inheritedCurve(kind)]} · ${cueEasing ? "cue's" : "show's"}`;
 	// The picker's own two states, not the schema enum: a timecode follow needs a
 	// timecode source, which does not exist yet.
 	let followMode = $state<'Manual' | 'FollowAfter'>('Manual');
@@ -95,6 +114,7 @@
 					name: name.trim(),
 					fadeInMs: cueFadeIn,
 					fadeOutMs: cueFadeOut,
+					easing: cueEasing,
 					followMode:
 						followMode === 'Manual' ? 'Manual' : { FollowAfter: { delay_ms: followDelay } },
 					captures: $entries
@@ -108,6 +128,8 @@
 								// A stored effect drops its anchor: the cue's `went_at` is
 								// what it is measured from on every Go.
 								effect: entry.effect ? { ...entry.effect, t0: null } : null,
+								// `null` is not "linear": it is this capture saying nothing, so
+								// the cue answers, and the show answers for the cue.
 								easing: t.easing,
 								fade_in_ms: t.fade,
 								fade_out_ms: 0,
@@ -204,15 +226,20 @@
 								</td>
 								<td>
 									<select
-										value={timingFor(entry.id).easing}
+										value={timingFor(entry.id).easing ?? ''}
 										aria-label="Curve for {kindLabel(entry.parameter_kind)}"
-										onchange={(e) => setTiming(entry.id, { easing: e.currentTarget.value as Easing })}
+										onchange={(e) =>
+											setTiming(entry.id, {
+												easing: (e.currentTarget.value || null) as Easing | null
+											})}
 									>
-										<option value="Linear">Linear</option>
-										<option value="EaseIn">Ease in</option>
-										<option value="EaseOut">Ease out</option>
-										<option value="EaseInOut">Ease both</option>
-										<option value="Step">Snap</option>
+										<!-- Named rather than left as "inherited": an operator
+										     deciding whether to override wants to see what they
+										     would be overriding. -->
+										<option value="">{inheritedFrom(entry.parameter_kind)}</option>
+										{#each CURVES as curve (curve)}
+											<option value={curve}>{CURVE_LABELS[curve]}</option>
+										{/each}
 									</select>
 								</td>
 							</tr>
@@ -267,6 +294,18 @@
 							Fade out
 							<input class="num" type="number" min="0" step="100" bind:value={cueFadeOut} />
 							<span class="unit">ms</span>
+						</label>
+						<label class="field">
+							Curve
+							<select bind:value={cueEasing}>
+								<!-- The show's own answer, which is different per parameter —
+								     so this one says where it comes from rather than naming a
+								     curve the intensities in this cue would not take. -->
+								<option value={null}>The show's</option>
+								{#each CURVES as curve (curve)}
+									<option value={curve}>{CURVE_LABELS[curve]}</option>
+								{/each}
+							</select>
 						</label>
 						<label class="field">
 							Follow

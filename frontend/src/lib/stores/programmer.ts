@@ -34,6 +34,10 @@ import { collection, show, showData } from './show.js';
 
 export const entries: Readable<ProgrammerValue[]> = collection('programmer_values');
 
+/// Read for one question — what timing the cue being edited already had — since the
+/// programmer itself carries none.
+const cues: Readable<Cue[]> = collection('cues');
+
 /** The entries by `(fixture, parameter key)`, for a control asking about itself. */
 export const byKey: Readable<Map<string, ProgrammerValue>> = derived(entries, ($entries) => {
 	const map = new Map<string, ProgrammerValue>();
@@ -264,12 +268,18 @@ export async function beginEdit(cue: Cue, sequence: Sequence | null): Promise<vo
  *
  * Replace rather than merge: the operator has the whole cue in front of them, and a
  * parameter they removed from the buffer is one they meant the cue to stop saying.
+ *
+ * The cue's own captures go in even so, because *replace* is about which parameters
+ * the cue holds and not about their timing: the programmer carries values and never
+ * a fade time, a delay or a curve, so an Update that passed nothing here would throw
+ * away, every time, timing an operator set in a control that is not on this screen.
  */
 export async function updateEdit(): Promise<void> {
 	const cueId = get(editingCue);
 	if (!cueId) return;
 	const data = showData();
-	const captures = storeCaptures([], held, 'replace', new Set(held.map((e) => e.id)));
+	const before = get(cues).find((c) => c.id === cueId)?.captures ?? [];
+	const captures = storeCaptures(before, held, 'replace', new Set(held.map((e) => e.id)));
 	await data.cues.byId(cueId).captures.set(captures);
 	await clear({ keepLocked: true });
 	await data.show.editing_cue.set(null);

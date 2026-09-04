@@ -567,7 +567,7 @@ mod tests {
         let pool = super::super::open(&bundle.db_path()).await.unwrap();
         sqlx::query(
             "INSERT INTO show (id, name, created_at, history_depth, home_fade_ms, \
-             haze_density, haze_turbulence) VALUES (?, 'Panto', '2026-01-01T00:00:00Z', 500, 0, 0.2, 0.5)",
+             haze_density, haze_turbulence, fade_curves) VALUES (?, 'Panto', '2026-01-01T00:00:00Z', 500, 0, 0.2, 0.5, '{}')",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .execute(&pool)

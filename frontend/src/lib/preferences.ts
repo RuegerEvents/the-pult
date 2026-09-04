@@ -10,6 +10,7 @@
  * syncs, nothing here is in the oplog, and nothing here can be taken back.
  */
 
+import type { FadeCurves } from './generated/index.js';
 import { backendOrigin } from './ws/endpoint.js';
 
 export type Preferences = {
@@ -24,6 +25,8 @@ export type Preferences = {
 	/** What a newly created show starts its haze at. Both 0 to 1. */
 	hazeDensity: number;
 	hazeTurbulence: number;
+	/** And what shape its fades have, per group of parameter. */
+	fadeCurves: FadeCurves;
 	/** How often this station takes a version of its own, in minutes. `0` is off. */
 	autosaveMinutes: number;
 	/** How many of those it keeps before the oldest is dropped. */
@@ -52,7 +55,10 @@ export async function readPreferences(): Promise<Preferences | null> {
  */
 export async function writePreferences(
 	change: Partial<
-		Pick<Preferences, 'historyDepth' | 'homeFadeMs' | 'hazeDensity' | 'hazeTurbulence'>
+		Pick<
+			Preferences,
+			'historyDepth' | 'homeFadeMs' | 'hazeDensity' | 'hazeTurbulence' | 'fadeCurves'
+		>
 	>
 ): Promise<Preferences | null> {
 	try {

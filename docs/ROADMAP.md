@@ -15,7 +15,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Session discovery | Working. mDNS advertise and browse, create, join, leave. |
 | Peer sync | Works and converges. Handshake, bidirectional catch-up from the oplog, live fan-out, heartbeat liveness and latency, vector-clock conflict resolution, and leader failover. Stations publish themselves and are visible in the UI, with what each machine and each link is costing since task 49. |
 | Frontend | Working for show, session, sequences, cues, patch, the programmer, effects and speed masters. A tiled workspace of resizable panels replaced the sidebar and tabs; layouts are saved in the showfile. Panels that can change the show open read-only behind an Edit toggle and are sized for a finger. The typed proxy runs end to end. Vitest covers the pure helpers; components are untested. Since task 49 a page also reports what it is itself costing — frame rate, evaluator time, clock offset — which the System panel shows beside every station's. |
-| Playback engine | Working, and no longer a tick. Playback decides *what is driving* each parameter — fades and effects anchored on the cue's `went_at` — and publishes the descriptions; nothing stores what they are worth. A pass happens when the show changes, so a fade in progress costs the engine nothing. |
+| Playback engine | Working, and no longer a tick. Playback decides *what is driving* each parameter — fades and effects anchored on the cue's `went_at` — and publishes the descriptions; nothing stores what they are worth. A pass happens when the show changes, so a fade in progress costs the engine nothing. Since task 59 a fade has a shape as well as a length, asked for in the same three steps the times are — the capture, the cue, then the show's own default per group of parameter. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Each holds the last patch it was pushed and draws its own frames out of it at its protocol's rate, evaluating rather than being handed values. Configured from the `outputs` collection and editable while the show is up, with per-output status and per-connector frame cost in the UI. Since task 57 an output's universe list is a routing it obeys — and obeys before it evaluates — so a rig can be split across two interfaces and each carries and costs its own half. Flags only seed an empty showfile. |
 | Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. Since task 47 it draws the *drawing* too: trusses and objects out of an MVR, from their own meshes, with a Layers panel to show and hide parts of it. Every beam is still one cone at one angle; the geometry and the beam angle a GDTF import brings are stored and not yet drawn. Nothing can be moved or placed in either view yet. |
 | Rig interchange | Working. MVR in and out: fixtures with their positions, trusses and objects with their meshes, layers and classes, all keyed by the uuid the file uses so a re-import updates the rig rather than doubling it. A fixture's place is a transform with a signed scale, relative to whatever it hangs off. What an import no longer mentions is reported, never deleted. No scene editing yet. |
@@ -3922,6 +3922,105 @@ cd plugins && cargo test                     # the paths a typed accessor builds
 cargo test -p pult-backend --test plugins    # a station running the rewritten `store`
 ```
 
+### 59. A cue that eases into its mark
+
+`fade-curves`. Asked for on 2026-09-04, and the mechanism was already there:
+`ParameterCapture::easing` has carried `Step`, `Linear`, `EaseIn`, `EaseOut` and
+`EaseInOut` since task 44, both compilations of the evaluator honour it, and
+`testdata/driven-values.json` holds them to each other. What was missing was anybody
+to write one. The store menu set it per capture at store time and defaulted to
+`Linear`; the cue editor did not show it; every demo wrote `Linear` outright. So the
+console could ease a fade and no show ever did, and the Club's `Centre` and the
+Festival's `Fan` — position cues, both of them — ran linear into their marks and
+stopped dead, which reads as a fault rather than as a move.
+
+**Three steps, and they are the fade times' own three steps.** A capture's curve wins,
+then the cue's, then the show's default for that parameter. Exactly the order
+`start_capture` already resolved `fade_in_ms` in, resolved on the same line, out of one
+function — `FadeCurves::resolve` in `pult-schema` — because playback, the cue editor and
+anything asking what a cue is about to do would otherwise each decide it, and three
+readings of a rule disagree only on the cues nobody tested.
+
+**Which needed a value that means "said nothing".** `Easing` has a `Default` and it is
+`Linear`, so a capture saying `Linear` and a capture saying nothing were the same
+value, and no default above it could ever reach one. Both are `Option<Easing>` now, on
+the capture and on the cue, and the reading is the honest one: a cue stored before
+there was anything to inherit from says `Linear` outright and goes on running linear,
+because that show *did* run linear and a curve appearing in it because a default
+changed underneath would be this console rewriting somebody's cue.
+
+**The show's default is per group, not per kind and not one.** One curve for a whole
+show cannot be right — a cue that dims a lamp and moves a head wants both answers —
+and one per `ParameterKind` is a setting nobody fills in, twenty-four rows deep with
+`Gobo(2)` in it. `FadeGroup` is five: intensity, position, colour, beam, and everything
+else. The pair that earns the split is the first two, and the default says so — position
+eases in and out, everything else stays linear, so a show that never opens the panel has
+dimmers behaving exactly as they always have and heads that move like heads.
+
+`FadeGroup::of_key` takes the *key* rather than the kind, because the two callers hold
+different halves: a capture knows its `ParameterKind`, and a release letting go of a
+parameter knows only the string it is letting go of. `parameter_key` bridges them, which
+is what keeps it one implementation. It splits at the colon, so two gobo wheels are one
+group rather than `Gobo:2` falling through to `Other`.
+
+**A release takes the show's curve too**, and that is not a stretch: letting go of a
+mark is a move, nothing above it can say otherwise, and the alternative was every
+release running linear for ever with no way to ask for anything else.
+
+**The demos say nothing and get it.** `kit::capture` writes `None`, so every position
+cue in all four rigs eases without one of them naming a curve — which is the test of
+whether the default is in the right place, and a demo writing `Linear` would have been
+a demo that could never show what the setting does.
+
+The show's copy is seeded from a station preference the way `home_fade_ms` and
+`haze_density` are, and for the third time the same argument: two stations running one
+cue with the heads easing on one desk and running linear on the other is a disagreement
+the audience can watch rather than a preference. Settings shows both halves.
+
+### The traps
+
+**A picker that says "inherited" is a picker nobody uses.** The first store menu had
+the per-capture curve reading "(cue)" and the cue's reading "(show)", which is accurate
+and answers nothing: an operator deciding whether to override wants to see what they
+would be overriding. The capture's row now *names* the curve it would take — resolved
+in the browser through the same three steps — and only the cue's says whose answer it
+is, because the show answers differently per parameter and printing one of them would
+be printing the wrong one for half the cue.
+
+**Update was throwing away timing, and had been all along.** `updateEdit` passed `[]`
+as the cue's existing captures, so every Edit → Update reset each capture's fade time,
+delay and curve to nothing. Invisible while everything was `Linear` and zero; the
+moment "said nothing" stopped meaning "linear" a test that had passed for months
+failed. The programmer holds values and no timing at all, so the cue's own captures are
+the only thing that knows — they go in now, and *replace* goes on meaning which
+parameters the cue holds rather than what their timing is.
+
+**The SDK mirror cannot carry a hand-written `Default`, and `#[serde(default)]`
+outlives the derive that answers it.** `FadeCurves` rests at eased position, so it
+writes its own `Default`, so `tools/pult-codegen/src/sdk.rs` drops the derive on the way
+into `plugins/sdk` — which is documented and deliberate. What was not handled is the
+*container* attribute: `#[serde(default)]` on a struct makes its derived `Deserialize`
+require `Default`, and keeping it over a dropped derive is a generated crate that does
+not compile. `field_attrs` had this rule one level down since typed-plugin-sdk landed;
+`container_attrs` is the same rule for the type itself. The failure mode matters — a
+dropped derive is a compile error at a plugin author's desk, which is the point of it,
+while this was a mirror nobody could build anything against.
+
+**And `show` gained a required column, which refuses older showfiles by name.**
+That is the designed behaviour and not a reason to move `SCHEMA_GENERATION`: the stamp
+is for a *shape* that changed, and the additive pass plus the required-column check
+already say "this showfile predates show.fade_curves" and name it. Two hand-written
+`INSERT INTO show` statements in the test suite had to learn the column, which is the
+whole cost.
+
+```
+cargo test -p pult-schema --lib types::show     # the groups, the defaults, the three steps
+cargo test -p pult-backend --lib playback       # and what a cue actually fades on
+cargo test -p pult-backend --lib demo           # no demo pins a curve, so all four inherit
+cargo test -p pult-codegen                      # the mirror still compiles
+cd frontend && npm test fade                    # the browser's copy of the same three steps
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -4014,8 +4113,14 @@ exactly what not splitting cost.
 
 The viewer rewrite, the measurement and acting on what it found were built
 together as task 51, and showfile-management and showfile-assets-folder together
-as task 52; typed-plugin-sdk left as task 58. What they answered changes what is
-worth doing next, so the top of the list is now:
+as task 52; typed-plugin-sdk left as task 58.
+
+**fade-curves left on 2026-09-04**, as task 59, and it was never in this list at all:
+it was added the same day out of the user's own question and sat under *Programming
+model* unplaced. Worth noticing, because it belonged near the top — a mechanism the
+console has and no show can reach is a smaller job than anything below and a more
+visible one than most. It answered no question that changes the order, so the list is
+otherwise unmoved:
 
 1. **camera-home-presets** — front, plan, section, three-quarter, and
    focus-on-selection. The smallest of everything here and the one an operator
@@ -4190,33 +4295,6 @@ Token and cost accounting for the NL plugin, visible over the REST API.
   live where, kept up to date by whom?
 
 ### Programming model
-
-#### fade-curves
-
-Asked by the user on 2026-09-04: a cue's fade needs a timing curve, and most of all
-for position — a head that eases into a mark reads as a move, and one that runs
-linear and stops dead reads as a mistake.
-
-What is true today: `ParameterCapture::easing` exists with `Step`, `Linear`,
-`EaseIn`, `EaseOut` and `EaseInOut`; the evaluator honours it, so it reaches the
-lamps and the screen alike; the programmer's store menu sets it per store and
-defaults to `Linear`; the cue editor does not show it; and every demo writes
-`Linear`. So the mechanism is there and nothing puts a curve into a cue except by
-hand at store time.
-
-- **Where the default lives.** A cue-level curve that captures inherit, the way a
-  cue's fade times work — and a per-*kind* default under that, because the answer
-  for intensity (linear, which is what dimmers have always done) is not the answer
-  for pan and tilt (ease in and out). Probably `Show`-level defaults per kind, seeded
-  from a preference, the way `home_fade_ms` is.
-- **What shape.** The five named curves may be enough; if not, one number — the
-  strength of an S-curve — beats a bezier editor nobody will use during a show.
-- **Split with the split fade.** A cue already fades up and down at different times;
-  a curve per direction is the same question, and probably the same answer: one
-  curve, both ways, unless somebody asks.
-- **The cue editor** has to show it, per cue and per capture, beside the times.
-- **The demos** should use it: the Club's `Centre` and the Festival's `Fan` are
-  position cues and the first place a linear move looks wrong.
 
 #### 3d-programmer-remainder
 

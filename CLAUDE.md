@@ -832,6 +832,20 @@ show that never sets one runs exactly as it did. Only values with an order to be
 can be going down — a colour has three and a relay none, and those take the in time
 rather than have the console guess a ranking.
 
+**And it fades in a shape, asked for in the same three steps.** The capture's `easing`,
+then the cue's, then the show's `fade_curves` — `FadeCurves::resolve` in `pult-schema`,
+one implementation, because playback and the cue editor deciding it separately would
+disagree only on the cues nobody tested. Both are `Option<Easing>` so that "said
+nothing" is a different value from "said linear": `Easing::default()` is `Linear`, and
+without the option a default above could never reach a capture. A show's own answer is
+per **group** — `FadeGroup` is intensity, position, colour, beam and everything else,
+keyed off the parameter *key* so that a release, which holds only a key, asks the same
+question a capture does. Position rests at ease-in-out and the rest at linear, which is
+the whole point: a dimmer has run linear since dimmers had handles, and a head that
+runs linear into a mark and stops dead reads as a fault. **A release takes the show's
+curve too** — letting go of a mark is a move, and nothing above it can say otherwise.
+Seeded from a station preference the way `home_fade_ms` is.
+
 ## The rig is a drawing, and a place is a transform
 
 `Fixture::position` is an `Option<Transform>` — a position in metres, a rotation as

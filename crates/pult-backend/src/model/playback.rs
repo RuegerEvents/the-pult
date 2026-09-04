@@ -26,6 +26,7 @@ use pult_schema::types::{
     fixture::{home_value_by_key, Fixture, FixtureType, ParameterValue},
     programmer::ProgrammerValue,
     sequence::Sequence,
+    show::FadeCurves,
     speedmaster::SpeedMaster,
 };
 
@@ -89,6 +90,9 @@ pub struct ShowView<'a> {
     /// How long a parameter takes to reach its home value. Show data, so two stations
     /// letting go of one rig let go of it together.
     pub home_fade_ms: u32,
+    /// What shape a fade has when neither the capture nor the cue says one. Show
+    /// data for the same reason `home_fade_ms` is.
+    pub fade_curves: FadeCurves,
 }
 
 impl<'a> ShowView<'a> {
@@ -100,6 +104,7 @@ impl<'a> ShowView<'a> {
         programmer: &'a [ProgrammerValue],
         speed_masters: &'a [SpeedMaster],
         home_fade_ms: u32,
+        fade_curves: FadeCurves,
     ) -> Self {
         Self {
             sequences,
@@ -110,6 +115,7 @@ impl<'a> ShowView<'a> {
             programmer,
             speed_masters,
             home_fade_ms,
+            fade_curves,
         }
     }
 
@@ -499,6 +505,11 @@ impl Playback {
             return;
         }
 
+        // A release is a move like any other, and a head letting go of a mark deserves
+        // the shape a head takes it with — so this is the show's own default rather
+        // than the linear every release used to be. Nothing above it can say
+        // otherwise: no cue and no capture is doing this.
+        let easing = view.fade_curves.for_key(&key);
         self.fades.push(Fade {
             fixture_id,
             key,
@@ -510,7 +521,7 @@ impl Playback {
                 // show that has not asked for a home time wants: releasing has always
                 // snapped.
                 duration_ms,
-                easing: Easing::Linear,
+                easing,
                 // No cue is doing this. A node told about the movement is told about a
                 // movement, and the panel that asks "is this my cue's fade" gets no.
                 cue_id: Uuid::nil(),
@@ -658,7 +669,12 @@ impl Playback {
                     to: capture.value.clone(),
                     t0: anchor + capture.delay_in_ms as u64,
                     duration_ms,
-                    easing: capture.easing,
+                    // The same three steps the times above take, in the same order
+                    // and from the same cue: this capture's own curve, then the cue
+                    // being taken, then what the show says parameters of this sort
+                    // do. Resolved in the schema so that the cue editor showing an
+                    // operator what a cue will do reads the same answer.
+                    easing: view.fade_curves.resolve(capture.easing, cue.easing, &key),
                     cue_id: owner.id,
                 },
             };

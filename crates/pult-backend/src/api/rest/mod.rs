@@ -618,6 +618,18 @@ async fn set_preferences(Json(body): Json<serde_json::Value>) -> Result<Json<ser
     if let Some(value) = fraction("hazeTurbulence")? {
         asked.haze_turbulence = value;
     }
+    // The whole map at once, and never a group at a time: a panel sends what it has,
+    // and a partial write here would silently reset the groups it did not mention.
+    // A curve nobody can spell is a refusal rather than a default, because unlike a
+    // log level this one is a picker with five options in it — a name that is not one
+    // of them is a bug in the caller and not a typo in a file.
+    match body.get("fadeCurves") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(value) => {
+            asked.fade_curves = serde_json::from_value(value.clone())
+                .map_err(|e| bad_request(&format!("fadeCurves: {e}")))?;
+        }
+    }
 
     // The Share login. Named as a pair, so setting one without the other is a
     // half-credential nothing can use; `null` clears it, which is how somebody logs
@@ -664,6 +676,7 @@ fn as_json(prefs: &infra::preferences::Preferences) -> serde_json::Value {
         "homeFadeMsMax": pult_schema::types::show::HOME_FADE_MS_MAX,
         "hazeDensity": prefs.haze_density,
         "hazeTurbulence": prefs.haze_turbulence,
+        "fadeCurves": prefs.fade_curves,
         // What this station saves for itself, so the Show panel can say so rather
         // than leaving an operator to wonder whether anything is happening.
         "autosaveMinutes": prefs.autosave_minutes,

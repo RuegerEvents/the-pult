@@ -229,6 +229,7 @@ describe('loading a cue back into the programmer', () => {
 		follow_mode: 'Manual',
 		fade_in_ms: 500,
 		fade_out_ms: 500,
+		easing: null,
 		is_active: false
 	};
 
@@ -241,8 +242,32 @@ describe('loading a cue back into the programmer', () => {
 
 	it('round-trips back into the same captures', () => {
 		const entries = entriesFromCue(cue);
-		const stored = storeCaptures([], entries, 'replace', new Set(entries.map((e) => e.id)));
+		// The cue's own captures go in, which is what `updateEdit` passes: the
+		// programmer holds values and no timing at all, so they are the only thing
+		// that knows what this capture's fade, delay and curve were.
+		const stored = storeCaptures(cue.captures, entries, 'replace', new Set(entries.map((e) => e.id)));
 		expect(stored).toEqual(cue.captures);
+	});
+
+	it('keeps timing an operator set, through a store that replaces the value', () => {
+		const timed: Cue = {
+			...cue,
+			captures: [{ ...cue.captures[0], fade_in_ms: 4_000, delay_in_ms: 250, easing: 'EaseOut' }]
+		};
+		const entries = entriesFromCue(timed);
+		const [stored] = storeCaptures(timed.captures, entries, 'replace', new Set(entries.map((e) => e.id)));
+		expect(stored.fade_in_ms).toBe(4_000);
+		expect(stored.delay_in_ms).toBe(250);
+		expect(stored.easing).toBe('EaseOut');
+	});
+
+	it('gives a parameter the cue never held no timing of its own', () => {
+		// Which the station reads as "the cue's", and the cue as "the show's". A zero
+		// here is not a snap and a null is not linear.
+		const entries = entriesFromCue(cue);
+		const [stored] = storeCaptures([], entries, 'replace', new Set(entries.map((e) => e.id)));
+		expect(stored.fade_in_ms).toBe(0);
+		expect(stored.easing).toBeNull();
 	});
 });
 
@@ -336,6 +361,7 @@ describe('an effect through store and back', () => {
 			follow_mode: 'Manual',
 			fade_in_ms: 0,
 			fade_out_ms: 0,
+			easing: null,
 			is_active: false
 		});
 
@@ -356,6 +382,7 @@ describe('an effect through store and back', () => {
 			follow_mode: 'Manual',
 			fade_in_ms: 0,
 			fade_out_ms: 0,
+			easing: null,
 			is_active: false
 		})[0].effect).toBeNull();
 	});

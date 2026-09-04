@@ -182,8 +182,11 @@ const captureKey = (capture: { fixture_id: string; parameter_kind: ParameterKind
  * *Replace* makes the cue exactly what is in the programmer, which is what an
  * operator means when a cue has drifted and they want it to say this and nothing else.
  *
- * Times are left at zero, which the playback engine reads as "use the cue's". A
- * capture with its own time is a deliberate thing, and storing should not invent one.
+ * Timing is **kept, not rewritten**. A capture the cue already had keeps its own fade
+ * time, delay and curve; a parameter arriving for the first time gets none, which the
+ * playback engine reads as "use the cue's". The programmer holds values and never
+ * timing, so a store that wrote zeroes would throw away, on every Update, timing an
+ * operator set in a control that was never on the screen they were looking at.
  */
 export function storeCaptures(
 	existing: ParameterCapture[],
@@ -191,21 +194,28 @@ export function storeCaptures(
 	mode: 'merge' | 'replace',
 	include: Set<string>
 ): ParameterCapture[] {
+	const before = new Map(existing.map((capture) => [captureKey(capture), capture]));
 	const stored: ParameterCapture[] = entries
 		.filter((entry) => include.has(entry.id))
-		.map((entry) => ({
-			fixture_id: entry.fixture_id,
-			parameter_kind: entry.parameter_kind,
-			value: entry.value,
-			fade_in_ms: 0,
-			fade_out_ms: 0,
-			delay_in_ms: 0,
-			// A stored effect drops its anchor: the cue's `went_at` is what it is
-			// measured from on every Go, so that two consoles replaying the cue
-			// start the same cycle rather than each remembering its own.
-			effect: entry.effect ? { ...entry.effect, t0: null } : null,
-			easing: 'Linear' as const
-		}));
+		.map((entry) => {
+			const kept = before.get(captureKey(entry));
+			return {
+				fixture_id: entry.fixture_id,
+				parameter_kind: entry.parameter_kind,
+				value: entry.value,
+				fade_in_ms: kept?.fade_in_ms ?? 0,
+				fade_out_ms: kept?.fade_out_ms ?? 0,
+				delay_in_ms: kept?.delay_in_ms ?? 0,
+				// A stored effect drops its anchor: the cue's `went_at` is what it is
+				// measured from on every Go, so that two consoles replaying the cue
+				// start the same cycle rather than each remembering its own.
+				effect: entry.effect ? { ...entry.effect, t0: null } : null,
+				// `null` for a parameter this cue has not held before: nothing said, so
+				// the cue answers and the show answers for the cue. Writing `Linear`
+				// would pin it against a show that says otherwise.
+				easing: kept?.easing ?? null
+			};
+		});
 
 	if (mode === 'replace') return stored;
 

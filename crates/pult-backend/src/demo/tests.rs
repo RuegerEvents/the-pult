@@ -196,6 +196,27 @@ async fn festival_seeds_a_rig_that_hangs_together() {
 }
 
 #[tokio::test]
+async fn the_demos_name_no_curve_and_so_their_heads_ease_into_their_marks() {
+    // The test of whether the show's default is in the right place. Every demo's
+    // position cues run on the shape the *show* says, so a desk that turns the
+    // setting off sees all four rigs change — which a demo that wrote `Linear` into
+    // its captures could never show.
+    for demo in [Demo::Haunt, Demo::Theatre, Demo::Club, Demo::Festival] {
+        let engine = a_station().await;
+        seed(&engine, demo).await.unwrap();
+        let cues: Vec<Cue> = read(&engine, "cues").await;
+        let named: Vec<_> = cues
+            .iter()
+            .flat_map(|cue| cue.captures.iter().map(move |c| (cue, c)))
+            .filter(|(_, c)| c.easing.is_some())
+            .map(|(cue, c)| format!("{} {:?}", cue.name, c.parameter_kind))
+            .collect();
+        assert!(named.is_empty(), "{} pins a curve: {named:?}", demo.id());
+        assert!(cues.iter().all(|cue| cue.easing.is_none()), "{}: nor does a cue", demo.id());
+    }
+}
+
+#[tokio::test]
 async fn a_show_that_already_has_a_rig_is_left_alone() {
     // `--demo` survives a restart, so this is the difference between a console that
     // opens the demo it was told to and one that patches a second rig on top of

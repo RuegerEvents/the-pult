@@ -204,6 +204,21 @@ impl CueEntity {
         self.at.field("fade_out_ms")
     }
 
+    /// What shape this cue's captures fade on, unless one of them says its own.
+    /// `None` is the show's default for each parameter's group, which is what every
+    /// cue nobody has opened this control on means.
+    ///
+    /// One curve rather than one per direction, where the times are one each. A
+    /// split *time* is what a designer asks for constantly — a look that builds
+    /// slowly and snaps away — and a curve that eased on the way up and ran linear
+    /// on the way down is a distinction nobody has asked for, so it stays one until
+    /// somebody does.
+    ///
+    /// PERSISTED.
+    pub fn easing(&self) -> Field<Option<Easing>> {
+        self.at.field("easing")
+    }
+
     /// True when this cue is currently being executed (output is active).
     ///
     /// SYNCED.
@@ -2936,6 +2951,19 @@ impl ShowSingleton {
     /// PERSISTED.
     pub fn haze_turbulence(&self) -> Field<f32> {
         self.at.field("haze_turbulence")
+    }
+
+    /// What shape a fade has when neither the capture nor the cue says one.
+    ///
+    /// Show data for the reason `home_fade_ms` is, and the reason is the same one
+    /// again: two stations running one cue with the heads easing on one desk and
+    /// running linear on the other is not a preference but a disagreement the
+    /// audience can watch. A station's own preference decides what a *new* show
+    /// starts with.
+    ///
+    /// PERSISTED.
+    pub fn fade_curves(&self) -> Field<FadeCurves> {
+        self.at.field("fade_curves")
     }
 }
 

@@ -4,6 +4,7 @@
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Sequence, Cue } from '$lib/generated/index.js';
 	import { createCue, orderedCues, reorderCueIds } from '$lib/cues.js';
+	import { CURVE_LABELS, CURVES } from '$lib/fade.js';
 	import { beginEdit, editingCue } from '$lib/stores/programmer.js';
 	import { editing } from '$lib/stores/editing.js';
 	import { collection } from '$lib/stores/show.js';
@@ -56,6 +57,10 @@
 		const entity = data.cues.byId(cueId);
 		if (patch.fade_in_ms !== undefined) await entity.fade_in_ms.set(patch.fade_in_ms);
 		if (patch.fade_out_ms !== undefined) await entity.fade_out_ms.set(patch.fade_out_ms);
+		// `null` is a real value here and not "unset": it is the cue saying nothing, so
+		// the show's own default answers for each parameter. So this is checked against
+		// `undefined` rather than for truthiness.
+		if (patch.easing !== undefined) await entity.easing.set(patch.easing);
 		if (patch.follow_mode !== undefined) await entity.follow_mode.set(patch.follow_mode);
 	}
 
@@ -398,6 +403,26 @@
 												value={cue.fade_out_ms}
 												onchange={(e) => setCueTiming(cueId, { fade_out_ms: Number(e.currentTarget.value) })}
 											/>
+										</label>
+										<label>
+											curve
+											<select
+												value={cue.easing ?? ''}
+												title="What shape this cue's fades have, unless a capture says its own"
+												onchange={(e) =>
+													setCueTiming(cueId, {
+														easing: (e.currentTarget.value || null) as Cue['easing']
+													})}
+											>
+												<!-- What the show would answer, named rather than left
+												     as "inherited" — except that the show answers
+												     differently per parameter, so this says whose answer
+												     it is instead of picking one of them to print. -->
+												<option value="">show's</option>
+												{#each CURVES as curve (curve)}
+													<option value={curve}>{CURVE_LABELS[curve]}</option>
+												{/each}
+											</select>
 										</label>
 										<label>
 											follow

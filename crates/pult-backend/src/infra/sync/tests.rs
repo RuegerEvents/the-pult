@@ -1299,7 +1299,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
         fade_out_ms: 0,
         delay_in_ms: 0,
         effect: None,
-        easing: Easing::EaseInOut,
+        easing: Some(Easing::EaseInOut),
     };
     let cue = Cue {
         id: Uuid::new_v4(),
@@ -1318,6 +1318,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
         follow_mode: FollowMode::Manual,
         fade_in_ms: 30_000,
         fade_out_ms: 0,
+        easing: None,
         is_active: false,
     };
     put(&one, "cues", serde_json::to_value(&cue).unwrap()).await;

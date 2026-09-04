@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use pult_schema::types::show::{
-    clamp_haze, clamp_history_depth, clamp_home_fade_ms, HAZE_DENSITY_DEFAULT,
+    clamp_haze, clamp_history_depth, clamp_home_fade_ms, FadeCurves, HAZE_DENSITY_DEFAULT,
     HAZE_TURBULENCE_DEFAULT, HISTORY_DEPTH_DEFAULT,
 };
 
@@ -85,6 +85,13 @@ pub struct Preferences {
     /// the default, which is the whole argument for it being a preference at all.
     pub haze_density: f32,
     pub haze_turbulence: f32,
+    /// What a newly created show starts its fade curves at, per parameter group.
+    ///
+    /// The same shape again, and the same argument: what shape a fade has is show
+    /// data, because two stations running one cue with different curves is a
+    /// disagreement rather than a preference. A house that has always run linear
+    /// sets it here once and every show it makes starts that way.
+    pub fade_curves: FadeCurves,
     /// What this station keeps in its own log: the panel, the ring and the file.
     ///
     /// A station preference and never show data, like `oplog_retention_minutes`
@@ -191,6 +198,7 @@ impl Default for Preferences {
             home_fade_ms: 0,
             haze_density: HAZE_DENSITY_DEFAULT,
             haze_turbulence: HAZE_TURBULENCE_DEFAULT,
+            fade_curves: FadeCurves::default(),
             oplog_retention_minutes: OPLOG_RETENTION_MINUTES_DEFAULT,
             log_level: default_log_level(),
             peer_log_level: default_peer_log_level(),

@@ -20,7 +20,6 @@ use anyhow::Result;
 use pult_schema::types::{
     catalogue,
     cue::{Cue, FollowMode, ParameterCapture},
-    effect::Easing,
     fixture::{
         Fixture, FixtureAddress, FixtureType, ParameterDefinition, ParameterKind, ParameterValue,
         Vec3,
@@ -324,7 +323,11 @@ pub fn capture(fixture: Uuid, kind: ParameterKind, value: ParameterValue) -> Par
         fade_out_ms: 0,
         delay_in_ms: 0,
         effect: None,
-        easing: Easing::Linear,
+        // Nothing said, so the cue's — and through it the show's, which is what puts
+        // an ease on every position cue in every demo without one of them naming a
+        // curve. A demo writing `Linear` here would be a demo that could never show
+        // what the setting does.
+        easing: None,
     }
 }
 
@@ -345,6 +348,7 @@ pub fn a_cue(name: &str, number: f64, captures: Vec<ParameterCapture>) -> Cue {
         follow_mode: FollowMode::Manual,
         fade_in_ms: 2_000,
         fade_out_ms: 0,
+        easing: None,
         is_active: false,
     }
 }

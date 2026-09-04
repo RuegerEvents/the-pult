@@ -40,7 +40,22 @@ fn view<'a>(
     programmer: &'a [ProgrammerValue],
     masters: &'a [pult_schema::types::speedmaster::SpeedMaster],
 ) -> ShowView<'a> {
-    ShowView::new(sequences, cues, fixtures, the_type(), programmer, masters, 0)
+    ShowView::new(sequences, cues, fixtures, the_type(), programmer, masters, 0, curves())
+}
+
+/// Linear everywhere, which is *not* what a new show has.
+///
+/// Deliberately: almost every test here asserts where a fade had got to at a given
+/// moment, and those are assertions about the arithmetic rather than about the
+/// default. The tests that are about the default say so by building their own.
+fn curves() -> FadeCurves {
+    FadeCurves {
+        intensity: Easing::Linear,
+        position: Easing::Linear,
+        color: Easing::Linear,
+        beam: Easing::Linear,
+        other: Easing::Linear,
+    }
 }
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -117,6 +132,7 @@ fn a_cue(fade_in_ms: u32, captures: Vec<ParameterCapture>) -> Cue {
         follow_mode: FollowMode::Manual,
         fade_in_ms,
         fade_out_ms: 0,
+        easing: None,
         is_active: false,
     }
 }
@@ -130,7 +146,7 @@ fn intensity(fixture_id: Uuid, value: f32) -> ParameterCapture {
         fade_out_ms: 0,
         delay_in_ms: 0,
         effect: None,
-        easing: Easing::Linear,
+        easing: Some(Easing::Linear),
     }
 }
 
@@ -656,7 +672,7 @@ fn a_parameter_with_no_order_takes_the_in_time() {
         fade_out_ms: 0,
         delay_in_ms: 0,
         effect: None,
-        easing: Easing::Linear,
+        easing: Some(Easing::Linear),
     };
     let mut cue = a_cue(1000, vec![capture]);
     cue.fade_out_ms = 8000;
@@ -692,7 +708,7 @@ fn colour_fades_channel_by_channel() {
         fade_out_ms: 0,
         delay_in_ms: 0,
         effect: None,
-        easing: Easing::Linear,
+        easing: Some(Easing::Linear),
     };
     let cue = a_cue(0, vec![capture]);
     let mut fixtures = vec![fixture.clone()];
@@ -726,7 +742,7 @@ fn a_boolean_switches_at_the_top_of_the_fade_not_the_end() {
         fade_out_ms: 0,
         delay_in_ms: 0,
         effect: None,
-        easing: Easing::Linear,
+        easing: Some(Easing::Linear),
     };
     let cue = a_cue(0, vec![capture]);
     let mut fixtures = vec![fixture.clone()];
@@ -1025,7 +1041,7 @@ fn a_first_fade_starts_from_where_the_parameter_rests() {
             fade_in_ms: 0,
             fade_out_ms: 0,
             delay_in_ms: 0,
-            easing: Easing::Linear,
+            easing: Some(Easing::Linear),
             effect: None,
         }],
     );
@@ -1160,7 +1176,7 @@ fn the_programmer_leaves_parameters_it_does_not_hold_alone() {
                 fade_out_ms: 0,
                 delay_in_ms: 0,
                 effect: None,
-                easing: Easing::Linear,
+                easing: Some(Easing::Linear),
             },
         ],
     );
@@ -1542,7 +1558,7 @@ fn editing_the_master_re_resolves_every_effect_on_it() {
 fn a_fade_is_described_from_the_cues_anchor_and_stays_after_it_lands() {
     let fixture = a_fixture();
     let capture =
-        ParameterCapture { delay_in_ms: 500, easing: Easing::EaseInOut, ..intensity(fixture.id, 1.0) };
+        ParameterCapture { delay_in_ms: 500, easing: Some(Easing::EaseInOut), ..intensity(fixture.id, 1.0) };
     let cue = a_cue(3_000, vec![capture]);
     let mut sequence = a_sequence(&[&cue], Some(0));
     sequence.went_at = Some(10_000);
@@ -1721,7 +1737,7 @@ fn view_fading_home<'a>(
     programmer: &'a [ProgrammerValue],
     home_fade_ms: u32,
 ) -> ShowView<'a> {
-    ShowView::new(sequences, cues, fixtures, the_type(), programmer, &[], home_fade_ms)
+    ShowView::new(sequences, cues, fixtures, the_type(), programmer, &[], home_fade_ms, curves())
 }
 
 #[test]
@@ -1963,6 +1979,155 @@ fn two_stations_release_to_the_same_rig() {
     );
 }
 
+// ── What shape a fade has ────────────────────────────────────────────────────
+
+/// The curve a parameter is actually fading on, after a pass.
+fn curve_of(fixtures: &[Fixture], fixture_id: Uuid, key: &str) -> Easing {
+    fixtures
+        .iter()
+        .find(|f| f.id == fixture_id)
+        .and_then(|f| f.live_fades.get(key))
+        .unwrap_or_else(|| panic!("nothing is fading {key}"))
+        .easing
+}
+
+/// A cue with a curve on it and a position capture that names none.
+fn a_position_cue(fixture_id: Uuid, cue_curve: Option<Easing>, capture_curve: Option<Easing>) -> Cue {
+    let capture = ParameterCapture {
+        fixture_id,
+        parameter_kind: ParameterKind::Pan,
+        value: ParameterValue::Float(1.0),
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        delay_in_ms: 0,
+        effect: None,
+        easing: capture_curve,
+    };
+    Cue { easing: cue_curve, ..a_cue(4_000, vec![capture]) }
+}
+
+/// The view the three tests below run under, so that each of the three answers is a
+/// different named curve and no two of them could be confused.
+fn view_with_curves<'a>(
+    sequences: &'a [Sequence],
+    cues: &'a [Cue],
+    fixtures: &'a [Fixture],
+) -> ShowView<'a> {
+    ShowView::new(
+        sequences,
+        cues,
+        fixtures,
+        the_type(),
+        &[],
+        &[],
+        0,
+        FadeCurves { position: Easing::EaseOut, ..curves() },
+    )
+}
+
+#[test]
+fn a_capture_with_no_curve_of_its_own_takes_the_cues() {
+    let fixture = a_fixture();
+    let cue = a_position_cue(fixture.id, Some(Easing::EaseIn), None);
+    let sequences = [a_sequence(&[&cue], Some(0))];
+    let cues = [cue];
+    let mut fixtures = vec![fixture.clone()];
+
+    let effects = {
+        let view = view_with_curves(&sequences, &cues, &fixtures);
+        Playback::default().pass(WALL, &view)
+    };
+    apply(&mut fixtures, &effects);
+
+    assert_eq!(curve_of(&fixtures, fixture.id, "Pan"), Easing::EaseIn);
+}
+
+#[test]
+fn a_cue_with_no_curve_of_its_own_takes_the_shows_for_that_group() {
+    let fixture = a_fixture();
+    // Nothing between the parameter and the show, which is what every cue nobody has
+    // opened this control on looks like.
+    let cue = a_position_cue(fixture.id, None, None);
+    let sequences = [a_sequence(&[&cue], Some(0))];
+    let cues = [cue];
+    let mut fixtures = vec![fixture.clone()];
+
+    let effects = {
+        let view = view_with_curves(&sequences, &cues, &fixtures);
+        Playback::default().pass(WALL, &view)
+    };
+    apply(&mut fixtures, &effects);
+
+    assert_eq!(
+        curve_of(&fixtures, fixture.id, "Pan"),
+        Easing::EaseOut,
+        "the show's answer for position, and not its answer for everything",
+    );
+}
+
+#[test]
+fn a_captures_own_curve_beats_both() {
+    let fixture = a_fixture();
+    let cue = a_position_cue(fixture.id, Some(Easing::EaseIn), Some(Easing::Step));
+    let sequences = [a_sequence(&[&cue], Some(0))];
+    let cues = [cue];
+    let mut fixtures = vec![fixture.clone()];
+
+    let effects = {
+        let view = view_with_curves(&sequences, &cues, &fixtures);
+        Playback::default().pass(WALL, &view)
+    };
+    apply(&mut fixtures, &effects);
+
+    assert_eq!(curve_of(&fixtures, fixture.id, "Pan"), Easing::Step);
+}
+
+#[test]
+fn going_home_takes_the_shows_curve_too() {
+    // A release is a move, and a head letting go of a mark moves the way the show
+    // says heads move. Nothing above it can say otherwise: no cue is doing it, so
+    // the curve the cue ran on does not follow the parameter home.
+    let fixture = a_fixture();
+    let cue = a_position_cue(fixture.id, Some(Easing::EaseIn), Some(Easing::Step));
+    let mut sequences = [a_sequence(&[&cue], Some(0))];
+    let cues = [cue];
+    let mut fixtures = vec![fixture.clone()];
+
+    let mut playback = Playback::default();
+    let mut run = |playback: &mut Playback, at: u64, fixtures: &mut Vec<Fixture>, sequences: &[Sequence]| {
+        let effects = {
+            let view = ShowView::new(
+                sequences,
+                &cues,
+                fixtures,
+                the_type(),
+                &[],
+                &[],
+                // A home time, or the release lands at once and has no shape to have.
+                2_000,
+                FadeCurves { position: Easing::EaseOut, ..curves() },
+            );
+            playback.pass(at, &view)
+        };
+        apply(fixtures, &effects);
+    };
+
+    run(&mut playback, WALL, &mut fixtures, &sequences);
+    // Long enough that the pan has arrived, so letting go has somewhere to travel
+    // from: a release that is already home writes no fade at all.
+    run(&mut playback, WALL + 5_000, &mut fixtures, &sequences);
+    assert_eq!(curve_of(&fixtures, fixture.id, "Pan"), Easing::Step, "the cue's, while it runs");
+
+    sequences[0].active_cue_index = None;
+    run(&mut playback, WALL + 5_000, &mut fixtures, &sequences);
+
+    assert_eq!(
+        curve_of(&fixtures, fixture.id, "Pan"),
+        Easing::EaseOut,
+        "the cue's curve went with the cue",
+    );
+}
+
 // ── The numbers did not move ─────────────────────────────────────────────────
 
 /// The non-goal of the whole change, written as a test: the same fade produces the
@@ -1975,7 +2140,7 @@ fn two_stations_release_to_the_same_rig() {
 #[test]
 fn a_cue_fade_gives_the_numbers_it_always_gave() {
     let fixture = a_fixture();
-    let capture = ParameterCapture { easing: Easing::EaseInOut, ..intensity(fixture.id, 1.0) };
+    let capture = ParameterCapture { easing: Some(Easing::EaseInOut), ..intensity(fixture.id, 1.0) };
     let cue = a_cue(4_000, vec![capture]);
     let sequences = [a_sequence(&[&cue], Some(0))];
     let cues = [cue];

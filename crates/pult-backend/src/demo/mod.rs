@@ -205,6 +205,7 @@ impl Seeder {
                 home_fade_ms: prefs.home_fade_ms,
                 haze_density: prefs.haze_density,
                 haze_turbulence: prefs.haze_turbulence,
+                fade_curves: prefs.fade_curves,
             })?,
             Lifecycle::Persisted,
         )

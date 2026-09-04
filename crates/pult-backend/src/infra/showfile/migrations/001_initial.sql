@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS cues (
     captures TEXT NOT NULL,
     follow_mode TEXT NOT NULL,
     fade_in_ms INTEGER NOT NULL,
-    fade_out_ms INTEGER NOT NULL
+    fade_out_ms INTEGER NOT NULL,
+    easing TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fixtures (
@@ -151,7 +152,8 @@ CREATE TABLE IF NOT EXISTS show (
     history_depth INTEGER NOT NULL,
     home_fade_ms INTEGER NOT NULL,
     haze_density REAL NOT NULL,
-    haze_turbulence REAL NOT NULL
+    haze_turbulence REAL NOT NULL,
+    fade_curves TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS speed_masters (

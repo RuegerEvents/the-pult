@@ -39,10 +39,17 @@ pub struct ParameterCapture {
     /// `effect` key, and `captures` is one JSON column with nothing to alter.
     #[serde(default)]
     pub effect: Option<EffectSpec>,
-    /// The shape of this capture's own fade. Defaults to `Linear`, which is what
-    /// every fade did before there was a choice.
+    /// The shape of this capture's own fade. `None` means the cue's, which means the
+    /// show's default for this parameter's group — the same three steps the fade
+    /// *times* take, and resolved in one place,
+    /// [`crate::types::show::FadeCurves::resolve`].
+    ///
+    /// A capture stored before there was anything above it to inherit from says
+    /// `Linear` outright and keeps saying it, which is the honest reading: that show
+    /// ran linear, and a curve appearing in it because a default changed underneath
+    /// would be this console rewriting somebody's cue.
     #[serde(default)]
-    pub easing: Easing,
+    pub easing: Option<Easing>,
 }
 
 /// A single lighting state snapshot with timing information.
@@ -68,6 +75,18 @@ pub struct Cue {
     /// fade, and everything takes the in time in both directions.
     #[pult(lifecycle = PERSISTED)]
     pub fade_out_ms: u32,
+    /// What shape this cue's captures fade on, unless one of them says its own.
+    /// `None` is the show's default for each parameter's group, which is what every
+    /// cue nobody has opened this control on means.
+    ///
+    /// One curve rather than one per direction, where the times are one each. A
+    /// split *time* is what a designer asks for constantly — a look that builds
+    /// slowly and snaps away — and a curve that eased on the way up and ran linear
+    /// on the way down is a distinction nobody has asked for, so it stays one until
+    /// somebody does.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub easing: Option<Easing>,
     /// True when this cue is currently being executed (output is active).
     #[pult(lifecycle = SYNCED)]
     pub is_active: bool,
@@ -100,7 +119,7 @@ mod tests {
                 // A stored capture never carries an anchor: the cue's `went_at` is it.
                 t0: None,
             }),
-            easing: Easing::EaseInOut,
+            easing: Some(Easing::EaseInOut),
         };
 
         let back: ParameterCapture =
@@ -110,6 +129,35 @@ mod tests {
         assert_eq!(effect.rate, Rate::Hz(0.5));
         assert_eq!(effect.phase, 0.25);
         assert_eq!(effect.t0, None);
-        assert_eq!(back.easing, Easing::EaseInOut);
+        assert_eq!(back.easing, Some(Easing::EaseInOut));
+    }
+
+    #[test]
+    fn a_capture_that_names_no_curve_inherits_and_one_that_names_linear_keeps_it() {
+        // The two shapes a stored capture can have. A cue written before there was
+        // anything to inherit from carries `"easing": "Linear"` and goes on running
+        // linear; one written since may carry no key at all, and takes the cue's.
+        let older: ParameterCapture = serde_json::from_value(serde_json::json!({
+            "fixture_id": Uuid::nil(),
+            "parameter_kind": "Pan",
+            "value": serde_json::to_value(ParameterValue::Float(0.5)).unwrap(),
+            "fade_in_ms": 0,
+            "fade_out_ms": 0,
+            "delay_in_ms": 0,
+            "easing": "Linear",
+        }))
+        .unwrap();
+        assert_eq!(older.easing, Some(Easing::Linear), "said so, and still says so");
+
+        let inheriting: ParameterCapture = serde_json::from_value(serde_json::json!({
+            "fixture_id": Uuid::nil(),
+            "parameter_kind": "Pan",
+            "value": serde_json::to_value(ParameterValue::Float(0.5)).unwrap(),
+            "fade_in_ms": 0,
+            "fade_out_ms": 0,
+            "delay_in_ms": 0,
+        }))
+        .unwrap();
+        assert_eq!(inheriting.easing, None, "nothing said: the cue's, then the show's");
     }
 }

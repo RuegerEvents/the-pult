@@ -15,7 +15,8 @@
 
 	import { onMount } from 'svelte';
 
-	import type { Show } from '$lib/generated/index.js';
+	import type { Easing, FadeCurves, Show } from '$lib/generated/index.js';
+	import { CURVE_LABELS, CURVES } from '$lib/fade.js';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { readPreferences, writePreferences, type Preferences } from '$lib/preferences.js';
 	import { editing } from '$lib/stores/editing.js';
@@ -66,6 +67,42 @@
 		trouble = null;
 		await data.show[field].set(clampedHaze(value));
 	}
+
+	/**
+	 * One group's default curve, in the show or on this console.
+	 *
+	 * The whole map is written rather than the one field, because `fade_curves` is a
+	 * single JSON column: a path write per group would be five rows in the history
+	 * for one decision.
+	 */
+	async function setShowCurve(group: keyof FadeCurves, curve: Easing) {
+		if (!show) return;
+		trouble = null;
+		await data.show.fade_curves.set({ ...show.fade_curves, [group]: curve });
+	}
+
+	async function setConsoleCurve(group: keyof FadeCurves, curve: Easing) {
+		if (!prefs) return;
+		trouble = null;
+		const stored = await writePreferences({
+			fadeCurves: { ...prefs.fadeCurves, [group]: curve }
+		});
+		if (!stored) {
+			trouble = 'This console could not write its settings down.';
+			return;
+		}
+		prefs = stored;
+	}
+
+	/// In the order the panel lists them, which is the order an operator thinks about
+	/// them in: what a fade *is* first, then where it points, then how it looks.
+	const GROUPS: { key: keyof FadeCurves; label: string }[] = [
+		{ key: 'intensity', label: 'Intensity' },
+		{ key: 'position', label: 'Position' },
+		{ key: 'color', label: 'Colour' },
+		{ key: 'beam', label: 'Beam' },
+		{ key: 'other', label: 'Everything else' }
+	];
 
 	async function setConsoleHaze(
 		field: 'hazeDensity' | 'hazeTurbulence',
@@ -200,6 +237,37 @@
 				{/if}
 				<span class="unit">turbulence</span>
 			</div>
+			<div class="row curves">
+				<span class="label">Fades take</span>
+				<div class="curve-grid">
+					{#each GROUPS as group (group.key)}
+						<label class="curve">
+							<span>{group.label}</span>
+							{#if $unlocked}
+								<select
+									class="input"
+									value={show.fade_curves[group.key]}
+									onchange={(e) => setShowCurve(group.key, e.currentTarget.value as Easing)}
+								>
+									{#each CURVES as curve (curve)}
+										<option value={curve}>{CURVE_LABELS[curve]}</option>
+									{/each}
+								</select>
+							{:else}
+								<span class="value">{CURVE_LABELS[show.fade_curves[group.key]]}</span>
+							{/if}
+						</label>
+					{/each}
+				</div>
+			</div>
+			<p class="note">
+				What shape a fade has when neither the cue nor the capture says one. A dimmer has
+				run linear since dimmers had handles; a head that runs linear into a mark and stops
+				dead reads as a fault rather than as a move, which is why position starts eased and
+				nothing else does. Show data, because two stations running one cue with different
+				curves is a disagreement the audience can watch rather than a preference.
+			</p>
+
 			<p class="note">
 				How much haze is in the room — at 0 the air is clear and no beam shows, at 1
 				every beam does — and how fast it drifts. Show data
@@ -259,6 +327,29 @@
 				{/if}
 				<span class="unit">seconds</span>
 			</div>
+			<div class="row curves">
+				<span class="label">New shows fade</span>
+				<div class="curve-grid">
+					{#each GROUPS as group (group.key)}
+						<label class="curve">
+							<span>{group.label}</span>
+							{#if $unlocked}
+								<select
+									class="input"
+									value={prefs.fadeCurves[group.key]}
+									onchange={(e) => setConsoleCurve(group.key, e.currentTarget.value as Easing)}
+								>
+									{#each CURVES as curve (curve)}
+										<option value={curve}>{CURVE_LABELS[curve]}</option>
+									{/each}
+								</select>
+							{:else}
+								<span class="value">{CURVE_LABELS[prefs.fadeCurves[group.key]]}</span>
+							{/if}
+						</label>
+					{/each}
+				</div>
+			</div>
 		{/if}
 	</section>
 
@@ -311,6 +402,43 @@
 
 	.input {
 		width: 9ch;
+	}
+
+	/* Five pickers rather than one control, so the row stops being a row: the label
+	   goes to the top of it and the groups wrap on a tablet rather than scrolling. */
+	.curves {
+		align-items: flex-start;
+		flex-wrap: wrap;
+	}
+
+	.curves .label {
+		color: var(--text);
+		font-size: var(--font-sm);
+		min-width: 12ch;
+		padding-top: 4px;
+	}
+
+	.curve-grid {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px 14px;
+	}
+
+	.curve {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.curve > span:first-child {
+		color: var(--text-dim);
+		font-size: var(--font-xs);
+		min-width: 9ch;
+	}
+
+	.curve .input {
+		width: 11ch;
 	}
 
 	.value {
