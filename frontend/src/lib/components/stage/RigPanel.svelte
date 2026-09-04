@@ -11,7 +11,7 @@
 	import { collection, show as showStore } from '$lib/stores/show.js';
 	import { selection } from '$lib/stores/selection.js';
 	import { shownPlanId } from '$lib/stores/stage.js';
-	import { RESOLUTIONS, setView, view } from '$lib/stores/view.js';
+	import { RENDER_MODES, RESOLUTIONS, setView, view } from '$lib/stores/view.js';
 	import Rig3D from './Rig3D.svelte';
 	import MvrButtons from './MvrButtons.svelte';
 
@@ -89,6 +89,20 @@
 
 	{#if viewing}
 		<div class="sheet">
+			<div class="field modes" role="radiogroup" aria-label="How the rig is drawn">
+				{#each RENDER_MODES as mode (mode.value)}
+					<button
+						class="mode"
+						class:on={$view.mode === mode.value}
+						role="radio"
+						aria-checked={$view.mode === mode.value}
+						title={mode.blurb}
+						onclick={() => setView({ mode: mode.value })}
+					>
+						{mode.label}
+					</button>
+				{/each}
+			</div>
 			<label class="field">
 				<span>Work light</span>
 				<input
@@ -113,9 +127,10 @@
 				</select>
 			</label>
 			<p class="note">
-				This screen's only. How bright the room is drawn with nothing on — 0% is a
-				blackout, 100% is the house lights up — and how many pixels the view renders.
-				Neither reaches a lamp or the show. The haze is the show's, in Settings.
+				This screen's only. {RENDER_MODES.find((m) => m.value === $view.mode)?.blurb} The
+				work light is how bright the room is drawn with nothing on — 0% is a blackout,
+				100% is the house lights up. None of it reaches a lamp or the show; the haze is
+				the show's, in Settings.
 			</p>
 		</div>
 	{/if}
@@ -156,6 +171,12 @@
 	.sheet { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex: none; background: #151515; }
 	.field { display: flex; align-items: center; gap: 8px; color: #888; font-size: 12px; }
 	.field input[type='range'] { width: 140px; }
+	.modes { gap: 0; }
+	.mode { background: none; border: 1px solid var(--line-strong); color: #999; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; margin-left: -1px; }
+	.mode:first-child { border-radius: 3px 0 0 3px; margin-left: 0; }
+	.mode:last-child { border-radius: 0 3px 3px 0; }
+	.mode:hover { color: #fff; }
+	.mode.on { background: #2a2f3a; border-color: var(--line-input); color: #fff; position: relative; }
 	.reading { color: #bbb; font-variant-numeric: tabular-nums; min-width: 4ch; }
 	.note { flex-basis: 100%; color: #666; font-size: 11px; line-height: 1.5; max-width: 70ch; }
 </style>

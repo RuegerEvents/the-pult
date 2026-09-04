@@ -55,7 +55,12 @@
 		wrapDegrees,
 		travelOf
 	} from '$lib/stage.js';
-	import { beamGeometry, beamMaterial, dimKeepingHue, strobeGate, LENS_RADIUS } from '$lib/beam.js';
+	import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+	import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+	import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+	import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+
+	import { beamGeometry, beamMaterial, coneMaterial, dimKeepingHue, strobeGate, LENS_RADIUS } from '$lib/beam.js';
 	import {
 		bearingFromPoint,
 		bearingOnFloor,
@@ -80,7 +85,7 @@
 	import { parameterKey } from '$lib/patch.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
-	import { DEFAULT_VIEW, view } from '$lib/stores/view.js';
+	import { DEFAULT_VIEW, view, type RenderMode } from '$lib/stores/view.js';
 
 	// `camera-controls` is a library rather than a wrapper: it wants the three.js
 	// pieces it uses handed to it once per process.
@@ -232,7 +237,12 @@
 	// ── The three.js side ───────────────────────────────────────────────────────
 
 	type Scene = ReturnType<typeof buildScene>;
-	let scene = $state<Scene | null>(null);
+	// `$state.raw`, not `$state`: a deep proxy would keep a plain field written
+	// through it — `scene.mode = …` — in the proxy's own storage, and the render loop
+	// holds the object itself and would never see it. The three.js instances inside
+	// escaped that because class instances are not proxied, which is why the lights
+	// and the pixel ratio worked and the mode did not.
+	let scene = $state.raw<Scene | null>(null);
 
 	/// Everything the renderer owns, built once per panel and torn down with it.
 	function buildScene(element: HTMLDivElement) {
@@ -289,7 +299,10 @@
 				transparent: true,
 				depthWrite: false,
 				side: THREE.DoubleSide,
-				uniforms: { uNear: { value: 0 }, uFar: { value: 160 } },
+				// `uLinear` is one on the photoreal path, where the frame is linear light
+				// and the output pass encodes it: a grey written as a screen value there
+				// comes out lighter than it was drawn.
+				uniforms: { uNear: { value: 0 }, uFar: { value: 160 }, uLinear: { value: 0 } },
 				vertexShader: /* glsl */ `
 					varying vec3 vWorld;
 					void main() {
@@ -301,6 +314,7 @@
 				fragmentShader: /* glsl */ `
 					precision highp float;
 					uniform float uFar;
+					uniform float uLinear;
 					varying vec3 vWorld;
 
 					// How close this pixel is to a line of the given spacing, measured
@@ -320,7 +334,8 @@
 						float fade = 1.0 - smoothstep(uFar * 0.35, uFar, length(p));
 						strength *= fade;
 						if (strength <= 0.002) discard;
-						gl_FragColor = vec4(vec3(0.42), strength);
+						float grey = mix(0.42, pow(0.42, 2.2), uLinear);
+						gl_FragColor = vec4(vec3(grey), strength);
 					}
 				`
 			})
@@ -335,10 +350,29 @@
 		// it and never shrinks: reallocating on the way down would churn buffers to
 		// save memory nobody is short of.
 		const beamMat = beamMaterial();
+		const coneMat = coneMaterial();
 		const beamMesh = new THREE.InstancedMesh(beamGeometry(), beamMat, 1);
 		beamMesh.frustumCulled = false;
 		beamMesh.count = 0;
 		root.add(beamMesh);
+
+		// ── The aim lines, for the wireframe mode ────────────────────────────────
+		//
+		// One segment per fixture from the lens to where the beam lands, in the
+		// fixture's colour and dimmed by its level — never to nothing, so an unlit
+		// head still says where it points. One geometry, grown with the rig.
+		const lines = new THREE.LineSegments(
+			new THREE.BufferGeometry(),
+			new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9 })
+		);
+		lines.frustumCulled = false;
+		lines.visible = false;
+		root.add(lines);
+
+		// What every truss, deck and imported mesh is drawn with in wireframe: one
+		// material per panel, since two panels can be in two modes and the stock
+		// materials are shared by every panel on the page.
+		const wire = new THREE.MeshBasicMaterial({ color: 0x7a8290, wireframe: true });
 
 		// ── One light, mounted for the life of the panel ─────────────────────────
 		//
@@ -368,6 +402,16 @@
 			pool,
 			ambient,
 			hemisphere,
+			coneMat,
+			lines,
+			wire,
+			/** The mode this screen asked for, and the one the scene is currently dressed as. */
+			mode: DEFAULT_VIEW.mode as RenderMode,
+			dressed: null as RenderMode | null,
+			/** Set when something new was added to the scene and needs dressing for the mode. */
+			restyle: true,
+			/** The photoreal chain, built the first time it is asked for. */
+			chain: null as null | { composer: EffectComposer; bloom: UnrealBloomPass },
 			timer: gpuTimer(renderer),
 			/** What each fixture was drawn as last frame, so a frame that changes nothing is not drawn. */
 			previous: new Float32Array(0),
@@ -402,6 +446,7 @@
 			const { clientWidth, clientHeight } = element;
 			if (clientWidth < 1 || clientHeight < 1) return;
 			built.renderer.setSize(clientWidth, clientHeight, false);
+			built.chain?.composer.setSize(clientWidth, clientHeight);
 			built.camera.aspect = clientWidth / clientHeight;
 			built.camera.updateProjectionMatrix();
 			dirty = true;
@@ -459,7 +504,8 @@
 			dirty = false;
 			lastDrawn = now;
 			built.timer.begin();
-			built.renderer.render(built.root, built.camera);
+			if (built.mode === 'photoreal') chainFor(built).composer.render();
+			else built.renderer.render(built.root, built.camera);
 			built.timer.end();
 			frames += 1;
 			work += performance.now() - now;
@@ -472,6 +518,10 @@
 			built.controls.dispose();
 			built.beamMesh.geometry.dispose();
 			built.beamMat.dispose();
+			built.coneMat.dispose();
+			built.lines.geometry.dispose();
+			built.wire.dispose();
+			built.chain?.composer.dispose();
 			for (const body of built.bodies.values()) {
 				body.geometry.dispose();
 				(body.material as THREE.Material).dispose();
@@ -516,6 +566,12 @@
 		const list = beams;
 		let changed = false;
 		let animated = false;
+
+		if (built.dressed !== built.mode || built.restyle) {
+			dress(built);
+			changed = true;
+		}
+		const hazy = built.mode === 'real' || built.mode === 'photoreal';
 
 		// Haze, from the show. It reaches no lamp, and it is show data because how
 		// hazy the room is is a fact about the room rather than about the screen
@@ -622,6 +678,7 @@
 					new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.3 })
 				);
 				body.userData.fixtureId = beam.fixture.id;
+				(body.material as THREE.MeshStandardMaterial).wireframe = built.mode === 'wireframe';
 				built.bodies.set(beam.fixture.id, body);
 				built.root.add(body);
 			}
@@ -642,8 +699,8 @@
 
 		// A lit beam with haze in it drifts on the clock, so the picture is never
 		// still while one is on. With the haze at nothing it is, and a lit static
-		// look costs no frames either.
-		if (lit > 0 && density > 0.001) animated = true;
+		// look costs no frames either — and a cone or a line has no haze to drift.
+		if (hazy && lit > 0 && density > 0.001) animated = true;
 
 		built.beamMesh.count = lit;
 		if (changed) {
@@ -652,6 +709,30 @@
 			levels.needsUpdate = true;
 			lengths.needsUpdate = true;
 			spreads.needsUpdate = true;
+		}
+
+		// The aim lines, in wireframe only: every fixture, lit or not.
+		if (built.mode === 'wireframe' && changed) {
+			const geometry = built.lines.geometry;
+			let positions = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+			let tints = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+			if (!positions || positions.count < list.length * 2) {
+				positions = new THREE.BufferAttribute(new Float32Array(list.length * 6), 3);
+				tints = new THREE.BufferAttribute(new Float32Array(list.length * 6), 3);
+				geometry.setAttribute('position', positions);
+				geometry.setAttribute('color', tints);
+			}
+			for (let i = 0; i < list.length; i++) {
+				const beam = list[i];
+				positions.setXYZ(i * 2, beam.at.x, beam.at.y, beam.at.z);
+				positions.setXYZ(i * 2 + 1, beam.end[0], beam.end[1], beam.end[2]);
+				const glow = 0.18 + 0.82 * beam.output.level;
+				tints!.setXYZ(i * 2, beam.output.r * glow, beam.output.g * glow, beam.output.b * glow);
+				tints!.setXYZ(i * 2 + 1, beam.output.r * glow * 0.35, beam.output.g * glow * 0.35, beam.output.b * glow * 0.35);
+			}
+			positions.needsUpdate = true;
+			tints!.needsUpdate = true;
+			geometry.setDrawRange(0, list.length * 2);
 		}
 
 		// Bodies for fixtures that are no longer drawn: hidden rather than disposed,
@@ -679,6 +760,93 @@
 		drawGizmos(built);
 		projectSheet(built);
 		return { changed, animated };
+	}
+
+	/**
+	 * Dress the scene for the mode this screen asked for.
+	 *
+	 * A mode is what a screen *draws*, so everything here is a material or a
+	 * visibility flag on things the scene already has: the beam mesh wears the beam
+	 * shader or the flat cone one; the bodies, trusses and decks wear their own
+	 * materials or the panel's wire one; the aim lines and the floor pool come and
+	 * go. Nothing is rebuilt, and switching costs one frame.
+	 *
+	 * The originals are kept on each mesh, since a truss's material is shared by
+	 * every panel on the page and must not be edited in place.
+	 */
+	function dress(built: Scene) {
+		const mode = built.mode;
+		const wireframe = mode === 'wireframe';
+		built.beamMesh.material = mode === 'cones' ? built.coneMat : built.beamMat;
+		built.beamMesh.visible = !wireframe;
+		built.lines.visible = wireframe;
+		built.deck.visible = !wireframe;
+		built.pool.visible = mode === 'real' || mode === 'photoreal';
+		for (const body of built.bodies.values()) {
+			(body.material as THREE.MeshStandardMaterial).wireframe = wireframe;
+		}
+		for (const group of built.objects.values()) {
+			group.traverse((node) => {
+				if (!(node instanceof THREE.Mesh)) return;
+				if (wireframe) {
+					if (node.material !== built.wire) node.userData.solid = node.material;
+					node.material = built.wire;
+				} else if (node.userData.solid) {
+					node.material = node.userData.solid;
+				}
+			});
+		}
+		// Tone mapping is the photoreal chain's, applied by its output pass over the
+		// summed frame; on the plain path three.js would apply it per material, to a
+		// picture that was never summed, and the working view would change.
+		const photoreal = mode === 'photoreal';
+		built.renderer.toneMapping = photoreal ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+		built.renderer.toneMappingExposure = 1;
+		// The photoreal frame is linear light. Three things written as screen values
+		// on the plain path are said in linear terms here: the clear colour, the grid's
+		// grey, and the beams, which are too hot as light at a value that was right
+		// for the screen.
+		built.renderer.setClearColor(photoreal ? new THREE.Color(0x101010).convertSRGBToLinear() : 0x101010, 1);
+		(built.grid.material as THREE.ShaderMaterial).uniforms.uLinear.value = photoreal ? 1 : 0;
+		built.beamMat.uniforms.uGain.value = photoreal ? 0.5 : 1;
+		built.dressed = mode;
+		built.restyle = false;
+	}
+
+	/**
+	 * The photoreal chain: the scene into a half-float target, bloom above white,
+	 * and tone mapping over the *sum*.
+	 *
+	 * This is the post-processing chain task 51 stayed away from, and it is here for
+	 * the one thing it alone can do. Beams add, and added into an 8-bit frame that
+	 * clips at one per channel, two saturated colours are white the moment they
+	 * cross. In a floating-point target the sum is kept, and ACES rolls it off
+	 * towards white the way a sensor does, so a blue and an amber crossing stay a
+	 * colour. The bloom's threshold is one: only what is *above* white glows, which
+	 * is the halo a lens gives a lamp it is looking into. Four samples of
+	 * multisampling on the target, since the plain path had them on the canvas.
+	 */
+	function chainFor(built: Scene) {
+		if (built.chain) return built.chain;
+		const size = built.renderer.getSize(new THREE.Vector2());
+		const ratio = built.renderer.getPixelRatio();
+		const target = new THREE.WebGLRenderTarget(size.x * ratio, size.y * ratio, {
+			type: THREE.HalfFloatType,
+			samples: 4
+		});
+		const composer = new EffectComposer(built.renderer, target);
+		composer.setPixelRatio(ratio);
+		composer.setSize(size.x, size.y);
+		composer.addPass(new RenderPass(built.root, built.camera));
+		// Tight and above white only. The first setting tried — 0.45 strength at a
+		// radius of 0.3 — spread the stage's light across the whole frame at its
+		// widest mip and lifted the sky to grey, which is fog on the lens and not a
+		// halo round a lamp.
+		const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.22, 0.1, 1.3);
+		composer.addPass(bloom);
+		composer.addPass(new OutputPass());
+		built.chain = { composer, bloom };
+		return built.chain;
 	}
 
 	/**
@@ -744,11 +912,14 @@
 		if (!built || !element) return;
 		built.ambient.intensity = AMBIENT_AT_FULL * workLight;
 		built.hemisphere.intensity = HEMISPHERE_AT_FULL * workLight;
+		built.mode = $view.mode;
 		built.renderer.setPixelRatio(Math.min(window.devicePixelRatio, resolution));
 		// A new pixel ratio takes effect at the next `setSize`.
 		const { clientWidth, clientHeight } = element;
 		if (clientWidth > 0 && clientHeight > 0) {
 			built.renderer.setSize(clientWidth, clientHeight, false);
+			built.chain?.composer.setPixelRatio(built.renderer.getPixelRatio());
+			built.chain?.composer.setSize(clientWidth, clientHeight);
 		}
 		markDirty();
 	});
@@ -806,6 +977,7 @@
 			const group = new THREE.Group();
 			built.objects.set(object.id, group);
 			built.root.add(group);
+			built.restyle = true;
 			place(group, object);
 			const references =
 				object.geometry.length > 0
@@ -845,6 +1017,8 @@
 						);
 						group.add(node);
 					});
+					built.restyle = true;
+					markDirty();
 				})
 				// A file the loader refuses leaves the group empty rather than taking
 				// the view with it: a rig that goes blank over one bad mesh is worse

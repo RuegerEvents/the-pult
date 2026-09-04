@@ -166,6 +166,11 @@ const FRAGMENT = /* glsl */ `
 	uniform float uHazeDensity;
 	uniform float uHazeTurbulence;
 	uniform float uFloorY;
+	// One on the plain path, where the sum lands on the canvas as it is. Less on the
+	// photoreal path, where the sum is linear light in a floating-point target and
+	// the output pass encodes it: a value that was right for the screen is too hot
+	// as light.
+	uniform float uGain;
 
 	varying vec3 vColor;
 	varying float vLevel;
@@ -256,7 +261,7 @@ const FRAGMENT = /* glsl */ `
 
 		// Alpha is one: additive blending scales the colour by it, and putting the
 		// strength there as well squares every beam into a ghost.
-		gl_FragColor = vec4(vColor * strength, 1.0);
+		gl_FragColor = vec4(vColor * strength * uGain, 1.0);
 	}
 `;
 
@@ -267,6 +272,7 @@ export type BeamUniforms = {
 	uHazeTurbulence: { value: number };
 	uFloorY: { value: number };
 	uLensRadius: { value: number };
+	uGain: { value: number };
 };
 
 /**
@@ -286,11 +292,60 @@ export function beamMaterial(): THREE.ShaderMaterial & { uniforms: BeamUniforms 
 			uHazeDensity: { value: 1 },
 			uHazeTurbulence: { value: 0.25 },
 			uFloorY: { value: 0 },
-			uLensRadius: { value: LENS_RADIUS }
+			uLensRadius: { value: LENS_RADIUS },
+			uGain: { value: 1 }
 		},
 		transparent: true,
 		depthWrite: false,
 		blending: THREE.AdditiveBlending,
+		side: THREE.DoubleSide,
+		toneMapped: false
+	}) as THREE.ShaderMaterial & { uniforms: BeamUniforms };
+}
+
+/**
+ * The Cones mode's material: the same cone, drawn flat.
+ *
+ * Where the beam shader answers "what is in the air", this answers "where is
+ * everything pointing" and nothing else — a translucent cone in the fixture's
+ * colour, with no haze, no attenuation and no addition. Ordinary alpha blending,
+ * so a hundred cones crossing stay a hundred cones rather than going to white, and
+ * a fragment shader of six lines, so a machine short of GPU has a mode that costs
+ * it almost nothing. Shares the vertex shader, because the cone *is* the vertex
+ * shader: a zoom is still one float in a buffer.
+ */
+export function coneMaterial(): THREE.ShaderMaterial & { uniforms: BeamUniforms } {
+	return new THREE.ShaderMaterial({
+		vertexShader: VERTEX,
+		fragmentShader: /* glsl */ `
+			precision highp float;
+			uniform float uFloorY;
+			varying vec3 vColor;
+			varying float vLevel;
+			varying vec3 vWorld;
+			varying vec3 vNormal;
+
+			void main() {
+				if (vLevel <= 0.0005) discard;
+				// Slightly denser at the edge, where the eye expects a surface to turn away.
+				float facing = abs(dot(normalize(vNormal), normalize(cameraPosition - vWorld)));
+				float edge = 1.0 - 0.5 * facing;
+				float alpha = 0.32 * edge * (0.35 + 0.65 * vLevel);
+				alpha *= smoothstep(0.0, 0.3, vWorld.y - uFloorY);
+				gl_FragColor = vec4(vColor, alpha);
+			}
+		`,
+		uniforms: {
+			uTime: { value: 0 },
+			uHazeDensity: { value: 1 },
+			uHazeTurbulence: { value: 0 },
+			uFloorY: { value: 0 },
+			uLensRadius: { value: LENS_RADIUS },
+			uGain: { value: 1 }
+		},
+		transparent: true,
+		depthWrite: false,
+		blending: THREE.NormalBlending,
 		side: THREE.DoubleSide,
 		toneMapped: false
 	}) as THREE.ShaderMaterial & { uniforms: BeamUniforms };

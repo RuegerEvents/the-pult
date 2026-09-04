@@ -16,7 +16,22 @@
 import { browser } from '$app/environment';
 import { writable } from 'svelte/store';
 
+/**
+ * What a screen draws the rig as. Four questions rather than a quality ladder:
+ * where is everything, where is it pointing, what is in the air, what would a
+ * camera see.
+ */
+export type RenderMode = 'wireframe' | 'cones' | 'real' | 'photoreal';
+
+export const RENDER_MODES: { value: RenderMode; label: string; blurb: string }[] = [
+	{ value: 'wireframe', label: 'Wireframe', blurb: 'Trusses and bodies as lines, and a line to where each light points. Costs almost nothing.' },
+	{ value: 'cones', label: 'Cones', blurb: 'Flat cones in each light\'s colour, nothing added. Never goes white, and cheap enough for any rig.' },
+	{ value: 'real', label: 'Real', blurb: 'Beams through the haze. The working view.' },
+	{ value: 'photoreal', label: 'Photoreal', blurb: 'Beams summed in high dynamic range, tone-mapped and bloomed, so crossing beams roll off instead of clipping.' }
+];
+
 export type ViewSettings = {
+	mode: RenderMode;
 	/**
 	 * How much light there is in the room that no fixture is making, 0–1. One is the
 	 * house lights up, bright enough to read every truss; zero is a blackout with
@@ -33,7 +48,7 @@ export type ViewSettings = {
 	resolution: number;
 };
 
-export const DEFAULT_VIEW: ViewSettings = { workLight: 0.4, resolution: 1.5 };
+export const DEFAULT_VIEW: ViewSettings = { mode: 'real', workLight: 0.4, resolution: 1.5 };
 
 /** The choices the panel offers for resolution, and what to call them. */
 export const RESOLUTIONS: { value: number; label: string }[] = [
@@ -44,16 +59,26 @@ export const RESOLUTIONS: { value: number; label: string }[] = [
 
 const STORAGE_KEY = 'pult.view';
 
+/**
+ * Whatever storage or a caller hands over, brought inside what the view will do —
+ * on top of `fallback`, so a partial change keeps the rest.
+ */
+export function parseView(value: unknown, fallback: ViewSettings = DEFAULT_VIEW): ViewSettings {
+	const given = (value && typeof value === 'object' ? value : {}) as Partial<ViewSettings>;
+	const mode = RENDER_MODES.some((m) => m.value === given.mode) ? (given.mode as RenderMode) : fallback.mode;
+	return {
+		mode,
+		workLight: finiteIn(given.workLight, 0, 1, fallback.workLight),
+		resolution: finiteIn(given.resolution, 0.5, 3, fallback.resolution)
+	};
+}
+
 function readBack(): ViewSettings {
 	if (!browser) return DEFAULT_VIEW;
 	try {
 		const raw = localStorage.getItem(STORAGE_KEY);
 		if (!raw) return DEFAULT_VIEW;
-		const parsed = JSON.parse(raw) as Partial<ViewSettings>;
-		return {
-			workLight: finiteIn(parsed.workLight, 0, 1, DEFAULT_VIEW.workLight),
-			resolution: finiteIn(parsed.resolution, 0.5, 3, DEFAULT_VIEW.resolution)
-		};
+		return parseView(JSON.parse(raw));
 	} catch {
 		return DEFAULT_VIEW;
 	}
@@ -69,10 +94,7 @@ export const view = writable<ViewSettings>(readBack());
 
 export function setView(change: Partial<ViewSettings>): void {
 	view.update((current) => {
-		const next = {
-			workLight: finiteIn(change.workLight ?? current.workLight, 0, 1, current.workLight),
-			resolution: finiteIn(change.resolution ?? current.resolution, 0.5, 3, current.resolution)
-		};
+		const next = parseView(change, current);
 		if (browser) {
 			try {
 				localStorage.setItem(STORAGE_KEY, JSON.stringify(next));

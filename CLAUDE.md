@@ -858,9 +858,19 @@ per drawn frame it prints what the GPU took, read through
 gap stays at nine milliseconds however far behind the GPU is. What the GPU spends on
 the beams is **per blended layer stacked on a tile**, not per pixel, triangle or
 instruction: measured, and recorded as `beam-overdraw` in the roadmap. A **View** sheet
-on the rig panel holds this screen's work light and resolution, in `localStorage`
-beside the layout (`stores/view.ts`) — the haze is the show's, a work light is not.
-Measure any of this in a *headed* browser only: a hidden tab has no animation frames.
+on the rig panel holds this screen's work light, resolution and **render mode**, in
+`localStorage` beside the layout (`stores/view.ts`) — the haze is the show's, a work
+light is not. The four modes are four questions: *Wireframe* (where is everything:
+wire materials and an aim line per fixture), *Cones* (where is it pointing: the same
+cone under a flat alpha-blended shader, never white), *Real* (the beam shader) and
+*Photoreal* (the scene into a half-float target, bloom above white, ACES over the
+sum — the only thing that keeps crossing beams a colour). `dress` in `Rig3D.svelte`
+switches by swapping materials and visibility on what the scene already has; nothing
+is rebuilt. Two traps there: the scene object is `$state.raw`, because a deep proxy
+keeps a plain field written through it and the render loop holds the object itself;
+and the photoreal frame is linear light, so the clear colour, the grid's grey and the
+beams' gain are said in linear terms on that path only. Measure any of this in a
+*headed* browser only: a hidden tab has no animation frames.
 
 **And a piece with no mesh is drawn from the catalogue.** `frontend/src/lib/stock.ts`
 turns `SceneObject::catalogue` into geometry — see *A show is a folder* — which is what

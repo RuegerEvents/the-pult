@@ -3642,6 +3642,58 @@ cargo test -p pult-backend --lib playback   # the stack, both ways, and what ano
 cargo test -p pult-backend --lib demo       # the batten holds its cells
 ```
 
+### 55. Four ways to draw a rig
+
+`render-modes`, built the day it was asked for. A mode is what a screen *draws*, so
+it lives beside the work light in the per-screen view store and is a row of four
+buttons on the rig panel's View sheet. Nothing is rebuilt on a switch: `dress` puts
+materials and visibility flags on things the scene already has, and the change costs
+one frame.
+
+- **Wireframe** — where is everything. Every truss, deck and imported mesh in one
+  wire material *per panel* (the stock materials are shared by every panel on the
+  page and are not edited in place), the bodies as wire in their own tint, and a
+  line per fixture from the lens to where the beam lands, in its colour, never
+  fading to nothing so an unlit head still says where it points.
+- **Cones** — where is everything pointing. The same instanced cone under a
+  six-line fragment shader: flat, alpha-blended, no haze, no attenuation, nothing
+  added. A hundred cones crossing stay a hundred cones.
+- **Real** — what is in the air. The beam shader, unchanged.
+- **Photoreal** — what a camera would see. The scene into a half-float target with
+  four samples of multisampling, bloom above white, and ACES over the *sum*, which
+  is the one thing that stops crossing beams going to flat white: a blue and an
+  amber added in floating point and rolled off stay a colour. This is the
+  post-processing chain task 51 stayed away from, here for the one thing only it
+  can do.
+
+Measured on the Festival at 1.5×, GPU per frame: wireframe 1.1 ms, cones 3.4,
+real 5.2, photoreal 8.3. The cones figure confirms `beam-overdraw`: the cheapest
+possible fragment shader over the same cones is still two thirds of the beam shader's
+cost, so the cost is the layers and not the arithmetic.
+
+### The traps
+
+**A `$state` proxy swallows a plain field.** The scene object was `$state`, and
+writing `scene.mode = …` through the proxy stored the value in the proxy's own map,
+where the render loop — holding the object itself — never saw it. The lights and the
+pixel ratio had worked through the same proxy only because three.js instances are
+class objects and escape proxying. `$state.raw` now, with the reason beside it.
+
+**A linear frame is not a screen.** Everything written as a screen value on the
+plain path — the clear colour, the grid's grey, the beams' strength — came out
+brighter through the output pass, which encodes linear light to sRGB on the way
+out; the first photoreal frame had a grey sky, which looked like too much bloom and
+was not. The clear colour is converted, the grid takes a `uLinear` uniform, and the
+beam material has a `uGain` the photoreal path sets to a half.
+
+**Bloom at a wide radius is fog on the lens.** 0.45 strength at 0.3 radius lifted
+the whole frame from its widest mip. 0.22 at 0.1, threshold 1.3: a halo round a lamp
+and nothing across the sky.
+
+```
+cd frontend && npm test        # the mode survives storage and refuses one it does not know
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -3803,11 +3855,9 @@ up now**: it needs a MIDI port and nothing else, and a stage manager pressing Go
 is a more common way for this console to be driven than any surface in the list.
 
 **render-modes** was added on 2026-09-04 out of the user's second look at task 53
-and sits high: its first half (wireframe, cones) is small and is also the answer for
-a machine short of GPU, and its second half (an HDR target and tone mapping) is the
-only fix for a picture that goes white where beams cross, which is the first thing a
-lighting designer sees wrong. It belongs between camera-home-presets and
-scene-editing in the order above.
+and built the same day as task 55. What photoreal still wants — a floor lit by every
+beam, bodies lit by their own beam, haze that thins with height — is listed under
+`photoreal-remainder` below rather than left in the task.
 
 **beam-overdraw** was added on 2026-09-04 out of task 53's measurement and is not
 placed either: it is the answer to "why is the GPU busy" with the levers named, and
@@ -3929,6 +3979,33 @@ Token and cost accounting for the NL plugin, visible over the REST API.
 
 ### Programming model
 
+#### fade-curves
+
+Asked by the user on 2026-09-04: a cue's fade needs a timing curve, and most of all
+for position — a head that eases into a mark reads as a move, and one that runs
+linear and stops dead reads as a mistake.
+
+What is true today: `ParameterCapture::easing` exists with `Step`, `Linear`,
+`EaseIn`, `EaseOut` and `EaseInOut`; the evaluator honours it, so it reaches the
+lamps and the screen alike; the programmer's store menu sets it per store and
+defaults to `Linear`; the cue editor does not show it; and every demo writes
+`Linear`. So the mechanism is there and nothing puts a curve into a cue except by
+hand at store time.
+
+- **Where the default lives.** A cue-level curve that captures inherit, the way a
+  cue's fade times work — and a per-*kind* default under that, because the answer
+  for intensity (linear, which is what dimmers have always done) is not the answer
+  for pan and tilt (ease in and out). Probably `Show`-level defaults per kind, seeded
+  from a preference, the way `home_fade_ms` is.
+- **What shape.** The five named curves may be enough; if not, one number — the
+  strength of an S-curve — beats a bezier editor nobody will use during a show.
+- **Split with the split fade.** A cue already fades up and down at different times;
+  a curve per direction is the same question, and probably the same answer: one
+  curve, both ways, unless somebody asks.
+- **The cue editor** has to show it, per cue and per capture, beside the times.
+- **The demos** should use it: the Club's `Centre` and the Festival's `Fan` are
+  position cues and the first place a linear move looks wrong.
+
 #### 3d-programmer-remainder
 
 What is left of the spec's §Programming once the rig view (task 13), programming
@@ -3973,66 +4050,22 @@ these did not.
 - **Placement.** Moving a fixture or a truss in 3D is `scene-editing`, not this: it
   changes the show rather than the picture, so it needs gestures, snap and multi-select.
 
-#### render-modes
+#### photoreal-remainder
 
-Asked by the user on 2026-09-04, after task 53: looking into several beams at once —
-from the side, along a truss — the picture goes to flat white, and would a set of
-rendering modes (wireframe, cones, real, photoreal) make sense? Yes to both, and they
-are one item, because the white-out is the thing the photoreal mode has to solve.
+What task 55's photoreal mode does not yet do, in the order it would pay:
 
-**Why it goes white.** The beams are added straight into an 8-bit frame with
-`toneMapped: false`. Additive blending in a buffer that clips at 1.0 per channel
-saturates to white the moment two or three bright beams overlap — a saturated blue
-plus a saturated amber is (1, 1, 1). Tone mapping per fragment does not help, since
-the clipping happens in the blend after it. The fix is the one every renderer of
-light uses: **accumulate in a floating-point target and tone-map the sum**. In
-three.js that is a `HalfFloatType` render target for the scene, then a full-screen
-pass applying ACES (or AgX, which holds hue better as it rolls off) — which is the
-post-processing chain task 51 deliberately avoided, and the one thing that cannot be
-done without it. With the sum in HDR, overlapping beams roll off towards white
-smoothly and a saturated colour stays a colour. Nothing about the beam shader
-changes; `toneMapped` goes back on and the exposure becomes a view setting.
-
-**What else photoreal wants, in the order it pays:**
-
-- **Bloom** over the tone-mapped image, threshold above white: the halo a lens gives a
-  lamp looking at it, and the cheapest thing that reads as a photograph. One blur
-  pass at half resolution.
-- **A floor that is lit by every beam**, not by one spotlight following the
-  brightest. Either a small number of real `SpotLight`s (a dozen brightest, reused,
-  never mounted or unmounted — task 51's rule), or a projected disc per beam drawn
-  into the floor as a second additive layer, which scales like the beams do.
-- **Bodies lit by their own beam** — a head's lens glowing with its colour already
-  happens (emissive); the truss above it catching light does not.
-- **Haze that thins with height and with distance from the fog machine** is
-  atmosphere; a per-show gradient is cheap once the haze is a real quantity.
+- **A floor lit by every beam**, not by one spotlight following the brightest. Either
+  a dozen real `SpotLight`s reused for the brightest dozen — never mounted or
+  unmounted, task 51's rule — or a projected disc per beam drawn into the floor as a
+  second additive layer, which scales the way the beams do. The second is the one
+  that survives a five-thousand-fixture rig.
+- **Bodies and trusses lit by the beams near them.** A head's lens already glows
+  with its colour; the truss above it catching light does not.
+- **Haze that thins with height and with distance** from the machine. A per-show
+  gradient, cheap once the density is a real quantity — which task 54 made it.
+- **Exposure** as a view setting beside the work light, once there is a reason to
+  look at a frame darker or brighter than ACES at one.
 - Shadows are not on this list. Nothing in a rig view casts one anybody looks at.
-
-**The modes.** A mode is *what a screen draws*, so it lives beside the work light in
-the view store, per screen. Four is the right number and they are not a quality
-ladder but four questions:
-
-- **Wireframe** — where is everything? Trusses and bodies as lines, no beams, a
-  bright work light. The plan view in three dimensions, and the mode a tablet with
-  no GPU to speak of should default to.
-- **Cones** — where is everything pointing? Flat translucent cones with no haze, no
-  attenuation and no blending arithmetic, coloured by output. The mode for aiming and
-  for a 5000-fixture rig, and the one that never white-outs because it does not add.
-- **Real** — what is in the air? Today's beam shader with haze: the working mode.
-- **Photoreal** — what would a camera see? Real plus the HDR target, tone mapping,
-  bloom and the lit floor. The mode to leave running on the screen behind the
-  designer's shoulder.
-
-Wireframe and Cones are a material switch and a shader flag each, and are worth
-doing first: they are also what a machine short of GPU needs, and `beam-overdraw`
-says the beams are the whole of the cost. Photoreal is the render-target chain,
-which is a day, and the floor, which is a design question.
-
-- **Not per show.** Two operators looking at one show in two modes are looking at
-  two pictures of one truth, and that is fine; the haze is the truth and stays the
-  show's.
-- The GPU timer task 53 added is the instrument for all of it; measure in a headed
-  browser.
 
 #### beam-overdraw
 

@@ -51,6 +51,11 @@ bracketed form — so every release needs one and it has to be spelled that way.
 - **A View sheet on the rig panel.** A work light for how brightly this screen draws
   what no fixture is lighting, and the resolution the view renders at. Kept on this
   screen, not in the show; the haze stays the show's.
+- **Four render modes.** Wireframe (trusses and bodies as lines, and a line to where
+  each light points), Cones (flat cones in each light's colour, never white), Real
+  (beams through the haze) and Photoreal (beams summed in high dynamic range,
+  tone-mapped and bloomed, so crossing beams roll off instead of clipping to white).
+  On the View sheet, per screen.
 - **The rig panel says what the GPU took.** Beside the page's own work per frame,
   where the browser will say, and *idle* when nothing was drawn — which is the
   figure that explains a view that reads nine milliseconds and still feels laggy.
