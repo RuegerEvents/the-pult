@@ -3139,8 +3139,8 @@ guessed:
   The viewer went imperative, which buys the option without presuming it.
 
 The one figure that is not comfortable is the **rate**: 29 Hz where DMX wants 40, on a
-frame that is using a fifth of its budget. That is not frame cost, and it is written
-up as `connector-frame-rate`, which is now the item this measurement most argues for.
+frame that is using a fifth of its budget. That is not frame cost, and it was written
+up as `connector-frame-rate` — the item this measurement most argued for, and task 56.
 
 **Threlte is gone, and the two live defects went with it.** Three files, 844 lines,
 and the hard part was already imperative: gizmo picking and dragging were hand-written
@@ -3694,6 +3694,76 @@ and nothing across the sky.
 cd frontend && npm test        # the mode survives storage and refuses one it does not know
 ```
 
+### 56. Where the missing ten hertz went
+
+`connector-frame-rate`. Task 51 measured the Art-Net connector drawing at **29 Hz**
+where `Frames::DMX` asks for 40, on a frame costing 4.77 ms of a 25 ms budget, and
+said that nothing yet named what was holding the rate down. Nothing in the entry's
+list of suspects turned out to be it. The instrument that answered it was a probe on
+the output loop that timed each arm of the select and the lateness of each wake, which
+took ten minutes to write and is the only reason this was not a search.
+
+Two causes, roughly two thirds and one third, and neither is the frame.
+
+**The station's own health report made the engine re-push the entire rig.**
+`state_version` was one counter over the whole show, bumped by every write and read by
+`push_output` to decide whether the connectors needed telling. But a station writes its
+own `stations` row every two seconds and its output status every second — figures about
+a processor, which cannot reach a lamp — so an idle console handed its connectors an
+identical patch one to two times a second. At 5000 fixtures that push costs **116 ms**
+inside the output loop, rebuilding `Patch` for a rig nothing had changed, and no frame
+can be drawn while it does. That is a sixth of every second.
+
+Now there is a version **per collection**, and each consumer names the collections it
+reads: `OUTPUT_COLLECTIONS` is the three `push_output` hands over, `PLAYBACK_COLLECTIONS`
+is what `playback_pass` reads. `version_of` sums them, so both call sites stay a single
+`u64` comparison. The list is beside the read it belongs to, and the failure mode of
+forgetting to add a collection is a rig that stops updating — which is why the second
+test below exists and why the fallback is *everything*: a write nobody can attribute to
+a collection (a registered command, a snapshot, a showfile loaded) counts as all of them
+having moved, which is what the single counter always assumed.
+
+**And lateness was compounding into the rate.** `schedule` measured the next deadline
+from `Instant::now()` at the moment the loop woke, which is the deadline *plus* however
+late the wake was. Nothing wakes on time — 2.4 ms of timer granularity and scheduler
+latency was the steady figure here — so every frame carried the sum of every lateness
+before it, and a 25 ms period was really a 27.4 ms one. Measured from the deadline that
+fired, the same 2.4 ms is jitter about a fixed rate.
+
+**29 → 40 Hz**, exactly what `Frames::DMX` asks for, at 5000 fixtures and at 500. The
+frame itself did not change and was never the problem: it is still about 4.5 ms, still
+94% evaluating, still under a fifth of budget. Which also leaves `parallel-render`
+exactly where task 51 left it — there is now *more* headroom, not less.
+
+### The traps
+
+**Chaining deadlines carries the old period with it.** The first version was
+`(due + period).max(from)`, which is right until a connector changes gait: a settled DMX
+line waits 800 ms between keep-alives, so the deadline chained off one is up to 800 ms
+away and the first frame of a cue would arrive after the light had got where it was
+going. The rule is a clamp, not a floor — never earlier than now, never more than one
+period from now — which fixes the gait change and keeps the short-of-frame case, where
+the chained deadline is already in the past and drawing again at once is the honest
+answer.
+
+**A version counter narrowed until it says nothing is far worse than one that says
+everything.** The first is a rig that silently stops updating; the second is only slow.
+So the gate is a pair, and the second half asserts that an operator taking a fader still
+reaches the wire.
+
+**The frame cost never showed any of this**, and could not have. `began.elapsed()` wraps
+`plugin.send`, which is the right thing for it to measure and is why 4.77 ms was honest
+all along. Everything found here was in the *gaps between* frames — a push that blocks
+the loop, a deadline that drifts — and nothing that measures the work inside a frame can
+see a frame that was never asked for. The Hz column was the only thing that could, and
+it had been printing the answer since task 51 with nobody able to say what it meant.
+
+```
+cargo test -p pult-backend --lib engine::tests::pushing_the_rig   # what makes the engine push
+cargo test -p pult-backend --lib connectors::tests               # and when the next frame goes
+scripts/demo.sh --measure --release --size 5000                  # 40 Hz
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -3767,6 +3837,15 @@ having to decide instancing at all, and the item that came out of it is one nobo
 had written down: the connector draws at 29 Hz where DMX wants 40, on a frame using
 a fifth of its budget.
 
+**That last one is now task 56**, and its answer was in neither half of the frame. The
+rate was held down by the station's own health report making the engine re-push the
+whole rig every second — 116 ms in the output loop at 5000 fixtures, for figures that
+cannot reach a lamp — and by scheduling each deadline from the moment the loop woke
+rather than from the deadline it woke to, so 2.4 ms of ordinary scheduler latency
+compounded into the period. 40 Hz now. Worth holding on to: **the frame cost could not
+have found either**, because both live in the gaps between frames, and the Hz column
+had been printing the answer since task 51 with nobody able to say what it meant.
+
 Items 1, 3 and 4 were built together as task 51, and showfile-management and
 showfile-assets-folder together as task 52. All five have left this list. What they
 answered changes what is worth doing next, so the top of it is now:
@@ -3775,79 +3854,75 @@ answered changes what is worth doing next, so the top of it is now:
    connector reads it. A decision rather than a feature: either `carries` gates
    the send, or the field stops claiming to. → none, and the wire viewer is now
    where an operator sees it
-2. **connector-frame-rate** — a new entry, and task 51 is what found it. At 5000
-   fixtures the Art-Net connector draws at **29 Hz** where `Frames::DMX` asks for
-   40, on a frame that costs 4.77 ms of a 25 ms budget. So the rate is not being
-   held back by what a frame costs, and nothing yet says what it *is* being held
-   back by — the scheduler, the sleep, or the manager's loop. → none, and the
-   instrument to answer it already prints the figure
-3. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
+2. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
    measured evaluating at **94%** of an output frame at 5000 fixtures, which is
    the answer the question was waiting for, and `pult-render` is pure and takes
    no locks. What the same measurement also says is that it is **not urgent**: the
-   frame is at 19% of budget. → none, and it should not be done until something
-   is actually short of frame
-4. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
+   frame is at 19% of budget, and task 56 gave it *more* headroom rather than
+   less. → none, and it should not be done until something is actually short of
+   frame
+3. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
    frontend proxy comes from; the wire stays generic. → none
-5. **camera-home-presets** — front, plan, section, three-quarter, and
+4. **camera-home-presets** — front, plan, section, three-quarter, and
    focus-on-selection. The smallest of everything here and the one an operator
    reaches for most often. Added 2026-09-03. → none: task 51's viewer owns its
    own camera already
-6. **scene-editing** — and specifically a picker for task 52's stock catalogue
+5. **scene-editing** — and specifically a picker for task 52's stock catalogue
    first, which is smaller than a gizmo and is what a console that has never
    imported an MVR needs in order to have a room at all. → none
-7. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+6. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
    plugin over introspection, which is what introspection is for. → none, and
    much better now that gdtf-import has landed and put a real patch in the show
-8. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+7. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
    themselves dynamic. → none: the viewer landed as task 51
-9. **voice-input** — speech to the command line, grammar first and NL on parse
+8. **voice-input** — speech to the command line, grammar first and NL on parse
    failure. → none
-10. **nl-show-context** — what relative syntax cannot reach, and whether it is
+9. **nl-show-context** — what relative syntax cannot reach, and whether it is
    worth the permission it costs. → voice-input, which is what shows which
    utterances actually arrive
-11. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+10. **control-transports** — MIDI and OSC as ports, in and out, with nothing
    above them decided. Was open-control-interfaces until 2026-09-02, when the
    three things people send over those ports turned out to want separate
    entries. → none
-12. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+11. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
    audio import. The biggest item here and the one the spec is most opinionated
    about. → none technically
-13. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+12. **llm-cost-overview** — token and cost accounting out of the NL plugin.
    → none
-14. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+13. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
    frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
    from task 51, which measured a connector's frame at 4.77 ms for 5000 fixtures —
-   the number a WASM boundary now has to be compared against
-15. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+   the number a WASM boundary now has to be compared against, and task 56, which
+   says the boundary has to survive being asked 40 times a second and not 29
+14. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-16. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+15. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
    → a real TS plugin wanting to exist
-17. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+16. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
    stage manager's Go arriving at the lights, and this console sending its own
    to sound and video. → control-transports
-18. **surface-layer** — a bound physical thing, which is what the transports are
+17. **surface-layer** — a bound physical thing, which is what the transports are
    not: one event type under every surface, plus the two questions (where a
    headless surface's selection lives, where a fader's gesture begins and ends)
    that decide whether any of the three below is a week or a month.
    → control-transports for the MIDI half, nothing for the USB half
-19. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+18. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
    is what proves the layer before anybody spends a weekend on USB captures.
    → surface-layer
-20. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+19. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
    it can be estimated at all. → surface-layer
-21. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+20. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
    undocumented and to be read off the device. → surface-layer, and
    midi-surfaces for the binding model
-22. **showfile-migrations** — so a show made in the beta still opens after it.
+21. **showfile-migrations** — so a show made in the beta still opens after it.
    Added 2026-09-03, and the trigger is the beta rather than anything in the
    code: until somebody is carrying real work in a showfile, refusing one from
    another generation by name is the better trade. → the first beta
-23. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
+22. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
    2026-09-03. → none, and the sharpest question in it is whether an imported
    `.pultz` should ask before running the plugins it carries
 
-Items 17 to 21 were added on 2026-09-02 and sit at the end rather than being
+Items 16 to 20 were added on 2026-09-02 and sit at the end rather than being
 placed, because three of them are blocked on hardware being in the room and not
 on anything in this repository. Any of those can move up the day the hardware is
 on the desk. **show-control is the exception and the one with a case for moving
@@ -3866,7 +3941,7 @@ actually running a show from. Task 53 already took the free wins — sixty a sec
 most, nothing drawn when nothing changed, only lit beams drawn — which is what turned
 a pinned GPU into an idle one on a dark stage.
 
-Items 22 and 23 were added on 2026-09-03 and sit at the end for a different reason:
+Items 21 and 22 were added on 2026-09-03 and sit at the end for a different reason:
 neither is blocked on anything, and both are blocked on *time*. A migration path is
 worth nothing until there is a showfile worth migrating, and the gaps in how plugins
 travel are gaps rather than absences.
@@ -4338,24 +4413,6 @@ was left open deliberately on 2026-09-02 rather than guessed at.
 
 ### Performance
 
-#### connector-frame-rate
-
-**At 5000 fixtures the Art-Net connector draws at 29 Hz, and `Frames::DMX` asks for
-40.** Task 51 measured the frame itself at 4.77 ms against a 25 ms budget, so this is
-not a connector that has run out of time to draw in — it is one that is not being
-asked often enough. Nothing yet says why.
-
-- Where to look, roughly in order: the manager's `next_frame` scheduling, which is
-  `from + period` off the *start* of the last frame rather than off its end; whatever
-  `tokio::time::sleep` actually grants at these intervals; and whether the send future
-  is holding the loop for longer than the frame it reports.
-- The instrument already prints it. `--measure` shows the Hz per connector beside the
-  frame cost, so this is a question that can be asked and answered without building
-  anything first.
-- **It matters more than the frame cost does.** A rig drawing at 29 Hz is a rig whose
-  fades are being sampled 29 times a second, and that is visible on a slow fade across
-  a big wash in a way that 4.77 ms against 25 ms is not.
-
 #### parallel-render
 
 Rayon over fixtures inside a connector's frame. Answered "no" twice before, and both
@@ -4370,8 +4427,9 @@ connector's thread is already off the engine, so this costs nothing architectura
 
 **And the same measurement says not yet.** 4.77 ms is 19% of the budget. Nothing is
 short of frame, and a rig that is not short of frame does not need its evaluator
-parallelised — it needs whatever is holding the rate down, which is
-`connector-frame-rate` above.
+parallelised — it needed whatever was holding the rate down, which task 56 found and
+fixed without touching the frame at all. So the headroom is larger now, not smaller:
+the same 4.5 ms frame, asked for 40 times a second instead of 29.
 
 - Worth doing the day something is actually short of frame, and worth *not* doing
   before then.

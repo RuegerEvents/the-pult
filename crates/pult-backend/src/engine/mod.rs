@@ -646,9 +646,21 @@ pub struct ShowEngine {
     /// The clock and author of the last accepted write at each replicated path.
     /// Only replicated paths are tracked, so playback output does not grow this.
     path_clocks: HashMap<Path, (VectorClock, NodeId)>,
-    /// Bumped by anything that changes the show, so an idle playback can skip the tick
-    /// instead of deserializing the whole state 40 times a second for nothing.
-    state_version: u64,
+    /// How many times each collection has been written, so a consumer can ask whether
+    /// anything **it reads** has moved rather than whether anything at all has.
+    ///
+    /// This was one counter over the whole show, and the difference is not academic.
+    /// A station writes its own `stations` row every two seconds and its output status
+    /// every second — diagnostics that cannot reach a lamp — and each of those made the
+    /// engine re-read the rig and hand the connectors an identical patch. At five
+    /// thousand fixtures that push costs 116 ms inside the output loop, so an idle
+    /// console spent a sixth of every second rebuilding a picture nothing had changed,
+    /// and drew at 30 Hz where `Frames::DMX` asks for 40.
+    collection_versions: HashMap<String, u64>,
+    /// Writes that name no collection, or that are too broad to attribute to one: a
+    /// showfile loaded, a snapshot applied, a registered command run. Counted into
+    /// every answer `version_of` gives, so the fallback is always "everybody moved".
+    everything_version: u64,
     playback_seen: u64,
     /// The version the output side was last handed. Its own counter, because the
     /// output side has to hear about a change playback rightly ignores — a fixture
@@ -702,6 +714,27 @@ pub struct ShowEngine {
 /// station left up for a fortnight is bounded while it runs rather than only when it
 /// is next opened — which is the case that motivated this at all.
 const APPENDS_BETWEEN_PRUNES: u32 = 1_000;
+
+/// What `push_output` hands the connectors, and so the only writes that can change
+/// what leaves this station.
+///
+/// Named here rather than deduced, because `push_output` reads exactly these three
+/// and this is the question of whether reading them again would say anything new. A
+/// collection missing from the list is a rig that stops updating, so anything added
+/// to that read belongs here too.
+const OUTPUT_COLLECTIONS: &[&str] = &["fixtures", "fixture_types", "programmer_values"];
+
+/// What `playback_pass` reads. `show` is in it for `home_fade_ms`, which decides how
+/// long a release takes.
+const PLAYBACK_COLLECTIONS: &[&str] = &[
+    "sequences",
+    "cues",
+    "fixtures",
+    "fixture_types",
+    "programmer_values",
+    "speed_masters",
+    "show",
+];
 
 /// How often a watched parameter is looked at.
 ///
@@ -779,7 +812,8 @@ impl ShowEngine {
             input_events: Vec::new(),
             output: None,
             path_clocks: HashMap::new(),
-            state_version: 0,
+            collection_versions: HashMap::new(),
+            everything_version: 0,
             playback_seen: 0,
             pushed_version: 0,
             outputs_dirty: true,
@@ -867,8 +901,9 @@ impl ShowEngine {
                     // The output side hears about the show whether or not playback had
                     // anything to say: a re-addressed or newly patched fixture changes
                     // the wire without changing a single level.
-                    if self.pushed_version != self.state_version || !moved.is_empty() {
-                        self.pushed_version = self.state_version;
+                    let rig = self.version_of(OUTPUT_COLLECTIONS);
+                    if self.pushed_version != rig || !moved.is_empty() {
+                        self.pushed_version = rig;
                         self.push_output(moved).await;
                     }
                     self.sample_watched();
@@ -881,7 +916,7 @@ impl ShowEngine {
                 EngineCommand::Stop => break,
                 EngineCommand::LoadFromShowfile => {
                     self.load_from_showfile().await;
-                    self.state_version += 1;
+                    self.touch_everything();
                 }
                 EngineCommand::Get { path, reply } => {
                     let result = self
@@ -932,7 +967,7 @@ impl ShowEngine {
                         if result.is_err() {
                             break;
                         }
-                        self.state_version += 1;
+                        self.touch(&path);
                         self.record_write(&path, lifecycle);
                         // A version's row has landed in memory; the file follows it
                         // once the row is on the disk. Here rather than in the verb
@@ -995,13 +1030,16 @@ impl ShowEngine {
                 }
                 EngineCommand::Call { method, args, reply } => {
                     let result = self.handle_call_legacy(&method, args).await;
-                    self.state_version += 1;
+                    // A registered command names a method rather than a path, and what
+                    // it goes on to write is its own business, so this is the case the
+                    // fallback exists for. It is operator-paced and costs nothing.
+                    self.touch_everything();
                     let _ = reply.send(result);
                 }
                 EngineCommand::SetSensedValue { fixture_id, key, value, reply } => {
                     let result = self.set_sensed_value(fixture_id, key, value).await;
                     if result.is_ok() {
-                        self.state_version += 1;
+                        self.touch_table("fixtures");
                     }
                     let _ = reply.send(result);
                 }
@@ -1011,14 +1049,12 @@ impl ShowEngine {
                 }
                 EngineCommand::ApplyPeerOperation(op) => {
                     self.apply_peer_operation(op).await;
-                    self.state_version += 1;
                 }
                 EngineCommand::ApplyOperationBatch(operations) => {
                     let count = operations.len();
                     for op in operations {
                         self.apply_peer_operation(op).await;
                     }
-                    self.state_version += 1;
                     debug!("[sync] caught up on {count} operations");
                 }
                 EngineCommand::GetClock { reply } => {
@@ -1033,10 +1069,53 @@ impl ShowEngine {
                 }
                 EngineCommand::ApplyStateSnapshot(snapshot) => {
                     self.apply_snapshot(snapshot).await;
-                    self.state_version += 1;
+                    self.touch_everything();
                 }
             }
         }
+    }
+
+    // ── What has moved ────────────────────────────────────────────────────────
+
+    /// Record that the collection a path names has been written.
+    ///
+    /// The first segment of every entity path is the table, which is the same thing
+    /// `broadcast_after_set` reads out of it. A path that names nothing — there are a
+    /// few, and a registered command's is one — counts as everything having moved,
+    /// which is what the single counter this replaced always assumed.
+    fn touch(&mut self, path: &Path) {
+        match path.first() {
+            Some(PathSegment::Key(table)) => self.touch_table(table),
+            _ => self.everything_version += 1,
+        }
+    }
+
+    /// The same, for a caller that holds the table rather than a path.
+    fn touch_table(&mut self, table: &str) {
+        match self.collection_versions.get_mut(table) {
+            Some(version) => *version += 1,
+            None => {
+                self.collection_versions.insert(table.to_string(), 1);
+            }
+        }
+    }
+
+    /// Something happened that nobody can attribute to a collection.
+    fn touch_everything(&mut self) {
+        self.everything_version += 1;
+    }
+
+    /// How much the collections a caller reads have moved, as one number.
+    ///
+    /// A sum rather than a set of counters, because every part of it only ever goes
+    /// up: two readings differ exactly when one of the named collections was written
+    /// between them, which is the whole of what a consumer is asking.
+    fn version_of(&self, collections: &[&str]) -> u64 {
+        collections
+            .iter()
+            .filter_map(|table| self.collection_versions.get(*table))
+            .sum::<u64>()
+            + self.everything_version
     }
 
     // ── Waking up ─────────────────────────────────────────────────────────────
@@ -1048,8 +1127,8 @@ impl ShowEngine {
     /// round when there is nothing left to drain.
     fn next_wake(&self) -> std::time::Duration {
         if self.outputs_dirty
-            || self.state_version != self.playback_seen
-            || self.state_version != self.pushed_version
+            || self.version_of(PLAYBACK_COLLECTIONS) != self.playback_seen
+            || self.version_of(OUTPUT_COLLECTIONS) != self.pushed_version
             || self.flows_dirty
             || !self.input_events.is_empty()
         {
@@ -1093,10 +1172,10 @@ impl ShowEngine {
             .playback
             .next_deadline()
             .is_some_and(|due| due <= pult_schema::types::sequence::now_ms());
-        if !follow_due && self.state_version == self.playback_seen {
+        if !follow_due && self.version_of(PLAYBACK_COLLECTIONS) == self.playback_seen {
             return Vec::new();
         }
-        self.playback_seen = self.state_version;
+        self.playback_seen = self.version_of(PLAYBACK_COLLECTIONS);
 
         let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
         let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
@@ -1186,7 +1265,9 @@ impl ShowEngine {
     /// drift into replicating differently.
     async fn run_synced_command(&mut self, path: Path, args: serde_json::Value) {
         if self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await.is_ok() {
-            self.state_version += 1;
+            // Everything, for the reason a `Call` is everything: the path is the
+            // command's, and what running it wrote is not in it.
+            self.touch_everything();
             self.record_write(&path, Lifecycle::Synced);
             if let Some(sync) = &self.sync {
                 sync.broadcast_synced(path, args, self.clock.clone(), Authorship::none()).await;
@@ -1362,7 +1443,7 @@ impl ShowEngine {
         if self.apply_set(path.clone(), value.clone(), Lifecycle::Synced).await.is_err() {
             return;
         }
-        self.state_version += 1;
+        self.touch(&path);
         self.record_write(&path, Lifecycle::Synced);
         self.log_local_write(&path, &value, Lifecycle::Synced, &Authorship::none()).await;
         self.broadcast_after_set(&path, value.clone());
@@ -1579,7 +1660,7 @@ impl ShowEngine {
                 continue;
             }
             moved.push(inverse.path.clone());
-            self.state_version += 1;
+            self.touch(&inverse.path);
             self.record_write(&inverse.path, lifecycle);
             self.log_local_write(&inverse.path, &inverse.value, lifecycle, &written).await;
             self.broadcast_after_set(&inverse.path, inverse.value.clone());
@@ -2520,6 +2601,10 @@ impl ShowEngine {
         // the row it named is gone.
         let touched_versions = self.version_touched_by(&op.path, &op.value);
         if self.apply_set(op.path.clone(), op.value.clone(), op.lifecycle).await.is_ok() {
+            // Here rather than at the call site, because only here is the path known —
+            // and a peer's own `stations` row is a write this station must not read as
+            // its rig having moved.
+            self.touch(&op.path);
             self.log_operation(&op).await;
             self.path_clocks.insert(op.path.clone(), (op.clock, op.node_id));
             self.broadcast_after_set(&op.path, op.value);

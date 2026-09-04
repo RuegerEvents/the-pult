@@ -817,3 +817,102 @@ async fn each_connector_reports_its_own_frame_cost() {
     .expect("the quiet connector to fall silent inside three seconds");
     assert!(later.iter().all(|c| c.frames > 0), "nothing reports a window of no frames");
 }
+
+// ── When the next frame goes ──────────────────────────────────────────────────
+//
+// `schedule` is the whole of a connector's rate, and it was measured from the
+// moment the loop woke rather than from the deadline it woke to. Nothing wakes
+// exactly on time, so every frame was late by the sum of every lateness before it:
+// a persistent 2.4 ms on a 25 ms period made a 40 Hz connector draw at 36.
+
+/// A plugin that wants a frame at whatever rate the test says, and a different one
+/// while settled, so a change of gait can be asked about.
+struct Paced {
+    moving: std::time::Duration,
+    settled: std::time::Duration,
+}
+
+impl OutputPlugin for Paced {
+    fn name(&self) -> &'static str {
+        "paced"
+    }
+    fn frames(&self) -> Frames {
+        Frames { while_moving: Some(self.moving), when_settled: Some(self.settled) }
+    }
+    fn send<'a>(&'a mut self, _: &'a Patch, _: &'a [Uuid], _: u64) -> SendFuture<'a> {
+        Box::pin(async move { Ok(Frame::evaluated(std::time::Duration::ZERO)) })
+    }
+}
+
+fn a_paced(moving_ms: u64, settled_ms: u64) -> Running {
+    Running::new(
+        an_output(OutputKind::Artnet, None),
+        Box::new(Paced {
+            moving: std::time::Duration::from_millis(moving_ms),
+            settled: std::time::Duration::from_millis(settled_ms),
+        }),
+    )
+}
+
+#[test]
+fn lateness_is_jitter_about_a_rate_and_not_a_debt_that_compounds() {
+    let mut output = a_paced(25, 800);
+    let start = std::time::Instant::now();
+    output.next_frame = Some(start);
+
+    // Twenty frames, each woken 3 ms after its deadline — which is what the loop
+    // actually does on a real machine.
+    let late = std::time::Duration::from_millis(3);
+    let mut due = start;
+    for _ in 0..20 {
+        output.schedule(due + late, true);
+        due = output.next_frame.expect("a paced connector always wants another");
+    }
+
+    assert_eq!(
+        due.duration_since(start),
+        std::time::Duration::from_millis(20 * 25),
+        "twenty 25 ms frames have to land 500 ms after the first however late each \
+         wake was. Measured from the wake instead of the deadline this is 560 ms, \
+         which is 36 Hz on a connector asking for 40."
+    );
+}
+
+#[test]
+fn a_connector_short_of_frame_is_asked_again_at_once() {
+    let mut output = a_paced(25, 800);
+    let start = std::time::Instant::now();
+    output.next_frame = Some(start);
+
+    // Woken 40 ms after a deadline on a 25 ms period: the chained deadline is already
+    // in the past, and there is no catching that up by scheduling into it.
+    let woke = start + std::time::Duration::from_millis(40);
+    output.schedule(woke, true);
+
+    assert_eq!(
+        output.next_frame, Some(woke),
+        "a connector that cannot hold its rate draws flat out rather than accruing a \
+         backlog of deadlines it will burst through later"
+    );
+}
+
+#[test]
+fn a_settled_connector_that_starts_moving_does_not_wait_out_its_keep_alive() {
+    let mut output = a_paced(25, 800);
+    let start = std::time::Instant::now();
+    // Settled: the next keep-alive is 800 ms out.
+    output.schedule(start, false);
+    assert_eq!(output.next_frame, Some(start + std::time::Duration::from_millis(800)));
+
+    // The keep-alive comes round, and by then a cue is running.
+    let woke = start + std::time::Duration::from_millis(800);
+    output.schedule(woke, true);
+
+    assert_eq!(
+        output.next_frame,
+        Some(woke + std::time::Duration::from_millis(25)),
+        "chaining from the deadline must not carry the old gait's period with it: an \
+          800 ms keep-alive deadline plus 25 ms would make the second frame of a cue \
+         arrive when the first light had already got where it was going"
+    );
+}

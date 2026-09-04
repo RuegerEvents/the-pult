@@ -66,6 +66,32 @@ a fade itself is told once. The engine pushes when the *show* changes — a cue 
 fixture patched, a fader grabbed — and says nothing at all in between. A three-second
 fade over two thousand fixtures is one push.
 
+**And "the show" is a version per collection, not one over everything.** `push_output`
+hands the connectors `OUTPUT_COLLECTIONS` — fixtures, fixture types, the programmer —
+and asks whether *those* have moved; `playback_pass` names its own list the same way.
+One counter over the whole show was what this used to be, and the difference is not
+academic: a station writes its own `stations` row every two seconds and its output
+status every second, so an idle console rebuilt and re-pushed an identical patch one to
+two times a second. At 5000 fixtures that costs **116 ms** inside the output loop, and
+it is where two thirds of the Art-Net connector's missing 10 Hz went. The list lives
+beside the read it belongs to, and the fallback is *everything*: a write nobody can
+attribute to a collection counts as all of them. Narrowing this until it says nothing
+is a rig that silently stops updating, which is why the gate is a pair.
+
+**A frame's deadline is measured from the last deadline, never from the wake.**
+Nothing wakes on time — 2.4 ms of timer granularity and scheduler latency is ordinary —
+and `Running::schedule` measuring from `Instant::now()` baked that into the period, so
+every frame was late by the sum of every lateness before it and a 25 ms period was
+really 27.4. Chained from the deadline, the same 2.4 ms is jitter about a fixed rate.
+The chain is *clamped* to `[now, now + period]` rather than merely floored, because a
+settled DMX line waits 800 ms between keep-alives and chaining off one would make the
+first frame of a cue arrive after the light had got where it was going.
+
+Worth holding on to: **the frame cost could not have found either of those.**
+`began.elapsed()` wraps `plugin.send`, which is the right thing for it to measure —
+both defects lived in the gaps *between* frames, and nothing measuring the work inside
+a frame can see a frame that was never asked for.
+
 **The browser has to know the station's clock.** The objects are anchored in console
 time, so a page evaluating against an unadjusted `Date.now()` runs every fade out by
 however wrong its own clock is, silently. `frontend/src/lib/ws/clock.ts` estimates the
@@ -976,6 +1002,13 @@ What it is *not*: what the process costs. That is `cpu_percent`, in the same row
 is why anything printing one prints the other. And a connector that emitted nothing in a
 window reports **nothing rather than zero**, since zero would read as "instant" when the
 truth is that nothing happened.
+
+**Read the Hz column against the frame cost, because they answer different questions.**
+A connector at 4.5 ms of a 25 ms budget is not short of frame; a connector at 29 Hz when
+`Frames::DMX` asks for 40 is sampling every fade eleven times a second fewer than it
+should, and no amount of headroom inside the frame says anything about that. Both defects
+that figure eventually named were outside the frame entirely — see *Connectors own their
+rate*.
 
 ## What is on the wire, and a connector says what its own traffic looks like
 

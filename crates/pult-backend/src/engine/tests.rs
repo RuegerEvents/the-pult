@@ -4598,3 +4598,128 @@ mod peers {
 // more: a pass happens when the show changes, and a fade in progress is not a pass.
 // `infra::connectors` and `infra::stations` hold what is left of these.
 
+
+// ── What makes the engine hand the connectors a patch ─────────────────────────
+//
+// A count, not a duration, for the reason `tests/counts.rs` gives: the number of
+// patches a diagnostic causes is the same on a laptop and on a runner, and the
+// milliseconds each one costs are not.
+
+mod pushing_the_rig {
+    use super::*;
+    use crate::infra::connectors::{OutputCommand, OutputHandle};
+
+    /// An engine with the output side's receiver kept, so a test can count what it
+    /// was handed rather than infer it from a rate.
+    async fn watched() -> (EngineHandle, tokio::sync::mpsc::Receiver<OutputCommand>) {
+        let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
+        let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        engine.set_output(OutputHandle(tx));
+        tokio::spawn(engine.run());
+        (handle, rx)
+    }
+
+    /// Everything the engine has decided to send by now. The engine pushes on its own
+    /// pass rather than inside the write, so a round-trip read is not enough on its
+    /// own — but a pass is scheduled immediately when anything is owed, so a short
+    /// settle is, and nothing here is timing-sensitive beyond "the loop got a turn".
+    async fn patches(rx: &mut tokio::sync::mpsc::Receiver<OutputCommand>) -> usize {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let mut seen = 0;
+        while let Ok(cmd) = rx.try_recv() {
+            if matches!(cmd, OutputCommand::Patch { .. }) {
+                seen += 1;
+            }
+        }
+        seen
+    }
+
+    /// The one this was built for. A station writes its own `stations` row every two
+    /// seconds and its output status every second — figures about the machine, which
+    /// cannot reach a lamp. When one counter stood for the whole show, each of those
+    /// made the engine re-read the rig and hand the connectors an identical patch: at
+    /// five thousand fixtures that push costs 116 ms inside the output loop, and the
+    /// Art-Net connector drew at 30 Hz where `Frames::DMX` asks for 40.
+    #[tokio::test]
+    async fn a_stations_own_health_report_pushes_no_patch() {
+        let (engine, mut rx) = watched().await;
+        engine
+            .set(create_path("fixtures"), Lifecycle::Persisted, a_fixture())
+            .await
+            .unwrap();
+        // The rig arriving is a change to the show and is supposed to be pushed.
+        assert!(patches(&mut rx).await > 0, "patching a fixture pushes");
+
+        for _ in 0..5 {
+            engine
+                .set(create_path("stations"), Lifecycle::Synced, a_station_row(Uuid::new_v4()))
+                .await
+                .unwrap();
+        }
+
+        let pushed = patches(&mut rx).await;
+        assert_eq!(
+            pushed, 0,
+            "five station health reports pushed {pushed} patches. Nothing about a CPU \
+             percentage changes what leaves this station, and a console reporting on \
+             itself must not cost the rig a frame."
+        );
+    }
+
+    /// And the other half of it: a write that *can* reach a lamp still pushes. A
+    /// version counter narrowed until it says nothing is a rig that stops updating,
+    /// which is a far worse failure than the one above.
+    #[tokio::test]
+    async fn a_write_to_the_rig_still_pushes() {
+        let (engine, mut rx) = watched().await;
+        engine
+            .set(create_path("fixtures"), Lifecycle::Persisted, a_fixture())
+            .await
+            .unwrap();
+        let _ = patches(&mut rx).await;
+
+        engine
+            .set(
+                create_path("programmer_values"),
+                Lifecycle::Synced,
+                serde_json::json!({
+                    "id": Uuid::new_v4(),
+                    "fixture_id": Uuid::new_v4(),
+                    "parameter_kind": "Intensity",
+                    "value": { "type": "Float", "value": 1.0 },
+                    "locked": false,
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            patches(&mut rx).await > 0,
+            "an operator taking a fader has to reach the wire"
+        );
+    }
+
+    fn a_fixture() -> serde_json::Value {
+        serde_json::to_value(Fixture {
+            id: Uuid::new_v4(),
+            name: "Dimmer".into(),
+            address: FixtureAddress::dmx(1, 1),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    fn a_station_row(id: Uuid) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "hostname": "console",
+            "is_leader": false,
+            "sync_addr": "127.0.0.1:1",
+            "http_addr": "127.0.0.1:2",
+            "cpu_percent": 12.5, "mem_used": 0, "mem_total": 0, "uptime_s": 0,
+            "output_plugins": [], "computes_fixtures": 0, "total_fixtures": 0,
+            "last_seen": Utc::now().to_rfc3339(),
+        })
+    }
+}

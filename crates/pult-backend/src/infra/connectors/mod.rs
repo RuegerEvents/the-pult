@@ -334,10 +334,29 @@ impl Running {
     }
 
     /// Put the next frame where this connector's own rate says it goes.
+    ///
+    /// Measured from **the deadline that just fired**, not from the moment the loop
+    /// woke up to it. Nothing wakes exactly on time — a couple of milliseconds of
+    /// timer granularity and scheduler latency is the ordinary case — and measuring
+    /// from the wake bakes that delay into the period, so every frame is late by the
+    /// sum of every lateness before it. At `Frames::DMX`'s 25 ms a persistent 2.4 ms
+    /// made a 40 Hz connector draw at 36. From the deadline, lateness is jitter about
+    /// a fixed rate instead of a debt that compounds.
+    ///
+    /// Held between `from` and one period past it, which is what makes chaining safe
+    /// in both directions. The floor is for a connector whose frame costs more than
+    /// its period: deadlines in the past cannot be caught up with, and drawing again
+    /// immediately is the honest answer to being short of frame. The ceiling is for a
+    /// connector changing gait — a settled DMX line waits 800 ms between keep-alives,
+    /// and chaining from that deadline would make the first frame of a cue up to 800
+    /// ms late.
     fn schedule(&mut self, from: std::time::Instant, moving: bool) {
         let frames = self.plugin.frames();
         let after = if moving { frames.while_moving } else { frames.when_settled };
-        self.next_frame = after.map(|period| from + period);
+        self.next_frame = after.map(|period| match self.next_frame {
+            Some(due) => (due + period).clamp(from, from + period),
+            None => from + period,
+        });
     }
 }
 
