@@ -17,6 +17,7 @@
 	import { addToast } from '$lib/toasts.js';
 	import { backendOrigin, type OpenShow } from '$lib/ws/endpoint.js';
 	import { focusOnMount, selectOnMount } from '$lib/actions.js';
+	import { beginSwitch, endSwitch } from '$lib/stores/switching.js';
 
 	let { show }: { show: OpenShow } = $props();
 
@@ -43,7 +44,7 @@
 		const what = naming;
 		naming = null;
 		if (what === 'version') return save(typed || undefined);
-		if (what === 'copy' && typed) return ask('show.saveAs', { name: typed });
+		if (what === 'copy' && typed) return ask('show.saveAs', { name: typed }, `saving a copy as ${typed}`);
 	}
 
 	/** A version, named or not. Not a switch: the console goes on running. */
@@ -59,14 +60,22 @@
 		}
 	}
 
-	/** A switch. Answers, and then the station stops — so nothing here waits after it. */
-	async function ask(method: string, args: Record<string, unknown> = {}) {
+	/**
+	 * A switch. Answers, and then the station stops — so nothing here waits after it.
+	 *
+	 * The switching screen goes up *before* the station is asked, with the words the
+	 * operator chose: the socket is about to close, and the cover has to be there
+	 * before the connection handling notices.
+	 */
+	async function ask(method: string, args: Record<string, unknown>, doing: string) {
 		open = false;
 		if (busy) return;
 		busy = true;
+		beginSwitch(doing);
 		try {
 			await client.call(method, args);
 		} catch (e) {
+			endSwitch();
 			addToast(`${e}`);
 			busy = false;
 		}
@@ -129,7 +138,7 @@
 				Export with versions
 			</a>
 			<span class="heading">Another show</span>
-			<button onclick={() => ask('show.close')}>Close — back to the start</button>
+			<button onclick={() => ask('show.close', {}, 'closing the show')}>Close — back to the start</button>
 			<span class="path">{show.path}</span>
 		</div>
 	{/if}

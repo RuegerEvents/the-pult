@@ -313,7 +313,7 @@ async fn a_snapshot_contains_its_own_row() {
     );
     assert_eq!(inside[0].name.as_deref(), Some("Before act two"));
 
-    station.shutdown().await;
+    station.shutdown("the test is over").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -348,7 +348,7 @@ async fn deleting_a_version_takes_its_file_with_it() {
 
     wait_until_here(&station, id, false).await;
     assert!(!file.exists(), "the file goes with the row");
-    station.shutdown().await;
+    station.shutdown("the test is over").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -378,7 +378,7 @@ async fn a_station_says_which_snapshots_it_actually_holds() {
     }
     assert_eq!(here, vec![id]);
 
-    station.shutdown().await;
+    station.shutdown("the test is over").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -522,7 +522,7 @@ async fn a_snapshot_this_disk_holds_that_the_show_forgot_gets_its_row_back() {
     let station = pult_backend::start(config.clone()).await.expect("a station starts");
     let id = a_version(&station, Some("Kept")).await;
     wait_until_here(&station, id, true).await;
-    station.shutdown().await;
+    station.shutdown("the test is over").await;
 
     // Take the row out from under the show, leaving the file: what a restore does.
     forget_the_row(&show, id).await;
@@ -531,7 +531,7 @@ async fn a_snapshot_this_disk_holds_that_the_show_forgot_gets_its_row_back() {
     for _ in 0..200 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         if versions_of(&station).await.iter().any(|row| row.id == id) {
-            station.shutdown().await;
+            station.shutdown("the test is over").await;
             return;
         }
     }
@@ -570,8 +570,8 @@ async fn both_stations_snapshot_one_save() {
     wait_until_here(&booth, id, true).await;
     wait_until_here(&roof, id, true).await;
 
-    roof.shutdown().await;
-    booth.shutdown().await;
+    roof.shutdown("the test is over").await;
+    booth.shutdown("the test is over").await;
 }
 
 /// Delete a `versions` row from a closed show, leaving its file behind.

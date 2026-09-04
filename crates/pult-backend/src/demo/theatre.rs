@@ -21,11 +21,19 @@ use pult_schema::types::{
 use super::{
     id,
     kit::{
-        a_cue, a_fixture, a_piece, a_stack, a_type, aimed, capture, colour, facing, intensity,
-        level, sky, truss_run, Addresses,
+        a_cue, a_fixture, a_piece, a_stack, a_type, aimed, boom, capture, colour, facing,
+        intensity, level, on, sky, truss_run, Addresses, HUNG_BELOW,
     },
     Seeder,
 };
+
+/// Where a system hangs: under a bar, or up a boom.
+enum Hang {
+    /// An index into the bars below.
+    Bar(usize),
+    /// An index into the booms below.
+    Boom(usize),
+}
 
 /// One lighting system: what it is called, what type it is made of, how many, and
 /// where they hang.
@@ -34,8 +42,7 @@ struct System {
     /// Index into the types below.
     kind: usize,
     count: u16,
-    /// Which bar or boom they hang on, as an index into the runs below.
-    bar: usize,
+    hang: Hang,
     /// The direction the whole system points.
     aim: Vec3,
 }
@@ -55,14 +62,23 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         into.create("fixture_types", *kind).await?;
     }
 
-    // The room. A twelve-metre opening, three bars over it and a boom each side.
-    let runs = [
-        truss_run(into, "FOH bar", None, Vec3 { x: 0.0, y: 6.0, z: 5.0 }, 12.0).await?,
-        truss_run(into, "LX 2", None, Vec3 { x: 0.0, y: 6.5, z: -1.0 }, 12.0).await?,
-        truss_run(into, "LX 4", None, Vec3 { x: 0.0, y: 6.5, z: -4.0 }, 12.0).await?,
-        truss_run(into, "Boom SL", None, Vec3 { x: -7.0, y: 3.0, z: 0.0 }, 3.0).await?,
-        truss_run(into, "Boom SR", None, Vec3 { x: 7.0, y: 3.0, z: 0.0 }, 3.0).await?,
-        truss_run(into, "Cyc batten", None, Vec3 { x: 0.0, y: 5.0, z: -6.0 }, 9.0).await?,
+    // The room. A twelve-metre opening, three bars over it, a batten for the cloth,
+    // and a boom each side — three metres of truss stood on its end with its foot on
+    // the deck, which is what a boom is and what the first version of this demo drew
+    // as a fourth and fifth horizontal bar.
+    // Each bar with its length beside it, because a system is spread along the bar
+    // it hangs on and not along some other one: the first version spread the cyc
+    // batten's eight cells over ten metres of a nine-metre bar, and the outer ones
+    // hung in the air past its ends.
+    let bars = [
+        (truss_run(into, "FOH bar", None, Vec3 { x: 0.0, y: 6.0, z: 5.0 }, 12.0).await?, 12.0),
+        (truss_run(into, "LX 2", None, Vec3 { x: 0.0, y: 6.5, z: -1.0 }, 12.0).await?, 12.0),
+        (truss_run(into, "LX 4", None, Vec3 { x: 0.0, y: 6.5, z: -4.0 }, 12.0).await?, 12.0),
+        (truss_run(into, "Cyc batten", None, Vec3 { x: 0.0, y: 5.0, z: -6.0 }, 9.0).await?, 9.0),
+    ];
+    let booms = [
+        boom(into, "Boom SL", None, Vec3 { x: -7.0, y: 1.5, z: 0.0 }, 3.0).await?,
+        boom(into, "Boom SR", None, Vec3 { x: 7.0, y: 1.5, z: 0.0 }, 3.0).await?,
     ];
 
     // And something for the light to land on: a low rostrum upstage centre, and a
@@ -85,11 +101,11 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     }
 
     let systems = [
-        System { name: "Front", kind: 0, count: 12, bar: 0, aim: facing::DOWNSTAGE },
-        System { name: "Back", kind: 0, count: 10, bar: 2, aim: facing::UPSTAGE },
-        System { name: "Side SL", kind: 1, count: 4, bar: 3, aim: facing::FROM_LEFT },
-        System { name: "Side SR", kind: 1, count: 4, bar: 4, aim: facing::FROM_RIGHT },
-        System { name: "Cyc", kind: 2, count: 8, bar: 5, aim: facing::AT_THE_CLOTH },
+        System { name: "Front", kind: 0, count: 12, hang: Hang::Bar(0), aim: facing::DOWNSTAGE },
+        System { name: "Back", kind: 0, count: 10, hang: Hang::Bar(2), aim: facing::UPSTAGE },
+        System { name: "Side SL", kind: 1, count: 4, hang: Hang::Boom(0), aim: facing::FROM_LEFT },
+        System { name: "Side SR", kind: 1, count: 4, hang: Hang::Boom(1), aim: facing::FROM_RIGHT },
+        System { name: "Cyc", kind: 2, count: 8, hang: Hang::Bar(3), aim: facing::AT_THE_CLOTH },
     ];
 
     let mut addresses = Addresses::from(1);
@@ -97,8 +113,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         let kind = types[system.kind];
         for n in 0..system.count {
             // Spread evenly along whatever they hang on, so the rig view shows a
-            // system rather than a heap. A boom is vertical, so its lanterns go up
-            // it rather than across.
+            // system rather than a heap.
             let spread = |span: f32| {
                 if system.count > 1 {
                     -span / 2.0 + span * (n as f32 / (system.count - 1) as f32)
@@ -106,20 +121,34 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                     0.0
                 }
             };
-            let vertical = system.name.starts_with("Side");
-            let offset = if vertical {
-                Vec3 { x: 0.0, y: spread(2.4), z: 0.0 }
-            } else {
-                Vec3 { x: spread(10.0), y: -0.3, z: 0.0 }
+            let (parent, position) = match system.hang {
+                // Under the bar, on a clamp, spread over all but the last half metre
+                // at each end of it.
+                Hang::Bar(bar) => {
+                    let (id, metres) = bars[bar];
+                    (id, aimed(spread(metres - 1.0), -HUNG_BELOW, 0.0, system.aim))
+                }
+                // Up the boom on a sidearm towards centre stage, so the lantern is
+                // clamped to the face of the boom rather than drawn inside it. The
+                // offset and the aim are world terms; `on` puts them in the boom's
+                // own turned frame.
+                Hang::Boom(index) => {
+                    let (id, handle) = &booms[index];
+                    let towards_centre = if handle.position.x < 0.0 { 0.45 } else { -0.45 };
+                    (
+                        *id,
+                        on(handle, Vec3 { x: towards_centre, y: spread(2.2), z: 0.0 }, system.aim),
+                    )
+                }
             };
 
             let mut fixture = a_fixture(
                 &format!("{} {}", system.name, n + 1),
                 kind.id,
                 addresses.take(kind.channel_count),
-                aimed(offset.x, offset.y, offset.z, system.aim),
+                position,
             );
-            fixture.parent = Some(runs[system.bar]);
+            fixture.parent = Some(parent);
             into.create("fixtures", &fixture).await?;
         }
     }

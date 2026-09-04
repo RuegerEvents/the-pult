@@ -3469,6 +3469,179 @@ cargo run -p pult-backend                    # → the welcome screen
 cargo run -p pult-backend -- --demo festival --show /tmp/F.pult
 ```
 
+### 53. Three rigs looked at, a viewer that draws when there is something to draw, and a switch that says so
+
+The user opened the four demos from task 52 and looked at them, which is the only
+review a demo can have. Four things came back, and a fifth was found on the way.
+
+**1. The Theatre's booms were horizontal.** `truss_run` runs along X and the booms
+were two more of it, with their lanterns stacked in the air beside them. A boom is a
+run of truss stood on its end, so `kit::boom` is the same run with its handle turned
+a quarter about Z — and a lantern on it has to be written *in the boom's frame*,
+since a fixture's position is relative to what it hangs off, rotation included.
+`kit::on(parent, world_offset, world_direction)` does that inversion once, so no
+show file hand-inverts a rotation: the demos still say where a light is and which
+way it points in world terms. The demo test now composes through `world_transform`
+before asking whether a light points down, which is what it should have been asking
+all along, and checks that nothing hangs *inside* the bar it is clamped to.
+
+**2. The Club's washes floated beside the truss.** Hung 600 mm off the bar in Z. Now
+a mover and a wash by turns along it, all at `HUNG_BELOW` — 350 mm under the centre
+line, which is the chord square plus a clamp, and the one figure every demo uses.
+
+**3. The Festival was two hundred of one thing, all on at once, in cues that meant
+nothing.** It is now five kinds — profiles out front, spots and washes by turns over
+the stage, a row of blinders on the downstage truss looking at the crowd, beams and
+LED strobes along the back wall, a floor package standing on the deck, and a wash
+tower each side — in a layer per system, and **seven playbacks** each with a short
+stack of looks that ends in *Out*. Five come up in a look and two (the blinders, the
+floor) sit at nothing until Go, because a rig where everything is asserted at once
+is a rig where nothing reads. `the_club_and_the_festival_come_up_running` had
+asserted that *every* sequence was running; it now asserts that something is moving,
+and a second test that something is waiting.
+
+**4. The GPU was pinned at 100% on the Festival and at 40% on a dark Theatre, on an
+M4 Max.** Three things, each of which was true on its own:
+
+- The view drew at the display's rate, which on a ProMotion display is a hundred and
+  twenty a second, whether or not anything had changed. It now draws **at most sixty
+  a second and only when there is something new to see**: the camera moved, the rig
+  changed, or the picture animates on its own clock (a lit beam with haze in it, a
+  strobe). "Changed" is worked out by comparing this frame's attributes against the
+  last frame's rather than by watching a store, because the output store ticks every
+  frame whether or not a value moved. A settled dark rig now costs **nothing**, and
+  the panel prints *idle* rather than a rate for frames it did not draw.
+- Every fixture was an instance of the beam mesh, lit or not, and an unlit cone
+  whose fragments all `discard` is still a cone that is rasterised. Only lit beams
+  get an instance now, packed from the front.
+- The canvas was rendered at the display's full device pixel ratio. That is now a
+  view setting, defaulting to 1.5.
+
+And the one that was *not* true, found by measuring. The beam fragment shader — four
+octaves of value noise per fragment, over a hundred and forty overlapping additive
+cones — was the obvious suspect, and it is not the cost. Measured on this machine
+with `EXT_disjoint_timer_query_webgl2` on a 960-px-wide panel: the beams are 5 ms of
+a 5.4 ms frame; drawing them at 1×, 1.5× and 2× gives 4.9, 5.4 and 6.5 ms; four
+octaves of haze against none is the same number; 1,536 triangles per cone against 64
+is the same number; but 10, 40 and 140 lit beams give 1.1, 3.1 and 5.7 ms, and
+single-sided unblended cones 2.8 ms. So the cost is neither per pixel nor per
+triangle nor per instruction: it is **per blended layer stacked on the same tile**,
+which is what a tile-based GPU serialises. That finding is a candidate,
+`beam-overdraw`, below — the lever is how many cones cover the same pixels, and
+neither resolution nor shader work moves it. What did come out free was
+`HEIGHT_SEGMENTS = 1`: a cone is straight, so its rings were drawing nothing.
+
+**And the figure the panel showed was the wrong one to feel lag by.** "8.7 ms" was
+the gap between animation frames, which a rAF loop keeps up whatever the GPU is
+doing; the picture can be several frames behind the pointer while every CPU number
+looks fine. The panel now prints both: the page's own work per drawn frame, and how
+long the GPU took over it where the browser will say.
+
+**5. Work light.** A `View` sheet on the rig panel: how brightly this screen draws
+what no fixture is lighting, and how many pixels it renders. This screen's and nobody
+else's — the haze is the show's, because how hazy the room is is a fact about the
+room, and a work light is not — so it sits in `localStorage` beside the layout, in
+`frontend/src/lib/stores/view.ts`, and every rig panel on the screen reads the one
+store.
+
+**6. Opening or closing a show showed "the console stopped answering", twice.**
+Opening a show is the station stopping and another starting in its place, and a page
+that treated that as a lost console drew three screens in a row for one act: the
+stopped-answering cover after its 600 ms grace, a reload, then "connecting to the
+console". Now it is one screen. The menu and the welcome screen **begin the switch
+before they ask** — `beginSwitch("opening Festival")` — so the cover is up before
+the socket goes, and the switch is kept in `sessionStorage` so the reloaded page
+comes up already saying it. It ends when the station answers `/api/config` and this
+tab is staying put, which is the hook `watchStation` now offers. And the tablet at
+the back of the room, on somebody else's socket, is *told*: the station's stop signal
+carries **why** (`ShowSwitch::describe` — "opening Festival.pult", "closing the
+show", "restoring a version") and the socket's send task writes it into a close frame
+with code **4001**, so a page that did not press the button draws the same screen.
+Any other close code is still a lost console and draws as one.
+
+### The traps
+
+**The send task holds the sink, so only it can say goodbye.** The socket loop and
+the send task both watch the stop signal; the loop drops the last sender into the
+send task's queue at the same instant the signal fires, and a `select!` that took the
+closed-queue branch first hung up with no farewell. The two-page test caught it on
+the first run — one direction got the reason and the other did not — so the reason
+is checked on *both* branches.
+
+**A hidden tab has no animation frames.** Half a morning of "the readout says idle
+while the picture animates" was Chrome pausing `requestAnimationFrame` in a tab
+whose window was occluded — the browser extension used to drive the page could
+screenshot it but not unhide it. Every figure above was taken in a headed Chrome
+launched by Playwright, where the window is on screen; nothing measured through the
+extension's tab is worth anything, and neither is a `--measure-browser` run in
+headless Chromium, whose GPU is SwiftShader.
+
+**A single-precision record compared against a double is never equal.** The
+last-frame record is a `Float32Array` and the value is a `number`; compared raw, a
+rig that has not moved "changed" every frame and the Theatre drew forever. Through
+`Math.fround`.
+
+```
+cargo test -p pult-backend --lib demo      # the booms, the clamp distance, what is running and what waits
+cargo test -p pult-backend --test shows    # a switch still opens, closes, restores
+cd frontend && npm test                    # the close code, the patience, what the screen says
+cargo run -p pult-backend -- --demo festival --show /tmp/F.pult   # and look at it
+```
+
+### 54. A second look, and a cue is the stack up to it
+
+The user looked again at task 53's work. Four corrections, one of which was a
+playback bug that had nothing to do with the demos, and two questions answered below
+as a candidate rather than as code.
+
+**1. Haze density meant nothing at 0.** The number mixed the turbulence folds into a
+beam that was drawn in full regardless, so a clear room still showed every beam and
+the scale read as arbitrary. It now means what it says: the haze is the only reason a
+beam can be seen in the air, so density is first how much of the beam shows — none at
+0, all of it at 1 — and then how much of the folds. The default is 1, because a rig
+view that draws no beams is the more misleading picture of the two, and a designer
+lighting a clear room turns it down.
+
+**2. The cyc batten's cells hung in the air past its ends.** Every system was spread
+over ten metres whichever bar it hung on, and the batten is nine. A bar carries its
+length now and a system is spread over all but the last half metre of it.
+
+**3. The work light slider took the camera home.** The effect that builds the scene
+read the view store for the pixel ratio, so a change to *any* view setting rebuilt the
+renderer, the camera and the controls. Read untracked now; a separate effect keeps
+both settings applied. And the range was wrong: it is 0–100% now, blackout to house
+lights up, with 40% the view as it was first drawn.
+
+**4. Going back from cue 5 to cue 1 in the Theatre left the side booms on.**
+`start_cue` applied a cue's own captures and nothing else, so a parameter a later cue
+had brought in stayed where that cue put it — playback had no notion that a cue is
+the *stack up to it*. `Playback::take_cue` works that out from the show rather than
+from memory: the latest capture of every key over the cues up to and including this
+one. A capture tracked in from an earlier cue is left alone if that cue's fade or
+effect is already what is driving the parameter — which is every forward Go, so
+nothing that used to happen changed — and otherwise started with the taken cue's
+times. A key only later cues capture goes home over the cue's down time, unless
+another sequence that is on could drive it, the same exception a release makes.
+Jumping *forward* over cues applies what they set on the way, which is also what a
+tracking console does and also was not happening.
+
+The choice worth stating: this is **tracking** playback, not cue-only. A cue that
+names four channels is the look of every cue before it with those four changed. The
+Theatre demo's blackout still has to zero everything explicitly, because tracking
+never releases a key on its own; only jumping to a point in the stack before the key
+was ever captured does.
+
+### The traps
+
+**The demo tests said the Theatre hung together, and it did — in every cue's own
+captures.** No test drove a stack backwards. `a_cue_is_the_stack_up_to_it` now does,
+in both directions.
+
+```
+cargo test -p pult-backend --lib playback   # the stack, both ways, and what another sequence keeps
+cargo test -p pult-backend --lib demo       # the batten holds its cells
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -3479,7 +3652,7 @@ asked and what is true of the code today, so the questions do not get
 re-discovered from scratch every time somebody picks the item up. When one is
 built it becomes the next numbered task and leaves this list.
 
-Verified against the code on 2026-09-03 unless an entry says otherwise.
+Verified against the code on 2026-09-04 unless an entry says otherwise.
 
 ### The order
 
@@ -3629,6 +3802,20 @@ on the desk. **show-control is the exception and the one with a case for moving
 up now**: it needs a MIDI port and nothing else, and a stage manager pressing Go
 is a more common way for this console to be driven than any surface in the list.
 
+**render-modes** was added on 2026-09-04 out of the user's second look at task 53
+and sits high: its first half (wireframe, cones) is small and is also the answer for
+a machine short of GPU, and its second half (an HDR target and tone mapping) is the
+only fix for a picture that goes white where beams cross, which is the first thing a
+lighting designer sees wrong. It belongs between camera-home-presets and
+scene-editing in the order above.
+
+**beam-overdraw** was added on 2026-09-04 out of task 53's measurement and is not
+placed either: it is the answer to "why is the GPU busy" with the levers named, and
+it becomes worth doing the day a rig view is short of frame on a machine somebody is
+actually running a show from. Task 53 already took the free wins — sixty a second at
+most, nothing drawn when nothing changed, only lit beams drawn — which is what turned
+a pinned GPU into an idle one on a dark stage.
+
 Items 22 and 23 were added on 2026-09-03 and sit at the end for a different reason:
 neither is blocked on anything, and both are blocked on *time*. A migration path is
 worth nothing until there is a showfile worth migrating, and the gaps in how plugins
@@ -3772,8 +3959,11 @@ these did not.
 - **Instancing the fixture bodies.** The beams are one `InstancedMesh`; the bodies are
   individual meshes reused between frames. Task 51 measured evaluating at 94% of the
   *station's* frame and left the browser's own body-drawing cost unasked, because
-  going imperative bought the option without needing to spend it. Ask it with
-  `--measure-browser` against a 5000-fixture rig before writing anything.
+  going imperative bought the option without needing to spend it. **Task 53 asked
+  it**, on the 176-fixture Festival: the bodies, the trusses, the grid, the deck and
+  the pool light together are under half a millisecond of GPU per frame and about a
+  millisecond of CPU. Not worth instancing at this size; ask again at 5000, in a
+  headed browser (see the task's traps).
 - **Picking, if the bodies are instanced.** The raycast is against per-fixture objects
   today. Instanced picking means either an id buffer or a manual intersection, and it
   is the reason instancing is not free.
@@ -3782,6 +3972,94 @@ these did not.
   be part of the beam shader is open.
 - **Placement.** Moving a fixture or a truss in 3D is `scene-editing`, not this: it
   changes the show rather than the picture, so it needs gestures, snap and multi-select.
+
+#### render-modes
+
+Asked by the user on 2026-09-04, after task 53: looking into several beams at once —
+from the side, along a truss — the picture goes to flat white, and would a set of
+rendering modes (wireframe, cones, real, photoreal) make sense? Yes to both, and they
+are one item, because the white-out is the thing the photoreal mode has to solve.
+
+**Why it goes white.** The beams are added straight into an 8-bit frame with
+`toneMapped: false`. Additive blending in a buffer that clips at 1.0 per channel
+saturates to white the moment two or three bright beams overlap — a saturated blue
+plus a saturated amber is (1, 1, 1). Tone mapping per fragment does not help, since
+the clipping happens in the blend after it. The fix is the one every renderer of
+light uses: **accumulate in a floating-point target and tone-map the sum**. In
+three.js that is a `HalfFloatType` render target for the scene, then a full-screen
+pass applying ACES (or AgX, which holds hue better as it rolls off) — which is the
+post-processing chain task 51 deliberately avoided, and the one thing that cannot be
+done without it. With the sum in HDR, overlapping beams roll off towards white
+smoothly and a saturated colour stays a colour. Nothing about the beam shader
+changes; `toneMapped` goes back on and the exposure becomes a view setting.
+
+**What else photoreal wants, in the order it pays:**
+
+- **Bloom** over the tone-mapped image, threshold above white: the halo a lens gives a
+  lamp looking at it, and the cheapest thing that reads as a photograph. One blur
+  pass at half resolution.
+- **A floor that is lit by every beam**, not by one spotlight following the
+  brightest. Either a small number of real `SpotLight`s (a dozen brightest, reused,
+  never mounted or unmounted — task 51's rule), or a projected disc per beam drawn
+  into the floor as a second additive layer, which scales like the beams do.
+- **Bodies lit by their own beam** — a head's lens glowing with its colour already
+  happens (emissive); the truss above it catching light does not.
+- **Haze that thins with height and with distance from the fog machine** is
+  atmosphere; a per-show gradient is cheap once the haze is a real quantity.
+- Shadows are not on this list. Nothing in a rig view casts one anybody looks at.
+
+**The modes.** A mode is *what a screen draws*, so it lives beside the work light in
+the view store, per screen. Four is the right number and they are not a quality
+ladder but four questions:
+
+- **Wireframe** — where is everything? Trusses and bodies as lines, no beams, a
+  bright work light. The plan view in three dimensions, and the mode a tablet with
+  no GPU to speak of should default to.
+- **Cones** — where is everything pointing? Flat translucent cones with no haze, no
+  attenuation and no blending arithmetic, coloured by output. The mode for aiming and
+  for a 5000-fixture rig, and the one that never white-outs because it does not add.
+- **Real** — what is in the air? Today's beam shader with haze: the working mode.
+- **Photoreal** — what would a camera see? Real plus the HDR target, tone mapping,
+  bloom and the lit floor. The mode to leave running on the screen behind the
+  designer's shoulder.
+
+Wireframe and Cones are a material switch and a shader flag each, and are worth
+doing first: they are also what a machine short of GPU needs, and `beam-overdraw`
+says the beams are the whole of the cost. Photoreal is the render-target chain,
+which is a day, and the floor, which is a design question.
+
+- **Not per show.** Two operators looking at one show in two modes are looking at
+  two pictures of one truth, and that is fine; the haze is the truth and stays the
+  show's.
+- The GPU timer task 53 added is the instrument for all of it; measure in a headed
+  browser.
+
+#### beam-overdraw
+
+What task 53's measurement found and did not fix. The beams cost about 5 ms of GPU
+per frame on the Festival, and that figure is **not per pixel, per triangle or per
+instruction** — rendering at 1× and 2× differs by a quarter, the haze octaves and the
+cone's triangle count make no difference at all — but it scales with the number of
+lit beams and halves when they are drawn single-sided and unblended. That is a
+tile-based GPU serialising the blended layers stacked on one tile: the cost is the
+*depth* of overlapping cones over the same pixels, and the levers are only the ones
+that reduce it.
+
+- **Frustum-cull per instance.** Every lit beam is drawn wherever the camera looks. A
+  cone entirely off screen costs nothing, but one that is *behind* the camera and
+  reaches past it does not, and neither does the 40 m run a shallow beam is drawn to.
+- **Shorten what is drawn.** `drawnLength` runs a cone on until its whole end ring is
+  under the deck, which for a beam aimed at the crowd is up to 40 m of tube covering
+  the whole screen. A cap per beam angle, or a fade that ends earlier for a wide one,
+  is fewer layers on every pixel.
+- **Front faces only, if the back wall can be faked.** Single-sided halved the cost
+  in the measurement, and the back wall of the tube is what makes the core bright.
+  Whether a term in the shader can stand in for it is a picture question.
+- **Not resolution, and not the noise.** Both were the obvious suspects and both were
+  measured out. The `View` sheet's resolution setting is still worth having for a
+  full-screen Retina display, where the tile count does finally exceed the cores.
+- Measure in a *headed* browser only: a hidden tab has no frames, and headless
+  Chromium's GPU is software.
 
 #### camera-home-presets
 

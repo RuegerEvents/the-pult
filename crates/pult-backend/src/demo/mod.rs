@@ -22,8 +22,9 @@
 //!   groups by system. What most of the world actually runs.
 //! - **Club** is movers, washes and strobes with effects left running, so the rig
 //!   view has something moving in it and the speed masters do something.
-//! - **Festival** is scale: two hundred heads on trusses that are themselves scene
-//!   objects, in layers, with six sequences each holding a slice of the rig.
+//! - **Festival** is scale and systems: a hundred and seventy-odd heads of five
+//!   kinds on trusses that are themselves scene objects, a layer per system, and
+//!   seven playbacks of which some are running and some are waiting for Go.
 //!
 //! None of them needs an asset, so a demo opens with no download and no network.
 
@@ -95,8 +96,9 @@ impl Demo {
                  running against two speed masters."
             }
             Demo::Festival => {
-                "Two hundred heads on trusses in layers, six sequences deep. The \
-                 one to open if you want to see the console work."
+                "Spots, washes, blinders, beams and strobes on six trusses, a floor \
+                 package and two towers, seven playbacks deep. The one to open if \
+                 you want to see the console work."
             }
         }
     }

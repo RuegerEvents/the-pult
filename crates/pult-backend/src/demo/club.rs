@@ -25,7 +25,7 @@ use super::{
     id,
     kit::{
         a_cue, a_fixture, a_piece, a_stack, a_type, aimed, capture, colour, facing, hue, intensity,
-        level, pan, strobe_rate, tilt, truss_run, Addresses,
+        level, pan, strobe_rate, tilt, truss_run, Addresses, HUNG_BELOW,
     },
     now_ms, Seeder,
 };
@@ -61,29 +61,37 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         .await?;
     }
 
+    // Eight positions along each twelve-metre truss, a mover and a wash by turns, all
+    // clamped under the bar. Interleaved along it rather than the washes hung on a
+    // second line beside it: the first version of this demo put them 600 mm off the
+    // truss, and a light that hangs off nothing is what that drew.
     let mut addresses = Addresses::from(1);
     for (row, truss) in [downstage, upstage].into_iter().enumerate() {
-        for n in 0..4u16 {
-            let x = -4.5 + 3.0 * n as f32;
-            let mut fixture = a_fixture(
-                &format!("Mover {}", row * 4 + n as usize + 1),
-                mover.id,
-                addresses.take(mover.channel_count),
-                aimed(x, -0.3, 0.0, facing::DOWN),
-            );
-            fixture.parent = Some(truss);
-            into.create("fixtures", &fixture).await?;
-        }
-        for n in 0..4u16 {
-            let x = -5.0 + 3.4 * n as f32;
-            let mut fixture = a_fixture(
-                &format!("Wash {}", row * 4 + n as usize + 1),
-                wash.id,
-                addresses.take(wash.channel_count),
-                // The washes are angled at the floor rather than straight down, so
-                // the two systems do not simply overlap.
-                aimed(x, -0.3, 0.6, if row == 0 { facing::DOWNSTAGE } else { facing::UPSTAGE }),
-            );
+        for slot in 0..8u16 {
+            let x = -5.25 + 1.5 * slot as f32;
+            let n = row * 4 + usize::from(slot / 2) + 1;
+            let mut fixture = if slot % 2 == 0 {
+                a_fixture(
+                    &format!("Mover {n}"),
+                    mover.id,
+                    addresses.take(mover.channel_count),
+                    aimed(x, -HUNG_BELOW, 0.0, facing::DOWN),
+                )
+            } else {
+                a_fixture(
+                    &format!("Wash {n}"),
+                    wash.id,
+                    addresses.take(wash.channel_count),
+                    // The washes are angled at the floor rather than straight down,
+                    // so the two systems do not simply overlap.
+                    aimed(
+                        x,
+                        -HUNG_BELOW,
+                        0.0,
+                        if row == 0 { facing::DOWNSTAGE } else { facing::UPSTAGE },
+                    ),
+                )
+            };
             fixture.parent = Some(truss);
             into.create("fixtures", &fixture).await?;
         }

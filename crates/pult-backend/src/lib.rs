@@ -98,8 +98,8 @@ pub struct Running {
     devices_mdns: Option<mdns_sd::ServiceDaemon>,
     /// For telling the session layer to take its service off the network.
     session: crate::infra::session::SessionHandle,
-    /// For telling every open WebSocket the same.
-    stopping: tokio::sync::watch::Sender<bool>,
+    /// For telling every open WebSocket the same, and why — see `AppState::stopping`.
+    stopping: tokio::sync::watch::Sender<Option<String>>,
 }
 
 /// What a show act asks the console to do next.
@@ -131,6 +131,29 @@ pub enum ShowSwitch {
     SaveAs {
         path: std::path::PathBuf,
     },
+}
+
+impl ShowSwitch {
+    /// What this act is, in the words a browser puts on its switching screen.
+    ///
+    /// The bundle's folder name rather than its path: the path is the station's
+    /// business, and a tablet showing "/Users/somebody/Shows/…" is showing the
+    /// wrong thing. The show's own name is not known here — it is a row in a
+    /// database this station is about to close.
+    pub fn describe(&self) -> String {
+        let folder = |path: &std::path::Path| {
+            path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+        };
+        match self {
+            ShowSwitch::Open { path, demo: Some(demo), .. } => {
+                format!("making {} in {}", demo.title(), folder(path))
+            }
+            ShowSwitch::Open { path, .. } => format!("opening {}", folder(path)),
+            ShowSwitch::Close => "closing the show".to_string(),
+            ShowSwitch::Restore { .. } => "restoring a version".to_string(),
+            ShowSwitch::SaveAs { path } => format!("saving a copy as {}", folder(path)),
+        }
+    }
 }
 
 /// What the show RPCs reach: somewhere to send an act, and what to say about the
@@ -174,12 +197,17 @@ impl Running {
     /// one a browser goes on offering to join. Everything else is aborted, because
     /// nothing else is holding state that outlives the process. The pools are closed
     /// last, which checkpoints the WAL: a bundle about to be copied has to be whole.
-    pub async fn shutdown(self) {
+    ///
+    /// `because` is what the browsers are told — "opening Festival.pult", "closing
+    /// the show" — so a page that did not press the button can draw the same
+    /// switching screen as the one that did, rather than a console that stopped
+    /// answering.
+    pub async fn shutdown(self, because: &str) {
         // The browsers first, because a socket left open would go on talking to an
         // engine that is about to stop — and a page that is told lets go, reconnects
         // onto whatever takes this station's place, and finds out what show it is
         // now looking at.
-        let _ = self.stopping.send(true);
+        let _ = self.stopping.send(Some(because.to_string()));
         // Asked rather than aborted: this is what flushes the writer's queue and
         // what takes the mDNS service off the network.
         let _ = self.engine.0.send(crate::engine::EngineCommand::Stop).await;
@@ -306,7 +334,7 @@ impl Console {
         self.config.port = running.http_addr.port();
         self.config.sync_port = running.sync_addr.port();
         let bundle = running.bundle.clone();
-        running.shutdown().await;
+        running.shutdown(&asked.describe()).await;
 
         let mut then_join = None;
         match asked {
@@ -458,9 +486,9 @@ pub async fn start(config: Config) -> Result<Running> {
     // Where a show act goes. Small: these arrive one at a time from a person, and a
     // queue of them would be a queue of consoles to become.
     let (switch_tx, switch_rx) = mpsc::channel::<ShowSwitch>(4);
-    // And how every open socket is told this station is going away; see
+    // And how every open socket is told this station is going away, and why; see
     // `AppState::stopping`.
-    let (stopping, stopping_rx) = tokio::sync::watch::channel(false);
+    let (stopping, stopping_rx) = tokio::sync::watch::channel(None);
     let shows = ShowsHandle {
         tx: switch_tx,
         bundle: bundle.clone(),

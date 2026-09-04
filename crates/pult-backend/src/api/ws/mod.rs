@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
         State,
     },
     response::IntoResponse,
@@ -164,9 +164,36 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let sent_bytes = state.ws_registry.add_session(session_id, outgoing_tx);
     debug!("WebSocket session {session_id} connected");
 
-    // Spawn task to forward outgoing messages to the WebSocket
-    let send_task = tokio::spawn(async move {
-        while let Some(msg) = outgoing_rx.recv().await {
+    // Forward outgoing messages to the WebSocket — and, when this station stops,
+    // say so in the close frame. The send task is the one that holds the sink, which
+    // is why the farewell is written here rather than in the loop below that also
+    // watches `stopping`: a close frame is the last thing on the socket, and only
+    // the task that owns the socket can put it there.
+    let mut going = state.stopping.clone();
+    let mut send_task = tokio::spawn(async move {
+        loop {
+            let msg = tokio::select! {
+                msg = outgoing_rx.recv() => match msg {
+                    Some(msg) => msg,
+                    // The queue closed. Either the browser went, or this station is
+                    // stopping and the loop below has just dropped the last sender
+                    // — which lands at the same instant as the signal, and a select
+                    // that happened to take this branch first would hang up with no
+                    // farewell. So the reason is checked here too.
+                    None => {
+                        // Bound before the await: the borrow is a guard, and a guard
+                        // held across an await is a future that cannot be sent.
+                        let because = going.borrow().clone();
+                        farewell(&mut sink, because).await;
+                        break;
+                    }
+                },
+                _ = going.changed() => {
+                    let because = going.borrow().clone();
+                    farewell(&mut sink, because).await;
+                    break;
+                }
+            };
             match serde_json::to_string(&msg) {
                 Ok(json) => {
                     // Counted before the send and after the encode: the length of the
@@ -247,10 +274,34 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             state.sync.watch_peer_output(node_id, output_id, ask).await;
         }
     }
+    // Give the send task a moment to write its close frame before it is taken down.
+    // In the ordinary case — the browser hung up — `remove_session` above dropped the
+    // last sender into its queue and it has already ended on its own.
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), &mut send_task).await;
     send_task.abort();
     broadcast_task.abort();
     debug!("WebSocket session {session_id} disconnected");
 }
+
+/// Say why the socket is closing, when the station is stopping. Nothing is sent for
+/// a browser that simply went, which is `None` here.
+async fn farewell(
+    sink: &mut futures::stream::SplitSink<WebSocket, Message>,
+    because: Option<String>,
+) {
+    let Some(because) = because else { return };
+    let _ = sink
+        .send(Message::Close(Some(CloseFrame { code: SWITCHING_SHOWS, reason: because.into() })))
+        .await;
+}
+
+/// The close code a socket is shut with when its station is making way for another.
+///
+/// In the range an application may define for itself, and the reason beside it is
+/// the sentence a browser shows. A browser seeing any other close — the process
+/// died, the network went — draws its "stopped answering" screen instead, which is
+/// the honest one for a stop nobody asked for.
+pub const SWITCHING_SHOWS: u16 = 4001;
 
 async fn handle_client_message(
     msg: ClientMessage,

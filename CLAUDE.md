@@ -440,6 +440,15 @@ the disconnect it already handles. A page compares the show `/api/config` names 
 the one it loaded under and reloads when they differ — every store in it is holding the
 previous show's rig — and the tablet on another station's socket does the same.
 
+**And the page shows one screen for it, not three.** The menu and the welcome screen
+call `beginSwitch("opening Festival")` *before* they ask, so the cover is up before
+the socket goes; the switch lives in `sessionStorage` so the reloaded page comes up
+already saying it; and it ends when `watchStation` hears a fresh `/api/config` and the
+tab is staying put. The tablet is *told*: the stop signal carries why
+(`ShowSwitch::describe`) and the socket's send task — the one that holds the sink —
+writes it into a close frame with code **4001**, which `frontend/src/lib/switching.ts`
+turns into the same screen. Any other close code is a lost console and draws as one.
+
 **Save is a point to come back to, not a flush.** Every PERSISTED write is already on
 the disk when it is acknowledged. `["versions", "__checkpoint"]` is the verb, beside
 `__by` and `__home`: the engine builds the row from its own clock and the caller's
@@ -485,6 +494,18 @@ hanging, and `{90, 0, 0}` meaning "hanging" is a quarter turn away from it — w
 aimed three of the four rigs at the back wall. `Transform::facing(position, direction)`
 does the decomposition properly, and `demo/kit.rs` says which way a light points as a
 direction.
+
+**A boom is a run of truss stood on its end, and a lantern on it is written in the
+boom's frame.** A fixture's position is relative to what it hangs off, rotation
+included, so `kit::boom` turns the run's handle a quarter about Z and `kit::on(parent,
+world_offset, world_direction)` puts a world-terms offset and aim into that turned
+frame — once, so no show file hand-inverts a rotation. The first Theatre drew its
+booms as two more horizontal bars. And everything hangs `HUNG_BELOW` (350 mm) under
+its bar's centre line: the chord square plus a clamp, and the one figure every demo
+uses, because the first Club hung its washes 600 mm *beside* the truss and what that
+drew was lights floating next to it. The demo tests check both, composed through
+`world_transform`, which is the only direction that says where a light on a boom
+looks.
 
 **And the console can draw a room it was never given a mesh for.** A `SceneObject` with
 no geometry is an empty group, so a truss a console made for itself was invisible.
@@ -740,6 +761,14 @@ or command line that wants to know what a light is doing and cannot evaluate for
 itself. An RPC rather than a command, deliberately: asking what a lamp is at must not
 write anybody's history.
 
+**A cue is the stack up to it.** Taking a cue applies the latest capture of every key
+over the cues up to and including it, worked out from the show and not remembered:
+`Playback::take_cue`. Forward one step that changes nothing — what an earlier cue set
+is still what is driving the parameter, and is left alone. Jumping back releases every
+key only later cues capture, over the cue's down time; jumping forward applies what
+the cues in between set. Tracking playback, deliberately, and the reason a blackout cue
+still has to zero everything by name.
+
 **A cue fades two ways.** `fade_in_ms` is what a parameter takes going up and
 `fade_out_ms` what it takes coming down, on the cue and per capture, the capture
 winning. Zero out means "this cue does not split its fade" rather than "snap", so a
@@ -800,7 +829,10 @@ absolute value of signed noise, four octaves) in world space with **time as the 
 axis**, floored at the beam's own intensity so it adds folds rather than taking light
 away; its two knobs are `Show::haze_density` and `haze_turbulence`: show data, because
 how hazy the room is is a fact about the room, seeded from a station preference the
-way `home_fade_ms` is. It reaches no lamp.
+way `home_fade_ms` is. It reaches no lamp. **Density is how much of a beam shows at
+all** — the haze is the only reason light can be seen in the air — so 0 is a clear
+room with no beam drawn and the light still on the floor, 1 is every beam with its
+folds, and 1 is the default.
 
 **The floor cuts the beam, not the cone's own end.** A cone cut square to its axis at
 the axis's floor hit is level with the floor only when the beam is vertical; aimed at an
@@ -813,6 +845,22 @@ half-angle, so the spot on the floor is exactly as wide as the beam that makes i
 console sends the byte and the fixture does the flashing. So `pult-render` has nothing
 to work out and needs no corpus case, and `strobeGate` lives in `beam.ts` because the
 square wave is a fact about the picture rather than about the rig.
+
+**The view draws when there is something new to see, at most sixty times a second.**
+The camera moved, the rig changed — worked out by comparing this frame's attributes
+against the last frame's, through `Math.fround`, because the output store ticks every
+frame whether or not a value moved — or the picture animates on its own clock: a lit
+beam with haze in it, a strobe. Only lit beams get an instance, packed from the front,
+since an unlit cone whose fragments all discard is still a cone that is rasterised. A
+settled dark rig costs nothing and the panel prints *idle*; beside the page's own work
+per drawn frame it prints what the GPU took, read through
+`EXT_disjoint_timer_query_webgl2`, which is the figure a laggy view is felt by — a rAF
+gap stays at nine milliseconds however far behind the GPU is. What the GPU spends on
+the beams is **per blended layer stacked on a tile**, not per pixel, triangle or
+instruction: measured, and recorded as `beam-overdraw` in the roadmap. A **View** sheet
+on the rig panel holds this screen's work light and resolution, in `localStorage`
+beside the layout (`stores/view.ts`) — the haze is the show's, a work light is not.
+Measure any of this in a *headed* browser only: a hidden tab has no animation frames.
 
 **And a piece with no mesh is drawn from the catalogue.** `frontend/src/lib/stock.ts`
 turns `SceneObject::catalogue` into geometry — see *A show is a folder* — which is what

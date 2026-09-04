@@ -33,7 +33,13 @@ export type StationStore = Readable<BackendConfig | null>;
 export function watchStation(
 	client: PultWsClient,
 	origin: string,
-	reload: () => void = () => location.reload()
+	reload: () => void = () => location.reload(),
+	/**
+	 * Called each time the station has answered and this tab is staying put — which
+	 * is the moment a switch is over. Not called when the answer is a reload: the
+	 * page that comes back asks again and hears it then.
+	 */
+	onFresh: () => void = () => {}
 ): StationStore {
 	return readable<BackendConfig | null>(null, (set) => {
 		// What this page believes it loaded onto. Set once, from the first answer:
@@ -49,6 +55,7 @@ export function watchStation(
 			}
 			loadedWith ??= config;
 			set(config);
+			onFresh();
 		};
 
 		void ask();

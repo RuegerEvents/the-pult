@@ -39,6 +39,13 @@ export class PultWsClient {
 
 	onConnect: (() => void) | undefined = undefined;
 	onDisconnect: (() => void) | undefined = undefined;
+	/**
+	 * The socket closed, with the code and reason the other end gave. A station
+	 * making way for another says so here — see `SWITCHING_SHOWS` in
+	 * `$lib/switching.ts` — which is the only way a page that did not press the
+	 * button can tell a switch from a console that died.
+	 */
+	onClose: ((code: number, reason: string) => void) | undefined = undefined;
 	onError: ((message: string) => void) | undefined = undefined;
 
 	constructor(readonly url: string) {}
@@ -92,8 +99,9 @@ export class PultWsClient {
 			this.onConnect?.();
 		};
 
-		this.socket.onclose = () => {
-			console.log('[pult] WebSocket disconnected');
+		this.socket.onclose = (event) => {
+			console.log('[pult] WebSocket disconnected', event.code, event.reason);
+			this.onClose?.(event.code, event.reason);
 			// The offset belonged to that connection. Keeping it across a reconnect
 			// would mean drawing the rig against a station this client is no longer
 			// talking to, which is exactly the silent wrongness this exists to avoid.

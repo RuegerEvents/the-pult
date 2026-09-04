@@ -26,7 +26,7 @@ use pult_schema::types::{
         Vec3,
     },
     flow::{Flow, FlowEdge, FlowNode, FlowNodeKind},
-    scene::{SceneObject, SceneObjectKind, Transform},
+    scene::{euler_xyz_degrees_to_basis, SceneObject, SceneObjectKind, Transform},
     sequence::Sequence,
     dmx_mode::DmxBreak,
 };
@@ -67,6 +67,35 @@ pub fn aimed(x: f32, y: f32, z: f32, direction: Vec3) -> Transform {
     Transform::facing(Vec3 { x, y, z }, direction)
 }
 
+/// How far below a bar's centre line a hung fixture sits, in metres.
+///
+/// An F34 chord square is 290 mm, so a body clamped under one has its top about
+/// 150 mm below the bar's centre; 350 mm is that plus the clamp. One number for
+/// every demo, because the first Club hung its washes 300 mm below and 600 mm
+/// *beside* the bar, and what that drew was a row of lights floating next to a
+/// truss rather than hanging off it.
+pub const HUNG_BELOW: f32 = 0.35;
+
+/// A fixture's transform *on something that has been turned*.
+///
+/// A fixture's position is relative to what it hangs off, rotation included, so a
+/// lantern on a vertical boom — a run of truss stood on its end — has to be written
+/// in the boom's own frame, where a metre up the boom is a metre along its local X.
+/// The demos think in world terms: an offset from the run's centre and a direction
+/// to point in. This does the bookkeeping, so no show file hand-inverts a rotation.
+///
+/// The parent is taken at unit scale, which every run here is.
+pub fn on(parent: &Transform, world_offset: Vec3, world_direction: Vec3) -> Transform {
+    let basis = euler_xyz_degrees_to_basis(parent.rotation);
+    // A rotation's inverse is its transpose.
+    let into_local = |v: Vec3| Vec3 {
+        x: basis[0][0] * v.x + basis[1][0] * v.y + basis[2][0] * v.z,
+        y: basis[0][1] * v.x + basis[1][1] * v.y + basis[2][1] * v.z,
+        z: basis[0][2] * v.x + basis[1][2] * v.y + basis[2][2] * v.z,
+    };
+    Transform::facing(into_local(world_offset), into_local(world_direction))
+}
+
 // ── Patching ──────────────────────────────────────────────────────────────────
 
 /// One DMX address in a universe.
@@ -91,6 +120,14 @@ pub fn a_type(name: &str, parameters: Vec<ParameterDefinition>) -> FixtureType {
         parameters,
         ..FixtureType::default()
     }
+}
+
+/// The same, with a beam angle, so the rig view draws a wash wide and a beam
+/// narrow rather than every type at the one fallback cone.
+pub fn a_type_with_beam(name: &str, parameters: Vec<ParameterDefinition>, degrees: f32) -> FixtureType {
+    let mut kind = a_type(name, parameters);
+    kind.physical.beam_angle_deg = Some(degrees);
+    kind
 }
 
 pub fn intensity() -> ParameterDefinition {
@@ -167,8 +204,8 @@ impl Addresses {
 /// moves everything on it, which is the whole reason a fixture's position is
 /// relative to what it hangs off.
 ///
-/// `along` is how many metres of it, made of three-metre lengths; the run is centred
-/// on `centre` and runs along X.
+/// `metres` is how many of it, made of three-metre lengths; the run is centred on
+/// `centre` and runs along X.
 pub async fn truss_run(
     into: &Seeder,
     name: &str,
@@ -176,6 +213,38 @@ pub async fn truss_run(
     centre: Vec3,
     metres: f32,
 ) -> Result<Uuid> {
+    Ok(run_of_sections(into, name, layer, Transform::at(centre), metres).await?.0)
+}
+
+/// A boom: the same run of truss stood on its end, centred on `centre`.
+///
+/// The handle is turned a quarter about Z, so the sections' own X runs up the world's
+/// Y. What a caller gets back beside the id is the handle's transform, which is what
+/// [`on`] needs to hang a lantern on it — a fixture on a boom is written in the
+/// boom's frame, and the first Theatre demo did not, so its "booms" were two more
+/// horizontal bars with their lanterns stacked in the air beside them.
+pub async fn boom(
+    into: &Seeder,
+    name: &str,
+    layer: Option<Uuid>,
+    centre: Vec3,
+    metres: f32,
+) -> Result<(Uuid, Transform)> {
+    let stood_up = Transform {
+        position: centre,
+        rotation: Vec3 { x: 0.0, y: 0.0, z: 90.0 },
+        ..Transform::default()
+    };
+    run_of_sections(into, name, layer, stood_up, metres).await
+}
+
+async fn run_of_sections(
+    into: &Seeder,
+    name: &str,
+    layer: Option<Uuid>,
+    handle: Transform,
+    metres: f32,
+) -> Result<(Uuid, Transform)> {
     let section = catalogue::piece("f34-3m").expect("the catalogue has a three-metre length");
     let sections = (metres / section.size.x).round().max(1.0) as usize;
     let span = sections as f32 * section.size.x;
@@ -184,7 +253,7 @@ pub async fn truss_run(
         id: id(),
         name: name.to_string(),
         kind: SceneObjectKind::Group,
-        transform: Transform::at(centre),
+        transform: handle,
         parent: None,
         layer,
         class: None,
@@ -215,7 +284,7 @@ pub async fn truss_run(
         )
         .await?;
     }
-    Ok(run.id)
+    Ok((run.id, handle))
 }
 
 /// One piece out of the catalogue, placed. Decks, walls and flats.
@@ -417,6 +486,49 @@ mod tests {
                 assert!((was - is).abs() < 1e-3, "aimed at {unit:?}, points {back:?}");
             }
         }
+    }
+
+    /// A lantern on a boom points where the demo aimed it once the boom's own quarter
+    /// turn is applied, and sits where the demo put it — which is the whole of what
+    /// `on` is for. Checked through `world_transform`, the same composition the rig
+    /// view and the selection engine use.
+    #[test]
+    fn a_lantern_on_a_boom_points_where_it_was_aimed() {
+        use pult_schema::types::scene::{by_id, world_transform};
+
+        let handle = Transform {
+            position: Vec3 { x: -7.0, y: 1.5, z: 0.0 },
+            rotation: Vec3 { x: 0.0, y: 0.0, z: 90.0 },
+            ..Transform::default()
+        };
+        let boom = SceneObject {
+            id: id(),
+            name: "Boom".into(),
+            kind: SceneObjectKind::Group,
+            transform: handle,
+            parent: None,
+            layer: None,
+            class: None,
+            geometry: Vec::new(),
+            symbol: None,
+            catalogue: None,
+        };
+        let objects = vec![boom.clone()];
+        let local = on(&handle, Vec3 { x: 0.45, y: 1.0, z: 0.0 }, facing::FROM_LEFT);
+        let world = world_transform(&local, Some(boom.id), &by_id(&objects));
+
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(
+            near(world.position.x, -6.55) && near(world.position.y, 2.5) && near(world.position.z, 0.0),
+            "a metre up the boom on a sidearm landed at {:?}",
+            world.position,
+        );
+        let back = world.facing_direction();
+        let length = facing::FROM_LEFT.x.hypot(facing::FROM_LEFT.y);
+        assert!(
+            near(back.x, facing::FROM_LEFT.x / length) && near(back.y, facing::FROM_LEFT.y / length),
+            "aimed across the stage, points {back:?}",
+        );
     }
 
     /// Straight down is no rotation at all, which is the fact the whole module rests

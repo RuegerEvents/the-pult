@@ -47,7 +47,11 @@ pub struct AppState {
     /// socket talking to a station that has stopped. A browser in that state still
     /// says "Connected" and is subscribed to an engine that no longer exists, so it
     /// has to be told rather than left to notice.
-    pub stopping: tokio::sync::watch::Receiver<bool>,
+    ///
+    /// Carries *why* — "opening Festival.pult" — which the socket puts in its close
+    /// frame, so a page that did not press the button draws the same switching
+    /// screen as the one that did. `None` is a station that is not stopping.
+    pub stopping: tokio::sync::watch::Receiver<Option<String>>,
     /// The port that was actually bound, which is not `config.port` when that was
     /// zero. This is the one a client is talking to.
     pub http_port: u16,

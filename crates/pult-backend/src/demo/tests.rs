@@ -111,22 +111,46 @@ async fn seeds_a_rig_that_hangs_together(demo: Demo) {
         }
     }
 
-    // And every light points *down*. The regression: a rotation written by hand
-    // meaning "hanging" was a quarter turn away from it, and three of the four demos
-    // aimed their whole rig at the back wall.
+    // And every light that hangs points *down*, in the world — through whatever it
+    // hangs off, since a lantern on a boom is written in the boom's own turned frame
+    // and only the composed direction says where it looks. The regression: a rotation
+    // written by hand meaning "hanging" was a quarter turn away from it, and three of
+    // the four demos aimed their whole rig at the back wall.
+    //
+    // A light *standing* on the floor or the deck is the exception, since a floor
+    // package looking up over the crowd is what a floor package is for.
+    let by_id = pult_schema::types::scene::by_id(&objects);
     for fixture in &fixtures {
         let Some(position) = &fixture.position else {
             panic!("{}: {} was never placed", demo.id(), fixture.name);
         };
-        let facing = position.facing_direction();
-        assert!(
-            facing.y < 0.0,
-            "{}: {} points upwards ({facing:?})",
-            demo.id(),
-            fixture.name,
-        );
         if let Some(parent) = fixture.parent {
             assert!(places.contains(&parent), "{}: {} hangs off nothing", demo.id(), fixture.name);
+        }
+        let world = pult_schema::types::scene::world_transform(position, fixture.parent, &by_id);
+        let facing = world.facing_direction();
+        let hung = world.position.y > 2.0;
+        assert!(
+            !hung || facing.y < 0.0,
+            "{}: {} hangs at {:.1} m and points upwards ({facing:?})",
+            demo.id(),
+            fixture.name,
+            world.position.y,
+        );
+        // And nothing hangs *inside* the bar it is clamped to: a fixture whose body
+        // overlaps the chords is what "next to the truss" looked like in the Club.
+        if let Some(parent) = fixture.parent {
+            let bar = by_id[&parent];
+            // A run of truss lies along its own X whichever way it was turned, so
+            // the distance from its centre line is the other two.
+            let off_the_bar = position.position.y.hypot(position.position.z);
+            assert!(
+                off_the_bar >= 0.3,
+                "{}: {} is {off_the_bar:.2} m from the centre of {}, which is inside it",
+                demo.id(),
+                fixture.name,
+                bar.name,
+            );
         }
     }
 
@@ -190,15 +214,43 @@ async fn a_show_that_already_has_a_rig_is_left_alone() {
 async fn the_club_and_the_festival_come_up_running() {
     // The engine has no clock: a show with nothing running is a station doing
     // nothing at all, which is the wrong thing to hand somebody who opened the demo
-    // to find out whether the console works.
+    // to find out whether the console works. So something has to be *moving*: a
+    // running sequence whose live cue carries an effect. Not everything — the
+    // Festival deliberately leaves its blinders and its floor package waiting for
+    // Go, because a rig where everything is asserted at once is a rig where nothing
+    // reads.
     for demo in [Demo::Club, Demo::Festival] {
         let engine = a_station().await;
         seed(&engine, demo).await.unwrap();
         let sequences: Vec<Sequence> = read(&engine, "sequences").await;
+        let cues: Vec<Cue> = read(&engine, "cues").await;
+        let moving = sequences.iter().any(|s| {
+            let Some(index) = s.active_cue_index else { return false };
+            s.went_at.is_some()
+                && cues
+                    .iter()
+                    .find(|cue| Some(&cue.id) == s.cue_ids.get(index))
+                    .is_some_and(|cue| cue.captures.iter().any(|c| c.effect.is_some()))
+        });
+        assert!(moving, "{} came up with nothing moving: {sequences:?}", demo.id());
+    }
+}
+
+#[tokio::test]
+async fn the_festival_leaves_something_for_go_to_do() {
+    let engine = a_station().await;
+    seed(&engine, Demo::Festival).await.unwrap();
+    let sequences: Vec<Sequence> = read(&engine, "sequences").await;
+    let waiting = sequences.iter().filter(|s| s.active_cue_index.is_none()).count();
+    assert!(waiting >= 2, "everything in the festival is on at once: {sequences:?}");
+    // And every playback ends in a way off, so an operator can kill a system.
+    let cues: Vec<Cue> = read(&engine, "cues").await;
+    for sequence in &sequences {
+        let last = sequence.cue_ids.last().and_then(|id| cues.iter().find(|c| &c.id == id));
         assert!(
-            sequences.iter().all(|s| s.active_cue_index.is_some() && s.went_at.is_some()),
-            "{} came up with nothing going: {sequences:?}",
-            demo.id(),
+            last.is_some_and(|cue| cue.name == "Out"),
+            "{} does not end in Out",
+            sequence.name
         );
     }
 }

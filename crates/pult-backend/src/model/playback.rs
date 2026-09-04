@@ -391,11 +391,131 @@ impl Playback {
             self.playing.insert(sequence.id, cue_id);
             effects.push(PlaybackEffect::SetCueActive { cue_id, is_active: true });
 
-            if let Some(cue) = view.cues.get(&cue_id) {
+            if let (Some(cue), Some(index)) = (view.cues.get(&cue_id), sequence.active_cue_index) {
                 let anchor = view.anchor_for(sequence, wall_ms);
-                self.start_cue(wall_ms, anchor, cue, view, sequence.id);
+                self.take_cue(wall_ms, anchor, index, cue, view, sequence);
             }
         }
+    }
+
+    /// Take a cue: the stack up to and including it, which is what a cue *is* in a
+    /// tracking stack.
+    ///
+    /// A cue that names four channels is not a look of four channels. It is the look
+    /// of every cue before it with those four changed, and the console that takes it
+    /// has to arrive at that look whichever cue it was on before. Going forward one
+    /// step, that is nothing new — everything an earlier cue set is still where it
+    /// left it. Jumping forward, the cues in between are applied on the way. And
+    /// jumping *back* is the case that used to be wrong: a parameter that a later cue
+    /// brought in was left where that cue put it, so going back from cue 5 to cue 1
+    /// in the Theatre demo left the side booms on, because nothing before cue 4
+    /// mentions them. Now it goes home, since no cue at or before cue 1 has it.
+    ///
+    /// Three kinds of key, worked out from the stack rather than remembered:
+    ///
+    /// - **This cue's own captures** start as they always did, with the cue's times.
+    /// - **A capture tracked in from an earlier cue** — the latest cue at or before
+    ///   this one that has the key — is left alone if it is already what is driving
+    ///   the parameter, and otherwise started with *this* cue's times, since this is
+    ///   the cue being taken.
+    /// - **A key only cues after this one capture** goes home over this cue's down
+    ///   time, unless another sequence that is on could drive it.
+    fn take_cue(
+        &mut self,
+        wall_ms: u64,
+        anchor: u64,
+        index: usize,
+        cue: &Cue,
+        view: &ShowView<'_>,
+        sequence: &Sequence,
+    ) {
+        // The latest capture of every key, over the stack up to here.
+        let mut tracked: HashMap<Key, (&Cue, &pult_schema::types::cue::ParameterCapture)> =
+            HashMap::new();
+        for id in sequence.cue_ids.iter().take(index + 1) {
+            let Some(earlier) = view.cues.get(id) else { continue };
+            for capture in &earlier.captures {
+                let key = (capture.fixture_id, parameter_key(&capture.parameter_kind));
+                tracked.insert(key, (earlier, capture));
+            }
+        }
+
+        // What only later cues capture goes home — unless something else that is on
+        // could still want it, the same rule a release follows.
+        let still_driven = view.captured_by_the_sequences_that_are_on(Some(sequence.id));
+        let down = if cue.fade_out_ms > 0 { cue.fade_out_ms } else { cue.fade_in_ms };
+        for at in view.captured_by(sequence) {
+            if tracked.contains_key(&at) || still_driven.contains(&at) {
+                continue;
+            }
+            self.release_key(wall_ms, at, view, down);
+        }
+
+        let mut latest_end = wall_ms;
+        for (at, (owner, capture)) in tracked {
+            if owner.id != cue.id {
+                let already = self
+                    .fades
+                    .iter()
+                    .any(|f| f.fixture_id == at.0 && f.key == at.1 && f.running.cue_id == owner.id)
+                    || self
+                        .effects
+                        .get(&at)
+                        .is_some_and(|fx| fx.source == EffectSource::Cue(owner.id));
+                if already {
+                    continue;
+                }
+            }
+            let ends = self.start_capture(wall_ms, anchor, cue, owner, capture, view);
+            latest_end = latest_end.max(ends);
+        }
+
+        if let FollowMode::FollowAfter { delay_ms } = cue.follow_mode {
+            // "After the previous cue completes, plus a delay": the fade has to land first.
+            self.follows.insert(sequence.id, latest_end + delay_ms as u64);
+        }
+        // Timecode follows need a timecode source, which does not exist yet.
+    }
+
+    /// Send one parameter home over `duration_ms`, from wherever it is now.
+    fn release_key(&mut self, wall_ms: u64, at: Key, view: &ShowView<'_>, duration_ms: u32) {
+        let (fixture_id, key) = at.clone();
+        // Where it is *before* its own fade and effect are taken away, so a
+        // parameter half way through a cue's fade goes home from where it had got
+        // to rather than from where that fade was aiming.
+        let from = self.value_at(view, &at, wall_ms);
+
+        // Its own fades and effects stop: they were a sequence asserting something,
+        // and it has been told to stop asserting. A cue *changing* leaves a fade to
+        // finish because it has somewhere to arrive; a release does not.
+        self.fades.retain(|f| !(f.fixture_id == fixture_id && f.key == key));
+        self.effects.remove(&at);
+
+        let Some(to) = view.home_value(fixture_id, &key) else {
+            return;
+        };
+        let from = from.unwrap_or_else(|| to.clone());
+        if from == to {
+            return;
+        }
+
+        self.fades.push(Fade {
+            fixture_id,
+            key,
+            running: RunningFade {
+                from,
+                to,
+                t0: wall_ms,
+                // A zero duration is a fade that has already landed, which is what a
+                // show that has not asked for a home time wants: releasing has always
+                // snapped.
+                duration_ms,
+                easing: Easing::Linear,
+                // No cue is doing this. A node told about the movement is told about a
+                // movement, and the panel that asks "is this my cue's fade" gets no.
+                cue_id: Uuid::nil(),
+            },
+        });
     }
 
     /// Put back everything a sequence that has just been taken off was driving.
@@ -431,45 +551,7 @@ impl Playback {
             if still_driven.contains(&at) {
                 continue;
             }
-            let (fixture_id, key) = at.clone();
-            // Where it is *before* its own fade and effect are taken away, so a
-            // parameter half way through a cue's fade goes home from where it had got
-            // to rather than from where that fade was aiming.
-            let from = self.value_at(view, &at, wall_ms);
-
-            // Its own fades and effects stop: they were this sequence asserting
-            // something, and it has been told to stop asserting. A cue *changing*
-            // leaves a fade to finish because it has somewhere to arrive; a sequence
-            // going off does not.
-            self.fades.retain(|f| !(f.fixture_id == fixture_id && f.key == key));
-            self.effects.remove(&at);
-
-            let Some(to) = view.home_value(fixture_id, &key) else {
-                continue;
-            };
-            let from = from.unwrap_or_else(|| to.clone());
-            if from == to {
-                continue;
-            }
-
-            self.fades.push(Fade {
-                fixture_id,
-                key,
-                running: RunningFade {
-                    from,
-                    to,
-                    t0: wall_ms,
-                    // A zero duration is a fade that has already landed, which is what
-                    // a show that has not asked for a home time wants: releasing has
-                    // always snapped.
-                    duration_ms: view.home_fade_ms,
-                    easing: Easing::Linear,
-                    // No cue is doing this. A node told about the movement is told
-                    // about a movement, and the panel that asks "is this my cue's
-                    // fade" gets no.
-                    cue_id: Uuid::nil(),
-                },
-            });
+            self.release_key(wall_ms, at, view, view.home_fade_ms);
         }
     }
 
@@ -501,23 +583,27 @@ impl Playback {
         }
     }
 
-    /// Begin whatever this cue asks of every parameter it captures.
+    /// Begin one capture, and answer when its fade lands.
+    ///
+    /// `cue` is the cue being taken and supplies the default times; `owner` is the
+    /// cue the capture belongs to, whose id goes on the fade or the effect — the two
+    /// are the same cue for its own captures and differ for one tracked in from
+    /// earlier in the stack.
     ///
     /// The anchor is the sequence's `went_at`, not this station's idea of now. Two
     /// consoles process the same Go milliseconds apart, and a fade started from each
     /// one's own arrival would leave them visibly out of step for the length of the
     /// fade; an effect anchored that way would stay out of step for good.
-    fn start_cue(
+    fn start_capture(
         &mut self,
         wall_ms: u64,
         anchor: u64,
         cue: &Cue,
+        owner: &Cue,
+        capture: &pult_schema::types::cue::ParameterCapture,
         view: &ShowView<'_>,
-        sequence_id: Uuid,
-    ) {
-        let mut latest_end = wall_ms;
-
-        for capture in &cue.captures {
+    ) -> u64 {
+        {
             let key = parameter_key(&capture.parameter_kind);
             let at = (capture.fixture_id, key.clone());
 
@@ -536,10 +622,10 @@ impl Playback {
                         spec,
                         view.speed_masters,
                         anchor,
-                        EffectSource::Cue(cue.id),
+                        EffectSource::Cue(owner.id),
                     ),
                 );
-                continue;
+                return wall_ms;
             }
 
             // Fade from wherever the parameter is now, so re-cueing mid-fade is
@@ -573,19 +659,13 @@ impl Playback {
                     t0: anchor + capture.delay_in_ms as u64,
                     duration_ms,
                     easing: capture.easing,
-                    cue_id: cue.id,
+                    cue_id: owner.id,
                 },
             };
-            latest_end = latest_end.max(fade.ends_at());
-
+            let ends = fade.ends_at();
             self.fades.push(fade);
+            ends
         }
-
-        if let FollowMode::FollowAfter { delay_ms } = cue.follow_mode {
-            // "After the previous cue completes, plus a delay": the fade has to land first.
-            self.follows.insert(sequence_id, latest_end + delay_ms as u64);
-        }
-        // Timecode follows need a timecode source, which does not exist yet.
     }
 
     /// Publish what is driving every parameter: the shapes, and the fades.

@@ -18,6 +18,7 @@
 	import { users } from '$lib/stores/user.js';
 	import { addToast } from '$lib/toasts.js';
 	import { asSize, parentPath } from '$lib/shows.js';
+	import { beginSwitch, endSwitch } from '$lib/stores/switching.js';
 	import { readPreferences } from '$lib/preferences.js';
 	import type { Version } from '$lib/generated/index.js';
 
@@ -78,9 +79,11 @@
 	async function restore(version: Version) {
 		confirming = null;
 		restoreRefusal = '';
+		beginSwitch(version.name ? `restoring “${version.name}”` : 'restoring a version');
 		try {
 			await client.call('show.restore', { versionId: version.id });
 		} catch (e) {
+			endSwitch();
 			// The refusal that matters is "leave the session first": a peer holds the
 			// show as it is now and would replay it straight back over whatever this
 			// station put there. Shown in place rather than as a toast, because it is

@@ -318,6 +318,69 @@ fn moving_on_deactivates_the_previous_cue() {
 }
 
 #[test]
+fn a_cue_is_the_stack_up_to_it() {
+    // A tracking stack: cue 2 brings a second light in and cue 3 says nothing about
+    // it. Going back to cue 1 has to let it go — no cue at or before cue 1 has it —
+    // and jumping from cue 1 to cue 3 has to bring it back, cue 2 being on the way.
+    // The Theatre demo is where this was found: back from cue 5 to cue 1 left the
+    // side booms on, because nothing before cue 4 mentions them.
+    let a = a_fixture();
+    let b = a_fixture();
+    let first = a_cue(0, vec![intensity(a.id, 1.0)]);
+    let second = a_cue(0, vec![intensity(b.id, 0.8)]);
+    let third = a_cue(0, vec![intensity(a.id, 0.5)]);
+    let mut fixtures = vec![a.clone(), b.clone()];
+    let cues = [first.clone(), second.clone(), third.clone()];
+    let mut sequences = [a_sequence(&[&first, &second, &third], Some(0))];
+    let mut playback = Playback::default();
+    let now = 0;
+
+    for index in 0..3 {
+        sequences[0].active_cue_index = Some(index);
+        pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    }
+    assert_eq!(live(&fixtures, b.id, "Intensity", now), Some(ParameterValue::Float(0.8)), "tracked through cue 3");
+    assert_eq!(live(&fixtures, a.id, "Intensity", now), Some(ParameterValue::Float(0.5)));
+
+    sequences[0].active_cue_index = Some(0);
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(
+        live(&fixtures, b.id, "Intensity", now),
+        Some(ParameterValue::Float(0.0)),
+        "back at cue 1, a light no cue at or before it captures goes home",
+    );
+    assert_eq!(live(&fixtures, a.id, "Intensity", now), Some(ParameterValue::Float(1.0)));
+
+    sequences[0].active_cue_index = Some(2);
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(
+        live(&fixtures, b.id, "Intensity", now),
+        Some(ParameterValue::Float(0.8)),
+        "jumping over cue 2 takes its captures along",
+    );
+    assert_eq!(live(&fixtures, a.id, "Intensity", now), Some(ParameterValue::Float(0.5)));
+}
+
+#[test]
+fn a_light_another_live_sequence_could_drive_is_not_let_go_by_a_jump_back() {
+    let shared = a_fixture();
+    let first = a_cue(0, vec![]);
+    let second = a_cue(0, vec![intensity(shared.id, 0.8)]);
+    let other = a_cue(0, vec![intensity(shared.id, 0.3)]);
+    let mut fixtures = vec![shared.clone()];
+    let cues = [first.clone(), second.clone(), other.clone()];
+    let mut sequences = [a_sequence(&[&first, &second], Some(1)), a_sequence(&[&other], Some(0))];
+    let mut playback = Playback::default();
+    let now = 0;
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+
+    sequences[0].active_cue_index = Some(0);
+    pass(&mut playback, now, &mut fixtures, &sequences, &cues, &[], &[]);
+    let showing = live(&fixtures, shared.id, "Intensity", now);
+    assert_ne!(showing, Some(ParameterValue::Float(0.0)), "the other sequence still wants it");
+}
+
+#[test]
 fn taking_the_sequence_off_deactivates_its_cue_and_lets_the_light_go() {
     let fixture = a_fixture();
     let cue = a_cue(0, vec![intensity(fixture.id, 1.0)]);

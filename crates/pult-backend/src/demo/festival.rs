@@ -1,93 +1,124 @@
-//! Two hundred heads on trusses, in layers, six sequences deep.
+//! A festival rig: five kinds of light on six trusses and the floor, seven playbacks
+//! deep, and not everything on at once.
 //!
 //! The show to open when the question is what the console does under a rig somebody
 //! would actually hire. Three things it has that the smaller demos do not:
 //!
-//! - **The trusses are runs of real sections, and the heads hang off them.** A
-//!   fixture's position is relative to whatever it hangs off, so dragging a truss
-//!   moves its lights — which is the whole reason `Fixture::parent` exists, and is
-//!   invisible in a rig where everything is placed in world space.
-//! - **Layers**, so hiding half the rig is one click and the Layers panel has
-//!   something to be about.
-//! - **Six sequences, all running**, each holding a slice of the rig with an effect
-//!   on it. Which is what makes the station tick: the engine has no clock of its own,
-//!   so a show with nothing running is a station doing nothing at all.
+//! - **Systems that are different things.** A front truss of profiles, washes and
+//!   spots by turns over the stage, a row of blinders on the downstage face, beams
+//!   and LED strobes along the back wall, a floor package standing on the deck, and
+//!   a wash tower each side. Each is its own playback with a short stack of looks
+//!   that end in *Out* — the shape a festival operator busks a set on, one hand per
+//!   system and Go on whichever the song wants next.
+//! - **Some of it is running and some of it is waiting.** The front, the washes, the
+//!   spots, the back wall and the towers come up in a look; the blinders and the floor
+//!   package sit at nothing until somebody presses Go. A rig where everything is
+//!   asserted at once is a rig where nothing reads.
+//! - **Layers**, one per system, so hiding the back wall to see the overheads is one
+//!   click and the Layers panel has something to be about.
 //!
-//! Deterministic, and it needs no asset: the trusses come out of the console's own
-//! catalogue, so opening this costs no download and no network.
+//! The trusses are runs of real sections and the heads hang off them, so dragging a
+//! truss moves its lights. Deterministic, and it needs no asset: everything comes out
+//! of the console's own catalogue, so opening this costs no download and no network.
 
 use anyhow::Result;
 use pult_schema::types::{
-    cue::ParameterCapture,
+    cue::{Cue, ParameterCapture},
     effect::{Curve, Direction, EffectSpec, Rate, Shape, Spread},
-    fixture::{Fixture, ParameterKind, ParameterValue, Vec3},
+    fixture::{Fixture, FixtureType, ParameterKind, ParameterValue, Vec3},
     scene::{Layer, Transform},
     speedmaster::SpeedMaster,
 };
+use uuid::Uuid;
 
 use super::{
     id,
     kit::{
-        a_cue, a_fixture, a_piece, a_stack, a_type, aimed, capture, colour, facing, intensity,
-        level, pan, tilt, truss_run, Addresses,
+        a_cue, a_fixture, a_piece, a_stack, a_type_with_beam, aimed, boom, capture, colour,
+        facing, hue, intensity, level, on, pan, strobe_rate, tilt, truss_run, Addresses,
+        HUNG_BELOW,
     },
     now_ms, Seeder,
 };
 
-/// Eight truss runs of twenty-five heads: two hundred, which is the size task 29
-/// measured a console working hard at without being the two thousand that exists
-/// only to be measured.
-const RUNS: usize = 8;
-const PER_RUN: usize = 25;
-/// Fifteen metres across, which is five three-metre lengths.
+/// Fifteen metres of overhead truss, which is five three-metre lengths.
 const SPAN: f32 = 15.0;
+
+/// The five kinds of light in this rig, as indices into the types the seed makes.
+#[derive(Clone, Copy)]
+enum Kind {
+    Spot,
+    Wash,
+    Beam,
+    Blinder,
+    Strobe,
+}
 
 pub async fn seed(into: &Seeder) -> Result<()> {
     into.name_the_show("Festival").await?;
 
-    let head = a_type("Wash 19×15W", vec![intensity(), colour(), pan(), tilt()]);
-    into.create("fixture_types", &head).await?;
+    // Five types, each with the beam angle the rig view draws it at: a wash is wide,
+    // a beam is a pencil, and a blinder is a lamp with no lens at all.
+    let spot = a_type_with_beam("Spot 350", vec![intensity(), colour(), pan(), tilt()], 14.0);
+    let wash = a_type_with_beam("Wash 19×40W", vec![intensity(), colour(), pan(), tilt()], 28.0);
+    let beam = a_type_with_beam("Beam 7R", vec![intensity(), colour(), pan(), tilt()], 4.0);
+    let blinder = a_type_with_beam("Blinder 4-lite", vec![intensity()], 45.0);
+    let strobe =
+        a_type_with_beam("LED Strobe", vec![intensity(), colour(), strobe_rate()], 60.0);
+    let types = [&spot, &wash, &beam, &blinder, &strobe];
+    for kind in types {
+        into.create("fixture_types", kind).await?;
+    }
+    let type_of = |kind: Kind| -> &FixtureType {
+        match kind {
+            Kind::Spot => &spot,
+            Kind::Wash => &wash,
+            Kind::Beam => &beam,
+            Kind::Blinder => &blinder,
+            Kind::Strobe => &strobe,
+        }
+    };
+    let called = |kind: Kind| match kind {
+        Kind::Spot => "Spot",
+        Kind::Wash => "Wash",
+        Kind::Beam => "Beam",
+        Kind::Blinder => "Blinder",
+        Kind::Strobe => "Strobe",
+    };
 
-    // Two layers, so hiding half the rig is one click. Front and back rather than
-    // odd and even: a layer is a thing an operator points at, not a partition.
+    // A layer per system. A layer is a thing an operator points at, and "the back
+    // wall" is what they point at when the overheads are in the way of it.
     let mut layers = Vec::new();
-    for (n, name) in ["Downstage", "Upstage"].into_iter().enumerate() {
-        let layer =
-            Layer { id: id(), name: name.to_string(), locked: false, sort_order: n as u32 };
+    for (n, name) in ["Front of house", "Overhead", "Back wall", "Floor", "Side"]
+        .into_iter()
+        .enumerate()
+    {
+        let layer = Layer { id: id(), name: name.to_string(), locked: false, sort_order: n as u32 };
         into.create("layers", &layer).await?;
         layers.push(layer.id);
     }
+    let [foh, overhead, back_wall, floor, side]: [Uuid; 5] =
+        layers.try_into().expect("five layers");
 
-    // Eight trusses spanning the stage at increasing depth and trim, so the rig
-    // reads as a stack of them going back rather than as one flat wall.
-    let mut runs = Vec::new();
-    for n in 0..RUNS {
-        let downstage = n < RUNS / 2;
-        let layer = layers[usize::from(!downstage)];
-        let run = truss_run(
-            into,
-            &format!("Truss {}", n + 1),
-            Some(layer),
-            Vec3 { x: 0.0, y: 8.0 + n as f32 * 0.4, z: 7.0 - n as f32 * 2.0 },
-            SPAN,
-        )
-        .await?;
-        runs.push((run, layer));
-    }
-
-    // A stage to light. Six decks across the front, and a back wall of flats.
-    for n in 0..6 {
-        a_piece(
-            into,
-            &format!("Deck {}", n + 1),
-            "deck-2x1",
-            Transform {
-                position: Vec3 { x: -5.0 + 2.0 * n as f32, y: 1.0, z: 2.0 },
-                ..Transform::default()
-            },
-            None,
-        )
-        .await?;
+    // ── The room ──────────────────────────────────────────────────────────────
+    //
+    // A sixteen-by-ten stage a metre up, out of decks scaled to four-by-two, and a
+    // wall of flats behind it. The audience is at +Z.
+    for row in 0..5 {
+        for column in 0..4 {
+            a_piece(
+                into,
+                &format!("Deck {}", row * 4 + column + 1),
+                "deck-2x1",
+                Transform {
+                    position: Vec3 { x: -6.0 + 4.0 * column as f32, y: 1.0, z: 4.0 - 2.0 * row as f32 },
+                    scale: Vec3 { x: 2.0, y: 1.0, z: 2.0 },
+                    ..Transform::default()
+                },
+                None,
+            )
+            .await?;
+        }
     }
     for n in 0..8 {
         a_piece(
@@ -95,7 +126,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             &format!("Backdrop {}", n + 1),
             "flat-1x24",
             Transform {
-                position: Vec3 { x: -7.0 + 2.0 * n as f32, y: 0.0, z: -8.0 },
+                position: Vec3 { x: -7.0 + 2.0 * n as f32, y: 1.0, z: -8.5 },
                 scale: Vec3 { x: 2.0, y: 2.0, z: 1.0 },
                 ..Transform::default()
             },
@@ -104,132 +135,479 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         .await?;
     }
 
-    // Twenty-five heads per truss, hung off it: a head's position is relative to
-    // whatever it hangs off, so moving a truss moves its lights.
+    // ── The trusses ───────────────────────────────────────────────────────────
     //
-    // Addressed straight through, rolling into the next universe when this one is
-    // full — six channels each means about eighty-five to a universe, so this is
-    // three of them and the Patch panel's universe view has something to show.
+    // Front of house out over the audience; four overheads stepping back and up over
+    // the stage so the rig reads as a stack rather than a wall; a low one along the
+    // back for the eye candy; and a tower each side, stood on the floor.
+    let foh_truss =
+        truss_run(into, "FOH truss", Some(foh), Vec3 { x: 0.0, y: 7.0, z: 11.0 }, SPAN).await?;
+    let mut overheads = Vec::new();
+    for n in 0..4 {
+        overheads.push(
+            truss_run(
+                into,
+                &format!("Truss {}", n + 1),
+                Some(overhead),
+                Vec3 { x: 0.0, y: 8.5 + n as f32 * 0.35, z: 4.0 - n as f32 * 3.0 },
+                SPAN,
+            )
+            .await?,
+        );
+    }
+    let back_truss =
+        truss_run(into, "Back truss", Some(back_wall), Vec3 { x: 0.0, y: 6.0, z: -7.5 }, SPAN)
+            .await?;
+    let towers = [
+        boom(into, "Tower SL", Some(side), Vec3 { x: -10.0, y: 3.0, z: 0.0 }, 6.0).await?,
+        boom(into, "Tower SR", Some(side), Vec3 { x: 10.0, y: 3.0, z: 0.0 }, 6.0).await?,
+    ];
+
+    // ── The hang ──────────────────────────────────────────────────────────────
+    //
+    // A truss is hung as a *pattern* along it — "SWB" is a spot, a wash and a blinder
+    // by turns — spread evenly over the span and clamped under the bar. Addressed
+    // straight through, rolling into the next universe when one is full.
     let mut addresses = Addresses::from(1);
-    let step = SPAN / PER_RUN as f32;
-    for (t, (truss, layer)) in runs.iter().enumerate() {
-        for n in 0..PER_RUN {
+    let mut counts = std::collections::HashMap::<&str, usize>::new();
+    let mut hang = |truss: Uuid,
+                    layer: Uuid,
+                    pattern: &[Kind],
+                    repeats: usize,
+                    aim: Vec3|
+     -> Vec<(Kind, Fixture)> {
+        let slots = pattern.len() * repeats;
+        let step = SPAN / slots as f32;
+        let mut made = Vec::new();
+        for slot in 0..slots {
+            let kind = pattern[slot % pattern.len()];
+            let definition = type_of(kind);
+            let n = counts.entry(called(kind)).or_default();
+            *n += 1;
             let mut fixture = a_fixture(
-                &format!("Head {}", t * PER_RUN + n + 1),
-                head.id,
-                addresses.take(head.channel_count),
-                aimed(-SPAN / 2.0 + step * (n as f32 + 0.5), -0.3, 0.0, facing::DOWN),
+                &format!("{} {}", called(kind), n),
+                definition.id,
+                addresses.take(definition.channel_count),
+                aimed(-SPAN / 2.0 + step * (slot as f32 + 0.5), -HUNG_BELOW, 0.0, aim),
             );
-            fixture.parent = Some(*truss);
-            fixture.layer = Some(*layer);
+            fixture.parent = Some(truss);
+            fixture.layer = Some(layer);
+            made.push((kind, fixture));
+        }
+        made
+    };
+
+    let mut hung: Vec<(Kind, Fixture)> = Vec::new();
+    // Profiles out front, pointed back at the stage.
+    let at_the_stage = Vec3 { x: 0.0, y: -0.5, z: -0.85 };
+    hung.extend(hang(foh_truss, foh, &[Kind::Spot], 16, at_the_stage));
+    // The downstage truss carries the blinders, which look out at the crowd; the
+    // other three are spots and washes by turns, straight down.
+    let at_the_crowd = Vec3 { x: 0.0, y: -0.35, z: 1.0 };
+    for (n, truss) in overheads.iter().enumerate() {
+        if n == 0 {
+            hung.extend(hang(*truss, overhead, &[Kind::Spot, Kind::Wash, Kind::Blinder], 10, facing::DOWN));
+        } else {
+            hung.extend(hang(*truss, overhead, &[Kind::Spot, Kind::Wash], 13, facing::DOWN));
+        }
+    }
+    // Beams and strobes along the back wall, over the band's heads at the crowd.
+    hung.extend(hang(back_truss, back_wall, &[Kind::Beam, Kind::Strobe], 14, at_the_crowd));
+
+    // A blinder hung straight down is a blinder nobody sees. Turn that row at the
+    // audience after the fact, since the pattern hung the whole truss one way.
+    for (kind, fixture) in &mut hung {
+        if matches!(kind, Kind::Blinder) {
+            let at = fixture.position.expect("hung").position;
+            fixture.position = Some(aimed(at.x, at.y, at.z, at_the_crowd));
+        }
+    }
+    for (_, fixture) in &hung {
+        into.create("fixtures", fixture).await?;
+    }
+
+    // The floor package: a dozen beams standing on the deck along the back edge,
+    // fanned up and out at the crowd. Not hung off anything — they stand.
+    for n in 0..12 {
+        let mut fixture = a_fixture(
+            &format!("Floor beam {}", n + 1),
+            beam.id,
+            addresses.take(beam.channel_count),
+            aimed(-6.75 + 1.5 * n as f32 - 0.375, 1.2, -6.5, Vec3 { x: 0.0, y: 0.55, z: 1.0 }),
+        );
+        fixture.layer = Some(floor);
+        into.create("fixtures", &fixture).await?;
+    }
+
+    // And six washes up each tower on sidearms, looking across the stage.
+    for (t, (tower, handle)) in towers.iter().enumerate() {
+        let (side_name, aim, towards_centre) =
+            if t == 0 { ("SL", facing::FROM_LEFT, 0.45) } else { ("SR", facing::FROM_RIGHT, -0.45) };
+        for n in 0..6 {
+            let mut fixture = a_fixture(
+                &format!("Tower {side_name} {}", n + 1),
+                wash.id,
+                addresses.take(wash.channel_count),
+                on(handle, Vec3 { x: towards_centre, y: -2.4 + 0.96 * n as f32, z: 0.0 }, aim),
+            );
+            fixture.parent = Some(*tower);
+            fixture.layer = Some(side);
             into.create("fixtures", &fixture).await?;
         }
     }
 
+    // ── The playbacks ─────────────────────────────────────────────────────────
+
     let master = SpeedMaster {
         id: id(),
         name: "Show".to_string(),
-        bpm: 124.0,
+        bpm: 128.0,
         multiplier: 1.0,
         running: true,
         t0: now_ms(),
     };
     into.create("speed_masters", &master).await?;
+    let on_beat = |multiplier: f32| Rate::Master { id: master.id, multiplier };
 
     let rig = into.fixtures().await;
+    let of = |prefix: &str| -> Vec<Uuid> {
+        rig.iter().filter(|f| f.name.starts_with(prefix)).map(|f| f.id).collect()
+    };
+    let front: Vec<Uuid> = rig
+        .iter()
+        .filter(|f| f.layer == Some(foh))
+        .map(|f| f.id)
+        .collect();
+    let washes: Vec<Uuid> = rig
+        .iter()
+        .filter(|f| f.layer == Some(overhead) && f.fixture_type_id == wash.id)
+        .map(|f| f.id)
+        .collect();
+    let spots: Vec<Uuid> = rig
+        .iter()
+        .filter(|f| f.layer == Some(overhead) && f.fixture_type_id == spot.id)
+        .map(|f| f.id)
+        .collect();
+    let blinders = of("Blinder");
+    let beams = of("Beam");
+    let strobes = of("Strobe");
+    let floor_beams = of("Floor beam");
+    let towers: Vec<Uuid> = of("Tower");
 
-    // Six sequences, each holding a slice of the rig, and each with a stack of four
-    // rather than a single look — a festival operator is riding several at once and
-    // pressing Go on all of them, which is the thing worth being able to try.
-    //
-    // Slices rather than the whole rig per sequence, because six effects over two
-    // hundred heads each would be a rig where everything is asserted six times.
-    const SEQUENCES: usize = 6;
-    for s in 0..SEQUENCES {
-        let slice: Vec<&Fixture> = rig.iter().skip(s).step_by(SEQUENCES).collect();
-        let shaped = |kind: ParameterKind,
-                      shape,
-                      multiplier: f32,
-                      low: ParameterValue,
-                      high: ParameterValue,
-                      direction| {
-            let effect = id();
-            let mut captures: Vec<ParameterCapture> = Vec::new();
-            for (n, fixture) in slice.iter().enumerate() {
-                captures.push(level(fixture.id, 0.7));
-                captures.push(ParameterCapture {
-                    effect: Some(EffectSpec {
-                        effect_id: effect,
-                        curve: Curve::Shape(shape),
-                        // Each sequence a different fraction of the one tempo, so
-                        // they drift against each other without ever disagreeing
-                        // about the beat.
-                        rate: Rate::Master { id: master.id, multiplier },
-                        low: low.clone(),
-                        high: high.clone(),
-                        width: 0.5,
-                        direction,
-                        phase: n as f32 / slice.len().max(1) as f32,
-                        spread: Spread::Linear,
-                        t0: None,
-                    }),
-                    ..capture(fixture.id, kind.clone(), low.clone())
-                });
-            }
-            captures
-        };
-
-        let rate = 0.25 * (s as f32 + 1.0);
-        let mut cues = vec![
-            a_cue(
-                &format!("Colour {}", s + 1),
-                1.0,
-                shaped(
-                    ParameterKind::ColorRgb,
-                    if s % 2 == 0 { Shape::Sine } else { Shape::Triangle },
+    // One effect id per look and one phase per head, so the effects panel gathers
+    // each back into a single editable wave rather than thirty unrelated sines.
+    let shaped = |on: &[Uuid],
+                  kind: ParameterKind,
+                  shape: Shape,
+                  rate: Rate,
+                  low: ParameterValue,
+                  high: ParameterValue,
+                  width: f32,
+                  direction: Direction|
+     -> Vec<ParameterCapture> {
+        let effect = id();
+        on.iter()
+            .enumerate()
+            .map(|(n, fixture)| ParameterCapture {
+                effect: Some(EffectSpec {
+                    effect_id: effect,
+                    curve: Curve::Shape(shape),
                     rate,
-                    ParameterValue::rgb(0.9, 0.2, 0.0),
-                    ParameterValue::rgb(0.0, 0.4, 1.0),
-                    if s % 3 == 0 { Direction::Forward } else { Direction::Backward },
-                ),
-            ),
-            a_cue(
-                &format!("Tilt {}", s + 1),
-                2.0,
-                shaped(
-                    ParameterKind::Tilt,
-                    Shape::Sine,
-                    rate,
-                    ParameterValue::Float(0.3),
-                    ParameterValue::Float(0.7),
-                    Direction::Forward,
-                ),
-            ),
-            a_cue(
-                &format!("Chase {}", s + 1),
-                3.0,
-                shaped(
-                    ParameterKind::Intensity,
-                    Shape::SawDown,
-                    rate * 2.0,
-                    ParameterValue::Float(0.0),
-                    ParameterValue::Float(1.0),
-                    Direction::Forward,
-                ),
-            ),
-            a_cue(
-                &format!("Hold {}", s + 1),
-                4.0,
-                slice.iter().map(|fixture| level(fixture.id, 0.5)).collect(),
-            ),
-        ];
-        for cue in &mut cues {
-            cue.fade_in_ms = 2_000;
-        }
+                    low: low.clone(),
+                    high: high.clone(),
+                    width,
+                    direction,
+                    phase: n as f32 / on.len().max(1) as f32,
+                    spread: Spread::Linear,
+                    t0: None,
+                }),
+                ..capture(*fixture, kind.clone(), low.clone())
+            })
+            .collect()
+    };
+    let all = |on: &[Uuid], at: f32| -> Vec<ParameterCapture> {
+        on.iter().map(|f| level(*f, at)).collect()
+    };
+    let coloured = |on: &[Uuid], at: f32, r: f32, g: f32, b: f32| -> Vec<ParameterCapture> {
+        on.iter().flat_map(|f| [level(*f, at), hue(*f, r, g, b)]).collect()
+    };
+    // Pan spread evenly across a system, so a row of heads fans out rather than all
+    // pointing the same way.
+    let fanned = |on: &[Uuid], from: f32, to: f32| -> Vec<ParameterCapture> {
+        on.iter()
+            .enumerate()
+            .flat_map(|(n, f)| {
+                let t = if on.len() > 1 { n as f32 / (on.len() - 1) as f32 } else { 0.5 };
+                [
+                    capture(*f, ParameterKind::Pan, ParameterValue::Float(from + (to - from) * t)),
+                    capture(*f, ParameterKind::Tilt, ParameterValue::Float(0.5)),
+                ]
+            })
+            .collect()
+    };
+    let joined = |parts: Vec<Vec<ParameterCapture>>| -> Vec<ParameterCapture> {
+        parts.into_iter().flatten().collect()
+    };
+    let out = |on: &[Uuid], number: f64| with_fade(a_cue("Out", number, all(on, 0.0)), 2_000);
 
-        // Started, so the rig is moving the moment the show opens.
-        a_stack(into, &format!("Look {}", s + 1), cues, true).await?;
-    }
+    // Front: the profiles on the stage. Comes up in the wash and stays there.
+    a_stack(
+        into,
+        "Front",
+        vec![
+            with_fade(a_cue("Stage wash", 1.0, coloured(&front, 0.85, 1.0, 0.92, 0.8)), 3_000),
+            with_fade(
+                a_cue(
+                    "Key and fill",
+                    2.0,
+                    front
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(n, f)| {
+                            // The middle of the truss keys the stage; the ends fill.
+                            let middle = (5..11).contains(&n);
+                            [level(*f, if middle { 1.0 } else { 0.4 }), hue(*f, 1.0, 0.92, 0.8)]
+                        })
+                        .collect(),
+                ),
+                2_000,
+            ),
+            out(&front, 3.0),
+        ],
+        true,
+    )
+    .await?;
+
+    // Washes: the overhead colour, rolling slowly the moment the show opens.
+    a_stack(
+        into,
+        "Washes",
+        vec![
+            with_fade(
+                a_cue(
+                    "Colour roll",
+                    1.0,
+                    joined(vec![
+                        all(&washes, 0.7),
+                        shaped(&washes, ParameterKind::ColorRgb, Shape::Sine, on_beat(0.125),
+                               ParameterValue::rgb(1.0, 0.25, 0.05), ParameterValue::rgb(0.05, 0.2, 1.0),
+                               0.5, Direction::Forward),
+                    ]),
+                ),
+                3_000,
+            ),
+            with_fade(a_cue("Deep blue", 2.0, coloured(&washes, 0.6, 0.05, 0.15, 0.9)), 4_000),
+            with_fade(a_cue("Amber", 3.0, coloured(&washes, 0.8, 1.0, 0.55, 0.15)), 4_000),
+            with_fade(a_cue("White", 4.0, coloured(&washes, 0.5, 1.0, 1.0, 1.0)), 2_000),
+            out(&washes, 5.0),
+        ],
+        true,
+    )
+    .await?;
+
+    // Spots: the overhead movers. A slow tilt wave to open on, and busier looks to
+    // Go to.
+    a_stack(
+        into,
+        "Spots",
+        vec![
+            with_fade(
+                a_cue(
+                    "Tilt wave",
+                    1.0,
+                    joined(vec![
+                        coloured(&spots, 0.5, 0.9, 0.95, 1.0),
+                        shaped(&spots, ParameterKind::Tilt, Shape::Sine, on_beat(0.25),
+                               ParameterValue::Float(0.35), ParameterValue::Float(0.65), 0.5,
+                               Direction::Forward),
+                    ]),
+                ),
+                3_000,
+            ),
+            with_fade(
+                a_cue("Fan", 2.0, joined(vec![coloured(&spots, 0.8, 1.0, 1.0, 1.0), fanned(&spots, 0.3, 0.7)])),
+                2_500,
+            ),
+            with_fade(
+                a_cue(
+                    "Ballyhoo",
+                    3.0,
+                    joined(vec![
+                        coloured(&spots, 0.9, 1.0, 1.0, 1.0),
+                        shaped(&spots, ParameterKind::Pan, Shape::Triangle, on_beat(0.5),
+                               ParameterValue::Float(0.3), ParameterValue::Float(0.7), 0.5,
+                               Direction::Forward),
+                        shaped(&spots, ParameterKind::Tilt, Shape::Sine, on_beat(1.0),
+                               ParameterValue::Float(0.4), ParameterValue::Float(0.6), 0.5,
+                               Direction::Backward),
+                    ]),
+                ),
+                1_000,
+            ),
+            with_fade(
+                a_cue("Centre", 4.0, joined(vec![coloured(&spots, 0.6, 1.0, 1.0, 1.0), fanned(&spots, 0.5, 0.5)])),
+                3_000,
+            ),
+            out(&spots, 5.0),
+        ],
+        true,
+    )
+    .await?;
+
+    // Blinders: waiting. A blinder that is on when the show opens is a blinder that
+    // has nothing left to do, so this stack sits at nothing until somebody presses
+    // Go — and the first thing Go does is hit.
+    a_stack(
+        into,
+        "Blinders",
+        vec![
+            with_fade(a_cue("Hit", 1.0, all(&blinders, 1.0)), 0),
+            with_fade(
+                a_cue(
+                    "Pulse",
+                    2.0,
+                    shaped(&blinders, ParameterKind::Intensity, Shape::Square, on_beat(0.5),
+                           ParameterValue::Float(0.0), ParameterValue::Float(1.0), 0.3,
+                           Direction::Forward),
+                ),
+                0,
+            ),
+            with_fade(a_cue("Glow", 3.0, all(&blinders, 0.12)), 3_000),
+            out(&blinders, 4.0),
+        ],
+        false,
+    )
+    .await?;
+
+    // The back wall: beams chasing along it, with the strobes held off until their
+    // own look — a strobe in a chase is noise, not eye candy.
+    a_stack(
+        into,
+        "Back wall",
+        vec![
+            with_fade(
+                a_cue(
+                    "Beam chase",
+                    1.0,
+                    joined(vec![
+                        beams.iter().flat_map(|f| [hue(*f, 0.2, 0.9, 1.0)]).collect(),
+                        fanned(&beams, 0.42, 0.58),
+                        shaped(&beams, ParameterKind::Intensity, Shape::SawDown, on_beat(1.0),
+                               ParameterValue::Float(0.0), ParameterValue::Float(1.0), 0.5,
+                               Direction::Forward),
+                        all(&strobes, 0.0),
+                    ]),
+                ),
+                1_000,
+            ),
+            with_fade(
+                a_cue(
+                    "Beam fan",
+                    2.0,
+                    joined(vec![coloured(&beams, 0.9, 0.9, 0.3, 1.0), fanned(&beams, 0.25, 0.75), all(&strobes, 0.0)]),
+                ),
+                2_000,
+            ),
+            with_fade(
+                a_cue(
+                    "Strobe hits",
+                    3.0,
+                    joined(vec![
+                        all(&beams, 0.0),
+                        strobes
+                            .iter()
+                            .flat_map(|f| {
+                                [
+                                    level(*f, 1.0),
+                                    hue(*f, 1.0, 1.0, 1.0),
+                                    // A strobe channel carries a rate: the console
+                                    // sends the byte and the fixture does the flashing.
+                                    capture(*f, ParameterKind::Strobe, ParameterValue::Float(0.5)),
+                                ]
+                            })
+                            .collect(),
+                    ]),
+                ),
+                0,
+            ),
+            with_fade(
+                a_cue(
+                    "Out",
+                    4.0,
+                    joined(vec![
+                        all(&beams, 0.0),
+                        strobes
+                            .iter()
+                            .flat_map(|f| [level(*f, 0.0), capture(*f, ParameterKind::Strobe, ParameterValue::Float(0.0))])
+                            .collect(),
+                    ]),
+                ),
+                1_000,
+            ),
+        ],
+        true,
+    )
+    .await?;
+
+    // The floor package: waiting, like the blinders. Its first look fans the beams
+    // up over the crowd.
+    a_stack(
+        into,
+        "Floor",
+        vec![
+            with_fade(
+                a_cue("Fan up", 1.0, joined(vec![coloured(&floor_beams, 0.8, 1.0, 0.1, 0.6), fanned(&floor_beams, 0.3, 0.7)])),
+                1_500,
+            ),
+            with_fade(
+                a_cue(
+                    "Sweep",
+                    2.0,
+                    joined(vec![
+                        coloured(&floor_beams, 0.9, 0.3, 0.6, 1.0),
+                        shaped(&floor_beams, ParameterKind::Pan, Shape::Triangle, on_beat(0.25),
+                               ParameterValue::Float(0.3), ParameterValue::Float(0.7), 0.5,
+                               Direction::Forward),
+                    ]),
+                ),
+                1_000,
+            ),
+            out(&floor_beams, 3.0),
+        ],
+        false,
+    )
+    .await?;
+
+    // The towers: a colour from each side, and a chase to Go to.
+    a_stack(
+        into,
+        "Side",
+        vec![
+            with_fade(a_cue("Magenta", 1.0, coloured(&towers, 0.7, 1.0, 0.1, 0.6)), 3_000),
+            with_fade(a_cue("Cyan", 2.0, coloured(&towers, 0.7, 0.1, 0.8, 1.0)), 3_000),
+            with_fade(
+                a_cue(
+                    "Colour chase",
+                    3.0,
+                    joined(vec![
+                        all(&towers, 0.8),
+                        shaped(&towers, ParameterKind::ColorRgb, Shape::Sine, on_beat(0.5),
+                               ParameterValue::rgb(1.0, 0.1, 0.6), ParameterValue::rgb(0.1, 0.8, 1.0),
+                               0.5, Direction::Forward),
+                    ]),
+                ),
+                1_000,
+            ),
+            out(&towers, 4.0),
+        ],
+        true,
+    )
+    .await?;
 
     Ok(())
+}
+
+fn with_fade(mut cue: Cue, fade_in_ms: u32) -> Cue {
+    cue.fade_in_ms = fade_in_ms;
+    cue
 }

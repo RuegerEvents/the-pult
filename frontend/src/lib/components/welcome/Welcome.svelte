@@ -18,8 +18,9 @@
 	import { getClientContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
 	import { backendOrigin } from '$lib/ws/endpoint.js';
-	import { folderName, links, orderRecent, type ShowList } from '$lib/shows.js';
+	import { baseName, folderName, links, orderRecent, type ShowList } from '$lib/shows.js';
 	import { focusOnMount, selectOnMount } from '$lib/actions.js';
+	import { beginSwitch, endSwitch } from '$lib/stores/switching.js';
 	import DemoCard from './DemoCard.svelte';
 	import ShowCard from './ShowCard.svelte';
 
@@ -62,14 +63,17 @@
 
 	/**
 	 * Ask for a show. The station acknowledges and then stops, so this never sees the
-	 * new console — the page reconnects onto it and reloads.
+	 * new console — the page reconnects onto it and reloads. The switching screen goes
+	 * up first, in the operator's own words, so the whole of that is one cover.
 	 */
-	async function ask(method: string, args: Record<string, unknown> = {}) {
+	async function ask(method: string, args: Record<string, unknown>, doing: string) {
 		if (busy) return;
 		busy = true;
+		beginSwitch(doing);
 		try {
 			await client.call(method, args);
 		} catch (e) {
+			endSwitch();
 			addToast(`${e}`);
 			busy = false;
 		}
@@ -79,7 +83,7 @@
 		const name = draft.trim();
 		if (!name) return;
 		naming = false;
-		await ask('show.new', { name });
+		await ask('show.new', { name }, `making ${name}`);
 	}
 
 	/**
@@ -91,7 +95,7 @@
 	 * joining with a different show open has that show overwritten.
 	 */
 	async function join(sessionId: string, showName: string) {
-		await ask('show.new', { name: showName, thenJoin: sessionId });
+		await ask('show.new', { name: showName, thenJoin: sessionId }, `joining ${showName}`);
 	}
 
 	async function importPultz(event: Event) {
@@ -191,7 +195,8 @@
 					class="open-path"
 					onsubmit={(e) => {
 						e.preventDefault();
-						if (openingPath.trim()) ask('show.open', { path: openingPath.trim() });
+						if (openingPath.trim())
+							ask('show.open', { path: openingPath.trim() }, `opening ${baseName(openingPath.trim())}`);
 					}}
 				>
 					<input bind:value={openingPath} placeholder="Open a path…" spellcheck="false" />
@@ -211,7 +216,7 @@
 			<h2>Recent</h2>
 			<div class="cards">
 				{#each recent as show (show.path)}
-					<ShowCard {show} onopen={(path) => ask('show.open', { path })} />
+					<ShowCard {show} onopen={(path) => ask('show.open', { path }, `opening ${show.name}`)} />
 				{/each}
 			</div>
 		</section>
@@ -222,7 +227,7 @@
 			<h2>In the shows folder</h2>
 			<div class="cards">
 				{#each elsewhere as show (show.path)}
-					<ShowCard {show} onopen={(path) => ask('show.open', { path })} />
+					<ShowCard {show} onopen={(path) => ask('show.open', { path }, `opening ${show.name}`)} />
 				{/each}
 			</div>
 		</section>
@@ -262,7 +267,7 @@
 					<DemoCard
 						{demo}
 						{busy}
-						onopen={(id) => ask('show.new', { name: demo.title, demo: id })}
+						onopen={(id) => ask('show.new', { name: demo.title, demo: id }, `making ${demo.title}`)}
 					/>
 				{/each}
 			</div>

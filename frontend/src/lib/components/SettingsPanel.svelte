@@ -201,7 +201,8 @@
 				<span class="unit">turbulence</span>
 			</div>
 			<p class="note">
-				How much haze the rig view draws beams through, and how fast it drifts. Show data
+				How much haze is in the room — at 0 the air is clear and no beam shows, at 1
+				every beam does — and how fast it drifts. Show data
 				because how hazy the room is is a fact about the room rather than about the screen
 				looking at it — a designer who lit a piece for a hazy house wants the next person
 				opening the file to see what they saw. It reaches no lamp.

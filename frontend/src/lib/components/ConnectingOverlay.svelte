@@ -1,31 +1,72 @@
 <script lang="ts">
 	/**
-	 * The screen while there is no console to talk to.
+	 * The screen while there is no console to talk to — or while the console is
+	 * becoming a different one.
 	 *
 	 * Everything in this app is a view of state that lives on the backend, so without
 	 * one there is nothing to look at: panels sit empty, a fader moves and springs
 	 * back, and none of it says why. This covers the lot and says the one thing that
 	 * matters — which console is not answering, and that it is still being asked.
+	 *
+	 * A *switch* is the same cover with a different sentence. Opening a show is the
+	 * station stopping and another starting in its place, and a page that treated that
+	 * as a lost console drew three screens in a row for one act: "stopped answering",
+	 * a reload, "connecting". Given the switch, it says what is being done and stays
+	 * up until the page is looking at the result — see `$lib/switching.ts`.
 	 */
+
+	import { overdue, switchTitle, type Switch } from '$lib/switching.js';
 
 	let {
 		everConnected,
 		address,
+		switching = null,
 		onretry
-	}: { everConnected: boolean; address: string; onretry: () => void } = $props();
+	}: {
+		everConnected: boolean;
+		address: string;
+		/** The switch under way, if this cover is up because of one. */
+		switching?: Switch | null;
+		onretry: () => void;
+	} = $props();
+
+	// A switch that has gone on too long says so and offers the retry, which is the
+	// only way a station that died half way through a switch stops looking like a
+	// slow one. Polled, because "too long" is a fact about the clock and not about
+	// anything the page is told.
+	let now = $state(Date.now());
+	$effect(() => {
+		if (!switching) return;
+		const timer = setInterval(() => (now = Date.now()), 1000);
+		return () => clearInterval(timer);
+	});
+	const waiting = $derived(switching !== null && overdue(switching, now));
 </script>
 
 <div class="cover" role="status" aria-live="polite">
 	<div class="panel">
 		<div class="spinner" aria-hidden="true"></div>
-		<h1>{everConnected ? 'The console stopped answering' : 'Connecting to the console'}</h1>
-		<p class="where">{address}</p>
-		<p class="hint">
-			{everConnected
-				? 'Still trying. The show is on the console rather than in this browser, so nothing has been lost.'
-				: 'Nothing can be read or changed until it answers.'}
-		</p>
-		<button onclick={onretry}>Try now</button>
+		{#if switching}
+			<h1>{switchTitle(switching.doing)}</h1>
+			<p class="where">{address}</p>
+			<p class="hint">
+				{waiting
+					? 'This is taking longer than it should. The console may have stopped on the way.'
+					: 'The console is stopping and starting again around the show. This page will follow it.'}
+			</p>
+			{#if waiting}
+				<button onclick={onretry}>Try now</button>
+			{/if}
+		{:else}
+			<h1>{everConnected ? 'The console stopped answering' : 'Connecting to the console'}</h1>
+			<p class="where">{address}</p>
+			<p class="hint">
+				{everConnected
+					? 'Still trying. The show is on the console rather than in this browser, so nothing has been lost.'
+					: 'Nothing can be read or changed until it answers.'}
+			</p>
+			<button onclick={onretry}>Try now</button>
+		{/if}
 	</div>
 </div>
 

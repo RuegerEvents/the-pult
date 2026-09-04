@@ -80,6 +80,7 @@
 	import { parameterKey } from '$lib/patch.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
+	import { DEFAULT_VIEW, view } from '$lib/stores/view.js';
 
 	// `camera-controls` is a library rather than a wrapper: it wants the three.js
 	// pieces it uses handed to it once per process.
@@ -113,12 +114,44 @@
 	// ── What a frame of this view costs ─────────────────────────────────────────
 	//
 	// The station publishes what its *output* frames cost and that is a different
-	// number: nothing about drawing a rig reaches a lamp. A rolling mean over a
-	// second, so it reads as a number rather than a flicker.
-	let frameMs = $state(0);
-	export function costMs(): number {
-		return frameMs;
+	// number: nothing about drawing a rig reaches a lamp. Two figures here, because
+	// they answer different questions. `cpuMs` is the work this panel does to draw
+	// a frame — the loop below and the call into three.js. `gpuMs` is how long the
+	// GPU took over one, read back through `EXT_disjoint_timer_query_webgl2` where
+	// the browser offers it, and it is the figure that says why a view reporting
+	// nine milliseconds can still feel laggy: a rAF loop never waits for the GPU,
+	// so the picture can be several frames behind the pointer while every CPU
+	// figure looks fine. Rolling means over a second, so they read as numbers.
+	//
+	// And "idle" is an answer. This view draws only when something changed, so a
+	// panel showing a settled rig has no frame to cost, and says so rather than
+	// reporting a rate for frames it did not draw.
+	let cpuMs = $state(0);
+	let gpuMs = $state<number | null>(null);
+	let drawing = $state(false);
+	export function cost(): { cpuMs: number; gpuMs: number | null; drawing: boolean } {
+		return { cpuMs, gpuMs, drawing };
 	}
+
+	/** Set by the render loop, so an effect can ask for a frame. */
+	let markDirty: () => void = () => {};
+
+	/**
+	 * At most this often. A ProMotion display offers a hundred and twenty frames a
+	 * second and a lighting visualiser drawn at that rate is a GPU pinned for a
+	 * smoothness nobody can see in a two-second fade. Fifteen rather than sixteen
+	 * and two thirds so a sixty-hertz display, whose frames arrive a hair early or
+	 * late, never skips one.
+	 */
+	const DRAW_EVERY_MS = 15;
+
+	/**
+	 * The room's own light with the work light all the way up: enough to read every
+	 * truss and the plan as if the house lights were on. The slider is a fraction of
+	 * this, and 40% of it is the view as it was first drawn.
+	 */
+	const AMBIENT_AT_FULL = 1.25;
+	const HEMISPHERE_AT_FULL = 0.75;
 
 	const placed = $derived(
 		fixtures.filter(
@@ -204,7 +237,14 @@
 	/// Everything the renderer owns, built once per panel and torn down with it.
 	function buildScene(element: HTMLDivElement) {
 		const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-		renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+		// Capped by the view setting, not by the display: every device pixel is a
+		// beam-shader invocation, and a Retina display's two per CSS pixel is what
+		// pinned a GPU on the festival rig.
+		// Read once, untracked: this runs inside the effect that builds the scene, and
+		// a reactive read here would rebuild the whole scene — renderer, camera, controls
+		// and all — every time somebody moved the work light slider, which is what
+		// took the camera home each time. The effect below keeps both up to date.
+		renderer.setPixelRatio(Math.min(window.devicePixelRatio, untrack(() => $view.resolution)));
 		renderer.setClearColor(0x101010, 1);
 		element.appendChild(renderer.domElement);
 		renderer.domElement.style.display = 'block';
@@ -222,9 +262,12 @@
 
 		// Enough ambient to read the rig and the plan when nothing is on, and no more:
 		// this is a view of what the fixtures are doing, so the fixtures should be the
-		// light in it.
-		root.add(new THREE.AmbientLight(0x5a6478, 0.5));
-		root.add(new THREE.HemisphereLight(0xffffff, 0x101010, 0.3));
+		// light in it. The view's work light scales both — this screen's setting, not
+		// the show's, since it lights no lamp and says nothing about the room.
+		const ambient = new THREE.AmbientLight(0x5a6478, AMBIENT_AT_FULL * DEFAULT_VIEW.workLight);
+		const hemisphere = new THREE.HemisphereLight(0xffffff, 0x101010, HEMISPHERE_AT_FULL * DEFAULT_VIEW.workLight);
+		root.add(ambient);
+		root.add(hemisphere);
 
 		// ── The deck ────────────────────────────────────────────────────────────
 		const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x242424, roughness: 0.95 });
@@ -323,6 +366,11 @@
 			beamMesh,
 			beamMat,
 			pool,
+			ambient,
+			hemisphere,
+			timer: gpuTimer(renderer),
+			/** What each fixture was drawn as last frame, so a frame that changes nothing is not drawn. */
+			previous: new Float32Array(0),
 			/** Fixture bodies, kept between frames and keyed by fixture id. */
 			bodies: new Map<string, THREE.Mesh>(),
 			/** Drawn scene objects, keyed by object id. */
@@ -345,12 +393,18 @@
 
 		// Size from the element rather than the window: this is one tile of a
 		// workspace, and two of them can be open at once.
+		let dirty = true;
+		markDirty = () => {
+			dirty = true;
+		};
+
 		const resize = new ResizeObserver(() => {
 			const { clientWidth, clientHeight } = element;
 			if (clientWidth < 1 || clientHeight < 1) return;
 			built.renderer.setSize(clientWidth, clientHeight, false);
 			built.camera.aspect = clientWidth / clientHeight;
 			built.camera.updateProjectionMatrix();
+			dirty = true;
 		});
 		resize.observe(element);
 
@@ -360,7 +414,10 @@
 
 		let running = true;
 		let previous = performance.now();
+		/** When this panel last drew, so a 120 Hz display is drawn at 60. */
+		let lastDrawn = -Infinity;
 		let frames = 0;
+		let work = 0;
 		let elapsed = 0;
 		// Our own elapsed seconds rather than `THREE.Clock`, which is deprecated, and
 		// rather than `performance.now()` directly: the shader wants seconds since
@@ -368,27 +425,44 @@
 		// hazing off one enormous number where float precision has run out.
 		let seconds = 0;
 
+		// Drawn only when there is something new to see. Three things count: the
+		// camera moved, the rig changed (a level, a colour, a direction — worked out
+		// by comparing against the last frame's attributes rather than trusting the
+		// stores, which tick every frame whether or not anything moved), or the
+		// picture animates on its own clock — a lit beam with haze in it, a strobe.
+		// A settled rig with nothing lit costs nothing at all, which is the answer to
+		// a theatre with no cue up holding a GPU at forty percent.
 		const tick = () => {
 			if (!running) return;
 			requestAnimationFrame(tick);
 			const now = performance.now();
+			if (now - lastDrawn < DRAW_EVERY_MS) return;
 			const delta = (now - previous) / 1000;
 			previous = now;
+			seconds += delta;
+			built.timer.poll();
 
-			// The gap between frames, not the work inside one: a page served a frame
-			// every 200 ms is stuttering however cheap its own work was.
-			frames += 1;
+			const moved = built.controls.update(delta);
+			const { changed, animated } = draw(built, seconds);
+
 			elapsed += delta;
 			if (elapsed >= 1) {
-				frameMs = (elapsed * 1000) / frames;
+				cpuMs = frames > 0 ? work / frames : 0;
+				drawing = frames > 0;
+				gpuMs = built.timer.take();
 				frames = 0;
+				work = 0;
 				elapsed = 0;
 			}
 
-			seconds += delta;
-			built.controls.update(delta);
-			draw(built, seconds);
+			if (!(moved || changed || animated || dirty)) return;
+			dirty = false;
+			lastDrawn = now;
+			built.timer.begin();
 			built.renderer.render(built.root, built.camera);
+			built.timer.end();
+			frames += 1;
+			work += performance.now() - now;
 		};
 		requestAnimationFrame(tick);
 
@@ -424,15 +498,37 @@
 
 	const BODY_GEOMETRY = new THREE.CylinderGeometry(0.14, 0.11, 0.34, 16);
 
-	function draw(built: Scene, seconds: number) {
+	/** How many numbers describe one fixture's drawing, for the last-frame record. */
+	const PER_FIXTURE = 10;
+
+	/**
+	 * Put the rig into the scene, and say whether that changed the picture.
+	 *
+	 * `changed` is worked out against what was drawn last frame rather than read
+	 * off a store: the output store ticks every animation frame whether or not a
+	 * value moved, so a store-driven flag would say "changed" sixty times a second
+	 * on a rig that has been sitting still since the interval. `animated` is a
+	 * picture that moves on its own clock — a lit beam with haze drifting through
+	 * it, a strobe between flashes — and has to be drawn whether or not the rig
+	 * changed.
+	 */
+	function draw(built: Scene, seconds: number): { changed: boolean; animated: boolean } {
 		const list = beams;
+		let changed = false;
+		let animated = false;
 
 		// Haze, from the show. It reaches no lamp, and it is show data because how
 		// hazy the room is is a fact about the room rather than about the screen
 		// looking at it.
-		built.beamMat.uniforms.uTime.value = seconds;
-		built.beamMat.uniforms.uHazeDensity.value = show?.haze_density ?? 0.35;
-		built.beamMat.uniforms.uHazeTurbulence.value = show?.haze_turbulence ?? 0.25;
+		const density = show?.haze_density ?? 1;
+		const turbulence = show?.haze_turbulence ?? 0.25;
+		const uniforms = built.beamMat.uniforms;
+		if (uniforms.uHazeDensity.value !== density || uniforms.uHazeTurbulence.value !== turbulence) {
+			changed = true;
+		}
+		uniforms.uTime.value = seconds;
+		uniforms.uHazeDensity.value = density;
+		uniforms.uHazeTurbulence.value = turbulence;
 
 		// The deck follows the plan it is showing.
 		built.deck.scale.set(floor.width, floor.depth, 1);
@@ -451,8 +547,20 @@
 		const lengths = built.beamMesh.geometry.getAttribute('beamLength') as THREE.InstancedBufferAttribute;
 		const spreads = built.beamMesh.geometry.getAttribute('beamSpread') as THREE.InstancedBufferAttribute;
 
+		// The record of last frame, one row per fixture in the order they are listed.
+		// A rig that grew or shrank is a different picture by definition.
+		if (built.previous.length !== list.length * PER_FIXTURE) {
+			built.previous = new Float32Array(list.length * PER_FIXTURE).fill(NaN);
+			changed = true;
+		}
+		const previous = built.previous;
+
 		let brightest = -1;
 		let brightestLevel = 0;
+		// Only lit beams get an instance, packed from the front. An unlit beam used
+		// to be an instance whose fragments all discarded — which still rasterises
+		// the whole cone — and on a theatre rig with no cue up that was every beam.
+		let lit = 0;
 
 		for (let i = 0; i < list.length; i++) {
 			const beam = list[i];
@@ -460,20 +568,46 @@
 			// beam that is not there this instant.
 			const gate = strobeGate(beam.strobe, seconds) * (beam.shutter > 0.02 ? 1 : 0);
 			const level = beam.output.level * gate;
+			// A strobe is drawn on its own clock, like haze: the picture moves even
+			// though nothing in the rig has changed.
+			if (beam.strobe > 0.002 && beam.output.level > 0.0005) animated = true;
 
 			scratchDirection.set(beam.direction.x, beam.direction.y, beam.direction.z).normalize();
-			scratchQuat.setFromUnitVectors(DOWN, scratchDirection);
 			scratchPosition.set(beam.at.x, beam.at.y, beam.at.z);
-			scratchMatrix.compose(scratchPosition, scratchQuat, scratchScale);
-			built.beamMesh.setMatrixAt(i, scratchMatrix);
-
 			scratchColour.setRGB(beam.output.r, beam.output.g, beam.output.b);
-			colours.setXYZ(i, scratchColour.r, scratchColour.g, scratchColour.b);
-			levels.setX(i, level);
-			// Run on past the axis's floor hit, so the floor cuts the beam rather than
-			// the cone's own square end standing half in the air on a slanted throw.
-			lengths.setX(i, drawnLength(beam.length, beam.direction, beam.spread, LENS_RADIUS));
-			spreads.setX(i, beam.spread);
+			const length = drawnLength(beam.length, beam.direction, beam.spread, LENS_RADIUS);
+
+			// Against last frame. Ten numbers say everything below draws from.
+			const row = i * PER_FIXTURE;
+			const now = [
+				scratchPosition.x, scratchPosition.y, scratchPosition.z,
+				scratchDirection.x, scratchDirection.y, scratchDirection.z,
+				level, scratchColour.r, scratchColour.g, scratchColour.b
+			];
+			for (let n = 0; n < PER_FIXTURE; n++) {
+				// Through `fround`, because the record is single precision and the
+				// value is double: compared raw, a number that has not moved differs
+				// from its own rounding every frame, and a settled rig draws forever.
+				const value = Math.fround(now[n]);
+				if (previous[row + n] !== value) {
+					changed = true;
+					previous[row + n] = value;
+				}
+			}
+
+			if (level > 0.0005) {
+				scratchQuat.setFromUnitVectors(DOWN, scratchDirection);
+				scratchMatrix.compose(scratchPosition, scratchQuat, scratchScale);
+				built.beamMesh.setMatrixAt(lit, scratchMatrix);
+				colours.setXYZ(lit, scratchColour.r, scratchColour.g, scratchColour.b);
+				levels.setX(lit, level);
+				// Run on past the axis's floor hit, so the floor cuts the beam rather
+				// than the cone's own square end standing half in the air on a slanted
+				// throw.
+				lengths.setX(lit, length);
+				spreads.setX(lit, beam.spread);
+				lit += 1;
+			}
 
 			if (level > brightestLevel) {
 				brightestLevel = level;
@@ -506,12 +640,19 @@
 			material.emissiveIntensity = 1;
 		}
 
-		built.beamMesh.count = list.length;
-		built.beamMesh.instanceMatrix.needsUpdate = true;
-		colours.needsUpdate = true;
-		levels.needsUpdate = true;
-		lengths.needsUpdate = true;
-		spreads.needsUpdate = true;
+		// A lit beam with haze in it drifts on the clock, so the picture is never
+		// still while one is on. With the haze at nothing it is, and a lit static
+		// look costs no frames either.
+		if (lit > 0 && density > 0.001) animated = true;
+
+		built.beamMesh.count = lit;
+		if (changed) {
+			built.beamMesh.instanceMatrix.needsUpdate = true;
+			colours.needsUpdate = true;
+			levels.needsUpdate = true;
+			lengths.needsUpdate = true;
+			spreads.needsUpdate = true;
+		}
 
 		// Bodies for fixtures that are no longer drawn: hidden rather than disposed,
 		// because a layer being toggled should not churn geometry.
@@ -537,7 +678,93 @@
 
 		drawGizmos(built);
 		projectSheet(built);
+		return { changed, animated };
 	}
+
+	/**
+	 * GPU time per frame, where the browser will say.
+	 *
+	 * One query in flight at a time; its answer arrives a few frames later and is
+	 * folded into a running mean. `null` throughout on a browser without the
+	 * extension, so the panel prints nothing rather than a zero that reads as free.
+	 */
+	function gpuTimer(renderer: THREE.WebGLRenderer) {
+		const gl = renderer.getContext() as WebGL2RenderingContext;
+		const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2') as {
+			TIME_ELAPSED_EXT: number;
+			GPU_DISJOINT_EXT: number;
+		} | null;
+		let query: WebGLQuery | null = null;
+		let open = false;
+		let total = 0;
+		let answered = 0;
+		return {
+			begin() {
+				if (!ext || query) return;
+				query = gl.createQuery();
+				if (!query) return;
+				gl.beginQuery(ext.TIME_ELAPSED_EXT, query);
+				open = true;
+			},
+			end() {
+				if (!ext || !open) return;
+				gl.endQuery(ext.TIME_ELAPSED_EXT);
+				open = false;
+			},
+			/** Fold in an answer that has arrived. */
+			poll() {
+				if (!ext || !query || open) return;
+				const ready = gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE) as boolean;
+				const disjoint = gl.getParameter(ext.GPU_DISJOINT_EXT) as boolean;
+				if (!ready && !disjoint) return;
+				if (ready && !disjoint) {
+					total += (gl.getQueryParameter(query, gl.QUERY_RESULT) as number) / 1e6;
+					answered += 1;
+				}
+				gl.deleteQuery(query);
+				query = null;
+			},
+			/** The mean since last asked, or `null` if nothing answered. */
+			take(): number | null {
+				if (!ext) return null;
+				const mean = answered > 0 ? total / answered : null;
+				total = 0;
+				answered = 0;
+				return mean;
+			}
+		};
+	}
+
+	// What this screen asks of the view: how bright the room is with nothing on,
+	// and how many pixels to draw. Both are this browser's, kept in `localStorage`.
+	$effect(() => {
+		const built = scene;
+		const { workLight, resolution } = $view;
+		const element = host;
+		if (!built || !element) return;
+		built.ambient.intensity = AMBIENT_AT_FULL * workLight;
+		built.hemisphere.intensity = HEMISPHERE_AT_FULL * workLight;
+		built.renderer.setPixelRatio(Math.min(window.devicePixelRatio, resolution));
+		// A new pixel ratio takes effect at the next `setSize`.
+		const { clientWidth, clientHeight } = element;
+		if (clientWidth > 0 && clientHeight > 0) {
+			built.renderer.setSize(clientWidth, clientHeight, false);
+		}
+		markDirty();
+	});
+
+	// Everything else on screen that the attribute comparison in `draw` cannot see:
+	// what is selected and hovered, what is being dragged, the drawing, the plan.
+	// Read here so the frame after any of them changes is drawn.
+	$effect(() => {
+		void $selected;
+		void hovered;
+		void grab;
+		void $visibleObjects;
+		void planUrl;
+		void plan;
+		markDirty();
+	});
 
 	/// Make room for a rig that has grown. Attributes are reallocated together, since
 	/// they are all indexed by the same instance.

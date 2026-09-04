@@ -57,6 +57,10 @@ pub struct Show {
     pub home_fade_ms: u32,
     /// How much haze the rig view draws the beams through, 0 to 1.
     ///
+    /// How much haze is in the room, 0 to 1. At 0 the air is clear and no beam is
+    /// drawn — the light still lands on the floor — and at 1 every beam shows with the
+    /// folds haze puts in it.
+    ///
     /// Show data rather than a per-browser view setting, and this one was argued
     /// both ways. How hazy the room is is a fact about the room: a designer who has
     /// lit a piece for a hazy house wants the next person opening the file to see
@@ -111,10 +115,12 @@ pub fn clamp_home_fade_ms(ms: u32) -> u32 {
     ms.min(HOME_FADE_MS_MAX)
 }
 
-/// Enough haze to see a beam without the room looking like a fire. A visualiser with
-/// none at all draws lights that illuminate nothing, which is the more misleading
-/// picture of the two.
-pub const HAZE_DENSITY_DEFAULT: f32 = 0.35;
+/// A full house of haze, which is what a visualiser is for: at 1 every beam shows,
+/// at 0 the air is clear and a light lands on the floor without a ray to be seen on
+/// the way, and the numbers between are that much haze. A new show starts with the
+/// lot because a rig view that draws no beams is the more misleading picture of the
+/// two, and a designer lighting a clear room turns it down.
+pub const HAZE_DENSITY_DEFAULT: f32 = 1.0;
 /// Slow drift. Fast enough that the air is visibly alive, slow enough that nobody
 /// reads it as smoke being pumped.
 pub const HAZE_TURBULENCE_DEFAULT: f32 = 0.25;

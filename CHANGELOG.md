@@ -43,9 +43,26 @@ bracketed form — so every release needs one and it has to be spelled that way.
   socket write, where it used to be two. At 5000 fixtures this is what shows that
   assembly and the socket are 6% of a frame and evaluating is 94% — the opposite of
   what was expected.
+- **Opening a show is one screen.** Opening, closing, restoring or copying a show
+  used to show "the console stopped answering" and then a reload; it now says
+  "Opening Festival…" from the moment the button is pressed until the page is
+  looking at the result — on the console that pressed it and on every other browser
+  on that station, which the station tells why it is stopping.
+- **A View sheet on the rig panel.** A work light for how brightly this screen draws
+  what no fixture is lighting, and the resolution the view renders at. Kept on this
+  screen, not in the show; the haze stays the show's.
+- **The rig panel says what the GPU took.** Beside the page's own work per frame,
+  where the browser will say, and *idle* when nothing was drawn — which is the
+  figure that explains a view that reads nine milliseconds and still feels laggy.
 
 ### Changed
 
+- **Playback tracks.** A cue is now the stack up to it: jumping back to a cue lets go
+  of everything only later cues brought in, and jumping forward applies what the cues
+  in between set. Going forward one cue at a time behaves exactly as before.
+- **Haze density means how much of a beam shows.** At 0 the air is clear and no beam
+  is drawn; at 1 every beam shows with its folds. It used to only mix the folds in,
+  so a clear room still drew every beam. New shows start at 1.
 - A station's identity moved out of the showfile and onto the machine
   (`--identity`, `PULT_IDENTITY`, or the configuration directory), so copying a show
   no longer clones the console that made it.
@@ -68,8 +85,23 @@ bracketed form — so every release needs one and it has to be spelled that way.
   of stopping at 40 metres, gizmo rings can no longer hide inside the fixture they
   belong to, and touching the view cancels a camera move in progress.
 
+- **The rig view draws only when there is something new to see**, and at most sixty
+  times a second. A ProMotion display was being drawn a hundred and twenty times a
+  second whether or not anything moved, with every unlit fixture still rasterised as
+  a cone that discarded every fragment; a dark theatre held a GPU at forty percent
+  and the festival pinned one. A settled dark rig now costs nothing.
+- **The Festival demo is a rig of five kinds** — profiles, spots, washes, blinders,
+  beams and LED strobes on six trusses, a floor package and two towers — with seven
+  playbacks of looks that end in *Out*, some running and some waiting for Go.
+
 ### Fixed
 
+- **The Theatre demo's booms were horizontal**, and the Club demo's washes hung in the
+  air beside the truss. Booms stand up now, with their lanterns on sidearms, and
+  everything in every demo is clamped under its bar at the same distance. The cyc
+  batten's cells no longer overhang its ends.
+- **Moving the rig view's work light took the camera home.** It no longer rebuilds
+  the scene, and the slider runs from blackout to house lights up in percent.
 - **Patching a large rig was quadratic, twice over.** Creating a fixture rewrote the
   whole collection's stored order *and* re-sent every fixture in the show to every
   connected browser. Both are now done once per burst instead of once per fixture.

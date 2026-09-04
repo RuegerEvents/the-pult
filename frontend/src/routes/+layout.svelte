@@ -19,6 +19,8 @@
 	import { reportBrowserErrors } from '$lib/errors.js';
 	import { reportBrowserStats } from '$lib/stats.js';
 	import { frameMeter } from '$lib/stores/output.js';
+	import { beginSwitch, endSwitch, switching } from '$lib/stores/switching.js';
+	import { switchFromClose } from '$lib/switching.js';
 	import LayoutBar from '$lib/components/layout/LayoutBar.svelte';
 	import UserBar from '$lib/components/UserBar.svelte';
 	import '$lib/styles/tokens.css';
@@ -40,9 +42,13 @@
 	// show is this station stopping and another starting in its place, and the
 	// reconnect is the first moment there is anybody to ask. A tab that comes back to
 	// a different show reloads: see `$lib/shows.ts`.
+	// And a fresh answer that keeps this tab where it is — the same show, or the
+	// reloaded page hearing the new one — is the moment a switch is over.
 	const station = watchStation(
 		client,
-		browser ? backendOrigin(window.location) : 'http://localhost:7700'
+		browser ? backendOrigin(window.location) : 'http://localhost:7700',
+		undefined,
+		endSwitch
 	);
 	setStationContext(station);
 	// One store per collection, shared by every panel: a tiled workspace can have the
@@ -127,6 +133,12 @@
 	});
 
 	$effect(() => {
+		// A switch covers at once and stays covered through the reconnect and the
+		// reload: the operator asked for it and the screen says what it is doing.
+		if ($switching) {
+			covering = true;
+			return;
+		}
 		if (connected) {
 			covering = false;
 			return;
@@ -142,6 +154,13 @@
 	onMount(() => {
 		client.onConnect = () => { connected = true; everConnected = true; };
 		client.onDisconnect = () => { connected = false; };
+		// A station making way for another says so in its close frame, which is how
+		// the tablet on somebody else's socket draws "Opening Festival…" rather than
+		// "the console stopped answering".
+		client.onClose = (code, reason) => {
+			const asked = switchFromClose(code, reason, Date.now());
+			if (asked) beginSwitch(asked.doing);
+		};
 		client.onError = (msg) => addToast(msg);
 		client.connect();
 		return () => client.disconnect();
@@ -169,7 +188,17 @@
 </div>
 
 {#if covering}
-	<ConnectingOverlay {everConnected} {address} onretry={() => client.retryNow()} />
+	<ConnectingOverlay
+		{everConnected}
+		{address}
+		switching={$switching}
+		onretry={() => {
+			// Trying again by hand means the switch is no longer being waited on as
+			// one: whatever the console is now, the ordinary screens take over.
+			endSwitch();
+			client.retryNow();
+		}}
+	/>
 {/if}
 
 <Toasts />

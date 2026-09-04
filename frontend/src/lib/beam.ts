@@ -43,12 +43,15 @@
  *
  * ## Haze
  *
- * Turbulence — the absolute value of signed noise, summed over four octaves — which
- * is what gives haze its streaks and folds; smooth noise gives blobs. Sampled in
- * world space with **time as the third axis**, so it drifts rather than being a
- * texture stuck to the beam. It never darkens a beam below what the beam is worth
- * without it: the haze is *in* the light, and adds structure rather than taking
- * light away.
+ * The haze is why a beam can be seen at all — light on its way to the floor is
+ * invisible until something in the air scatters it — so the show's density is first
+ * how much of the beam shows: nothing in a clear room, the whole of it at 1. Its
+ * structure is turbulence — the absolute value of signed noise, summed over four
+ * octaves — which is what gives haze its streaks and folds; smooth noise gives
+ * blobs. Sampled in world space with **time as the third axis**, so it drifts rather
+ * than being a texture stuck to the beam. It never darkens a beam below what the
+ * beam is worth without it: the haze is *in* the light, and adds structure rather
+ * than taking light away.
  *
  * ## The beam starts at the lens, not at a point
  *
@@ -66,8 +69,16 @@ import * as THREE from 'three';
 
 /** How many sides the cylinder has. Enough to read as round, few enough to instance. */
 const RADIAL_SEGMENTS = 32;
-/** Rings along the length, so the falloff and haze have somewhere to be sampled. */
-const HEIGHT_SEGMENTS = 24;
+/**
+ * Rings along the length: one. A cone is straight from lens to end, so its surface
+ * with one ring is exactly its surface with twenty-four — the normal is constant
+ * along a generatrix and every varying is linear in the length — and the falloff and
+ * the haze are worked out per fragment, which no ring makes finer. It used to be
+ * twenty-four, on the belief that the rings gave those somewhere to be sampled; a
+ * measurement of the beams' GPU time found the triangle count made no difference at
+ * all, which is what said the rings were not doing anything.
+ */
+const HEIGHT_SEGMENTS = 1;
 
 /** Radius of the lens the beam leaves, in metres. The width of the beam at the lantern. */
 export const LENS_RADIUS = 0.1;
@@ -222,13 +233,17 @@ const FRAGMENT = /* glsl */ `
 
 		float intensity = silhouette * attenuation;
 
-		// 3. The haze the beam is passing through. Never below the beam's own
-		//    intensity: haze is in the light and adds folds to it rather than taking
-		//    light away. Density is how much of that structure shows; turbulence is
-		//    how fast the field moves through the room.
+		// 3. The haze the beam is passing through, which is the only reason a beam
+		//    can be seen in the air at all: light on its way to the floor is invisible
+		//    until something scatters it. So the density is first how *much* of the
+		//    beam shows — none in a clear room, all of it at 1 — and then how much of
+		//    the folds haze puts in it. The folds never take the beam below its own
+		//    intensity: haze is in the light and adds structure rather than
+		//    darkening it. Turbulence is how fast the field moves through the room.
+		float density = clamp(uHazeDensity, 0.0, 1.0);
 		vec3 samplePoint = vWorld * 0.45 + vec3(0.0, 0.0, uTime * uHazeTurbulence * 0.3);
 		float folds = max(turbulence(samplePoint) * 0.9, intensity);
-		float haze = mix(1.0, folds, clamp(uHazeDensity, 0.0, 1.0));
+		float haze = density * mix(1.0, folds, density);
 
 		float strength = vLevel * intensity * haze;
 
@@ -268,7 +283,7 @@ export function beamMaterial(): THREE.ShaderMaterial & { uniforms: BeamUniforms 
 		fragmentShader: FRAGMENT,
 		uniforms: {
 			uTime: { value: 0 },
-			uHazeDensity: { value: 0.35 },
+			uHazeDensity: { value: 1 },
 			uHazeTurbulence: { value: 0.25 },
 			uFloorY: { value: 0 },
 			uLensRadius: { value: LENS_RADIUS }
