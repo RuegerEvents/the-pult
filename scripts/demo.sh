@@ -195,7 +195,14 @@ echo "building${PROFILE:+ ($PROFILE)}"
 # members, and building them needs webkit on the machine.
 BUILD_FLAGS=()
 [ "$PROFILE" = release ] && BUILD_FLAGS=(--release)
-if ! cargo build --quiet ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} > "$DEMO_DIR/build.log" 2>&1; then
+# Not --quiet, and not redirected whole: a from-scratch build of this workspace
+# is minutes long, and a build that prints nothing at all reads as a hang. Cargo
+# draws no progress bar down a pipe, so the "Compiling" lines are the progress;
+# the whole output still goes to the log for the failure case. `sed` always
+# succeeds, so pipefail still reports cargo's own failure and nothing else's.
+if ! cargo build ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} 2>&1 \
+     | tee "$DEMO_DIR/build.log" \
+     | sed -nE 's/^ *(Compiling|Building|Finished) /  \1 /p'; then
   echo "the build failed:" >&2
   cat "$DEMO_DIR/build.log" >&2
   exit 1
