@@ -9,7 +9,7 @@
 
 mod http;
 
-use pult_plugin_sdk::{self as sdk, host, output_line, surface, PultPlugin};
+use pult_plugin_sdk::{self as sdk, data, host, output_line, surface, PultPlugin};
 use serde_json::{json, Value};
 
 const SYSTEM_PROMPT: &str = "You operate a lighting console through its command line. \
@@ -280,40 +280,28 @@ Speaking to: {}\nConfigured in the plugin's config.toml.",
 
 /// What exists, briefly — enough for the model to name things, small enough
 /// to cost nothing.
+///
+/// Read through the typed accessors rather than by hand: `f.get("name")` on a
+/// `Value` is three fallbacks deep and answers `"?"` for a field this build spelled
+/// wrong, which is exactly the kind of quiet wrongness a prompt made of it carries
+/// into the model.
 fn show_summary() -> String {
     let mut out = String::new();
-    if let Ok(fixtures) = host::get(&["fixtures"]) {
+    if let Ok(fixtures) = data::fixtures().get() {
         let names: Vec<String> = fixtures
-            .as_array()
-            .into_iter()
-            .flatten()
+            .iter()
             .take(60)
             .enumerate()
-            .map(|(i, f)| {
-                format!("{}:{}", i + 1, f.get("name").and_then(Value::as_str).unwrap_or("?"))
-            })
+            .map(|(i, f)| format!("{}:{}", i + 1, f.name))
             .collect();
         out.push_str(&format!("Fixtures ({}): {}\n", names.len(), names.join(", ")));
     }
-    if let Ok(sequences) = host::get(&["sequences"]) {
+    if let Ok(sequences) = data::sequences().get() {
         let rows: Vec<String> = sequences
-            .as_array()
-            .into_iter()
-            .flatten()
+            .iter()
             .take(30)
             .enumerate()
-            .map(|(i, s)| {
-                let cues = s
-                    .get("cue_ids")
-                    .and_then(Value::as_array)
-                    .map(|c| c.len())
-                    .unwrap_or(0);
-                format!(
-                    "{}:{} ({cues} cues)",
-                    i + 1,
-                    s.get("name").and_then(Value::as_str).unwrap_or("?")
-                )
-            })
+            .map(|(i, s)| format!("{}:{} ({} cues)", i + 1, s.name, s.cue_ids.len()))
             .collect();
         out.push_str(&format!("Sequences: {}\n", rows.join(", ")));
     }

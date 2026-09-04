@@ -14,7 +14,12 @@ use core::{
     Catalog, Command, Completions, Expectation, Level, ParseError, SelOp, SelectTarget, Target,
     Then,
 };
-use pult_plugin_sdk::{self as sdk, host, output_line, surface, PultPlugin};
+use pult_plugin_sdk::{
+    self as sdk, data,
+    host, output_line,
+    schema::{Cue, EffectSpec, Easing, FollowMode, ParameterCapture},
+    surface, PultPlugin,
+};
 use serde_json::{json, Value};
 
 struct CommandLine {
@@ -439,66 +444,50 @@ impl CommandLine {
     /// anchors dropped.
     fn store(&self, sequence: Target, cue: Target) -> Result<surface::ExecResponse, String> {
         let (sequence_id, sequence_name) = resolve("sequences", &sequence)?;
-        let seq = host::get(&["sequences", &sequence_id])?;
-        let cue_ids: Vec<String> = seq
-            .get("cue_ids")
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default();
+        let sequence_id = uuid(&sequence_id)?;
+        let cue_ids = data::sequences().by_id(sequence_id).cue_ids().get()?;
 
-        let entries = collection("programmer_values")?;
+        let entries = data::programmer_values().get()?;
         if entries.is_empty() {
             return Err("the programmer is empty — nothing to store".into());
         }
-        let captures: Vec<Value> = entries
-            .iter()
-            .map(|entry| {
-                let mut effect = entry.get("effect").cloned().unwrap_or(Value::Null);
-                if let Some(spec) = effect.as_object_mut() {
-                    // A stored effect drops its anchor: the cue's `went_at` is
-                    // what it is measured from on every Go.
-                    spec.insert("t0".into(), Value::Null);
-                }
-                json!({
-                    "fixture_id": entry.get("fixture_id"),
-                    "parameter_kind": entry.get("parameter_kind"),
-                    "value": entry.get("value"),
-                    "fade_in_ms": 0,
-                    "fade_out_ms": 0,
-                    "delay_in_ms": 0,
-                    "effect": effect,
-                    "easing": "Linear",
-                })
+        let captures: Vec<ParameterCapture> = entries
+            .into_iter()
+            .map(|entry| ParameterCapture {
+                fixture_id: entry.fixture_id,
+                parameter_kind: entry.parameter_kind,
+                value: entry.value,
+                fade_in_ms: 0,
+                fade_out_ms: 0,
+                delay_in_ms: 0,
+                // A stored effect drops its anchor: the cue's `went_at` is what it
+                // is measured from on every Go.
+                effect: entry.effect.map(|spec| EffectSpec { t0: None, ..spec }),
+                easing: Easing::Linear,
             })
             .collect();
 
         // An existing cue is merged into; a number one past the end (or a new
         // name) makes the next cue.
         let existing = match &cue {
-            Target::Index(n) if *n <= cue_ids.len() => Some(cue_ids[n - 1].clone()),
+            Target::Index(n) if *n <= cue_ids.len() => Some(cue_ids[n - 1]),
             Target::Index(_) => None,
             Target::Name(name) => {
-                let cues = collection("cues")?;
-                cue_ids.iter().find_map(|id| {
-                    let c = cues.iter().find(|c| c.get("id").and_then(Value::as_str) == Some(id))?;
-                    (c.get("name").and_then(Value::as_str) == Some(name.as_str()))
-                        .then(|| id.clone())
-                })
+                let cues = data::cues().get()?;
+                cue_ids.iter().find(|id| {
+                    cues.iter().any(|c| c.id == **id && c.name == *name)
+                }).copied()
             }
         };
 
         match existing {
             Some(cue_id) => {
-                let old = host::get(&["cues", &cue_id])?;
-                let merged = merge_captures(
-                    old.get("captures").and_then(Value::as_array).cloned().unwrap_or_default(),
-                    captures,
-                );
-                host::set(&["cues", &cue_id, "captures"], &Value::Array(merged))?;
-                let name = old.get("name").and_then(Value::as_str).unwrap_or("cue");
+                let old = data::cues().by_id(cue_id).get()?;
+                let merged = merge_captures(old.captures, captures);
+                data::cues().by_id(cue_id).captures().set(merged)?;
                 Ok(lines_response(vec![output_line(
                     "result",
-                    format!("stored into \"{name}\" of \"{sequence_name}\""),
+                    format!("stored into \"{}\" of \"{sequence_name}\"", old.name),
                 )]))
             }
             None => {
@@ -515,21 +504,20 @@ impl CommandLine {
                     Target::Name(name) => name.clone(),
                     Target::Index(n) => format!("Cue {n}"),
                 };
-                let cue_id = uuid::Uuid::new_v4().to_string();
-                let payload = json!({
-                    "id": cue_id,
-                    "name": name,
-                    "number": (cue_ids.len() + 1) as f64,
-                    "captures": captures,
-                    "follow_mode": "Manual",
-                    "fade_in_ms": 500,
-                    "fade_out_ms": 500,
-                    "is_active": false,
-                });
-                host::set(&["cues", "__create"], &payload)?;
+                let cue_id = uuid::Uuid::new_v4();
+                data::cues().create(&Cue {
+                    id: cue_id,
+                    name: name.clone(),
+                    number: (cue_ids.len() + 1) as f64,
+                    captures,
+                    follow_mode: FollowMode::Manual,
+                    fade_in_ms: 500,
+                    fade_out_ms: 500,
+                    is_active: false,
+                })?;
                 let mut ids = cue_ids;
                 ids.push(cue_id);
-                host::set(&["sequences", &sequence_id, "cue_ids"], &json!(ids))?;
+                data::sequences().by_id(sequence_id).cue_ids().set(ids)?;
                 Ok(lines_response(vec![output_line(
                     "result",
                     format!("stored as \"{name}\" in \"{sequence_name}\""),
@@ -657,20 +645,21 @@ fn cue_id_in(sequence_id: &str, index: usize) -> Result<Value, String> {
 
 /// Merge new captures over old, one slot per fixture and parameter — the store
 /// menu's merge mode.
-fn merge_captures(existing: Vec<Value>, stored: Vec<Value>) -> Vec<Value> {
-    let key = |c: &Value| {
-        format!(
-            "{}/{}",
-            c.get("fixture_id").and_then(Value::as_str).unwrap_or(""),
-            c.get("parameter_kind").map(|k| k.to_string()).unwrap_or_default()
-        )
-    };
+fn merge_captures(
+    existing: Vec<ParameterCapture>,
+    stored: Vec<ParameterCapture>,
+) -> Vec<ParameterCapture> {
+    let key = |c: &ParameterCapture| format!("{}/{:?}", c.fixture_id, c.parameter_kind);
     let taken: Vec<String> = stored.iter().map(&key).collect();
-    existing
-        .into_iter()
-        .filter(|c| !taken.contains(&key(c)))
-        .chain(stored)
-        .collect()
+    existing.into_iter().filter(|c| !taken.contains(&key(c))).chain(stored).collect()
+}
+
+/// A uuid the show already gave out, back as one.
+///
+/// `resolve` answers what the station spelled, and the typed accessors take the
+/// thing rather than the spelling of it — so this is where a string stops being one.
+fn uuid(id: &str) -> Result<uuid::Uuid, String> {
+    uuid::Uuid::parse_str(id).map_err(|e| format!("{id} is not an id: {e}"))
 }
 
 fn selection_of(ctx: &Value) -> Vec<String> {

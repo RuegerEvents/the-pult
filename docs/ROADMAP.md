@@ -3827,6 +3827,101 @@ cargo test -p pult-backend --lib connectors   # what each connector carries, and
 cargo test -p pult-schema --lib output        # and what coverage makes of it
 ```
 
+### 58. The SDK learns the schema, and the wire is left alone
+
+`typed-plugin-sdk`. Introspection was the only way a plugin knew anything about the
+show, and it is the right *wire* and a poor thing to program against: the schema
+arrives as JSON, a plugin walks it by hand, and every path is spelled
+`&["cues", id, "fade_in_ms"]` with nothing checking a character of it. `pult-codegen`
+now writes `plugins/sdk/src/generated/` from the same two inventories the frontend
+proxy comes from, so `data::cues().nth(3).fade_in_ms().set(4000)` is that same call
+with the compiler on it.
+
+**The wire does not change, and that is the whole design.** Task 35 wrote down why the
+WIT cannot carry entity types — a component's imports are stamped with the package
+version and a record's fields are part of every signature using it, so a `Cue` gaining
+a field is a breaking ABI change, and since task 34 a show carries its plugins between
+machines. So the typing is a *source* convenience over an unchanged
+`data.set(path, json)`: a bundle built against schema-of-Tuesday still loads on a
+station from schema-of-Wednesday, and the one call that names a path that station has
+not got fails there. The entry asked whether that message was good enough to be the
+failure mode of the whole layer; it is now, because the read says which path and which
+type it wanted rather than letting `serde_json` say "invalid type: null".
+
+**Introspection stays, and the reference plugin is the proof.** Typed accessors are
+what was known at *build* time. `host::entities()` is what **this** station has now,
+including collections the SDK never heard of — and `command-line` still builds its
+entire grammar out of it, still writes `host::set(&[table, &id, field], …)` for a field
+an operator named at the prompt, and could not be typed if anybody wanted it to be. The
+part of it that *was* typed is `store`, which is the plugin's longest write and the one
+that builds whole entities: a `Cue` with its captures and the sequence's list of them,
+previously nine hand-spelled JSON keys with `entry.get("fixture_id")` under each.
+
+### What EntityMeta does not know
+
+The entry assumed the inventories were enough, the way they are for the frontend. They
+are not, and the reason is worth keeping: **`EntityMeta` carries field names and
+lifecycles, not shapes.** The frontend gets its shapes from ts-rs, which is a second
+exporter running inside the schema's own compilation; there is no equivalent pointed at
+Rust. So the field types are read off `pult-schema`'s own source with `syn`, and that is
+the only reflection here — the set of entities, their tables, their commands and their
+lifecycles all still come from the inventories.
+
+Which forces the second half: **the types are a mirror, not a dependency.** The plugins
+workspace compiles to `wasm32-wasip2` and `pult-schema` carries sqlx, tokio and
+inventory — the same wall `pult-render` was split out over in task 44. `schema.rs` is
+therefore 106 types transformed out of the Rust that defines them, reachable-set only,
+so a wire viewer's `UniverseFrame` and a helper with a lifetime on it are not in it.
+
+**`pult-render` is the exception and is a path dependency.** Mirroring it would have
+made a plugin's `ParameterValue` a different type from the station's, which is exactly
+the drift the crate exists to prevent — and its own doc has said "compiled twice:
+natively for the station, its connectors *and its plugins*" since it was written. So
+the plugins workspace now has one path dependency into the console's, and
+`schema.rs` re-exports rather than copies.
+
+### The traps
+
+**A mirror carries shapes and cannot carry code.** Three schema types write their
+`Default` by hand: `Transform` rests at scale **1** and not at scale 0,
+`FixtureAddress` at universe 1 channel 1, `Rate` at 1 Hz. Keeping `#[derive(Default)]`
+on the mirror would have compiled and been wrong — a plugin patching a fixture at scale
+zero — so the generator computes, by fixpoint, which types can still derive it: a type
+loses `Default` if it holds a type that lost it *directly*, an `Option<Transform>` or a
+`Vec<Transform>` being fine. Losing the derive is a compile error at the plugin
+author's desk. Silently defaulting a transform to nothing is not.
+
+**A `#[serde(default = "some_fn")]` names a function the mirror has not got**, and the
+function reads a constant that reads another. Rewritten to a plain `#[serde(default)]`,
+which differs only for a key that is *absent* — and the station serializes every field
+it has, so nothing on the wire can tell.
+
+**A `DateTime<Utc>` is a string on the wire and is one here**, as `Timestamp`. A date
+library in every guest for a value a plugin passes back or prints is weight for nothing.
+
+**Derives have to precede the attributes they introduce.** `#[serde(tag = "type")]`
+emitted above `#[derive(Deserialize)]` is "derive helper attribute is used before it is
+introduced" — an error the schema's own source never sees, because a human writes them
+in the other order without thinking about it.
+
+**It is checked in, and a test says so.** `OUT_DIR` was the alternative and the entry
+already preferred this: it keeps the plugins workspace buildable without the console's,
+and it means a plugin author can *read* what a `Cue` carries. That is worth exactly as
+much as the guarantee that the two agree, so `cargo test -p pult-codegen` renders the
+SDK and compares it against the files — a field added to the schema and not regenerated
+fails in CI rather than at somebody's desk.
+
+**And it costs a plugin that ignores it 1.6 KB.** Measured on `store-probe`, which
+touches neither module: 111,520 bytes against 113,158. The types are types and the
+accessors are one-line wrappers, so `lto` takes what nothing calls.
+
+```
+cargo run -p pult-codegen -- generate        # writes plugins/sdk/src/generated/
+cargo test -p pult-codegen                   # and the checked-in copy is what it writes
+cd plugins && cargo test                     # the paths a typed accessor builds
+cargo test -p pult-backend --test plugins    # a station running the rewritten `store`
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -3917,80 +4012,79 @@ evaluation costs per output; changing what the evaluation costs per output is th
 benefit, at 94% of a frame, and a filter at the socket makes a two-interface split cost
 exactly what not splitting cost.
 
-Items 1, 3 and 4 were built together as task 51, and showfile-management and
-showfile-assets-folder together as task 52. All five have left this list. What they
-answered changes what is worth doing next, so the top of it is now:
+The viewer rewrite, the measurement and acting on what it found were built
+together as task 51, and showfile-management and showfile-assets-folder together
+as task 52; typed-plugin-sdk left as task 58. What they answered changes what is
+worth doing next, so the top of the list is now:
 
-1. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
-   measured evaluating at **94%** of an output frame at 5000 fixtures, which is
-   the answer the question was waiting for, and `pult-render` is pure and takes
-   no locks. What the same measurement also says is that it is **not urgent**: the
-   frame is at 19% of budget, and task 56 gave it *more* headroom rather than
-   less. Task 57 took the cheaper half of the same lever for the case that has
-   one: an output that carries part of the rig now evaluates part of the rig. → none,
-   and it should not be done until something is actually short of frame
-2. **typed-plugin-sdk** — codegen into `plugins/sdk` from the same inventory the
-   frontend proxy comes from; the wire stays generic. → none
-3. **camera-home-presets** — front, plan, section, three-quarter, and
+1. **camera-home-presets** — front, plan, section, three-quarter, and
    focus-on-selection. The smallest of everything here and the one an operator
    reaches for most often. Added 2026-09-03. → none: task 51's viewer owns its
    own camera already
-4. **scene-editing** — and specifically a picker for task 52's stock catalogue
+2. **scene-editing** — and specifically a picker for task 52's stock catalogue
    first, which is smaller than a gizmo and is what a console that has never
    imported an MVR needs in order to have a room at all. → none
-5. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
+3. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
    plugin over introspection, which is what introspection is for. → none, and
    much better now that gdtf-import has landed and put a real patch in the show
-6. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+4. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
    themselves dynamic. → none: the viewer landed as task 51
-7. **voice-input** — speech to the command line, grammar first and NL on parse
+5. **voice-input** — speech to the command line, grammar first and NL on parse
    failure. → none
-8. **nl-show-context** — what relative syntax cannot reach, and whether it is
+6. **nl-show-context** — what relative syntax cannot reach, and whether it is
    worth the permission it costs. → voice-input, which is what shows which
    utterances actually arrive
-9. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+7. **control-transports** — MIDI and OSC as ports, in and out, with nothing
    above them decided. Was open-control-interfaces until 2026-09-02, when the
    three things people send over those ports turned out to want separate
    entries. → none
-10. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+8. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
    audio import. The biggest item here and the one the spec is most opinionated
    about. → none technically
-11. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+9. **llm-cost-overview** — token and cost accounting out of the NL plugin.
    → none
-12. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+10. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
    frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
    from task 51, which measured a connector's frame at 4.77 ms for 5000 fixtures —
    the number a WASM boundary now has to be compared against, and task 56, which
    says the boundary has to survive being asked 40 times a second and not 29
-13. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+11. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-14. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+12. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
    → a real TS plugin wanting to exist
-15. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+13. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
    stage manager's Go arriving at the lights, and this console sending its own
    to sound and video. → control-transports
-16. **surface-layer** — a bound physical thing, which is what the transports are
+14. **surface-layer** — a bound physical thing, which is what the transports are
    not: one event type under every surface, plus the two questions (where a
    headless surface's selection lives, where a fader's gesture begins and ends)
    that decide whether any of the three below is a week or a month.
    → control-transports for the MIDI half, nothing for the USB half
-17. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+15. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
    is what proves the layer before anybody spends a weekend on USB captures.
    → surface-layer
-18. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+16. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
    it can be estimated at all. → surface-layer
-19. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+17. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
    undocumented and to be read off the device. → surface-layer, and
    midi-surfaces for the binding model
-20. **showfile-migrations** — so a show made in the beta still opens after it.
+18. **showfile-migrations** — so a show made in the beta still opens after it.
    Added 2026-09-03, and the trigger is the beta rather than anything in the
    code: until somebody is carrying real work in a showfile, refusing one from
    another generation by name is the better trade. → the first beta
-21. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
+19. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
    2026-09-03. → none, and the sharpest question in it is whether an imported
    `.pultz` should ask before running the plugins it carries
+20. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
+   measured evaluating at **94%** of an output frame at 5000 fixtures, which is
+   the answer the question was waiting for, and `pult-render` is pure and takes
+   no locks. The same measurement is why it sits here rather than at the top: the
+   frame is at 19% of budget, task 56 gave it *more* headroom rather than less,
+   and task 57 took the cheaper half of the same lever for the case that has one —
+   an output that carries part of the rig now evaluates part of the rig. → none,
+   and it should not be done until something is actually short of frame
 
-Items 15 to 19 were added on 2026-09-02 and sit at the end rather than being
+Items 13 to 17 were added on 2026-09-02 and sit near the end rather than being
 placed, because three of them are blocked on hardware being in the room and not
 on anything in this repository. Any of those can move up the day the hardware is
 on the desk. **show-control is the exception and the one with a case for moving
@@ -4009,10 +4103,18 @@ actually running a show from. Task 53 already took the free wins — sixty a sec
 most, nothing drawn when nothing changed, only lit beams drawn — which is what turned
 a pinned GPU into an idle one on a dark stage.
 
-Items 20 and 21 were added on 2026-09-03 and sit at the end for a different reason:
-neither is blocked on anything, and both are blocked on *time*. A migration path is
-worth nothing until there is a showfile worth migrating, and the gaps in how plugins
-travel are gaps rather than absences.
+Items 18 and 19 were added on 2026-09-03 and sit near the end for a different
+reason: neither is blocked on anything, and both are blocked on *time*. A
+migration path is worth nothing until there is a showfile worth migrating, and
+the gaps in how plugins travel are gaps rather than absences.
+
+**parallel-render moved from the top of this list to the bottom of it on
+2026-09-04**, and nothing about the item changed — what changed is that it had
+been sitting at the top with its own entry saying not to do it. An item whose
+trigger has not fired is not the next thing; it is the thing after the trigger
+fires, and leaving it first made the list read as though the console were short
+of frame. It is now beside the other two kinds of waiting: hardware on the desk,
+and a beta somebody is carrying work in.
 
 The `<T.SpotLight>` recompiling every material as a fade crossed 1% used to be
 called out here as the one thing not belonging to any phase. It is gone, and not by
@@ -4022,39 +4124,6 @@ went the same way, which is what that entry predicted for one of them and not th
 other.
 
 ### Plugins
-
-#### typed-plugin-sdk
-
-Introspection is the right wire and a poor thing to program against. A plugin
-learns the schema from `introspection::entities()` as JSON and navigates it by
-hand, with no types, no compile-time field names, and stringly-typed paths
-(`&["cues", id, "fade_time"]`). Every plugin author pays for that.
-
-The fix is codegen into the **SDK**, not the WIT. `pult-codegen` already
-generates `frontend/src/lib/ws/data.ts` from the `EntityMeta` inventory, giving
-the frontend `data.sequences[5].cues[3].fadeTime.set(4)` while the WebSocket wire
-stays generic path-plus-JSON. `plugins/sdk` can have that same split, from the
-same inventory and the same tool: `sdk::data::cues().nth(3).fade_time().set(4.0)`
-over an unchanged `data.set(path, json)`.
-
-- Codegen'ing the WIT itself is ruled out, and task 35 records why. A
-  component's imports are stamped with the package version, and a record type's
-  fields are part of every signature using it, so `Cue` gaining a field would be
-  a breaking ABI change. The schema changes daily and a show now carries its
-  plugins between machines, so a bundle built against schema-of-Tuesday would
-  refuse to load on a station from schema-of-Wednesday. Today no plugin notices
-  the schema growing, and that property is worth keeping.
-- Introspection stays. It answers the runtime question, which is what *this*
-  station has including collections the SDK never heard of. A command-line plugin
-  building its grammar and a sync plugin walking unknown tables both need that.
-  Typed codegen is for what is known at build time.
-- How does the SDK version relate to the station's? A plugin built against a
-  newer SDK writing a field an older station lacks gets a per-path runtime error,
-  the same graceful failure the frontend already has. Worth confirming the
-  message is good.
-- Where does the generated code live, checked in beside `sdk/src/lib.rs` or
-  emitted into `OUT_DIR` by a build script? Checked in matches how the frontend
-  does it and keeps the plugins workspace buildable without the console's.
 
 #### openhaunt-as-plugin
 

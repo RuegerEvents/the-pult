@@ -108,6 +108,7 @@ All bindings are on `pult_plugin_sdk`; JSON crosses as `serde_json::Value`.
 | `host::subscribe(pattern)` | slash-joined pattern; updates arrive at `on_update` |
 | `host::call_plugin(id, method, args)` | another plugin's `handle` — see dependencies |
 | `host::entities()` / `commands()` / `rpcs()` | the schema, at runtime |
+| `data::<table>()` | the same paths, typed — see below |
 | `store::get` / `set` / `delete` / `keys` / `subscribe` | what your plugin remembers — see below |
 | `sdk::log_info!` (`_warn`, `_error`, `_debug`) | the station log, prefixed with your id |
 
@@ -146,6 +147,42 @@ knows a relative write happened.
 lifecycles, command argument schemas, doc strings. A plugin that drives
 itself from introspection (as `command-line` does for its entire grammar)
 stays correct when the data model grows.
+
+### Or say it by name, when you know it at build time
+
+`pult_plugin_sdk::data` is the same wire with the compiler on it. It is
+generated from the same registries introspection serves, so a path is a
+method call and a value is a type:
+
+```rust
+use pult_plugin_sdk::{data, schema::{Cue, FollowMode}};
+
+let cue = data::cues().nth(3);
+cue.fade_in_ms().set(4000)?;                  // ["cues", "3", "fade_in_ms"]
+cue.fade_in_ms().by(1500.0)?;                 // the `__by` sentinel, typed
+let captures = cue.captures().get()?;         // Vec<ParameterCapture>
+
+data::sequences().by_id(id).go_next(&Default::default())?;
+data::programmer_values().home(&json!({ "fixtureId": id }))?;
+```
+
+`pult_plugin_sdk::schema` is the entity types themselves — a mirror of
+`pult-schema`, with the evaluator's own types (`ParameterValue`, `Easing`,
+`RunningFade`) re-exported from `pult-render` rather than copied.
+
+Two things to know about it.
+
+**It is a source convenience, not a promise about the station.** The wire is
+still generic path-plus-JSON, so a bundle built against a newer schema than
+the console it lands on loads and runs; the one call that names a path this
+station has not got gets an error naming the path and the type it wanted.
+That is deliberate — see `docs/ROADMAP.md` task 35 for why the WIT itself
+carries no entity types.
+
+**It does not replace introspection.** Typed accessors are what was known
+when your plugin was built. `host::entities()` is what *this* station has
+now, including collections your SDK never heard of — which is what a plugin
+building a grammar, or walking unknown tables, needs.
 
 ### Writes are attributed
 

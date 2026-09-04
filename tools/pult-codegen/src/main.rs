@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use pult_schema::{commands::CommandRegistration, registry::EntityMeta};
 
+mod sdk;
+
 #[derive(Parser)]
 #[command(name = "pult-codegen", about = "TypeScript type + SQL migration generation for the-pult")]
 struct Cli {
@@ -30,6 +32,7 @@ fn generate() -> Result<()> {
     generate_ts_bindings(&workspace)?;
     generate_catalogue(&workspace)?;
     generate_frontend_proxy(&workspace)?;
+    sdk::generate(&workspace)?;
     generate_sql_migration(&workspace)?;
 
     Ok(())

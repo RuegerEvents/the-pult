@@ -370,6 +370,61 @@ async fn a_station_runs_the_reference_plugins() {
     let level = taken["value"]["value"].as_f64().expect("a float");
     assert!((level - 0.4).abs() < 1e-5, "from what playback was showing, not from zero: {taken}");
 
+    // ── The programmer into a cue ─────────────────────────────────────────────
+    //
+    // `store` is the plugin's longest write and the one that builds whole entities
+    // rather than setting a field: a `Cue` with its captures, and the sequence's own
+    // list of them. It goes through the typed accessors, so what this asserts is that
+    // the shapes the SDK's mirror serializes are the shapes the station reads.
+    let result = exec("store sequence 1 cue 1").await.expect("exec answers");
+    assert!(result["error"].is_null(), "a first store makes the cue: {result}");
+
+    let cues = running
+        .engine
+        .get(vec![pult_schema::path::PathSegment::Key("cues".into())])
+        .await
+        .expect("cues readable");
+    let cue = cues.as_array().and_then(|c| c.first()).expect("a cue was stored");
+    assert_eq!(cue["name"], json!("Cue 1"));
+    assert_eq!(cue["fade_in_ms"], json!(500));
+    assert_eq!(cue["follow_mode"], json!("Manual"));
+    let captures = cue["captures"].as_array().expect("captures");
+    assert!(!captures.is_empty(), "every held value went in: {cue}");
+    assert!(
+        captures.iter().any(|c| c["fixture_id"] == json!(spot)),
+        "the nudged fixture among them: {cue}"
+    );
+    assert_eq!(captures[0]["easing"], json!("Linear"), "and the shape of its fade: {cue}");
+
+    let sequences = running
+        .engine
+        .get(vec![pult_schema::path::PathSegment::Key("sequences".into())])
+        .await
+        .expect("sequences readable");
+    let listed = sequences
+        .as_array()
+        .and_then(|s| s.first())
+        .and_then(|s| s["cue_ids"].as_array())
+        .expect("the sequence lists its cues");
+    assert_eq!(listed, &vec![cue["id"].clone()], "and the sequence has it: {sequences}");
+
+    // A second store into the same cue merges rather than doubling: one capture per
+    // fixture and parameter, the newer value winning.
+    let before = captures.len();
+    let result = exec("store sequence 1 cue 1").await.expect("exec answers");
+    assert!(result["error"].is_null(), "storing again merges: {result}");
+    let cues = running
+        .engine
+        .get(vec![pult_schema::path::PathSegment::Key("cues".into())])
+        .await
+        .expect("cues readable");
+    let merged = cues.as_array().and_then(|c| c.first()).expect("still one cue");
+    assert_eq!(
+        merged["captures"].as_array().map(Vec::len),
+        Some(before),
+        "the same keys, not twice as many: {merged}"
+    );
+
     // An unknown plugin is an answer, not a hang.
     let missing = running
         .plugins

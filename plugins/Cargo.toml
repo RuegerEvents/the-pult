@@ -22,6 +22,7 @@ members = [
 # `--workspace --target wasm32-wasip2`.
 default-members = [
     "command-line/core",
+    "sdk",
 ]
 
 [workspace.package]
@@ -34,7 +35,13 @@ serde_json = "1"
 wit-bindgen = "0.61"
 pult-plugin-sdk = { path = "sdk" }
 command-line-core = { path = "command-line/core" }
-uuid = { version = "1", default-features = false }
+uuid = { version = "1", default-features = false, features = ["serde"] }
+# The evaluator, as the station compiles it. A path dependency into the console's
+# workspace rather than a mirrored copy: `pult-render` exists to be compiled
+# twice and its own doc says "and its plugins", so a `ParameterValue` in a guest
+# is the console's type and not something that looks like it. Pure — serde and
+# uuid — so it goes to wasm32-wasip2 as readily as to the browser's target.
+pult-render = { path = "../crates/pult-render" }
 
 # Components ship to operators' consoles; small beats fast-to-compile here.
 [profile.release]

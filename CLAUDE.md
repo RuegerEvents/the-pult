@@ -617,6 +617,34 @@ grows without touching any of them. Station RPCs live in
 from the WebSocket, callable from plugins, and visible to introspection at
 once.
 
+**And the SDK has a typed half over the same generic wire.** `pult-codegen`
+writes `plugins/sdk/src/generated/` from the same inventories the frontend proxy
+comes from, so `data::cues().nth(3).fade_in_ms().set(4000)` is
+`host::set(&["cues", "3", "fade_in_ms"], …)` with the compiler on it — the split
+`frontend/src/lib/ws/data.ts` has had all along. **The WIT stays untyped and that
+is the point**: a component's imports carry the package version and a record's
+fields are part of every signature using it, so a `Cue` gaining a field would be
+a breaking ABI change, and a show now carries its plugins between machines. As a
+*source* convenience it costs nothing: a bundle built against schema-of-Tuesday
+still loads on schema-of-Wednesday, and the one call naming a path that station
+has not got fails there, with the path and the wanted type in the message.
+
+`schema.rs` is the entity types, mirrored out of `pult-schema`'s own source with
+`syn` — the plugins workspace cannot depend on that crate, whose sqlx, tokio and
+inventory are the wall `pult-render` was split out over. `pult-render` itself is
+a *path dependency* rather than a mirror, because it was built to be compiled
+twice and its own doc says "and its plugins": a `ParameterValue` in a guest is
+the console's type. What the mirror cannot carry is code, so a type whose
+`Default` is written by hand — `Transform` rests at scale 1, `FixtureAddress` at
+universe 1 — loses the derive, and so does anything holding one directly. Losing
+it is a compile error at the plugin author's desk; keeping it would have been a
+fixture patched at scale zero.
+
+Introspection is not replaced and must not be. Typed accessors are what was known
+at *build* time; `host::entities()` is what *this* station has now, including the
+collections an SDK never heard of — which is what `command-line` builds its whole
+grammar out of.
+
 ```
 scripts/build-plugins.sh                     # plugins/ workspace → components
 cargo run -p pult-backend -- --plugins plugins   # load them; edits hot-reload
@@ -686,6 +714,8 @@ checks that a plugin built against an older minor still runs.
 
 ```
 cargo test -p pult-backend --test stores   # what a plugin remembers
+cd plugins && cargo test                   # the SDK's paths, and the CLI grammar
+cargo test -p pult-codegen                 # the checked-in SDK is what codegen writes
 scripts/check-api-compat.sh                # an older plugin still runs here
 ```
 
@@ -1108,7 +1138,7 @@ and Windows. Two things are worth knowing before changing that workflow:
 
 ```
 cargo test                     # the workspace's default members
-cd plugins && cargo test       # the plugins workspace's pure crates (CLI grammar)
+cd plugins && cargo test       # the plugins workspace's host-buildable crates
 cd frontend && npm test        # vitest, pure helpers and the wasm evaluator
 cd frontend && npm run check   # svelte-check
 ```

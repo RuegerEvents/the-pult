@@ -28,6 +28,18 @@
 
 use serde_json::Value;
 
+mod generated;
+
+pub mod data;
+
+/// The show's types, as a plugin sees them.
+///
+/// Generated from `pult-schema` — see [`data`] for what the typed layer is and what
+/// it deliberately is not.
+pub mod schema {
+    pub use crate::generated::schema::*;
+}
+
 wit_bindgen::generate!({
     world: "plugin",
     path: "../../wit",

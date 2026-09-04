@@ -4182,7 +4182,12 @@ dependencies = [
  "anyhow",
  "clap",
  "inventory",
+ "prettyplease",
+ "proc-macro2",
  "pult-schema",
+ "quote",
+ "serde_json",
+ "syn 2.0.117",
 ]
 
 [[package]]

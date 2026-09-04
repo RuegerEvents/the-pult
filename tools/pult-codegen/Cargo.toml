@@ -12,3 +12,12 @@ pult-schema = { path = "../../crates/pult-schema" }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 inventory = { workspace = true }
+serde_json = { workspace = true }
+# Reading the schema's own source. The SDK's mirror of the entity types is a
+# transformation of the Rust that defines them — the only reflection there is
+# over a struct's field types, since `EntityMeta` carries names and lifecycles
+# and not shapes.
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+prettyplease = "0.2"
