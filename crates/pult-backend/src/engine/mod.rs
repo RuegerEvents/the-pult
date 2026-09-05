@@ -18,7 +18,7 @@ use pult_schema::{
         },
         output::{OutputCoverage, OutputStatuses},
         plugin::PluginsState, programmer::programmer_entry_id, session::SessionState,
-        station::PeerLinks, user::User,
+        station::PeerLinks, user::User, xchange::XchangeState,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,11 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
     ("clients", || serde_json::to_value(ClientStatsMap::default()).unwrap_or_default()),
     ("plugins", || serde_json::to_value(PluginsState::default()).unwrap_or_default()),
+    // What MVR-xchange is doing. LOCAL on every station and *pushed* here by whichever
+    // one is holding the connections — see `infra/interop/xchange`. Not a SYNCED
+    // entity: a laptop appearing on the LAN is not an operation, has no author, and
+    // has no business in the History panel or in anybody's undo stack.
+    ("xchange", || serde_json::to_value(XchangeState::default()).unwrap_or_default()),
     // Which saved versions this station holds a snapshot for. LOCAL because it is a
     // fact about this machine's disk: a `versions` row replicates and the file it
     // names does not, so a station that joined after a version was taken has the row
@@ -2969,6 +2974,10 @@ impl ShowEngine {
             haze_turbulence: prefs.haze_turbulence,
             fade_curves: prefs.fade_curves,
             production: Default::default(),
+            mvr_xchange: pult_schema::types::XchangeSettings {
+                group: prefs.mvr_xchange_group.clone(),
+                ..Default::default()
+            },
         };
         let Ok(value) = serde_json::to_value(&show) else { return };
         if let Err(e) = self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await {

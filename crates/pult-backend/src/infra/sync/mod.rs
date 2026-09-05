@@ -75,6 +75,14 @@ pub enum SyncCommand {
     /// [`SyncCommand::RaisePeerLog`], recomputed from who is watching rather than
     /// counted up and down.
     WatchPeerOutput { node_id: NodeId, output_id: Uuid, focuses: Vec<Option<String>> },
+    /// Publish what the exchange is doing to every peer.
+    ///
+    /// Fanned out rather than addressed, because every station of the session wants
+    /// it, and dropped rather than queued on a full link for the reason a raised log
+    /// is: a panel must never be what holds up a show.
+    PublishXchange { state: serde_json::Value },
+    /// Ask the leader to act on the exchange, on behalf of an operator here.
+    RelayXchange { ask: pult_schema::types::XchangeAsk },
     /// Drop all peer connections (called on session Leave).
     DisconnectAll,
     Stop,
@@ -123,6 +131,16 @@ impl SyncHandle {
             .await
             .map_err(|_| "the sync manager has stopped".to_string())?;
         rx.await.unwrap_or_else(|_| Err("the sync manager dropped the question".into()))
+    }
+
+    /// Tell every peer what the exchange is doing. Only the station running it does.
+    pub async fn publish_xchange(&self, state: serde_json::Value) {
+        let _ = self.0.send(SyncCommand::PublishXchange { state }).await;
+    }
+
+    /// Hand an operator's ask to whichever station is on the exchange's wire.
+    pub async fn relay_xchange(&self, ask: pult_schema::types::XchangeAsk) {
+        let _ = self.0.send(SyncCommand::RelayXchange { ask }).await;
     }
 
     pub async fn set_leader(&self, node_id: NodeId) {
@@ -271,6 +289,15 @@ impl SyncManager {
         self.watched.updates = Some(updates);
     }
 
+    /// The exchange this station is running, for the one message that reaches it: an
+    /// ask relayed from an operator standing at another station.
+    ///
+    /// Set before `run`, like the two above, because a peer task is handed a copy of
+    /// `Watched` as it is spawned and a station's first peer can arrive at once.
+    pub fn exchanging(&mut self, xchange: crate::infra::interop::xchange::XchangeHandle) {
+        self.watched.xchange = Some(xchange);
+    }
+
     /// Be told when this node is promoted to leader.
     pub fn on_promotion(&mut self, tx: mpsc::Sender<NodeId>) {
         self.promoted = Some(tx);
@@ -392,6 +419,20 @@ impl SyncManager {
                     authorship,
                 };
                 self.fan_out(msg);
+            }
+            SyncCommand::PublishXchange { state } => {
+                self.fan_out(SyncMessage::XchangeState { node_id: self.node_id, state });
+            }
+            SyncCommand::RelayXchange { ask } => {
+                // To the leader and nobody else: it is the only station on the wire,
+                // and an ask sent to all of them would be carried out several times.
+                let leader = *self.leader.borrow();
+                match self.peers.get(&leader) {
+                    Some(sender) => {
+                        let _ = sender.0.try_send(SyncMessage::XchangeAsk { ask });
+                    }
+                    None => warn!("[sync] no link to the leader to relay an exchange ask"),
+                }
             }
             SyncCommand::RaisePeerLog { node_id, level } => {
                 if let Some(sender) = self.peers.get(&node_id) {

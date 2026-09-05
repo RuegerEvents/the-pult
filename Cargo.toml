@@ -7,6 +7,7 @@ members = [
     "crates/pult-schema",
     "crates/pult-gdtf",
     "crates/pult-mvr",
+    "crates/pult-mvr-xchange",
     "crates/pult-backend",
     "crates/pult-gui",
     "tools/pult-codegen",
@@ -27,6 +28,7 @@ default-members = [
     "crates/pult-schema",
     "crates/pult-gdtf",
     "crates/pult-mvr",
+    "crates/pult-mvr-xchange",
     "crates/pult-backend",
     "tools/pult-codegen",
     "tools/openhaunt-node-sim",
@@ -67,6 +69,7 @@ chrono = { version = "0.4", features = ["serde"] }
 pult-render = { path = "crates/pult-render" }
 pult-gdtf = { path = "crates/pult-gdtf" }
 pult-mvr = { path = "crates/pult-mvr" }
+pult-mvr-xchange = { path = "crates/pult-mvr-xchange" }
 ts-rs = { version = "10", features = ["uuid-impl", "chrono-impl", "serde-json-impl", "indexmap-impl"] }
 
 # Proc macro infra (only in pult-macros)
@@ -99,6 +102,9 @@ sysinfo = { version = "0.39", default-features = false, features = ["system", "n
 
 # mDNS discovery
 mdns-sd = "0.13"
+# The WebSocket *client* half of MVR-xchange. Already in the tree — axum's `ws`
+# feature builds on it — so this is a name for something that was compiled anyway.
+tokio-tungstenite = "0.29"
 
 # HTTP client, for talking to OpenHaunt nodes
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "cookies"] }

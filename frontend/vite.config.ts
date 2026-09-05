@@ -20,6 +20,11 @@ export default defineConfig({
 	server: {
 		proxy: {
 			'/ws': { target: backend, ws: true },
+			// A hosted MVR-xchange group. Listed here for the reason `/stock` is: an
+			// unproxied prefix does not 404, it returns the SPA's own HTML, so a
+			// client joining a group from a dev browser would get a page where its
+			// handshake should have been.
+			'/mvrxchange': { target: backend, ws: true },
 			'/assets': { target: backend },
 			'/stock': { target: backend },
 			'/api': { target: backend }

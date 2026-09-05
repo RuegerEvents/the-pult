@@ -3235,6 +3235,19 @@ impl ShowSingleton {
     pub fn production(&self) -> Field<Production> {
         self.at.field("production")
     }
+
+    /// Which MVR-xchange group this show belongs to, and whether it is in one.
+    ///
+    /// Show data, and the leader moving is the whole argument: an exchange client is
+    /// one per show hosted by whichever station is leading, so a group name kept per
+    /// station would change group on a failover. A station that wants no part in it
+    /// says so in its own `preferences.toml` instead — that is a fact about the
+    /// machine, and it is a veto rather than a setting.
+    ///
+    /// PERSISTED.
+    pub fn mvr_xchange(&self) -> Field<XchangeSettings> {
+        self.at.field("mvr_xchange")
+    }
 }
 
 // ── speed_masters ───────────────────────────────────────────────────────

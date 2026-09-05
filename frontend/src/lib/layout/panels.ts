@@ -33,6 +33,7 @@ import StationsPanel from '$lib/components/StationsPanel.svelte';
 import SystemPanel from '$lib/components/SystemPanel.svelte';
 import ValuesPanel from '$lib/components/programmer/ValuesPanel.svelte';
 import WirePanel from '$lib/components/wire/WirePanel.svelte';
+import XchangePanel from '$lib/components/XchangePanel.svelte';
 import PlanPanel from '$lib/components/stage/PlanPanel.svelte';
 import RigPanel from '$lib/components/stage/RigPanel.svelte';
 import LayersPanel from '$lib/components/stage/LayersPanel.svelte';
@@ -97,6 +98,10 @@ export const PANELS = {
 	// putting on the wire. Asked for while somebody is looking rather than published,
 	// so a console with it shut costs the station nothing.
 	wire: { title: 'On the wire', component: WirePanel, fills: false },
+	// Other people's software on the network, and the rigs it is offering. Its own
+	// panel rather than a section of Rig tools: that is a strip of buttons, and this is
+	// a live list of who is there and what they have.
+	xchange: { title: 'MVR-xchange', component: XchangePanel, fills: false },
 	stations: { title: 'Stations', component: StationsPanel, fills: false },
 	// The other half of the pair: Stations is who is here, this is what it costs —
 	// per station, per output connector, and per browser, which is the figure that

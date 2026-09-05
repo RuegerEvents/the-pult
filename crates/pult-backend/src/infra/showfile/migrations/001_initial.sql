@@ -171,7 +171,8 @@ CREATE TABLE IF NOT EXISTS show (
     haze_density REAL NOT NULL,
     haze_turbulence REAL NOT NULL,
     fade_curves TEXT NOT NULL,
-    production TEXT NOT NULL
+    production TEXT NOT NULL,
+    mvr_xchange TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS speed_masters (

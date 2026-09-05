@@ -1,0 +1,20 @@
+[package]
+name = "pult-mvr-xchange"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+# Pure, and deliberately so: this is the protocol on paper — what a message says and
+# how the bytes around it are shaped — with no socket, no runtime and no clock. The
+# station half lives in `pult-backend`'s `infra/interop/xchange/`, which is what owns
+# the mDNS daemon, the connections and the rule about who is allowed to speak.
+#
+# It does not depend on `pult-mvr` either. Not one field of a message carries MVR
+# content: a commit says a uuid, a size and a comment, and the archive it names moves
+# as an opaque buffer.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+thiserror.workspace = true

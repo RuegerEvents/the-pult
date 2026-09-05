@@ -23,6 +23,11 @@ ends as the next numbered task.
   `transform.rs` is where a matrix becomes a position, a rotation and a **signed**
   scale — signed because a fifth of the trusses in a real Vectorworks file are
   mirrored, and no rotation is a reflection.
+- **`crates/pult-mvr-xchange`** — the MVR-xchange protocol, on paper: the messages and
+  both of the specification's framings. `serde`, `uuid`, `thiserror` and nothing else —
+  no socket, no runtime, and *not `pult-mvr` either*, because not one field of a message
+  carries MVR content and an archive crosses as an opaque buffer. The station's half is
+  `crates/pult-backend/src/infra/interop/xchange/`.
 - **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, `Name.pult` showfile bundles, peer sync (mDNS + TCP), the WASM plugin runtime (`infra/plugins/`), fixture connectors. `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.
@@ -765,6 +770,9 @@ cargo run -p openhaunt-node-sim-gui -- --config tools/openhaunt-node-sim/configs
 cargo run -p openhaunt-node-sim -- --module env --write-config mine.json   # somewhere to start
 ```
 
+The **`xchange` panel** is MVR-xchange: the group, who is in it, what they have
+committed, and the two acts. See *A rig can leave while it is still being drawn*.
+
 The frontend opens onto a **tiled workspace** rather than a sidebar and tabs. Panels
 live in a tree of splits and tab groups: drag a tab to a tile's edge to divide it or
 to its middle to stack it, drag the gutters to resize, and pick a layout from the menu
@@ -1414,6 +1422,99 @@ panel, because it is a fact about the production rather than about a sheet.
 cargo test -p pult-schema paperwork        # the tables, and what they refuse to say
 cargo test -p pult-backend --test counts   # a dragged block is one Ctrl-Z
 cd frontend && npx vitest run src/lib/paperwork   # both renderings of one page
+```
+
+## A rig can leave while it is still being drawn
+
+MVR as a file is `/api/import/mvr` and `/api/export/mvr`. **MVR-xchange is the same
+scene over the network**, between this console and a previz or a CAD seat, as it
+changes. `crates/pult-mvr-xchange` is the protocol on paper — messages, and the framing
+around them — with no socket, no runtime and no MVR content in it, so its corpus is
+testable with no station near it the way `pult-gdtf`'s is.
+`crates/pult-backend/src/infra/interop/xchange/` is the console's half.
+
+**Two modes, and they do not combine.** DIN SPEC 15801 defines *TCP mode* — mDNS
+discovery under `<group>._mvrxchange._tcp.local.`, plus a framing of the protocol's own
+(`778682`, a version, a package number and count, a payload kind, a 64-bit length, all
+big-endian) — and *WebSocket mode*, ordinary DNS to a URL somebody hosts, JSON in text
+frames and files in binary ones. Both are built, and this console can be a WebSocket
+host as well as a client: hosting is the `/mvrxchange` route on the port already serving
+the page, so the address to hand somebody is the one they already use. The show names
+one group at a time.
+
+**Only the leader is on the wire, and the identity it presents is the show's.** A pult
+session is several stations replicating one show; if all of them advertised, one
+`MVR_COMMIT` from a previz would arrive at each and every one would import the same file
+into the same replicated show — three plans, three gestures, racing. So there is one
+exchange client per show, hosted by whichever station is leading, `station_uuid` is a v5
+over the **show id** and `StationName` is the show's name. A failover then reads to a
+peer as one console that moved rather than one that vanished and another that appeared.
+
+**Which is why the state is LOCAL on every station and pushed by the one running it.**
+`SyncMessage::XchangeState` carries it out and `SyncMessage::XchangeAsk` carries an
+operator's act back to the leader with their user id in it — the shapes `LogLines` and
+`LogRaise` already have, at protocol version 7. **Not a SYNCED entity**, deliberately:
+the engine logs every non-LOCAL write to the oplog, so a discovered laptop appearing on
+the LAN would be a row in the History panel and something in an undo stack.
+
+**The group is show data; the veto is the station's.** `Show::mvr_xchange` holds the
+group, the mode and the URL, and is off until switched on — because the leader moves,
+and a group kept per station would change group on a failover. What is a fact about the
+machine is `mvr_xchange` in `preferences.toml`: whether this console may take part at
+all.
+
+**A commit is deliberate, and applying is one act.** A button and a required comment
+(an empty one is a commit nobody can tell from the last), the whole rig, never targeted.
+Applying sends the request, waits for the archive and runs the *same* import the REST
+route runs — one gesture, one Ctrl-Z, attributed to whoever clicked from wherever they
+clicked. `interop/mvr::read_rig`/`write_rig` are that shared implementation, moved out of
+the two handlers so a socket and an HTTP route cannot disagree about what an export
+contains. A live sequence is a **warning and not a refusal**: `xchange.apply` answers
+`{needsConfirm, running}` and the panel asks, because a console cannot know whether the
+house is in and a rule that refused while anything was live would refuse all afternoon.
+
+**Commits live beside `preferences.toml`, capped by a count.** An announcement is a claim
+that bytes exist and the bytes move later — possibly to a station that joins tomorrow and
+reads the history out of `MVR_JOIN` — so the archive has to still exist byte for byte.
+Not the asset store, which would put every commit ever made in the `.pultz` and on the
+link carrying the show; not regenerated, which would answer a request for last Tuesday
+with today's rig. And this station announces **what it holds, not what it once made**:
+`ours` and `here` are separate fields, so after a failover the history is shorter and
+every entry in it is real.
+
+Three traps, each of which was a defect first.
+
+**A TCP station's address comes from mDNS and from nowhere else.** A message arriving
+over TCP comes from the *ephemeral* port the sender dialled out of, and every interaction
+in that mode is a short connection — so remembering a station from an inbound message
+overwrote its discovered listening address with one that was dead on close, and commits
+were announced to a closed port. `Known::dialable` is what says which addresses can be
+opened.
+
+**A station that comes up already settled must still say so.** The ordinary case — the
+exchange off — changes nothing on the manager's first look and took the "nothing moved"
+early return, leaving every panel showing a default state with no reason in it.
+
+**And `MVR_NEW_SESSION_HOST` is answered `OK: false`.** In that protocol `true` means "I
+have moved". An unauthenticated station on the LAN naming a host to connect to is a
+redirect, so it becomes a prompt in the panel with the sender and the URL in it, and
+following it writes the *show's* settings — every station of a session has to agree which
+group it is in.
+
+The specification disagrees with itself in four places, each somewhere a strict parser
+would refuse a message the document itself prints; all four are read both ways, written
+the table's way, and pinned by a corpus case. The subtlest is the package field order,
+listed count-before-number in Table 66 and number-before-count in the byte layout under
+it — invisible in an unchunked message, where number 0 of count 1 is the same bytes
+either way.
+
+**None of it has been pointed at grandMA3 or Vectorworks.** The TCP half can be checked
+at a venue in an hour; a group this console hosts has no second implementation anywhere.
+
+```
+cargo test -p pult-mvr-xchange              # the messages, the framing, the corpus
+cargo test -p pult-backend --lib xchange    # the rules, and two consoles over TCP
+cargo test -p pult-backend --test xchange   # two stations, one hosting and one joining
 ```
 
 ## Releases

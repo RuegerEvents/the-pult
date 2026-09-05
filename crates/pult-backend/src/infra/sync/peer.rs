@@ -77,6 +77,9 @@ pub struct Watched {
     /// Where a drawn view goes: to this station's own browsers, and out to whichever
     /// peer asked for it. `None` in a test with no engine broadcast behind it.
     pub updates: Option<UpdateBroadcast>,
+    /// The exchange, for the one message that has to reach it: an ask relayed from an
+    /// operator standing at another station. `None` where nothing is running one.
+    pub xchange: Option<crate::infra::interop::xchange::XchangeHandle>,
 }
 
 /// Spawns an outbound peer connection task.
@@ -436,6 +439,23 @@ async fn run_peer_loop(
                         );
                         continue;
                     }
+                    // The exchange, both ways. The state is written straight into
+                    // this station's own LOCAL path so a browser here sees what the
+                    // leader sees; an ask goes to the manager, which is only running
+                    // on the station that holds the connections.
+                    SyncMessage::XchangeState { state, .. } => {
+                        let path = vec![pult_schema::path::PathSegment::Key("xchange".into())];
+                        let _ = engine
+                            .set(path, pult_schema::lifecycle::Lifecycle::Local, state.clone())
+                            .await;
+                        continue;
+                    }
+                    SyncMessage::XchangeAsk { ask } => {
+                        if let Some(xchange) = &watched.xchange {
+                            xchange.ask_without_answer(ask.clone()).await;
+                        }
+                        continue;
+                    }
                     SyncMessage::OutputTraffic { view } => {
                         // Straight onto this station's own update broadcast, where a
                         // browser subscribed to `output_traffic` picks it up without
@@ -619,6 +639,8 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
         SyncMessage::LogLines { .. } | SyncMessage::LogRaise { .. } => {}
         // The same: this connection holds the ask and the answer.
         SyncMessage::OutputWatch { .. } | SyncMessage::OutputTraffic { .. } => {}
+        // Both answered in run_peer_loop, which can reach the engine and the exchange.
+        SyncMessage::XchangeState { .. } | SyncMessage::XchangeAsk { .. } => {}
         SyncMessage::LeaderChanged { .. } | SyncMessage::SessionMembers { .. } => {
             // Handled in run_peer_loop, which can reach SyncManager.
         }

@@ -155,6 +155,42 @@ pub struct Preferences {
     /// everything a settings form needs and nothing an onlooker can use.
     #[serde(default)]
     pub gdtf_share: Option<ShareCredentials>,
+    /// Whether this station may take part in MVR-xchange at all.
+    ///
+    /// A **veto**, not a setting: which group a show belongs to is show data, because
+    /// the exchange is hosted by whichever station is leading and a group kept per
+    /// station would change on a failover. What is a fact about *this machine* is
+    /// whether it is allowed on the wire at all — a console in a venue that does not
+    /// permit it, or one an engineer wants quiet while diagnosing something else.
+    ///
+    /// True, because a show that has not switched the exchange on is already off; a
+    /// station that defaulted to refusing would make the show's own switch do nothing
+    /// and give nobody a reason why.
+    #[serde(default = "yes")]
+    pub mvr_xchange: bool,
+    /// What a newly created show starts its MVR-xchange group at.
+    ///
+    /// The same shape as `home_fade_ms` and for the same reason: the group is show
+    /// data, and this is what *this* desk starts a new show with. A house that always
+    /// works in one group sets it once.
+    #[serde(default = "default_xchange_group")]
+    pub mvr_xchange_group: String,
+    /// How many of this station's own commits are kept, and so how far back its
+    /// announced history goes.
+    ///
+    /// A count rather than a byte budget, deliberately: a count is what the panel
+    /// shows and what an operator can reason about, where bytes vary with the rig and
+    /// leave somebody asking why their commit went and somebody else's stayed.
+    #[serde(default = "default_xchange_keep")]
+    pub mvr_xchange_keep: u32,
+    /// The largest file this station will accept from a group, in megabytes.
+    ///
+    /// Enforced against the *declared* length before a byte of payload is buffered —
+    /// a cap applied afterwards has already cost what it was meant to prevent. The
+    /// protocol has no authentication of any kind, so this is most of what stands
+    /// between a machine on the venue wifi and this console's disk.
+    #[serde(default = "default_xchange_max_file_mb")]
+    pub mvr_xchange_max_file_mb: u64,
 }
 
 /// Fifteen minutes: about how long a rewrite of one cue takes.
@@ -166,6 +202,26 @@ pub const AUTOSAVE_KEEP_DEFAULT: u32 = 12;
 pub const AUTOSAVE_MINUTES_MAX: u32 = 60 * 24;
 /// Two, below which the console is checkpointing faster than an operator can think.
 pub const AUTOSAVE_MINUTES_MIN: u32 = 2;
+
+fn yes() -> bool {
+    true
+}
+
+fn default_xchange_group() -> String {
+    pult_mvr_xchange::DEFAULT_GROUP.to_string()
+}
+
+/// Twenty commits: more than a day of a designer's iterations, and small enough that
+/// an operator scrolling the list can still find one.
+fn default_xchange_keep() -> u32 {
+    20
+}
+
+/// Half a gigabyte. A rig with meshes is tens of megabytes; a festival with scanned
+/// geometry can be hundreds, and past this it is not a drawing any more.
+fn default_xchange_max_file_mb() -> u64 {
+    512
+}
 
 fn default_autosave_minutes() -> u32 {
     AUTOSAVE_MINUTES_DEFAULT
@@ -208,6 +264,10 @@ impl Default for Preferences {
             autosave_keep: AUTOSAVE_KEEP_DEFAULT,
             backup_dir: None,
             gdtf_share: None,
+            mvr_xchange: true,
+            mvr_xchange_group: default_xchange_group(),
+            mvr_xchange_keep: default_xchange_keep(),
+            mvr_xchange_max_file_mb: default_xchange_max_file_mb(),
         }
     }
 }
@@ -273,6 +333,26 @@ pub fn path() -> Option<PathBuf> {
         return Some(PathBuf::from(named));
     }
     Some(config_dir()?.join("the-pult").join("preferences.toml"))
+}
+
+/// Where this station keeps the MVR-xchange archives it has committed.
+///
+/// Beside `preferences.toml` rather than in the showfile: a commit is this station's
+/// own traffic, and a directory of megabyte archives in the `.pultz` is a cost nobody
+/// asked for. `PULT_XCHANGE_CACHE` names it outright for the same two reasons
+/// `PULT_PREFERENCES` does — a test wanting its own, and two consoles on one machine.
+///
+/// The temporary directory is the fallback rather than `None`: a station that cannot
+/// find a config directory can still take part in an exchange for as long as it is up,
+/// and losing the cache on a reboot costs a commit history nobody could serve anyway.
+pub fn xchange_cache_dir() -> PathBuf {
+    if let Some(named) = std::env::var_os("PULT_XCHANGE_CACHE") {
+        return PathBuf::from(named);
+    }
+    match config_dir() {
+        Some(dir) => dir.join("the-pult").join("xchange"),
+        None => std::env::temp_dir().join("pult-xchange"),
+    }
 }
 
 /// The platform's configuration directory, without a crate to ask.

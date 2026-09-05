@@ -17,6 +17,7 @@ pult-schema = { path = "../pult-schema" }
 pult-render = { workspace = true }
 pult-gdtf = { workspace = true }
 pult-mvr = { workspace = true }
+pult-mvr-xchange = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
@@ -38,6 +39,7 @@ tokio-stream = { workspace = true }
 futures = { workspace = true }
 toml = { workspace = true }
 mdns-sd = { workspace = true }
+tokio-tungstenite = { workspace = true }
 sysinfo = { workspace = true }
 reqwest = { workspace = true }
 rumqttd = { workspace = true }

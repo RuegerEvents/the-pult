@@ -4,6 +4,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use super::effect::Easing;
+use super::xchange::XchangeSettings;
 use super::fixture::{parameter_key, ParameterKind};
 use crate::PultSchema;
 
@@ -100,6 +101,16 @@ pub struct Show {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub production: Production,
+    /// Which MVR-xchange group this show belongs to, and whether it is in one.
+    ///
+    /// Show data, and the leader moving is the whole argument: an exchange client is
+    /// one per show hosted by whichever station is leading, so a group name kept per
+    /// station would change group on a failover. A station that wants no part in it
+    /// says so in its own `preferences.toml` instead — that is a fact about the
+    /// machine, and it is a veto rather than a setting.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub mvr_xchange: XchangeSettings,
 }
 
 /// What a title block says, beside the drawing's own name and scale.

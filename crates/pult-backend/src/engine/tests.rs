@@ -95,6 +95,7 @@ fn a_show() -> Show {
         haze_turbulence: pult_schema::types::show::HAZE_TURBULENCE_DEFAULT,
         fade_curves: pult_schema::types::show::FadeCurves::default(),
         production: Default::default(),
+        mvr_xchange: Default::default(),
     }
 }
 
@@ -3203,6 +3204,7 @@ mod groups {
             viewers: Default::default(),
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
+            xchange: None,
         }
     }
 

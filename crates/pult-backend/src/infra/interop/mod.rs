@@ -5,8 +5,13 @@
 //! land in the show through [`apply`] — which is where the rules about *writing* live:
 //! one gesture, validate before anything is stored, and undo the lot if a write fails
 //! halfway.
+//!
+//! [`xchange`] is the same MVR arriving over a network rather than as a file somebody
+//! exported. It goes through exactly the same import, which is the point: a rig shared
+//! by a designer and a rig dragged off a memory stick are the same act.
 
 pub mod apply;
 pub mod gdtf;
 pub mod mvr;
 pub mod share;
+pub mod xchange;

@@ -55,4 +55,10 @@ pub struct AppState {
     /// The port that was actually bound, which is not `config.port` when that was
     /// zero. This is the one a client is talking to.
     pub http_port: u16,
+    /// MVR-xchange, for the RPCs an operator drives it with.
+    pub xchange: crate::infra::interop::xchange::XchangeHandle,
+    /// The clients of a hosted MVR-xchange group. Held here because `/mvrxchange` is a
+    /// route on this router and needs somewhere to register an upgraded socket; it
+    /// answers only while the exchange has claimed it.
+    pub xchange_hosting: crate::infra::interop::xchange::HostRegistry,
 }

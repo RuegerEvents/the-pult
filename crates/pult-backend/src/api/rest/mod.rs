@@ -350,6 +350,29 @@ async fn import_gdtf_bytes(
     }))
 }
 
+/// A client of the MVR-xchange group this console is hosting.
+///
+/// The upgrade happens here, on the router; everything past it is
+/// [`crate::infra::interop::xchange::ws::serve_client`]. A socket arriving while
+/// nothing is hosting is closed rather than parked, so a client learns at once that
+/// this console is not the group it was looking for.
+pub async fn mvrxchange(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> Response {
+    if !state.xchange_hosting.hosting() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this console is not hosting an MVR-xchange group",
+        )
+            .into_response();
+    }
+    let registry = state.xchange_hosting.clone();
+    ws.on_upgrade(move |socket| {
+        crate::infra::interop::xchange::ws::serve_client(socket, registry)
+    })
+}
+
 /// Import a whole rig from an `.mvr`.
 ///
 /// One gesture, so a drawing is one Ctrl-Z, and the answer says what it did: what was
@@ -360,46 +383,14 @@ async fn import_mvr(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, Response> {
-    use pult_schema::path::PathSegment;
-
-    // Read the whole show first: every collection an import matches against, so the
-    // plan is built against what is there rather than against what it hopes is.
-    async fn read<T: serde::de::DeserializeOwned>(state: &AssetState, table: &str) -> Vec<T> {
-        state
-            .engine
-            .get(vec![PathSegment::Key(table.into())])
-            .await
-            .ok()
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default()
-    }
-
-    let fixture_types = read(&state, "fixture_types").await;
-    let fixtures = read(&state, "fixtures").await;
-    let scene_objects = read(&state, "scene_objects").await;
-    let layers = read(&state, "layers").await;
-    let symbols = read(&state, "symbols").await;
-    let classes = read(&state, "classes").await;
-    let named_assets = read(&state, "named_assets").await;
-    let existing = infra::interop::mvr::Existing {
-        fixture_types: &fixture_types,
-        fixtures: &fixtures,
-        scene_objects: &scene_objects,
-        layers: &layers,
-        symbols: &symbols,
-        classes: &classes,
-        named_assets: &named_assets,
-    };
-
-    let plan = infra::interop::mvr::plan_import(&body, &existing)
-        .map_err(|error| bad_request(&error.to_string()))?;
-
-    let report =
-        infra::interop::apply::apply(plan, &state.assets, &state.engine, user_for_writes(&headers))
-            .await
-            .map_err(|error| {
-                (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
-            })?;
+    let report = infra::interop::mvr::read_rig(
+        &state.engine,
+        &state.assets,
+        &body,
+        user_for_writes(&headers),
+    )
+    .await
+    .map_err(|error| bad_request(&error))?;
 
     Ok(Json(json!({
         "created": report.created,
@@ -419,68 +410,14 @@ async fn export_mvr(
     State(state): State<AssetState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, Response> {
-    use pult_schema::path::PathSegment;
-    use std::collections::{BTreeMap, BTreeSet};
-
-    async fn read<T: serde::de::DeserializeOwned>(state: &AssetState, table: &str) -> Vec<T> {
-        state
-            .engine
-            .get(vec![PathSegment::Key(table.into())])
-            .await
-            .ok()
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default()
-    }
-
-    let only: BTreeSet<uuid::Uuid> = params
+    let only: std::collections::BTreeSet<uuid::Uuid> = params
         .get("layers")
         .map(|list| list.split(',').filter_map(|id| uuid::Uuid::parse_str(id.trim()).ok()).collect())
         .unwrap_or_default();
 
-    let fixture_types: Vec<pult_schema::types::fixture::FixtureType> =
-        read(&state, "fixture_types").await;
-    let fixtures = read(&state, "fixtures").await;
-    let scene_objects = read(&state, "scene_objects").await;
-    let layers = read(&state, "layers").await;
-    let symbols = read(&state, "symbols").await;
-    let classes = read(&state, "classes").await;
-    let named_assets = read(&state, "named_assets").await;
-    let rig = infra::interop::mvr::Rig {
-        fixture_types: &fixture_types,
-        fixtures: &fixtures,
-        scene_objects: &scene_objects,
-        layers: &layers,
-        symbols: &symbols,
-        classes: &classes,
-        named_assets: &named_assets,
-    };
-
-    let export = infra::interop::mvr::plan_export(&rig, &only);
-
-    // The plan says which files belong beside the scene; this is where they are
-    // found. A fixture type that arrived as a file exports as that file, byte for
-    // byte; one the console made for itself exports as a generated one, which is the
-    // same rule `/api/export/gdtf` follows.
-    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for want in &export.wanted {
-        if let Some(sha) = &want.asset {
-            if let Ok(Some(stored)) = state.assets.get(sha).await {
-                files.insert(want.name.clone(), stored.bytes);
-                continue;
-            }
-        }
-        if let Some(id) = want.fixture_type {
-            if let Some(fixture_type) = fixture_types.iter().find(|t| t.id == id) {
-                if let Ok((bytes, _)) = infra::interop::gdtf::export(&state.assets, fixture_type).await
-                {
-                    files.insert(want.name.clone(), bytes);
-                }
-            }
-        }
-    }
-
-    let bytes = infra::interop::mvr::export::write(&export, files)
-        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response())?;
+    let bytes = infra::interop::mvr::write_rig(&state.engine, &state.assets, &only)
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error).into_response())?;
 
     Ok((
         [

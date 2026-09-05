@@ -22,7 +22,11 @@ use pult_schema::{
 // carrying. Asked for rather than published, for the reason a raised log is: a
 // universe image at 40 Hz crossing the link for a panel nobody has open is a stream
 // the show's own network is paying for.
-pub const PROTOCOL_VERSION: u32 = 6;
+// 7 added XchangeState and XchangeAsk, so MVR-xchange — which only the session
+// leader is on the wire for — is visible from, and drivable at, every station. The
+// state goes one way like a log line and the ask goes the other like a raise; neither
+// is show state, and neither is replicated, persisted or undone.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -126,6 +130,25 @@ pub enum SyncMessage {
     /// station that drew it is connected to everyone who could want it.
     OutputTraffic {
         view: pult_schema::types::output::OutputView,
+    },
+    /// What the exchange is doing, from the station holding it.
+    ///
+    /// One way and unacknowledged, like a log line, and for the same reason: an
+    /// operator at a follower has to be able to see a group their own console is in,
+    /// and only the leader knows. The value is a whole `XchangeState`, sent as JSON
+    /// rather than as the type, so a peer running an older build applies what it can
+    /// read and is not disconnected over a field it has never heard of.
+    XchangeState {
+        node_id: NodeId,
+        state: serde_json::Value,
+    },
+    /// An operator at this station asking the leader to act on the exchange.
+    ///
+    /// The shape `LogRaise` has — a thing one station asks another to do — and the
+    /// user id inside it is the attribution: an applied commit belongs to whoever
+    /// clicked, from wherever they clicked.
+    XchangeAsk {
+        ask: pult_schema::types::XchangeAsk,
     },
     Heartbeat {
         seq: u64,

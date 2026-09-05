@@ -23,6 +23,7 @@ pub mod mount;
 pub mod group;
 pub mod version;
 pub mod paperwork;
+pub mod xchange;
 
 pub use fixture::{home_value, home_value_by_key, output_parameters, parameter_key, Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
@@ -44,6 +45,10 @@ pub use paperwork::{
 pub use catalogue::{piece, Connector, ConnectorKind, Property, PropertyKind, StockPiece, StockShape, CATALOGUE};
 pub use mount::{Chord, Mount};
 pub use session::{DiscoveredSession, SessionState};
+pub use xchange::{
+    station_uuid_for, PendingHost, XchangeAsk, XchangeCommit, XchangeIdle, XchangeMode, XchangeSettings,
+    XchangeState, XchangeStation,
+};
 pub use devices::{DeviceHealth, DevicesState, DiscoveredDevice};
 pub use openhaunt::{EffectCapability, PortEffectCapability};
 pub use output::{

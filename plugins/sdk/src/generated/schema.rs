@@ -1768,6 +1768,14 @@ pub struct Show {
     /// their name on your drawing.
     #[serde(default)]
     pub production: Production,
+    /// Which MVR-xchange group this show belongs to, and whether it is in one.
+    ///
+    /// Show data, and the leader moving is the whole argument: an exchange client is
+    /// one per show hosted by whichever station is leading, so a group name kept per
+    /// station would change group on a failover. A station that wants no part in it
+    /// says so in its own `preferences.toml` instead — that is a fact about the
+    /// machine, and it is a veto rather than a setting.
+    pub mvr_xchange: XchangeSettings,
 }
 
 /// One named position on a wheel: a gobo, a colour, a prism facet.
@@ -2226,4 +2234,49 @@ pub struct ViewportBlock {
     /// Dimensions along each bar, where this viewport carries them. See [`Dimensions`].
     #[serde(default)]
     pub dimensions: Option<Dimensions>,
+}
+
+/// How this console reaches its group.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum XchangeMode {
+    /// mDNS under `<group>._mvrxchange._tcp.local.`, and the protocol's own framing.
+    /// No configuration, no server, and what a show LAN actually runs.
+    #[default]
+    Tcp,
+    /// Join a WebSocket host somebody else is running, at [`XchangeSettings::url`].
+    WebSocket,
+    /// Be that host, on the port already serving the console's own page.
+    WebSocketHost,
+}
+
+/// What the show says about its exchange.
+///
+/// Show data rather than a station preference, and the leader moving is the reason:
+/// anything kept per station would change group on a failover, which is the one thing
+/// this must not do. A station can still refuse to take part at all — that veto lives
+/// in `preferences.toml`, because it is a fact about the machine.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct XchangeSettings {
+    /// Off until somebody switches it on, like grandMA3's Enable. A console that has
+    /// never been asked to share a rig should not appear on anybody's network.
+    #[serde(default)]
+    pub enabled: bool,
+    /// The mDNS sub-service name in TCP mode. The group *is* the address, which is why
+    /// no message carries one.
+    #[serde(default)]
+    pub group: String,
+    #[serde(default)]
+    pub mode: XchangeMode,
+    /// The host to join in [`XchangeMode::WebSocket`]. Ignored in the other two.
+    #[serde(default)]
+    pub url: String,
 }

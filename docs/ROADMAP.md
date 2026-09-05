@@ -18,7 +18,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Playback engine | Working, and no longer a tick. Playback decides *what is driving* each parameter — fades and effects anchored on the cue's `went_at` — and publishes the descriptions; nothing stores what they are worth. A pass happens when the show changes, so a fade in progress costs the engine nothing. Since task 59 a fade has a shape as well as a length, asked for in the same three steps the times are — the capture, the cue, then the show's own default per group of parameter. |
 | Output plugins | Working for Art-Net, sACN, and OpenHaunt nodes, several at once. Each holds the last patch it was pushed and draws its own frames out of it at its protocol's rate, evaluating rather than being handed values. Configured from the `outputs` collection and editable while the show is up, with per-output status and per-connector frame cost in the UI. Since task 57 an output's universe list is a routing it obeys — and obeys before it evaluates — so a rig can be split across two interfaces and each carries and costs its own half. Flags only seed an empty showfile. |
 | Stage view | Working. A ground plan is uploaded, calibrated against something of known length, and fixtures are dragged onto it — then the same rig in 3D from front of house, beams and all. Since task 47 it draws the *drawing* too: trusses and objects out of an MVR, from their own meshes, with a Layers panel to show and hide parts of it. Every beam is still one cone at one angle; the geometry and the beam angle a GDTF import brings are stored and not yet drawn. Nothing can be moved or placed in either view yet. Since task 60 the camera has five places to go — front, plan, section, three-quarter and whatever is selected — framed from the rig's own bounding box. |
-| Rig interchange | Working. MVR in and out: fixtures with their positions, trusses and objects with their meshes, layers and classes, all keyed by the uuid the file uses so a re-import updates the rig rather than doubling it. A fixture's place is a transform with a signed scale, relative to whatever it hangs off. What an import no longer mentions is reported, never deleted. No scene editing yet. |
+| Rig interchange | Working. MVR in and out: fixtures with their positions, trusses and objects with their meshes, layers and classes, all keyed by the uuid the file uses so a re-import updates the rig rather than doubling it. A fixture's place is a transform with a signed scale, relative to whatever it hangs off. What an import no longer mentions is reported, never deleted. Since task 63 the same scene also moves over the network as MVR-xchange, in both modes of the specification, with one exchange client per show hosted by whichever station is leading — untried against other people's software. |
 | Fixture definitions | Working. GDTF in and out, with modes, breaks, wheels, emitters, physical data and the geometry tree; the archive is kept whole and exports byte for byte. The GDTF Share is searchable and importable behind a station credential. A type the console derived from a node or somebody typed in is unchanged and still has an implicit mode. |
 | Flows | Working. The spec's node graph, evaluated as a graph: sources, conditions, boolean logic, delays and actions, with live state on every node. Replaced `triggers`. |
 | Devices / events | Working. OpenHaunt nodes are discovered over mDNS and adopted as fixtures; their inputs land in `sensed_values`; flows turn those into cues. A port that says it can trace a shape is handed one descriptor instead of forty messages a second. Tested end to end against `tools/openhaunt-node-sim` and, since task 22, against real firmware on an ESP32. |
@@ -4490,6 +4490,125 @@ cargo run -p pult-backend -- --show Rig.pult --demo theatre   # → the Paperwor
 ```
 
 
+### 63. A rig that goes out while it is still being drawn
+
+MVR could leave this console and arrive in it, as a file somebody exported and somebody
+else opened. MVR-xchange is the other half: the same scene, moving between a console and
+a previz and a CAD seat over the network, as it changes. The entry had been waiting on
+"there is no scene to share", which task 61 answered — a console can now build a rig out
+of the catalogue with nothing imported at all.
+
+**The entry's own description of the work was wrong, and finding that out was the first
+half hour.** It said "mDNS discovery and a WebSocket, which this codebase has both of".
+DIN SPEC 15801 defines *two modes* and they do not combine: TCP mode is mDNS discovery
+plus a framing of the protocol's own — a `778682` magic, a version, a package number and
+count, a payload kind and a 64-bit length, all big-endian — and WebSocket mode is
+ordinary DNS to a URL somebody hosts, with JSON in text frames and files in binary ones.
+The free lunch was half a lunch: `mdns-sd` was already here for `_pult._tcp`, and the
+framing was new code whichever mode you picked. **Both are built**, on the user's call
+mid-design, which is also what made hosting a group possible at all.
+
+**Only the leader is on the wire, and the identity it presents is the show's.** This is
+the question the entry named — whether a shared scene is a session in this console's
+sense — and the answer is that it is *one client per show*, hosted by whichever station
+is leading. If every station advertised, one `MVR_COMMIT` from a previz would arrive at
+all of them and each would import the same file into the same replicated show: three
+plans, three gestures, racing. So `station_uuid` is a v5 over the show id and
+`StationName` is the show's name, which means a failover reads to a peer as one console
+that moved rather than one that vanished and another that appeared. The specification
+asks for a uuid "persistent across multiple start-ups of the same software on the same
+computer"; that is written for one application on one desk, and this honours what it is
+*for* rather than what it says.
+
+**Which leaves an operator at a follower unable to see a group their own console is in**
+— so the leader publishes `XchangeState` down the sync link and every station writes it
+to its own LOCAL `xchange` path, and an ask travels the other way with the asking
+operator's user id in it. Protocol version 7. The shapes are `LogLines` and `LogRaise`
+exactly: one way, unacknowledged, not show state. **Deliberately not a SYNCED entity**,
+and the reason is worth keeping — a laptop appearing on the LAN is not an operation, has
+no author, and every write of it would be a row in the History panel. The engine logs
+every non-LOCAL write to the oplog, so a "SYNCED state object" is not a thing that
+exists; the LOCAL path plus a push is what it has to be.
+
+**Committing is deliberate and applying is one act.** A button and a required comment —
+an empty one is a commit nobody can tell from the last — and the whole rig, never a
+subset and never targeted: `ForStationsUUID` is honoured on the way in and always empty
+on the way out. Applying sends the request, waits for the archive and runs the *same*
+import `POST /api/import/mvr` runs, attributed to whoever clicked, from whichever station
+they clicked at. So it is one gesture and one Ctrl-Z, and `read_rig`/`write_rig` moved
+out of the two REST handlers into `interop/mvr` so the socket and the HTTP route cannot
+disagree about what an export contains.
+
+**A live sequence is a warning and not a refusal.** `xchange.apply` answers
+`{needsConfirm, running: [...]}` rather than acting, and the panel asks. A console cannot
+know whether the house is in, and a rule that refused while anything was live would
+refuse all afternoon — a sequence is parked live during exactly the iteration this
+feature exists for.
+
+**The commits live beside `preferences.toml`, not in the showfile.** A commit announces a
+`FileUUID` and a `FileSize` and the bytes move later, possibly to a station that joins
+tomorrow and reads the history out of `MVR_JOIN` — so the archive has to still exist,
+byte for byte. The content-addressed asset store would have given replication and the
+`.pultz` for free, which is exactly wrong: every commit ever made would ride in the file
+and across the link carrying the show. Regenerating on demand would answer a request for
+last Tuesday's commit with today's rig, which is a lie with the right uuid on it. The
+limit is a **count** rather than a byte budget, because a count is what the panel shows
+and what an operator can reason about.
+
+**And this station announces what it holds, not what it once made.** After a failover the
+new leader has the show's commit list and none of the old leader's files, so the history
+gets shorter and every entry in it is real. `ours` and `here` are separate fields for
+that reason, and `load_our_commits` reads the cache rather than trusting memory.
+
+Three things were wrong first and are worth carrying forward.
+
+**A TCP station's address comes from mDNS and from nowhere else.** A message arriving
+over TCP comes from the *ephemeral* port the sender dialled out of, and every interaction
+in that mode is a short connection — so `remember` was overwriting a discovered listening
+address with a socket that was dead the moment it closed, and a commit was being announced
+to a closed port. `Known::dialable` says which addresses can be opened, and discovery is
+the only thing that ever sets it in TCP mode.
+
+**A station that comes up already settled must still say so.** The ordinary case — the
+exchange switched off — changes nothing on the manager's first look, took the "nothing
+moved" early return, and left every panel showing a default `XchangeState` with no reason
+in it. Found by a test asking a switched-off station why it was off and being told
+nothing.
+
+**And `MVR_NEW_SESSION_HOST` is answered `OK: false`.** In this protocol `true` means "I
+have moved", and this console has not: an unauthenticated station on the LAN naming a
+host to connect to is a redirect, and the answer is a prompt in the panel with the sender
+and the URL in it. Saying so is more use to the asker than a lie in either direction.
+
+The specification disagrees with itself in four places, and every one of them is somewhere
+a strict parser would refuse a message the document itself prints. All four are read both
+ways and written the table's way, with a corpus case pinning each: `MVR_LEAVE`'s station
+field is `FromStationUUID` in the table and `StationUUID` in the example; `MVR_REQUEST`'s
+`FromStationUUID` is an array in the table and a string in the example; `MVR_COMMIT`'s
+example omits two fields the table has; and the package field order is listed
+count-before-number in Table 66 and number-before-count in the byte layout under it. That
+last one is invisible in an unchunked message — number 0 of count 1 is the same bytes
+either way round — which is what makes it the one a reader would never find.
+
+`pult-mvr-xchange` is a crate of its own, on the user's call over folding the codec into
+`pult-mvr`: serde, uuid and thiserror, no IO, no MVR content — not one field of a message
+carries any, and the archive crosses as an opaque buffer. So the corpus is testable with
+no station near it, the way `pult-gdtf`'s is.
+
+What has *not* been proved: any of it against grandMA3 or Vectorworks. The TCP half can be
+checked at a venue in an afternoon; a group this console hosts has no second
+implementation anywhere, and these tests are the only thing that will ever have exercised
+it. `SCHEMA_GENERATION` is unchanged — `Show::mvr_xchange` is an added field, which the
+additive pass handles and which refuses an older showfile by name, as designed.
+
+```
+cargo test -p pult-mvr-xchange                     # the messages, the framing, the corpus
+cargo test -p pult-backend --lib xchange           # the rules, and two consoles over TCP
+cargo test -p pult-backend --test xchange          # two stations, hosting and joining
+cd frontend && npm run check
+```
+
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -4500,7 +4619,7 @@ asked and what is true of the code today, so the questions do not get
 re-discovered from scratch every time somebody picks the item up. When one is
 built it becomes the next numbered task and leaves this list.
 
-Verified against the code on 2026-09-04 unless an entry says otherwise.
+Verified against the code on 2026-09-05 unless an entry says otherwise.
 
 ### The order
 
@@ -4608,6 +4727,22 @@ drawing — a plugin cannot measure a mesh, and a drawing is what somebody actua
 The *tables* went to the station anyway, which is the entry's instinct honoured properly:
 what the rig weighs is now a question a plugin, the command line and curl can all ask.
 
+**mvr-xchange left on 2026-09-05**, as task 63, and it was not on this list at all —
+it sat unplaced under *Interop*, unblocked by task 61 and never moved up. Worth
+noticing, because it is the second time in two days: `fade-curves` was in the same
+position and for the same reason. An entry that becomes unblocked does not place
+itself, and nothing here re-reads the unplaced sections when the thing they were
+waiting for lands.
+
+Two things it changed about the rest of this list. **network-interface-management is
+new** and comes directly out of building it — see below; it is the first item here
+that is about a gap the console has had all along rather than about something it
+cannot yet do. And the entry's own description of the work was wrong in a way that
+would have cost somebody a day: "mDNS discovery and a WebSocket, which this codebase
+has both of" describes two mutually exclusive modes of the specification, not one
+piece of work. **An entry's claim about how much is already here is worth checking
+before it is used to order anything.**
+
 1. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
    themselves dynamic. → none: the viewer landed as task 51
 2. **voice-input** — speech to the command line, grammar first and NL on parse
@@ -4656,7 +4791,9 @@ what the rig weighs is now a question a plugin, the command line and curl can al
 16. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
    2026-09-03. → none, and the sharpest question in it is whether an imported
    `.pultz` should ask before running the plugins it carries
-17. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
+17. **network-interface-management** — which interface each of this console's
+   network services binds. Added 2026-09-05, out of task 63. → none
+18. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
    measured evaluating at **94%** of an output frame at 5000 fixtures, which is
    the answer the question was waiting for, and `pult-render` is pure and takes
    no locks. The same measurement is why it sits here rather than at the top: the
@@ -4684,7 +4821,7 @@ actually running a show from. Task 53 already took the free wins — sixty a sec
 most, nothing drawn when nothing changed, only lit beams drawn — which is what turned
 a pinned GPU into an idle one on a dark stage.
 
-Items 16 and 17 were added on 2026-09-03 and sit near the end for a different
+Items 16 and 18 were added on 2026-09-03 and sit near the end for a different
 reason: neither is blocked on anything, and both are blocked on *time*. A
 migration path is worth nothing until there is a showfile worth migrating, and
 the gaps in how plugins travel are gaps rather than absences.
@@ -4943,17 +5080,15 @@ it against real files for a week.
 
 #### mvr-xchange
 
-The other half of MVR: a protocol for two consoles or a console and a previz to share a
-scene as it changes, rather than a file somebody exports.
+Built on 2026-09-05 as task 63, and kept here as a heading so a reader looking for it
+lands somewhere. Its own question — whether a shared scene is a session in this
+console's sense — was answered *one client per show, hosted by the leader*, and the
+reasoning is in the task.
 
-**Unblocked by task 61**, and the entry used to say why it was not: "out of scope while
-there is no scene to share". There is one now — a console can build a rig out of the
-catalogue with nothing imported, and hand it to somebody else's software.
-
-- It is mDNS discovery and a WebSocket, which this codebase has both of.
-- The open question is whether a shared scene is a *session* in this console's sense or
-  something beside one. Two stations of one show already agree about the rig; an
-  xchange peer is somebody else's software that agrees about part of it.
+What is left of it is not a design question but an afternoon at a venue: **none of it
+has been pointed at grandMA3 or Vectorworks.** The TCP half can be checked against
+either in about an hour; the hosted-group half has no second implementation anywhere
+and never will have until somebody points one at it.
 
 #### open-control-interfaces
 
@@ -4966,6 +5101,46 @@ address-mapping one under show-control and the connector-or-plugin one under
 control-transports.
 
 ### Observability
+
+#### network-interface-management
+
+**Nothing in this console says which network interface anything goes out on.** Added
+2026-09-05 while building task 63, which needed a second mDNS responder and found that
+the first one had never answered the question either.
+
+A console at a venue usually has more than one interface: a house LAN, a separate
+Art-Net network with no route to anything, sometimes a wifi the tablet is on. Today
+every service picks for itself, or lets the operating system pick:
+
+- **`_pult._tcp` session discovery** binds whatever `mdns-sd` binds, which is every
+  interface it can find. Two consoles that can see each other on the lighting network
+  and not on the house one is a configuration nobody can currently express.
+- **`_mvrxchange._tcp`** now does the same thing, for the same reason.
+- **Art-Net and sACN** send to whatever the route table says, and sACN's multicast has
+  the sharper version of this: the outgoing interface for a multicast group is a
+  socket option nothing here sets.
+- **The HTTP server** binds `0.0.0.0`, which is at least honest, but it means the
+  console's own page and a hosted MVR-xchange group are offered on the show network
+  as well as on the house one.
+
+grandMA3 exposes exactly this and calls it Interface, per protocol. That is the shape
+to copy, and the questions it raises here:
+
+- **Per service or one setting?** One is simpler and wrong: the whole point is that
+  Art-Net is on a different cable from the tablet.
+- **Where it lives.** A station preference, almost certainly — which cable is in which
+  socket is a fact about the machine, not about the show. But an `OutputConfig`
+  already names a target address, so an Art-Net output may want its own answer, and
+  then two places say something about the same thing.
+- **What a name is.** `en0` on a Mac, `eth0` or a predictable name on Linux, a GUID on
+  Windows. `sysinfo`'s `network` feature is already here for throughput and can
+  enumerate them; whether it gives a stable identity across a reboot is unchecked.
+- **And what happens when the named interface is gone.** A console that silently binds
+  everything because the interface it was told about is missing is worse than one that
+  refuses and says so — this is the `consoleNow()` rule again.
+
+→ none, and the trigger is the first rig where somebody has to explain why the previz
+on the house LAN cannot see the console.
 
 #### station-clock-offset
 

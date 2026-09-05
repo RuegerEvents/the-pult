@@ -1,0 +1,209 @@
+{
+  "note": [
+    "The specification's own worked examples, verbatim, plus the ones that show where",
+    "it disagrees with itself. Read by tests/corpus.rs.",
+    "",
+    "`type` is what the message must parse as. `lenient` marks a case that exists only",
+    "because a strict reading of the document would refuse a message the document",
+    "itself prints — see message.rs. `strict_json` is the JSON this crate writes when",
+    "it sends that message, where that differs from what it accepts."
+  ],
+  "messages": [
+    {
+      "name": "join, as the spec prints it",
+      "type": "MVR_JOIN",
+      "json": {
+        "Type": "MVR_JOIN",
+        "Provider": "MVRApplication",
+        "verMajor": 1,
+        "verMinor": 6,
+        "StationUUID": "4aa291a1-1a62-45fe-aabc-e90e5e2399a8",
+        "StationName": "MVR Application from user A at location B",
+        "Commits": []
+      }
+    },
+    {
+      "name": "join carrying a commit history",
+      "type": "MVR_JOIN",
+      "json": {
+        "Type": "MVR_JOIN",
+        "Provider": "the-pult",
+        "verMajor": 1,
+        "verMinor": 6,
+        "StationUUID": "4aa291a1-1a62-45fe-aabc-e90e5e2399a8",
+        "StationName": "Festival",
+        "Commits": [
+          {
+            "verMajor": 1,
+            "verMinor": 6,
+            "FileSize": 4096,
+            "FileUUID": "0e8b1a3f-51ba-4b1e-8f2f-1f7c2e1e2a01",
+            "StationUUID": "4aa291a1-1a62-45fe-aabc-e90e5e2399a8",
+            "ForStationsUUID": [],
+            "Comment": "Moved the overhead truss upstage 500",
+            "FileName": "Festival-2026-09-05.mvr"
+          }
+        ]
+      }
+    },
+    {
+      "name": "join answered",
+      "type": "MVR_JOIN_RET",
+      "json": {
+        "Type": "MVR_JOIN_RET",
+        "OK": true,
+        "Message": "",
+        "verMajor": 1,
+        "verMinor": 6,
+        "StationUUID": "a7669ff9-bd61-4486-aea6-c190f8ba6b8c",
+        "StationName": "MVR Application from user A at location B",
+        "Commits": []
+      }
+    },
+    {
+      "name": "leave, spelled as the table says",
+      "type": "MVR_LEAVE",
+      "json": {
+        "Type": "MVR_LEAVE",
+        "FromStationUUID": "4aa291a1-1a62-45fe-aabc-e90e5e2399a8"
+      }
+    },
+    {
+      "name": "leave, spelled as the example says",
+      "type": "MVR_LEAVE",
+      "lenient": "Table 70 names FromStationUUID; the example under it writes StationUUID.",
+      "json": {
+        "Type": "MVR_LEAVE",
+        "StationUUID": "4aa291a1-1a62-45fe-aabc-e90e5e2399a8"
+      },
+      "strict_json": {
+        "Type": "MVR_LEAVE",
+        "FromStationUUID": "4aa291a1-1a62-45fe-aabc-e90e5e2399a8"
+      }
+    },
+    {
+      "name": "leave answered",
+      "type": "MVR_LEAVE_RET",
+      "json": { "Type": "MVR_LEAVE_RET", "OK": true, "Message": "" }
+    },
+    {
+      "name": "commit, as the spec prints it",
+      "type": "MVR_COMMIT",
+      "lenient": "The example omits StationUUID and FileName, which Table 72 has.",
+      "json": {
+        "Type": "MVR_COMMIT",
+        "verMajor": 1,
+        "verMinor": 6,
+        "FileUUID": "0e8b1a3f-51ba-4b1e-8f2f-1f7c2e1e2a01",
+        "ForStationsUUID": [],
+        "FileSize": 256,
+        "Comment": "My complete description of what I have changed"
+      }
+    },
+    {
+      "name": "commit addressed to two stations",
+      "type": "MVR_COMMIT",
+      "json": {
+        "Type": "MVR_COMMIT",
+        "verMajor": 1,
+        "verMinor": 6,
+        "FileSize": 256,
+        "FileUUID": "0e8b1a3f-51ba-4b1e-8f2f-1f7c2e1e2a01",
+        "StationUUID": "4aa291a1-1a62-45fe-aabc-e90e5e2399a8",
+        "ForStationsUUID": [
+          "a7669ff9-bd61-4486-aea6-c190f8ba6b8c",
+          "b1c2d3e4-0000-4000-8000-000000000001"
+        ],
+        "Comment": "For previz only",
+        "FileName": "wip.mvr"
+      }
+    },
+    {
+      "name": "commit answered",
+      "type": "MVR_COMMIT_RET",
+      "json": { "Type": "MVR_COMMIT_RET", "OK": true, "Message": "" }
+    },
+    {
+      "name": "request, as the spec prints it",
+      "type": "MVR_REQUEST",
+      "lenient": "Empty strings for both fields; the example's way of saying nothing.",
+      "json": {
+        "Type": "MVR_REQUEST",
+        "FromStationUUID": "",
+        "FileUUID": null
+      },
+      "strict_json": { "Type": "MVR_REQUEST" }
+    },
+    {
+      "name": "request naming a station as an array",
+      "type": "MVR_REQUEST",
+      "lenient": "Table 74 types FromStationUUID as an array; the example writes a string.",
+      "json": {
+        "Type": "MVR_REQUEST",
+        "FileUUID": "0e8b1a3f-51ba-4b1e-8f2f-1f7c2e1e2a01",
+        "FromStationUUID": ["4aa291a1-1a62-45fe-aabc-e90e5e2399a8"]
+      },
+      "strict_json": {
+        "Type": "MVR_REQUEST",
+        "FileUUID": "0e8b1a3f-51ba-4b1e-8f2f-1f7c2e1e2a01",
+        "FromStationUUID": "4aa291a1-1a62-45fe-aabc-e90e5e2399a8"
+      }
+    },
+    {
+      "name": "request refused",
+      "type": "MVR_REQUEST_RET",
+      "json": {
+        "Type": "MVR_REQUEST_RET",
+        "OK": false,
+        "Message": "The MVR is not available on this client"
+      }
+    },
+    {
+      "name": "the group is moving to another mDNS service",
+      "type": "MVR_NEW_SESSION_HOST",
+      "json": {
+        "Type": "MVR_NEW_SESSION_HOST",
+        "ServiceName": "fancyProjectGroup._mvrxchange._tcp.local.",
+        "ServiceURL": ""
+      }
+    },
+    {
+      "name": "the group is moving to a websocket host",
+      "type": "MVR_NEW_SESSION_HOST",
+      "json": {
+        "Type": "MVR_NEW_SESSION_HOST",
+        "ServiceName": "",
+        "ServiceURL": "ws://previz.local:8080/mvrxchange"
+      }
+    },
+    {
+      "name": "the move answered",
+      "type": "MVR_NEW_SESSION_HOST_RET",
+      "json": { "Type": "MVR_NEW_SESSION_HOST_RET", "OK": true, "Message": "" }
+    },
+    {
+      "name": "a message from a later version of somebody else's software",
+      "type": "unknown",
+      "json": { "Type": "MVR_SOMETHING_NOT_YET_WRITTEN", "Payload": { "x": 1 } }
+    }
+  ],
+  "packages": [
+    {
+      "note": [
+        "The byte layout, pinned as data so a wrong magic or a flipped endianness",
+        "cannot pass by round-tripping through this crate's own encoder.",
+        "header 778682 = 0x000BE1BA, version 1, number 0, count 1, kind, length, payload."
+      ],
+      "name": "an empty JSON object",
+      "kind": "json",
+      "payload_utf8": "{}",
+      "hex": "000be1ba000000010000000000000001000000000000000000000002 7b7d"
+    },
+    {
+      "name": "four bytes of a zip",
+      "kind": "file",
+      "payload_hex": "504b0304",
+      "hex": "000be1ba000000010000000000000001000000010000000000000004 504b0304"
+    }
+  ]
+}

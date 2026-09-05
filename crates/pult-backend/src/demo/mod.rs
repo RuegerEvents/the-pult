@@ -237,6 +237,10 @@ impl Seeder {
                 haze_turbulence: prefs.haze_turbulence,
                 fade_curves: prefs.fade_curves,
                 production: Default::default(),
+                mvr_xchange: pult_schema::types::XchangeSettings {
+                    group: prefs.mvr_xchange_group.clone(),
+                    ..Default::default()
+                },
             })?,
             Lifecycle::Persisted,
         )

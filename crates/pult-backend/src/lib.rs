@@ -70,6 +70,10 @@ pub struct Running {
     /// Where a view is pushed at the browsers, and where one from a peer arrives.
     pub updates: crate::engine::UpdateBroadcast,
     pub serve: JoinHandle<Result<()>>,
+    /// MVR-xchange on this station, for a caller that wants to commit or apply
+    /// without a browser to click in — which is what the tests want, the same way
+    /// `sync` is here so a test can join a peer without going through discovery.
+    pub xchange: crate::infra::interop::xchange::XchangeHandle,
     /// Which show this station has open, if it has one.
     pub bundle: Option<Bundle>,
     /// The show acts, for a caller that wants to take one without a browser to take
@@ -672,16 +676,51 @@ pub async fn start(config: Config) -> Result<Running> {
     // socket and no other station has ever heard of it.
     tasks.push(tokio::spawn(crate::infra::clients::sweep(clients.clone(), REPORT_INTERVAL * 5)));
 
+    // The route a hosted MVR-xchange group is served on exists for the life of the
+    // process and *answers* only while a manager has claimed it. Built here so both
+    // the router and the manager can hold it: a route that came and went with the
+    // exchange would mean rebuilding the router when a show is opened, which is not a
+    // thing this server does.
+    let xchange_registry = crate::infra::interop::xchange::HostRegistry::default();
+
     let (session_mgr, session_handle) = SessionManager::new(
         node_id,
         config.sync_port,
         engine_handle.clone(),
         sync_handle.clone(),
     );
+    // MVR-xchange. Built here and not later because the sync manager has to be handed
+    // its handle *before* it runs — a peer can arrive with a relayed ask on it at once.
+    //
+    // Only one station of a session is ever on the exchange's wire, and this manager
+    // works out for itself whether it is that one: it reads the show and the session
+    // and reconsiders whenever either moves, so nothing here has to know about
+    // leadership, and a failover needs no signal of its own.
+    let xchange_prefs = crate::infra::preferences::load();
+    let (xchange_mgr, xchange_handle) = crate::infra::interop::xchange::XchangeManager::new(
+        // Which *machine* is holding the exchange, for a follower's panel to name. Not
+        // what the group is told — that is the show's name, because the thing on the
+        // wire is the show and not the box under the desk.
+        sysinfo::System::host_name().unwrap_or_else(|| "console".to_string()),
+        operator_handle.clone(),
+        assets.clone(),
+        xchange_registry.clone(),
+        crate::infra::preferences::xchange_cache_dir(),
+        crate::infra::interop::xchange::XchangeLimits {
+            allowed: xchange_prefs.mvr_xchange,
+            keep: xchange_prefs.mvr_xchange_keep as usize,
+            max_file_bytes: xchange_prefs.mvr_xchange_max_file_mb.saturating_mul(1024 * 1024),
+        },
+    );
+    let mut xchange_mgr = xchange_mgr;
+    xchange_mgr.set_sync(sync_handle.clone());
+    sync_mgr.exchanging(xchange_handle.clone());
+
     // If the leader disappears and this node wins the election, the session layer
     // has to start advertising so newcomers find the show here.
     sync_mgr.on_promotion(session_mgr.promotion_sender());
     tasks.push(tokio::spawn(sync_mgr.run()));
+    tasks.push(tokio::spawn(xchange_mgr.run()));
     let session_task = tokio::spawn(session_mgr.run());
 
     // Plugins come up last of the managers: they see a station that already
@@ -710,6 +749,10 @@ pub async fn start(config: Config) -> Result<Running> {
             // A plugin has no socket either, so there is nothing to count for one.
             ws_registry: None,
             shows: shows.clone(),
+            // A plugin can drive the exchange like anything else that can call an
+            // RPC — and, having no browser, writes as the default user, which is
+            // what the missing `caller` above already says about it.
+            xchange: Some(xchange_handle.clone()),
         },
         config.plugin_dirs.clone(),
         // Where a carried bundle's bytes live.
@@ -743,6 +786,8 @@ pub async fn start(config: Config) -> Result<Running> {
         shows: shows.clone(),
         stopping: stopping_rx,
         http_port: http_addr.port(),
+        xchange: xchange_handle.clone(),
+        xchange_hosting: xchange_registry.clone(),
     };
 
     // The log to the browsers: gathered for a moment, then pushed as one `Update`.
@@ -786,6 +831,10 @@ pub async fn start(config: Config) -> Result<Running> {
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        // A hosted MVR-xchange group, on the port that already serves the page — so
+        // the address to hand somebody is the one they use to reach this console.
+        // Refuses unless the exchange is actually hosting; see `xchange::ws`.
+        .route("/mvrxchange", get(crate::api::rest::mvrxchange))
         .merge(crate::api::rest::routes())
         .merge(crate::api::rest::config_routes())
         .merge(crate::infra::plugins::asset_routes())
@@ -816,6 +865,7 @@ pub async fn start(config: Config) -> Result<Running> {
         viewers,
         updates: broadcast,
         serve,
+        xchange: xchange_handle,
         bundle,
         shows,
         stopping,

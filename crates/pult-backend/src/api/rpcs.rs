@@ -111,6 +111,25 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"fixtureId","type":"string","optional":false},{"name":"parameterKind","type":"object","optional":true}]"#,
         doc: "What a fixture's parameters are putting out right now; one when named, all of them when not.",
     },
+    // MVR-xchange. RPCs rather than entity commands for the reason `show.open` is one:
+    // which group a console is in and what it hands another program are nobody's to
+    // undo, and there is no row to attach them to. What an *applied* commit writes is
+    // undoable, and is the ordinary import doing it — attributed to whoever asked.
+    LocalRpcMeta {
+        method: "xchange.commit",
+        args_schema: r#"[{"name":"comment","type":"string","optional":false}]"#,
+        doc: "Write the rig as an MVR, keep it, and tell the exchange group about it.",
+    },
+    LocalRpcMeta {
+        method: "xchange.apply",
+        args_schema: r#"[{"name":"fileUuid","type":"string","optional":false},{"name":"confirm","type":"boolean","optional":true}]"#,
+        doc: "Fetch a commit and import it. Answers what is running instead, unless confirmed.",
+    },
+    LocalRpcMeta {
+        method: "xchange.followHost",
+        args_schema: r#"[{"name":"follow","type":"boolean","optional":false}]"#,
+        doc: "Answer a station that asked this exchange group to move to another host.",
+    },
     // The console's own log. Reads and diagnostics, so RPCs rather than commands
     // for the reason `parameter.value` is one: none of this is anybody's to undo,
     // and a log that wrote history every time somebody looked at it would be a
@@ -225,6 +244,10 @@ pub struct LocalRpcDeps {
     /// `log.report`, the two calls whose whole meaning is "while *this* client is
     /// here", say so rather than pretending. Every other call ignores it.
     pub caller: Option<uuid::Uuid>,
+    /// MVR-xchange, where this station is running one. `None` in a test that built
+    /// its own dependencies, which is what makes the three calls say so rather than
+    /// panic.
+    pub xchange: Option<crate::infra::interop::xchange::XchangeHandle>,
     /// For the calls that answer a question about the show. Reads only — anything
     /// here that wanted to write would be an entity command instead.
     pub engine: EngineHandle,
@@ -270,6 +293,38 @@ fn level_arg(args: &Value, name: &str) -> Result<Option<pult_schema::ws::LogLeve
 async fn raise_peer(deps: &LocalRpcDeps, node_id: uuid::Uuid, level: Option<pult_schema::ws::LogLevel>) {
     if let Some(sync) = &deps.sync {
         sync.raise_peer_log(pult_schema::events::operation::NodeId(node_id), level).await;
+    }
+}
+
+/// Which sequences are live, by name.
+///
+/// Read for one reason: applying somebody else's commit repatches addresses, and a
+/// designer's mid-afternoon file landing during a cue is the failure this feature would
+/// otherwise be remembered for. The console cannot put a dialog in the room, so it
+/// hands the list back and the person who can see the stage decides.
+async fn running_sequences(engine: &EngineHandle) -> Vec<String> {
+    let Ok(value) = engine.get(vec![PathSegment::Key("sequences".into())]).await else {
+        return Vec::new();
+    };
+    let sequences: Vec<pult_schema::types::Sequence> =
+        serde_json::from_value(value).unwrap_or_default();
+    sequences
+        .into_iter()
+        .filter(|sequence| sequence.active_cue_index.is_some())
+        .map(|sequence| sequence.name)
+        .collect()
+}
+
+/// Who is asking, for the writes an RPC can cause.
+///
+/// Only `xchange.apply` needs one, and it needs it badly: an applied commit is an
+/// ordinary import and belongs to the operator who clicked, from whichever station
+/// they clicked at. A browser that has not identified itself writes as the default
+/// user, which is what every other path already does.
+fn asking_user(deps: &LocalRpcDeps) -> uuid::Uuid {
+    match (&deps.ws_registry, deps.caller) {
+        (Some(registry), Some(session)) => registry.user_for_writes(session),
+        _ => pult_schema::types::user::User::DEFAULT_ID,
     }
 }
 
@@ -482,6 +537,45 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                     .map_err(|e| format!("invalid cues: {e}"))?;
             paperwork_cue_values(&deps.engine, shots).await
         }
+        "xchange.commit" => {
+            let comment =
+                args["comment"].as_str().ok_or_else(|| "missing comment".to_string())?.to_string();
+            let xchange = deps.xchange.as_ref().ok_or("no exchange on this station")?;
+            xchange
+                .ask(pult_schema::types::XchangeAsk::Commit {
+                    comment,
+                    user_id: asking_user(deps),
+                })
+                .await
+        }
+        "xchange.apply" => {
+            let file_uuid: uuid::Uuid = serde_json::from_value(args["fileUuid"].clone())
+                .map_err(|e| format!("invalid fileUuid: {e}"))?;
+            let xchange = deps.xchange.as_ref().ok_or("no exchange on this station")?;
+
+            // Warned, not refused. Whether the house is in is not a thing the console
+            // can know, and a rule that refused while anything was live would be a
+            // rule that refused all afternoon — a sequence is nearly always parked
+            // live during exactly the iteration this feature is for.
+            if !args["confirm"].as_bool().unwrap_or(false) {
+                let running = running_sequences(&deps.engine).await;
+                if !running.is_empty() {
+                    return Ok(serde_json::json!({ "needsConfirm": true, "running": running }));
+                }
+            }
+
+            xchange
+                .ask(pult_schema::types::XchangeAsk::Apply {
+                    file_uuid,
+                    user_id: asking_user(deps),
+                })
+                .await
+        }
+        "xchange.followHost" => {
+            let follow = args["follow"].as_bool().ok_or_else(|| "missing follow".to_string())?;
+            let xchange = deps.xchange.as_ref().ok_or("no exchange on this station")?;
+            xchange.ask(pult_schema::types::XchangeAsk::FollowHost { follow }).await
+        }
         "selection.resolve" => {
             let group_id: uuid::Uuid = serde_json::from_value(args["groupId"].clone())
                 .map_err(|e| format!("invalid groupId: {e}"))?;
@@ -525,6 +619,7 @@ pub fn is_local_rpc(method: &str) -> bool {
         || method.starts_with("log.")
         || method.starts_with("output.")
         || method.starts_with("client.")
+        || method.starts_with("xchange.")
 }
 
 /// The four acts that change which show this console has open.
@@ -1022,6 +1117,7 @@ mod tests {
             viewers: Default::default(),
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
+            xchange: None,
         };
         for meta in LOCAL_RPCS {
             assert!(is_local_rpc(meta.method), "{} is not routed here", meta.method);
@@ -1120,6 +1216,7 @@ mod tests {
             viewers: Default::default(),
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
+            xchange: None,
         };
         let ask = || {
             dispatch("parameter.value", serde_json::json!({ "fixtureId": fixture_id }), &deps)
