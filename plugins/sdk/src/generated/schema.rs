@@ -85,6 +85,82 @@ pub struct Cue {
     pub is_active: bool,
 }
 
+/// A cue, and how long it has been running when the picture is taken.
+///
+/// The time is the whole reason this is not a bare id. **A cue sampled the instant it
+/// is taken is a photograph of the state before it** — a five-second fade up from black
+/// is black at zero, and a movement effect is at the start of its swing with every head
+/// pointing the same way. Both are the least interesting frame of the cue and both are
+/// what you get without this.
+///
+/// So a viewport says *four seconds in*, and the fade has landed and the effect has run
+/// a quarter of a cycle. Different per cue, because a look is often a state that has
+/// settled with a movement still running over it, and the two want different moments.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CueShot {
+    pub cue: Uuid,
+    /// Milliseconds since the cue was taken.
+    ///
+    /// Defaulted to [`SETTLED_MS`] rather than to zero, because zero is the one value
+    /// that is reliably wrong.
+    #[serde(default)]
+    pub at_ms: u32,
+}
+
+/// Which end of a bar a rigger measures from.
+///
+/// Every crew has a convention and none of them is the right one: some hang from stage
+/// left because that is where the truss numbering starts, some from the centre line
+/// because that is what the drawing is symmetrical about, and some from whichever end
+/// the tape happens to be tied to. A drawing that dimensioned from the wrong end is a
+/// drawing somebody measures wrong from, so this is asked rather than assumed.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum Datum {
+    /// The bar's own left end, seen the way the viewport draws it.
+    #[default]
+    Left,
+    Right,
+    /// The middle of the bar, which on a symmetrical rig is the centre line.
+    Centre,
+}
+
+/// Dimensions along the bars, for the crew hanging the rig.
+///
+/// A plan says where a light is; it does not say how far along the truss to slide it,
+/// and that is the only question anybody up a ladder is actually asking. So a drafting
+/// viewport can carry a **chain of running dimensions per bar**: the distance from the
+/// chosen datum to each head, and the gap between one head and the next.
+///
+/// Only on a drafting viewport, and not because of an implementation limit: a rendered
+/// picture has no stated scale, so a measurement drawn on one would be a number with no
+/// units anybody could check.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Dimensions {
+    pub datum: Datum,
+    /// Whether to print the running distance from the datum as well as the gaps.
+    ///
+    /// Both by default. A chain of gaps alone accumulates a crew's rounding errors
+    /// along the bar; a set of distances alone makes somebody subtract to find a
+    /// spacing. Drawings carry both for exactly that reason.
+    #[serde(default)]
+    pub running: bool,
+    /// Which side of the bar the chain is drawn on.
+    ///
+    /// Below by default, because labels go above a head — putting both on one side is
+    /// how a plan becomes unreadable, and the de-collision only knows about labels.
+    #[serde(default)]
+    pub above: bool,
+}
+
 /// One DMX break's place in the world: which universe, and where in it.
 ///
 /// A break rather than "the address", because a fixture can have more than one and
@@ -435,6 +511,24 @@ pub struct FixtureType {
     /// Where this type came from, and so whether the console may rewrite it.
     #[serde(default)]
     pub source: FixtureTypeSource,
+    /// What one of these is drawn as on a plan.
+    ///
+    /// [`PlanSymbol::Auto`] walks geometry, then thumbnail, then generic, and is
+    /// almost always right. It is a field rather than a rule because a GDTF may carry
+    /// a usable version of either, both or neither: a file whose geometry is one
+    /// undifferentiated block draws a better head from its thumbnail, and a file whose
+    /// thumbnail is the manufacturer's logo draws a better one from its geometry.
+    /// Nobody can tell which from the outside, so an operator who does not like what a
+    /// file gave them overrules that one type once and every sheet follows.
+    #[serde(default)]
+    pub plan_symbol: PlanSymbol,
+    /// The `Thumbnail` resource the GDTF carried, in the asset store.
+    ///
+    /// The file's own top view, which is what other consoles draw. Extracted on
+    /// import; `None` for a type from anywhere else and for a file that named no
+    /// thumbnail.
+    #[serde(default)]
+    pub thumbnail: Option<String>,
 }
 
 /// Where a fixture type came from, which decides whether the console may rewrite it.
@@ -649,6 +743,70 @@ pub struct Group {
     pub query: SelectionQuery,
 }
 
+/// What a table's rows are grouped and subtotalled by.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum Grouping {
+    /// By what it hangs off: the nearest [`SceneObjectKind::Group`] up the parent
+    /// chain, falling back to the parent object itself.
+    ///
+    /// The default, and the one a loading table means — a `Group` is the handle that
+    /// moves a truss and its lights together, which makes it the closest thing the
+    /// drawing has to a rigging point.
+    #[default]
+    Structure,
+    Layer,
+    Class,
+    FixtureType,
+    /// One list, no subtotals.
+    Flat,
+}
+
+/// What colours a drafting viewport.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum Ink {
+    /// Black on white, with line weight carrying what colour would have.
+    #[default]
+    Mono,
+    ByLayer,
+    ByClass,
+}
+
+/// One line of a fixture's label on a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LabelField {
+    Name,
+    /// `Fixture::fixture_number` — MVR's FixtureID, the number on the label.
+    Number,
+    /// `Fixture::unit_number` — which of several identical units this is.
+    Unit,
+    /// `universe/address` for every break the fixture has, or the node and port for
+    /// one on an OpenHaunt node, which has no universe to print.
+    Address,
+    TypeName,
+    /// The four-or-so characters a patch sheet has room for.
+    TypeShortName,
+    /// Which DMX mode the unit is set to.
+    Mode,
+}
+
 /// A drawing's layer: a name to show, hide and lock a part of the rig by.
 ///
 /// Whether *this browser* is showing it is a Svelte store, not a field — two people
@@ -699,6 +857,32 @@ pub enum LayoutNode {
         /// Which of them is showing.
         active: usize,
     },
+}
+
+/// How a drafting viewport draws a solid.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum LineMode {
+    /// Each object's projected outline filled and painted far to near, so a nearer
+    /// piece covers a further one.
+    ///
+    /// The look of hidden-line removal for a fraction of the work, and exact for the
+    /// convex pieces a rig is mostly made of. Where two objects interpenetrate it is
+    /// wrong, and says so rather than pretending: the painter's algorithm has no
+    /// answer for a truss run through a wall.
+    #[default]
+    Hidden,
+    /// Every edge, nothing hidden. What a fixtures plan wants, where seeing the truss
+    /// through the light is the point.
+    Wireframe,
 }
 
 /// What the whole machine is doing, whoever is doing it.
@@ -817,6 +1001,29 @@ pub enum OutputKind {
     Sacn,
     /// Adopted OpenHaunt nodes: their ports, and sACN to any DMX gateway among them.
     OpenHaunt,
+}
+
+/// A paper size, in the only series this console offers.
+///
+/// A-series only: a production office prints A3 and a rigger reads A3. Adding Letter
+/// would be two more variants and a second set of margins for the one case where
+/// somebody's printer disagrees with the drawing's own aspect.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum Paper {
+    A4,
+    #[default]
+    A3,
+    A2,
+    A1,
 }
 
 /// Where a parameter sits on the thing that carries it.
@@ -991,6 +1198,56 @@ pub enum PhysicalUnit {
     Watts,
 }
 
+/// What a picture viewport renders with: the rig panel's four modes.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum PictureMode {
+    Wireframe,
+    /// Where a light is pointing, under a flat alpha-blended shader. The honest one
+    /// for showing coverage on paper.
+    Cones,
+    #[default]
+    Real,
+    Photoreal,
+}
+
+/// What a fixture of this type is drawn as, seen from above.
+///
+/// See [`FixtureType::plan_symbol`] for why this is a choice and not a rule.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum PlanSymbol {
+    /// Geometry, then thumbnail, then generic: the first that exists.
+    ///
+    /// Geometry leads because a projected outline is *to scale* — it is the fixture's
+    /// own body, and a plan drawn from it can be measured for clearance. A thumbnail
+    /// is whatever the manufacturer drew at whatever size they drew it.
+    #[default]
+    Auto,
+    /// The outline of the type's own geometry tree, projected.
+    Geometry,
+    /// The `Thumbnail` resource out of the GDTF.
+    Thumbnail,
+    /// A shape by what the fixture is, sized from `physical.dimensions_m`.
+    Generic,
+}
+
 /// One thing a plugin remembers, in a store that travels with the show.
 ///
 /// An ordinary entity on purpose. Being one buys SQLite persistence, replication
@@ -1077,6 +1334,38 @@ pub enum PluginStage {
     Both,
 }
 
+/// What a title block says, beside the drawing's own name and scale.
+///
+/// Every field may be empty, and an empty one is *omitted* rather than printed as a
+/// blank row — a title block with an empty Venue line reads as a mistake, and one
+/// without the line reads as a show that has not been given a venue yet.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Production {
+    /// The production, where that is not the showfile's own name. "The Greatest
+    /// Showman — Corn Exchange 2026" against a file called `Showman`.
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub venue: String,
+    /// The venue's address, printed under it.
+    #[serde(default)]
+    pub address: String,
+    /// When it runs, as text rather than as dates: "02.05.2025 - 05.05.2025", "three
+    /// weeks from the 4th", "TBC". A title block is read by a person and a date range
+    /// with a hole in it is a normal thing for one to say.
+    #[serde(default)]
+    pub dates: String,
+    /// Who drew it — a person, a company, or both on two lines.
+    #[serde(default)]
+    pub designer: String,
+    /// How to reach them: a website, an email, a phone number.
+    #[serde(default)]
+    pub contact: String,
+    /// Which issue of the drawing this is. "Entwurf - 14.04.25", "Rev C".
+    #[serde(default)]
+    pub revision: String,
+}
+
 /// One parameter of one fixture, held by the programmer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProgrammerValue {
@@ -1101,6 +1390,27 @@ pub struct ProgrammerValue {
     pub locked: bool,
 }
 
+/// Orthographic or perspective.
+///
+/// The distinction is not cosmetic: **only an orthographic viewport has a scale**. A
+/// perspective one prints NTS, because a shaded axonometric captioned 1:50 is a lie
+/// somebody measures off.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum Projection {
+    #[default]
+    Orthographic,
+    Perspective,
+}
+
 /// How fast, either said outright or borrowed from a speed master.
 ///
 /// Stays here rather than moving to the evaluator: resolving a master into a rate
@@ -1112,6 +1422,19 @@ pub enum Rate {
     /// The master supplies the tempo and the anchor; `multiplier` is this effect's own
     /// ratio on top of the master's.
     Master { id: Uuid, multiplier: f32 },
+}
+
+/// A rectangle on the sheet, in millimetres from its top-left corner.
+///
+/// Millimetres rather than fractions of the page, because a viewport at 1:50 is a
+/// window of a known size onto the rig and a fraction would change what it framed when
+/// somebody moved the sheet from A3 to A2.
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
 }
 
 /// A tag that cuts across layers: "house rig", "touring", "practicals".
@@ -1175,6 +1498,16 @@ pub struct SceneObject {
     /// still pickable and still says what it is — what it has is no gizmo.
     #[serde(default)]
     pub locked: bool,
+    /// What this one weighs, in kilograms, where somebody has said.
+    ///
+    /// Overrides the nominal figure a catalogue piece carries, and is the only weight
+    /// there is for an object out of a drawing — MVR says where a truss is and never
+    /// what it weighs. A loading table distinguishes the two: a total resting on
+    /// entered weights is a different claim from one resting on
+    /// [`crate::types::catalogue::StockPiece::weight_kg`], and printing them as the
+    /// same number is how a nominal figure becomes a rigging decision.
+    #[serde(default)]
+    pub weight_kg: Option<f32>,
 }
 
 /// What an object in the rig is. MVR's own list, which is also the list an operator
@@ -1313,6 +1646,48 @@ pub struct Sequence {
     pub went_at: Option<u64>,
 }
 
+/// One sheet of the paperwork.
+///
+/// Seeded into a new show rather than being a built-in preset the way a
+/// [`super::layout::Layout`] is. The consequence, recorded because it will be asked
+/// about: a showfile made before this feature existed opens with no sheets and stays
+/// that way, and a show made today never picks up a later version's better defaults.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Sheet {
+    pub id: Uuid,
+    /// The drawing's own name, printed in the title block: "Fixtures", "Sections".
+    pub name: String,
+    /// Where it comes in the set. The export writes them in this order.
+    ///
+    /// Not `index`, which is a SQL keyword the generated `CREATE TABLE` does not quote
+    /// — a column called that fails to open the show. The same trap
+    /// [`super::scene::Layer::sort_order`] carries a note about, found the same way.
+    pub sort_order: i32,
+    pub paper: Paper,
+    pub landscape: bool,
+    /// The A/B–1/2/3 border round the drawing, so two people on a phone can name the
+    /// same part of it.
+    #[serde(default)]
+    pub frame: bool,
+    #[serde(default)]
+    pub title_block: bool,
+    #[serde(default)]
+    pub blocks: Vec<SheetBlock>,
+}
+
+/// One thing on a sheet.
+///
+/// Tagged by `type` for the reason [`super::layout::LayoutNode`] is: the frontend
+/// discriminates on a field, and every operation over a sheet is written against that
+/// tag.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum SheetBlock {
+    Viewport(ViewportBlock),
+    Table(TableBlock),
+    Text(TextBlock),
+}
+
 /// Top-level show metadata.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Show {
@@ -1384,6 +1759,15 @@ pub struct Show {
     /// audience can watch. A station's own preference decides what a *new* show
     /// starts with.
     pub fade_curves: FadeCurves,
+    /// Who this show is for and who drew it: the text in a sheet's title block.
+    ///
+    /// Show data, all of it, including the designer's own block — which is the same on
+    /// every show one company does and would sit as happily in `preferences.toml`. It
+    /// is here because a showfile travels: paperwork exported from a file you sent
+    /// somebody should still carry your name, and a station preference would have
+    /// their name on your drawing.
+    #[serde(default)]
+    pub production: Production,
 }
 
 /// One named position on a wheel: a gobo, a colour, a prism facet.
@@ -1566,6 +1950,61 @@ pub struct Symbol {
     pub geometry: Vec<GeometryRef>,
 }
 
+/// A table on a sheet.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TableBlock {
+    pub rect: Rect,
+    #[serde(default)]
+    pub title: String,
+    pub kind: TableKind,
+    #[serde(default)]
+    pub grouping: Grouping,
+    /// Which fixtures are in it. `None` follows the sheet's own layers; a query is
+    /// asked of the rig and stays true after somebody patches a fifth mover.
+    #[serde(default)]
+    pub rows: Option<SelectionQuery>,
+    /// Layers to keep, when `rows` is `None`. `None` again is all of them.
+    #[serde(default)]
+    pub layers: Option<Vec<Uuid>>,
+}
+
+/// What a table is a table of.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum TableKind {
+    /// The instrument schedule: one row per fixture, with its type, address and place.
+    #[default]
+    Patch,
+    /// What hangs where, and what it weighs. **Includes the structure's own weight**,
+    /// because the number a rigger wants is what is on the point, not what is on the
+    /// truss.
+    Loading,
+    /// What it draws.
+    Power,
+    /// One row per fixture type, with how many there are. The rider's table.
+    Counts,
+}
+
+/// Free text on a sheet: a note, a legend, a warning.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TextBlock {
+    pub rect: Rect,
+    pub text: String,
+    /// Cap height in millimetres. 2.5 mm is a drawing's small text, 5 mm a heading.
+    #[serde(default)]
+    pub size_mm: f32,
+    #[serde(default)]
+    pub bold: bool,
+}
+
 /// Where something is, what it is turned to, and how big it is.
 ///
 /// Metres, and XYZ Euler degrees — three.js's default order, and so the console's,
@@ -1669,4 +2108,122 @@ pub struct Version {
     /// timestamp across machines with unsynchronised clocks cannot.
     #[serde(default)]
     pub clock: VectorClock,
+}
+
+/// Where a viewport looks from.
+///
+/// The same five places `frontend/src/lib/camera.ts` offers, named here so a sheet can
+/// hold one. What each of them *is* stays in the browser: the box it fits is over the
+/// rig, which is geometry.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum ViewPreset {
+    #[default]
+    Front,
+    Plan,
+    /// From stage left, so the stage is on the left of the frame the way a section is
+    /// drawn.
+    Section,
+    ThreeQuarter,
+    /// Framed on what is selected rather than on the rig. Of limited use on a sheet,
+    /// which has no selection — it frames whatever the viewport's layers hold.
+    Focus,
+}
+
+/// What a viewport claims about its size.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum ViewScale {
+    /// Fill the frame, then **snap down to a standard ratio** so the drawing can be
+    /// measured with a rule somebody owns. The fitted ratio is almost never a round
+    /// number — the sheet this feature was designed against prints 1:35 — and a
+    /// drawing at 1:35 is a drawing nobody can check.
+    Fit,
+    /// One of [`STANDARD_SCALES`], or any other denominator a person typed.
+    Ratio { denominator: u32 },
+}
+
+/// Vector or raster, and the settings each needs.
+///
+/// **A viewport carries its own and never reads `stores/view.ts`.** The rig panel's
+/// work light and render mode are one browser's, kept in `localStorage`; a sheet that
+/// inherited them would export differently from the tablet than from the desk, and a
+/// document that depends on which machine printed it is not a document. Haze is the
+/// exception and stays the show's, being a fact about the room rather than about the
+/// screen.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum ViewStyle {
+    /// Vector: lines and filled outlines, drawn into the sheet itself.
+    Drafting { lines: LineMode, ink: Ink },
+    /// Raster: the rig renderer, off an offscreen canvas, placed as an image.
+    Picture {
+        mode: PictureMode,
+        /// How much flat light is on the scene, 0 to 1, the way the rig panel's View
+        /// sheet says it.
+        work_light: f32,
+        /// Dots per inch to render at. Capped in the browser by what the GPU will
+        /// allocate, and the effective figure is reported rather than silently
+        /// reduced.
+        dpi: u32,
+        /// Which cues the rig is standing in, for the picture.
+        ///
+        /// A beauty shot of a rig with nothing on is a photograph of a dark room, so a
+        /// picture viewport says what the lights are doing rather than taking whatever
+        /// the console happens to be showing. Empty means *now* — what the show is
+        /// actually doing, which is what somebody documenting a state they have just
+        /// built wants.
+        ///
+        /// **Nothing is taken.** The values are worked out from the cue stack and
+        /// handed to the renderer for that one frame; the playback is not touched and
+        /// no fade starts. Rendering a sheet must not put the rig into the state it is
+        /// drawing — that would be a document changing the show it documents, and on a
+        /// console with the lamps on it would be visible in the room.
+        ///
+        /// Several, because a look is usually more than one sequence: a colour state
+        /// and a movement running over it. They are applied in order, so a later one
+        /// wins where two capture the same parameter.
+        #[serde(default)]
+        cues: Vec<CueShot>,
+    },
+}
+
+/// A window onto the rig, on a sheet.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ViewportBlock {
+    pub rect: Rect,
+    /// Printed under the frame. Empty for none.
+    #[serde(default)]
+    pub title: String,
+    pub view: ViewPreset,
+    #[serde(default)]
+    pub projection: Projection,
+    pub scale: ViewScale,
+    pub style: ViewStyle,
+    /// Which layers this viewport shows. `None` is every layer in the show —
+    /// deliberately *not* "every layer this browser has visible", because a sheet
+    /// whose content depended on what somebody had toggled would print differently
+    /// every time.
+    #[serde(default)]
+    pub layers: Option<Vec<Uuid>>,
+    /// The lines of a head's label, in order. Empty for an unlabelled drawing.
+    #[serde(default)]
+    pub labels: Vec<LabelField>,
+    #[serde(default)]
+    pub scale_bar: bool,
+    /// A mark saying which way is upstage. Meaningless on an elevation, and drawn only
+    /// on a plan.
+    #[serde(default)]
+    pub orientation_mark: bool,
+    /// Dimensions along each bar, where this viewport carries them. See [`Dimensions`].
+    #[serde(default)]
+    pub dimensions: Option<Dimensions>,
 }

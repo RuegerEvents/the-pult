@@ -146,6 +146,29 @@ pub fn a_type_with_beam(name: &str, parameters: Vec<ParameterDefinition>, degree
     kind
 }
 
+/// What one of these weighs, draws and measures.
+///
+/// **Every demo type has these**, and it is not decoration. The paperwork's loading and
+/// power tables are honest about what they cannot account for, so a demo whose types say
+/// nothing exports a sheet reading `≥ 400 kg nominal` with every fixture listed as
+/// unknown — the tables working correctly and the demo failing to show them working,
+/// which is what the first Theatre export did.
+///
+/// The figures are representative of the *class* of instrument rather than of any one
+/// product, the way [`pult_schema::types::catalogue`]'s truss weights are, because
+/// nothing in a demo is a real hire item. Dimensions are metres: along X, up Y, through Z.
+pub fn weighing(
+    mut kind: FixtureType,
+    kg: f32,
+    watts: f32,
+    (x, y, z): (f32, f32, f32),
+) -> FixtureType {
+    kind.physical.weight_kg = Some(kg);
+    kind.physical.power_w = Some(watts);
+    kind.physical.dimensions_m = Some(Vec3 { x, y, z });
+    kind
+}
+
 pub fn intensity() -> ParameterDefinition {
     ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
 }
@@ -302,6 +325,7 @@ async fn run_of_sections(
         catalogue: None,
         properties: serde_json::Value::Null,
         locked: false,
+        weight_kg: None,
     };
     into.create("scene_objects", &run).await?;
 
@@ -322,6 +346,7 @@ async fn run_of_sections(
                 catalogue: Some(section.id.to_string()),
                 properties: serde_json::Value::Null,
                 locked: false,
+                weight_kg: None,
             },
         )
         .await?;
@@ -352,6 +377,7 @@ pub async fn a_piece(
         catalogue: Some(piece.id.to_string()),
         properties: serde_json::Value::Null,
         locked: false,
+        weight_kg: None,
     };
     into.create("scene_objects", &object).await?;
     Ok(object.id)
@@ -563,6 +589,7 @@ mod tests {
             catalogue: None,
             properties: serde_json::Value::Null,
             locked: false,
+            weight_kg: None,
         };
         let objects = vec![boom.clone()];
         // A metre up the boom, clamped to the chord that faces centre stage.
@@ -615,4 +642,74 @@ mod tests {
         let FixtureAddress::Dmx { breaks, .. } = addresses.take(6) else { panic!("a DMX address") };
         assert_eq!((breaks[0].universe, breaks[0].address), (2, 1));
     }
+}
+
+// ── Paperwork ────────────────────────────────────────────────────────────────
+
+/// A title block, said shortly.
+///
+/// Seven strings in the order they read on paper. A demo names all of them because an
+/// empty title block is what a broken feature looks like — see
+/// [`super::Seeder::describe_the_production`].
+pub fn production(
+    title: &str,
+    venue: &str,
+    address: &str,
+    dates: &str,
+    designer: &str,
+    contact: &str,
+) -> pult_schema::types::show::Production {
+    pult_schema::types::show::Production {
+        title: title.into(),
+        venue: venue.into(),
+        address: address.into(),
+        dates: dates.into(),
+        designer: designer.into(),
+        contact: contact.into(),
+        // Left empty on purpose: a demo has not been issued to anybody, and inventing
+        // "Rev C" would put a revision on a drawing that has never been revised.
+        revision: String::new(),
+    }
+}
+
+/// Point every rendered viewport in the show at a state worth photographing.
+///
+/// The default sheets are seeded when the show is created, before a demo has built a
+/// single cue — so their picture viewports name no cues and would render whatever the
+/// console happens to be doing, which for a freshly-seeded demo is a dark room. This is
+/// how a demo says "and these are the cues that make it look like something".
+///
+/// Every `Picture` block on every sheet gets the same look, which is right for a demo:
+/// the shots differ by where they are taken from, not by what is on.
+pub async fn posed(into: &Seeder, shots: Vec<pult_schema::types::CueShot>) -> Result<()> {
+    use pult_schema::lifecycle::Lifecycle;
+    use pult_schema::path::PathSegment;
+    use pult_schema::types::{Sheet, SheetBlock, ViewStyle};
+
+    let sheets: Vec<Sheet> = into.rows("sheets").await?;
+    for mut sheet in sheets {
+        let mut touched = false;
+        for block in &mut sheet.blocks {
+            if let SheetBlock::Viewport(viewport) = block {
+                if let ViewStyle::Picture { cues, .. } = &mut viewport.style {
+                    *cues = shots.clone();
+                    touched = true;
+                }
+            }
+        }
+        if !touched {
+            continue;
+        }
+        into.set(
+            vec![
+                PathSegment::Key("sheets".into()),
+                PathSegment::Id(sheet.id),
+                PathSegment::Key("blocks".into()),
+            ],
+            serde_json::to_value(&sheet.blocks)?,
+            Lifecycle::Persisted,
+        )
+        .await?;
+    }
+    Ok(())
 }

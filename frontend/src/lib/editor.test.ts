@@ -26,7 +26,8 @@ function object(id: string, parent: string | null = null): SceneObject {
 		symbol: null,
 		catalogue: null,
 		properties: null,
-		locked: false
+		locked: false,
+		weight_kg: null
 	};
 }
 

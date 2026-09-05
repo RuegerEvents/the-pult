@@ -63,6 +63,19 @@ export const PRESETS: Preset[] = [
 		)
 	},
 	{
+		key: 'paperwork',
+		name: 'Paperwork',
+		// The sheets take the width, because what is being looked at is a piece of A3
+		// and everything else on the screen is there to say what is on it. Layers and
+		// objects beside it, since deciding what a sheet shows is deciding which parts
+		// of the drawing belong on paper.
+		tree: split(
+			'Row',
+			[tabs(['paperwork']), split('Column', [tabs(['layers']), tabs(['objects'])], [0.5, 0.5])],
+			[0.78, 0.22]
+		)
+	},
+	{
 		key: 'patch',
 		name: 'Patch',
 		tree: split('Row', [tabs(['patch']), tabs(['devices', 'outputs'])], [0.66, 0.34])

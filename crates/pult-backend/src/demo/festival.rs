@@ -29,6 +29,7 @@ use pult_schema::types::{
     mount::Mount,
     scene::{Layer, Transform},
     speedmaster::SpeedMaster,
+    CueShot,
 };
 use uuid::Uuid;
 
@@ -36,6 +37,7 @@ use super::{
     id,
     kit::{
         a_clamped_fixture, a_cue, a_fixture, a_piece, a_stack, a_type_with_beam, aimed, boom,
+        posed, production, weighing,
         capture, colour, facing, hue, intensity, level, on, pan, strobe_rate, tilt, truss_run,
         under, Addresses,
     },
@@ -60,12 +62,37 @@ pub async fn seed(into: &Seeder) -> Result<()> {
 
     // Five types, each with the beam angle the rig view draws it at: a wash is wide,
     // a beam is a pencil, and a blinder is a lamp with no lens at all.
-    let spot = a_type_with_beam("Spot 350", vec![intensity(), colour(), pan(), tilt()], 14.0);
-    let wash = a_type_with_beam("Wash 19×40W", vec![intensity(), colour(), pan(), tilt()], 28.0);
-    let beam = a_type_with_beam("Beam 7R", vec![intensity(), colour(), pan(), tilt()], 4.0);
-    let blinder = a_type_with_beam("Blinder 4-lite", vec![intensity()], 45.0);
+    let spot = weighing(
+        a_type_with_beam("Spot 350", vec![intensity(), colour(), pan(), tilt()], 14.0),
+        22.0,
+        450.0,
+        (0.35, 0.55, 0.30),
+    );
+    let wash = weighing(
+        a_type_with_beam("Wash 19×40W", vec![intensity(), colour(), pan(), tilt()], 28.0),
+        25.0,
+        800.0,
+        (0.40, 0.50, 0.34),
+    );
+    let beam = weighing(
+        a_type_with_beam("Beam 7R", vec![intensity(), colour(), pan(), tilt()], 4.0),
+        20.0,
+        380.0,
+        (0.30, 0.47, 0.25),
+    );
+    let blinder = weighing(
+        a_type_with_beam("Blinder 4-lite", vec![intensity()], 45.0),
+        9.0,
+        2600.0,
+        (0.55, 0.30, 0.25),
+    );
     let strobe =
-        a_type_with_beam("LED Strobe", vec![intensity(), colour(), strobe_rate()], 60.0);
+        weighing(
+            a_type_with_beam("LED Strobe", vec![intensity(), colour(), strobe_rate()], 60.0),
+            12.0,
+            1000.0,
+            (0.55, 0.30, 0.20),
+        );
     let types = [&spot, &wash, &beam, &blinder, &strobe];
     for kind in types {
         into.create("fixture_types", kind).await?;
@@ -617,6 +644,44 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         true,
     )
     .await?;
+
+    into.describe_the_production(production(
+        "Northgate Open Air",
+        "The Showground, Main Stage",
+        "Riverside Way, Northgate",
+        "17.07.2026 - 19.07.2026",
+        "Halliwell Lighting Design",
+        "studio@halliwell-ld.example",
+    ))
+    .await?;
+
+    // Four sequences at once, which is what a festival look is: a stage wash to see
+    // the band by, the spots ballyhooing over it, the towers chasing colour, and the
+    // floor beams fanned up over the crowd.
+    //
+    // Read back by name rather than kept in scope, because this demo builds its stacks
+    // inline and hoisting five cue lists out of them to reach four ids would make the
+    // stacks harder to read for the sake of the paperwork.
+    //
+    // The times differ per cue and each one is a decision. The wash is a plain fade and
+    // is simply past it. The ballyhoo is a movement effect at 6 s, far enough round that
+    // the heads are spread rather than stacked. The colour chase gets 9 s, because it
+    // runs at half the beat and would still be near its magenta at six. The floor fan
+    // gets 4 s — its beams are static once up, so more time buys nothing.
+    let cues: Vec<pult_schema::types::cue::Cue> = into.rows("cues").await?;
+    let shot = |name: &str, at_ms: u32| {
+        cues.iter().find(|cue| cue.name == name).map(|cue| CueShot::at(cue.id, at_ms))
+    };
+    let beauty: Vec<CueShot> = [
+        shot("Stage wash", 5_000),
+        shot("Ballyhoo", 6_000),
+        shot("Colour chase", 9_000),
+        shot("Fan up", 4_000),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    posed(into, beauty).await?;
 
     Ok(())
 }

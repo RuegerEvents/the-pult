@@ -2803,6 +2803,7 @@ impl ShowEngine {
         }
         self.seed_default_user().await;
         self.seed_the_show().await;
+        self.seed_the_sheets().await;
         // A showfile that has been round a long tech week arrives past both
         // retentions, and this is the largest cut it will ever take.
         self.prune_the_log();
@@ -2967,6 +2968,7 @@ impl ShowEngine {
             haze_density: prefs.haze_density,
             haze_turbulence: prefs.haze_turbulence,
             fade_curves: prefs.fade_curves,
+            production: Default::default(),
         };
         let Ok(value) = serde_json::to_value(&show) else { return };
         if let Err(e) = self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await {
@@ -2978,6 +2980,59 @@ impl ShowEngine {
         self.broadcast_after_set(&path, value.clone());
         if let Some(sync) = &self.sync {
             sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
+        }
+    }
+
+    /// The six default paperwork sheets, into a show that has none.
+    ///
+    /// Beside [`Self::seed_the_show`] and gated the same way — on the collection being
+    /// empty — which is what makes it *seed on new only*: a showfile that has been
+    /// opened before has sheets, and one whose sheets somebody deliberately deleted
+    /// stays deleted rather than growing them back on the next open.
+    ///
+    /// The consequence, recorded because it will be asked about: a showfile made before
+    /// this feature existed opens with no paperwork and there is no action that adds
+    /// it. That was a deliberate choice and not an oversight.
+    async fn seed_the_sheets(&mut self) {
+        let path: Path = vec![PathSegment::Key("sheets".into())];
+        let existing = self.state.get_by_path(&path);
+        let empty = match existing {
+            Some(serde_json::Value::Object(map)) => map.is_empty(),
+            Some(serde_json::Value::Array(rows)) => rows.is_empty(),
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => false,
+        };
+        if !empty {
+            return;
+        }
+        // The same rule the show row follows: a station with no bundle open is an
+        // in-memory show nothing will read again, and seeding paperwork into it would
+        // be six rows nobody asked for.
+        if self.seed_name.is_none() {
+            return;
+        }
+
+        for sheet in pult_schema::types::paperwork::default_sheets() {
+            // `__create` rather than a write to the row's own id: a set to a path that
+            // does not exist yet is not a create, and the difference is a warning at
+            // open and a show with no paperwork in it.
+            let path: Path =
+                vec![PathSegment::Key("sheets".into()), PathSegment::Key("__create".into())];
+            let Ok(value) = serde_json::to_value(&sheet) else { continue };
+            if let Err(e) =
+                self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await
+            {
+                warn!("[engine] could not seed the paperwork sheets: {e}");
+                return;
+            }
+            self.record_write(&path, Lifecycle::Persisted);
+            self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none())
+                .await;
+            self.broadcast_after_set(&path, value.clone());
+            if let Some(sync) = &self.sync {
+                sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none())
+                    .await;
+            }
         }
     }
 

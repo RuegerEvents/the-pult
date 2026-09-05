@@ -33,7 +33,8 @@ function object(id: string, catalogue: string | null, transform: Transform): Sce
 		symbol: null,
 		catalogue,
 		properties: null,
-		locked: false
+		locked: false,
+		weight_kg: null
 	};
 }
 

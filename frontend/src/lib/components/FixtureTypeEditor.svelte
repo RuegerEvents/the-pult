@@ -151,7 +151,11 @@
 				beam_angle_deg: null
 			},
 			geometry: [],
-			source: 'Manual'
+			source: 'Manual',
+			// Nothing to draw a plan head from yet — no geometry, no thumbnail — so
+			// `Auto` will land on the generic symbol until somebody gives it either.
+			plan_symbol: 'Auto',
+			thumbnail: null
 		});
 		newName = '';
 		creating = false;

@@ -447,8 +447,11 @@ impl<'a> Planner<'a> {
             properties: stock
                 .map(|(_, properties)| properties)
                 .unwrap_or(serde_json::Value::Null),
-            // A drawing has nothing to say about this; an operator locks a piece here.
+            // A drawing has nothing to say about either of these. MVR has nowhere to
+            // put a weight, so a loading table over an imported rig rests on the
+            // catalogue where a piece was recognised and says so.
             locked: false,
+            weight_kg: None,
         };
         if let Some(piece) = &row.catalogue {
             self.catalogue_of.insert(id, piece.clone());

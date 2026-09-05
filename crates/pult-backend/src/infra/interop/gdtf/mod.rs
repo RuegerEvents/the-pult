@@ -26,6 +26,7 @@ use pult_schema::types::dmx_mode::{ChannelFunctionRange, DmxChannelLayout, DmxMo
 use pult_schema::types::fixture::{
     parameter_key, Connector, Emitter, FixtureGeometry, FixturePhysical, FixtureType,
     FixtureTypeSource, GeometryKind, ParameterDefinition, ParameterKind, ParameterValue,
+    PlanSymbol,
     PhysicalRange, PhysicalUnit, Slot, Vec3,
 };
 use uuid::Uuid;
@@ -50,6 +51,20 @@ pub fn placeholder_id(gdtf_spec: &str) -> Uuid {
 /// `asset` is the sha256 the archive was stored under, which is what makes the row a
 /// pointer at the file rather than a replacement for it.
 pub fn derive_fixture_type(file: &GdtfFile, asset: &str) -> (FixtureType, Vec<Warning>) {
+    let (fixture_type, warnings, _) = derive_fixture_type_with_thumbnail(file, asset);
+    (fixture_type, warnings)
+}
+
+/// The same, and the thumbnail resource the file carried.
+///
+/// Split out rather than folded in because [`derive_fixture_type`] is pure over the
+/// row and this hands back bytes somebody has to store. The caller puts them in the
+/// asset store and fills in `thumbnail` with the sha, which is why the row this
+/// returns has `thumbnail: None`.
+pub fn derive_fixture_type_with_thumbnail(
+    file: &GdtfFile,
+    asset: &str,
+) -> (FixtureType, Vec<Warning>, Option<(String, Vec<u8>)>) {
     let gdtf = &file.description.fixture_type;
     let mut warnings = pult_gdtf::validate::check(gdtf);
 
@@ -95,8 +110,38 @@ pub fn derive_fixture_type(file: &GdtfFile, asset: &str) -> (FixtureType, Vec<Wa
             revision,
             share_rid: None,
         },
+        // Filled in by the caller, which is the half of this that can store bytes.
+        plan_symbol: PlanSymbol::Auto,
+        thumbnail: None,
     };
-    (fixture_type, warnings)
+    (fixture_type, warnings, thumbnail(file))
+}
+
+/// The `Thumbnail` resource, as `(mime, bytes)`.
+///
+/// GDTF names a thumbnail without an extension and the archive may carry a `.svg`, a
+/// `.png`, or both. The SVG is preferred: a plan head is drawn at whatever scale the
+/// sheet is at, and a 128-pixel PNG blown up to 20 mm of A3 is a smear. Neither is a
+/// failure — a type with no thumbnail draws from its geometry, which is what
+/// [`pult_schema::types::fixture::PlanSymbol::Auto`] tries first anyway.
+fn thumbnail(file: &GdtfFile) -> Option<(String, Vec<u8>)> {
+    let named = file.description.fixture_type.thumbnail.as_deref()?.trim();
+    if named.is_empty() {
+        return None;
+    }
+    for (extension, mime) in [("svg", "image/svg+xml"), ("png", "image/png")] {
+        let wanted = format!("{named}.{extension}");
+        // Case-insensitively: a file written on Windows and read on Linux is the one
+        // case where a resource name and its entry differ by nothing else.
+        if let Some((_, bytes)) = file
+            .resources
+            .iter()
+            .find(|(path, _)| path.eq_ignore_ascii_case(&wanted))
+        {
+            return Some((mime.to_string(), bytes.clone()));
+        }
+    }
+    None
 }
 
 // ── Parameters ───────────────────────────────────────────────────────
@@ -443,13 +488,20 @@ pub fn plan_import(
 ) -> Result<(super::apply::ImportPlan, Uuid), pult_gdtf::Error> {
     let file = GdtfFile::parse(bytes)?;
     let asset = crate::infra::assets::digest(bytes);
-    let (fixture_type, warnings) = derive_fixture_type(&file, &asset);
+    let (mut fixture_type, warnings, thumbnail) =
+        derive_fixture_type_with_thumbnail(&file, &asset);
     let id = fixture_type.id;
 
     let mut plan = super::apply::ImportPlan {
         assets: vec![(crate::infra::assets::GDTF_MIME.to_string(), bytes.to_vec())],
         ..Default::default()
     };
+    // The file's own top view, kept beside the archive so a plan can draw the head the
+    // manufacturer drew rather than a projection of its body.
+    if let Some((mime, bytes)) = thumbnail {
+        fixture_type.thumbnail = Some(crate::infra::assets::digest(&bytes));
+        plan.assets.push((mime, bytes));
+    }
     plan.report.warnings = warnings.iter().map(ToString::to_string).collect();
 
     // By the file's own id: a newer revision of a fixture updates the row rather than

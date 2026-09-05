@@ -144,6 +144,19 @@ pub struct StockPiece {
     pub chords: &'static [Chord],
     /// What it asks about itself.
     pub properties: &'static [Property],
+    /// What one of these weighs, in kilograms.
+    ///
+    /// **Nominal, and a loading table says so.** These are round figures for the
+    /// class of part — a 290 mm four-chord box truss of the F34 / FD34 / X30D
+    /// family, 48.3 × 4 mm steel tube, an aluminium-and-ply stage deck — taken at
+    /// the heavy end of the range, because the direction to be wrong in about a
+    /// load is upwards. They are not any one manufacturer's data sheet and must not
+    /// be read as one: a rig on somebody else's truss overrides the piece with
+    /// [`crate::types::scene::SceneObject::weight_kg`], and a total resting on
+    /// these reads *nominal* where one resting on entered weights reads *entered*.
+    ///
+    /// `None` for a piece nobody could put a figure on.
+    pub weight_kg: Option<f32>,
 }
 
 /// The width of an F34 chord square, in metres.
@@ -274,6 +287,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: truss_ends!(0.5),
         chords: BOX_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(8.0),
     },
     StockPiece {
         id: "f34-2m",
@@ -284,6 +298,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: truss_ends!(1.0),
         chords: BOX_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(13.0),
     },
     StockPiece {
         id: "f34-3m",
@@ -294,6 +309,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: truss_ends!(1.5),
         chords: BOX_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(18.0),
     },
     StockPiece {
         id: "f34-corner",
@@ -306,6 +322,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         // be a light bolted to a joint.
         chords: NO_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(12.0),
     },
     StockPiece {
         id: "f34-base",
@@ -320,6 +337,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         )],
         chords: NO_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(15.0),
     },
     StockPiece {
         id: "f34-top",
@@ -334,6 +352,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         )],
         chords: NO_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(15.0),
     },
     StockPiece {
         id: "pipe-1m",
@@ -344,6 +363,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: pipe_ends!(0.5),
         chords: PIPE_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(4.4),
     },
     StockPiece {
         id: "pipe-2m",
@@ -354,6 +374,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: pipe_ends!(1.0),
         chords: PIPE_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(8.8),
     },
     StockPiece {
         id: "pipe-3m",
@@ -364,6 +385,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: pipe_ends!(1.5),
         chords: PIPE_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(13.2),
     },
     StockPiece {
         id: "pipe-6m",
@@ -374,6 +396,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: pipe_ends!(3.0),
         chords: PIPE_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(26.4),
     },
     StockPiece {
         id: "deck-2x1",
@@ -386,6 +409,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: deck_edges!(1.0, 0.5),
         chords: NO_CHORDS,
         properties: LEG_HEIGHT,
+        weight_kg: Some(34.0),
     },
     StockPiece {
         id: "deck-1x1",
@@ -396,6 +420,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: deck_edges!(0.5, 0.5),
         chords: NO_CHORDS,
         properties: LEG_HEIGHT,
+        weight_kg: Some(19.0),
     },
     StockPiece {
         id: "wall-2x1",
@@ -406,6 +431,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: NO_CONNECTORS,
         chords: NO_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(20.0),
     },
     StockPiece {
         id: "flat-1x24",
@@ -417,6 +443,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         connectors: NO_CONNECTORS,
         chords: NO_CHORDS,
         properties: NOTHING,
+        weight_kg: Some(15.0),
     },
 ];
 

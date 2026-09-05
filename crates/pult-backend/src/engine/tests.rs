@@ -94,6 +94,7 @@ fn a_show() -> Show {
         haze_density: pult_schema::types::show::HAZE_DENSITY_DEFAULT,
         haze_turbulence: pult_schema::types::show::HAZE_TURBULENCE_DEFAULT,
         fade_curves: pult_schema::types::show::FadeCurves::default(),
+        production: Default::default(),
     }
 }
 

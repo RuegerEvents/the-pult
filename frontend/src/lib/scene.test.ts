@@ -59,7 +59,8 @@ function asObject(placed: ChainCase['objects'][number]): SceneObject {
 		symbol: null,
 		catalogue: null,
 		properties: null,
-		locked: false
+		locked: false,
+		weight_kg: null
 	};
 }
 

@@ -68,6 +68,7 @@ impl Placed {
             catalogue: None,
             properties: serde_json::Value::Null,
             locked: false,
+            weight_kg: None,
         }
     }
 }
@@ -135,6 +136,7 @@ fn a_parent_chain_that_loops_stops_rather_than_hangs() {
         catalogue: None,
         properties: serde_json::Value::Null,
         locked: false,
+        weight_kg: None,
     };
     let objects = vec![placed(a, b), placed(b, a)];
 

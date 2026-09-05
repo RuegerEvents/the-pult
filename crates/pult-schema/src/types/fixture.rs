@@ -511,6 +511,47 @@ pub struct FixtureType {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub source: FixtureTypeSource,
+    /// What one of these is drawn as on a plan.
+    ///
+    /// [`PlanSymbol::Auto`] walks geometry, then thumbnail, then generic, and is
+    /// almost always right. It is a field rather than a rule because a GDTF may carry
+    /// a usable version of either, both or neither: a file whose geometry is one
+    /// undifferentiated block draws a better head from its thumbnail, and a file whose
+    /// thumbnail is the manufacturer's logo draws a better one from its geometry.
+    /// Nobody can tell which from the outside, so an operator who does not like what a
+    /// file gave them overrules that one type once and every sheet follows.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub plan_symbol: PlanSymbol,
+    /// The `Thumbnail` resource the GDTF carried, in the asset store.
+    ///
+    /// The file's own top view, which is what other consoles draw. Extracted on
+    /// import; `None` for a type from anywhere else and for a file that named no
+    /// thumbnail.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub thumbnail: Option<String>,
+}
+
+/// What a fixture of this type is drawn as, seen from above.
+///
+/// See [`FixtureType::plan_symbol`] for why this is a choice and not a rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum PlanSymbol {
+    /// Geometry, then thumbnail, then generic: the first that exists.
+    ///
+    /// Geometry leads because a projected outline is *to scale* — it is the fixture's
+    /// own body, and a plan drawn from it can be measured for clearance. A thumbnail
+    /// is whatever the manufacturer drew at whatever size they drew it.
+    #[default]
+    Auto,
+    /// The outline of the type's own geometry tree, projected.
+    Geometry,
+    /// The `Thumbnail` resource out of the GDTF.
+    Thumbnail,
+    /// A shape by what the fixture is, sized from `physical.dimensions_m`.
+    Generic,
 }
 
 impl FixtureType {

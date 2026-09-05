@@ -296,6 +296,81 @@ async fn a_dragged_truss_is_one_row() {
     );
 }
 
+/// The same rule, for the block of a paperwork sheet.
+///
+/// A sheet's `blocks` is one column, so dragging a viewport rewrites the whole array
+/// once per animation frame — sixty writes of a list, where the truss above writes one
+/// transform. If the gesture is dropped somewhere on that path, putting a viewport back
+/// where it was is a key somebody holds down, and each press moves it a pixel.
+#[tokio::test]
+async fn a_dragged_sheet_block_is_one_row() {
+    let station = a_station().await;
+    let who = Uuid::new_v4();
+    let gesture = Uuid::new_v4();
+
+    let sheet = Uuid::new_v4();
+    let block = |x: f32| {
+        serde_json::json!([{
+            "type": "Viewport",
+            "rect": { "x": x, "y": 18.0, "w": 190.0, "h": 200.0 },
+            "title": "Plan",
+            "view": "Plan",
+            "projection": "Orthographic",
+            "scale": { "type": "Fit" },
+            "style": { "type": "Drafting", "lines": "Hidden", "ink": "Mono" },
+            "layers": null,
+            "labels": [],
+            "scale_bar": true,
+            "orientation_mark": true
+        }])
+    };
+
+    station
+        .engine
+        .set(
+            vec![PathSegment::Key("sheets".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Persisted,
+            serde_json::json!({
+                "id": sheet,
+                "name": "Plan",
+                "sort_order": 0,
+                "paper": "A3",
+                "landscape": true,
+                "frame": true,
+                "title_block": true,
+                "blocks": block(18.0)
+            }),
+        )
+        .await
+        .expect("the sheet is made");
+
+    for step in 0..60 {
+        station
+            .engine
+            .set_as(
+                who,
+                Some(gesture),
+                vec![
+                    PathSegment::Key("sheets".into()),
+                    PathSegment::Id(sheet),
+                    PathSegment::Key("blocks".into()),
+                ],
+                Lifecycle::Persisted,
+                block(18.0 + step as f32),
+            )
+            .await
+            .expect("the drag writes");
+    }
+
+    let history = station.engine.history(100).await;
+    let mine = history.iter().filter(|entry| entry.gesture == Some(gesture)).count();
+    assert_eq!(
+        mine, 1,
+        "dragging a block across sixty frames became {mine} entries in the history. \
+         Laying out a sheet is a drag like any other and has to be one Ctrl-Z."
+    );
+}
+
 #[tokio::test]
 async fn a_settled_rig_changes_no_universes() {
     let station = a_station().await;

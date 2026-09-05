@@ -158,6 +158,17 @@ impl Seeder {
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
+    /// Read a whole collection back, for the one helper that has to amend what the
+    /// engine seeded rather than write something new.
+    pub async fn rows<T: serde::de::DeserializeOwned>(&self, table: &str) -> Result<Vec<T>> {
+        let value = self
+            .engine
+            .get(vec![PathSegment::Key(table.into())])
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(serde_json::from_value(value).unwrap_or_default())
+    }
+
     /// Set one field of one row, which is how a demo starts a sequence running.
     pub async fn set(
         &self,
@@ -178,6 +189,25 @@ impl Seeder {
     /// bundle's manifest, so a console always has one by the time a demo runs — but a
     /// station with no bundle open has none, and a demo that failed on its first
     /// write there would be a demo nothing could test.
+    /// Who this show is for, and who drew it — the text in every sheet's title block.
+    ///
+    /// **Every demo fills this in**, for the reason every demo type now has a weight: a
+    /// title block is one of the first things somebody opening the Paperwork panel
+    /// looks at, and six sheets with an empty corner are a feature that looks broken
+    /// rather than a show that has not been given a venue. The venues are invented and
+    /// read as invented; the point is the shape of a filled-in block, not the fiction.
+    pub async fn describe_the_production(
+        &self,
+        production: pult_schema::types::show::Production,
+    ) -> Result<()> {
+        self.set(
+            vec![PathSegment::Key("show".into()), PathSegment::Key("production".into())],
+            serde_json::to_value(production)?,
+            Lifecycle::Persisted,
+        )
+        .await
+    }
+
     pub async fn name_the_show(&self, name: &str) -> Result<()> {
         use pult_schema::types::Show;
 
@@ -206,6 +236,7 @@ impl Seeder {
                 haze_density: prefs.haze_density,
                 haze_turbulence: prefs.haze_turbulence,
                 fade_curves: prefs.fade_curves,
+                production: Default::default(),
             })?,
             Lifecycle::Persisted,
         )

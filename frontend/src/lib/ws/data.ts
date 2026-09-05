@@ -21,6 +21,7 @@ import type { ProgrammerValue } from '../generated/ProgrammerValue.js';
 import type { SceneClass } from '../generated/SceneClass.js';
 import type { SceneObject } from '../generated/SceneObject.js';
 import type { Sequence } from '../generated/Sequence.js';
+import type { Sheet } from '../generated/Sheet.js';
 import type { Show } from '../generated/Show.js';
 import type { SpeedMaster } from '../generated/SpeedMaster.js';
 import type { StagePlan } from '../generated/StagePlan.js';
@@ -101,6 +102,10 @@ export type SequenceEntity = PathProxy<Sequence> & {
   goNext(args: { at?: number }): Promise<void>;
   goToCue(args: { cueId: string, at?: number }): Promise<void>;
   off(args: { at?: number }): Promise<void>;
+};
+
+export type SheetEntity = PathProxy<Sheet> & {
+  delete(): Promise<void>;
 };
 
 export type SpeedMasterEntity = PathProxy<SpeedMaster> & {
@@ -367,6 +372,20 @@ export type SequenceCollection = {
   [n: number]: SequenceEntity;
 };
 
+export type SheetCollection = {
+  get(): Promise<Sheet[]>;
+  set(value: Sheet[]): Promise<void>;
+  subscribe(cb: (value: Sheet[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Sheet[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): SheetEntity;
+  nth(n: number): SheetEntity;
+  create(entity: Sheet): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: SheetEntity;
+};
+
 export type SpeedMasterCollection = {
   get(): Promise<SpeedMaster[]>;
   set(value: SpeedMaster[]): Promise<void>;
@@ -472,6 +491,7 @@ export type DataRoot = {
   classes: SceneClassCollection;
   scene_objects: SceneObjectCollection;
   sequences: SequenceCollection;
+  sheets: SheetCollection;
   show: PathProxy<Show | null>;
   speed_masters: SpeedMasterCollection;
   stage_plans: StagePlanCollection;

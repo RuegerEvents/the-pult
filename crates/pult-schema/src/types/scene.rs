@@ -222,6 +222,17 @@ pub struct SceneObject {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub locked: bool,
+    /// What this one weighs, in kilograms, where somebody has said.
+    ///
+    /// Overrides the nominal figure a catalogue piece carries, and is the only weight
+    /// there is for an object out of a drawing — MVR says where a truss is and never
+    /// what it weighs. A loading table distinguishes the two: a total resting on
+    /// entered weights is a different claim from one resting on
+    /// [`crate::types::catalogue::StockPiece::weight_kg`], and printing them as the
+    /// same number is how a nominal figure becomes a rigging decision.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub weight_kg: Option<f32>,
 }
 
 /// A drawing's layer: a name to show, hide and lock a part of the rig by.

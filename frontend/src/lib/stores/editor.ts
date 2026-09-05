@@ -95,7 +95,8 @@ export async function placePiece(
 			symbol: null,
 			catalogue: entry.id,
 			properties: canonicalProperties(entry, options.properties),
-			locked: false
+			locked: false,
+			weight_kg: null
 		});
 		return id;
 	});

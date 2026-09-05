@@ -19,6 +19,7 @@ use pult_schema::types::{
     mount::Mount,
     scene::Transform,
     speedmaster::SpeedMaster,
+    CueShot,
 };
 use uuid::Uuid;
 
@@ -26,7 +27,8 @@ use super::{
     id,
     kit::{
         a_clamped_fixture, a_cue, a_fixture, a_piece, a_stack, a_type, aimed, capture, colour, facing, hue, intensity,
-        level, pan, strobe_rate, tilt, truss_run, under, Addresses,
+        level, pan, posed, production, strobe_rate, tilt, truss_run, under, weighing,
+        Addresses,
     },
     now_ms, Seeder,
 };
@@ -34,9 +36,20 @@ use super::{
 pub async fn seed(into: &Seeder) -> Result<()> {
     into.name_the_show("Club").await?;
 
-    let mover = a_type("Beam 7R", vec![intensity(), colour(), pan(), tilt()]);
-    let wash = a_type("LED Wash", vec![intensity(), colour()]);
-    let strobe = a_type("Strobe", vec![intensity(), strobe_rate()]);
+    let mover = weighing(
+        a_type("Beam 7R", vec![intensity(), colour(), pan(), tilt()]),
+        20.0,
+        380.0,
+        (0.30, 0.47, 0.25),
+    );
+    let wash =
+        weighing(a_type("LED Wash", vec![intensity(), colour()]), 9.0, 250.0, (0.30, 0.35, 0.30));
+    let strobe = weighing(
+        a_type("Strobe", vec![intensity(), strobe_rate()]),
+        8.5,
+        750.0,
+        (0.44, 0.29, 0.19),
+    );
     for kind in [&mover, &wash, &strobe] {
         into.create("fixture_types", kind).await?;
     }
@@ -304,11 +317,39 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         ),
     ];
 
+    // What a picture of this rig is of: the movers' first look sweeping, the washes
+    // deep blue under it, and the strobes *out*. Three sequences at once, which is what
+    // a club look actually is — and the reason a viewport takes a list of cues rather
+    // than one.
+    //
+    // The two effects are caught at different moments on purpose. The movers are six
+    // seconds in, a good way round their sweep; the washes are given twelve, because
+    // their colour chase runs at a quarter of the beat and at six they would still be
+    // near the pink they started from. Sampling both at the same instant would have been
+    // the obvious thing and would have made half the rig look like it was not doing
+    // anything.
+    let beauty = vec![
+        CueShot::at(mover_looks[0].id, 6_000),
+        CueShot::at(wash_looks[2].id, 12_000),
+        CueShot::at(strobe_looks[2].id, 2_000),
+    ];
+
     // Each left *running*, so the show has something in it the moment it opens
     // rather than waiting to be told to.
     a_stack(into, "Movers", mover_looks, true).await?;
     a_stack(into, "Washes", wash_looks, true).await?;
     a_stack(into, "Strobes", strobe_looks, true).await?;
+
+    into.describe_the_production(production(
+        "Saturday Residency",
+        "Basement 42",
+        "Hafenstraße 12, Nordhafen",
+        "Every Saturday",
+        "Halliwell Lighting Design",
+        "studio@halliwell-ld.example",
+    ))
+    .await?;
+    posed(into, beauty).await?;
 
     Ok(())
 }

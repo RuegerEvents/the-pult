@@ -84,6 +84,24 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"groupId","type":"string","optional":false}]"#,
         doc: "The fixtures a saved group picks out of the rig right now, in its order.",
     },
+    // The paperwork's arithmetic. A read like the two above, and on the station rather
+    // than in the browser for one reason: the browser is the only thing that can *draw*
+    // a sheet, and if the tables were drawn there too then what the rig weighs would be
+    // a number no plugin and no command line could ever ask for.
+    LocalRpcMeta {
+        method: "paperwork.tables",
+        args_schema: r#"[{"name":"kind","type":"string","optional":false},{"name":"grouping","type":"string","optional":true},{"name":"rows","type":"object","optional":true},{"name":"layers","type":"array","optional":true}]"#,
+        doc: "A paperwork table over the rig: Patch, Loading, Power or Counts, grouped and subtotalled.",
+    },
+    // What a rig would look like in a given state, for a rendered viewport on a sheet.
+    // A read like the one above, and it must stay one: rendering a beauty shot must not
+    // *take* the cues it draws, or a document would change the show it documents — with
+    // the lamps on, visibly, in the room.
+    LocalRpcMeta {
+        method: "paperwork.cueValues",
+        args_schema: r#"[{"name":"cues","type":"array","optional":false}]"#,
+        doc: "What every parameter would be doing with these cues running, each a given time in.",
+    },
     // A read, so deliberately not a command: asking what a light is doing must not
     // write history. It exists because nothing stores the answer any more — the
     // console keeps what is *driving* each parameter and evaluates on demand — and a
@@ -452,6 +470,18 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             restore_a_show(version, &deps.shows, deps.sync.as_ref(), &deps.engine).await
         }
         "show.list" => list_shows(&deps.shows).await,
+        "paperwork.tables" => {
+            let request: pult_schema::types::paperwork::TableRequest =
+                serde_json::from_value(args.clone())
+                    .map_err(|e| format!("invalid table request: {e}"))?;
+            paperwork_table(&deps.engine, request).await
+        }
+        "paperwork.cueValues" => {
+            let shots: Vec<pult_schema::types::paperwork::CueShot> =
+                serde_json::from_value(args["cues"].clone())
+                    .map_err(|e| format!("invalid cues: {e}"))?;
+            paperwork_cue_values(&deps.engine, shots).await
+        }
         "selection.resolve" => {
             let group_id: uuid::Uuid = serde_json::from_value(args["groupId"].clone())
                 .map_err(|e| format!("invalid groupId: {e}"))?;
@@ -491,6 +521,7 @@ pub fn is_local_rpc(method: &str) -> bool {
         || method.starts_with("device.")
         || method.starts_with("selection.")
         || method.starts_with("parameter.")
+        || method.starts_with("paperwork.")
         || method.starts_with("log.")
         || method.starts_with("output.")
         || method.starts_with("client.")
@@ -800,6 +831,167 @@ async fn resolve_group(engine: &EngineHandle, group_id: uuid::Uuid) -> Result<Va
 
     let ids = evaluate(&group.query, &fixtures, None, &objects);
     serde_json::to_value(ids).map_err(|e| e.to_string())
+}
+
+/// Build one paperwork table out of what the station holds.
+///
+/// Five reads and a pure function. The arithmetic itself is
+/// [`pult_schema::types::paperwork::table`] — deliberately in the schema crate rather
+/// than here, so that the browser building a PDF, a plugin asking what a truss weighs
+/// and this RPC are all the same implementation and cannot come to different totals.
+async fn paperwork_table(
+    engine: &EngineHandle,
+    request: pult_schema::types::paperwork::TableRequest,
+) -> Result<Value, String> {
+    async fn rows<T: serde::de::DeserializeOwned>(
+        engine: &EngineHandle,
+        collection: &str,
+    ) -> Result<Vec<T>, String> {
+        let value = engine
+            .get(vec![PathSegment::Key(collection.into())])
+            .await
+            .map_err(|e| format!("cannot read {collection}: {e}"))?;
+        Ok(serde_json::from_value(value).unwrap_or_default())
+    }
+
+    let fixtures: Vec<Fixture> = rows(engine, "fixtures").await?;
+    let fixture_types: Vec<FixtureType> = rows(engine, "fixture_types").await?;
+    let scene_objects: Vec<SceneObject> = rows(engine, "scene_objects").await?;
+    let layers: Vec<pult_schema::types::scene::Layer> = rows(engine, "layers").await?;
+    let classes: Vec<pult_schema::types::scene::SceneClass> = rows(engine, "classes").await?;
+
+    let rig = pult_schema::types::paperwork::Rig {
+        fixtures: &fixtures,
+        fixture_types: &fixture_types,
+        scene_objects: &scene_objects,
+        layers: &layers,
+        classes: &classes,
+    };
+    let table = pult_schema::types::paperwork::table(&request, &rig);
+    serde_json::to_value(table).map_err(|e| e.to_string())
+}
+
+/// What the rig would be doing with a set of cues running.
+///
+/// The state is *worked out*, never taken. Each cue's stack is tracked through with
+/// [`pult_schema::types::cue::tracked_through`] — the same function playback's own Go
+/// uses, so a sheet cannot draw a different answer from the one the console would
+/// produce — and each resulting capture is turned into the fade or the effect it would
+/// have started, anchored so that at the moment of evaluation it has been running for
+/// exactly the time the viewport asked for.
+///
+/// **The time is the point.** A fade sampled at zero is the state *before* the cue, so a
+/// five-second fade up from black renders black; an effect at zero has every head at the
+/// same phase. Both are the least useful frame of the cue.
+///
+/// Fades run from the parameter's **home** value rather than from what the rig happens
+/// to be doing now. A picture on a sheet documents a cue taken on a rig at rest, and
+/// anchoring it to whatever the console is showing at the moment somebody pressed Export
+/// would make the same sheet come out differently every time.
+async fn paperwork_cue_values(
+    engine: &EngineHandle,
+    shots: Vec<pult_schema::types::paperwork::CueShot>,
+) -> Result<Value, String> {
+    use pult_render::{driving::Driving, effect::RunningFade};
+    use pult_schema::types::{
+        cue::{tracked_through, Cue},
+        effect::EffectSource,
+        Sequence,
+    };
+
+    async fn rows<T: serde::de::DeserializeOwned>(
+        engine: &EngineHandle,
+        collection: &str,
+    ) -> Result<Vec<T>, String> {
+        let value = engine
+            .get(vec![PathSegment::Key(collection.into())])
+            .await
+            .map_err(|e| format!("cannot read {collection}: {e}"))?;
+        Ok(serde_json::from_value(value).unwrap_or_default())
+    }
+
+    let cues: Vec<Cue> = rows(engine, "cues").await?;
+    let sequences: Vec<Sequence> = rows(engine, "sequences").await?;
+    let fixtures: Vec<Fixture> = rows(engine, "fixtures").await?;
+    let types: Vec<FixtureType> = rows(engine, "fixture_types").await?;
+    let masters: Vec<pult_schema::types::SpeedMaster> = rows(engine, "speed_masters").await?;
+    let show: Option<pult_schema::types::Show> = engine
+        .get(vec![PathSegment::Key("show".into())])
+        .await
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok());
+    let curves = show.map(|s| s.fade_curves).unwrap_or_default();
+
+    let by_id: std::collections::HashMap<uuid::Uuid, &Cue> =
+        cues.iter().map(|cue| (cue.id, cue)).collect();
+    let fixtures_by_id: std::collections::HashMap<uuid::Uuid, &Fixture> =
+        fixtures.iter().map(|f| (f.id, f)).collect();
+    let types_by_id: std::collections::HashMap<uuid::Uuid, &FixtureType> =
+        types.iter().map(|t| (t.id, t)).collect();
+
+    // A round number well past any anchor, so the arithmetic below never underflows
+    // when a shot asks for a moment before the cue was taken.
+    const NOW: u64 = 1_000_000_000;
+    let mut out = serde_json::Map::new();
+
+    for shot in &shots {
+        let Some(cue) = by_id.get(&shot.cue) else { continue };
+        // The stack up to this cue, which needs the sequence holding it.
+        let Some(sequence) = sequences.iter().find(|s| s.cue_ids.contains(&shot.cue)) else {
+            continue;
+        };
+        let index = sequence.cue_ids.iter().position(|id| *id == shot.cue).unwrap_or(0);
+        let through: Vec<&uuid::Uuid> = sequence.cue_ids.iter().take(index + 1).collect();
+        let tracked = tracked_through(through, |id| by_id.get(id).copied());
+
+        // The cue was taken `at_ms` ago.
+        let anchor = NOW.saturating_sub(shot.at_ms as u64);
+
+        for (owner, capture) in tracked {
+            let key = parameter_key(&capture.parameter_kind);
+            let Some(fixture) = fixtures_by_id.get(&capture.fixture_id) else { continue };
+            let kind = types_by_id.get(&fixture.fixture_type_id).copied();
+            let home = pult_schema::types::home_value_by_key(fixture, kind, &key);
+
+            let value = if let Some(spec) = &capture.effect {
+                let running = crate::model::effects::resolve(
+                    spec,
+                    &masters,
+                    anchor,
+                    EffectSource::Cue(owner.id),
+                );
+                pult_render::driving::value_at(
+                    &Driving { effect: Some(&running), ..Default::default() },
+                    NOW,
+                )
+            } else {
+                // From home rather than from now: see the note above.
+                let from = home.clone().unwrap_or_else(|| capture.value.clone());
+                let up = if capture.fade_in_ms > 0 { capture.fade_in_ms } else { cue.fade_in_ms };
+                let running = RunningFade {
+                    from,
+                    to: capture.value.clone(),
+                    t0: anchor + capture.delay_in_ms as u64,
+                    duration_ms: up,
+                    easing: curves.resolve(capture.easing, cue.easing, &key),
+                    cue_id: owner.id,
+                };
+                pult_render::driving::value_at(
+                    &Driving { fade: Some(&running), ..Default::default() },
+                    NOW,
+                )
+            };
+
+            if let Some(value) = value {
+                if let Ok(value) = serde_json::to_value(&value) {
+                    // Keyed the way `readingOf` in the browser keys a snapshot, so the
+                    // answer drops straight into a `Showing`.
+                    out.insert(format!("{}/{}", capture.fixture_id, key), value);
+                }
+            }
+        }
+    }
+    Ok(Value::Object(out))
 }
 
 #[cfg(test)]

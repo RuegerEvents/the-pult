@@ -1264,6 +1264,158 @@ cargo test -p pult-backend --test wire        # two stations, and a console watc
 cd frontend && npm test                       # what a browser makes of the batches
 ```
 
+## Paperwork is a drawing, and it is drawn twice
+
+The rig has to leave the console as paper: A3 sheets with a title block, viewports at a
+stated scale, labelled plan heads, and tables of weight, power and counts. The roadmap
+called this "a read-only plugin over introspection" and that was half right, which is
+the interesting half.
+
+**The tables are the station's and the drawing is the browser's.** A WASM guest has no
+meshes, no HTTP route and no file output, and only `frontend/src/lib/geometry.ts` ever
+measures a mesh — so a plugin cannot draw a truss without shipping a second copy of the
+rig renderer. But the *arithmetic* is rows and sums over what the station already holds,
+so it lives in `pult_schema::types::paperwork` behind the **`paperwork.tables`** RPC,
+and a plugin, the command line and curl can all ask what a truss weighs. Written in the
+browser beside the renderer, that number would have been reachable by nothing.
+
+**One drawing model, rendered twice.** `frontend/src/lib/paperwork/drawing.ts` is lines,
+polylines, text and images in **paper millimetres from the top left**; `svg.ts` renders
+it for the preview and `pdf.ts` for the file. There is no SVG-to-PDF converter anywhere,
+deliberately — a converter is a third implementation of the page with its own opinions
+about dashes, joins and text placement, and it is what would make the file differ from
+the preview somebody signed off. The PDF's whole conversion is one flip, `y →
+(height − y)·mm`, handed to `drawSvgPath`'s own transform rather than applied twice.
+
+Two things are one implementation on purpose, and both were briefly two. **Clipping** is
+`drawing.ts`'s, not each renderer's: Liang–Barsky for lines, Sutherland–Hodgman for
+fills, so a truss half out of a viewport is cut the same way in both and the corpus can
+assert it. And **`textOrigin`** in `font.ts` resolves anchor and baseline for both, so
+`text-anchor` is always `start` in the SVG — SVG could do it and PDF cannot, and letting
+each do it its own way is the same trap one level down.
+
+**One font, shipped, measured through fontkit.** Open Sans under the OFL in
+`frontend/static/fonts/`, embedded in the PDF by `pdf-lib` and asked for by the SVG
+through the same URL. Layout depends on its metrics — de-collision decides where a
+label goes by *how wide it is*, and a column is as wide as its widest cell — so there is
+**no metric fallback**: a sheet cannot be drawn until the font has loaded. A second
+answer to that question is a page laid out differently on a Linux tablet than on the
+desk it was approved from.
+
+**A viewport is either drafting or picture, and only one of them has a scale.**
+Drafting is vector: each object's projected convex outline, filled white, painted far to
+near, which is hidden-line's look for none of its cost and is exact for the convex
+pieces a rig is mostly made of. Picture is the rig renderer through an offscreen
+`Rig3D` — `forCapture` turns on `preserveDrawingBuffer`, and `captureFrame` frames,
+dresses and renders **synchronously**, because the caller reads the buffer as soon as it
+returns and one animation frame later the pixels may be gone. It also must not call
+`frame()`, which writes the projection into `stores/view.ts`: a document re-projecting
+somebody's open rig panel is a document editing a workspace.
+
+`Fit` **snaps to a standard ratio** rather than printing what a free fit came to — the
+Vectorworks sheet this was designed against prints 1:35, which no rule measures. And a
+picture viewport prints **NTS**, orthographic or not: the rig renderer fits its own
+camera and this code did not choose that fit, so a ratio here would be a number nothing
+worked out. It printed `1:0` before that was written down.
+
+**Nothing prints a bare total, anywhere.** `Totals` carries what it could *not* account
+for beside what it summed — how many items had no figure, and whether any of it came
+from the catalogue's nominal weights — and `Totals::weight_label` is the one place that
+becomes text, so the PDF, the CSV and a plugin's answer cannot disagree about whether a
+number is complete. `≥ 412 kg nominal` is a different claim from `412 kg`, and `—` is
+what a total with nothing in it says, because zero reads as a rig that weighs nothing.
+A filtered table captions what it left out; a plan that could not place twelve fixtures
+says so in its margin. **A loading table is a number somebody hangs a truss on**, and
+this is the whole reason the module is shaped the way it is.
+
+**Catalogue weights are nominal and say so.** `StockPiece::weight_kg` is a round figure
+for the *class* of part — 290 mm four-chord box truss, 48.3 × 4 mm tube, an
+aluminium-and-ply deck — taken at the heavy end, because the direction to be wrong about
+a load is upwards. `SceneObject::weight_kg` overrides one, and a total resting on
+entered weights is printed differently from one resting on these.
+
+**Waiting is part of correctness here.** `geometry.ts` hands back a placeholder box for
+a mesh it cannot load, which is right for a rig view and wrong for a rigging plan — a
+box is a drawing of something that is not there. So an export polls `pendingGeometry()`
+until every piece has its mesh and then **refuses**, naming what did not arrive, rather
+than printing what it has. The first exported PDF had no trusses on it at all and said
+nothing, because two animation frames is not a download.
+
+Three smaller rules with reasons. **A captured line mode clears to white** and dresses
+its models in flat grey — a rig view is a dark studio, and a shaded axonometric on A3
+came out as a near-black rectangle. *Real* and *photoreal* keep the dark ground, which
+is not an inconsistency: a beam is additive light and there is no version of one on
+white. **Fixture bodies keep their own material** even on paper, because the per-frame
+update writes `emissive` on it and a `MeshBasicMaterial` has none. And **label
+de-collision only ever pushes upwards** — splitting the push sends the lower label onto
+its own head, `clearOfHead` lifts it back, and the two rules chase each other until the
+passes run out.
+
+**The sheets are the show's, seeded on `show.new` only.** A PERSISTED `sheets`
+collection with six defaults mirroring the reference set. Two consequences, recorded
+because they will be asked about: a showfile made before this feature opens with no
+paperwork and there is no action that adds it, and a show made today never picks up a
+later version's better default sheets. `layouts` does it the other way; this was the
+user's call.
+
+**A rendered viewport says which cues are running, and when.** A beauty shot of a rig
+with nothing on is a photograph of a dark room, so `ViewStyle::Picture` carries a list of
+`CueShot` — a cue and how long it has been running. The time is the point: a fade sampled
+at zero is the state *before* the cue, and an effect at zero has every head at the same
+phase, so both are the least useful frame of the look. **Nothing is taken**: the
+`paperwork.cueValues` RPC tracks the stack with `cue::tracked_through` — the same
+function a Go uses — turns each capture into the fade or effect it would have started,
+anchored so it has run exactly that long, and evaluates it. A document that put the rig
+into the state it was drawing would be changing the show it documents, visibly, in the
+room. Fades run from the parameter's **home** value, not from what the console happens
+to be doing, or the same sheet would export differently every time.
+
+**Previews render in the background, debounced, and only for the sheet being looked at.**
+At screen dpi rather than the sheet's own, because a preview is looked at on a screen.
+The signature that decides whether to redraw is everything that changes the pixels and
+nothing that does not — the block's rectangle is deliberately *not* in it, so dragging a
+viewport across the page does not re-render it every frame. And every wait in that path
+races `requestAnimationFrame` against a timer, because **a backgrounded tab is served no
+animation frames at all** and an export that stalled on one would report a failure thirty
+seconds later that had not happened.
+
+**A 2D viewport can dimension each bar**, which is the only question anybody up a ladder
+is asking. `Dimensions` carries the datum — left, right or centre, because every crew has
+a convention and none of them is right — and draws a gap chain plus a running chain, in
+one unit per bar decided by its longest figure. Three things there were wrong first and
+are worth keeping: the chain is measured **along the bar in its own frame**, not across
+the page, so a truss at forty degrees reads the same as one square on; it is grouped by
+**what the lights actually hang off**, which is the `Group` handle rather than the truss
+sections under it, and a group's length is the span of its children; and the running
+figures are a *chain* with the figure at each tick, not twelve dimensions from the datum
+piled on one line. Off by default on every sheet but Fixtures — on a 200-fixture festival
+plan at 1:200 a chain per bar buries the drawing.
+
+**Labels are a drafting thing and there is no picture version of them.** A rendered view
+is a photograph; one with channel numbers written over it is neither one thing nor the
+other. The composer draws none on a picture and the editor does not offer the controls.
+
+**And a sheet is laid out on the sheet.** Blocks are dragged and resized on the preview
+itself through an overlay of handles — *outside* the SVG, because the drawing is a
+rendering of the model and the thing being dragged has to be the block. Two rules make
+that safe, and both are the same rule: a rectangle dragged through itself stops rather
+than turning inside out, and a block dragged off the paper keeps a corner on it, because
+in either case what you get back is a block that draws as nothing and can never be
+grabbed again. `resizedRect` is pure and in `stores/paperwork.ts` so both are tested.
+
+A drag is **one gesture and one write per animation frame**, which is `stores/editor.ts`'s
+rule for dragging a truss applied to dragging a viewport — and `Sheet::blocks` is one
+column, so each of those frames rewrites the whole array. `a_dragged_sheet_block_is_one_row`
+in the counts test is the gate: without the gesture, putting a viewport back is a key
+somebody holds down. The title block's own text is `Show::production`, edited in the Show
+panel, because it is a fact about the production rather than about a sheet.
+
+```
+cargo test -p pult-schema paperwork        # the tables, and what they refuse to say
+cargo test -p pult-backend --test counts   # a dragged block is one Ctrl-Z
+cd frontend && npx vitest run src/lib/paperwork   # both renderings of one page
+```
+
 ## Releases
 
 Tagging `v*` builds all four products for Linux x86_64 and aarch64, macOS arm64

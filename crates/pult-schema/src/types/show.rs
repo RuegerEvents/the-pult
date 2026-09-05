@@ -90,6 +90,49 @@ pub struct Show {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub fade_curves: FadeCurves,
+    /// Who this show is for and who drew it: the text in a sheet's title block.
+    ///
+    /// Show data, all of it, including the designer's own block — which is the same on
+    /// every show one company does and would sit as happily in `preferences.toml`. It
+    /// is here because a showfile travels: paperwork exported from a file you sent
+    /// somebody should still carry your name, and a station preference would have
+    /// their name on your drawing.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub production: Production,
+}
+
+/// What a title block says, beside the drawing's own name and scale.
+///
+/// Every field may be empty, and an empty one is *omitted* rather than printed as a
+/// blank row — a title block with an empty Venue line reads as a mistake, and one
+/// without the line reads as a show that has not been given a venue yet.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Production {
+    /// The production, where that is not the showfile's own name. "The Greatest
+    /// Showman — Corn Exchange 2026" against a file called `Showman`.
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub venue: String,
+    /// The venue's address, printed under it.
+    #[serde(default)]
+    pub address: String,
+    /// When it runs, as text rather than as dates: "02.05.2025 - 05.05.2025", "three
+    /// weeks from the 4th", "TBC". A title block is read by a person and a date range
+    /// with a hole in it is a normal thing for one to say.
+    #[serde(default)]
+    pub dates: String,
+    /// Who drew it — a person, a company, or both on two lines.
+    #[serde(default)]
+    pub designer: String,
+    /// How to reach them: a website, an email, a phone number.
+    #[serde(default)]
+    pub contact: String,
+    /// Which issue of the drawing this is. "Entwurf - 14.04.25", "Rev C".
+    #[serde(default)]
+    pub revision: String,
 }
 
 /// Which of a show's default curves a parameter takes.

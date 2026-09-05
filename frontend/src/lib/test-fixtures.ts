@@ -37,6 +37,8 @@ export function aFixtureType(over: Partial<FixtureType> = {}): FixtureType {
 		channel_count: 0,
 		parameters: [],
 		dmx_modes: [],
+		plan_symbol: 'Auto',
+		thumbnail: null,
 		physical: NOTHING_PHYSICAL,
 		geometry: [],
 		source: 'Manual',

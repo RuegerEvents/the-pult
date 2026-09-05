@@ -40,7 +40,9 @@ CREATE TABLE IF NOT EXISTS fixture_types (
     dmx_modes TEXT NOT NULL,
     physical TEXT NOT NULL,
     geometry TEXT NOT NULL,
-    source TEXT NOT NULL
+    source TEXT NOT NULL,
+    plan_symbol TEXT NOT NULL,
+    thumbnail TEXT
 );
 
 CREATE TABLE IF NOT EXISTS flows (
@@ -139,13 +141,25 @@ CREATE TABLE IF NOT EXISTS scene_objects (
     symbol TEXT,
     catalogue TEXT,
     properties TEXT NOT NULL,
-    locked INTEGER NOT NULL
+    locked INTEGER NOT NULL,
+    weight_kg TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sequences (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
     cue_ids TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sheets (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL,
+    paper TEXT NOT NULL,
+    landscape INTEGER NOT NULL,
+    frame INTEGER NOT NULL,
+    title_block INTEGER NOT NULL,
+    blocks TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS show (
@@ -156,7 +170,8 @@ CREATE TABLE IF NOT EXISTS show (
     home_fade_ms INTEGER NOT NULL,
     haze_density REAL NOT NULL,
     haze_turbulence REAL NOT NULL,
-    fade_curves TEXT NOT NULL
+    fade_curves TEXT NOT NULL,
+    production TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS speed_masters (

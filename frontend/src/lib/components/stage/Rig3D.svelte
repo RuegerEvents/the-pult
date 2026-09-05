@@ -128,11 +128,18 @@
 		toggleObject
 	} from '$lib/stores/scene.js';
 	import { setValue } from '$lib/stores/programmer.js';
-	import { output as showing, watching } from '$lib/stores/output.js';
+	import { output as showing, watching, type Showing } from '$lib/stores/output.js';
 	import { parameterKey } from '$lib/patch.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
-	import { DEFAULT_VIEW, setView, view, type Projection, type RenderMode } from '$lib/stores/view.js';
+	import {
+		DEFAULT_VIEW,
+		setView,
+		view,
+		type Projection,
+		type RenderMode,
+		type ViewSettings
+	} from '$lib/stores/view.js';
 
 	// `camera-controls` is a library rather than a wrapper: it wants the three.js
 	// pieces it uses handed to it once per process.
@@ -145,7 +152,10 @@
 		planUrl,
 		show,
 		follow = false,
-		gizmoMode = 'translate'
+		gizmoMode = 'translate',
+		viewOverride = null,
+		forCapture = false,
+		showingOverride = null
 	}: {
 		fixtures: Fixture[];
 		types: FixtureType[];
@@ -156,7 +166,47 @@
 		/** What the drawing's gizmo does. The toolbar has to show which of the three is
 		 *  on, so it is the panel's state and arrives here as a prop. */
 		gizmoMode?: 'translate' | 'rotate' | 'scale';
+		/**
+		 * View settings that are not this browser's.
+		 *
+		 * The rig panel passes nothing and gets `stores/view.ts`, which is what one
+		 * operator wants on their own screen. A *paperwork* viewport passes its own,
+		 * because a sheet carries its render mode and work light in the show and has to
+		 * export identically from the tablet and from the desk — a document that depends
+		 * on which machine printed it is not a document.
+		 */
+		viewOverride?: Partial<ViewSettings> | null;
+		/**
+		 * Keep the drawing buffer after a frame, so it can be read back.
+		 *
+		 * Off everywhere but the paperwork export, and off there for a reason worth
+		 * knowing: `preserveDrawingBuffer` stops the browser discarding the colour
+		 * buffer at the end of a frame, which costs a copy per frame on some drivers.
+		 * A rig panel redrawing sixty times a second must not pay that to enable a
+		 * screenshot nobody is taking. An export renders a handful of frames and then
+		 * throws the whole renderer away.
+		 */
+		forCapture?: boolean;
+		/**
+		 * Draw a state other than the one the rig is in.
+		 *
+		 * A beauty shot on a sheet documents a *look* — a cue, four seconds in — and the
+		 * console is very unlikely to be sitting in it when somebody presses Export. The
+		 * values come from the `paperwork.cueValues` RPC, which works them out without
+		 * taking anything: a document that put the rig into the state it was drawing
+		 * would be changing the show it documents, visibly, in the room.
+		 *
+		 * `null` everywhere else, which is every rig panel: what those draw is what is
+		 * happening.
+		 */
+		showingOverride?: Showing | null;
 	} = $props();
+
+	/** What this instance draws from: the live rig, unless it was handed a state. */
+	const values = $derived(showingOverride ?? $showing);
+
+	/** What this instance is actually drawing with: the store, unless it was told. */
+	const settings = $derived({ ...$view, ...(viewOverride ?? {}) });
 
 	/** The element three.js draws into. */
 	let host = $state<HTMLDivElement | null>(null);
@@ -248,15 +298,15 @@
 		placed.map((fixture) => {
 			const at = fixturePoint(fixture, $objectsById)!;
 			const type = typeOf(fixture);
-			const direction = beamDirection(fixture, type, $showing, $objectsById);
+			const direction = beamDirection(fixture, type, values, $objectsById);
 			const length = throwDistance(at, direction);
-			const output = fixtureOutput(fixture, $showing);
-			const bearing = bearingOnFloor(fixture, type, $showing);
+			const output = fixtureOutput(fixture, values);
+			const bearing = bearingOnFloor(fixture, type, values);
 			// The beam angle the file measured, where there is one. `stage.ts` reads
 			// the type's own range; the constant is the fallback and says so.
 			const half = (type?.physical?.beam_angle_deg ?? 14) / 2;
 			const read = (kind: Parameters<typeof parameterKey>[0]) =>
-				$showing.value(fixture.id, parameterKey(kind));
+				values.value(fixture.id, parameterKey(kind));
 			const asNumber = (v: ReturnType<typeof read>) =>
 				v?.type === 'Float' ? v.value : undefined;
 			return {
@@ -300,7 +350,11 @@
 
 	/// Everything the renderer owns, built once per panel and torn down with it.
 	function buildScene(element: HTMLDivElement) {
-		const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+		const renderer = new THREE.WebGLRenderer({
+			antialias: true,
+			alpha: false,
+			preserveDrawingBuffer: untrack(() => forCapture)
+		});
 		// Capped by the view setting, not by the display: every device pixel is a
 		// beam-shader invocation, and a Retina display's two per CSS pixel is what
 		// pinned a GPU on the festival rig.
@@ -308,7 +362,7 @@
 		// a reactive read here would rebuild the whole scene — renderer, camera, controls
 		// and all — every time somebody moved the work light slider, which is what
 		// took the camera home each time. The effect below keeps both up to date.
-		renderer.setPixelRatio(Math.min(window.devicePixelRatio, untrack(() => $view.resolution)));
+		renderer.setPixelRatio(Math.min(window.devicePixelRatio, untrack(() => settings.resolution)));
 		renderer.setClearColor(0x101010, 1);
 		element.appendChild(renderer.domElement);
 		renderer.domElement.style.display = 'block';
@@ -451,6 +505,12 @@
 		// material per panel, since two panels can be in two modes and the stock
 		// materials are shared by every panel on the page.
 		const wire = new THREE.MeshBasicMaterial({ color: 0x7a8290, wireframe: true });
+		// What a model wears on paper. Flat rather than lit, because a shaded axonometric
+		// on a drawing is read for its *shape* and a lighting rig's own lamps are not
+		// the light it should be read by; and light grey rather than white so its edges
+		// have something to stand against. Its companion is the black outline the depth
+		// buffer already gives between overlapping pieces.
+		const paper = new THREE.MeshBasicMaterial({ color: 0xb8bec6 });
 
 		// ── One light, mounted for the life of the panel ─────────────────────────
 		//
@@ -496,6 +556,7 @@
 			coneMat,
 			lines,
 			wire,
+			paper,
 			/** The mode this screen asked for, and the one the scene is currently dressed as. */
 			mode: DEFAULT_VIEW.mode as RenderMode,
 			dressed: null as RenderMode | null,
@@ -904,17 +965,33 @@
 		for (const body of built.bodies.values()) {
 			(body.material as THREE.MeshStandardMaterial).wireframe = wireframe;
 		}
+		// What a captured line frame draws its solids in. The dark studio materials read
+		// as a black silhouette on the white ground a sheet clears to — which is what
+		// the first exported axonometric was — so on paper they are swapped for a flat
+		// grey. Set here rather than below because the swap loop is here.
+		const onPaper = forCapture && (mode === 'wireframe' || mode === 'cones');
 		for (const group of built.objects.values()) {
 			group.traverse((node) => {
 				if (!(node instanceof THREE.Mesh)) return;
-				if (wireframe) {
-					if (node.material !== built.wire) node.userData.solid = node.material;
-					node.material = built.wire;
+				const dressAs = wireframe ? built.wire : onPaper ? built.paper : null;
+				if (dressAs) {
+					if (node.material !== built.wire && node.material !== built.paper) {
+						node.userData.solid = node.material;
+					}
+					node.material = dressAs;
 				} else if (node.userData.solid) {
 					node.material = node.userData.solid;
 				}
 			});
 		}
+		// **Fixture bodies keep their own material, on paper as on screen.** Not an
+		// oversight: the per-frame update writes `color` and `emissive` on it to say
+		// which lamp is on, and a `MeshBasicMaterial` has no `emissive` — swapping them
+		// threw "Cannot read properties of undefined" once per frame. They are already
+		// a dark grey, which is what a lantern should be on a white sheet anyway.
+		// The deck is the room's own floor and is drawn dark for a studio. On white it
+		// is the black quadrilateral the first export put in the middle of the sheet.
+		built.deck.visible = built.deck.visible && !onPaper;
 		// Tone mapping is the photoreal chain's, applied by its output pass over the
 		// summed frame; on the plain path three.js would apply it per material, to a
 		// picture that was never summed, and the working view would change.
@@ -925,8 +1002,20 @@
 		// on the plain path are said in linear terms here: the clear colour, the grid's
 		// grey, and the beams, which are too hot as light at a value that was right
 		// for the screen.
-		built.renderer.setClearColor(photoreal ? new THREE.Color(0x101010).convertSRGBToLinear() : 0x101010, 1);
+		// **On paper, a line drawing goes on white.** A rig view is a dark studio with
+		// light in it, which is right on a screen and wrong on A3: a shaded axonometric
+		// on a sheet came out as a near-black rectangle, which is both unreadable and a
+		// cartridge of toner. So a *captured* wireframe or cones frame clears to white
+		// and the models read as grey solids on it. Real and photoreal keep the dark
+		// ground, and that is not an inconsistency: a beam is additive light, and a
+		// picture of one on white is a picture of nothing.
+		const clear = onPaper ? 0xffffff : 0x101010;
+		built.renderer.setClearColor(
+			photoreal ? new THREE.Color(clear).convertSRGBToLinear() : clear,
+			1
+		);
 		(built.grid.material as THREE.ShaderMaterial).uniforms.uLinear.value = photoreal ? 1 : 0;
+		built.grid.visible = !onPaper;
 		built.beamMat.uniforms.uGain.value = photoreal ? 0.5 : 1;
 		built.dressed = mode;
 		built.restyle = false;
@@ -1028,13 +1117,13 @@
 	// on. All this browser's, kept in `localStorage`.
 	$effect(() => {
 		const built = scene;
-		const { workLight, resolution } = $view;
-		if (built) useProjection(built, $view.projection);
+		const { workLight, resolution } = settings;
+		if (built) useProjection(built, settings.projection);
 		const element = host;
 		if (!built || !element) return;
 		built.ambient.intensity = AMBIENT_AT_FULL * workLight;
 		built.hemisphere.intensity = HEMISPHERE_AT_FULL * workLight;
-		built.mode = $view.mode;
+		built.mode = settings.mode;
 		built.renderer.setPixelRatio(Math.min(window.devicePixelRatio, resolution));
 		// A new pixel ratio takes effect at the next `setSize`.
 		const { clientWidth, clientHeight } = element;
@@ -1362,6 +1451,79 @@
 		take(focusShot(box, from, aspect()));
 	}
 
+	/**
+	 * How many pieces of the drawing are still waiting for their geometry.
+	 *
+	 * A group goes into the scene the moment its row does, and its mesh arrives from
+	 * `/stock/{id}.glb` or the asset store afterwards — which is right for a rig view,
+	 * where a truss appearing a moment later is a truss appearing. It is wrong for an
+	 * export: the first paperwork PDF drawn from a freshly-mounted offscreen renderer
+	 * had every truss missing and said nothing about it, because two animation frames
+	 * is not a download.
+	 *
+	 * So the export waits on this. Zero means every object that expects geometry has
+	 * some; an object that expects none — a `Group`, a focus point — is never counted.
+	 */
+	export function pendingGeometry(): number {
+		const built = scene;
+		if (!built) return 0;
+		let waiting = 0;
+		for (const object of $visibleObjects) {
+			const group = built.objects.get(object.id);
+			if (!group) {
+				waiting += 1;
+				continue;
+			}
+			const expects =
+				object.geometry.length > 0 ||
+				Boolean(object.catalogue) ||
+				Boolean(object.symbol);
+			// An empty group is one whose mesh has not arrived. The pick box is added
+			// *from* the drawn mesh, so any child at all means something landed.
+			if (expects && group.children.length === 0) waiting += 1;
+		}
+		return waiting;
+	}
+
+	/**
+	 * Frame the rig and draw it, now, without touching anybody's settings.
+	 *
+	 * `frame()` is the operator's button and writes the projection into
+	 * `stores/view.ts`, because a person who picked "Plan" wants the view to stay
+	 * flat. A *sheet* must not do that: the paperwork export runs in a hidden
+	 * renderer beside an open rig panel, and re-projecting somebody's screen because
+	 * a viewport on page 3 is a section would be a document editing a workspace.
+	 *
+	 * It also renders synchronously rather than marking the frame dirty and waiting,
+	 * because the caller is about to read the drawing buffer: with
+	 * `preserveDrawingBuffer` on, the pixels are there straight after this returns,
+	 * and one animation frame later they may not be.
+	 */
+	export function captureFrame(preset: ViewPreset, projection: Projection): HTMLCanvasElement | null {
+		const built = scene;
+		if (!built) return null;
+		const bounds = rigBounds(placed, $objectsById, { pieces: $visibleObjects });
+		built.framed = bounds;
+		built.preset = preset;
+		// Dress before drawing, not on the next frame: a mesh that arrived after the
+		// last dress is still wearing the studio's dark material, and there is no next
+		// frame — the buffer is read as soon as this returns. It is what put a solid
+		// black cyc cloth in the middle of the first exported axonometric.
+		built.restyle = true;
+		dress(built);
+		useProjection(built, projection);
+		refitOrtho(built);
+		const shot = presetShot(preset, bounds, aspect());
+		const [px, py, pz] = shot.position;
+		const [tx, ty, tz] = shot.target;
+		// Immediate, not animated: an export has no time to watch a camera fly.
+		built.controls.setLookAt(px, py, pz, tx, ty, tz, false);
+		built.controls.update(0);
+		if (built.mode === 'photoreal') chainFor(built).composer.render();
+		else built.renderer.render(built.root, built.camera);
+		return built.renderer.domElement;
+	}
+
 	function take(shot: Shot) {
 		const [px, py, pz] = shot.position;
 		const [tx, ty, tz] = shot.target;
@@ -1480,7 +1642,7 @@
 		const built = scene;
 		const at = pivotAt;
 		const mode = gizmoMode;
-		const grid = $view.grid;
+		const grid = settings.grid;
 		if (!built || dragging) return;
 		const offered = movable.length > 0 && at !== null;
 		built.gizmo.enabled = offered;

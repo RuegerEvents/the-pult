@@ -324,6 +324,7 @@ fn a_from_scratch_rig_survives_being_written_back_out() {
             catalogue: Some(catalogue.into()),
             properties,
             locked: false,
+            weight_kg: None,
         }
     };
     let at = |x: f32, y: f32, z: f32| Transform::at(Vec3 { x, y, z });

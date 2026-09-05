@@ -12,6 +12,8 @@
 
 	import { onMount } from 'svelte';
 
+	import type { Production } from '$lib/generated/index.js';
+
 	import { focusOnMount, selectOnMount } from '$lib/actions.js';
 	import { getClientContext, getDataContext, getStationContext } from '$lib/ws/context.js';
 	import { collection, show as openShow } from '$lib/stores/show.js';
@@ -57,6 +59,45 @@
 	/** What a version nobody named is shown as — the same rule the station uses. */
 	function label(version: Version): string {
 		return version.name?.trim() ? version.name : when(version.created_at);
+	}
+
+	/**
+	 * The title block's fields, in the order they read on paper.
+	 *
+	 * A list rather than markup per field, because they are the same control seven
+	 * times and the only thing that differs is what it is called.
+	 */
+	const PRODUCTION_FIELDS = [
+		{ key: 'title', label: 'Production', hint: 'Defaults to the show’s own name' },
+		{ key: 'venue', label: 'Venue', hint: '' },
+		{ key: 'address', label: 'Address', hint: '' },
+		{ key: 'dates', label: 'Dates', hint: '02.05.2025 - 05.05.2025' },
+		{ key: 'designer', label: 'Drawn by', hint: '' },
+		{ key: 'contact', label: 'Contact', hint: '' },
+		{ key: 'revision', label: 'Revision', hint: 'Draft, Rev C…' }
+	] as const;
+
+	const EMPTY_PRODUCTION: Production = {
+		title: '',
+		venue: '',
+		address: '',
+		dates: '',
+		designer: '',
+		contact: '',
+		revision: ''
+	};
+
+	const production = $derived($openShow?.production ?? EMPTY_PRODUCTION);
+
+	/**
+	 * One field of it, written as the whole block.
+	 *
+	 * `production` is one column, so there is no path to `venue` on its own — the same
+	 * shape `Sheet::blocks` has, for the same reason: it is a record somebody edits as
+	 * a unit and nothing else points into it.
+	 */
+	async function setProduction(key: keyof Production, value: string) {
+		await data.show.production.set({ ...production, [key]: value });
 	}
 
 	async function saveName() {
@@ -179,6 +220,30 @@
 			<span class="label">Show ID</span>
 			<span class="mono dim">{$openShow.id.slice(0, 8)}…</span>
 		</div>
+
+		<!--
+			The title block, and the reason it is here rather than in `preferences.toml`:
+			a showfile travels, and paperwork exported from a file you sent somebody
+			should still carry your name. Every line may be empty, and an empty one is
+			omitted from the sheet rather than printed as a blank row.
+		-->
+		<details class="production">
+			<summary>Title block</summary>
+			{#each PRODUCTION_FIELDS as field (field.key)}
+				<label class="field">
+					<span class="label">{field.label}</span>
+					<input
+						class="inline-input"
+						value={production[field.key]}
+						placeholder={field.hint}
+						oninput={(e) => setProduction(field.key, e.currentTarget.value)}
+					/>
+				</label>
+			{/each}
+			<p class="fine">
+				What the Paperwork panel prints in the corner of every sheet.
+			</p>
+		</details>
 	{/if}
 
 	{#if naming}

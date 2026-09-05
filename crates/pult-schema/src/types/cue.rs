@@ -161,3 +161,39 @@ mod tests {
         assert_eq!(inheriting.easing, None, "nothing said: the cue's, then the show's");
     }
 }
+
+/// The latest capture of every key over a run of cues.
+///
+/// **The whole of what "a cue is the stack up to it" means**, as one function. Playback
+/// uses it to decide what a Go asserts; the paperwork's `paperwork.cueValues` RPC uses it
+/// to answer what a rig would look like in a given state, for a rendered viewport on a
+/// sheet. Written once because those two are the same question asked for different
+/// reasons, and two implementations of it would disagree about exactly the cue somebody
+/// had built by tracking a value forward three cues.
+///
+/// `through` is the cue ids in order, up to and including the one being asked about.
+/// Anything not in `cues` is skipped rather than refused: a sequence naming a cue that
+/// has been deleted is a show mid-edit, not a reason to answer nothing.
+pub fn tracked_through<'a>(
+    through: impl IntoIterator<Item = &'a Uuid>,
+    cues: impl Fn(&Uuid) -> Option<&'a Cue>,
+) -> Vec<(&'a Cue, &'a ParameterCapture)> {
+    // Insertion-ordered rather than a plain map, so the answer is the same every time it
+    // is asked. A `HashMap`'s iteration order is not, and a picture on a sheet that
+    // resolved two captures in a different order on a different run would be a document
+    // that changes when nothing changed.
+    let mut order: Vec<(Uuid, String)> = Vec::new();
+    let mut latest: std::collections::HashMap<(Uuid, String), (&Cue, &ParameterCapture)> =
+        std::collections::HashMap::new();
+
+    for id in through {
+        let Some(cue) = cues(id) else { continue };
+        for capture in &cue.captures {
+            let key = (capture.fixture_id, super::fixture::parameter_key(&capture.parameter_kind));
+            if latest.insert(key.clone(), (cue, capture)).is_none() {
+                order.push(key);
+            }
+        }
+    }
+    order.into_iter().filter_map(|key| latest.remove(&key)).collect()
+}

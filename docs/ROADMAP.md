@@ -27,6 +27,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Selection | Working as a query over the rig: by type, name, sphere, box or the spec's radial cone, built up by adding, narrowing and removing, and ordered along an axis or outwards from a point. Re-evaluated as the rig changes, so a fixture patched under a live selection joins it, and read against a *world* position, so a light on a truss is where the truss put it. Saved as groups since task 30. |
 | Effects | Working. One primitive covers a shape and a step list, running from the programmer or a cue, at its own rate or a speed master's. Rendered identically on every station from replicated state, and handed to a node that can trace it for itself. No amplitude fade into one yet. |
 | Undo / history | Working, per person and across their clients, and by gesture rather than by write — one drag is one Ctrl-Z. The oplog carries the author, the previous value and what an operation reverses, so undo is a query over it rather than a stack — which is what lets a tablet take back what the desk did. A History panel shows what everyone changed. Nothing prunes the log. |
+| Paperwork | Working. A show carries six A3 sheets — plan, rig, sections, a labelled fixtures plan, patch, and loading and power — composed into one drawing model and rendered twice, to SVG for the preview and to PDF for the file. Vector viewports carry a snapped scale, a scale bar and de-collided labels with leaders; picture viewports are the rig renderer offscreen at 300 dpi and print NTS. Tables come from the station's own `paperwork.tables`, so what the rig weighs is a question a plugin can ask, and no total is printed without saying what it could not account for. Tables also come out as CSV. A sheet is laid out on the sheet: blocks are dragged and resized on the preview, and what one is is edited beside it. |
 | Timecode | Not started. `FollowMode::Timecode` exists and nothing produces one. |
 | Distribution | Working. The frontend is built into the binaries that serve it, the console and the simulator each have a Tauri desktop app, and tagging builds all four for Linux x86_64 and aarch64, macOS arm64 and Windows. Nothing is signed and nothing auto-updates. |
 
@@ -4327,6 +4328,168 @@ cargo test -p pult-backend --lib demo              # every demo still points dow
 cd frontend && npm test                            # inverses, mounts, snapping, the editor
 ```
 
+### 62. Paperwork that says what it does not know
+
+The rig had to leave the console as paper. This is the sheet set: A3 with a title block
+and a grid frame, viewports at a stated scale, labelled plan heads, and tables of
+weight, power and counts — designed against a real Vectorworks set for a musical in the
+Alte Kelter, four sheets whose Fixtures plan labels every head with its name, its unit
+number and its `universe/address`.
+
+**The entry said "a read-only plugin over introspection" and that was half right.** The
+tables are arithmetic over rows a station already holds, so they went to the station:
+`pult_schema::types::paperwork::table` behind the `paperwork.tables` RPC, callable from
+a plugin, the command line and curl. The *drawing* could not go there and could not go
+in a plugin either — a WASM guest has no meshes and no file output, only
+`frontend/src/lib/geometry.ts` ever measures a mesh, and a plugin panel would have
+shipped a second copy of the rig renderer to draw a truss. So the split is not a
+compromise: it is where the two halves actually live.
+
+**One drawing model, rendered twice**, which is this repository's own idiom applied to a
+page. `paperwork/drawing.ts` holds lines, polylines, text and images in paper
+millimetres; `svg.ts` renders it for the preview and `pdf.ts` for the file, and the
+PDF's entire conversion is one y-flip handed to `drawSvgPath`'s own transform. There is
+no SVG-to-PDF converter, deliberately — that would be a third implementation of the page
+with its own opinions, and it is what would make the file differ from the preview
+somebody approved.
+
+Two things were briefly written twice and are now written once, which is the part worth
+carrying forward. **Clipping** belongs to the model, not to each renderer: Liang–Barsky
+for lines and Sutherland–Hodgman for fills, so a truss half out of a viewport is cut
+identically in both and a test can assert it. And **`textOrigin`** resolves anchor and
+baseline for both, so the SVG always writes `text-anchor="start"` — SVG could resolve it
+and PDF cannot, and letting each do it its own way is the same defect one level down.
+Both were noticed within an hour of being written, which is roughly how long it takes to
+type the second copy.
+
+**The rule the whole thing is arranged around: nothing prints a bare total.** A
+per-truss loading is a number somebody hangs a truss on. `Totals` carries what it could
+not account for beside what it summed, and `Totals::weight_label` is the one place that
+becomes text — so `≥ 412 kg nominal` and `412 kg` are different claims, `—` is what a
+total with no figures says (zero would read as a rig that weighs nothing), a table
+filtered by layer captions what it left out, and a plan that could not place twelve
+fixtures says so in its margin. On the theatre demo, whose types carry no physical data,
+the loading table honestly reads `≥ 400 kg nominal` and names all 38 gaps.
+
+**Catalogue weights are nominal and say so.** `StockPiece::weight_kg` is a round figure
+for the class of part, taken at the heavy end because the direction to be wrong about a
+load is upwards; `SceneObject::weight_kg` overrides one; and a total resting on entered
+weights is printed differently from one resting on the catalogue.
+
+**Waiting turned out to be part of correctness.** `geometry.ts` returns a placeholder box
+for a mesh it cannot load — right for a rig view, wrong for a rigging plan, where a box
+is a drawing of something that is not there. The first exported PDF had *no trusses on
+it at all* and said nothing about it, because the offscreen renderer was captured two
+animation frames after it mounted and two frames is not a download. So the export polls
+`pendingGeometry()` and then refuses, naming what did not arrive.
+
+Four more defects the first real export found, each with a reason worth keeping.
+
+- **A picture viewport captioned itself `1:0`.** The fix is not a guard: a raster is
+  fitted by the rig renderer, which this code did not choose and cannot read back, so an
+  orthographic picture *has* a scale and this is not the thing that knows it. It prints
+  NTS.
+- **The axonometric came out as a near-black rectangle.** A rig view is a dark studio and
+  A3 is not. A captured line mode now clears to white and dresses its models in flat
+  grey; *real* and *photoreal* keep the dark ground, which is not an inconsistency,
+  because a beam is additive light and there is no version of one on white.
+- **Swapping the fixture bodies' material threw once a frame.** The per-frame update
+  writes `emissive` on it and a `MeshBasicMaterial` has none. They keep their own
+  material, which is already the right grey for a sheet.
+- **Label de-collision pushed a label onto its own head.** Four lanterns on a boom are
+  one point in plan; splitting the vertical push sends the lower label down onto its
+  symbol, `clearOfHead` lifts it back, and the two rules chase each other until the
+  passes run out. Pushing only upwards is both stable and what somebody arranging the
+  sheet by hand would do.
+
+**A rendered viewport stands in a state, and the state has a time.** The first version
+took a bare list of cue ids and the user caught the hole in it immediately: a cue sampled
+the instant it is taken is the state *before* it, so a five-second fade up from black
+renders black and an effect renders with every head at the same phase. So a `CueShot` is
+a cue *and* how long it has been running, defaulting to five seconds, and each demo names
+its own — the club's movers at six seconds and its colour chase at twelve, because the
+chase runs at a quarter of the beat and at six would still be near the pink it started
+from. Sampling both at one instant is the obvious thing and makes half the rig look
+static.
+
+Nothing is taken. `paperwork.cueValues` tracks the stack with `cue::tracked_through` —
+extracted from playback's own Go, so a sheet cannot draw a state the console would not
+produce — and evaluates the fades and effects it would have started. Fades run from
+**home** rather than from now, so the same sheet exports the same picture whatever the
+rig happens to be doing.
+
+**Every demo type now has a weight, a power figure and a size**, and every demo a filled
+title block. Not decoration: the tables are honest about what they cannot account for, so
+a demo whose types said nothing exported `≥ 400 kg nominal` with all thirty-eight
+fixtures listed as unknown — the feature working correctly and the demo failing to show
+it working. The Theatre loading table now reads 704 kg and 26.1 kW with nothing missing.
+The sizes pay for themselves twice over: a generic plan head is drawn from
+`dimensions_m`, so a cyc batten is now a metre wide on the plan and a profile is not.
+
+**A 2D viewport can dimension each bar.** `Dimensions` with a datum — left, right or
+centre — because every crew measures from somewhere different and a drawing dimensioned
+from the wrong end is one somebody measures wrong from. Three things were wrong first.
+The chain is measured **along the bar in its own frame**: measuring the projected page
+distance gives a number that shrinks as the truss turns. It is grouped by **what the
+lights hang off**, which is the `Group` handle and not the sections under it — the first
+version iterated the pieces and drew nothing at all, because no fixture is parented to
+one. And the running figures are a proper chain with the figure at its own tick, not
+twelve dimensions from the datum stacked on one line, which is what the first one looked
+like. One unit per bar, decided by its longest figure, because "8500, 9500, 10.50 m" is a
+conversion in the middle of a bar.
+
+**And a defect the tab I was testing in hid.** Every wait in the render path was a bare
+`requestAnimationFrame`, and a backgrounded tab is served none — so an export interrupted
+by switching tabs parked until the mesh wait gave up thirty seconds later and reported a
+failure that had not happened. Racing each frame against a timer fixes it; the renderer
+never needed the frame, since `captureFrame` draws synchronously.
+
+**A sheet is laid out on the sheet.** Blocks are dragged and resized on the preview,
+through an overlay of handles rather than anything inside the SVG — the drawing is a
+*rendering* of the model, and interaction inside it would mean the thing being dragged
+was the picture. Two clamps make that safe and they are the same clamp twice: a
+rectangle dragged through itself stops rather than turning inside out, and a block
+dragged off the paper keeps a corner on it. Either way what you would otherwise get back
+is a block that draws as nothing and can never be grabbed again to fix it.
+
+A drag is one gesture and one write per animation frame, which is what `stores/editor.ts`
+already does for a truss — and `Sheet::blocks` is one column, so every one of those
+frames rewrites the whole array rather than one transform. That is the more demanding
+case, so `a_dragged_sheet_block_is_one_row` joined the counts test beside the truss it
+was modelled on.
+
+`Fit` **snaps to a standard ratio** rather than printing what a free fit came to — the
+reference sheet prints 1:35, which no rule measures. One font is shipped and measured
+through fontkit for both renderers, with **no metric fallback**, because a second answer
+to "how wide is this string" is a page laid out differently on the tablet than on the
+desk it was signed off from.
+
+**Scope, narrowed by the user mid-design and better for it.** No magic sheet, no channel
+hookup, and no new `Fixture` fields: a hookup wants purpose, circuit, gel and gobo, none
+of which exist, and adding four columns to sell one table is the wrong trade. Patch,
+loading, power and counts, as PDF and as CSV — the CSV carrying the same notes and the
+same `≥`, because a spreadsheet's own SUM over the column would otherwise produce a
+confident number nobody checked.
+
+**The sheets are seeded into a new show rather than being built-in presets**, which is
+the opposite of what `layouts` does and was the user's call. Two consequences, recorded
+because they will be asked about: a showfile that exists today opens with no paperwork
+and there is no action that adds it, and a show made this week never picks up a later
+version's better default sheets. Adding `Show::production` and `FixtureType::plan_symbol`
+also means an older showfile is **refused by name** — which is the additive pass's own
+check doing exactly what it was built for, and is why `SCHEMA_GENERATION` is unchanged.
+
+`SCHEMA_GENERATION` is 4.
+
+```
+cargo test -p pult-schema paperwork                # the tables, and what they refuse to say
+cargo test -p pult-backend --test counts           # a dragged block is one Ctrl-Z
+cd frontend && npx vitest run src/lib/paperwork    # both renderings of one page
+cd frontend && npx vitest run src/lib/stores/paperwork   # dragging, and naming a sheet
+cargo run -p pult-backend -- --show Rig.pult --demo theatre   # → the Paperwork layout
+```
+
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -4437,58 +4600,63 @@ the rest of this list is one entry. `mvr-xchange` said "out of scope while there
 scene to share", and there is one now: a console can build a rig from nothing and hand
 it to somebody else's software. It is unblocked, and it is where it was.
 
-1. **paperwork-export** — patch lists, cue sheets, rider paperwork. A read-only
-   plugin over introspection, which is what introspection is for. → none, and
-   much better now that gdtf-import has landed and put a real patch in the show
-2. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
+**paperwork-export left on 2026-09-04**, as task 62, and it took the first place on this
+list with it. Worth carrying forward: its own entry was wrong about where it belonged,
+and had been since it was written. "A read-only report is an ideal plugin, since
+introspection already exposes all the data" is true of the tables and false of the
+drawing — a plugin cannot measure a mesh, and a drawing is what somebody actually wanted.
+The *tables* went to the station anyway, which is the entry's instinct honoured properly:
+what the rig weighs is now a question a plugin, the command line and curl can all ask.
+
+1. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
    themselves dynamic. → none: the viewer landed as task 51
-3. **voice-input** — speech to the command line, grammar first and NL on parse
+2. **voice-input** — speech to the command line, grammar first and NL on parse
    failure. → none
-4. **nl-show-context** — what relative syntax cannot reach, and whether it is
+3. **nl-show-context** — what relative syntax cannot reach, and whether it is
    worth the permission it costs. → voice-input, which is what shows which
    utterances actually arrive
-5. **control-transports** — MIDI and OSC as ports, in and out, with nothing
+4. **control-transports** — MIDI and OSC as ports, in and out, with nothing
    above them decided. Was open-control-interfaces until 2026-09-02, when the
    three things people send over those ports turned out to want separate
    entries. → none
-6. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
+5. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
    audio import. The biggest item here and the one the spec is most opinionated
    about. → none technically
-7. **llm-cost-overview** — token and cost accounting out of the NL plugin.
+6. **llm-cost-overview** — token and cost accounting out of the NL plugin.
    → none
-8. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
+7. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
    frame rate survives the boundary. → the benchmarks from tasks 43 and 44 and
    from task 51, which measured a connector's frame at 4.77 ms for 5000 fixtures —
    the number a WASM boundary now has to be compared against, and task 56, which
    says the boundary has to survive being asked 40 times a second and not 29
-9. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
+8. **video-mapping-ndi** — NDI output. Scope carefully, it hides a media server.
    → openhaunt-as-plugin, as the first proof the plugin API carries heavy output
-10. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
+9. **plugin-language-hosts** — TS plugins, via a host plugin or as components.
    → a real TS plugin wanting to exist
-11. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
+10. **show-control** — MSC in and out, and MIDI and OSC as plain triggers. A
    stage manager's Go arriving at the lights, and this console sending its own
    to sound and video. → control-transports
-12. **surface-layer** — a bound physical thing, which is what the transports are
+11. **surface-layer** — a bound physical thing, which is what the transports are
    not: one event type under every surface, plus the two questions (where a
    headless surface's selection lives, where a fader's gesture begins and ends)
    that decide whether any of the three below is a week or a month.
    → control-transports for the MIDI half, nothing for the USB half
-13. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
+12. **midi-surfaces** — documented, and the hardware costs fifty pounds, so this
    is what proves the layer before anybody spends a weekend on USB captures.
    → surface-layer
-14. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
+13. **makepro-x** — MakePro X hardware. Blocked on naming what it speaks before
    it can be estimated at all. → surface-layer
-15. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
+14. **ma3-command-wing** — a grandMA3 command wing over USB, protocol
    undocumented and to be read off the device. → surface-layer, and
    midi-surfaces for the binding model
-16. **showfile-migrations** — so a show made in the beta still opens after it.
+15. **showfile-migrations** — so a show made in the beta still opens after it.
    Added 2026-09-03, and the trigger is the beta rather than anything in the
    code: until somebody is carrying real work in a showfile, refusing one from
    another generation by name is the better trade. → the first beta
-17. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
+16. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
    2026-09-03. → none, and the sharpest question in it is whether an imported
    `.pultz` should ask before running the plugins it carries
-18. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
+17. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
    measured evaluating at **94%** of an output frame at 5000 fixtures, which is
    the answer the question was waiting for, and `pult-render` is pure and takes
    no locks. The same measurement is why it sits here rather than at the top: the
@@ -4497,7 +4665,7 @@ it to somebody else's software. It is unblocked, and it is where it was.
    an output that carries part of the rig now evaluates part of the rig. → none,
    and it should not be done until something is actually short of frame
 
-Items 12 to 16 were added on 2026-09-02 and sit near the end rather than being
+Items 11 to 15 were added on 2026-09-02 and sit near the end rather than being
 placed, because three of them are blocked on hardware being in the room and not
 on anything in this repository. Any of those can move up the day the hardware is
 on the desk. **show-control is the exception and the one with a case for moving
@@ -4516,7 +4684,7 @@ actually running a show from. Task 53 already took the free wins — sixty a sec
 most, nothing drawn when nothing changed, only lit beams drawn — which is what turned
 a pinned GPU into an idle one on a dark stage.
 
-Items 17 and 18 were added on 2026-09-03 and sit near the end for a different
+Items 16 and 17 were added on 2026-09-03 and sit near the end for a different
 reason: neither is blocked on anything, and both are blocked on *time*. A
 migration path is worth nothing until there is a showfile worth migrating, and
 the gaps in how plugins travel are gaps rather than absences.
@@ -4786,13 +4954,6 @@ catalogue with nothing imported, and hand it to somebody else's software.
 - The open question is whether a shared scene is a *session* in this console's sense or
   something beside one. Two stations of one show already agree about the rig; an
   xchange peer is somebody else's software that agrees about part of it.
-
-#### paperwork-export
-
-Patch lists, cue sheets, rider paperwork.
-
-- A read-only report is an ideal plugin, since introspection already exposes all
-  the data. The open part is print CSS against generating a PDF.
 
 #### open-control-interfaces
 

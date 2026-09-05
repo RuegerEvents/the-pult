@@ -13,13 +13,14 @@ use pult_schema::types::{
     mount::Mount,
     flow::{FlowNodeKind, TriggerAction, TriggerCondition, TriggerSource},
     speedmaster::SpeedMaster,
+    CueShot,
 };
 
 use super::{
     id,
     kit::{
         a_clamped_fixture, a_cue, a_stack, a_type, capture, colour, draw, facing, intensity, level,
-        pan, tilt, truss_run, under, Addresses,
+        pan, posed, production, tilt, truss_run, under, weighing, Addresses,
     },
     now_ms, Seeder,
 };
@@ -29,14 +30,20 @@ pub async fn seed(into: &Seeder) -> Result<()> {
 
     // One ordinary DMX fixture type, so the Patch panel has something in it and an
     // Art-Net output has something to send.
-    let dimmer = a_type("Dimmer", vec![intensity()]);
+    let dimmer =
+        weighing(a_type("Dimmer", vec![intensity()]), 6.5, 1000.0, (0.30, 0.36, 0.32));
     into.create("fixture_types", &dimmer).await?;
 
     // And a moving head, so there is something to puppeteer. Nothing binds a
     // channel: where a parameter sits belongs to a mode, and a type that names none
     // has the implicit one — intensity at 1, the colour across 2 to 4, pan at 5,
     // tilt at 6.
-    let spot = a_type("Spot", vec![intensity(), colour(), pan(), tilt()]);
+    let spot = weighing(
+        a_type("Spot", vec![intensity(), colour(), pan(), tilt()]),
+        16.0,
+        350.0,
+        (0.30, 0.45, 0.25),
+    );
     into.create("fixture_types", &spot).await?;
 
     // Two bars to hang it all off, so the rig view has structure in it rather than
@@ -189,6 +196,12 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     cues.push(out);
 
     let scare_id = cues[2].id;
+    // "Possession": everything up with the two heads cycling colour against each other,
+    // which is the one state in this stack with movement in it. Eight seconds in rather
+    // than the default five, so the two heads are visibly *apart* in their cycle —
+    // photographing them at the same phase would make the effect look like a static
+    // colour wash, which is the opposite of what it is there to show.
+    let beauty = vec![CueShot::at(cues[3].id, 8_000)];
     let sequence = a_stack(into, "Haunt", cues, false).await?;
 
     // Two graphs for the Flows panel. The first is a chain anyone can set off by
@@ -233,6 +246,17 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         &[(0, 0, 2, 0), (1, 0, 2, 1), (2, 0, 3, 0), (3, 0, 4, 0)],
     )
     .await?;
+
+    into.describe_the_production(production(
+        "The Turning of the Screw",
+        "The Old Malt Barn",
+        "Brewery Yard, Northgate",
+        "31.10.2026 - 02.11.2026",
+        "Halliwell Lighting Design",
+        "studio@halliwell-ld.example",
+    ))
+    .await?;
+    posed(into, beauty).await?;
 
     Ok(())
 }

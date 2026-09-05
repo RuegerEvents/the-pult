@@ -354,7 +354,9 @@ describe('the mode a fixture is patched in', () => {
 			beam_angle_deg: null
 		},
 		geometry: [],
-		source: 'Manual'
+		source: 'Manual',
+		plan_symbol: 'Auto',
+		thumbnail: null
 	});
 
 	const inMode = (name: string): FixtureAddress => ({

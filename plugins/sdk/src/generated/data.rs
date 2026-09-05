@@ -714,6 +714,32 @@ impl FixtureTypeEntity {
     pub fn source(&self) -> Field<FixtureTypeSource> {
         self.at.field("source")
     }
+
+    /// What one of these is drawn as on a plan.
+    ///
+    /// [`PlanSymbol::Auto`] walks geometry, then thumbnail, then generic, and is
+    /// almost always right. It is a field rather than a rule because a GDTF may carry
+    /// a usable version of either, both or neither: a file whose geometry is one
+    /// undifferentiated block draws a better head from its thumbnail, and a file whose
+    /// thumbnail is the manufacturer's logo draws a better one from its geometry.
+    /// Nobody can tell which from the outside, so an operator who does not like what a
+    /// file gave them overrules that one type once and every sheet follows.
+    ///
+    /// PERSISTED.
+    pub fn plan_symbol(&self) -> Field<PlanSymbol> {
+        self.at.field("plan_symbol")
+    }
+
+    /// The `Thumbnail` resource the GDTF carried, in the asset store.
+    ///
+    /// The file's own top view, which is what other consoles draw. Extracted on
+    /// import; `None` for a type from anywhere else and for a file that named no
+    /// thumbnail.
+    ///
+    /// PERSISTED.
+    pub fn thumbnail(&self) -> Field<Option<String>> {
+        self.at.field("thumbnail")
+    }
 }
 
 // ── flows ───────────────────────────────────────────────────────────────
@@ -2685,6 +2711,20 @@ impl SceneObjectEntity {
     pub fn locked(&self) -> Field<bool> {
         self.at.field("locked")
     }
+
+    /// What this one weighs, in kilograms, where somebody has said.
+    ///
+    /// Overrides the nominal figure a catalogue piece carries, and is the only weight
+    /// there is for an object out of a drawing — MVR says where a truss is and never
+    /// what it weighs. A loading table distinguishes the two: a total resting on
+    /// entered weights is a different claim from one resting on
+    /// [`crate::types::catalogue::StockPiece::weight_kg`], and printing them as the
+    /// same number is how a nominal figure becomes a rigging decision.
+    ///
+    /// PERSISTED.
+    pub fn weight_kg(&self) -> Field<Option<f32>> {
+        self.at.field("weight_kg")
+    }
 }
 
 // ── sequences ───────────────────────────────────────────────────────────
@@ -2876,6 +2916,173 @@ impl SequenceEntity {
     }
 }
 
+// ── sheets ──────────────────────────────────────────────────────────────
+
+/// One sheet of the paperwork.
+///
+/// Seeded into a new show rather than being a built-in preset the way a
+/// [`super::layout::Layout`] is. The consequence, recorded because it will be asked
+/// about: a showfile made before this feature existed opens with no sheets and stays
+/// that way, and a show made today never picks up a later version's better defaults.
+///
+/// The `sheets` collection.
+pub fn sheets() -> SheetCollection {
+    SheetCollection { at: Collection::at("sheets") }
+}
+
+/// The `sheets` collection, reached by [`sheets()`].
+pub struct SheetCollection {
+    at: Collection,
+}
+
+impl SheetCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<Sheet>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> SheetEntity {
+        SheetEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> SheetEntity {
+        SheetEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &Sheet) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `sheets` row, reached by [`SheetCollection::by_id`] or
+/// [`SheetCollection::nth`].
+pub struct SheetEntity {
+    at: Entity,
+}
+
+impl SheetEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<Sheet, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &Sheet) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// The drawing's own name, printed in the title block: "Fixtures", "Sections".
+    ///
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// Where it comes in the set. The export writes them in this order.
+    ///
+    /// Not `index`, which is a SQL keyword the generated `CREATE TABLE` does not quote
+    /// — a column called that fails to open the show. The same trap
+    /// [`super::scene::Layer::sort_order`] carries a note about, found the same way.
+    ///
+    /// PERSISTED.
+    pub fn sort_order(&self) -> Field<i32> {
+        self.at.field("sort_order")
+    }
+
+    /// PERSISTED.
+    pub fn paper(&self) -> Field<Paper> {
+        self.at.field("paper")
+    }
+
+    /// PERSISTED.
+    pub fn landscape(&self) -> Field<bool> {
+        self.at.field("landscape")
+    }
+
+    /// The A/B–1/2/3 border round the drawing, so two people on a phone can name the
+    /// same part of it.
+    ///
+    /// PERSISTED.
+    pub fn frame(&self) -> Field<bool> {
+        self.at.field("frame")
+    }
+
+    /// PERSISTED.
+    pub fn title_block(&self) -> Field<bool> {
+        self.at.field("title_block")
+    }
+
+    /// PERSISTED.
+    pub fn blocks(&self) -> Field<Vec<SheetBlock>> {
+        self.at.field("blocks")
+    }
+}
+
 // ── show ────────────────────────────────────────────────────────────────
 
 /// Top-level show metadata.
@@ -3014,6 +3221,19 @@ impl ShowSingleton {
     /// PERSISTED.
     pub fn fade_curves(&self) -> Field<FadeCurves> {
         self.at.field("fade_curves")
+    }
+
+    /// Who this show is for and who drew it: the text in a sheet's title block.
+    ///
+    /// Show data, all of it, including the designer's own block — which is the same on
+    /// every show one company does and would sit as happily in `preferences.toml`. It
+    /// is here because a showfile travels: paperwork exported from a file you sent
+    /// somebody should still carry your name, and a station preference would have
+    /// their name on your drawing.
+    ///
+    /// PERSISTED.
+    pub fn production(&self) -> Field<Production> {
+        self.at.field("production")
     }
 }
 

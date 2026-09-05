@@ -17,13 +17,15 @@ use pult_schema::types::{
     group::{Group, SelectionClause, SelectionCombine, SelectionOrder, SelectionQuery,
             SelectionTerm},
     scene::Transform,
+    CueShot,
 };
 
 use super::{
     id,
     kit::{
         a_clamped_fixture, a_cue, a_piece, a_stack, a_type, boom, capture, colour, facing,
-        intensity, level, on, sky, truss_run, under, Addresses,
+        intensity, level, on, posed, production, sky, truss_run, under, weighing,
+        Addresses,
     },
     Seeder,
 };
@@ -55,9 +57,16 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     // for the cloth. Only the batten mixes, which is why it is the one with a colour
     // parameter — everything else is a lantern with gel in it, and a console that
     // offered a colour picker for one would be lying.
-    let profile = a_type("Profile 26°", vec![intensity()]);
-    let fresnel = a_type("Fresnel 1kW", vec![intensity()]);
-    let cyc = a_type("LED Cyc Batten", vec![intensity(), colour()]);
+    let profile =
+        weighing(a_type("Profile 26°", vec![intensity()]), 8.2, 750.0, (0.30, 0.35, 0.60));
+    let fresnel =
+        weighing(a_type("Fresnel 1kW", vec![intensity()]), 6.5, 1000.0, (0.28, 0.38, 0.32));
+    let cyc = weighing(
+        a_type("LED Cyc Batten", vec![intensity(), colour()]),
+        9.0,
+        200.0,
+        (1.00, 0.25, 0.20),
+    );
     let types: Vec<&FixtureType> = vec![&profile, &fresnel, &cyc];
     for kind in &types {
         into.create("fixture_types", *kind).await?;
@@ -239,6 +248,28 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         cues.push(cue);
     }
 
+    // "Dawn": front, back and the cyc at full, which is the one state in this stack
+    // where every system in the rig is doing something and the cyc has a colour in it.
+    // Its fade is eight seconds, so the shot is taken at ten — five would have caught
+    // it most of the way up and drawn a rig that looks underlit rather than one that
+    // looks like dawn.
+    let dawn = cues
+        .iter()
+        .find(|cue| cue.name == "Dawn")
+        .map(|cue| CueShot::at(cue.id, 10_000));
+
     a_stack(into, "Main", cues, false).await?;
+
+    into.describe_the_production(production(
+        "The Winter's Tale",
+        "The Corn Exchange",
+        "Market Square, Northgate",
+        "02.05.2026 - 05.05.2026",
+        "Halliwell Lighting Design",
+        "studio@halliwell-ld.example",
+    ))
+    .await?;
+    posed(into, dawn.into_iter().collect()).await?;
+
     Ok(())
 }

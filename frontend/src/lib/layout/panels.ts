@@ -40,6 +40,7 @@ import ObjectsPanel from '$lib/components/stage/ObjectsPanel.svelte';
 import ObjectPanel from '$lib/components/stage/ObjectPanel.svelte';
 import PiecesPanel from '$lib/components/stage/PiecesPanel.svelte';
 import ToolsPanel from '$lib/components/stage/ToolsPanel.svelte';
+import PaperworkPanel from '$lib/components/paperwork/PaperworkPanel.svelte';
 
 export type PanelId = keyof typeof PANELS;
 
@@ -109,6 +110,9 @@ export const PANELS = {
 	// No edit toggle: this panel is an editor, and it writes to the programmer
 	// rather than to the show.
 	effects: { title: 'Effects', component: EffectsPanel, fills: false },
+	// The sheets, and the one button that writes them. `fills`, because a sheet is a
+	// piece of A3 and a tile that hands it half its height is a preview nobody can read.
+	paperwork: { title: 'Paperwork', component: PaperworkPanel, fills: true },
 	history: { title: 'History', component: HistoryPanel, fills: false },
 	// Not the History panel: that is the oplog, this is diagnostics. `fills`,
 	// because a log wants every line it can get rather than a fixed block.
