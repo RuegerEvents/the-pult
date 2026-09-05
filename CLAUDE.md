@@ -104,6 +104,26 @@ offset the way a round-trip time is estimated, maintains it rather than taking i
 and — this is the rule that matters — **says nothing until it has one**: `consoleNow()`
 answers `null` and panels show a gap rather than a plausible wrong number.
 
+**And so does a station, about the leader's.** Same failure between two consoles, and it
+reaches lamps rather than pixels: `live_fades`, `live_effects` and a cue's `went_at` are
+absolute milliseconds, so a station evaluating a peer's fade against its own clock runs
+it out by their skew. `pult_schema::clock` is the answer — **the leader's clock is the
+show clock**, a follower estimates the offset over `ClockPing`/`ClockPong` on the sync
+link, and `now_ms()` applies it, which corrects playback, the connectors, a Go's `at`, a
+log line and the answer a browser syncs against all at once. The estimator is
+`ws/clock.ts`'s arithmetic, held to it by `testdata/clock-offset.json`.
+
+Four rules there, each of which is a way the rig would otherwise jump. A correction under
+20 ms applies, over 1 s steps, and in between is **walked at 5% of real time** — because
+`now_ms` is monotone-from-a-base precisely so a stepping system clock cannot jump every
+running fade, and correcting it puts that back unless it is disciplined. It is **never
+stepped backwards** at any size: that falls before a landed fade's `t1` and starts a
+parameter that had arrived moving again. A **promoted leader keeps the offset it had**,
+as a standing bias, so the show clock is continuous across a failover — after one, show
+time is no machine's wall clock but a timeline the session carries. And a station with no
+estimate yet **applies zero and says so**, in a `warn` and in its row: `consoleNow()`'s
+rule is right for a page, which can show a gap, and wrong for a lamp.
+
 What is *sensed* is the exception and stays state. `Fixture::sensed_values` holds what a
 device reported — a contact, a temperature, a humidity — because the console cannot work
 that out: it was told it. Driven outputs are functions; sensed inputs are state.
@@ -249,9 +269,8 @@ console nobody is watching.
 **Ordering is honest, not exact.** Each line carries its emitting station's `seq` and
 clock: `(node_id, seq)` dedupes the backlog against the live stream and makes a dropped
 line *visible* ("1,204 lines did not arrive") rather than a silent hole. Across
-stations the merge is by `at_ms`, which is only as good as their skew — see
-`station-clock-offset` in the roadmap, which is a live correctness hole in fades and
-not only a cosmetic one in logs.
+stations the merge is by `at_ms`, which is only as good as their skew — and since task
+64 that skew is corrected, so the interleave got better without this code changing.
 
 ```
 cargo test -p pult-backend --lib logging      # the ring, the levels, the file
@@ -262,9 +281,18 @@ PULT_LOG_DIR=/somewhere cargo run -p pult-backend   # where this run's file goes
 ## What it costs, and the browser is one of the machines
 
 **Stations is who is here; System is what it costs.** The first panel is the network —
-leader, addresses, the link measured from here. The second is processor, memory,
-uptime, a line per output connector out of `Station::frame_costs`, and the browsers.
-Latency is in both deliberately, being the one figure that answers both questions.
+leader, addresses, the link measured from here, and what each station is doing about the
+show clock. The second is processor, memory, uptime, a line per output connector out of
+`Station::frame_costs`, and the browsers. Latency is in both deliberately, being the one
+figure that answers both questions.
+
+**The clock column is three states, because two of them are zero.** `ClockSync` on the
+station row is `Reference | Corrected | Uncorrected`: a station that *is* the clock and a
+station that could not measure one are both adding nothing, and one figure meaning both
+would be exactly the plausible-wrong-number the mechanism exists to remove. Beside it and
+LOCAL, `PeerLink::offset_ms` is how far that peer's *show* clock is from this one's —
+about zero on a converged link however far either is correcting itself, which is what
+makes it answer "do these two consoles agree" rather than "how odd is that machine".
 
 **A browser is not a station and must not appear in `stations`.** That collection is
 one row per node, written by the node about itself and replicated; a tab that closes

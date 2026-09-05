@@ -62,11 +62,12 @@ pub struct PeerSender(pub mpsc::Sender<SyncMessage>);
 
 /// What a peer connection carries besides the show.
 ///
-/// Both of these are diagnostics that cross a link **because somebody asked**, and
-/// both live on the connection: a station that goes away takes its asks with it, and
+/// Most of these are diagnostics that cross a link **because somebody asked**, and
+/// they live on the connection: a station that goes away takes its asks with it, and
 /// nothing has to expire. Bundled rather than threaded separately because they arrive
 /// at the same place by the same route, and a fifth positional `Option<...>` through
-/// four signatures is how the wrong one gets passed.
+/// four signatures is how the wrong one gets passed — which is also why the one field
+/// here that is *not* an ask rides along rather than becoming a ninth argument.
 #[derive(Clone, Default)]
 pub struct Watched {
     /// This station's log, so a peer that asked for more can be published to.
@@ -80,6 +81,15 @@ pub struct Watched {
     /// The exchange, for the one message that has to reach it: an ask relayed from an
     /// operator standing at another station. `None` where nothing is running one.
     pub xchange: Option<crate::infra::interop::xchange::XchangeHandle>,
+    /// Added to what this station *reports* its show clock to be, and to nothing it
+    /// applies.
+    ///
+    /// Zero everywhere but in a test. Two stations inside one process share a machine
+    /// clock and a process-wide correction, so their real skew is exactly zero and
+    /// there is nothing for an estimate to converge on; skewing what one of them
+    /// *answers* is what gives a test a disagreement to watch being measured, without
+    /// asserting on a corrected clock that both of them share.
+    pub report_skew_ms: i64,
 }
 
 /// Spawns an outbound peer connection task.
@@ -284,6 +294,16 @@ async fn handle_inbound(
 /// How often a heartbeat goes out.
 pub const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long a settled clock estimate stands before it is taken again. Clocks drift,
+/// and an offset measured once at connect would be wrong from then until a reconnect —
+/// the same reason `ws/clock.ts` maintains its estimate rather than taking one.
+pub const CLOCK_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long an unanswered `ClockPing` waits before being asked again. A burst is
+/// answer-driven, so without this a single dropped frame would stall an estimate until
+/// the refresh came round.
+pub const CLOCK_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// How long a peer can stay silent before the connection is considered dead.
 /// Three missed heartbeats: long enough to ride out a hiccup, short enough that a
 /// pulled cable does not leave a ghost in the peer map for a whole show.
@@ -325,6 +345,11 @@ async fn run_peer_loop(
     let mut heartbeat_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut liveness_tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut last_heard = tokio::time::Instant::now();
+    // The clock estimate for this link, and when to ask next. A deadline rather than
+    // an interval because the cadence is not one: five questions back-to-back while a
+    // burst is in progress, then half a minute of quiet, then five more.
+    let mut estimate = pult_schema::clock::Estimate::default();
+    let mut clock_deadline = tokio::time::Instant::now();
 
     // Reading happens in its own task rather than in the `select!` below.
     //
@@ -392,6 +417,52 @@ async fn run_peer_loop(
                             })
                             .await;
                     }
+                    continue;
+                }
+                // A clock question is answered from here for the same reason a
+                // heartbeat is — the write half is in scope — and, more to the point,
+                // answered *immediately*: every millisecond between the question
+                // arriving and the answer leaving is a millisecond of round trip the
+                // asker is about to halve and attribute to the network.
+                if let SyncMessage::ClockPing { sent_at } = msg {
+                    let station_ms =
+                        pult_schema::clock::now_ms() as i64 + watched.report_skew_ms;
+                    let pong = SyncMessage::ClockPong {
+                        sent_at,
+                        station_ms: station_ms.max(0) as u64,
+                    };
+                    if let Err(e) = write_frame(&mut write_half, &pong).await {
+                        break Err(e);
+                    }
+                    continue;
+                }
+                if let SyncMessage::ClockPong { sent_at, station_ms } = msg {
+                    // Measured against this machine's *raw* clock, not the corrected
+                    // one, so the answer is the whole offset every time rather than a
+                    // residual added to whatever is already applied — which would be
+                    // a feedback loop with this link's jitter in it.
+                    let sample = pult_schema::clock::Sample::taken(
+                        sent_at,
+                        station_ms,
+                        pult_schema::clock::machine_now_ms(),
+                    );
+                    let best = estimate.add(sample);
+                    let _ = to_manager
+                        .send(SyncCommand::PeerClock {
+                            node_id: peer_node_id,
+                            offset_ms: best.offset_ms,
+                            rtt_ms: best.rtt_ms,
+                        })
+                        .await;
+                    // The answer asks the next question, until the burst is full —
+                    // which is what gets a station that joined mid-show an estimate in
+                    // five round trips rather than in five heartbeats.
+                    let next = if estimate.is_complete() {
+                        CLOCK_REFRESH
+                    } else {
+                        std::time::Duration::ZERO
+                    };
+                    clock_deadline = tokio::time::Instant::now() + next;
                     continue;
                 }
                 // The log messages are answered here for the same reason a heartbeat
@@ -563,6 +634,19 @@ async fn run_peer_loop(
                 outstanding.sent(heartbeat_seq, tokio::time::Instant::now());
                 heartbeat_seq += 1;
             }
+            // Ask what time it is. Cheap enough to be unconditional: five small frames
+            // per burst, one per round trip, and nothing at all for the thirty seconds
+            // between bursts.
+            _ = tokio::time::sleep_until(clock_deadline) => {
+                let ping = SyncMessage::ClockPing { sent_at: pult_schema::clock::machine_now_ms() };
+                if let Err(e) = write_frame(&mut write_half, &ping).await {
+                    break Err(e);
+                }
+                // Re-armed for the retry rather than for the next burst: an answer
+                // moves this deadline itself, so what is left here is what happens if
+                // one never comes.
+                clock_deadline = tokio::time::Instant::now() + CLOCK_RETRY;
+            }
             // Liveness. A TCP connection can stay open long after the node behind it
             // has stopped answering, so silence is what we watch, not the socket.
             _ = liveness_tick.tick() => {
@@ -633,8 +717,10 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
         SyncMessage::SyncedBroadcast { path, value, clock, authorship, .. } => {
             apply_synced(engine, peer_node_id, path, value, clock, authorship).await;
         }
-        // Heartbeat is answered in run_peer_loop, which holds the write half.
+        // Heartbeat is answered in run_peer_loop, which holds the write half. So is
+        // the clock exchange, and for a sharper version of the same reason.
         SyncMessage::Heartbeat { .. } | SyncMessage::HeartbeatAck { .. } => {}
+        SyncMessage::ClockPing { .. } | SyncMessage::ClockPong { .. } => {}
         // Both answered in run_peer_loop, which holds the connection's own ask.
         SyncMessage::LogLines { .. } | SyncMessage::LogRaise { .. } => {}
         // The same: this connection holds the ask and the answer.

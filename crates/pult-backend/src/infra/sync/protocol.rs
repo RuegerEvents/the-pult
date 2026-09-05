@@ -26,7 +26,7 @@ use pult_schema::{
 // leader is on the wire for — is visible from, and drivable at, every station. The
 // state goes one way like a log line and the ask goes the other like a raise; neither
 // is show state, and neither is replicated, persisted or undone.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -155,6 +155,30 @@ pub enum SyncMessage {
     },
     HeartbeatAck {
         seq: u64,
+    },
+    /// What time do you think it is?
+    ///
+    /// Its own exchange rather than a stamp on the heartbeat, which already goes
+    /// back and forth every five seconds and could have carried one. Cadence is why:
+    /// an estimate is the best of a handful of samples, so a heartbeat-borne one is
+    /// twenty-five seconds from being any good, and a station that joins mid-show has
+    /// a rig to drive on its first frame. These burst — the answer asks the next
+    /// question — and then go quiet for thirty seconds, and the heartbeat's own
+    /// interval stays chosen for liveness, which is what it was chosen for.
+    ///
+    /// `sent_at` is the asker's own *machine* clock and comes back untouched: only
+    /// the asker ever reads it, so no two stations have to agree on it for it to work.
+    ClockPing {
+        sent_at: u64,
+    },
+    /// The answer, carrying this station's **show** clock rather than its machine one.
+    ///
+    /// Which is what makes a promoted leader's standing bias propagate with no field
+    /// to carry it: a station that inherited an offset answers in the timeline the
+    /// session is already running on, and its followers estimate towards that.
+    ClockPong {
+        sent_at: u64,
+        station_ms: u64,
     },
 }
 

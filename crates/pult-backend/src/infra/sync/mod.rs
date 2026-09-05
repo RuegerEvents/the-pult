@@ -59,6 +59,14 @@ pub enum SyncCommand {
     /// belongs to this node: the same link measured from the other end is a
     /// different path and a different number.
     PeerLatency { node_id: NodeId, rtt: std::time::Duration, unanswered: u32 },
+    /// A clock estimate came back from this peer: how far its show clock is ahead of
+    /// this machine's own, and the round trip it was measured over.
+    ///
+    /// Every link estimates, and the leader's is the one that is *applied* — the rest
+    /// are kept as the per-link diagnostic, because a rig wants to know whether its
+    /// consoles agree about the time whether or not the correction happens to come
+    /// from that machine.
+    PeerClock { node_id: NodeId, offset_ms: f64, rtt_ms: f64 },
     /// The leader told us who is in the session.
     SetMembers(Vec<NodeId>),
     /// Query who this node currently believes leads the session.
@@ -298,6 +306,14 @@ impl SyncManager {
         self.watched.xchange = Some(xchange);
     }
 
+    /// Answer clock questions this far out, and apply nothing differently.
+    ///
+    /// A test hook — see `Config::clock_skew_ms`. Set before `run` for the reason the
+    /// three above are: a station's first peer can arrive at once.
+    pub fn reporting_clock_skew(&mut self, ms: i64) {
+        self.watched.report_skew_ms = ms;
+    }
+
     /// Be told when this node is promoted to leader.
     pub fn on_promotion(&mut self, tx: mpsc::Sender<NodeId>) {
         self.promoted = Some(tx);
@@ -519,6 +535,35 @@ impl SyncManager {
                     link.unanswered = unanswered;
                 });
             }
+            SyncCommand::PeerClock { node_id, offset_ms, rtt_ms } => {
+                // Applied only from the reference, and never from ourselves: a leader
+                // measuring a follower and correcting towards it would make the show
+                // clock chase the machine it is supposed to be the answer for.
+                let leading = *self.leader.borrow() == self.node_id;
+                if !leading && node_id == *self.leader.borrow() {
+                    pult_schema::clock::correct_towards(offset_ms);
+                }
+                // Published as a *show*-clock difference rather than a machine one, so
+                // a converged link reads about zero however far this station is
+                // correcting its own — which is what makes the column answer "do we
+                // agree" rather than "how odd is this machine".
+                let disagreement = (offset_ms - pult_schema::clock::offset_ms()) as f32;
+                self.links.send_modify(|links| {
+                    // The clock half only, for the reason `PeerLatency` writes only
+                    // the latency half.
+                    let link = links.entry(node_id.0.to_string()).or_insert_with(|| PeerLink {
+                        node_id: Some(node_id),
+                        ..Default::default()
+                    });
+                    link.node_id = Some(node_id);
+                    link.offset_ms = Some(disagreement);
+                    link.measured_at = Some(chrono::Utc::now());
+                });
+                debug!(
+                    "[sync] peer {} clock {:+.1} ms over {:.1} ms round trip",
+                    node_id.0, disagreement, rtt_ms
+                );
+            }
             SyncCommand::PeerLost(node_id) => {
                 self.links.send_modify(|links| {
                     links.remove(&node_id.0.to_string());
@@ -569,6 +614,14 @@ impl SyncManager {
 
         if winner == self.node_id {
             info!("[sync] leader {} is gone; taking over", lost.0);
+            // This station is the reference now, and it keeps the offset it had
+            // estimated to the leader that just died. So the show clock is continuous
+            // across the failover and nothing in flight moves — which is the whole
+            // point, a fade lurching at the exact moment a console fails being the
+            // worst available time for one. The consequence, written down in
+            // `pult_schema::clock`: after a failover show time is no machine's wall
+            // clock but a timeline the session carries.
+            pult_schema::clock::hold_as_reference();
             self.fan_out(SyncMessage::LeaderChanged { new_leader_node_id: winner });
             self.publish_members();
             if let Some(tx) = &self.promoted {

@@ -45,6 +45,54 @@ pub struct ChannelFunctionRange {
     pub physical_to: f32,
 }
 
+/// Which of the three a station is in.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum ClockState {
+    /// This station leads the session, so show time is its own clock — plus whatever
+    /// bias it inherited if it was promoted into the job. Nothing corrects it.
+    #[default]
+    Reference,
+    /// A follower with an estimate, running the reference's clock.
+    Corrected,
+    /// A follower with no estimate yet, applying zero *provisionally* and saying so.
+    ///
+    /// It goes on driving its rig: `consoleNow()`'s rule — say nothing until you have
+    /// one — is right for a browser and wrong here, because a page can show a gap and
+    /// a lamp cannot.
+    Uncorrected,
+}
+
+/// What a station is doing about the show clock, as it reports about itself.
+///
+/// Three states rather than a number, because the two that would otherwise both read
+/// as zero are the two that must not look alike: a station that *is* the reference and
+/// a station that has not managed to measure anything are both adding nothing to their
+/// own clock, and only one of them is right to. That is this whole task's rule applied
+/// to its own reporting — a plausible number where there is no answer is the failure
+/// being fixed, not a tidy way to report it.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClockSync {
+    pub state: ClockState,
+    /// What this station is adding to its own clock right now, in milliseconds. Zero
+    /// for a reference, and zero-and-provisional for an uncorrected follower.
+    pub offset_ms: f32,
+    /// True while that is still walking towards the last estimate rather than sitting
+    /// on it — a station converging, which is a different thing from one that has
+    /// arrived. See `pult_schema::clock` for the bands.
+    pub converging: bool,
+    /// When an estimate last landed. `None` on a station that has never had one.
+    pub measured_at: Option<Timestamp>,
+}
+
 /// A socket on the fixture.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Connector {
@@ -1946,6 +1994,16 @@ pub struct Station {
     pub net_sent: u64,
     #[serde(default)]
     pub net_window_ms: u32,
+    /// What this station is doing about the show clock.
+    ///
+    /// SYNCED rather than LOCAL, unlike the per-peer figures on `PeerLink`, because
+    /// the question it answers is about the *session*: a console showing the Stations
+    /// panel is asking whether every machine driving this rig agrees what time it is,
+    /// and a station that cannot say is exactly the one worth seeing from elsewhere.
+    ///
+    /// Defaulted, and the default is `Reference` — a lone console is its own clock.
+    #[serde(default)]
+    pub clock: ClockSync,
     /// When this station last said any of the above.
     pub last_seen: Timestamp,
 }

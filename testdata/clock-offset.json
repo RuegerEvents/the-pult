@@ -1,0 +1,125 @@
+{
+  "about": [
+    "What a clock offset comes to, read by two test suites:",
+    "crates/pult-schema/src/clock.rs and frontend/src/lib/clock.test.ts.",
+    "",
+    "A browser has to know the station's clock or every fade it draws runs out by",
+    "however wrong its own clock is; a station has to know the session leader's or",
+    "every fade it *drives* does. Same question, same arithmetic, two",
+    "implementations — ws/clock.ts and pult_schema::clock — so this file is what",
+    "holds them to each other, as testdata/transforms.json does for the scene graph.",
+    "",
+    "The `samples` half is what both do: stamp the question, halve the round trip,",
+    "and keep the sample whose round trip was shortest rather than averaging. A",
+    "short round trip is the one least likely to have queued in either direction, so",
+    "its midpoint is closest to the truth; a mean is dragged by exactly the samples",
+    "worth least. Times are milliseconds on the asking machine's own clock, and",
+    "`stationMs` is what the far end said its show clock was.",
+    "",
+    "The `bands` half is the station's alone, and is read only by the Rust suite. A",
+    "browser draws a picture and a station drives a rig, so only one of them has to",
+    "say what a correction does to a fade that is running while it lands: under 20 ms",
+    "apply, over 1000 ms step, in between walk at 5% of real time — and never",
+    "backwards at any size, because a backward step falls before a landed fade's t1",
+    "and starts a parameter that had arrived moving again."
+  ],
+  "samples": [
+    {
+      "name": "one answer is an estimate",
+      "answers": [{ "sentAt": 1000, "stationMs": 1500, "receivedAt": 1040 }],
+      "offsetMs": 480,
+      "rttMs": 40
+    },
+    {
+      "name": "a clock already in step reads as zero",
+      "answers": [{ "sentAt": 0, "stationMs": 10, "receivedAt": 20 }],
+      "offsetMs": 0,
+      "rttMs": 20
+    },
+    {
+      "name": "the shortest round trip wins, not the average",
+      "answers": [
+        { "sentAt": 0, "stationMs": 1000, "receivedAt": 100 },
+        { "sentAt": 200, "stationMs": 1210, "receivedAt": 210 },
+        { "sentAt": 300, "stationMs": 1700, "receivedAt": 700 }
+      ],
+      "offsetMs": 1005,
+      "rttMs": 10
+    },
+    {
+      "name": "a full burst keeps its best, and a slow sixth does not talk it out of it",
+      "answers": [
+        { "sentAt": 0, "stationMs": 100, "receivedAt": 50 },
+        { "sentAt": 100, "stationMs": 210, "receivedAt": 140 },
+        { "sentAt": 200, "stationMs": 320, "receivedAt": 230 },
+        { "sentAt": 300, "stationMs": 430, "receivedAt": 320 },
+        { "sentAt": 400, "stationMs": 540, "receivedAt": 410 },
+        { "sentAt": 500, "stationMs": 800, "receivedAt": 700 }
+      ],
+      "offsetMs": 135,
+      "rttMs": 10
+    },
+    {
+      "name": "a station behind the reference gives a negative offset",
+      "answers": [{ "sentAt": 10000, "stationMs": 9000, "receivedAt": 10020 }],
+      "offsetMs": -1010,
+      "rttMs": 20
+    }
+  ],
+  "bands": [
+    {
+      "name": "under 20 ms is the estimate's own noise, and applies at once",
+      "appliedMs": 0,
+      "measuredMs": 12,
+      "after": [
+        { "elapsedMs": 0, "offsetMs": 12 },
+        { "elapsedMs": 1000, "offsetMs": 12 }
+      ]
+    },
+    {
+      "name": "the middle band is walked at a twentieth of real time",
+      "appliedMs": 0,
+      "measuredMs": 400,
+      "after": [
+        { "elapsedMs": 0, "offsetMs": 0 },
+        { "elapsedMs": 4000, "offsetMs": 200 },
+        { "elapsedMs": 8000, "offsetMs": 400 },
+        { "elapsedMs": 20000, "offsetMs": 400 }
+      ]
+    },
+    {
+      "name": "just under a second is still a walk",
+      "appliedMs": 0,
+      "measuredMs": 999,
+      "after": [
+        { "elapsedMs": 0, "offsetMs": 0 },
+        { "elapsedMs": 1000, "offsetMs": 50 }
+      ]
+    },
+    {
+      "name": "a second forward is a different clock, and is stepped",
+      "appliedMs": 0,
+      "measuredMs": 1000,
+      "after": [{ "elapsedMs": 0, "offsetMs": 1000 }]
+    },
+    {
+      "name": "backwards is never stepped, however far back it is",
+      "appliedMs": 0,
+      "measuredMs": -5000,
+      "after": [
+        { "elapsedMs": 0, "offsetMs": 0 },
+        { "elapsedMs": 1000, "offsetMs": -50 },
+        { "elapsedMs": 100000, "offsetMs": -5000 }
+      ]
+    },
+    {
+      "name": "a correction from a standing bias walks from where it is",
+      "appliedMs": 250,
+      "measuredMs": 300,
+      "after": [
+        { "elapsedMs": 0, "offsetMs": 250 },
+        { "elapsedMs": 1000, "offsetMs": 300 }
+      ]
+    }
+  ]
+}

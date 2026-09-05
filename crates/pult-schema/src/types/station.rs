@@ -113,6 +113,17 @@ pub struct Station {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub net_window_ms: u32,
+    /// What this station is doing about the show clock.
+    ///
+    /// SYNCED rather than LOCAL, unlike the per-peer figures on `PeerLink`, because
+    /// the question it answers is about the *session*: a console showing the Stations
+    /// panel is asking whether every machine driving this rig agrees what time it is,
+    /// and a station that cannot say is exactly the one worth seeing from elsewhere.
+    ///
+    /// Defaulted, and the default is `Reference` — a lone console is its own clock.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub clock: ClockSync,
     /// When this station last said any of the above.
     #[pult(lifecycle = SYNCED)]
     pub last_seen: DateTime<Utc>,
@@ -342,6 +353,20 @@ pub struct PeerLink {
     pub node_id: Option<NodeId>,
     /// Round-trip time of the last answered heartbeat, in milliseconds.
     pub rtt_ms: Option<f32>,
+    /// How far this peer's *show* clock is ahead of ours, in milliseconds.
+    ///
+    /// Show clock rather than machine clock on both sides, so a converged link reads
+    /// about zero however far either station is correcting its own — which makes this
+    /// the figure that answers "do these two consoles agree what time it is", asked
+    /// per link. The leader's link is the one whose reading is also *applied*; the
+    /// rest are the same measurement kept as a diagnostic, since a rig wants to know
+    /// its skew whether or not the correction happens to come from that machine.
+    ///
+    /// `None` until a burst has answered. It stays put when a link drops rather than
+    /// being cleared: the peer's clock did not change because a cable did, and
+    /// `measured_at` already says how old it is.
+    #[serde(default)]
+    pub offset_ms: Option<f32>,
     /// When that heartbeat came back.
     pub measured_at: Option<DateTime<Utc>>,
     /// Heartbeats sent with no answer yet. Non-zero is a link in trouble.
@@ -365,6 +390,47 @@ pub struct PeerLink {
     /// How long that window was, so a rate can be read off it.
     #[serde(default)]
     pub window_ms: u32,
+}
+
+/// What a station is doing about the show clock, as it reports about itself.
+///
+/// Three states rather than a number, because the two that would otherwise both read
+/// as zero are the two that must not look alike: a station that *is* the reference and
+/// a station that has not managed to measure anything are both adding nothing to their
+/// own clock, and only one of them is right to. That is this whole task's rule applied
+/// to its own reporting — a plausible number where there is no answer is the failure
+/// being fixed, not a tidy way to report it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ClockSync {
+    pub state: ClockState,
+    /// What this station is adding to its own clock right now, in milliseconds. Zero
+    /// for a reference, and zero-and-provisional for an uncorrected follower.
+    pub offset_ms: f32,
+    /// True while that is still walking towards the last estimate rather than sitting
+    /// on it — a station converging, which is a different thing from one that has
+    /// arrived. See `pult_schema::clock` for the bands.
+    pub converging: bool,
+    /// When an estimate last landed. `None` on a station that has never had one.
+    pub measured_at: Option<DateTime<Utc>>,
+}
+
+/// Which of the three a station is in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum ClockState {
+    /// This station leads the session, so show time is its own clock — plus whatever
+    /// bias it inherited if it was promoted into the job. Nothing corrects it.
+    #[default]
+    Reference,
+    /// A follower with an estimate, running the reference's clock.
+    Corrected,
+    /// A follower with no estimate yet, applying zero *provisionally* and saying so.
+    ///
+    /// It goes on driving its rig: `consoleNow()`'s rule — say nothing until you have
+    /// one — is right for a browser and wrong here, because a page can show a gap and
+    /// a lamp cannot.
+    Uncorrected,
 }
 
 /// Every peer this station is connected to, keyed by node id: the LOCAL `peers` path.
@@ -393,6 +459,7 @@ mod tests {
             net_received: 0,
             net_sent: 0,
             net_window_ms: 0,
+            clock: ClockSync::default(),
             last_seen,
         }
     }

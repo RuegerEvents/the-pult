@@ -3822,6 +3822,20 @@ impl StationEntity {
         self.at.field("net_window_ms")
     }
 
+    /// What this station is doing about the show clock.
+    ///
+    /// SYNCED rather than LOCAL, unlike the per-peer figures on `PeerLink`, because
+    /// the question it answers is about the *session*: a console showing the Stations
+    /// panel is asking whether every machine driving this rig agrees what time it is,
+    /// and a station that cannot say is exactly the one worth seeing from elsewhere.
+    ///
+    /// Defaulted, and the default is `Reference` — a lone console is its own clock.
+    ///
+    /// SYNCED.
+    pub fn clock(&self) -> Field<ClockSync> {
+        self.at.field("clock")
+    }
+
     /// When this station last said any of the above.
     ///
     /// SYNCED.

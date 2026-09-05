@@ -51,6 +51,37 @@
 		return link.unanswered > 0 ? `${rtt} · ${link.unanswered} missed` : rtt;
 	}
 
+	/**
+	 * What a station says about the show clock.
+	 *
+	 * Three states rather than a figure, because two of them are zero and only one is
+	 * right to be: a station that *is* the reference and one that has not managed to
+	 * measure anything are both adding nothing. Printing "0.0 ms" for both is the
+	 * plausible-wrong-number this whole mechanism exists to remove.
+	 */
+	function clock(station: Station): string {
+		const c = station.clock;
+		const said =
+			c.state === 'Reference'
+				? 'reference'
+				: c.state === 'Uncorrected'
+					? 'no offset yet'
+					: `${c.offset_ms >= 0 ? '+' : ''}${c.offset_ms.toFixed(1)} ms` +
+						(c.converging ? ' · converging' : '');
+		// What that station says about itself, and what this one measures of it. The
+		// second is the figure that answers "do these two consoles agree about the
+		// time", and it is measured over the link from here — so there is one only for
+		// somebody else, the way latency is.
+		const link = isSelf(station) ? null : links[station.id];
+		if (!link || link.offset_ms === null || link.offset_ms === undefined) return said;
+		return `${said} · ${Math.abs(link.offset_ms).toFixed(1)} ms apart`;
+	}
+
+	/// A station driving a rig against a clock nobody has placed. It goes on driving
+	/// it — a lamp cannot show a gap the way a panel can — which is exactly why the
+	/// row has to say so.
+	const uncorrected = $derived(stations.filter((s) => s.clock.state === 'Uncorrected'));
+
 	/// Every station computes every fixture today, so this is all-or-nothing until
 	/// parameter computation is partitioned.
 	const fixtureShare = (station: Station) =>
@@ -98,7 +129,7 @@
 			<table class="rack">
 				<thead>
 					<tr>
-						<th>Station</th><th>Role</th><th>Latency</th><th>Outputs</th>
+						<th>Station</th><th>Role</th><th>Latency</th><th>Clock</th><th>Outputs</th>
 						<th>Fixtures</th><th>Heard</th>
 					</tr>
 				</thead>
@@ -118,6 +149,11 @@
 								{/if}
 							</td>
 							<td class="num">{latency(station)}</td>
+							<td
+								class="num"
+								class:dim={station.clock.state === 'Reference'}
+								class:warnt={station.clock.state === 'Uncorrected'}
+							>{clock(station)}</td>
 							<td>
 								{#if station.output_plugins.length === 0}
 									<span class="dim">none</span>
@@ -138,6 +174,17 @@
 					been quiet for half a minute.
 				</p>
 			{/if}
+			{#if uncorrected.length > 0}
+				<p class="warn">
+					{uncorrected.length === 1
+						? `${uncorrected[0].hostname} has`
+						: `${uncorrected.length} stations have`} no offset to the leader's clock yet, and
+					{uncorrected.length === 1 ? 'is' : 'are'} running on
+					{uncorrected.length === 1 ? 'its' : 'their'} own. Every fade is anchored in an absolute
+					millisecond, so until that is measured this console and that one disagree about where a
+					running cue has got to — by however far apart their clocks are.
+				</p>
+			{/if}
 			{#if !partitioned}
 				<p class="note">
 					Every station computes every fixture — playback runs everywhere, which is what makes
@@ -149,6 +196,12 @@
 				Latency is measured from this station, so each console shows its own view of the
 				network rather than a shared one. What these machines are <em>costing</em> — CPU,
 				memory, and what their output frames took — is the System panel.
+			</p>
+			<p class="note">
+				The clock column is what each station adds to its own to get <em>show</em> time. The
+				leader is the reference and adds nothing; a follower measures the difference over the
+				sync link and works it off gradually, because a clock that steps steps every running
+				fade with it.
 			</p>
 		{/if}
 	</section>
@@ -170,6 +223,7 @@
 	.tag { background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 9px; color: #999; font-size: 10px; padding: 1px 6px; margin-left: 6px; }
 	.num { font-variant-numeric: tabular-nums; }
 	.dim { color: #666; }
+	.warnt { color: #fbbf24; }
 	.mono { font-family: monospace; }
 	.badge { font-size: 0.68rem; font-weight: 500; padding: 2px 7px; border-radius: 10px; }
 	.badge--green { background: #14532d44; color: #4ade80; border: 1px solid #14532d; }

@@ -86,6 +86,16 @@ pub struct Config {
     /// must not come back from one.
     #[serde(skip)]
     pub log: Option<crate::logging::LogHandle>,
+    /// Skew what this station *reports* its show clock to be, in milliseconds, and
+    /// nothing that it applies.
+    ///
+    /// A test hook, and here rather than in the environment for the reason
+    /// `identity` and `plugin_data` are: two stations inside one process share a
+    /// machine clock, a process-wide clock correction and every environment variable,
+    /// so a test that wants to watch a skew being measured has to be able to tell one
+    /// of them apart from the other.
+    #[serde(default)]
+    pub clock_skew_ms: i64,
 }
 
 fn default_bind() -> IpAddr { IpAddr::V4(Ipv4Addr::UNSPECIFIED) }
@@ -110,6 +120,7 @@ impl Default for Config {
             plugin_dirs: Vec::new(),
             plugin_data: None,
             log: None,
+            clock_skew_ms: 0,
         }
     }
 }

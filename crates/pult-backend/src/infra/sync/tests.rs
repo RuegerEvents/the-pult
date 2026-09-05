@@ -37,13 +37,24 @@ struct Node {
 
 /// A backend node with its own engine, showfile, and sync port.
 async fn a_node() -> Node {
+    a_node_reporting_skew(0).await
+}
+
+/// The same, but answering clock questions `skew_ms` out from what it really thinks.
+///
+/// Two stations inside one test process share a machine clock *and* the process-wide
+/// correction over it, so their real skew is exactly zero and there is nothing for an
+/// estimate to converge on. Skewing what one of them *answers* is what gives a test a
+/// disagreement to watch being measured.
+async fn a_node_reporting_skew(skew_ms: i64) -> Node {
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let id = NodeId(Uuid::new_v4());
     let (tx, rx) = tokio::sync::mpsc::channel(256);
     let engine = EngineHandle(tx);
 
-    let (manager, sync, addr) =
+    let (mut manager, sync, addr) =
         SyncManager::bind(id, 0, engine.clone(), None).await.expect("bind an ephemeral sync port");
+    manager.reporting_clock_skew(skew_ms);
     let sync_mgr_links = manager.peer_links();
     tokio::spawn(manager.run());
 
@@ -871,6 +882,7 @@ async fn a_station_row_reaches_the_other_console() {
         net_received: 0,
         net_sent: 0,
         net_window_ms: 0,
+        clock: Default::default(),
         last_seen: Utc::now(),
     };
     one.engine
@@ -921,6 +933,7 @@ async fn each_station_reports_its_own_frame_cost_and_not_the_others() {
         net_received: 0,
         net_sent: 0,
         net_window_ms: 0,
+        clock: Default::default(),
         last_seen: Utc::now(),
     };
 
@@ -1101,6 +1114,76 @@ async fn losing_a_peer_forgets_the_latency_to_it() {
     })
     .await;
     let _ = links.borrow_and_update();
+}
+
+// ── The show clock ────────────────────────────────────────────────────────────
+
+/// The estimate crosses a real link and lands on the link it was measured over.
+///
+/// The follower is the one told to lie, deliberately: a *leader* that lied would be
+/// lying about the show clock, and its follower — sharing this process's one
+/// correction — would apply the answer to the liar's own reading of it and chase
+/// itself. Skewing the follower puts the disagreement where nothing applies it, which
+/// is what makes this assertable at all inside one process.
+#[tokio::test]
+async fn a_peers_clock_shows_up_as_a_disagreement_on_its_link() {
+    const SKEW_MS: i64 = 2_500;
+
+    let leader = a_node().await;
+    let follower = a_node_reporting_skew(SKEW_MS).await;
+    follower
+        .sync
+        .connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4())
+        .await
+        .expect("the peer answers");
+
+    let mut links = leader.sync_mgr_links.clone();
+    eventually("the leader to measure its follower's clock", || {
+        let links = links.clone();
+        async move { links.borrow().values().any(|l| l.offset_ms.is_some()) }
+    })
+    .await;
+
+    let measured = links.borrow_and_update().clone();
+    let link = measured.get(&follower.id.0.to_string()).expect("a link to the follower");
+    let offset = link.offset_ms.expect("an offset");
+    assert!(
+        (offset - SKEW_MS as f32).abs() < 100.0,
+        "measured {offset} ms over loopback, wanted about {SKEW_MS}"
+    );
+    assert!(link.measured_at.is_some(), "and when it was measured");
+}
+
+/// The rule that keeps the reference the reference. A leader measures every peer,
+/// because a rig wants to know whether its consoles agree; what it must never do is
+/// take a follower's answer and correct towards it, which would make the show clock
+/// chase the machine it is supposed to be the answer for.
+#[tokio::test]
+async fn a_leader_measures_a_follower_and_does_not_chase_it() {
+    let leader = a_node().await;
+    let follower = a_node_reporting_skew(30_000).await;
+    follower
+        .sync
+        .connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4())
+        .await
+        .expect("the peer answers");
+
+    let mut links = leader.sync_mgr_links.clone();
+    eventually("the leader to measure its follower's clock", || {
+        let links = links.clone();
+        async move { links.borrow().values().any(|l| l.offset_ms.is_some()) }
+    })
+    .await;
+    let _ = links.borrow_and_update();
+
+    // Half a minute out, measured and published, and applied by nobody. The figure is
+    // the process's, which every station in this test binary shares — so it is also
+    // the assertion that this test did not move anybody else's clock.
+    assert!(
+        pult_schema::clock::offset_ms().abs() < 100.0,
+        "the show clock followed a follower: {} ms",
+        pult_schema::clock::offset_ms()
+    );
 }
 
 // ── Plugin stores ─────────────────────────────────────────────────────────────

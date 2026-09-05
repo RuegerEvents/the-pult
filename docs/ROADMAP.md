@@ -4609,6 +4609,135 @@ cd frontend && npm run check
 ```
 
 
+### 64. Two consoles that agree what time it is
+
+Every fade, every effect and every cue's `went_at` is anchored in an absolute
+millisecond, and nothing stores what a parameter is doing — it is worked out, per
+consumer, by evaluating those anchors against *now*. Which is exactly right on one
+station and wrong on two: the anchors replicate to the millisecond, the clocks they are
+read against do not, and station B evaluating station A's three-second fade runs it out
+by however far B's clock is from A's. Silently, with every individual value plausible.
+`types/sequence.rs` said "two stations still agree because they agree on the anchors they
+replicate, not on their clocks", and that sentence is only true if the clocks agree.
+Nothing was disciplining them: a show LAN with no route to the internet is ordinary on an
+isolated Art-Net network, and there is no NTP on it.
+
+**PTP was researched and refused, and the survey is the part worth keeping** so nobody
+does it again. `statime` is the only real Rust PTP stack and it ships exactly one working
+port — `statime-linux`; anything else is "implement a suitable binary yourself", meaning a
+`Clock`, the two PTP sockets, the timers and packet timestamping, per platform. Kernel
+timestamping is `SO_TIMESTAMPING` and Linux-only; macOS has no general equivalent, its PTP
+living inside the AVB audio stack, and Windows has it on some NICs and statime consumes
+none of it. `clock-steering` is Unix and wants `CAP_SYS_TIME`, so **a console cannot steer
+the OS clock anyway** and would hold PTP's answer as a software offset — which is the
+estimator's architecture, reached after three platform ports. And an isolated show LAN
+usually has no grandmaster to sync to, so the console would be electing one: the design
+below, expensively. An output frame is 25 ms and a fade is seconds. If
+`timecode-workflow` reopens this, it will be for sub-millisecond alignment against
+*other departments*, which is a different question from this one.
+
+**So: the leader's clock is the show clock.** No anchor records which station wrote it —
+`live_fades` carries a `t0` and nothing else — so there is nothing to correct against on
+read, and one reference is what removes the need for one. Every station estimates over
+every peer link and *applies* the leader's. The estimator is `ws/clock.ts`'s, to the
+millisecond: stamp the question, halve the round trip, keep the sample whose round trip
+was shortest rather than averaging, and publish on the first rather than the fifth. The
+two are held together by `testdata/clock-offset.json`, read by `pult_schema::clock`'s
+tests and by `ws/clock.test.ts` — the rule this repo applies to everything written twice.
+
+**A dedicated exchange that bursts, not a stamp on the heartbeat.** `ClockPing`/`ClockPong`
+at protocol version 8. The heartbeat was the obvious carrier and is the wrong one: it runs
+every five seconds, so a best-of-five estimate is *twenty-five seconds* away, and a station
+joining mid-show has a rig to drive on its first frame. These are answer-driven — the
+answer asks the next question — so a burst finishes in five round trips, and then the link
+goes quiet for thirty seconds. A peer answers with its own **show** clock rather than its
+machine one, which is what makes a promoted leader's bias propagate with no field carrying
+it.
+
+**The correction lives inside `now_ms()`,** one process-wide offset, so playback, the
+connectors, the `at` a Go carries, a log line's `at_ms` and the answer a browser syncs
+against are all corrected at once. The browser inherits show time with no protocol change
+and `ws/clock.ts` is untouched; task 48's cross-station log interleave got better for free.
+And the arithmetic deliberately does not feed back on itself: a sample compares the
+reference's *corrected* clock against this machine's *raw* one, so the answer is the whole
+offset every time rather than a residual added to whatever is applied.
+
+**Three bands, and never backwards.** Under 20 ms is the estimator's own noise and applies
+directly. Above 1 s is not drift but a different clock and is stepped. In between it is
+walked at 5% of real time — 200 ms in four seconds, the show running 5% fast or slow while
+it happens, which is well under a cue's perceptual floor and far less visible than a step.
+A backward correction is *never* stepped at any size: it would fall before a landed fade's
+`t1` and start a parameter that had arrived moving again, which nothing else in the
+evaluator can cause. `now_ms` was already monotone-from-a-base precisely so a stepping
+system clock could not jump the rig mid-cue; correcting it towards a reference puts that
+hazard straight back unless the correction is disciplined, and the bands are that
+discipline.
+
+**A promoted leader keeps the offset it had.** It stops correcting and holds what is
+applied as a standing bias, so the show clock is *continuous* across a failover and
+nothing in flight moves — a fade lurching at the exact moment a console fails being the
+worst available time for one. The consequence, written down rather than discovered later:
+after a failover show time is no machine's wall clock but a timeline the session carries.
+
+**Before there is an estimate: apply zero, and say so.** `consoleNow()`'s rule — say
+nothing until you have one — is right for a browser and wrong here, because a page can
+show a gap and a lamp cannot. So a station with no offset goes on driving its rig at its
+own clock, warns when it enters that state, and says so continuously in its row. Losing
+the link does **not** forget the offset either: the leader's clock did not change because
+a cable did, and forgetting would mean stepping to zero and back — two corrections where
+the truth is none. It is kept, `measured_at` says how old it is, and a reconnect bursts
+again.
+
+**Published as three states, because two of them are zero.** `ClockSync` on the station
+row is `Reference | Corrected | Uncorrected` plus the figure and whether it is still
+converging. A station that *is* the clock and a station that could not measure one are
+both adding nothing, and a single `Option<f32>` that meant both would be the
+plausible-wrong-number this whole task exists to remove. Beside it, LOCAL, `PeerLink`
+gains `offset_ms`: how far that peer's *show* clock is from ours, so a converged link
+reads about zero however far either station is correcting its own — the column that
+answers "do these two consoles agree", asked per link, the way latency is.
+
+### The traps
+
+**Two stations in one process share the clock, so there is nothing to converge on.**
+The offset is process-wide and so is `now_ms`'s base, which makes a test binary's two
+stations agree exactly — and worse, a follower applying a correction would move the
+leader's reading of its own clock, and the pair would chase each other. So a station can
+be told to skew *what it reports* and nothing it applies (`Config::clock_skew_ms`), and
+the test skews the **follower**, asserting the leader's measurement of it. The leader
+applies nothing, being the reference, which is the second assertion: `a_leader_measures_a_
+follower_and_does_not_chase_it` also checks that the process's own offset never moved.
+
+**The corpus had to pin the rule, not a copy of it.** The first version of the band test
+reimplemented the three bands inside the test and then asserted against them, which is a
+test that passes when the rule is wrong. `Correction::corrected_towards` is pure and takes
+the clock as an argument, so the corpus drives the real thing and no test needs a clock.
+
+**A re-estimate mid-slew has to start from where the walk reached.** Re-basing from where
+the previous walk *began* makes the clock jump backwards by however far it had got — the
+one thing the module exists to prevent, arrived at from inside.
+
+**And `frontend/src/lib/ws/clock.test.ts` already existed.** The corpus block was written
+as a sibling file first. Two test files for one module is how a rule ends up asserted
+twice and changed once.
+
+**And one that was not a trap of this task's, checked rather than assumed.** A full
+`cargo test` failed a multi-station test on two runs out of three — `roster` once,
+`shows` once — which is exactly the shape a change to the sync layer would produce. It
+was not one: with the whole change *stashed*, the same command on the same target
+directory failed a third multi-station test (`logs`), and each of them passes alone and
+in a smaller group. So it is load on the machine and not this work, and it is the third
+time this repository has had to establish that — see tasks 40 and 46. Worth writing down
+because the cheap conclusion was available and wrong: the way to tell a flake from a
+regression is to run the baseline like for like, not to re-read the diff.
+
+```
+cargo test -p pult-schema --lib clock       # the bands, the estimator, both corpus halves
+cargo test -p pult-backend --lib sync       # two stations, and a skew measured over TCP
+cd frontend && npx vitest run src/lib/ws/clock.test.ts
+```
+
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -4742,6 +4871,22 @@ would have cost somebody a day: "mDNS discovery and a WebSocket, which this code
 has both of" describes two mutually exclusive modes of the specification, not one
 piece of work. **An entry's claim about how much is already here is worth checking
 before it is used to order anything.**
+
+**station-clock-offset left on 2026-09-05**, as task 64, and it is the *third* entry in
+two days to be built from outside this list — after `fade-curves` and `mvr-xchange`, and
+for the third time because nothing re-reads the unplaced sections. This one is worth
+more than the pattern, though, because of what it was: not a feature the console could
+not yet do but a **live correctness hole**, named in `CLAUDE.md` and in task 48's own
+record, sitting under *Observability* with no number against it while eighteen items
+that were all additions had one. Two consoles disagreeing about what time it is runs
+every replicated fade out by their skew, silently.
+
+So the rule this list needs is not "re-read the unplaced sections when something is
+unblocked" — that was the last lesson and it is a weaker one. It is that **a defect and
+a feature do not belong in one ordering**. An item that makes the console do something
+new competes on value; an item that makes it stop being wrong does not compete at all,
+and putting the two in one numbered list is what let this sit unplaced. If another is
+found, it goes at the top, and the reason is written here rather than argued again.
 
 1. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
    themselves dynamic. → none: the viewer landed as task 51
@@ -5144,54 +5289,18 @@ on the house LAN cannot see the console.
 
 #### station-clock-offset
 
-**Two stations do not agree on what time it is, and every fade is anchored in an
-absolute millisecond.** Found while building task 48, whose merged log needed to
-interleave two stations' lines and could only do it to within their skew — but the
-log is the harmless version of this. The load-bearing one is that
-`live_fades`, `live_effects` and a cue's `went_at` are all anchored in *unix*
-milliseconds, and `Sequence::off`, the browser and every connector evaluate them
-against their own `now_ms()`.
+Built on 2026-09-05 as task 64, and kept here as a heading so a reader looking for it
+lands somewhere. Its own open question — PTP against the estimator already in the
+building — was answered *the estimator*, and the reason is recorded in the task rather
+than in a link: `statime` ships one working platform port, kernel timestamping is
+Linux-only, `clock-steering` is Unix and privileged so a console holds PTP's answer as a
+software offset anyway, and an isolated show LAN has no grandmaster to sync to. Three
+platform ports to arrive at the architecture the estimator starts from.
 
-`types/sequence.rs` says "two stations still agree because they agree on the anchors
-they replicate, not on their clocks". That sentence is only true if the clocks agree:
-`now_ms()` is the wall clock read once at first use plus elapsed, so **station B
-evaluating station A's fade runs it out by exactly B's skew from A**. Silently, and
-each individual value looks plausible — which is the same failure
-`frontend/src/lib/ws/clock.ts` exists to prevent in the browser, between stations,
-unaddressed. A show LAN with no route to the internet is normal for an isolated
-Art-Net network, and nothing is disciplining those clocks at all.
-
-**The open question is PTP against the estimator already in the building**, and it
-was left open deliberately on 2026-09-02 rather than guessed at.
-
-- **The RTT estimator.** `infra/sync/peer.rs`'s heartbeats already measure the round
-  trip to each peer (`Outstanding::answered`), which is exactly the input
-  `clock.ts` uses. A per-peer offset out of that is single-digit milliseconds on a
-  LAN, needs no daemon, no privilege and no per-platform story, and would reuse an
-  estimator this repo has already written once and holds to a corpus.
-- **PTP (IEEE 1588).** Tens of microseconds in software, sub-microsecond with
-  hardware timestamping. The complication is that **a console cannot steer the OS
-  clock without privilege**, so what it would actually do with PTP's answer is hold
-  an offset and apply it in software — the same *shape* as the estimator, at much
-  higher cost. `ptp4l` is Linux-and-root; macOS has no general daemon (its PTP lives
-  inside the AVB audio stack); Windows client support is thin.
-- **So the question is what needs the precision**, and the honest answer may be
-  "nothing here". An output frame is 25 ms and a fade is seconds. Where PTP earns its
-  keep is sub-millisecond determinism against *other departments* — SMPTE, audio,
-  video frame alignment — which is timecode-workflow, and that entry already names
-  the OpenHaunt clock topic as its prior art. If this is decided for the estimator,
-  say so there too, because that is the item that will want to reopen it.
-- **What it costs to be wrong is asymmetric.** The estimator is a week and can be
-  replaced; PTP is a dependency and a deployment story. Doing the estimator first
-  does not foreclose PTP, and it makes the size of the problem visible: publish the
-  measured offset per peer in the `stations` row beside `cpu_percent` and
-  `frame_costs`, and a rig will say how bad its own skew actually is.
-- **And the same rule as `clock.ts`: say nothing until you have one.** A station that
-  has not yet estimated an offset must not apply a plausible wrong number; it should
-  be visibly without one, the way `consoleNow()` answers `null` and panels show a gap.
-- Task 48's merged log is **already correct whatever this decides** — a line carries
-  its own station's `seq` and clock, deduping is exact, and only the cross-station
-  interleave is approximate. It gets better for free the day an offset exists.
+What is left of it is the thing that entry named last and got right: **if
+`timecode-workflow` wants sub-millisecond alignment against other departments — SMPTE,
+audio, video frame alignment — that is a different question from this one**, and the
+survey in task 64 is what it should start from rather than re-researching.
 
 ### Performance
 

@@ -14,12 +14,12 @@ use pult_schema::{
     types::{
         fixture::Fixture,
         output::OutputConfig,
-        station::{FrameCost, MachineStats, Station},
+        station::{ClockState, ClockSync, FrameCost, MachineStats, Station},
     },
 };
 use sysinfo::{Components, Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::watch;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::engine::EngineHandle;
 
@@ -49,6 +49,14 @@ pub struct StationReporter {
     /// taking a lock. Nothing here is a replicated write per frame — the figures ride
     /// on the station row this reporter already publishes.
     frames: watch::Receiver<Vec<FrameCost>>,
+    /// What this station last said about the show clock, so a change of state is a
+    /// line in the log and a steady state is not.
+    ///
+    /// The row carries the state continuously and the log carries the transitions,
+    /// which is the division that keeps "this console does not know what time it is"
+    /// both findable later and quiet during a rehearsal. A warn per output frame
+    /// would be forty a second into the ring task 48 built.
+    clock_said: Option<ClockState>,
 }
 
 /// One reading of the machine and of this process, taken at one moment.
@@ -258,6 +266,7 @@ impl StationReporter {
             started: std::time::Instant::now(),
             links,
             frames,
+            clock_said: None,
         }
     }
 
@@ -319,10 +328,13 @@ impl StationReporter {
         let outputs: Vec<OutputConfig> = self.read("outputs").await;
         let total = fixtures.len() as u32;
 
+        let is_leader = !self.is_follower().await;
+        let clock = self.clock_state(is_leader);
+
         Station {
             id: self.node_id.0,
             hostname: self.hostname.clone(),
-            is_leader: !self.is_follower().await,
+            is_leader,
             sync_addr: self.sync_addr.to_string(),
             http_addr: self.http_addr.clone(),
             cpu_percent: sample.cpu_percent,
@@ -347,7 +359,50 @@ impl StationReporter {
             net_received: sample.net_received,
             net_sent: sample.net_sent,
             net_window_ms: sample.net_window_ms,
+            clock,
             last_seen: Utc::now(),
+        }
+    }
+
+    /// What this station is doing about the show clock, and a line whenever that
+    /// changes.
+    ///
+    /// Three states rather than a figure, because a leader and a follower that has
+    /// measured nothing are both adding zero and only one of them is right to — see
+    /// `ClockSync`. The leadership half is the caller's to know; everything else is
+    /// read from `pult_schema::clock`, which is the one place an offset lives.
+    fn clock_state(&mut self, is_leader: bool) -> ClockSync {
+        let measured_at = pult_schema::clock::estimated_at_ms();
+        let state = match (is_leader, measured_at) {
+            (true, _) => ClockState::Reference,
+            (false, Some(_)) => ClockState::Corrected,
+            (false, None) => ClockState::Uncorrected,
+        };
+        let offset_ms = pult_schema::clock::offset_ms() as f32;
+
+        if self.clock_said != Some(state) {
+            match state {
+                ClockState::Reference => info!("[clock] this station is the show clock"),
+                ClockState::Corrected => info!(
+                    "[clock] following the leader's clock, {offset_ms:+.1} ms from this machine's"
+                ),
+                // A warning rather than a note: it is a station driving a rig against
+                // a clock nobody has placed, which is exactly the silent wrongness
+                // this whole mechanism exists to remove. It goes on driving it —
+                // `consoleNow()`'s rule is right for a page and wrong for a lamp.
+                ClockState::Uncorrected => warn!(
+                    "[clock] no offset to the leader yet; running this machine's own clock"
+                ),
+            }
+            self.clock_said = Some(state);
+        }
+
+        ClockSync {
+            state,
+            offset_ms,
+            converging: pult_schema::clock::converging(),
+            measured_at: measured_at
+                .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64)),
         }
     }
 
@@ -515,6 +570,24 @@ mod tests {
             let rows = engine.get(vec![PathSegment::Key("stations".into())]).await.unwrap();
             let rows: Vec<Station> = serde_json::from_value(rows).unwrap();
             rows.into_iter().next().expect("the reporter published a row")
+        }
+
+        /// A station on its own is the show clock, and says so rather than saying
+        /// nothing.
+        ///
+        /// The distinction the row exists to carry: `Reference` and `Uncorrected` both
+        /// add zero to this machine's clock, and one of them is a console driving a rig
+        /// against a clock nobody has placed. A single `Option<f32>` meaning both would
+        /// be the plausible-wrong-number this whole mechanism removes.
+        #[tokio::test]
+        async fn a_station_with_no_session_is_its_own_clock() {
+            let (engine, mut reporter, _frames) = a_reporter().await;
+            reporter.publish().await;
+
+            let row = published_row(&engine).await;
+            assert!(row.is_leader, "nobody else is here");
+            assert_eq!(row.clock.state, ClockState::Reference);
+            assert!(!row.clock.converging, "with nothing to converge on");
         }
 
         /// The machine half, against the machine actually running the test.

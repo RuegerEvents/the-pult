@@ -221,3 +221,52 @@ describe('a browser whose clock is wrong', () => {
 		expect(consoleNow()).toBeNull();
 	});
 });
+
+/**
+ * The corpus, which is what holds this estimator to the station's.
+ *
+ * `testdata/clock-offset.json` is read here and by `crates/pult-schema/src/clock.rs`.
+ * A browser estimating the station's clock and a station estimating the session
+ * leader's are the same question with the same answer, and the parts of it that are
+ * judgement rather than arithmetic — how many samples, best-of against average,
+ * whether a slow refresh can talk a settled estimate out of itself — are exactly where
+ * two implementations drift. The tests above are this browser's own behaviour; these
+ * are the agreement.
+ *
+ * The corpus's `bands` half is the station's alone and is not read here: a browser
+ * draws a picture and a station drives a rig, so only one of them has to say what a
+ * correction does to a fade that is running while it lands.
+ */
+describe('the clock-offset corpus', () => {
+	type Answer = { sentAt: number; stationMs: number; receivedAt: number };
+	type Case = { name: string; answers: Answer[]; offsetMs: number; rttMs: number };
+
+	const corpus: { samples: Case[] } = JSON.parse(
+		readFileSync(new URL('../../../../testdata/clock-offset.json', import.meta.url), 'utf8')
+	);
+
+	beforeEach(() => {
+		forgetOffset();
+		// The estimator asks its next question as each answer lands, so a real timer
+		// would leave one behind per sample.
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	for (const { name, answers, offsetMs, rttMs } of corpus.samples) {
+		it(name, () => {
+			const sync = new ClockSync({ ask: () => {} });
+			for (const answer of answers) {
+				sync.answered(answer.sentAt, answer.stationMs, answer.receivedAt);
+			}
+			sync.stop();
+
+			const best = clockOffset();
+			expect(best, 'an estimate was published').not.toBeNull();
+			expect(best!.offsetMs).toBeCloseTo(offsetMs, 6);
+			expect(best!.rttMs).toBeCloseTo(rttMs, 6);
+		});
+	}
+});

@@ -548,6 +548,7 @@ pub async fn start(config: Config) -> Result<Running> {
     // Now that the broadcast exists, a peer link can carry a view both ways: an ask
     // arriving, and a drawn view going back to whoever asked.
     sync_mgr.watching_outputs(viewers.clone(), broadcast.clone());
+    sync_mgr.reporting_clock_skew(config.clock_skew_ms);
 
     // Every node browses for OpenHaunt devices; only the one leading the session
     // adopts or commands any of them.

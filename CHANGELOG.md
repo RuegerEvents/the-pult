@@ -101,6 +101,14 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Fixed
 
+- **Two consoles did not agree what time it is, and every fade is anchored in one.**
+  A station now measures the offset to the session leader's clock over the sync link
+  and runs on that, so a cue taken on one console reaches the same place at the same
+  moment on all of them. Corrections are worked off gradually rather than jumped, and
+  never backwards, so nothing in flight lurches; a station that has not measured one
+  yet goes on driving its rig and says so, in the log and in the Stations panel, which
+  now has a clock column. Nothing on an isolated show LAN was disciplining these
+  clocks at all.
 - **An output's universe list did nothing.** Every output sent every universe in the
   patch, whatever it was configured to carry, so the Outputs panel's coverage warnings
   described a routing nobody implemented. The list is now obeyed by all three
