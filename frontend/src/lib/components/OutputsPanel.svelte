@@ -65,9 +65,16 @@
 			target: null,
 			universes: [],
 			enabled: true,
-			// This station by default. Leaving it unset makes every station send the
-			// same frames, which is a choice rather than a default.
-			node_id: thisStation
+			// This station by default. Leaving it unset means "whichever station may",
+			// which for sACN is every one of them and for Art-Net and OpenHaunt is the
+			// leader — those two have no way to arbitrate between two senders.
+			node_id: thisStation,
+			// Told nothing, so this output falls through to the station's own
+			// `[network]` preference and then to every interface. Filling one in here
+			// would bake a cable into a row that replicates to machines that have
+			// never heard of it.
+			interfaces: {},
+			priority: 'Auto'
 		});
 		newName = '';
 		creating = false;

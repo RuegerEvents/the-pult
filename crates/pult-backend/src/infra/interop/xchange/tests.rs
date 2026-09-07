@@ -28,6 +28,7 @@ async fn a_manager(allowed: bool) -> (XchangeManager, XchangeHandle, EngineHandl
         HostRegistry::default(),
         dir,
         XchangeLimits { allowed, keep: 3, max_file_bytes: 8 * 1024 * 1024 },
+        crate::infra::net::Network::unconfigured(),
     );
     (manager, handle, engine)
 }
@@ -666,6 +667,7 @@ async fn a_running_station(name: &str) -> Started {
         HostRegistry::default(),
         dir,
         XchangeLimits { allowed: true, keep: 3, max_file_bytes: 8 * 1024 * 1024 },
+        crate::infra::net::Network::unconfigured(),
     );
     // Started by hand rather than by `run`, so the port is known before anything is
     // told where to find it.

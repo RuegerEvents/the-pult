@@ -101,7 +101,7 @@ async fn recv(socket: &tokio::net::UdpSocket) -> Vec<u8> {
 #[tokio::test]
 async fn fixture_levels_reach_the_wire() {
     let (node, addr) = a_node().await;
-    let mut output = ArtNetOutput::bind(addr).await.unwrap();
+    let mut output = ArtNetOutput::bind(addr, None).await.unwrap();
 
     output.send(&a_dimmer_patch(1.0), &[], 0).await.unwrap();
 
@@ -114,7 +114,7 @@ async fn fixture_levels_reach_the_wire() {
 #[tokio::test]
 async fn an_unchanged_universe_is_not_resent() {
     let (node, addr) = a_node().await;
-    let mut output = ArtNetOutput::bind(addr).await.unwrap();
+    let mut output = ArtNetOutput::bind(addr, None).await.unwrap();
     let patch = a_dimmer_patch(0.5);
 
     output.send(&patch, &[], 0).await.unwrap();
@@ -134,7 +134,7 @@ async fn an_unchanged_universe_is_not_resent() {
 #[tokio::test]
 async fn the_sequence_counter_advances_and_skips_zero() {
     let (node, addr) = a_node().await;
-    let mut output = ArtNetOutput::bind(addr).await.unwrap();
+    let mut output = ArtNetOutput::bind(addr, None).await.unwrap();
 
     output.send(&a_dimmer_patch(0.1), &[], 0).await.unwrap();
     let first = recv(&node).await;
@@ -149,7 +149,7 @@ async fn the_sequence_counter_advances_and_skips_zero() {
 #[tokio::test]
 async fn each_universe_gets_its_own_packet() {
     let (node, addr) = a_node().await;
-    let mut output = ArtNetOutput::bind(addr).await.unwrap();
+    let mut output = ArtNetOutput::bind(addr, None).await.unwrap();
 
     output.send(&a_patch_across_two_universes(), &[], 0).await.unwrap();
 
@@ -175,7 +175,7 @@ fn a_patch_across_two_universes() -> Patch {
 #[tokio::test]
 async fn a_restricted_output_puts_only_its_own_universes_on_the_wire() {
     let (node, addr) = a_node().await;
-    let mut output = ArtNetOutput::bind(addr).await.unwrap().carrying(vec![9]);
+    let mut output = ArtNetOutput::bind(addr, None).await.unwrap().carrying(vec![9]);
 
     output.send(&a_patch_across_two_universes(), &[], 0).await.unwrap();
 
@@ -197,7 +197,7 @@ async fn a_universe_this_output_does_not_carry_is_not_offered_to_a_viewer() {
     // it — so the wire panel offers what this connector is actually carrying rather
     // than every universe in the show.
     let (_node, addr) = a_node().await;
-    let mut output = ArtNetOutput::bind(addr).await.unwrap().carrying(vec![9]);
+    let mut output = ArtNetOutput::bind(addr, None).await.unwrap().carrying(vec![9]);
 
     output.send(&a_patch_across_two_universes(), &[], 0).await.unwrap();
 
@@ -211,7 +211,7 @@ async fn a_universe_this_output_does_not_carry_is_not_offered_to_a_viewer() {
 #[tokio::test]
 async fn an_empty_patch_sends_nothing() {
     let (node, addr) = a_node().await;
-    let mut output = ArtNetOutput::bind(addr).await.unwrap();
+    let mut output = ArtNetOutput::bind(addr, None).await.unwrap();
 
     let empty = Patch::new(vec![], vec![], vec![]);
     output.send(&empty, &[], 0).await.unwrap();

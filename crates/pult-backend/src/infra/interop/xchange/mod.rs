@@ -198,6 +198,9 @@ enum Awaiting {
 
 pub struct XchangeManager {
     station_label: String,
+    /// Which cable the exchange goes out on. Only the leader is ever on the wire, so
+    /// this is asked once per transport start rather than held open.
+    net: crate::infra::net::NetHandle,
     engine: EngineHandle,
     assets: AssetStore,
     sync: Option<SyncHandle>,
@@ -237,12 +240,14 @@ impl XchangeManager {
         registry: HostRegistry,
         cache_dir: std::path::PathBuf,
         limits: XchangeLimits,
+        net: crate::infra::net::NetHandle,
     ) -> (Self, XchangeHandle) {
         let (tx, rx) = mpsc::channel(64);
         let cache = CommitCache::new(cache_dir, limits.keep);
         (
             XchangeManager {
                 station_label,
+                net,
                 engine,
                 assets,
                 sync: None,
@@ -441,6 +446,7 @@ impl XchangeManager {
                     &self.station_name(),
                     self.limits.max_file_bytes,
                     self.self_tx.clone(),
+                    self.net.clone(),
                 )
                 .await?;
                 self.transport = Some(Transport::Tcp(tcp));

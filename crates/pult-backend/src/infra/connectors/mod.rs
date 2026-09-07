@@ -20,6 +20,7 @@ use pult_schema::{
     path::PathSegment,
     types::{
         fixture::{Fixture, FixtureType},
+        network::NetService,
         output::{
             OutputConfig, OutputCoverage, OutputKind, OutputSection, OutputStatus, OutputStatuses,
             OutputView,
@@ -232,10 +233,26 @@ impl OutputHandle {
     }
 }
 
+/// What a socket was opened on, and what it claims once open.
+///
+/// Kept beside the configuration because these are the two things that can change
+/// without the configuration changing: a cable is unplugged, or a leader steps down.
+/// Comparing it is what tells the manager the socket has to be rebuilt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Wire {
+    /// The address this output leaves by, or `None` for whichever the route table
+    /// picks — which is what this console did before anybody could say.
+    interface: Option<std::net::Ipv4Addr>,
+    /// The sACN priority byte. Meaningless to the other kinds, and carried anyway so
+    /// that one comparison decides whether any output has to be rebuilt.
+    priority: u8,
+}
+
 /// One running output: the plugin, and what it was built from.
 struct Running {
     config: OutputConfig,
     plugin: Box<dyn OutputPlugin>,
+    wire: Wire,
     status: OutputStatus,
     /// Sends since the last status report, for the frame rate.
     sends_since_report: u32,
@@ -262,8 +279,9 @@ struct Running {
 }
 
 impl Running {
-    fn new(config: OutputConfig, plugin: Box<dyn OutputPlugin>) -> Self {
+    fn new(config: OutputConfig, plugin: Box<dyn OutputPlugin>, wire: Wire) -> Self {
         Running {
+            wire,
             status: OutputStatus {
                 name: config.name.clone(),
                 kind: format!("{:?}", config.kind).to_lowercase(),
@@ -384,6 +402,10 @@ struct Watching {
 pub struct OutputManager {
     node_id: NodeId,
     engine: EngineHandle,
+    /// Which cable each output goes out on, and where this station stands in the
+    /// session. Both are read on the reconcile path: an unowned Art-Net output is
+    /// the leader's, and an sACN one's priority byte comes off the slot.
+    net: crate::infra::net::NetHandle,
     running: HashMap<Uuid, Running>,
     rx: mpsc::Receiver<OutputCommand>,
     devices: Devices,
@@ -417,6 +439,7 @@ impl OutputManager {
         node_id: NodeId,
         engine: EngineHandle,
         devices: Devices,
+        net: crate::infra::net::NetHandle,
     ) -> (Self, OutputHandle, watch::Receiver<Vec<FrameCost>>) {
         let (tx, rx) = mpsc::channel(4);
         let (frame_costs, costs_rx) = watch::channel(Vec::new());
@@ -424,6 +447,7 @@ impl OutputManager {
             Self {
                 node_id,
                 engine,
+                net,
                 running: HashMap::new(),
                 rx,
                 devices,
@@ -464,9 +488,17 @@ impl OutputManager {
     /// Seed a plugin without going through a configuration. Test-only: it is how a
     /// stand-in for a protocol gets in, so the manager's own behaviour can be tested
     /// without a socket on the other end.
+    ///
+    /// It is recorded as *configured* as well as running, because the manager now
+    /// reconciles on its own timer — a cable coming or going, and a failover, change
+    /// what should be running without anything writing to the show. A stand-in that
+    /// was not in `configured` would be stopped a second later by a pass that had
+    /// never heard of it.
     #[cfg(test)]
     pub fn preload(&mut self, config: OutputConfig, plugin: Box<dyn OutputPlugin>) {
-        self.running.insert(config.id, Running::new(config, plugin));
+        let wire = Wire { interface: None, priority: 100 };
+        self.configured.push(config.clone());
+        self.running.insert(config.id, Running::new(config, plugin, wire));
     }
 
     pub async fn run(mut self) {
@@ -511,6 +543,11 @@ impl OutputManager {
                 _ = report.tick() => {
                     self.measure_rates();
                     self.publish_status().await;
+                    // Where a cable coming or going is acted on, and where a
+                    // failover reaches the outputs. Both change what should be
+                    // running without anything writing to the show, so nothing else
+                    // in this loop would ever notice them.
+                    self.reconcile(self.configured.clone()).await;
                 }
                 _ = tokio::time::sleep_until(next_frame.into()) => {
                     self.draw_due_frames().await;
@@ -709,9 +746,10 @@ impl OutputManager {
             let fixtures = self.fixtures_as_addressed();
             self.publish_coverage(&fixtures).await;
         }
+        let standing = self.net.standing();
         let wanted: HashMap<Uuid, OutputConfig> = outputs
             .into_iter()
-            .filter(|o| o.runs_on(self.node_id))
+            .filter(|o| o.runs_on(self.node_id, standing.is_leader))
             .map(|o| (o.id, o))
             .collect();
 
@@ -720,20 +758,43 @@ impl OutputManager {
         for id in gone {
             if let Some(output) = self.running.remove(&id) {
                 info!("[output] stopped {}", output.config.name);
+                self.net.forget(&NetService::Output(id));
             }
         }
 
         for (id, config) in wanted {
+            // What this output should be on and at, worked out before anything is
+            // opened so that the two reasons to rebuild — the configuration moved,
+            // or the machine did — are one comparison rather than two.
+            let wire = match self.wire_for(&config, standing) {
+                Some(wire) => wire,
+                // Told a cable this machine has not got. `Network::bind` has already
+                // said so, on the row and in the log; a sender must not fall back to
+                // every interface, so this one does not run until it can.
+                None => {
+                    self.running.remove(&id);
+                    continue;
+                }
+            };
             match self.running.get_mut(&id) {
                 // Same wire, different label: keep the socket, take the new name.
-                Some(existing) if same_wire(&existing.config, &config) => {
+                Some(existing) if same_wire(&existing.config, &config) && existing.wire == wire => {
                     existing.status.name = config.name.clone();
                     existing.config = config;
                 }
-                _ => match build(&self.devices, &config).await {
+                _ => match build(&self.devices, &config, &wire).await {
                     Some(plugin) => {
-                        info!("[output] {} → {} ({})", config.name, describe(&config), plugin.name());
-                        self.running.insert(id, Running::new(config, plugin));
+                        info!(
+                            "[output] {} → {} ({}){}",
+                            config.name,
+                            describe(&config),
+                            plugin.name(),
+                            match wire.interface {
+                                Some(addr) => format!(" out of {addr}"),
+                                None => String::new(),
+                            }
+                        );
+                        self.running.insert(id, Running::new(config, plugin, wire));
                     }
                     None => {
                         self.running.remove(&id);
@@ -742,6 +803,28 @@ impl OutputManager {
             }
         }
         self.publish_status().await;
+    }
+
+    /// Which cable this output goes out on and what priority it claims.
+    ///
+    /// `None` is a refusal: the row or the preference named an interface this machine
+    /// has not got. Recomputed every reconcile rather than remembered, which is what
+    /// makes the refusal recoverable — the same pass that finds a cable missing finds
+    /// it again when somebody plugs it in.
+    fn wire_for(&self, config: &OutputConfig, standing: crate::infra::net::Standing) -> Option<Wire> {
+        let wanted = self.net.for_output(config, self.node_id);
+        let interface = self
+            .net
+            .bind(NetService::Output(config.id), &config.name, wanted.as_deref())
+            .ok()?;
+        Some(Wire {
+            interface,
+            priority: config.priority.byte_for(
+                self.node_id,
+                standing.sacn_slot.unwrap_or(pult_schema::types::network::SACN_PRIORITY_FLOOR),
+                standing.is_leader,
+            ),
+        })
     }
 
     /// Close the measurement window and open a new one. Timer only: doing this
@@ -851,7 +934,11 @@ async fn wait_for_viewers(watching: Option<&mut Watching>) -> bool {
 /// A free function rather than a method: the manager holds boxed plugins across this
 /// await, and borrowing `&self` here would require the whole manager to be `Sync`,
 /// which a plugin is not and does not need to be.
-async fn build(devices: &Devices, config: &OutputConfig) -> Option<Box<dyn OutputPlugin>> {
+async fn build(
+    devices: &Devices,
+    config: &OutputConfig,
+    wire: &Wire,
+) -> Option<Box<dyn OutputPlugin>> {
     // `universes` is handed to every kind that puts one on a wire, which is all
     // three: an OpenHaunt output feeds sACN to the gateways among its nodes. A
     // connector obeying the filter is what makes a two-node split — this Art-Net
@@ -860,7 +947,7 @@ async fn build(devices: &Devices, config: &OutputConfig) -> Option<Box<dyn Outpu
         OutputKind::Artnet => {
             // No address is not a default to guess at — Art-Net has nowhere to go.
             let target = parse_target(config.target.as_deref()?, artnet::ARTNET_PORT)?;
-            let plugin = artnet::ArtNetOutput::bind(target).await;
+            let plugin = artnet::ArtNetOutput::bind(target, wire.interface).await;
             bound(config, plugin.map(|o| o.carrying(config.universes.clone())))
         }
         OutputKind::Sacn => {
@@ -868,14 +955,17 @@ async fn build(devices: &Devices, config: &OutputConfig) -> Option<Box<dyn Outpu
                 Some(addr) => Some(parse_target(addr, sacn::SACN_PORT)?),
                 None => None, // the per-universe multicast groups
             };
-            let plugin = sacn::SacnOutput::bind(target).await;
-            bound(config, plugin.map(|o| o.carrying(config.universes.clone())))
+            let plugin = sacn::SacnOutput::bind(target, wire.interface).await;
+            bound(
+                config,
+                plugin.map(|o| o.carrying(config.universes.clone()).at_priority(wire.priority)),
+            )
         }
         OutputKind::OpenHaunt => {
             let (directory, handle) = devices.clone()?;
             bound(
                 config,
-                openhaunt::OpenHauntOutput::new(directory, handle, sacn::SACN_PORT)
+                openhaunt::OpenHauntOutput::new(directory, handle, sacn::SACN_PORT, wire.interface)
                     .await
                     .map(|o| o.carrying(config.universes.clone())),
             )

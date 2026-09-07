@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::{
     events::operation::NodeId,
     types::fixture::{Fixture, FixtureAddress},
+    types::network::SacnPriority,
     PultSchema,
 };
 
@@ -64,17 +65,66 @@ pub struct OutputConfig {
     pub universes: Vec<u16>,
     #[pult(lifecycle = PERSISTED)]
     pub enabled: bool,
-    /// Which station sends this. `None` means every one of them, which puts the same
-    /// frames on the wire once per node — useful on purpose for a redundant path,
-    /// and a surprise by accident, so the UI fills in the local station.
+    /// Which station sends this. `None` means *whichever station may*, and what that
+    /// comes to depends on the kind — see [`OutputConfig::runs_on`]. The UI fills in
+    /// the local station, so the explicit case stays the normal one.
     #[pult(lifecycle = PERSISTED)]
     pub node_id: Option<NodeId>,
+    /// Which interface this goes out on, per station.
+    ///
+    /// A map rather than one string because an output row replicates and an
+    /// interface name means a different cable on every machine: `en5` on the booth
+    /// console and `eth1` on the stage rack are not the same thing, and one field
+    /// would be wrong on all but one of them.
+    ///
+    /// A station this map does not name has been told nothing, and falls through to
+    /// its own `[network]` preference and then to every interface — which is what
+    /// this console did before any of this existed, and is why no existing show has
+    /// to be edited. A station it *does* name, with an interface that machine has
+    /// not got, refuses to send rather than quietly binding everything.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub interfaces: BTreeMap<NodeId, String>,
+    /// What priority byte an sACN output puts in its packets. Ignored by the other
+    /// kinds, which have no such field in their protocols.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub priority: SacnPriority,
 }
 
 impl OutputConfig {
     /// Should this station send this output?
-    pub fn runs_on(&self, node_id: NodeId) -> bool {
-        self.enabled && self.node_id.map(|owner| owner == node_id).unwrap_or(true)
+    ///
+    /// A row that names a station is that station's, whatever the kind. What `None`
+    /// means is decided by whether the protocol can survive two senders.
+    ///
+    /// **Art-Net and OpenHaunt cannot.** Art-Net has no priority mechanism at all,
+    /// so two consoles sending one universe is a rig that flickers with nothing on
+    /// any screen to explain it. `None` therefore resolves to *the leader*, which is
+    /// deliberately not a refusal: `None` is what every existing show has and is
+    /// completely harmless on a single console — a lone station is the leader, so
+    /// nothing about a one-console rig changes — and a second station joining
+    /// silently stops double-sending instead of starting to fight.
+    ///
+    /// **sACN can**, because E1.31 has a priority byte and receivers arbitrate on
+    /// it. So an unowned sACN output runs everywhere, and [`SacnPriority`] is what
+    /// makes that well-defined rather than a race.
+    pub fn runs_on(&self, node_id: NodeId, is_leader: bool) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        match self.node_id {
+            Some(owner) => owner == node_id,
+            None => match self.kind {
+                OutputKind::Sacn => true,
+                OutputKind::Artnet | OutputKind::OpenHaunt => is_leader,
+            },
+        }
+    }
+
+    /// What this row says about which cable this station should use, if anything.
+    pub fn interface_for(&self, node_id: NodeId) -> Option<&str> {
+        self.interfaces.get(&node_id).map(String::as_str)
     }
 
     /// Does this output carry the given universe?
@@ -363,6 +413,8 @@ mod tests {
             universes: vec![],
             enabled: true,
             node_id: None,
+            interfaces: BTreeMap::new(),
+            priority: SacnPriority::default(),
         }
     }
 
@@ -487,10 +539,82 @@ mod tests {
     }
 
     #[test]
-    fn an_output_with_no_station_runs_everywhere() {
+    fn an_unowned_sacn_output_runs_everywhere() {
+        // E1.31 arbitrates on the priority byte, so several stations sending one
+        // universe is defined rather than a race.
         let output = an_output(OutputKind::Sacn);
-        assert!(output.runs_on(NodeId::new()));
-        assert!(output.runs_on(NodeId::new()));
+        assert!(output.runs_on(NodeId::new(), false));
+        assert!(output.runs_on(NodeId::new(), true));
+    }
+
+    #[test]
+    fn an_unowned_art_net_output_runs_on_the_leader_only() {
+        // Art-Net has no priority mechanism, so two consoles on one universe is a
+        // rig that flickers. `None` is what every existing show has, so this is
+        // resolved rather than refused: a lone console is the leader and nothing
+        // about a one-station rig changes, and a second station joining stops
+        // double-sending instead of starting to fight.
+        for kind in [OutputKind::Artnet, OutputKind::OpenHaunt] {
+            let output = an_output(kind);
+            assert!(output.runs_on(NodeId::new(), true));
+            assert!(!output.runs_on(NodeId::new(), false));
+        }
+    }
+
+    #[test]
+    fn a_named_station_owns_it_whether_or_not_it_leads() {
+        let mine = NodeId::new();
+        let mut output = an_output(OutputKind::Artnet);
+        output.node_id = Some(mine);
+        assert!(output.runs_on(mine, false), "a follower still sends what is its own");
+    }
+
+    #[test]
+    fn two_stations_on_one_art_net_universe_are_reported_and_not_refused() {
+        // The split this makes possible — stage left out one cable, stage right out
+        // another — is indistinguishable from a collision by anything here, so it
+        // is said rather than blocked.
+        let a = NodeId::new();
+        let b = NodeId::new();
+        let mut left = an_output(OutputKind::Artnet);
+        left.name = "Stage left".into();
+        left.node_id = Some(a);
+        let mut right = an_output(OutputKind::Artnet);
+        right.name = "Stage right".into();
+        right.node_id = Some(b);
+
+        let found = contentions(&[left.clone(), right.clone()], &[1, 2]);
+        assert_eq!(found.len(), 2, "an empty universe list is every universe");
+        assert_eq!(found[0].universe, 1);
+        assert_eq!(found[0].outputs.len(), 2);
+
+        // One station's two outputs are not a contention: it is one sender.
+        right.node_id = Some(a);
+        assert!(contentions(&[left.clone(), right.clone()], &[1]).is_empty());
+
+        // Nor is an unowned row, which resolves to the leader and so is one sender.
+        right.node_id = None;
+        assert!(contentions(&[left.clone(), right], &[1]).is_empty());
+    }
+
+    #[test]
+    fn sacn_never_contends() {
+        let mut left = an_output(OutputKind::Sacn);
+        left.node_id = Some(NodeId::new());
+        let mut right = an_output(OutputKind::Sacn);
+        right.node_id = Some(NodeId::new());
+        assert!(contentions(&[left, right], &[1]).is_empty());
+    }
+
+    #[test]
+    fn a_row_names_a_cable_per_station() {
+        let mine = NodeId::new();
+        let mut output = an_output(OutputKind::Artnet);
+        output.interfaces.insert(mine, "en5".into());
+        assert_eq!(output.interface_for(mine), Some("en5"));
+        // A station the map does not name has been told nothing, which is not the
+        // same as being told something wrong.
+        assert_eq!(output.interface_for(NodeId::new()), None);
     }
 
     #[test]
@@ -500,18 +624,18 @@ mod tests {
         let mut output = an_output(OutputKind::Artnet);
         output.node_id = Some(mine);
 
-        assert!(output.runs_on(mine));
-        assert!(!output.runs_on(theirs), "two stations sending is two copies on the wire");
+        assert!(output.runs_on(mine, false));
+        assert!(!output.runs_on(theirs, true), "two stations sending is two copies on the wire");
     }
 
     #[test]
     fn a_disabled_output_runs_nowhere() {
         let mut output = an_output(OutputKind::Artnet);
         output.enabled = false;
-        assert!(!output.runs_on(NodeId::new()));
+        assert!(!output.runs_on(NodeId::new(), true));
 
         output.node_id = Some(NodeId::new());
-        assert!(!output.runs_on(output.node_id.unwrap()));
+        assert!(!output.runs_on(output.node_id.unwrap(), true));
     }
 
     #[test]
@@ -529,4 +653,57 @@ mod tests {
         assert!(output.carries(5));
         assert!(!output.carries(2));
     }
+}
+
+/// Two stations putting the same universe on a wire.
+///
+/// **A warning and never a refusal**, which is the honest position: once an output
+/// names its own interface, station A sending universe 1 out `en5` to the stage-left
+/// rack and station B sending it out `en6` to stage-right is a legitimate split, and
+/// it is indistinguishable from two consoles shouting at one rack by anything this
+/// code can see — they differ only in whether the interfaces reach the same
+/// broadcast domain, which is a fact about a building. Refusing would make the split
+/// unbuildable; saying nothing would leave the collision silent. So it says so.
+///
+/// sACN is left out because it is the one kind where this is defined rather than a
+/// race: E1.31 receivers arbitrate on the priority byte, which is the whole reason
+/// [`crate::types::network::SacnPriority`] exists.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OutputContention {
+    pub universe: u16,
+    pub kind: OutputKind,
+    /// The outputs that carry it, by name, in id order.
+    pub outputs: Vec<String>,
+}
+
+/// Every universe two differently-owned outputs of a kind that cannot share one
+/// would both send.
+///
+/// Only rows that name *different* stations contend: an unowned Art-Net row resolves
+/// to the leader, so it is one sender by construction and never fights anybody.
+pub fn contentions(outputs: &[OutputConfig], universes: &[u16]) -> Vec<OutputContention> {
+    let mut found = Vec::new();
+    for kind in [OutputKind::Artnet, OutputKind::OpenHaunt] {
+        let owned: Vec<&OutputConfig> = outputs
+            .iter()
+            .filter(|o| o.enabled && o.kind == kind && o.node_id.is_some())
+            .collect();
+        for &universe in universes {
+            let sending: Vec<&&OutputConfig> =
+                owned.iter().filter(|o| o.carries(universe)).collect();
+            let stations: std::collections::BTreeSet<NodeId> =
+                sending.iter().filter_map(|o| o.node_id).collect();
+            if stations.len() > 1 {
+                let mut outputs: Vec<&&OutputConfig> = sending;
+                outputs.sort_by_key(|o| o.id);
+                found.push(OutputContention {
+                    universe,
+                    kind,
+                    outputs: outputs.iter().map(|o| o.name.clone()).collect(),
+                });
+            }
+        }
+    }
+    found
 }

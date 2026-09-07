@@ -61,6 +61,8 @@ async fn an_artnet_output(station: &Running) -> uuid::Uuid {
         universes: vec![],
         enabled: true,
         node_id: Some(station.node_id),
+        interfaces: Default::default(),
+        priority: Default::default(),
     };
     station
         .engine

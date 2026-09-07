@@ -883,6 +883,7 @@ async fn a_station_row_reaches_the_other_console() {
         net_sent: 0,
         net_window_ms: 0,
         clock: Default::default(),
+        sacn_slot: None,
         last_seen: Utc::now(),
     };
     one.engine
@@ -934,6 +935,7 @@ async fn each_station_reports_its_own_frame_cost_and_not_the_others() {
         net_sent: 0,
         net_window_ms: 0,
         clock: Default::default(),
+        sacn_slot: None,
         last_seen: Utc::now(),
     };
 

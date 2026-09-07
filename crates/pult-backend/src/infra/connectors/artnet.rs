@@ -35,8 +35,13 @@ pub struct ArtNetOutput {
 }
 
 impl ArtNetOutput {
-    pub async fn bind(target: SocketAddr) -> Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    /// `interface` is the address to leave by, or `None` for whichever one the
+    /// route table picks — which is what this console did before anybody could say.
+    pub async fn bind(
+        target: SocketAddr,
+        interface: Option<std::net::Ipv4Addr>,
+    ) -> Result<Self> {
+        let socket = crate::infra::net::udp(interface).await?;
         if target.ip().is_multicast() || is_broadcast(&target) {
             socket.set_broadcast(true)?;
         }

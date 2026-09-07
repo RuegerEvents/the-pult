@@ -50,7 +50,7 @@ impl Station {
             // http_addr is what a peer fetches a bundle from, and "0.0.0.0" is
             // an address to listen on rather than one to connect to — asking it
             // for a bundle times out rather than failing.
-            bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            bind: Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
             port: 0,
             sync_port: 0,
             show: Some(show.clone()),

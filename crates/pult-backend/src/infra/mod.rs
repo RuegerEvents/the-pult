@@ -8,6 +8,7 @@ pub mod stations;
 pub mod clients;
 pub mod devices;
 pub mod connectors;
+pub mod net;
 pub mod interop;
 pub mod plugins;
 

@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{engine::EngineHandle, infra::local_ipv4, infra::sync::SyncHandle};
+use crate::{engine::EngineHandle, infra::sync::SyncHandle};
 
 // ── SessionCommand ────────────────────────────────────────────────────────────
 
@@ -75,12 +75,26 @@ pub struct SessionManager {
     discovered_leader_ids: HashMap<Uuid, NodeId>,
     discovered_show_ids: HashMap<Uuid, Uuid>,
     mdns: ServiceDaemon,
+    /// The address this station advertises itself at.
+    ///
+    /// What the session's own interface setting resolved to, and otherwise
+    /// [`local_ipv4`] — which asks the route table, and so answers with the *house*
+    /// LAN on a console that has one beside a lighting network. That was the silent
+    /// defect here: the address a peer was told to dial for the show was decided by
+    /// which cable reaches the internet.
+    advertise_at: std::net::Ipv4Addr,
     /// A handle to our own command channel, for the promotion bridge.
     self_tx: mpsc::Sender<SessionCommand>,
 }
 
 impl SessionManager {
-    pub fn new(node_id: NodeId, sync_port: u16, engine: EngineHandle, sync: SyncHandle) -> (Self, SessionHandle) {
+    pub fn new(
+        node_id: NodeId,
+        sync_port: u16,
+        engine: EngineHandle,
+        sync: SyncHandle,
+        net: crate::infra::net::NetHandle,
+    ) -> (Self, SessionHandle) {
         let (tx, rx) = mpsc::channel(16);
         let (mdns_tx, mdns_rx) = mpsc::channel(64);
 
@@ -88,6 +102,19 @@ impl SessionManager {
             Ok(d) => d,
             Err(e) => panic!("[session] cannot create mDNS daemon: {e}"),
         };
+        // Told nothing is every interface, which is what this always did. Told a
+        // cable that is not here is a fault on the row and every interface anyway —
+        // a station that cannot find its peers at all is a session that silently
+        // stops existing, and unlike an output there is no wrong wire to put bytes
+        // on: the worst case is being found somewhere as well as here.
+        let address = net
+            .bind(
+                pult_schema::types::network::NetService::Session,
+                "session discovery",
+                net.prefs().session.as_deref(),
+            )
+            .unwrap_or(None);
+        let advertise_at = crate::infra::net::restrict_mdns(&mdns, address);
 
         let browse_receiver = match mdns.browse(SERVICE_TYPE) {
             Ok(r) => r,
@@ -101,6 +128,7 @@ impl SessionManager {
                         discovered_leader_ids: HashMap::new(),
                         discovered_show_ids: HashMap::new(),
                         mdns,
+                        advertise_at,
                         self_tx: tx.clone(),
                     },
                     SessionHandle(tx),
@@ -122,6 +150,7 @@ impl SessionManager {
                 discovered_leader_ids: HashMap::new(),
                 discovered_show_ids: HashMap::new(),
                 mdns,
+                advertise_at,
                 self_tx: tx.clone(),
             },
             SessionHandle(tx),
@@ -299,7 +328,7 @@ impl SessionManager {
     async fn advertise(&mut self, session_id: Uuid, show_id: Uuid, show_name: String) {
         let instance_name = format!("pult-{}", &self.node_id.0.to_string()[..8]);
         let hostname = format!("{}.local.", gethostname());
-        let ip = local_ipv4();
+        let ip = self.advertise_at;
 
         let mut props = HashMap::new();
         props.insert("session_id".to_string(), session_id.to_string());

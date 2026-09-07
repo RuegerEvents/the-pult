@@ -83,7 +83,10 @@ fn main() {
 /// Bring a station up and say where it ended up listening.
 async fn start(args: &Args, log: LogHandle) -> anyhow::Result<String> {
     let console = pult_backend::Console::start(Config {
-        bind: Ipv4Addr::UNSPECIFIED.into(),
+        // Nothing said, so the station's own `[network] http` preference decides and
+        // then every interface — which is what the desktop app has always done, and
+        // now also what it does if somebody sets that preference.
+        bind: None,
         port: free_or_any(args.port).await,
         sync_port: free_or_any(args.sync_port).await,
         show: args.show.clone(),

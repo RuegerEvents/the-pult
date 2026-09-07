@@ -112,20 +112,47 @@ pub struct SacnOutput {
     target: Option<SocketAddr>,
     /// The universes this output carries. Empty is every one in the patch.
     carried: Vec<u16>,
+    /// The priority byte every packet carries.
+    ///
+    /// Worked out by the manager from the row's [`SacnPriority`], this station's slot
+    /// and whether it leads — held as a plain number here because a connector must
+    /// not have to know what a session is to fill in a field of a packet.
+    ///
+    /// This is what makes several stations sending one universe a defined thing
+    /// rather than a race, and it is the whole reason sACN is the kind that may run
+    /// on more than one station where Art-Net is not.
+    priority: u8,
     sent: UniverseCache,
     sequence: SequenceCounter,
 }
 
 impl SacnOutput {
-    pub async fn bind(target: Option<SocketAddr>) -> Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    /// `interface` is the address to leave by, and for multicast it is more than a
+    /// source address: the outgoing interface for a group is a socket option, and
+    /// nothing here set it before — so a station with a house LAN and a lighting one
+    /// put its universes on whichever the route table preferred, which on a console
+    /// is usually the cable that reaches the internet.
+    pub async fn bind(
+        target: Option<SocketAddr>,
+        interface: Option<std::net::Ipv4Addr>,
+    ) -> Result<Self> {
+        let socket = crate::infra::net::udp(interface).await?;
         socket.set_multicast_loop_v4(true)?;
+        if let Some(address) = interface {
+            // `IP_MULTICAST_IF`, which neither `std` nor `tokio` exposes — and it is
+            // the option that actually decides which cable a group leaves by, as
+            // against the bind address, which only decides the source. `socket2` was
+            // already in the tree as tokio's own dependency, so this is a borrow of
+            // the socket that exists rather than a second one built to set a flag.
+            socket2::SockRef::from(&socket).set_multicast_if_v4(&address)?;
+        }
         Ok(Self {
             socket,
             cid: *Uuid::new_v4().as_bytes(),
             source_name: "the-pult".to_string(),
             target,
             carried: Vec::new(),
+            priority: DEFAULT_PRIORITY,
             sent: UniverseCache::default(),
             sequence: SequenceCounter::default(),
         })
@@ -138,6 +165,18 @@ impl SacnOutput {
     pub fn carrying(mut self, universes: Vec<u16>) -> Self {
         self.carried = universes;
         self
+    }
+
+    /// What priority to claim, taken after construction the way `carrying` is.
+    pub fn at_priority(mut self, priority: u8) -> Self {
+        self.priority = priority.min(pult_schema::types::network::SACN_PRIORITY_MAX);
+        self
+    }
+
+    /// What this output is claiming, so the manager can tell whether a change of
+    /// leadership or slot means this socket has to be rebuilt.
+    pub fn priority(&self) -> u8 {
+        self.priority
     }
 
     fn destination(&self, universe: u16) -> SocketAddr {
@@ -181,7 +220,7 @@ impl OutputPlugin for SacnOutput {
                     &self.source_name,
                     universe.number,
                     sequence,
-                    DEFAULT_PRIORITY,
+                    self.priority,
                     &universe.channels,
                 );
                 frame.assembled(building.elapsed());

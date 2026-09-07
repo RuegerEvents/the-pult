@@ -29,6 +29,7 @@ import SessionPanel from '$lib/components/SessionPanel.svelte';
 import SettingsPanel from '$lib/components/SettingsPanel.svelte';
 import SpeedMastersPanel from '$lib/components/SpeedMastersPanel.svelte';
 import ShowPanel from '$lib/components/ShowPanel.svelte';
+import NetworkPanel from '$lib/components/NetworkPanel.svelte';
 import StationsPanel from '$lib/components/StationsPanel.svelte';
 import SystemPanel from '$lib/components/SystemPanel.svelte';
 import ValuesPanel from '$lib/components/programmer/ValuesPanel.svelte';
@@ -107,6 +108,11 @@ export const PANELS = {
 	// per station, per output connector, and per browser, which is the figure that
 	// exists nowhere else because a console is a browser evaluating a rig.
 	system: { title: 'System', component: SystemPanel, fills: false },
+	// The third of that family, and the one that is a setting as well as a
+	// diagnostic: which cable each service goes out on, and — because the question
+	// "why can the previz not see us" is almost never asked at the broken console —
+	// every station's interfaces and every station's faults.
+	network: { title: 'Network', component: NetworkPanel, fills: false, editable: true },
 	plugins: { title: 'Plugins', component: PluginsPanel, fills: false, editable: true },
 	show: { title: 'Show', component: ShowPanel, fills: false },
 	session: { title: 'Session', component: SessionPanel, fills: false },

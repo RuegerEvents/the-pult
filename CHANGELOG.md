@@ -12,6 +12,15 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **Which cable each service goes out on.** A console with a house LAN beside an
+  isolated lighting network can now say which one the page, session discovery,
+  MVR-xchange, OpenHaunt and each output use — by interface name or by address, in a
+  new Network panel or in `[network]` in `preferences.toml`. An output names its own
+  per station, so two universes can leave by two cables. sACN's multicast finally sets
+  the outgoing interface, which nothing here ever did. Saying nothing keeps exactly the
+  old behaviour; naming a cable that is not there stops that one service and says so on
+  the station's row, so a console in the booth can read the stage rack's fault — and it
+  starts by itself when the cable appears, without a restart.
 - **A show is a folder, and Save is a version.** A showfile is now `Name.pult/` — the
   database, the assets as files, and a snapshot per saved version — with `.pultz` as
   the single file that travels. ⌘S takes a version; the Show panel lists them with who
@@ -101,6 +110,17 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Fixed
 
+- **A station advertised the wrong address on a two-network console.** What a station
+  published for its peers to dial came from the interface with the *default route* —
+  the house LAN, on a console that also has a lighting network — so which cable reached
+  the internet decided where the show was reachable. It now advertises what it actually
+  bound.
+- **Art-Net went out from every console in a session.** An output with no station named
+  ran on all of them, and Art-Net has no priority mechanism to arbitrate with, so two
+  consoles meant a flickering rig with nothing on screen to explain it. Unowned Art-Net
+  and OpenHaunt outputs now run on the leader alone. sACN, which does have a priority
+  byte, still runs everywhere and now claims a priority per station rather than sending
+  a hardcoded 100 from each.
 - **Two consoles did not agree what time it is, and every fade is anchored in one.**
   A station now measures the offset to the session leader's clock over the sync link
   and runs on that, so a cue taken on one console reaches the same place at the same

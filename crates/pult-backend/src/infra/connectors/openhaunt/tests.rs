@@ -182,6 +182,7 @@ async fn a_relay_is_commanded_when_it_changes_and_not_before() {
         directory(vec![("relay1", an_entry("127.0.0.1", MAINS_RELAY, None, true))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -215,6 +216,7 @@ async fn a_strip_sends_its_colour_as_bytes_and_its_brightness_as_a_number() {
         directory(vec![("led1", an_entry("127.0.0.1", WS2812, None, true))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -238,6 +240,7 @@ async fn a_display_sends_text() {
         directory(vec![("oled1", an_entry("127.0.0.1", OLED, None, true))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -261,6 +264,7 @@ async fn a_device_that_is_offline_is_not_commanded() {
         directory(vec![("relay1", an_entry("127.0.0.1", MAINS_RELAY, None, false))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -281,6 +285,7 @@ async fn an_input_parameter_is_never_sent_back_to_the_device_that_reported_it() 
         directory(vec![("in1", an_entry("127.0.0.1", DIGITAL_IN, None, true))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -301,6 +306,7 @@ async fn unpatching_a_device_forgets_what_was_last_sent_to_it() {
         directory(vec![("relay1", an_entry("127.0.0.1", MAINS_RELAY, None, true))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -349,6 +355,7 @@ async fn a_gateway_receives_the_universe_it_was_adopted_onto() {
         )]),
         devices,
         port,
+        None,
     )
     .await
     .unwrap();
@@ -379,6 +386,7 @@ async fn a_gateway_hears_nothing_about_a_universe_it_is_not_on() {
         )]),
         devices,
         port,
+        None,
     )
     .await
     .unwrap();
@@ -409,6 +417,7 @@ async fn a_restricted_output_does_not_feed_a_gateway_outside_its_universes() {
         directory(vec![("gate1", an_entry("127.0.0.1", DMX_OUT, Some(5), true))]),
         devices,
         port,
+        None,
     )
     .await
     .unwrap()
@@ -439,6 +448,7 @@ async fn an_unchanged_universe_is_not_resent_to_a_gateway() {
         )]),
         devices,
         port,
+        None,
     )
     .await
     .unwrap();
@@ -467,6 +477,7 @@ async fn a_console_with_no_node_fixtures_sends_nothing_at_all() {
         )]),
         devices,
         port,
+        None,
     )
     .await
     .unwrap();
@@ -544,6 +555,7 @@ async fn a_capable_port_is_handed_the_shape_once_and_then_left_alone() {
         directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -584,6 +596,7 @@ async fn a_port_that_says_nothing_gets_values_as_it_always_did() {
         directory(vec![("strip1", an_entry("127.0.0.1", WS2812, None, true))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -621,6 +634,7 @@ async fn a_shape_the_port_did_not_list_falls_back_to_values() {
         directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["square"], false))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -646,6 +660,7 @@ async fn clearing_an_effect_stops_the_node_and_then_gives_it_a_value() {
         directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -684,6 +699,7 @@ async fn a_change_of_tempo_sends_one_more_description() {
         directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -715,6 +731,7 @@ async fn a_step_chase_goes_out_as_its_keyframes() {
         directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 0, &[], false))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -761,6 +778,7 @@ async fn a_fade_on_a_capable_port_is_one_timed_set_and_nothing_after_it() {
         directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], true))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -813,6 +831,7 @@ async fn a_fade_on_a_port_that_cannot_time_one_is_still_interpolated_here() {
         directory(vec![("strip1", a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]),
         devices,
         5568,
+        None,
     )
     .await
     .unwrap();
@@ -856,7 +875,7 @@ async fn a_node_that_reboots_is_told_the_shape_again() {
             .into_iter()
             .collect(),
     });
-    let mut output = OpenHauntOutput::new(directory_rx, devices, 5568).await.unwrap();
+    let mut output = OpenHauntOutput::new(directory_rx, devices, 5568, None).await.unwrap();
 
     let ft = a_module(WS2812);
     let mut fixture = a_node_fixture(&ft, "strip1", None);

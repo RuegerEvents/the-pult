@@ -20,6 +20,7 @@ pub mod layout;
 pub mod plugin;
 pub mod catalogue;
 pub mod mount;
+pub mod network;
 pub mod group;
 pub mod version;
 pub mod paperwork;
@@ -52,10 +53,15 @@ pub use xchange::{
 pub use devices::{DeviceHealth, DevicesState, DiscoveredDevice};
 pub use openhaunt::{EffectCapability, PortEffectCapability};
 pub use output::{
-    OutputConfig, OutputConfigCreate, OutputConfigPatch, OutputCoverage, OutputGap, OutputKind,
-    OutputStatus, OutputStatuses,
+    contentions, OutputConfig, OutputConfigCreate, OutputConfigPatch, OutputContention,
+    OutputCoverage, OutputGap, OutputKind, OutputStatus, OutputStatuses,
 };
 pub use station::{FrameCost, MachineStats, PeerLink, PeerLinks, Station, StationCreate, StationPatch};
+pub use network::{
+    claim_slot, resolve, sacn_slots, InterfaceError, NetInterface, NetService, SacnPriority,
+    ServiceBinding, StationNetwork, StationNetworkCreate, StationNetworkPatch,
+    SACN_PRIORITY_FLOOR, SACN_PRIORITY_LEADER, SACN_PRIORITY_MAX, SACN_PRIORITY_STEP,
+};
 pub use client::{BrowserFrames, ClientStats, ClientStatsMap};
 pub use stage::{StagePlan, StagePlanCreate, StagePlanPatch};
 pub use programmer::{

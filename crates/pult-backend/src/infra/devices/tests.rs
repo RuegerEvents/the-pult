@@ -497,6 +497,8 @@ async fn an_openhaunt_output_the_operator_switched_off_is_left_off() {
         universes: Vec::new(),
         enabled: false,
         node_id: None,
+        interfaces: Default::default(),
+        priority: Default::default(),
     };
     h.engine
         .set(create_path("outputs"), Lifecycle::Persisted, serde_json::to_value(&off).unwrap())

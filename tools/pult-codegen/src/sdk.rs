@@ -430,7 +430,13 @@ fn keep_attrs(attrs: &[Attribute]) -> Vec<TokenStream> {
 /// to the console. `Serialize` and `Deserialize` are always on — a type that reaches a
 /// plugin at all reaches it as JSON.
 fn keep_derives(attrs: &[Attribute], default_ok: bool) -> TokenStream {
-    const KEPT: &[&str] = &["Debug", "Clone", "Copy", "PartialEq", "Eq", "Hash", "Default"];
+    // Ordering is kept as well as equality, because a schema field may be a
+    // `BTreeMap` keyed by one of these — `OutputConfig::interfaces` is, keyed by
+    // `NodeId` — and a mirror that dropped `Ord` would make that field not compile in
+    // a guest while compiling perfectly on the station. Like the rest of this list,
+    // these are facts about the data rather than about the console.
+    const KEPT: &[&str] =
+        &["Debug", "Clone", "Copy", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "Default"];
     let mut kept: Vec<String> = Vec::new();
     for attr in attrs {
         if !attr.path().is_ident("derive") {
@@ -587,7 +593,7 @@ fn render_schema(source: &Source, wanted: &BTreeSet<String>) -> Result<(String, 
         //! the station's own struct: methods, invariants and `Default` impls stay
         //! where the console keeps them.
 
-        use std::collections::HashMap;
+        use std::collections::{BTreeMap, HashMap};
         use uuid::Uuid;
 
         /// A moment, RFC 3339, exactly as the wire carries it.
@@ -723,7 +729,7 @@ fn render_data(
          //! Introspection is still the way to ask what *this* station has, including the\n\
          //! collections this build never heard of.\n\n",
     );
-    out.push_str("use std::collections::HashMap;\n\nuse uuid::Uuid;\n\n");
+    out.push_str("#[allow(unused_imports)]\nuse std::collections::{BTreeMap, HashMap};\n\nuse uuid::Uuid;\n\n");
     out.push_str("use crate::data::{Collection, Entity, Field, Singleton};\n");
     out.push_str("use crate::schema::*;\n\n");
 

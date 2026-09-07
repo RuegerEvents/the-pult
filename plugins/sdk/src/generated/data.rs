@@ -14,7 +14,8 @@
 //! Introspection is still the way to ask what *this* station has, including the
 //! collections this build never heard of.
 
-use std::collections::HashMap;
+#[allow(unused_imports)]
+use std::collections::{BTreeMap, HashMap};
 
 use uuid::Uuid;
 
@@ -1876,13 +1877,39 @@ impl OutputConfigEntity {
         self.at.field("enabled")
     }
 
-    /// Which station sends this. `None` means every one of them, which puts the same
-    /// frames on the wire once per node — useful on purpose for a redundant path,
-    /// and a surprise by accident, so the UI fills in the local station.
+    /// Which station sends this. `None` means *whichever station may*, and what that
+    /// comes to depends on the kind — see [`OutputConfig::runs_on`]. The UI fills in
+    /// the local station, so the explicit case stays the normal one.
     ///
     /// PERSISTED.
     pub fn node_id(&self) -> Field<Option<NodeId>> {
         self.at.field("node_id")
+    }
+
+    /// Which interface this goes out on, per station.
+    ///
+    /// A map rather than one string because an output row replicates and an
+    /// interface name means a different cable on every machine: `en5` on the booth
+    /// console and `eth1` on the stage rack are not the same thing, and one field
+    /// would be wrong on all but one of them.
+    ///
+    /// A station this map does not name has been told nothing, and falls through to
+    /// its own `[network]` preference and then to every interface — which is what
+    /// this console did before any of this existed, and is why no existing show has
+    /// to be edited. A station it *does* name, with an interface that machine has
+    /// not got, refuses to send rather than quietly binding everything.
+    ///
+    /// PERSISTED.
+    pub fn interfaces(&self) -> Field<BTreeMap<NodeId, String>> {
+        self.at.field("interfaces")
+    }
+
+    /// What priority byte an sACN output puts in its packets. Ignored by the other
+    /// kinds, which have no such field in their protocols.
+    ///
+    /// PERSISTED.
+    pub fn priority(&self) -> Field<SacnPriority> {
+        self.at.field("priority")
     }
 }
 
@@ -3836,11 +3863,191 @@ impl StationEntity {
         self.at.field("clock")
     }
 
+    /// What this machine's interfaces are and what each service made of them is
+    /// **not** here: it is `station_networks`, keyed by the same id. An inventory is
+    /// not a reading — it changes when a cable is plugged in, not every two seconds —
+    /// and carried on this row it was 57% of it, rewritten at this row's cadence for
+    /// names nobody had changed.
+    /// Which sACN priority slot this station is holding, where it is holding one.
+    ///
+    /// Published because the claim is *read from these rows*: every station works out
+    /// the lowest slot nobody with a lower node id holds, which it can only do if
+    /// each one says what it took. `None` on a leader, which is at the top of the
+    /// ladder rather than in a slot.
+    ///
+    /// Defaulted, so a peer on an older build still deserialises.
+    ///
+    /// SYNCED.
+    pub fn sacn_slot(&self) -> Field<Option<u8>> {
+        self.at.field("sacn_slot")
+    }
+
     /// When this station last said any of the above.
     ///
     /// SYNCED.
     pub fn last_seen(&self) -> Field<Timestamp> {
         self.at.field("last_seen")
+    }
+}
+
+// ── station_networks ────────────────────────────────────────────────────
+
+/// What one station's networking looks like: what it has, and what it did with it.
+///
+/// **A collection of its own rather than fields on the `Station` row, and the reason is
+/// a measurement.** That row is one reading of a machine at one moment — CPU, memory,
+/// frame costs — replaced whole every two seconds because half of an old reading beside
+/// half of a new one is not a state the machine was ever in. An interface list is not
+/// like that at all: it is an *inventory*, and it changes when somebody plugs a cable
+/// in, which is to say almost never.
+///
+/// Carried on that row it was **57% of it** — 2517 bytes against 1081, on a laptop with
+/// twenty-four interfaces of which three have an address — rewritten every two seconds
+/// and logged to the oplog like any SYNCED write, for names nobody had changed. Here it
+/// is written only when it differs from what was last published, and the whole-row rule
+/// next door goes back to being exactly true rather than approximately.
+///
+/// SYNCED and not PERSISTED, for the reason `Station` is: a showfile travels, and which
+/// cards are in a particular machine does not travel with it. Keyed by the station's
+/// `NodeId`, so a console in the booth can read the stage rack's cabling — which is the
+/// whole reason this is replicated at all, since "why can the previz not see us" is
+/// almost never asked at the console that is broken.
+///
+/// The `station_networks` collection.
+pub fn station_networks() -> StationNetworkCollection {
+    StationNetworkCollection { at: Collection::at("station_networks") }
+}
+
+/// The `station_networks` collection, reached by [`station_networks()`].
+pub struct StationNetworkCollection {
+    at: Collection,
+}
+
+impl StationNetworkCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<StationNetwork>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> StationNetworkEntity {
+        StationNetworkEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> StationNetworkEntity {
+        StationNetworkEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &StationNetwork) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `station_networks` row, reached by [`StationNetworkCollection::by_id`] or
+/// [`StationNetworkCollection::nth`].
+pub struct StationNetworkEntity {
+    at: Entity,
+}
+
+impl StationNetworkEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<StationNetwork, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &StationNetwork) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// The station's `NodeId`, so the row is stable across restarts and every node
+    /// writes to the same key for the same machine.
+    ///
+    /// SYNCED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// Every interface the machine has, in a stable order.
+    ///
+    /// SYNCED.
+    pub fn interfaces(&self) -> Field<Vec<NetInterface>> {
+        self.at.field("interfaces")
+    }
+
+    /// What each service was told, what it managed, and what went wrong.
+    ///
+    /// SYNCED.
+    pub fn bindings(&self) -> Field<Vec<ServiceBinding>> {
+        self.at.field("bindings")
+    }
+
+    /// When any of the above last actually moved — which is *not* when it was last
+    /// looked at. A station that has been up all afternoon with nothing replugged
+    /// should say so rather than claim it noticed something two seconds ago.
+    ///
+    /// SYNCED.
+    pub fn changed_at(&self) -> Field<Timestamp> {
+        self.at.field("changed_at")
     }
 }
 

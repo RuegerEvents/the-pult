@@ -90,7 +90,7 @@ export const PRESETS: Preset[] = [
 			'Column',
 			[
 				split('Row', [tabs(['outputs']), tabs(['system'])], [0.5, 0.5]),
-				split('Row', [tabs(['stations']), tabs(['show', 'session'])], [0.5, 0.5])
+				split('Row', [tabs(['stations', 'network']), tabs(['show', 'session'])], [0.5, 0.5])
 			],
 			[0.5, 0.5]
 		)

@@ -11,6 +11,7 @@
  */
 
 import type { FadeCurves } from './generated/index.js';
+import type { NetworkPrefs } from './network.js';
 import { backendOrigin } from './ws/endpoint.js';
 
 export type Preferences = {
@@ -31,6 +32,14 @@ export type Preferences = {
 	autosaveMinutes: number;
 	/** How many of those it keeps before the oldest is dropped. */
 	autosaveKeep: number;
+	/**
+	 * Which cable each of this station's services goes out on.
+	 *
+	 * A key being absent is a value: it means this station has said nothing about
+	 * that service, and every interface is used — which is what it always did, and
+	 * is a different answer from naming a cable that is not there.
+	 */
+	network: NetworkPrefs;
 };
 
 const url = () => `${backendOrigin(window.location)}/api/preferences`;
@@ -57,7 +66,15 @@ export async function writePreferences(
 	change: Partial<
 		Pick<
 			Preferences,
-			'historyDepth' | 'homeFadeMs' | 'hazeDensity' | 'hazeTurbulence' | 'fadeCurves'
+			| 'historyDepth'
+			| 'homeFadeMs'
+			| 'hazeDensity'
+			| 'hazeTurbulence'
+			| 'fadeCurves'
+			// The whole section at once, because *absent* is a value here: a service
+			// the operator cleared has to become "said nothing" rather than keep what
+			// it had, and a field-by-field merge cannot express that.
+			| 'network'
 		>
 	>
 ): Promise<Preferences | null> {

@@ -541,6 +541,14 @@ async fn set_preferences(Json(body): Json<serde_json::Value>) -> Result<Json<ser
     if let Some(depth) = number("historyDepth")? {
         asked.history_depth = depth;
     }
+    // The whole `[network]` section at once, because the six keys are one screen and
+    // one decision — and because *absent* is a value here: a service the operator
+    // cleared has to become `None` rather than keep what it had, which a
+    // field-by-field merge cannot express.
+    if let Some(network) = body.get("network") {
+        asked.network = serde_json::from_value(network.clone())
+            .map_err(|e| bad_request(&format!("network: {e}")))?;
+    }
     if let Some(ms) = number("homeFadeMs")? {
         asked.home_fade_ms = ms;
     }
@@ -631,6 +639,10 @@ fn as_json(prefs: &infra::preferences::Preferences) -> serde_json::Value {
             "user": each.user,
             "hasPassword": !each.password.is_empty(),
         })),
+        // Which cable each service goes out on. Six keys, any of which may be absent
+        // — and absent is a different answer from empty: it means this station has
+        // said nothing, and every interface is used, which is what it always did.
+        "network": prefs.network,
     })
 }
 

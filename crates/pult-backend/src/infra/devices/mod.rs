@@ -344,6 +344,8 @@ impl DeviceManager {
             universes: Vec::new(),
             enabled: true,
             node_id: Some(self.node_id),
+            interfaces: Default::default(),
+            priority: Default::default(),
         };
         match serde_json::to_value(&output) {
             Ok(value) => {
@@ -905,7 +907,20 @@ impl DeviceManager {
 /// The mdns-sd receiver is blocking, so it gets its own thread and forwards over a
 /// channel — the same shape `SessionManager` uses. Every node browses, follower or
 /// not: seeing what is on the network costs nothing and is worth showing.
-pub fn spawn_mdns_browser(devices: DeviceHandle) -> Option<ServiceDaemon> {
+pub fn spawn_mdns_browser(
+    devices: DeviceHandle,
+    net: crate::infra::net::NetHandle,
+) -> Option<ServiceDaemon> {
+    // Told a cable this machine has not got: this browser does not start. A node
+    // adopted off the wrong network is a fixture patched onto a wire that cannot
+    // carry it, which is worse than a node nobody found.
+    let address = net
+        .bind(
+            pult_schema::types::network::NetService::OpenHaunt,
+            "the OpenHaunt device browser",
+            net.prefs().openhaunt.as_deref(),
+        )
+        .ok()?;
     let daemon = match ServiceDaemon::new() {
         Ok(d) => d,
         Err(e) => {
@@ -913,6 +928,7 @@ pub fn spawn_mdns_browser(devices: DeviceHandle) -> Option<ServiceDaemon> {
             return None;
         }
     };
+    crate::infra::net::restrict_mdns(&daemon, address);
     let receiver = match daemon.browse(SERVICE_TYPE) {
         Ok(r) => r,
         Err(e) => {

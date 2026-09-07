@@ -38,6 +38,8 @@ fn an_output(kind: OutputKind, target: Option<&str>) -> OutputConfig {
         universes: vec![],
         enabled: true,
         node_id: None,
+        interfaces: Default::default(),
+        priority: Default::default(),
     }
 }
 
@@ -265,7 +267,7 @@ fn a_watchable_manager(
     node_id: NodeId,
     engine: EngineHandle,
 ) -> (OutputManager, OutputHandle, Viewers, crate::engine::UpdateBroadcast) {
-    let (manager, handle, _costs) = OutputManager::new(node_id, engine, None);
+    let (manager, handle, _costs) = OutputManager::new(node_id, engine, None, crate::infra::net::Network::unconfigured());
     let viewers = Viewers::default();
     let updates = crate::engine::UpdateBroadcast::new();
     (manager.watchable(viewers.clone(), updates.clone()), handle, viewers, updates)
@@ -409,7 +411,7 @@ async fn every_plugin_receives_the_patch() {
     let first = counter();
     let second = counter();
     let (mut manager, handle, _costs) =
-        OutputManager::new(NodeId::new(), an_engine().await, None);
+        OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     manager.preload(an_output(OutputKind::Artnet, None), Box::new(Recorder { calls: first.clone(), fails: false }));
     manager.preload(an_output(OutputKind::Sacn, None), Box::new(Recorder { calls: second.clone(), fails: false }));
     tokio::spawn(manager.run());
@@ -425,7 +427,7 @@ async fn one_failing_plugin_does_not_silence_the_others() {
     let broken = counter();
     let working = counter();
     let (mut manager, handle, _costs) =
-        OutputManager::new(NodeId::new(), an_engine().await, None);
+        OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     manager.preload(an_output(OutputKind::Artnet, None), Box::new(Recorder { calls: broken.clone(), fails: true }));
     manager.preload(an_output(OutputKind::Sacn, None), Box::new(Recorder { calls: working.clone(), fails: false }));
     tokio::spawn(manager.run());
@@ -445,7 +447,7 @@ async fn one_failing_plugin_does_not_silence_the_others() {
 #[tokio::test]
 async fn a_configured_output_starts_sending() {
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
 
     handle.configure(vec![an_output(OutputKind::Artnet, Some(&addr.to_string()))]);
@@ -457,7 +459,7 @@ async fn a_configured_output_starts_sending() {
 #[tokio::test]
 async fn removing_an_output_stops_it() {
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
     let output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
 
@@ -475,7 +477,7 @@ async fn removing_an_output_stops_it() {
 #[tokio::test]
 async fn disabling_an_output_stops_it_without_deleting_it() {
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
     let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
 
@@ -494,7 +496,7 @@ async fn disabling_an_output_stops_it_without_deleting_it() {
 #[tokio::test]
 async fn an_output_owned_by_another_station_does_not_run_here() {
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
 
     let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
@@ -510,7 +512,7 @@ async fn an_output_owned_by_another_station_does_not_run_here() {
 async fn an_output_owned_by_this_station_runs() {
     let (receiver, addr) = a_receiver().await;
     let node_id = NodeId::new();
-    let (manager, handle, _costs) = OutputManager::new(node_id, an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(node_id, an_engine().await, None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
 
     let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
@@ -526,7 +528,7 @@ async fn renaming_an_output_does_not_interrupt_it() {
     // Rebuilding the plugin would re-open the socket and reset its dedup cache, so
     // an unchanged universe would be re-sent — a visible blip for a rename.
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
     let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
 
@@ -547,7 +549,7 @@ async fn renaming_an_output_does_not_interrupt_it() {
 async fn re_addressing_an_output_moves_it() {
     let (old_receiver, old_addr) = a_receiver().await;
     let (new_receiver, new_addr) = a_receiver().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
     let mut output = an_output(OutputKind::Artnet, Some(&old_addr.to_string()));
 
@@ -568,7 +570,7 @@ async fn narrowing_and_widening_the_universes_takes_effect_while_the_show_is_up(
     // it at half past six being obeyed. `same_wire` counts `universes`, so the change
     // rebuilds the plugin and the fresh dedup cache is what puts the first frame out.
     let (receiver, addr) = a_receiver().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
     let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
     output.universes = vec![9]; // the rig is on universe 3
@@ -590,7 +592,7 @@ async fn narrowing_and_widening_the_universes_takes_effect_while_the_show_is_up(
 
 #[tokio::test]
 async fn an_art_net_output_with_no_address_is_refused_rather_than_guessed_at() {
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     let engine = an_engine().await;
     let _ = &engine;
     tokio::spawn(manager.run());
@@ -604,7 +606,7 @@ async fn an_art_net_output_with_no_address_is_refused_rather_than_guessed_at() {
 async fn two_outputs_feed_two_nodes_at_once() {
     let (first_node, first_addr) = a_receiver().await;
     let (second_node, second_addr) = a_receiver().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
 
     handle.configure(vec![
@@ -623,7 +625,7 @@ async fn two_outputs_feed_two_nodes_at_once() {
 async fn a_working_output_reports_that_it_is_sending() {
     let (_receiver, addr) = a_receiver().await;
     let engine = an_engine().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
 
     let output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
@@ -645,7 +647,7 @@ async fn a_working_output_reports_that_it_is_sending() {
 #[tokio::test]
 async fn a_failing_output_reports_what_went_wrong() {
     let engine = an_engine().await;
-    let (mut manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None);
+    let (mut manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None, crate::infra::net::Network::unconfigured());
     let output = an_output(OutputKind::Artnet, None);
     manager.preload(output.clone(), Box::new(Recorder { calls: counter(), fails: true }));
     tokio::spawn(manager.run());
@@ -663,7 +665,7 @@ async fn a_failing_output_reports_what_went_wrong() {
 async fn an_output_that_stops_running_stops_being_reported() {
     let (_receiver, addr) = a_receiver().await;
     let engine = an_engine().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
 
     handle.configure(vec![an_output(OutputKind::Artnet, Some(&addr.to_string()))]);
@@ -696,7 +698,7 @@ fn a_bare_address_takes_the_protocol_s_own_port() {
 #[tokio::test]
 async fn a_fixture_no_output_carries_is_reported_until_one_does() {
     let engine = an_engine().await;
-    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None);
+    let (manager, handle, _costs) = OutputManager::new(NodeId::new(), engine.clone(), None, crate::infra::net::Network::unconfigured());
     tokio::spawn(manager.run());
 
     // A dimmer on universe 3 and nothing configured: a gap, naming both.
@@ -729,7 +731,7 @@ async fn a_fixture_no_output_carries_is_reported_until_one_does() {
 async fn a_connector_draws_a_moving_value_from_one_patch() {
     let levels: Arc<std::sync::Mutex<Vec<f32>>> = Default::default();
     let (mut manager, handle, _costs) =
-        OutputManager::new(NodeId::new(), an_engine().await, None);
+        OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     manager.preload(
         an_output(OutputKind::Artnet, None),
         Box::new(Sampler {
@@ -763,7 +765,7 @@ async fn a_connector_draws_a_moving_value_from_one_patch() {
 async fn a_settled_patch_drops_to_the_keep_alive_rate() {
     let levels: Arc<std::sync::Mutex<Vec<f32>>> = Default::default();
     let (mut manager, handle, _costs) =
-        OutputManager::new(NodeId::new(), an_engine().await, None);
+        OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     manager.preload(
         an_output(OutputKind::Artnet, None),
         Box::new(Sampler {
@@ -791,7 +793,7 @@ async fn a_settled_patch_drops_to_the_keep_alive_rate() {
 #[tokio::test]
 async fn each_connector_reports_its_own_frame_cost() {
     let (mut manager, handle, mut costs) =
-        OutputManager::new(NodeId::new(), an_engine().await, None);
+        OutputManager::new(NodeId::new(), an_engine().await, None, crate::infra::net::Network::unconfigured());
     let busy = an_output(OutputKind::Artnet, None);
     let mut quiet = an_output(OutputKind::Sacn, None);
     quiet.name = "Guest console".into();
@@ -877,6 +879,7 @@ fn a_paced(moving_ms: u64, settled_ms: u64) -> Running {
             moving: std::time::Duration::from_millis(moving_ms),
             settled: std::time::Duration::from_millis(settled_ms),
         }),
+        Wire { interface: None, priority: 100 },
     )
 }
 

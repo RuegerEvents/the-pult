@@ -477,10 +477,31 @@ pub async fn start(config: Config) -> Result<Running> {
         log.set_node_id(node_id.0);
     }
 
+    // Which cable each service goes out on. Built before anything binds, because
+    // everything below asks it — and it holds what each service was told as well as
+    // what it managed, which is what the `Station` row carries to a console in
+    // another room.
+    let net = crate::infra::net::Network::new(crate::infra::preferences::load().network);
+
     // Bound first: `--port 0` is a real case for a second console on one machine,
     // and the station row published below has to carry the port that was given
     // out rather than the zero that was asked for.
-    let listener = tokio::net::TcpListener::bind(SocketAddr::new(config.bind, config.port)).await?;
+    //
+    // `config.bind` is what a library caller asked for and wins; `None` takes the
+    // station's `[network] http` preference. A *listener* whose named interface is
+    // missing falls back to every one of them rather than refusing — see
+    // `infra::net`, where the reason is written down: the page is how the setting
+    // gets fixed.
+    let bind = config.bind.unwrap_or_else(|| {
+        net.bind_listener(
+            pult_schema::types::network::NetService::Http,
+            "the console's page",
+            net.prefs().http.as_deref(),
+        )
+        .map(std::net::IpAddr::V4)
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+    });
+    let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, config.port)).await?;
     let http_addr = listener.local_addr()?;
 
     // Every task this station starts, so it can be stopped again. Opening a show is
@@ -555,7 +576,7 @@ pub async fn start(config: Config) -> Result<Running> {
     let (device_mgr, device_handle, device_directory) =
         DeviceManager::new(node_id, engine_handle.clone(), config.openhaunt_broker_port);
     tasks.push(tokio::spawn(device_mgr.run()));
-    let devices_mdns = spawn_mdns_browser(device_handle.clone());
+    let devices_mdns = spawn_mdns_browser(device_handle.clone(), net.clone());
 
     // Which outputs exist is show data now. The manager reconciles against the
     // `outputs` collection, and the engine hands it that collection whenever it
@@ -564,6 +585,7 @@ pub async fn start(config: Config) -> Result<Running> {
         node_id,
         engine_handle.clone(),
         Some((device_directory, device_handle.clone())),
+        net.clone(),
     );
     let output_mgr = output_mgr.watchable(viewers.clone(), broadcast.clone());
     tasks.push(tokio::spawn(output_mgr.run()));
@@ -655,6 +677,7 @@ pub async fn start(config: Config) -> Result<Running> {
             .map(|bundle| bundle.path().to_path_buf())
             .or_else(|| shows_dir(&config))
             .unwrap_or_else(std::env::temp_dir),
+        net.clone(),
     );
     tasks.push(tokio::spawn(reporter.run()));
 
@@ -689,6 +712,7 @@ pub async fn start(config: Config) -> Result<Running> {
         config.sync_port,
         engine_handle.clone(),
         sync_handle.clone(),
+        net.clone(),
     );
     // MVR-xchange. Built here and not later because the sync manager has to be handed
     // its handle *before* it runs — a peer can arrive with a relayed ask on it at once.
@@ -712,6 +736,7 @@ pub async fn start(config: Config) -> Result<Running> {
             keep: xchange_prefs.mvr_xchange_keep as usize,
             max_file_bytes: xchange_prefs.mvr_xchange_max_file_mb.saturating_mul(1024 * 1024),
         },
+        net.clone(),
     );
     let mut xchange_mgr = xchange_mgr;
     xchange_mgr.set_sync(sync_handle.clone());
@@ -1006,6 +1031,8 @@ async fn seed_outputs_from_flags(engine: &EngineHandle, node_id: NodeId, config:
             universes: vec![],
             enabled: true,
             node_id: Some(node_id),
+            interfaces: Default::default(),
+            priority: Default::default(),
         });
     }
     if let Some(target) = config.sacn {
@@ -1020,6 +1047,8 @@ async fn seed_outputs_from_flags(engine: &EngineHandle, node_id: NodeId, config:
             universes: vec![],
             enabled: true,
             node_id: Some(node_id),
+            interfaces: Default::default(),
+            priority: Default::default(),
         });
     }
 

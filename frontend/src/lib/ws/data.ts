@@ -26,6 +26,7 @@ import type { Show } from '../generated/Show.js';
 import type { SpeedMaster } from '../generated/SpeedMaster.js';
 import type { StagePlan } from '../generated/StagePlan.js';
 import type { Station } from '../generated/Station.js';
+import type { StationNetwork } from '../generated/StationNetwork.js';
 import type { Symbol } from '../generated/Symbol.js';
 import type { User } from '../generated/User.js';
 import type { Version } from '../generated/Version.js';
@@ -117,6 +118,10 @@ export type StagePlanEntity = PathProxy<StagePlan> & {
 };
 
 export type StationEntity = PathProxy<Station> & {
+  delete(): Promise<void>;
+};
+
+export type StationNetworkEntity = PathProxy<StationNetwork> & {
   delete(): Promise<void>;
 };
 
@@ -428,6 +433,20 @@ export type StationCollection = {
   [n: number]: StationEntity;
 };
 
+export type StationNetworkCollection = {
+  get(): Promise<StationNetwork[]>;
+  set(value: StationNetwork[]): Promise<void>;
+  subscribe(cb: (value: StationNetwork[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: StationNetwork[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): StationNetworkEntity;
+  nth(n: number): StationNetworkEntity;
+  create(entity: StationNetwork): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: StationNetworkEntity;
+};
+
 export type SymbolCollection = {
   get(): Promise<Symbol[]>;
   set(value: Symbol[]): Promise<void>;
@@ -496,6 +515,7 @@ export type DataRoot = {
   speed_masters: SpeedMasterCollection;
   stage_plans: StagePlanCollection;
   stations: StationCollection;
+  station_networks: StationNetworkCollection;
   symbols: SymbolCollection;
   users: UserCollection;
   versions: VersionCollection;

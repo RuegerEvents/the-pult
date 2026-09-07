@@ -76,11 +76,12 @@ impl OpenHauntOutput {
         directory: watch::Receiver<DeviceDirectory>,
         devices: DeviceHandle,
         sacn_port: u16,
+        interface: Option<std::net::Ipv4Addr>,
     ) -> Result<Self> {
         Ok(Self {
             directory,
             devices,
-            socket: UdpSocket::bind("0.0.0.0:0").await?,
+            socket: crate::infra::net::udp(interface).await?,
             cid: *Uuid::new_v4().as_bytes(),
             sacn_port,
             carried: Vec::new(),

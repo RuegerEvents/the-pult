@@ -191,6 +191,28 @@ pub struct Preferences {
     /// between a machine on the venue wifi and this console's disk.
     #[serde(default = "default_xchange_max_file_mb")]
     pub mvr_xchange_max_file_mb: u64,
+    /// Which interface each of this console's network services goes out on.
+    ///
+    /// A station preference and never show data, which barely needs arguing: which
+    /// cable is in which socket is a fact about this machine, and an interface name
+    /// means a different cable on every one of them. A show that carried `en5` would
+    /// be carrying a claim about hardware it has never seen.
+    ///
+    /// Empty is every service on every interface, which is what this console did
+    /// before any of this existed — so a preferences file written before it opens
+    /// unchanged and behaves identically.
+    #[serde(default)]
+    pub network: crate::infra::net::NetworkPrefs,
+    /// The sACN priority slot this station last held.
+    ///
+    /// Remembered rather than recomputed so that a console rebooting mid-show comes
+    /// back at the priority its receivers last heard it at, instead of at whatever
+    /// gap it left behind — an sACN receiver changing which source it follows is a
+    /// visible jump on stage, and the whole reason the ladder is sticky.
+    ///
+    /// Written by the station reporter, and only when it changes.
+    #[serde(default)]
+    pub sacn_slot: Option<u8>,
 }
 
 /// Fifteen minutes: about how long a rewrite of one cue takes.
@@ -268,6 +290,8 @@ impl Default for Preferences {
             mvr_xchange_group: default_xchange_group(),
             mvr_xchange_keep: default_xchange_keep(),
             mvr_xchange_max_file_mb: default_xchange_max_file_mb(),
+            network: crate::infra::net::NetworkPrefs::default(),
+            sacn_slot: None,
         }
     }
 }

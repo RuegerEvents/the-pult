@@ -165,7 +165,7 @@ async fn recv(socket: &tokio::net::UdpSocket) -> Vec<u8> {
 #[tokio::test]
 async fn fixture_levels_reach_the_wire() {
     let (receiver, addr) = a_receiver().await;
-    let mut output = SacnOutput::bind(Some(addr)).await.unwrap();
+    let mut output = SacnOutput::bind(Some(addr), None).await.unwrap();
 
     output.send(&a_dimmer_patch(3, 1.0), &[], 0).await.unwrap();
 
@@ -177,7 +177,7 @@ async fn fixture_levels_reach_the_wire() {
 #[tokio::test]
 async fn an_unchanged_universe_is_not_resent() {
     let (receiver, addr) = a_receiver().await;
-    let mut output = SacnOutput::bind(Some(addr)).await.unwrap();
+    let mut output = SacnOutput::bind(Some(addr), None).await.unwrap();
 
     output.send(&a_dimmer_patch(1, 1.0), &[], 0).await.unwrap();
     let _ = recv(&receiver).await;
@@ -194,7 +194,7 @@ async fn an_unchanged_universe_is_not_resent() {
 #[tokio::test]
 async fn the_sequence_counter_advances_and_skips_zero() {
     let (receiver, addr) = a_receiver().await;
-    let mut output = SacnOutput::bind(Some(addr)).await.unwrap();
+    let mut output = SacnOutput::bind(Some(addr), None).await.unwrap();
 
     output.send(&a_dimmer_patch(1, 0.5), &[], 0).await.unwrap();
     let first = recv(&receiver).await;
@@ -208,7 +208,7 @@ async fn the_sequence_counter_advances_and_skips_zero() {
 #[tokio::test]
 async fn a_restricted_output_leaves_the_universes_it_does_not_carry_to_somebody_else() {
     let (receiver, addr) = a_receiver().await;
-    let mut output = SacnOutput::bind(Some(addr)).await.unwrap().carrying(vec![9]);
+    let mut output = SacnOutput::bind(Some(addr), None).await.unwrap().carrying(vec![9]);
 
     output.send(&a_dimmer_patch(3, 1.0), &[], 0).await.unwrap();
 
@@ -224,7 +224,7 @@ async fn a_restricted_output_leaves_the_universes_it_does_not_carry_to_somebody_
 #[tokio::test]
 async fn a_fixture_on_a_node_puts_nothing_on_a_universe() {
     let (receiver, addr) = a_receiver().await;
-    let mut output = SacnOutput::bind(Some(addr)).await.unwrap();
+    let mut output = SacnOutput::bind(Some(addr), None).await.unwrap();
 
     // Addressed to the node before the patch is built, because where a fixture's
     // channels land is resolved once, when the patch arrives — the same as when it

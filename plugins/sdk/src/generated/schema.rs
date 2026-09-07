@@ -13,7 +13,7 @@
 //! What a plugin holds is therefore the *shape* the station serializes, not
 //! the station's own struct: methods, invariants and `Default` impls stay
 //! where the console keeps them.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use uuid::Uuid;
 
 /// A moment, RFC 3339, exactly as the wire carries it.
@@ -837,6 +837,22 @@ pub enum Ink {
     ByClass,
 }
 
+/// Why an interface setting could not be turned into an address to bind.
+///
+/// A type rather than a string so that the panel, the log line and the test all say
+/// the same thing about the same condition.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum InterfaceError {
+    /// No interface of that name on this machine.
+    Unknown(String),
+    /// The interface is here and has no IPv4 address on it.
+    NoAddress(String),
+    /// An address literal that is on none of this machine's interfaces.
+    NotHere(String),
+    /// An IPv6 literal. Refused by name rather than bound to nothing.
+    NotIpv4(String),
+}
+
 /// One line of a fixture's label on a plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LabelField {
@@ -1016,7 +1032,77 @@ pub struct NamedAsset {
     pub mime: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// One of this machine's network interfaces, as a station reports it.
+///
+/// On the SYNCED `Station` row rather than LOCAL, so a console in the booth can fill
+/// in a dropdown for the stage rack's Art-Net cable without anybody walking over —
+/// the same argument `ClockSync` makes for being on that row.
+///
+/// Addresses are plural because an aliased NIC is the case that makes a name
+/// insufficient. They are strings on the wire because that is what an address is to
+/// a panel; [`NetInterface::ipv4`] is how anything here reads them back.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NetInterface {
+    /// What the operating system calls it: `en0`, `eth0`, a GUID on Windows.
+    pub name: String,
+    /// Every IPv4 address on it, in the order the machine reports them.
+    pub addresses: Vec<String>,
+    /// False only where the machine says `Down`. `Unknown` — which is what Linux
+    /// reports for loopback — is not a claim that the interface is unusable, and
+    /// reading it as one would hide the interface a dev station actually binds.
+    pub up: bool,
+    /// Loopback is included and flagged rather than excluded, unlike the throughput
+    /// figures beside it on the row: `demo.sh` and the tests legitimately bind it,
+    /// and an operator looking at a console that only talks to itself needs to see
+    /// that this is what it is doing.
+    pub loopback: bool,
+}
+
+/// Which service an interface setting is about.
+///
+/// The four that bind or advertise on their own, plus one per configured output —
+/// because an output names its interface on its own row, per station, and its fault
+/// belongs beside the others rather than in a second place.
+///
+/// Art-Net and sACN are not variants: `[network] artnet` and `sacn` are the
+/// *fallback* an output row takes when it names no interface of its own, and the
+/// thing that actually binds is the output.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum NetService {
+    /// The page, the WebSocket, and a hosted MVR-xchange group.
+    Http,
+    /// `_pult._tcp` and the sync listener: who this console is in a session with.
+    Session,
+    /// `_mvrxchange._tcp` and its listener.
+    MvrXchange,
+    /// The OpenHaunt device browser and the MQTT broker this station runs for them.
+    OpenHaunt,
+    /// One configured output, by its row id.
+    Output(Uuid),
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
 pub struct NodeId(pub Uuid);
 
 /// One configured output.
@@ -1036,10 +1122,27 @@ pub struct OutputConfig {
     /// its gateway nodes is a universe on a wire like any other.
     pub universes: Vec<u16>,
     pub enabled: bool,
-    /// Which station sends this. `None` means every one of them, which puts the same
-    /// frames on the wire once per node — useful on purpose for a redundant path,
-    /// and a surprise by accident, so the UI fills in the local station.
+    /// Which station sends this. `None` means *whichever station may*, and what that
+    /// comes to depends on the kind — see [`OutputConfig::runs_on`]. The UI fills in
+    /// the local station, so the explicit case stays the normal one.
     pub node_id: Option<NodeId>,
+    /// Which interface this goes out on, per station.
+    ///
+    /// A map rather than one string because an output row replicates and an
+    /// interface name means a different cable on every machine: `en5` on the booth
+    /// console and `eth1` on the stage rack are not the same thing, and one field
+    /// would be wrong on all but one of them.
+    ///
+    /// A station this map does not name has been told nothing, and falls through to
+    /// its own `[network]` preference and then to every interface — which is what
+    /// this console did before any of this existed, and is why no existing show has
+    /// to be edited. A station it *does* name, with an interface that machine has
+    /// not got, refuses to send rather than quietly binding everything.
+    #[serde(default)]
+    pub interfaces: BTreeMap<NodeId, String>,
+    /// What priority byte an sACN output puts in its packets. Ignored by the other
+    /// kinds, which have no such field in their protocols.
+    pub priority: SacnPriority,
 }
 
 /// Which protocol an output speaks.
@@ -1485,6 +1588,24 @@ pub struct Rect {
     pub h: f32,
 }
 
+/// How an sACN output decides the priority byte it puts in every packet.
+///
+/// Art-Net has no priority mechanism at all, which is why it is the kind that must
+/// go from one station; E1.31 has this, which is what makes several stations sending
+/// one universe a defined thing rather than a race. So an sACN output may run
+/// everywhere, and this is what makes that well-defined.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SacnPriority {
+    /// Derived from the session: the leader at 100, every other station in a slot
+    /// below it. Nobody types a number and a failover is the receiver's arbitration.
+    Auto,
+    /// A number per station, for a rig where another desk is already at a known
+    /// priority. A station this map does not name takes its `Auto` number rather
+    /// than a default — being unnamed is being told nothing, which is the same
+    /// fall-through rule the interfaces map follows.
+    Manual(BTreeMap<NodeId, u8>),
+}
+
 /// A tag that cuts across layers: "house rig", "touring", "practicals".
 ///
 /// MVR's `Class`, kept rather than dropped for two reasons. It is data the file
@@ -1692,6 +1813,24 @@ pub struct Sequence {
     /// agree on when it started, not merely that it did.
     #[serde(default)]
     pub went_at: Option<u64>,
+}
+
+/// What one service was told, what it managed, and what went wrong.
+///
+/// On the station row so that "why can the previz not see us" is answerable from a
+/// different console than the broken one, which is how it is usually asked.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceBinding {
+    pub service: NetService,
+    /// A name for the panel to print: the output's own name, or the service's.
+    pub label: String,
+    /// What the preference or the row said, if anything. `None` is "told nothing",
+    /// which is the case that falls through rather than the case that refuses.
+    pub wanted: Option<String>,
+    /// The address it resolved to and is bound on.
+    pub bound: Option<String>,
+    /// Why it is not running, where it is not.
+    pub fault: Option<InterfaceError>,
 }
 
 /// One sheet of the paperwork.
@@ -2004,8 +2143,58 @@ pub struct Station {
     /// Defaulted, and the default is `Reference` — a lone console is its own clock.
     #[serde(default)]
     pub clock: ClockSync,
+    /// What this machine's interfaces are and what each service made of them is
+    /// **not** here: it is `station_networks`, keyed by the same id. An inventory is
+    /// not a reading — it changes when a cable is plugged in, not every two seconds —
+    /// and carried on this row it was 57% of it, rewritten at this row's cadence for
+    /// names nobody had changed.
+    /// Which sACN priority slot this station is holding, where it is holding one.
+    ///
+    /// Published because the claim is *read from these rows*: every station works out
+    /// the lowest slot nobody with a lower node id holds, which it can only do if
+    /// each one says what it took. `None` on a leader, which is at the top of the
+    /// ladder rather than in a slot.
+    ///
+    /// Defaulted, so a peer on an older build still deserialises.
+    #[serde(default)]
+    pub sacn_slot: Option<u8>,
     /// When this station last said any of the above.
     pub last_seen: Timestamp,
+}
+
+/// What one station's networking looks like: what it has, and what it did with it.
+///
+/// **A collection of its own rather than fields on the `Station` row, and the reason is
+/// a measurement.** That row is one reading of a machine at one moment — CPU, memory,
+/// frame costs — replaced whole every two seconds because half of an old reading beside
+/// half of a new one is not a state the machine was ever in. An interface list is not
+/// like that at all: it is an *inventory*, and it changes when somebody plugs a cable
+/// in, which is to say almost never.
+///
+/// Carried on that row it was **57% of it** — 2517 bytes against 1081, on a laptop with
+/// twenty-four interfaces of which three have an address — rewritten every two seconds
+/// and logged to the oplog like any SYNCED write, for names nobody had changed. Here it
+/// is written only when it differs from what was last published, and the whole-row rule
+/// next door goes back to being exactly true rather than approximately.
+///
+/// SYNCED and not PERSISTED, for the reason `Station` is: a showfile travels, and which
+/// cards are in a particular machine does not travel with it. Keyed by the station's
+/// `NodeId`, so a console in the booth can read the stage rack's cabling — which is the
+/// whole reason this is replicated at all, since "why can the previz not see us" is
+/// almost never asked at the console that is broken.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StationNetwork {
+    /// The station's `NodeId`, so the row is stable across restarts and every node
+    /// writes to the same key for the same machine.
+    pub id: Uuid,
+    /// Every interface the machine has, in a stable order.
+    pub interfaces: Vec<NetInterface>,
+    /// What each service was told, what it managed, and what went wrong.
+    pub bindings: Vec<ServiceBinding>,
+    /// When any of the above last actually moved — which is *not* when it was last
+    /// looked at. A station that has been up all afternoon with nothing replugged
+    /// should say so rather than claim it noticed something two seconds ago.
+    pub changed_at: Timestamp,
 }
 
 /// A piece of geometry drawn once and placed many times.

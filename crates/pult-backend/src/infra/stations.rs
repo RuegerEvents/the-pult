@@ -13,6 +13,7 @@ use pult_schema::{
     path::{Path, PathSegment},
     types::{
         fixture::Fixture,
+        network::{NetInterface, ServiceBinding},
         output::OutputConfig,
         station::{ClockState, ClockSync, FrameCost, MachineStats, Station},
     },
@@ -49,6 +50,21 @@ pub struct StationReporter {
     /// taking a lock. Nothing here is a replicated write per frame — the figures ride
     /// on the station row this reporter already publishes.
     frames: watch::Receiver<Vec<FrameCost>>,
+    /// What every service on this station was told about cables, and what came of
+    /// it. Refreshed here rather than anywhere else because this is the only thing
+    /// on the station that already looks at the machine on a timer.
+    net: crate::infra::net::NetHandle,
+    /// What was last published as this station's networking, so the inventory is
+    /// written when it *changes* rather than at this reporter's cadence. See
+    /// `StationNetwork`: carried on the station row it was 57% of a row rewritten
+    /// every two seconds, for names nobody had changed.
+    network_said: Option<(Vec<NetInterface>, Vec<ServiceBinding>)>,
+    /// The sACN priority slot this station is holding.
+    ///
+    /// Claimed from the other stations' own rows — see `claim_slot` — and remembered
+    /// in `preferences.toml`, so a console that reboots mid-show comes back at the
+    /// priority the receivers last heard it at.
+    sacn_slot: Option<u8>,
     /// What this station last said about the show clock, so a change of state is a
     /// line in the log and a steady state is not.
     ///
@@ -69,6 +85,10 @@ struct Sample {
     net_sent: u64,
     net_window_ms: u32,
     machine: MachineStats,
+    /// The machine's interfaces, off the same refresh the throughput figures come
+    /// from — so publishing them costs no new syscall and no new dependency, and a
+    /// service told to use a cable that was not there gets to try again every tick.
+    interfaces: Vec<NetInterface>,
 }
 
 /// What has to be asked of the operating system, and the handles it is asked through.
@@ -162,6 +182,7 @@ impl Probe {
         self.net_window_from = std::time::Instant::now();
 
         Sample {
+            interfaces: crate::infra::net::read(&self.networks),
             cpu_percent,
             mem_used,
             mem_total: self.system.total_memory(),
@@ -255,9 +276,13 @@ impl StationReporter {
         links: watch::Receiver<pult_schema::types::station::PeerLinks>,
         frames: watch::Receiver<Vec<FrameCost>>,
         showfile: std::path::PathBuf,
+        net: crate::infra::net::NetHandle,
     ) -> Self {
         StationReporter {
             node_id,
+            net,
+            network_said: None,
+            sacn_slot: crate::infra::preferences::load().sacn_slot,
             engine,
             sync_addr,
             http_addr,
@@ -331,6 +356,20 @@ impl StationReporter {
         let is_leader = !self.is_follower().await;
         let clock = self.clock_state(is_leader);
 
+        // The one thing on this station that already looks at the machine on a
+        // timer, so this is where a cable coming or going is noticed. Handing the
+        // reading over is what makes a refusal recoverable: a service told to use an
+        // interface that was not there when the console came up starts by itself
+        // when somebody plugs it in.
+        self.net.observe(sample.interfaces.clone());
+        let sacn_slot = self.claim_sacn_slot(is_leader).await;
+        // Both of the things that decide what an output does — whether this station
+        // runs an unowned one, and what priority its sACN claims — are worked out
+        // here, once, and read from there. A second answer to "am I the leader" is a
+        // second answer to which console is driving the rig.
+        self.net.set_standing(crate::infra::net::Standing { is_leader, sacn_slot });
+        self.publish_network(sample.interfaces.clone()).await;
+
         Station {
             id: self.node_id.0,
             hostname: self.hostname.clone(),
@@ -343,7 +382,7 @@ impl StationReporter {
             uptime_s: self.started.elapsed().as_secs(),
             output_plugins: outputs
                 .iter()
-                .filter(|o| o.runs_on(self.node_id))
+                .filter(|o| o.runs_on(self.node_id, is_leader))
                 .map(|o| o.name.clone())
                 .collect(),
             // Every station computes every fixture today. Reported as a pair rather
@@ -360,6 +399,7 @@ impl StationReporter {
             net_sent: sample.net_sent,
             net_window_ms: sample.net_window_ms,
             clock,
+            sacn_slot,
             last_seen: Utc::now(),
         }
     }
@@ -404,6 +444,76 @@ impl StationReporter {
             measured_at: measured_at
                 .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64)),
         }
+    }
+
+    /// Publish this station's cabling, but only when it has moved.
+    ///
+    /// The whole point of `station_networks` being its own collection: an interface
+    /// list changes when somebody plugs a cable in, and a station that has been up all
+    /// afternoon writes nothing at all. `changed_at` therefore says when the cabling
+    /// last moved rather than when it was last looked at, which is the honest reading
+    /// and the one an operator wants.
+    async fn publish_network(&mut self, interfaces: Vec<NetInterface>) {
+        let bindings = self.net.bindings();
+        let now = (interfaces, bindings);
+        if self.network_said.as_ref() == Some(&now) {
+            return;
+        }
+        let row = pult_schema::types::network::StationNetwork {
+            id: self.node_id.0,
+            interfaces: now.0.clone(),
+            bindings: now.1.clone(),
+            changed_at: Utc::now(),
+        };
+        let Ok(value) = serde_json::to_value(&row) else { return };
+        let path: Path = vec![
+            PathSegment::Key("station_networks".into()),
+            PathSegment::Id(row.id),
+        ];
+        if self.engine.set(path, Lifecycle::Synced, value.clone()).await.is_err() {
+            let create = vec![
+                PathSegment::Key("station_networks".into()),
+                PathSegment::Key("__create".into()),
+            ];
+            if let Err(e) = self.engine.set(create, Lifecycle::Synced, value).await {
+                debug!("[stations] could not publish this station's cabling: {e}");
+                return;
+            }
+        }
+        self.network_said = Some(now);
+    }
+
+    /// Take the lowest sACN priority slot no station with a lower node id is holding.
+    ///
+    /// Read out of the other stations' own rows, which is what makes this need no
+    /// leader, no new message and no replicated assignment table — every station can
+    /// already see every row. A leader holds no slot: it is at the top of the ladder
+    /// rather than in it.
+    ///
+    /// Written back to `preferences.toml` only when it changes, because this runs
+    /// every two seconds and a file rewritten at that rate for a number that almost
+    /// never moves is a disk nobody asked to use.
+    async fn claim_sacn_slot(&mut self, is_leader: bool) -> Option<u8> {
+        if is_leader {
+            return None;
+        }
+        let others: Vec<(NodeId, u8)> = self
+            .read::<Station>("stations")
+            .await
+            .into_iter()
+            .filter(|row| row.id != self.node_id.0)
+            .filter_map(|row| row.sacn_slot.map(|slot| (NodeId(row.id), slot)))
+            .collect();
+        let slot = pult_schema::types::network::claim_slot(self.node_id, self.sacn_slot, &others);
+        if self.sacn_slot != Some(slot) {
+            self.sacn_slot = Some(slot);
+            let mut prefs = crate::infra::preferences::load();
+            prefs.sacn_slot = Some(slot);
+            if let Err(e) = crate::infra::preferences::save(&prefs) {
+                debug!("[stations] could not remember the sACN priority slot: {e}");
+            }
+        }
+        Some(slot)
     }
 
     async fn is_follower(&self) -> bool {
@@ -562,6 +672,7 @@ mod tests {
                 links,
                 frames,
                 std::path::PathBuf::from("."),
+                crate::infra::net::Network::unconfigured(),
             );
             (handle, reporter, frames_tx)
         }

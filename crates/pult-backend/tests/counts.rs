@@ -111,6 +111,8 @@ async fn an_output(station: &Running) -> Uuid {
         universes: vec![],
         enabled: true,
         node_id: Some(station.node_id),
+        interfaces: Default::default(),
+        priority: Default::default(),
     };
     create(station, "outputs", serde_json::to_value(&output).unwrap()).await;
     // Held open: a closed socket makes the first send fail with a refusal on some

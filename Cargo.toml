@@ -98,6 +98,7 @@ toml = "0.8"
 # `systemstat` covers the same ground and was not taken: this crate was already
 # here for CPU and memory, and a second one would be a second thing to keep
 # working on four release targets.
+socket2 = "0.6"
 sysinfo = { version = "0.39", default-features = false, features = ["system", "network", "disk", "component"] }
 
 # mDNS discovery

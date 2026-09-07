@@ -4738,6 +4738,188 @@ cd frontend && npx vitest run src/lib/ws/clock.test.ts
 ```
 
 
+### 65. Which cable it goes out on
+
+**Nothing in this console said which network interface anything used.** Every service
+picked for itself, or let the operating system pick: both mDNS daemons bound every
+interface they could find, sACN's multicast left by whatever the route table said —
+`IP_MULTICAST_IF` was never set — and Art-Net, sACN and OpenHaunt all bound
+`0.0.0.0:0`. A console at a venue has a house LAN, an isolated lighting network with no
+route to anything, and often a wifi the tablet is on, and none of that could be
+expressed.
+
+**And one of those defaults was not merely unexpressive but wrong.** `infra::local_ipv4`
+finds this machine's address by connecting a UDP socket to `8.8.8.8` and reading the
+local end back — that is, *the interface with the default route*. It was what a station
+advertised over `_pult._tcp` and published as its `sync_addr`. So on a console with a
+house LAN beside a show LAN, the address a peer was told to dial for the show was
+decided by which cable reaches the internet. It is now the fallback rather than the
+answer: a service advertises what it actually bound.
+
+**Six services and a per-row map, because one setting is simpler and wrong.**
+`[network]` in `preferences.toml` names the four that bind on their own — `http`,
+`session`, `mvr_xchange`, `openhaunt` — plus `artnet` and `sacn`, which bind nothing and
+are the fallback an output row takes. A preference and never show data, which barely
+needs arguing: which cable is in which socket is a fact about the machine.
+
+An **output** names its own, per station, in `OutputConfig::interfaces` —
+`BTreeMap<NodeId, String>`, so different universes go out different cables. A map rather
+than one string because the row replicates and `en5` means a different cable on every
+machine; one field would be wrong on all but one of them.
+
+**A name or an address, and both are wanted.** `resolve` parses what it was given as an
+`IpAddr` first and falls back to a name. The forms cannot be confused, a name survives a
+DHCP lease, and an address is the only way to say *which* alias on a NIC carrying both
+2.0.0.x and 10.0.0.x — which is an ordinary Art-Net setup, and the case that decided
+this. IPv4 only, and a v6 literal is refused by name rather than accepted and bound to
+nothing.
+
+**Two absences, two answers, and this is the whole of why no show had to be edited.**
+Told nothing falls through to the preference and then to every interface, which is what
+this console always did. Told an interface the machine has not got **refuses**, visibly,
+because a console silently offering the show network's traffic on the house LAN is the
+failure the setting exists to prevent.
+
+**With one deliberate exception, written into `infra/net.rs` where somebody will find
+it.** A *listener* — the HTTP server — falls back to every interface with the fault
+recorded rather than refusing, because the page is how an operator fixes the setting: a
+console that will not serve its own UI because somebody named the wrong cable cannot be
+put right from the desk. A listener bound too widely *offers* something; a sender on the
+wrong cable *does* something. `Network::bind` refuses and `Network::bind_listener` falls
+back, so which a service gets is a choice it makes by name.
+
+**Re-resolved on the probe tick, both ways.** A refused service starts by itself when its
+cable appears, and a running one whose cable drops reports the fault without being torn
+down — rebinding on a flapping cable loses the stream twice where leaving it loses
+nothing. So plugging the show network in never needs a restart at twenty-five past seven.
+The output manager reconciles on its own one-second timer for the same reason: a cable
+coming or going, and a failover, change what should be running without anything writing
+to the show, so nothing else in that loop would ever notice.
+
+**And what a station publishes about its cabling is a collection of its own.** It went
+onto the `Station` row first, which was wrong for a reason a measurement made plain: that
+row is one reading of a machine at one moment, replaced whole every two seconds, and an
+interface list is an *inventory* that changes when somebody plugs a cable in. Carried
+there it was **57% of the row** — 2517 bytes against 1081, on a laptop with twenty-four
+interfaces of which three have an address — rewritten every two seconds and logged to the
+oplog for names nobody had changed. `station_networks` is keyed by the same `NodeId` and
+written only when it differs from what was last published, which also makes the
+whole-row rule next door exactly true again rather than approximately.
+
+**The picker groups and never filters, and that was measured too.** Hiding interfaces
+with no address is the obvious tidy-up and is wrong: the address-less ones on this
+machine are `en1` to `en6`, the adapter ports — which is precisely where a show LAN gets
+plugged in, and precisely what somebody names before it is configured. Hiding them would
+put the re-resolve rule out of reach of the UI, since its whole point is that a cable can
+be named before it is ready. And the filter does not sort the noise correctly the other
+way: a VPN's `utun` has an address and is never the answer. Ready first, the rest under
+*Not configured yet*.
+
+**Restricting an mDNS daemon restricts discovery too, and that is the feature.**
+`mdns-sd`'s `IfKind` takes exactly the two forms this console stores. A daemon both
+advertises and browses, so a console told to keep the session on the lighting network
+will not *find* a peer on the house LAN either — and adopting an OpenHaunt node the
+console cannot reach is how a fixture ends up on a cable that cannot carry it.
+
+### What it dragged in, and why it belonged here
+
+Asking which cable an output uses immediately asks which *station* sends it, and that
+turned out to be a live defect rather than a new feature.
+
+**Art-Net and OpenHaunt cannot survive two senders.** Art-Net has no priority mechanism
+at all, so two consoles sending one universe is a rig that flickers with nothing on any
+screen to explain it. `OutputConfig::node_id` being `None` meant *every* station, which
+was documented as "useful on purpose for a redundant path" and is nothing of the kind for
+those two kinds.
+
+**It is resolved rather than refused, which is the part worth keeping.** `None` is what
+every existing show has and is completely harmless on one console, so refusing it would
+have broken working rigs to prevent a collision that only exists when a second station
+joins. Instead `runs_on` takes leadership and `None` resolves to *the leader* for the two
+kinds that cannot share: a lone station is the leader, so a one-console rig is untouched,
+and a second station joining silently stops double-sending instead of starting to fight.
+
+**sACN can share, and now says so.** E1.31 has a priority byte — hardcoded to 100 here
+since it was written — so several stations sending one universe is defined rather than a
+race. `SacnPriority` is `Auto | Manual(BTreeMap<NodeId, u8>)`. Auto is the leader at 100
+and every follower in a slot below it, stepping by 10 to a floor of 10; a station absent
+from a `Manual` map takes its Auto number, which is the same fall-through rule the
+interfaces map follows and for the same reason — being unnamed is being told nothing.
+
+**The slots are self-claimed and sticky, and both halves matter.** Every station sees
+every `Station` row, so each takes the lowest slot no station with a *lower node id* is
+holding and writes it into its own row: no leader arbitrates, no assignment table
+replicates, nothing new goes on the wire, and it converges in a pass because the lowest
+id defers to nobody. Sticky because an sACN receiver changing which source it follows is
+a visible jump on stage — a joining station takes a free slot and renumbers nobody, and
+the slot is remembered in `preferences.toml` so a console rebooting mid-show comes back
+at the priority its receivers last heard it at.
+
+**And overlapping universes warn rather than refuse.** Once an output names its own
+cable, station A sending universe 1 out `en5` to the stage-left rack and station B
+sending it out `en6` to stage-right is a legitimate split — indistinguishable from two
+consoles shouting at one rack by anything this code can see, since they differ only in
+whether the interfaces reach the same broadcast domain. Refusing would make the split
+this task exists to enable unbuildable.
+
+### The traps
+
+**A listener and a sender want opposite answers to the same question**, and writing one
+rule for both is the mistake this nearly made. It is stated in `infra/net.rs` rather than
+inferred from which function a service happened to call.
+
+**`preload` is test-only and became load-bearing.** The output manager now reconciles on
+a timer against `self.configured`, and a stand-in plugin that had been injected straight
+into `running` was stopped a second later by a pass that had never heard of it. The fix
+is that `preload` records the stand-in as configured as well as running, which is what it
+was always standing in for.
+
+**Enumerating interfaces is on the runtime thread, and it was measured before it was
+written there.** `infra/stations` records why the disks and the sensors are not: the first
+volume enumeration in a process took six seconds against a large `target/debug/deps`.
+Interfaces are **0.5 ms for 24 of them, and no slower on the first call than the third**,
+so a service can ask on its way up without a channel and a wait. The point is the
+measurement, not the number.
+
+**The plugin SDK mirror dropped `Ord`, and a `BTreeMap` field found it.**
+`OutputConfig::interfaces` is keyed by `NodeId`, and `keep_derives` kept `PartialEq` and
+`Eq` but not `PartialOrd`/`Ord` — so the field compiled on the station and not in a
+guest. Ordering is a fact about the data like the rest of that list, and is now kept.
+
+**Two `NOT NULL` columns on `outputs`, and what that does to an existing showfile was
+checked rather than assumed.** `SCHEMA_GENERATION` is *not* bumped, because adding a
+field is not a shape change — but a file that already has outputs configured is still
+refused, by name, by `a_required_column_nothing_filled_in`: the additive pass has to add
+a column nullable, so every existing row holds NULL where this build needs a value. That
+is the mechanism working exactly as `infra/showfile/mod.rs` describes it, and it fails
+loudly with the column named rather than panicking in a generated `from_columns`. A show
+with no outputs row opens untouched.
+
+**And the flaky multi-station tests are not this either — established like for like, for
+the fourth time.** A full `cargo test` failed `logs` and `roster` under load. With the
+whole change *stashed*, the same command on the same target directory failed the same two
+binaries with the same shape, and each passes alone. See task 64's own last trap, and
+tasks 40 and 46: the way to tell a flake from a regression is to run the baseline like
+for like.
+
+### What is not done
+
+**None of it has been pointed at a machine with two real network cards.** A loopback
+alias needs `sudo` on a Mac and a second NIC cannot be assumed on anybody's CI, so the
+arithmetic is covered by pure tests and the one thing that proves the setting reaches a
+socket is `mdns-sd`'s own default: loopback is off unless a daemon is told otherwise, so
+a daemon restricted to `127.0.0.1` and one left alone are genuinely on different
+interfaces, and one cannot see the other's advertisement. That test asserts the negative
+only after the positive fires, since a daemon that finds nothing anywhere proves nothing.
+A venue with a real show LAN is what is left.
+
+```
+cargo test -p pult-schema network             # resolution, the ladder, the slots
+cargo test -p pult-backend --lib infra::net   # the two absences, and a restricted daemon
+cd frontend && npx vitest run src/lib/network.test.ts
+```
+
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -4881,6 +5063,15 @@ record, sitting under *Observability* with no number against it while eighteen i
 that were all additions had one. Two consoles disagreeing about what time it is runs
 every replicated fade out by their skew, silently.
 
+**network-interface-management left on 2026-09-05**, as task 65, and it is the first
+item to be built *from* this list in five — the four before it all came from outside it.
+It also proves the rule directly below, which was written the same day: it went in at
+number 17 as a feature, and half of what it turned out to be was a defect. Art-Net
+outputs with no station named were sending from *every* console in a session, on a
+protocol with no priority mechanism at all, and nothing in the list said so because
+nothing had asked which station sends what. **An entry's size is not known until
+somebody starts it**, and the half that mattered was not the half that was written down.
+
 So the rule this list needs is not "re-read the unplaced sections when something is
 unblocked" — that was the last lesson and it is a weaker one. It is that **a defect and
 a feature do not belong in one ordering**. An item that makes the console do something
@@ -4936,9 +5127,7 @@ found, it goes at the top, and the reason is written here rather than argued aga
 16. **plugins-that-travel** — the gaps in a mechanism that mostly exists. Added
    2026-09-03. → none, and the sharpest question in it is whether an imported
    `.pultz` should ask before running the plugins it carries
-17. **network-interface-management** — which interface each of this console's
-   network services binds. Added 2026-09-05, out of task 63. → none
-18. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
+17. **parallel-render** — rayon over fixtures inside a connector's frame. Task 51
    measured evaluating at **94%** of an output frame at 5000 fixtures, which is
    the answer the question was waiting for, and `pult-render` is pure and takes
    no locks. The same measurement is why it sits here rather than at the top: the
@@ -4966,7 +5155,7 @@ actually running a show from. Task 53 already took the free wins — sixty a sec
 most, nothing drawn when nothing changed, only lit beams drawn — which is what turned
 a pinned GPU into an idle one on a dark stage.
 
-Items 16 and 18 were added on 2026-09-03 and sit near the end for a different
+Items 16 and 17 were added on 2026-09-03 and sit near the end for a different
 reason: neither is blocked on anything, and both are blocked on *time*. A
 migration path is worth nothing until there is a showfile worth migrating, and
 the gaps in how plugins travel are gaps rather than absences.
@@ -5249,43 +5438,16 @@ control-transports.
 
 #### network-interface-management
 
-**Nothing in this console says which network interface anything goes out on.** Added
-2026-09-05 while building task 63, which needed a second mDNS responder and found that
-the first one had never answered the question either.
+Built on 2026-09-05 as task 65, and kept here as a heading so a reader looking for it
+lands somewhere. Its own open questions were answered *six keys in `preferences.toml`
+plus a per-station map on the output row*, *a name or an address, resolved at bind*, and
+*refuse rather than fall back* — with one deliberate exception for listeners, since the
+page is how the setting gets fixed. The reasoning is in the task.
 
-A console at a venue usually has more than one interface: a house LAN, a separate
-Art-Net network with no route to anything, sometimes a wifi the tablet is on. Today
-every service picks for itself, or lets the operating system pick:
-
-- **`_pult._tcp` session discovery** binds whatever `mdns-sd` binds, which is every
-  interface it can find. Two consoles that can see each other on the lighting network
-  and not on the house one is a configuration nobody can currently express.
-- **`_mvrxchange._tcp`** now does the same thing, for the same reason.
-- **Art-Net and sACN** send to whatever the route table says, and sACN's multicast has
-  the sharper version of this: the outgoing interface for a multicast group is a
-  socket option nothing here sets.
-- **The HTTP server** binds `0.0.0.0`, which is at least honest, but it means the
-  console's own page and a hosted MVR-xchange group are offered on the show network
-  as well as on the house one.
-
-grandMA3 exposes exactly this and calls it Interface, per protocol. That is the shape
-to copy, and the questions it raises here:
-
-- **Per service or one setting?** One is simpler and wrong: the whole point is that
-  Art-Net is on a different cable from the tablet.
-- **Where it lives.** A station preference, almost certainly — which cable is in which
-  socket is a fact about the machine, not about the show. But an `OutputConfig`
-  already names a target address, so an Art-Net output may want its own answer, and
-  then two places say something about the same thing.
-- **What a name is.** `en0` on a Mac, `eth0` or a predictable name on Linux, a GUID on
-  Windows. `sysinfo`'s `network` feature is already here for throughput and can
-  enumerate them; whether it gives a stable identity across a reboot is unchecked.
-- **And what happens when the named interface is gone.** A console that silently binds
-  everything because the interface it was told about is missing is worse than one that
-  refuses and says so — this is the `consoleNow()` rule again.
-
-→ none, and the trigger is the first rig where somebody has to explain why the previz
-on the house LAN cannot see the console.
+What is left of it is not a design question: **none of it has been pointed at a machine
+with two real network cards.** A loopback alias needs `sudo` and CI has one interface, so
+what a venue would prove and this cannot is the ordinary case — a console on a house LAN
+and a lighting network at once.
 
 #### station-clock-offset
 

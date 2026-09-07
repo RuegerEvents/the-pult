@@ -101,7 +101,9 @@ CREATE TABLE IF NOT EXISTS outputs (
     target TEXT,
     universes TEXT NOT NULL,
     enabled INTEGER NOT NULL,
-    node_id TEXT
+    node_id TEXT,
+    interfaces TEXT NOT NULL,
+    priority TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS plugin_data (

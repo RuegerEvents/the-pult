@@ -124,6 +124,22 @@ pub struct Station {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub clock: ClockSync,
+    /// What this machine's interfaces are and what each service made of them is
+    /// **not** here: it is `station_networks`, keyed by the same id. An inventory is
+    /// not a reading — it changes when a cable is plugged in, not every two seconds —
+    /// and carried on this row it was 57% of it, rewritten at this row's cadence for
+    /// names nobody had changed.
+    /// Which sACN priority slot this station is holding, where it is holding one.
+    ///
+    /// Published because the claim is *read from these rows*: every station works out
+    /// the lowest slot nobody with a lower node id holds, which it can only do if
+    /// each one says what it took. `None` on a leader, which is at the top of the
+    /// ladder rather than in a slot.
+    ///
+    /// Defaulted, so a peer on an older build still deserialises.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub sacn_slot: Option<u8>,
     /// When this station last said any of the above.
     #[pult(lifecycle = SYNCED)]
     pub last_seen: DateTime<Utc>,
@@ -460,6 +476,7 @@ mod tests {
             net_sent: 0,
             net_window_ms: 0,
             clock: ClockSync::default(),
+            sacn_slot: None,
             last_seen,
         }
     }

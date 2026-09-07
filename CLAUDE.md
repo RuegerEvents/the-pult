@@ -1300,6 +1300,104 @@ cargo test -p pult-backend --test wire        # two stations, and a console watc
 cd frontend && npm test                       # what a browser makes of the batches
 ```
 
+## Which cable it goes out on
+
+A console at a venue has a house LAN, an isolated lighting network with no route to
+anything, and often a wifi the tablet is on. Until task 65 nothing here said which one
+anything used: both mDNS daemons bound every interface they could find, sACN's multicast
+left by whatever the route table said — `IP_MULTICAST_IF` was never set — and every
+output socket bound `0.0.0.0:0`.
+
+**And one default was wrong rather than merely unexpressive.** `infra::local_ipv4` finds
+this machine's address by connecting a UDP socket to `8.8.8.8` and reading the local end
+back, which is *the interface with the default route*. It was what a station advertised
+over `_pult._tcp`, so the address a peer was told to dial for the show was decided by
+which cable reaches the internet. It is now the fallback: a service advertises what it
+actually bound.
+
+**Six keys and a per-row map.** `[network]` in `preferences.toml` names `http`,
+`session`, `mvr_xchange` and `openhaunt`, which bind on their own, plus `artnet` and
+`sacn`, which bind nothing and are the fallback an output row takes. A station
+preference and never show data — which cable is in which socket is a fact about the
+machine. An **output** names its own per station in `OutputConfig::interfaces`, a
+`BTreeMap<NodeId, String>`, because the row replicates and `en5` means a different cable
+on every machine.
+
+**A name or an address**, parsed as an `IpAddr` first and read as a name otherwise. Both,
+because a name survives a DHCP lease and an address is the only way to say *which* alias
+on a NIC carrying both 2.0.0.x and 10.0.0.x. IPv4 only, and a v6 literal is refused by
+name rather than bound to nothing.
+
+**Two absences, two answers**, and this is why no existing show or preferences file had
+to change. Told nothing falls through to the preference and then to every interface,
+exactly as before. Told an interface the machine has not got **refuses**, visibly —
+`pult_schema::types::network::resolve` is the whole rule, and `infra/net.rs` is what
+records the outcome so a console in the booth can read the stage rack's fault.
+
+**An inventory is not a reading, and that is a collection of its own.** What a machine
+has and what each service made of it live in `station_networks`, keyed by the station's
+`NodeId`, written *only when they change* — not on the `Station` row beside CPU and
+frame costs. That row is one measurement at one moment, replaced whole every two
+seconds; an interface list changes when somebody plugs a cable in. Carried there it was
+**57% of the row** — 2517 bytes against 1081, on a laptop with twenty-four interfaces of
+which three have an address — rewritten every two seconds and logged to the oplog, for
+names nobody had changed.
+
+**The one exception is a listener, and it is deliberate.** The HTTP server falls back to
+every interface with the fault recorded rather than refusing, because the page is how the
+setting gets fixed: a console that will not serve its own UI over a mistyped cable cannot
+be put right from the desk. A listener bound too widely *offers* something; a sender on
+the wrong cable *does* something. `Network::bind` refuses and `Network::bind_listener`
+falls back, so a service chooses by name.
+
+**Re-resolved on the probe tick, both ways**, so a refused service starts by itself when
+its cable appears and a running one whose cable drops reports the fault without being
+torn down. Plugging the show network in never needs a restart. The output manager
+reconciles on its own one-second timer for the same reason: a cable coming or going, and
+a failover, change what should be running without anything writing to the show.
+
+**Restricting an mDNS daemon restricts discovery too, and that is the feature.** A daemon
+both advertises and browses, so a console kept on the lighting network will not *find* a
+peer on the house LAN either — and adopting an OpenHaunt node it cannot reach is how a
+fixture ends up on a cable that cannot carry it.
+
+**Which station sends an output is part of the same question.** Art-Net and OpenHaunt
+have no way to arbitrate between two senders, so `OutputConfig::node_id` being `None`
+resolves to **the leader** for those kinds — resolved rather than refused, because `None`
+is what every existing show has and is harmless on one console: a lone station is the
+leader, and a second one joining stops the double-send instead of starting a fight. sACN
+can share, having a priority byte, so an unowned sACN output runs everywhere and
+`SacnPriority` makes that defined: `Auto` is the leader at 100 and each follower in a slot
+below it, `Manual` is a map by station, and a station the map does not name takes its Auto
+number. Slots are **self-claimed from the other stations' own rows** — each takes the
+lowest one no *lower node id* holds, which converges in a pass with no leader arbitrating
+and nothing new on the wire — and **sticky**, remembered in `preferences.toml`, because an
+sACN receiver changing which source it follows is a visible jump on stage.
+
+**Two stations on one Art-Net universe warn and are never refused.** Once an output names
+its cable, stage-left out `en5` and stage-right out `en6` is a legitimate split, and
+nothing here can tell it from two consoles shouting at one rack — they differ only in
+whether the interfaces reach the same broadcast domain.
+
+**The picker groups and never filters, which was also measured.** Hiding interfaces with
+no address looks obviously right and is wrong: on the machine this was built on, the
+address-less ones are `en1` to `en6` — the adapter ports, which is exactly where a show
+LAN gets plugged in, and exactly what somebody wants to name before it is configured.
+The re-resolve rule exists so a cable *can* be named before it is ready, and a picker
+that hid it would put that out of reach of the UI. The filter does not sort the noise
+correctly the other way either: a VPN's `utun` has an address and is never the answer.
+So the ready ones come first and the rest stay reachable under *Not configured yet*.
+
+Worth holding on to: **enumerating interfaces is on the runtime thread and was measured
+before it was put there** — 0.5 ms for 24 of them, against the six seconds the first disk
+enumeration cost, which is why the disks are on `station-probe` and this is not.
+
+```
+cargo test -p pult-schema network             # resolution, the ladder, the slots
+cargo test -p pult-backend --lib infra::net   # the two absences, and a restricted daemon
+cd frontend && npx vitest run src/lib/network.test.ts
+```
+
 ## Paperwork is a drawing, and it is drawn twice
 
 The rig has to leave the console as paper: A3 sheets with a title block, viewports at a

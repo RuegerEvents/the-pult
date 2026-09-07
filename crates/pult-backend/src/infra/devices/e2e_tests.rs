@@ -177,7 +177,7 @@ async fn a_gateway_node_receives_the_universe_it_was_adopted_onto() {
     // The plugin is pointed at the simulator's port rather than 5568, so tests can
     // run side by side.
     let mut output =
-        OpenHauntOutput::new(h.directory.clone(), h.devices.clone(), sacn_port).await.unwrap();
+        OpenHauntOutput::new(h.directory.clone(), h.devices.clone(), sacn_port, None).await.unwrap();
 
     // One ordinary dimmer, patched to the universe the gateway was given.
     let dimmer_type = FixtureType {
@@ -349,7 +349,7 @@ async fn a_node_that_can_trace_a_shape_is_left_to_get_on_with_it() {
     assert!(capable.has_shape("sine"));
 
     let mut output =
-        OpenHauntOutput::new(h.directory.clone(), h.devices.clone(), 5568).await.unwrap();
+        OpenHauntOutput::new(h.directory.clone(), h.devices.clone(), 5568, None).await.unwrap();
 
     let mut fixtures = h.fixtures().await;
     let types: Vec<FixtureType> = h

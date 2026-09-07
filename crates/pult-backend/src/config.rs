@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -8,10 +8,16 @@ use uuid::Uuid;
 /// has to know how the other starts a console.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// The address to serve HTTP and the WebSocket on. `0.0.0.0` so a tablet on
-    /// the same network can reach the console.
-    #[serde(default = "default_bind")]
-    pub bind: IpAddr,
+    /// The address to serve HTTP and the WebSocket on.
+    ///
+    /// `None` takes the station's `[network] http` preference and then every
+    /// interface, so that a tablet on the same network can reach the console — which
+    /// is what this always did. An `Option` rather than a defaulted address because a
+    /// preference underneath it could not otherwise tell "the caller said `0.0.0.0`"
+    /// from "the caller said nothing", which is the same shape `shows_dir` and
+    /// `plugin_data` already have.
+    #[serde(default)]
+    pub bind: Option<IpAddr>,
     /// `0` asks the OS for a free one; the port that was actually bound comes
     /// back on [`crate::Running::http_addr`].
     #[serde(default = "default_port")]
@@ -98,7 +104,6 @@ pub struct Config {
     pub clock_skew_ms: i64,
 }
 
-fn default_bind() -> IpAddr { IpAddr::V4(Ipv4Addr::UNSPECIFIED) }
 fn default_port() -> u16 { 7700 }
 fn default_sync_port() -> u16 { 7701 }
 fn default_broker_port() -> u16 { 1883 }
@@ -106,7 +111,7 @@ fn default_broker_port() -> u16 { 1883 }
 impl Default for Config {
     fn default() -> Self {
         Self {
-            bind: default_bind(),
+            bind: None,
             port: default_port(),
             sync_port: default_sync_port(),
             show: None,

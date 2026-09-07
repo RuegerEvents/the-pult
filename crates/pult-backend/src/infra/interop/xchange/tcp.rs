@@ -83,11 +83,26 @@ pub async fn start(
     station_name: &str,
     max_file_bytes: u64,
     to_manager: mpsc::Sender<XchangeCommand>,
+    net: crate::infra::net::NetHandle,
 ) -> Result<Tcp, String> {
-    let listener = TcpListener::bind("0.0.0.0:0").await.map_err(|e| e.to_string())?;
+    // Told a cable this machine has not got: the exchange does not go on the wire.
+    // A previz seat finding this console on the house LAN when the operator said the
+    // lighting one is exactly what the setting is for, so this one refuses rather
+    // than falling back — see `infra::net`.
+    let address = net
+        .bind(
+            pult_schema::types::network::NetService::MvrXchange,
+            "MVR-xchange",
+            net.prefs().mvr_xchange.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+    let listener = TcpListener::bind((address.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED), 0))
+        .await
+        .map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
 
     let daemon = ServiceDaemon::new().map_err(|e| format!("no mDNS daemon: {e}"))?;
+    crate::infra::net::restrict_mdns(&daemon, address);
     let (everybody, ours) = service_types(group);
 
     // The instance name is this console's station name. Two stations of one show never

@@ -45,7 +45,9 @@
 				target: null,
 				universes: gap.universe !== null ? [gap.universe] : [],
 				enabled: true,
-				node_id: thisStation
+				node_id: thisStation,
+				interfaces: {},
+				priority: 'Auto'
 			});
 		} catch (e) {
 			addToast(`Could not add the output: ${e}`);
