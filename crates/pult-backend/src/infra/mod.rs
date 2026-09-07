@@ -1,4 +1,6 @@
 pub mod assets;
+pub mod audio;
+pub mod tracks;
 pub mod identity;
 pub mod preferences;
 pub mod showfile;

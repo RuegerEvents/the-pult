@@ -67,6 +67,16 @@ pub struct Running {
     /// Who is watching what this station's outputs — or a peer's — are putting on
     /// the wire.
     pub viewers: crate::infra::connectors::Viewers,
+    /// The listening side, for `input.grab`.
+    pub input: Option<crate::infra::connectors::input::InputHandle>,
+    /// The sound, for the three audio RPCs.
+    pub audio: Option<crate::infra::audio::AudioHandle>,
+    /// What a station RPC needs to reach, as a plugin reaches it.
+    ///
+    /// Public so an integration test can call one the way a browser does — the
+    /// alternative being to stand up a WebSocket to press a button, or to
+    /// duplicate the RPC's own logic in the test and prove nothing about it.
+    pub rpc: crate::api::rpcs::LocalRpcDeps,
     /// Where a view is pushed at the browsers, and where one from a peer arrives.
     pub updates: crate::engine::UpdateBroadcast,
     pub serve: JoinHandle<Result<()>>,
@@ -206,6 +216,19 @@ impl Running {
     /// the show" — so a page that did not press the button can draw the same
     /// switching screen as the one that did, rather than a console that stopped
     /// answering.
+    /// Answer one station RPC, the way a browser's WebSocket does.
+    ///
+    /// Here so that a test can press a button rather than reimplement one. The caller
+    /// is nobody, so writes are attributed to the default user — which is what every
+    /// path without a browser behind it already does.
+    pub async fn call_rpc(
+        &self,
+        method: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        crate::api::rpcs::dispatch(method, args, &self.rpc).await
+    }
+
     pub async fn shutdown(self, because: &str) {
         // The browsers first, because a socket left open would go on talking to an
         // engine that is about to stop — and a page that is told lets go, reconnects
@@ -587,9 +610,47 @@ pub async fn start(config: Config) -> Result<Running> {
         Some((device_directory, device_handle.clone())),
         net.clone(),
     );
-    let output_mgr = output_mgr.watchable(viewers.clone(), broadcast.clone());
+    // The recordings this station has decoded, shared between the connectors and the
+    // engine: one reads a track to put it on a wire, the other reads the same one to
+    // work out what a stopping track was holding, and two caches would let them
+    // disagree at exactly that moment.
+    let tracks = crate::infra::tracks::TrackCache::new(assets.clone());
+    let output_mgr = output_mgr
+        .with_tracks(tracks.clone())
+        .watchable(viewers.clone(), broadcast.clone());
     tasks.push(tokio::spawn(output_mgr.run()));
     engine.set_output(output);
+    engine.set_tracks(tracks);
+
+    // And the listening side, which is the same shape: a manager reconciling sockets
+    // against a collection. Its viewers land in the same table an output's do, so a
+    // browser — or a peer — watches an input with nothing added to either protocol.
+    let (input_mgr, input) = crate::infra::connectors::input::InputManager::new(
+        node_id,
+        engine_handle.clone(),
+        net.clone(),
+        Some(assets.clone()),
+    );
+    let input_mgr = input_mgr.watchable(viewers.clone(), broadcast.clone());
+    tasks.push(tokio::spawn(input_mgr.run()));
+    engine.set_input(input.clone());
+
+    // And the sound. The same shape again: an actor reconciling devices against the
+    // `timelines` collection, told about it whenever it changes. Which station plays a
+    // timeline is `Timeline::node_id` — or the leader — so every station runs one of
+    // these and most of them are quietly playing nothing.
+    let (audio_mgr, audio) = crate::infra::audio::AudioManager::new(
+        node_id,
+        engine_handle.clone(),
+        net.clone(),
+        // A station preference, read here rather than in the manager for the reason
+        // `[network]` is: preferences are read once by the process, and a station
+        // reading its own would overwrite what a caller of `start` asked for.
+        crate::infra::preferences::load().audio,
+        Some(assets.clone()),
+    );
+    tasks.push(tokio::spawn(audio_mgr.run()));
+    engine.set_audio(audio.clone());
 
     // The bundle knows what a show with no row yet should be called, and nothing
     // else does. Told before the load, because the load is what seeds the row.
@@ -751,10 +812,7 @@ pub async fn start(config: Config) -> Result<Running> {
 
     // Plugins come up last of the managers: they see a station that already
     // plays back and syncs, which is also the state a hot reload lands in.
-    let (plugin_mgr, plugin_handle) = PluginManager::new(
-        plugin_handle_engine.clone(),
-        broadcast.clone(),
-        crate::api::rpcs::LocalRpcDeps {
+    let plugin_rpc_deps = crate::api::rpcs::LocalRpcDeps {
             session: session_handle.clone(),
             devices: device_handle.clone(),
             engine: operator_handle.clone(),
@@ -772,6 +830,10 @@ pub async fn start(config: Config) -> Result<Running> {
             // but not "while it is looking", having nothing to stop looking with,
             // which is what the missing `caller` above already says.
             viewers: viewers.clone(),
+            // And it can grab off a wire the same way, being on the station that
+            // holds the socket by construction.
+            input: Some(input.clone()),
+            audio: Some(audio.clone()),
             // A plugin has no socket either, so there is nothing to count for one.
             ws_registry: None,
             shows: shows.clone(),
@@ -779,7 +841,11 @@ pub async fn start(config: Config) -> Result<Running> {
             // RPC — and, having no browser, writes as the default user, which is
             // what the missing `caller` above already says about it.
             xchange: Some(xchange_handle.clone()),
-        },
+    };
+    let (plugin_mgr, plugin_handle) = PluginManager::new(
+        plugin_handle_engine.clone(),
+        broadcast.clone(),
+        plugin_rpc_deps.clone(),
         config.plugin_dirs.clone(),
         // Where a carried bundle's bytes live.
         Some(assets.clone()),
@@ -807,6 +873,8 @@ pub async fn start(config: Config) -> Result<Running> {
         broadcast: broadcast.clone(),
         log_watchers: log_watchers.clone(),
         viewers: viewers.clone(),
+        input: Some(input.clone()),
+        audio: Some(audio.clone()),
         clients: clients.clone(),
         config: config.clone(),
         shows: shows.clone(),
@@ -889,6 +957,9 @@ pub async fn start(config: Config) -> Result<Running> {
         log: config.log.clone(),
         log_watchers,
         viewers,
+        input: Some(input),
+        audio: Some(audio),
+        rpc: plugin_rpc_deps,
         updates: broadcast,
         serve,
         xchange: xchange_handle,

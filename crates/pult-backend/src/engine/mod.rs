@@ -16,6 +16,7 @@ use pult_schema::{
             home_value, output_parameters, Fixture, FixtureType, ParameterDirection,
             ParameterKind, ParameterValue,
         },
+        input::InputStatuses,
         output::{OutputCoverage, OutputStatuses},
         plugin::PluginsState, programmer::programmer_entry_id, session::SessionState,
         station::PeerLinks, user::User, xchange::XchangeState,
@@ -90,6 +91,17 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     ("session", || serde_json::to_value(SessionState::default()).unwrap_or_default()),
     ("devices", || serde_json::to_value(DevicesState::default()).unwrap_or_default()),
     ("output_status", || serde_json::to_value(OutputStatuses::default()).unwrap_or_default()),
+    // What is arriving, per input, from the station holding the socket. LOCAL for the
+    // reason `output_status` is: it describes this machine's sockets, and the station
+    // beside it running the same show has its own answer.
+    ("input_status", || serde_json::to_value(InputStatuses::default()).unwrap_or_default()),
+    // What each timeline's sound is doing here: which device, how far the playhead is
+    // from the show's anchor, and whether timecode is arriving. LOCAL for the reason
+    // the two above are — it describes a device on *this* machine, and the station
+    // beside it running the same show has its own answer, usually "nothing, somebody
+    // else is playing it".
+    ("audio_status", || serde_json::to_value(
+        pult_schema::types::timeline::AudioStatuses::default()).unwrap_or_default()),
     ("output_coverage", || serde_json::to_value(OutputCoverage::default()).unwrap_or_default()),
     ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
     ("clients", || serde_json::to_value(ClientStatsMap::default()).unwrap_or_default()),
@@ -648,6 +660,20 @@ pub struct ShowEngine {
     /// and released between two ticks would otherwise look like nothing happening.
     input_events: Vec<InputEvent>,
     output: Option<OutputHandle>,
+    /// The listening side, where this station has one. It is told the `inputs`
+    /// collection the way the output side is told `outputs`, and the `timelines`
+    /// collection as well — because what is armed and where its playhead is are what
+    /// decide whether it is recording.
+    input: Option<crate::infra::connectors::input::InputHandle>,
+    /// The sound, where this station is playing any. Told the `timelines` collection
+    /// for the same two reasons the listening side is: which timeline this station
+    /// plays, and where its playhead is.
+    audio: Option<crate::infra::audio::AudioHandle>,
+    /// Where the timelines have got to: what has been fired, and what was running.
+    timelines: crate::model::timelines::Timelines,
+    /// The recordings this station has decoded. Shared with the output manager, so
+    /// the value a stopping track is released from is the one the wire was showing.
+    tracks: Option<crate::infra::tracks::TrackCache>,
     /// The clock and author of the last accepted write at each replicated path.
     /// Only replicated paths are tracked, so playback output does not grow this.
     path_clocks: HashMap<Path, (VectorClock, NodeId)>,
@@ -674,6 +700,20 @@ pub struct ShowEngine {
     /// The `outputs` collection changed and the output side has not been told yet.
     /// Set on the first tick too, so a saved show comes up sending.
     outputs_dirty: bool,
+    /// The same for `inputs`, and its own flag rather than the same one: an input
+    /// rebuilt because an output row was renamed would drop a socket mid-take.
+    inputs_dirty: bool,
+    /// The version of the collections the timeline pass reads, when it last ran.
+    timelines_seen: u64,
+    /// When the next timeline event is due, as of the last pass.
+    ///
+    /// Cached rather than recomputed in `next_wake`, which runs once per command as
+    /// well as once per tick: reading the collection there would deserialize it five
+    /// thousand times while a rig is being patched, for a deadline that only changes
+    /// when a timeline does. And a change to a timeline is a change to
+    /// `PLAYBACK_COLLECTIONS`, which already makes `next_wake` answer zero — so a pass
+    /// always runs before this can be read stale.
+    timelines_deadline: Option<u64>,
     /// Whether the plugins have been handed a patch with something in it. An
     /// empty show pushes nothing — except once, when the last fixture goes, so
     /// what the plugins know does not outlive it.
@@ -727,7 +767,8 @@ const APPENDS_BETWEEN_PRUNES: u32 = 1_000;
 /// and this is the question of whether reading them again would say anything new. A
 /// collection missing from the list is a rig that stops updating, so anything added
 /// to that read belongs here too.
-const OUTPUT_COLLECTIONS: &[&str] = &["fixtures", "fixture_types", "programmer_values"];
+const OUTPUT_COLLECTIONS: &[&str] =
+    &["fixtures", "fixture_types", "programmer_values", "timelines"];
 
 /// What `playback_pass` reads. `show` is in it for `home_fade_ms`, which decides how
 /// long a release takes.
@@ -739,7 +780,15 @@ const PLAYBACK_COLLECTIONS: &[&str] = &[
     "programmer_values",
     "speed_masters",
     "show",
+    // A timeline drives a sequence, and a recording is a layer over what playback is
+    // asserting — so a play, a stop or a locate is a change to the show playback
+    // reads, in exactly the way a Go is.
+    "timelines",
 ];
+
+/// What the timeline pass reads. Its own list rather than a share of the playback
+/// one, because a cue edit is not a reason to re-decide what a song has crossed.
+const TIMELINE_COLLECTIONS: &[&str] = &["timelines"];
 
 /// How often a watched parameter is looked at.
 ///
@@ -816,12 +865,19 @@ impl ShowEngine {
             flows: Flows::default(),
             input_events: Vec::new(),
             output: None,
+            input: None,
+            audio: None,
+            timelines: Default::default(),
+            tracks: None,
             path_clocks: HashMap::new(),
             collection_versions: HashMap::new(),
             everything_version: 0,
             playback_seen: 0,
             pushed_version: 0,
             outputs_dirty: true,
+            inputs_dirty: true,
+            timelines_seen: 0,
+            timelines_deadline: None,
             pushed_fixtures: false,
             flows_dirty: true,
             watched: Default::default(),
@@ -838,6 +894,21 @@ impl ShowEngine {
     /// Attach an output plugin manager. Call before `run`.
     pub fn set_output(&mut self, output: OutputHandle) {
         self.output = Some(output);
+    }
+
+    /// Attach the listening side. Call before `run`.
+    pub fn set_input(&mut self, input: crate::infra::connectors::input::InputHandle) {
+        self.input = Some(input);
+    }
+
+    /// Attach the sound. Call before `run`.
+    pub fn set_audio(&mut self, audio: crate::infra::audio::AudioHandle) {
+        self.audio = Some(audio);
+    }
+
+    /// Where a recording's bytes come from. Call before `run`.
+    pub fn set_tracks(&mut self, tracks: crate::infra::tracks::TrackCache) {
+        self.tracks = Some(tracks);
     }
 
     /// What to call this show if the file has no `show` row yet. Call before `run`.
@@ -902,6 +973,9 @@ impl ShowEngine {
                         self.flush_collections();
                     }
                     self.push_output_config().await;
+                    // Before playback, so a Go a timeline fires is a change playback
+                    // sees on the very next pass rather than a tick later.
+                    self.timelines_pass().await;
                     let moved = self.playback_pass().await;
                     // The output side hears about the show whether or not playback had
                     // anything to say: a re-addressed or newly patched fixture changes
@@ -1132,6 +1206,7 @@ impl ShowEngine {
     /// round when there is nothing left to drain.
     fn next_wake(&self) -> std::time::Duration {
         if self.outputs_dirty
+            || self.inputs_dirty
             || self.version_of(PLAYBACK_COLLECTIONS) != self.playback_seen
             || self.version_of(OUTPUT_COLLECTIONS) != self.pushed_version
             || self.flows_dirty
@@ -1144,8 +1219,14 @@ impl ShowEngine {
         // follow pending and nothing watched genuinely has nothing to do until a
         // command arrives, and this is how it says so.
         let mut wait = std::time::Duration::from_secs(3600);
+        let now = pult_schema::types::sequence::now_ms();
         if let Some(due) = self.playback.next_deadline() {
-            let now = pult_schema::types::sequence::now_ms();
+            wait = wait.min(std::time::Duration::from_millis(due.saturating_sub(now)));
+        }
+        // A timeline's next event is a deadline exactly as a follow cue's is, and for
+        // the same reason: nothing polls, so the only way a Go written against a
+        // position happens on time is for the engine to be asleep until it is due.
+        if let Some(due) = self.timelines_deadline {
             wait = wait.min(std::time::Duration::from_millis(due.saturating_sub(now)));
         }
         if !self.watched.is_empty() {
@@ -1263,6 +1344,127 @@ impl ShowEngine {
         }
 
         moved
+    }
+
+    // ── Timelines ─────────────────────────────────────────────────────────────
+
+    /// Fire what the timelines have crossed, and let go of what a stopped one held.
+    ///
+    /// The pass itself runs **everywhere**, because the record of what has been fired
+    /// has to stay in step on every station — a follower promoted mid-song must not
+    /// re-fire the first half of it. What is leader-only is the *firing*: a Go is
+    /// replicated like any other, so a follower running it as well would be two Gos
+    /// on one cue, anchored a clock skew apart.
+    async fn timelines_pass(&mut self) {
+        let timelines: Vec<pult_schema::types::timeline::Timeline> =
+            self.read_collection("timelines");
+        let wall_ms = pult_schema::types::sequence::now_ms();
+        // Recomputed before the early return below as well as after a pass, so a
+        // timeline that has just stopped does not leave a deadline behind waking the
+        // engine for an event nothing will fire.
+        self.timelines_deadline = self.timelines.next_deadline(wall_ms, &timelines);
+        let moved = self.version_of(TIMELINE_COLLECTIONS) != self.timelines_seen;
+        // A running timeline is looked at on every tick it gets, and **not** gated on
+        // its own next deadline having arrived. That was the first version and it
+        // never fired anything: by the time the engine woke at the deadline, the
+        // playhead was past the event, `next_event_after` answered `None`, and the
+        // pass returned early having skipped the very event it had been woken for. The
+        // deadline's job is to decide *when* to wake — it is in `next_wake` — and the
+        // pass's job is to decide what has been crossed. A running timeline with no
+        // events left is not a cost either way: nothing schedules a wake for it.
+        if !moved && !timelines.iter().any(|timeline| timeline.running) {
+            return;
+        }
+        self.timelines_seen = self.version_of(TIMELINE_COLLECTIONS);
+        if moved {
+            // What is armed, and where its playhead is: the two things the listening
+            // side needs to know whether it is recording, and at what
+            // position each change point falls.
+            if let Some(input) = &self.input {
+                input.timelines(timelines.clone());
+            }
+            if let Some(audio) = &self.audio {
+                audio.timelines(timelines.clone());
+            }
+        }
+
+        let pass = self.timelines.pass(wall_ms, &timelines);
+        if !self.state.is_follower() {
+            for fire in pass.fire {
+                let path = entity_field_path("sequences", fire.sequence_id, fire.command);
+                self.run_synced_command(path, fire.args).await;
+            }
+            // A timeline driving a speed master, at a grid segment it has crossed. The
+            // leader's alone, for the reason firing a Go is: the writes replicate, and
+            // two stations setting one master's tempo would be two anchors a clock skew
+            // apart. Ordinary SYNCED field writes rather than a command, because that is
+            // all a tempo change is — `bpm` and the `t0` it is measured from, together,
+            // which is what makes it a bounded step in phase.
+            for tempo in pass.masters {
+                if !timelines.iter().any(|t| t.speed_master == Some(tempo.master_id)) {
+                    continue;
+                }
+                self.set_master_field(tempo.master_id, "bpm", serde_json::json!(tempo.bpm)).await;
+                self.set_master_field(tempo.master_id, "t0", serde_json::json!(tempo.t0)).await;
+            }
+        }
+        for stopped in pass.stopped {
+            self.let_go_of(stopped).await;
+        }
+        self.timelines_deadline = self.timelines.next_deadline(wall_ms, &timelines);
+    }
+
+    /// One field of a speed master, written and replicated as the engine's own.
+    ///
+    /// `bpm` is PERSISTED and `t0` is SYNCED, so the two go through the same path with
+    /// different lifecycles — which is exactly what `patch_field` is for and is why
+    /// this is two calls rather than a replaced row.
+    async fn set_master_field(&mut self, master_id: Uuid, field: &str, value: serde_json::Value) {
+        let path = entity_field_path("speed_masters", master_id, field);
+        let lifecycle = match field {
+            "t0" => Lifecycle::Synced,
+            _ => Lifecycle::Persisted,
+        };
+        if self.apply_set(path.clone(), value.clone(), lifecycle).await.is_ok() {
+            self.touch(&path);
+            self.record_write(&path, lifecycle);
+            self.broadcast_after_set(&path, value.clone());
+            if let Some(sync) = &self.sync {
+                sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
+            }
+        }
+    }
+
+    /// A recording stopped: put back what it was holding.
+    ///
+    /// Sampled at the position the timeline stopped at, which is the value that was on
+    /// the wire the instant before — so the release starts from where the rig actually
+    /// was rather than from where the last change point happened to be. The decoded
+    /// track comes from the same cache the output manager reads, which is what stops
+    /// the two disagreeing about it.
+    async fn let_go_of(&mut self, stopped: crate::model::timelines::TimelineStopped) {
+        let Some(cache) = self.tracks.clone() else { return };
+        let mut held: HashMap<(Uuid, String), pult_schema::types::fixture::ParameterValue> =
+            HashMap::new();
+        for sha in &stopped.tracks {
+            let Some(track) = cache.get(sha).await else { continue };
+            for key in &track.keys {
+                if let Some(value) = pult_render::sample(&key.points, stopped.position_ms) {
+                    // A key in two takes takes the later one's word for it, which is
+                    // the same "latest anchor wins" the evaluator applies while they
+                    // are playing.
+                    held.insert((key.fixture_id, key.key.clone()), value.clone());
+                }
+            }
+        }
+        if held.is_empty() {
+            return;
+        }
+        self.playback
+            .release_tracks(held.into_iter().map(|((id, key), value)| (id, key, value)).collect());
+        // The pass that would publish it has already run this time round the loop, so
+        // ask for another rather than leaving the rig holding a track that has stopped.
+        self.playback_seen = self.playback_seen.wrapping_sub(1);
     }
 
     /// Run a registered command and replicate the result.
@@ -1464,12 +1666,18 @@ impl ShowEngine {
     /// The manager reconciles rather than rebuilds, so sending this on every edit is
     /// cheap; sending it on every tick would not be, which is what the flag is for.
     async fn push_output_config(&mut self) {
-        if !self.outputs_dirty {
-            return;
+        if self.outputs_dirty {
+            self.outputs_dirty = false;
+            if let Some(output) = &self.output {
+                output.configure(self.read_collection("outputs"));
+            }
         }
-        self.outputs_dirty = false;
-        let Some(output) = &self.output else { return };
-        output.configure(self.read_collection("outputs"));
+        if self.inputs_dirty {
+            self.inputs_dirty = false;
+            if let Some(input) = &self.input {
+                input.configure(self.read_collection("inputs"));
+            }
+        }
     }
 
     /// Hand the output plugins the current picture of what is driving the rig.
@@ -1495,7 +1703,12 @@ impl ShowEngine {
         self.pushed_fixtures = !fixtures.is_empty();
         let fixture_types = self.read_collection("fixture_types");
         let programmer = self.read_collection("programmer_values");
-        output.push(fixtures, fixture_types, programmer, moved);
+        // The timelines go with the patch because a playing recording is a `Driving`
+        // layer: a connector holding a patch is holding everything that decides what
+        // leaves this station, and a track pushed separately would be a second thing
+        // to keep in step with it.
+        let timelines = self.read_collection("timelines");
+        output.push(fixtures, fixture_types, programmer, timelines, moved);
     }
 
     /// Merge one key into what a fixture's devices have reported, and replicate the
@@ -2322,6 +2535,9 @@ impl ShowEngine {
         if table == "outputs" {
             self.outputs_dirty = true;
         }
+        if table == "inputs" {
+            self.inputs_dirty = true;
+        }
         // A button press is a write to `flow_nodes`, and the flow tick is otherwise
         // only woken by an input or a running delay. Named here for the same reason
         // `outputs` is: the alternative is polling every graph forty times a second
@@ -2800,6 +3016,7 @@ impl ShowEngine {
                 state.post_load_init();
                 self.state = state;
                 self.outputs_dirty = true;
+                self.inputs_dirty = true;
                 // Whole graphs arrived at once, so what they watch has to be worked
                 // out again before the next fade is offered to them.
                 self.flows_dirty = true;
@@ -3057,6 +3274,7 @@ impl ShowEngine {
             state.local = std::mem::take(&mut self.state.local);
             self.state = state;
             self.outputs_dirty = true;
+            self.inputs_dirty = true;
             self.flows_dirty = true;
             // The snapshot replaces every value, so what we knew about individual
             // paths no longer describes anything.

@@ -28,6 +28,7 @@ import type { ParameterValue } from '../generated/index.js';
 import { FrameMeter } from '../stats.js';
 import { consoleNow } from '../ws/clock.js';
 import { collection } from './show.js';
+import { tracks } from './tracks.js';
 
 /** What the rig was doing at one moment. */
 export type Showing = {
@@ -139,6 +140,11 @@ export const output: Readable<Showing> = readable<Showing>(NOTHING_YET, (set) =>
 	let frame: number | null = null;
 	let stopDriving: (() => void) | undefined;
 	let live = true;
+	// Recordings, kept in step with the show for as long as anything is being drawn.
+	// Held here rather than beside `driving` because a track is not derived from what
+	// the engine pushed: it is an asset fetched by sha, and it changes when a timeline
+	// starts rather than when a cue is taken.
+	const stopTracks = tracks.subscribe(() => {});
 	/** The last frame's timestamp, so a frame can be measured as the gap to it. */
 	let previousAt: number | null = null;
 
@@ -192,5 +198,6 @@ export const output: Readable<Showing> = readable<Showing>(NOTHING_YET, (set) =>
 		// them is not a frame anybody waited for.
 		previousAt = null;
 		stopDriving?.();
+		stopTracks();
 	};
 });

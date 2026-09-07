@@ -224,3 +224,35 @@ async fn an_empty_patch_sends_nothing() {
     .await;
     assert!(got.is_err(), "nothing patched means nothing to send");
 }
+
+// ── Reading one back ──────────────────────────────────────────────────────────
+
+/// The parser against the builder, for the reason the sACN one is: a station listening
+/// to its own loopback is the case an integration test actually runs, so the two have
+/// to agree about the 15-bit port address and about the one big-endian field.
+#[test]
+fn a_packet_this_console_built_reads_back_as_what_went_into_it() {
+    let mut channels = [0u8; UNIVERSE_SIZE];
+    channels[0] = 255;
+    channels[300] = 17;
+
+    for universe in [0u16, 1, 15, 256, 0x7fff] {
+        let packet = art_dmx(universe, 5, &channels);
+        let read = parse_art_dmx(&packet).expect("its own packet");
+        assert_eq!(read.universe, universe, "the port address splits into Net and SubUni");
+        assert_eq!(read.sequence, 5);
+        assert_eq!(read.channels, channels);
+    }
+}
+
+#[test]
+fn something_that_is_not_an_artdmx_packet_is_not_read_as_one() {
+    assert_eq!(parse_art_dmx(&[]), None);
+    assert_eq!(parse_art_dmx(&[0u8; 530]), None, "no Art-Net header");
+
+    // ArtPoll: the same header, a different opcode, and a controller that read it as
+    // a universe would put a node's name into somebody's dimmers.
+    let mut poll = art_dmx(1, 1, &[0; UNIVERSE_SIZE]);
+    poll[8..10].copy_from_slice(&0x2000u16.to_le_bytes());
+    assert_eq!(parse_art_dmx(&poll), None);
+}

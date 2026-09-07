@@ -242,3 +242,71 @@ async fn a_fixture_on_a_node_puts_nothing_on_a_universe() {
     .await;
     assert!(anything.is_err());
 }
+
+// ── Reading one back ──────────────────────────────────────────────────────────
+
+/// The parser against the builder. Held to each other rather than to a captured
+/// packet, because the builder is what this console puts on the wire and a reader that
+/// agreed with a recording but not with it would decode everybody's frames except its
+/// own — which is precisely the case a station listening to its own loopback exercises.
+#[test]
+fn a_packet_this_console_built_reads_back_as_what_went_into_it() {
+    let cid = *uuid::Uuid::from_u128(0x1234_5678).as_bytes();
+    let mut channels = [0u8; UNIVERSE_SIZE];
+    channels[0] = 255;
+    channels[41] = 7;
+    channels[511] = 128;
+
+    let packet = e131_data_packet(&cid, "the-pult", 42, 9, 133, &channels);
+    let read = parse_e131(&packet).expect("its own packet");
+
+    assert_eq!(read.cid, cid);
+    assert_eq!(read.universe, 42);
+    assert_eq!(read.sequence, 9);
+    assert_eq!(read.priority, 133);
+    assert_eq!(read.channels, channels);
+}
+
+#[test]
+fn something_that_is_not_an_e131_data_packet_is_not_read_as_one() {
+    assert_eq!(parse_e131(&[]), None);
+    assert_eq!(parse_e131(&[0u8; 638]), None, "the ACN identifier is missing");
+
+    let cid = [0u8; 16];
+    let good = e131_data_packet(&cid, "x", 1, 1, 100, &[0; UNIVERSE_SIZE]);
+
+    let mut truncated = good.clone();
+    truncated.truncate(100);
+    assert_eq!(parse_e131(&truncated), None);
+
+    // A preview packet is a previz rehearsing. It arrives on the same port and must
+    // not reach anybody's rig.
+    let mut preview = good.clone();
+    preview[112] = 0b1000_0000;
+    assert_eq!(parse_e131(&preview), None);
+
+    // And a terminated one is a sender saying it has stopped, not a frame of zeros.
+    let mut terminated = good.clone();
+    terminated[112] = 0b0100_0000;
+    assert_eq!(parse_e131(&terminated), None);
+
+    // A non-zero start code is RDM or somebody's text, not DMX.
+    let mut rdm = good;
+    rdm[125] = 0xcc;
+    assert_eq!(parse_e131(&rdm), None);
+}
+
+/// A sender is allowed to send fewer than 512 slots, and the rest are unlit rather
+/// than unchanged — which is what a receiver has to assume and what a reader that
+/// left the tail alone would get wrong on the first short packet from a dimmer rack.
+#[test]
+fn a_short_packet_reads_as_zeros_past_what_it_carried() {
+    let mut packet = e131_data_packet(&[0; 16], "x", 1, 1, 100, &[200; UNIVERSE_SIZE]);
+    // Claim four slots and the start code, and cut the packet to match.
+    packet[123..125].copy_from_slice(&5u16.to_be_bytes());
+    packet.truncate(126 + 4);
+
+    let read = parse_e131(&packet).expect("still a data packet");
+    assert_eq!(&read.channels[..4], &[200, 200, 200, 200]);
+    assert!(read.channels[4..].iter().all(|byte| *byte == 0));
+}

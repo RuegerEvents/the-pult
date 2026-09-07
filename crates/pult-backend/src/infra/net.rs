@@ -74,9 +74,9 @@ impl NetworkPrefs {
             NetService::Session => self.session.as_deref(),
             NetService::MvrXchange => self.mvr_xchange.as_deref(),
             NetService::OpenHaunt => self.openhaunt.as_deref(),
-            // An output's fallback depends on its kind, which this does not know;
-            // `Network::for_output` is where that is asked.
-            NetService::Output(_) => None,
+            // A row's fallback depends on its kind, which this does not know;
+            // `Network::for_output` and `for_input` are where that is asked.
+            NetService::Output(_) | NetService::Input(_) => None,
         }
     }
 }
@@ -308,6 +308,21 @@ impl Network {
                 OutputKind::Sacn => self.prefs.sacn.clone(),
                 OutputKind::OpenHaunt => self.prefs.openhaunt.clone(),
             }
+        })
+    }
+
+    /// The same question for an input, which asks it the same way and of the same
+    /// preferences: which cable an sACN receiver joins its groups on is the same fact
+    /// about the machine as which cable an sACN sender leaves by.
+    pub fn for_input(
+        &self,
+        config: &pult_schema::types::input::InputConfig,
+        node_id: pult_schema::events::operation::NodeId,
+    ) -> Option<String> {
+        use pult_schema::types::input::InputKind;
+        config.interface_for(node_id).map(str::to_string).or_else(|| match config.kind {
+            InputKind::Artnet => self.prefs.artnet.clone(),
+            InputKind::Sacn => self.prefs.sacn.clone(),
         })
     }
 

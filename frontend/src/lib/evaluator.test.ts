@@ -67,6 +67,9 @@ type Built = {
 		watch(keys: unknown): void;
 		evaluate(nowMs: number): Float32Array;
 		color_overrides(key: string, nowMs: number): Record<string, number>;
+		load_track(sha: string, bytes: Uint8Array): void;
+		play_track(sha: string, anchorMs: number, positionMs: number, rate: number): void;
+		stop_track(sha: string): void;
 	};
 };
 
@@ -134,6 +137,109 @@ describe('the evaluator, compiled for a browser', () => {
 		expect(unpack(packed, 0)).toEqual({ type: 'Float', value: 0.75 });
 		expect(unpack(packed, 1)).toEqual({ type: 'Float', value: 0.5 });
 		expect(unpack(packed, 2)).toEqual({ type: 'Float', value: 0.25 });
+	});
+});
+
+/**
+ * One recording, written out by hand.
+ *
+ * Deliberately by hand rather than through a TypeScript encoder, because there must
+ * not be a TypeScript encoder: `pult_render::track` is the only implementation and the
+ * page hands it bytes. Writing the bytes here is an assertion about the *format* — that
+ * it is little-endian, magic `PLTK`, version 1, and the layout the module header
+ * describes — and it fails the moment either end changes its mind about that.
+ */
+function aTrack(fixtureId: string, key: string, points: [number, number][]): Uint8Array {
+	const bytes: number[] = [];
+	const u16 = (n: number) => bytes.push(n & 0xff, (n >> 8) & 0xff);
+	const u32 = (n: number) => {
+		bytes.push(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
+	};
+	const f32 = (n: number) => {
+		const view = new DataView(new ArrayBuffer(4));
+		view.setFloat32(0, n, true);
+		for (let i = 0; i < 4; i++) bytes.push(view.getUint8(i));
+	};
+
+	bytes.push(0x50, 0x4c, 0x54, 0x4b); // PLTK
+	u16(1); // version
+	u32(1); // one key
+	for (const pair of fixtureId.replace(/-/g, '').match(/../g) ?? []) {
+		bytes.push(parseInt(pair, 16));
+	}
+	const name = new TextEncoder().encode(key);
+	u16(name.length);
+	for (const byte of name) bytes.push(byte);
+	u32(points.length);
+	for (const [ms, value] of points) {
+		u32(ms);
+		bytes.push(0); // Float
+		f32(value);
+	}
+	return new Uint8Array(bytes);
+}
+
+describe('a recording, played in the page', () => {
+	const FIXTURE = '00000000-0000-0000-0000-0000000000ff';
+	const KEY = `${FIXTURE}/Intensity`;
+
+	/** A float that came back through an `f32`, so 0.4 is 0.4 rather than exactly it. */
+	const at = (evaluator: { evaluate(ms: number): Float32Array }, ms: number) => {
+		const value = unpack(evaluator.evaluate(ms), 0);
+		expect(value?.type).toBe('Float');
+		return value?.type === 'Float' ? value.value : NaN;
+	};
+
+	it('drives the parameter it recorded, stepwise, over what is under it', () => {
+		if (!built) return;
+		const evaluator = new built.Evaluator();
+		evaluator.set_driving({ [KEY]: { home: { type: 'Float', value: 0.1 } } });
+		evaluator.watch([KEY]);
+
+		evaluator.load_track(
+			'sha',
+			aTrack(FIXTURE, 'Intensity', [
+				[0, 0.25],
+				[1000, 0.75]
+			])
+		);
+		// Anchored at console 5000, playhead at 0.
+		evaluator.play_track('sha', 5000, 0, 1);
+
+		expect(at(evaluator, 5000)).toBeCloseTo(0.25, 5);
+		expect(at(evaluator, 5999)).toBeCloseTo(0.25, 5);
+		expect(at(evaluator, 6000)).toBeCloseTo(0.75, 5);
+
+		// And stopping it hands the parameter back to what is underneath.
+		evaluator.stop_track('sha');
+		expect(at(evaluator, 6000)).toBeCloseTo(0.1, 5);
+	});
+
+	it('runs the playhead at the rate it was given', () => {
+		if (!built) return;
+		const evaluator = new built.Evaluator();
+		evaluator.set_driving({ [KEY]: { home: { type: 'Float', value: 0 } } });
+		evaluator.watch([KEY]);
+		evaluator.load_track(
+			'sha',
+			aTrack(FIXTURE, 'Intensity', [
+				[0, 0.25],
+				[1000, 0.75]
+			])
+		);
+		evaluator.play_track('sha', 0, 0, 2);
+		expect(at(evaluator, 500)).toBeCloseTo(0.75, 5);
+	});
+
+	it('says nothing before its first change point, so what is under it shows through', () => {
+		if (!built) return;
+		const evaluator = new built.Evaluator();
+		evaluator.set_driving({ [KEY]: { home: { type: 'Float', value: 0.4 } } });
+		evaluator.watch([KEY]);
+		evaluator.load_track('sha', aTrack(FIXTURE, 'Intensity', [[2000, 1]]));
+		evaluator.play_track('sha', 0, 0, 1);
+		expect(at(evaluator, 500)).toBeCloseTo(0.4, 5);
+		expect(at(evaluator, 2500)).toBeCloseTo(1, 5);
 	});
 });
 

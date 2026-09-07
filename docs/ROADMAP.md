@@ -28,7 +28,7 @@ The spec is the product. This is the build order for getting there, and the gap 
 | Effects | Working. One primitive covers a shape and a step list, running from the programmer or a cue, at its own rate or a speed master's. Rendered identically on every station from replicated state, and handed to a node that can trace it for itself. No amplitude fade into one yet. |
 | Undo / history | Working, per person and across their clients, and by gesture rather than by write — one drag is one Ctrl-Z. The oplog carries the author, the previous value and what an operation reverses, so undo is a query over it rather than a stack — which is what lets a tablet take back what the desk did. A History panel shows what everyone changed. Nothing prunes the log. |
 | Paperwork | Working. A show carries six A3 sheets — plan, rig, sections, a labelled fixtures plan, patch, and loading and power — composed into one drawing model and rendered twice, to SVG for the preview and to PDF for the file. Vector viewports carry a snapped scale, a scale bar and de-collided labels with leaders; picture viewports are the rig renderer offscreen at 300 dpi and print NTS. Tables come from the station's own `paperwork.tables`, so what the rig weighs is a question a plugin can ask, and no total is printed without saying what it could not account for. Tables also come out as CSV. A sheet is laid out on the sheet: blocks are dragged and resized on the preview, and what one is is edited beside it. |
-| Timecode | Not started. `FollowMode::Timecode` exists and nothing produces one. |
+| Timecode | Working. A `timelines` collection carries events, markers and takes against a position; the transport is a replicated anchor, so every station and every browser reads the same playhead without anything ticking. Only the leader fires, and an event becomes an ordinary Go anchored where it fell. DMX input is in — sACN and Art-Net, merged by priority then HTP — and what arrives is decoded *through the patch*, so a grab and a recording are values rather than bytes. A recording is a `Driving` layer over playback and under the programmer, codec in `pult-render` and compiled twice. The audio half is in too: one station plays the file and the *audio callback's* clock is the reference, the waveform is an asset the panel draws, beats and downbeats come from Beat This! through `rten`, a grid drives a speed master, and LTC is chased with a ±2% varispeed. MTC waits for control-transports, which is what opens a MIDI port. |
 | Distribution | Working. The frontend is built into the binaries that serve it, the console and the simulator each have a Tauri desktop app, and tagging builds all four for Linux x86_64 and aarch64, macOS arm64 and Windows. Nothing is signed and nothing auto-updates. |
 
 ## Task list
@@ -66,7 +66,7 @@ One thing left open, worth doing, not blocking:
 
 `model::playback` fades captures into `Fixture::live_values`, marks the played cue active, and fires `FollowAfter` cues. It is a pure state machine driven by the engine's own tick, so its tests run a four-second fade in microseconds.
 
-`Timecode` follows still do nothing. The spec wants waveform-based timecode with beat grids rather than plain SMPTE, so this should wait for that design rather than get a stopgap.
+`Timecode` follows still did nothing, and task 66 removed the variant rather than implementing it: a position written on a cue is a clock the cue cannot see, and the same fact written as a `timelines` event is a list an operator can read and drag. The wait was right — what replaced it could not have been designed from here.
 
 `Show::is_running` is still unused. Its meaning is a product decision, not a code one.
 
@@ -1111,7 +1111,8 @@ built rather than being merely unwritten:
 - **Go back, release, and rate.** Going back needs the cue *before* this one on the
   same anchor arithmetic; rate is a live multiplier on a running fade, which the
   `Fade` struct has no room for yet.
-- **A timecode source.** `FollowMode::Timecode` is matched and ignored. It should
+- **A timecode source.** `FollowMode::Timecode` was matched and ignored, and task 66
+  removed it in favour of the `timelines` collection. It should
   wait for the beat-grid work rather than sit beside it.
 
 Task 8 — the WASM plugin runtime — is still the largest thing not started, and is
@@ -4920,6 +4921,392 @@ cd frontend && npx vitest run src/lib/network.test.ts
 ```
 
 
+### 66. A recording is a function of time
+
+The first half of `timecode-workflow`: DMX input, the timeline, the track and the
+transport. The audio half — playing a file, the waveform, the beat detector, LTC — is
+untouched and stays in the entry with its decisions made.
+
+**What went in.** A PERSISTED `inputs` collection mirroring `outputs`, an
+`InputManager` beside the output one, a decoder that is the inverse of `dmx/encode.rs`,
+a PERSISTED `timelines` collection with events, markers and takes, a transport that is
+a replicated anchor, a track codec in `pult-render`, and a fourth layer in `Driving`.
+`FollowMode::Timecode` is gone and `SCHEMA_GENERATION` is 5.
+
+**A recording is decoded values, never bytes.** This is the decision the whole shape
+follows from. A capture is `(fixture, parameter, value)` wherever it comes from, so
+anything arriving on a wire that is going to land in the programmer or in a track goes
+through the patch on the way in — byte to value through the mode the fixture is patched
+in. Which is what lets a take made off a guest console be played back onto a rig that
+has since been repatched, and what makes `input.grab` write `0.749` rather than `191`.
+The corpus asserts it as a round trip: render a patch, read the universes back as
+values, drive the same patch from those values, require the bytes to be identical.
+
+**Decoding a colour is exact on any fixture, and that needed `unmix`.** `r`, `g` and `b`
+come from the emitters that are primaries by `primary_channel`'s own rule — the same
+rule `derive` passes them through going out — and then every emitter whose received
+level differs from what that colour would derive becomes an override. So a CMY head,
+which has no primaries at all, comes back as three overrides over black; an RGBW head
+whose white is somewhere the mix would never put it comes back with the white pinned;
+and a plain RGB par comes back with nothing pinned, which is a colour an operator can
+then edit. Exact by construction rather than by luck, with half a byte of tolerance
+because the levels came off a wire as bytes and re-deriving them in floating point does
+not land on the same number twice — tighter and every emitter of every fixture would be
+pinned, which would make the next colour command do nothing.
+
+**`inputs` has no leader fallback, and the universe map is explicit.** An output with no
+`node_id` resolves to the leader because Art-Net cannot arbitrate between two senders
+and *something* has to send; nothing has to listen, so an input naming no station means
+nobody is listening and the panel says so. Falling back would move a receiver's socket
+on every failover, which for an input is exactly wrong — the guest console's cable is
+plugged into one machine. And `universes` is a `BTreeMap<u16, u16>` from wire to patch,
+empty by default: an input that guessed the identity mapping would decode somebody
+else's universe 1 straight over the house rig's.
+
+**What arrives never becomes show state.** A universe is 512 bytes forty times a second
+per source. The merged images stay in the connector, LOCAL, and are drawn on demand
+through the *same* `Viewers` table an output's wire view uses — the input's row id
+standing in for an output's. That is what makes a peer's input watchable with nothing
+added to either the RPC or the sync protocol, and it is why `OutputView::output_id`
+carries an input id without complaint. The panel tells the two apart by which collection
+the id came out of, and nowhere else does.
+
+**The merge is priority, then HTP, then a timeout.** Per patch universe, a table keyed by
+the sACN CID or — for Art-Net, which carries no source identity at all — the datagram's
+source address. Highest priority present wins outright; equals take the highest of each
+slot; a source silent for 2.5 seconds is gone. The timeout is what makes a console being
+unplugged different from a console sending zeros: the first drops out and lets whatever
+else is there through, and the second wins on HTP against nothing.
+
+**A timeline says when; a sequence stays the stack.** An event is a position and a Go
+into any sequence, so one song can drive three of them. Running state is a SYNCED
+anchor — `running`, `anchor_ms`, `position_at_anchor_ms`, `rate` — and the position on
+every station and in every browser is arithmetic over it, so nothing ticks anywhere.
+`play`, `stop`, `locate` and `record` carry `at` the way a Go does. Only the leader
+*fires*; the pass itself runs everywhere, because the record of what has been fired has
+to stay in step or a promoted follower would re-fire the first half of the song.
+
+**A track is a `Driving` layer backed by an asset.** `pult_render::track` is the codec:
+hand-written little-endian, magic `PLTK`, a version, per `(fixture, key)` a list of
+change points. Written and read by the crate that is compiled twice, so the browser
+hands the bytes to the wasm and there is one parser — a recording is the largest thing
+that has ever driven a parameter and two readers of it would drift exactly where it is
+longest. Replay is **stepwise**: the recorder wrote a point when the value changed, so
+holding the latest one reproduces what came down the wire, and interpolating would
+invent motion nobody sent. Stack order is programmer > track > effect > fade > home.
+
+### Six traps, each of which was a defect first
+
+**A deadline says when to wake, not what to do.** The first timeline pass was gated on
+its own next deadline having arrived, and it never fired anything: by the time the
+engine woke at the deadline the playhead was *past* the event, `next_event_after`
+answered `None`, and the pass returned early having skipped the very event it had been
+woken for. The deadline belongs in `next_wake` and the pass decides what has been
+crossed. A running timeline with no events left costs nothing either way, because
+nothing schedules a wake for it.
+
+**Telling a jump from progress cannot be done with a tolerance.** A locate has to take
+the tracked state — the latest event per sequence — and ordinary progress has to fire
+what it crossed, and the first attempt compared the playhead against where it "should"
+have got to by now. That needs a tolerance, and a tolerance on a station that was busy
+is a Go that silently did not happen. What works is exact: ask the *new* transport where
+the playhead was at the *previous* pass's moment, and if that is not where the previous
+pass saw it, somebody moved it. Ordinary progress leaves the transport alone and the two
+agree to the millisecond.
+
+**Resuming in place must not re-take the tracked state.** The version before that rule
+treated every play as a fresh start, so stopping in the middle of a song and pressing
+play again re-fired the last event before the playhead — which for a `GoNext` advances a
+cue nobody asked for. A test said so before a rig did.
+
+**`SO_REUSEADDR` on a fixed port is the whole difference from an output.** Every output
+socket leaves by an ephemeral port and nothing else wants it. An input has to sit on
+5568 or 6454 — the port the protocol names — beside whatever else on the machine is
+listening to the same show LAN, and beside a second input of this console's own. Bound
+to `0.0.0.0` rather than to the named interface even when one is named, because a
+multicast group is joined *on* an interface as a separate act and binding a receiver to
+a unicast address is what stops broadcast Art-Net arriving at all.
+
+**A test that clears the programmer clears the wire.** The first integration test wrote
+a value into the programmer, cleared it, and grabbed — and got zero, correctly, because
+the output it was reading back was rendering the cleared programmer. What holds a value
+on the wire without anything being programmed is the fixture's own `home_values`, and
+`191/255` is exact in an `f32`, so the assertion is an equality rather than a guess
+about rounding.
+
+**A borrow across a write, twice.** `reconcile_recording` held an iterator over
+`self.timelines` while deciding to write; the fix is to resolve the pair of ids first.
+And the wasm evaluator's frame had to lift `packed` out with `mem::take`, because
+composing a track reads the whole evaluator and a mutable slice of one of its fields
+cannot be held across that.
+
+### What is not done
+
+**None of it has been pointed at another console.** The loopback test is this station
+sending sACN into its own listener, which exercises the parser, the merge, the decoder
+and the RPC — and says nothing about what a grandMA or an Avolites actually puts on a
+wire. Two sources merging, and Art-Net from a real node, are a venue afternoon.
+
+**A cross-station grab is refused by name.** The page has to be on the station holding
+the socket. Asking the station that is would mean putting a universe across the link
+carrying the show for a button press; what is missing is the panel saying which console
+to open, which it can work out from the row.
+
+**A take is written whole at the end.** A recording is held in memory until the timeline
+stops, so a console that dies mid-song loses the take. Streaming it to the asset store
+as it goes is possible and was not done: an asset is content-addressed and a partial one
+has no sha yet.
+
+**Releasing into a fade still in flight is an approximation.** When a track stops, the
+key goes home over `home_fade_ms` to the stack beneath **evaluated at the moment the
+release lands** — the model has one fade per key and there is no way to join one that is
+still moving. The parameter therefore arrives where playback would have had it and does
+not then carry on moving with it. A key with an effect underneath is left alone
+entirely, since an effect beats a fade and a release fade under one would be invisible.
+
+```
+cargo test -p pult-render track                      # the codec, and what it refuses
+cargo test -p pult-render color                      # mix and unmix, both ways
+cargo test -p pult-backend --lib connectors::dmx     # render, decode, render again
+cargo test -p pult-backend --lib connectors::input   # the merge, and what times out
+cargo test -p pult-backend --lib model::timelines    # crossing, jumping, stopping
+cargo test -p pult-backend --test timecode           # a wire read back, and a cue that went
+cd frontend && npx vitest run src/lib/evaluator.test.ts   # a track, played in the page
+```
+
+
+### 67. A song the console can hear
+
+The audio half of `timecode-workflow`, and the whole of what was left: playing a
+timeline's file, drawing it, finding the beats in it, and chasing somebody else's
+clock. Task 66 built the position and everything written against it; this is the sound
+that position is usually about.
+
+**What went in.** A new pure crate `pult-audio` — waveform peaks with a codec, an LTC
+encoder and decoder, the Beat This! detector through `rten`, the chase discipline, and
+the two resamplers the other four need. On the station: an `AudioManager` beside the
+output and input ones, `cpal` for the devices and `symphonia` for the files, an
+`[audio]` section in `preferences.toml`, three RPCs, a LOCAL `audio_status` path, and
+the speed-master step in the leader's timeline pass. In the browser: the waveform, and
+the pickers around it. `Timeline` gained `peaks` and `detected`, both `Option`, so
+`SCHEMA_GENERATION` stayed at 5 — an added `Option` field is what the additive pass is
+for.
+
+**The audio callback's sample clock is the reference.** This is the decision everything
+else follows from. One station plays — `Timeline::node_id`, or the leader, the rule
+`OutputConfig::runs_on` already follows for Art-Net — and it measures the playhead off
+the frames its own callback has delivered rather than off a wall clock. A sound card's
+crystal and a computer's are two different crystals, and the one the audience can hear
+is the one that has to be right. When the two differ by more than 20 ms the station
+rewrites the SYNCED anchor, and every other station and every browser follows the
+loudspeakers. **A tablet plays nothing**: Web Audio was declined in the grill, because
+the reference clock must not be a tab a browser can throttle to one frame a minute when
+somebody switches to their email.
+
+**And the 20 ms rule is what makes that safe.** The anchor is the *show's* — SYNCED, on
+the link, evaluated by every browser — so a station that rewrote it every buffer would
+put a few hundred bytes and a few milliseconds of jitter on the network forty times a
+second for a correction nobody can perceive, and the browsers' playheads would visibly
+stutter. Twenty milliseconds is `pult_schema::clock`'s own figure, taken deliberately
+rather than by coincidence, and `pult_audio::lock` chases to the same one.
+
+**The playhead is the callback's cursor minus the device's own latency**, and the
+subtraction is not a detail. A callback that has just filled a buffer has read ahead of
+what anybody in the room can hear; a console that anchored the show to the *read*
+position would run every cue a buffer early, which at a conservative 512 frames and
+44.1 kHz is 12 ms and on a machine set up for safety rather than latency is five times
+that. `cpal` reports it as the gap between the callback's own timestamp and the
+predicted playback one, and it is stored by the callback because only the callback is
+told.
+
+**Audio never gates the transport.** A timeline with no audio, or one on a station with
+no device, runs exactly as task 66 left it — everything here is a correction *applied
+to* a transport that already works, which is what makes "the sound card is missing" a
+status row rather than a show that will not start. `a_timeline_with_no_sound_runs_the_way_it_always_did`
+is the gate, and it also asserts that such a timeline reports *nothing* rather than an
+empty row: a panel full of "no" is worse than a panel with nothing in it.
+
+**Peaks are an asset, not a derivation.** The station that plays a file reduces it once
+— min and max per bin, a hundred bins a second, `i16` — and stores the reduction under
+`application/vnd.pult.peaks`; `Timeline::peaks` is that sha. Min and max rather than an
+average because a waveform is read as an *envelope*, and a snare that peaks for two
+milliseconds is invisible in its bin's mean. `i16` rather than `f32` because the
+sixteenth bit of a column's height is not a thing anybody can see and it halves what the
+tablet at the back of the room downloads. Computed by the *playing* station, which is
+what stops two of them reducing the same file and racing to write the row. A field
+rather than a name derived from the audio's sha, because that would be a second
+content-addressing scheme and a tablet would be asking for a sha that might not exist
+yet.
+
+**The detector is Beat This!, vendored, with its models embedded.** The survey that
+chose it was recorded in the entry and has not changed: aubio GPL-3, BTrack GPL-3,
+Essentia AGPL-3, MiniBPM GPL-2 or paid, the QM Vamp plugins GPL-2, madmom and librosa
+Python. Beat This! (CPJKU, ISMIR 2024) is MIT for code *and* weights, beats madmom in
+its own paper, and gives downbeats as well as beats — which is what a speed master
+wants, since a detector that only found the pulse would leave somebody tapping for the
+bar line anyway.
+
+Three things about it differ from what the entry assumed, and all three are simpler:
+
+- **The `beat-this` crate is vendored rather than depended on**, because its `clap`,
+  `glob`, `hound`, `rubato` and `symphonia`-with-every-codec are not optional
+  dependencies and there is no feature that turns a CLI's argument parser off. About
+  four hundred lines of inference path — the mel front end, the chunking, the peak
+  picking — with attribution in the module header and the MIT licence beside the models.
+- **No `rten-convert`, and so no Python in this repository's build.** `rten` 0.26 loads
+  `.onnx` directly (`Model::load_static_slice`), so the files checked in are byte for
+  byte the ones upstream published — which is the whole reason the sha256 in
+  `models/README.md` means anything. A converted `.rten` would have been a fourth
+  artefact nobody could check against anything.
+- **The FFT the entry expected is there and is not a direct dependency.** The log-mel is
+  an ONNX model rather than arithmetic written here — which is what guarantees the
+  spectrogram this console computes is the one the network was trained against — so the
+  STFT is an operator inside `rten`'s `fft` feature and `pult-audio` needs no `realfft`
+  beside it.
+
+The small model (10 MB) and the mel front end (270 KB) are **embedded**, because a
+console at a venue has no internet and a feature that only works on the office wifi is
+a feature nobody trusts. The full model is 83 MB — more than the rest of the binary —
+and `timeline.model { full: true }` fetches it into the config directory, verified
+against `pult_audio::beats::FULL_MODEL_SHA256` before a byte is written, because what
+those bytes are fed to is a parser.
+
+**The detector proposes and the operator confirms.** What comes back is written to
+`Timeline::detected` and drawn over the waveform in its own colour; *Use this grid* is
+the write to `grid`. A console that silently rewrote the grid of a show somebody had
+already programmed against would be worse than one that could not detect anything.
+
+**LTC is declared, never sniffed, and the chase has three answers.** What the wire
+carries is a frame *count*; whether thirty of them is a second is not in the signal at
+all, and 29.97 non-drop against 30 is one frame in a thousand — right all afternoon and
+wrong at the performance. So the rate comes off the timeline. `pult_audio::lock::chase`
+answers `Hold` under 20 ms, `Varispeed` within ±2% up to a second, and `Locate` beyond
+it: ±2% is about a third of a semitone, past which a resampled stem is audibly wrong,
+and it is also what bounds the correction in time — at 2%, twenty milliseconds closes in
+one second. **The anchor is written from the timecode's position and never from our own
+playhead**, because the generator is the authority and our sound is the thing being
+corrected. **Lock loss stops nothing**: the timeline runs on from the last anchor and
+the status says "LTC lost" until frames return, since a dropout mid-act is not a reason
+for the show to stop.
+
+**And chasing does not press Play.** Whether a timeline is running stays the operator's;
+this steers a running one. A console that started the act because a machine down the
+corridor began rolling would be a surprise nobody asked for.
+
+**A timeline drives a speed master as a bounded step.** Crossing a grid segment writes
+that master's `bpm` and its `t0` — the wall millisecond the segment's downbeat fell at,
+worked out backwards from the anchor so a late pass still puts the "one" where it
+belonged. One write per segment and none in between, which is `types::speedmaster`'s own
+discipline: the new rate and the anchor it is measured from arrive together, so a tempo
+change is a step in phase rather than a drift. A locate restates it, because the
+playhead has moved to a different bar; **stopping does not**, so the chases go on running
+at the song's tempo through the applause.
+
+### Eight traps, and one measurement that changed a decision
+
+**A slow DC tracker cannot decode a quiet feed.** The LTC decoder finds its crossings
+against a running mean, and the first version averaged over a second — which is right
+for following an offset and wrong for everything else. A signal at 5% riding a 0.4 DC
+offset never crossed at all inside a buffer shorter than the averaging window, because
+the *excursion* the hysteresis band is a fraction of had latched onto the offset rather
+than onto the signal. Twenty milliseconds is where the two pressures balance: the
+slowest thing LTC puts on a wire is half the bit rate, 960 Hz at 24 fps, so a 50 Hz
+tracker follows an offset and cannot follow the code. A test at four gains and two
+offsets is the gate.
+
+**Sixty-three seconds against 0.44.** The detector's own test took **63 s** in a debug
+build and **0.44 s** at `--release`, on the same machine and the same thirty seconds of
+audio. That is not a slow debug build; it is a SIMD matrix kernel compiled as scalar
+Rust. The cheap answer was `[profile.dev.package.rten*] opt-level = 3` in the workspace
+manifest, which brings it to **1.09 s** — and the consequence is not only a test that
+can stay in the ordinary suite rather than being an `#[ignore]` nobody runs, but a
+*console* that can detect beats in a development build without somebody deciding the
+feature is broken. Nothing else in the workspace is opted in: this is the one dependency
+whose unoptimised form is unusable rather than merely slower.
+
+**Telling this station's own anchor write from an operator locating needs the exact
+comparison, again.** The manager rewrites the anchor and then sees its own write come
+back through the engine; an operator locating looks identical from one row. The answer
+is `model/timelines.rs`'s: remember the transport as it stood, and the transport this
+station last *wrote*, and compare exactly. A tolerance would either miss a small locate
+or leave the station chasing its own echo for ever.
+
+**A `cpal::Stream` is not `Send`, and enumeration blocks.** Either would force a thread;
+together they decide the shape of `infra/audio/device.rs`. The stream lives on a thread
+that outlives the call which built it and answers over a `tokio::sync::oneshot` — whose
+`send` is synchronous, which is what lets a std thread hand a result back to an async
+caller without a second channel. And every enumeration goes through `spawn_blocking`,
+for the reason `infra/stations` puts the disks on a probe thread: a six-second call on
+the runtime is a station that accepts no connection.
+
+**The RPC prefix table is a gate and it caught this.** `audio.` and `timeline.` had to
+be added to `is_local_rpc`, and `the_table_and_the_dispatcher_agree` failed until they
+were — which is the test doing exactly what it was written for. `timeline.` singular
+does not collide with the `timelines` collection: an entity command is a *path* write and
+never reaches that function.
+
+**A tempo taken from one interval is 2.4 bpm wrong, and only a real song showed it.**
+The detector works at 50 frames a second, so every beat it reports is quantised to
+20 ms — and at 128 bpm a 468.75 ms beat lands on 460 or 480, whose median is 460, which
+reads as **130.4 bpm**. Over a minute that walks a whole bar out of step, and none of the
+hand-written corpora could see it because they were all built on exact intervals. The
+fix is two things: the tempo comes from the **span** of a stretch rather than from one
+interval, and the number of beats in that span is the *count of intervals* rather than
+`span / median` — dividing by a biased median invents two extra beats and gets 130 back
+again, which is how the first attempt at the fix failed. There is a corpus case built out
+of deliberately quantised beats now, and it asserts the naive reading is wrong before it
+asserts the real one is right.
+
+**The same file put back was never reduced again.** `reducing` is keyed by the audio's
+sha and stops two passes starting at once; leaving a sha in it after the write meant that
+replacing a timeline's audio with the *same file* — which clears `peaks` — left the panel
+saying "the station is still reducing this file" for the rest of the show. What stops the
+work being repeated is `Timeline::peaks` being set, and the set only ever guarded the
+*start*. A file that will not decode is remembered separately, in `refused`, which is the
+one thing that should be. Found by driving the panel with a browser and reading the row
+back out of the showfile, which is also how the tempo defect surfaced.
+
+**A generated stream's first frame is partial.** The integration test fed one second of
+LTC and got no lock, correctly: a decoder that has just been switched on starts mid-bit,
+so the first sync word it finds has a fragment in front of it and is discarded rather
+than decoded as a mixture of two frames. Feeding two seconds is the fix, and the rule it
+enforces — *a short frame after a good one is dropped* — is what stops a dropout being
+reported as a position.
+
+### What is not done
+
+**None of it has been pointed at a real generator.** The corpus is this console's own
+encoder feeding its own decoder, at every rate and four sample rates, upside down and
+quietly — which exercises the biphase decoding, the frame layout and the drop-frame
+arithmetic, and says nothing about what a Rosendahl or an ATEM actually puts on a
+cable. A venue afternoon, like the DMX input half before it.
+
+**No test opens an audio device**, and CI has none. The seam is
+`AudioHandle::feed_timecode`, which pushes samples into exactly the queue a `cpal` input
+thread pushes them into — so the decoder, the chase, the anchor write and the firing are
+all real and only the cable is not. What is therefore untested is `device.rs` itself:
+the sample-format conversions, the latency reading, and what happens when a device is
+unplugged mid-show.
+
+**The waveform is drawn and the peaks are not resolved further than 10 ms.** A hundred
+bins a second is finer than any zoom the panel offers, but somebody editing a take
+against a transient will eventually want sample-accurate zoom, and that is a second
+resolution rather than a change to this one.
+
+**A debug link on macOS now warns that `__eh_frame` is over 16 MB**, which is the
+inference runtime's code and not the embedded model. The release build links clean, and
+so does CI. It is a note about the compactness of unwind tables and not about
+correctness.
+
+```
+cargo test -p pult-audio                             # peaks, LTC, the detector, the chase
+cargo test -p pult-backend --lib infra::audio        # who plays, and the two conversions
+cargo test -p pult-backend --lib model::timelines    # the speed-master step
+cargo test -p pult-backend --test audio              # timecode in, an anchor and a Go out
+cd frontend && npx vitest run src/lib/waveform.test.ts
+```
+
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -5090,9 +5477,12 @@ found, it goes at the top, and the reason is written here rather than argued aga
    above them decided. Was open-control-interfaces until 2026-09-02, when the
    three things people send over those ports turned out to want separate
    entries. → none
-5. **timecode-workflow** — waveform and beat-grid timecode, timed playback,
-   audio import. The biggest item here and the one the spec is most opinionated
-   about. → none technically
+5. **dmx-input-as-layer** — incoming DMX driving the rig live, as a fifth
+   `Driving` source. Everything under it is built: task 66's `inputs` rows, the
+   sockets, the merge and the decoder. What is missing is the merge rule against
+   the programmer and playback, which is the whole question. Was the last
+   unbuilt part of timecode-workflow's neighbourhood; that entry itself became
+   tasks 66 and 67. → none
 6. **llm-cost-overview** — token and cost accounting out of the NL plugin.
    → none
 7. **openhaunt-as-plugin** — output connectors as WASM, if a connector's own
@@ -5459,10 +5849,12 @@ Linux-only, `clock-steering` is Unix and privileged so a console holds PTP's ans
 software offset anyway, and an isolated show LAN has no grandmaster to sync to. Three
 platform ports to arrive at the architecture the estimator starts from.
 
-What is left of it is the thing that entry named last and got right: **if
-`timecode-workflow` wants sub-millisecond alignment against other departments — SMPTE,
-audio, video frame alignment — that is a different question from this one**, and the
-survey in task 64 is what it should start from rather than re-researching.
+What is left of it is the thing that entry named last and got right: **if anything ever
+wants sub-millisecond alignment against other departments — SMPTE, audio, video frame
+alignment — that is a different question from this one**, and the survey in task 64 is
+what it should start from rather than re-researching. Task 67 did not reopen it: LTC is
+chased through an audio input at frame accuracy, which is a thirtieth of a second and
+several orders of magnitude away from wanting PTP.
 
 ### Performance
 
@@ -5502,19 +5894,27 @@ different from any measured so far.
 
 ### Media and time
 
-#### timecode-workflow
+#### dmx-input-as-layer
 
-The big one, and the spec is opinionated about it: waveform and beat-grid
-timecode, plus "timecode without timecode" meaning timed cue playback, with audio
-import and playback. `FollowMode::Timecode` has existed unimplemented since task
-3, deliberately waiting for this design rather than getting a stopgap. It should
-subsume that follow mode rather than sit beside it.
+Incoming DMX driving the rig live — a guest console controlling part of the rig
+through this one. Split out of timecode-workflow on 2026-09-07 as the thing it
+deliberately did not decide.
 
-- Audio import lands in the asset store. Playback happens on which station, and
-  what do the others chase? The OpenHaunt clock topic and `went_at` anchoring are
-  the prior art for shared time.
-- Beat grids relate to speed masters; tap tempo is a degenerate beat grid.
-- Is external SMPTE or MTC in scope, or explicitly out?
+Task 66 built everything under it: the `inputs` rows, the sockets, the merge, and a
+decoder that turns a received universe into `(fixture, parameter, value)`. Task 67
+finished the rest of `timecode-workflow` — the audio, the waveform, the detector and
+LTC — so this is now the only part of that neighbourhood left. What is missing is only
+the layer itself.
+
+- A fifth `Driving` source, evaluated at the listening station only; the data
+  never crosses the link. `Patch::decode` already produces exactly the values it
+  would carry, once per merged-image change.
+- The merge rule against the programmer and playback is the whole question: HTP,
+  LTP, per parameter, or a priority an operator sets per input row.
+- And it is the one `Driving` layer that would *not* be a function of time, which
+  is why it cannot simply be added to `pult-render`: a received value is state the
+  listening station was told, the way `sensed_values` is, so a peer evaluating the
+  same rig would need it replicated or would draw something different.
 
 #### video-mapping-ndi
 
@@ -5563,6 +5963,12 @@ MIDI and OSC as ports. Nothing above them decided here on purpose.
   cheapest place in the repository to answer it: a UDP socket and a string is
   close to free either way, so measuring a plugin on the input path here costs
   almost nothing and tells openhaunt-as-plugin something it wants to know.
+- **MTC arrives here**, having been left out of task 67 deliberately: it is
+  timecode over a MIDI port, and this is the entry that opens one. What it is
+  *not* is a second chase — `TimelineSource` would gain an `Mtc` variant and the
+  quarter-frame messages would be assembled into the same position
+  `infra/audio` already writes an anchor from, at the same 20 ms threshold. The
+  work is the port and the assembly, and nothing above them.
 
 #### show-control
 
@@ -5688,7 +6094,7 @@ beats finding it out halfway through a USB capture.
   it, so assume 7 and see.
 - Feedback (LED rings, motor faders) is the same problem as wing feedback and
   far cheaper to get wrong. Worth doing here first for that reason alone.
-- **MTC belongs to timecode-workflow and MSC belongs to show-control.** Neither
+- **MTC belongs to control-transports and MSC belongs to show-control.** Neither
   is this item, and all three want to open a MIDI port, which is what
   control-transports is for.
 

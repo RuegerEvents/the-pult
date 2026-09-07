@@ -1,0 +1,21 @@
+[package]
+name = "pult-audio"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Sound, as numbers: waveform peaks, LTC, beat detection and the chase discipline."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+# The inference runtime for the beat detector, and the tensors it hands back.
+# `fft` is what makes the mel front end's STFT operator resolve: the log-mel is an
+# ONNX model rather than arithmetic written here, so the FFT this crate needs is the
+# one inside `rten` and there is no second one beside it.
+rten = { workspace = true }
+rten-tensor = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

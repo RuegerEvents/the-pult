@@ -20,12 +20,42 @@
 	import { getDataContext } from '$lib/ws/context.js';
 	import { readPreferences, writePreferences, type Preferences } from '$lib/preferences.js';
 	import { editing } from '$lib/stores/editing.js';
+	import { getClientContext } from '$lib/ws/context.js';
 
 	const data = getDataContext();
+	const client = getClientContext();
 	const unlocked = editing('settings');
 
 	let show = $state<Show | null>(null);
 	let prefs = $state<Preferences | null>(null);
+	/** What this machine has, asked for once — enumerating devices blocks. */
+	let devices = $state<{ outputs: AudioDevice[]; inputs: AudioDevice[] } | null>(null);
+
+	type AudioDevice = {
+		name: string;
+		id: string;
+		is_default: boolean;
+		channels: number;
+		sample_rate: number;
+	};
+
+	/**
+	 * Which device a timeline plays through, and which one timecode arrives on.
+	 *
+	 * The whole `[audio]` section at once, for the reason `[network]` is written whole:
+	 * *absent* is a value — a device the operator cleared has to become "said nothing,
+	 * use the default" rather than keep what it had.
+	 */
+	async function setAudioDevice(which: 'output' | 'input', name: string) {
+		trouble = null;
+		const next = { ...(prefs?.audio ?? {}), [which]: name || null };
+		const stored = await writePreferences({ audio: next });
+		if (!stored) {
+			trouble = 'This console could not write its settings down.';
+			return;
+		}
+		prefs = stored;
+	}
 	/// Said out loud only when something went wrong, because a setting that took is
 	/// its own confirmation — the number is on screen.
 	let trouble = $state<string | null>(null);
@@ -134,8 +164,36 @@
 	/// itself around half way.
 	const presses = (depth: number) => Math.floor(depth / 2);
 
+	/**
+	 * The devices, in two groups: the host's own default first, then everything else.
+	 *
+	 * **Grouped and never filtered**, which is `NetworkPanel`'s rule for interfaces and
+	 * is right here for the same reason — an aggregate device, a virtual output, a card
+	 * the operating system has an odd name for, are all things somebody legitimately
+	 * wants to pick, and there is no rule that separates them from noise.
+	 */
+	function audioGroups(devices: AudioDevice[]) {
+		const groups = [
+			{ label: 'This machine uses this by default', devices: devices.filter((d) => d.is_default) },
+			{ label: 'Everything else', devices: devices.filter((d) => !d.is_default) }
+		];
+		return groups.filter((group) => group.devices.length > 0);
+	}
+
 	onMount(() => {
 		readPreferences().then((p) => (prefs = p));
+		// Asked for once rather than watched: enumerating a machine's audio devices
+		// blocks — the station does it on a thread of its own for that reason — and a
+		// settings panel that re-asked on a timer would be paying for it continuously.
+		client
+			.call('audio.devices', {})
+			.then((found) => {
+				devices = found as { outputs: AudioDevice[]; inputs: AudioDevice[] };
+			})
+			.catch(() => {
+				// A station with no audio manager, which is what a test builds. The
+				// pickers fall back to naming a device by hand.
+			});
 		return data.show.subscribe((v) => (show = v as Show | null));
 	});
 </script>
@@ -327,6 +385,68 @@
 				{/if}
 				<span class="unit">seconds</span>
 			</div>
+			<div class="row">
+				<label for="audio-out">Plays audio through</label>
+				{#if $unlocked}
+					<select
+						id="audio-out"
+						class="input wide"
+						value={prefs.audio?.output ?? ''}
+						onchange={(e) => setAudioDevice('output', e.currentTarget.value)}
+					>
+						<option value="">The system default</option>
+						<!--
+							Grouped and never filtered, which is the rule the interface
+							picker follows and for the same reason: the device somebody
+							wants to name is as likely to be the odd one as the obvious
+							one, and a picker that hid it would put the setting out of
+							reach of the UI.
+						-->
+						{#each audioGroups(devices?.outputs ?? []) as group (group.label)}
+							<optgroup label={group.label}>
+								{#each group.devices as device (device.id)}
+									<option value={device.name}>
+										{device.name} — {device.channels} ch, {device.sample_rate} Hz
+									</option>
+								{/each}
+							</optgroup>
+						{/each}
+					</select>
+				{:else}
+					<span class="value">{prefs.audio?.output ?? 'The system default'}</span>
+				{/if}
+			</div>
+			<div class="row">
+				<label for="audio-in">Hears timecode on</label>
+				{#if $unlocked}
+					<select
+						id="audio-in"
+						class="input wide"
+						value={prefs.audio?.input ?? ''}
+						onchange={(e) => setAudioDevice('input', e.currentTarget.value)}
+					>
+						<option value="">The system default</option>
+						{#each audioGroups(devices?.inputs ?? []) as group (group.label)}
+							<optgroup label={group.label}>
+								{#each group.devices as device (device.id)}
+									<option value={device.name}>
+										{device.name} — {device.channels} ch, {device.sample_rate} Hz
+									</option>
+								{/each}
+							</optgroup>
+						{/each}
+					</select>
+				{:else}
+					<span class="value">{prefs.audio?.input ?? 'The system default'}</span>
+				{/if}
+			</div>
+			<p class="note">
+				Which sound card is in which machine is a fact about the machine, so this never
+				travels with a show. A device this console has not got is <em>refused</em> and says
+				so on the timeline rather than quietly falling back to another one — the rule a
+				network interface follows, and for the same reason: from the desk, playing out of
+				the wrong output and playing out of nothing look identical.
+			</p>
 			<div class="row curves">
 				<span class="label">New shows fade</span>
 				<div class="curve-grid">
@@ -400,6 +520,7 @@
 		min-width: 12ch;
 	}
 
+	.input.wide { min-width: 260px; }
 	.input {
 		width: 9ch;
 	}

@@ -1633,6 +1633,232 @@
           "overrides": {}
         }
       }
+    },
+    {
+      "name": "a track says nothing before its first change point",
+      "driving": {
+        "track": {
+          "points": [
+            {
+              "ms": 500,
+              "value": {
+                "type": "Float",
+                "value": 0.9
+              }
+            }
+          ],
+          "anchor_ms": 1000,
+          "position_at_anchor_ms": 0,
+          "rate": 1.0
+        },
+        "home": {
+          "type": "Float",
+          "value": 0.25
+        }
+      },
+      "at": 1200,
+      "expect": {
+        "type": "Float",
+        "value": 0.25
+      }
+    },
+    {
+      "name": "a track at one of its change points",
+      "driving": {
+        "track": {
+          "points": [
+            {
+              "ms": 0,
+              "value": {
+                "type": "Float",
+                "value": 0.1
+              }
+            },
+            {
+              "ms": 500,
+              "value": {
+                "type": "Float",
+                "value": 0.9
+              }
+            }
+          ],
+          "anchor_ms": 1000,
+          "position_at_anchor_ms": 0,
+          "rate": 1.0
+        },
+        "home": {
+          "type": "Float",
+          "value": 0.25
+        }
+      },
+      "at": 1500,
+      "expect": {
+        "type": "Float",
+        "value": 0.9
+      }
+    },
+    {
+      "name": "a track between two points holds the earlier one",
+      "driving": {
+        "track": {
+          "points": [
+            {
+              "ms": 0,
+              "value": {
+                "type": "Float",
+                "value": 0.1
+              }
+            },
+            {
+              "ms": 500,
+              "value": {
+                "type": "Float",
+                "value": 0.9
+              }
+            }
+          ],
+          "anchor_ms": 1000,
+          "position_at_anchor_ms": 0,
+          "rate": 1.0
+        },
+        "home": {
+          "type": "Float",
+          "value": 0.25
+        }
+      },
+      "at": 1499,
+      "expect": {
+        "type": "Float",
+        "value": 0.1
+      }
+    },
+    {
+      "name": "a track at twice the rate is twice as far along",
+      "driving": {
+        "track": {
+          "points": [
+            {
+              "ms": 0,
+              "value": {
+                "type": "Float",
+                "value": 0.1
+              }
+            },
+            {
+              "ms": 500,
+              "value": {
+                "type": "Float",
+                "value": 0.9
+              }
+            }
+          ],
+          "anchor_ms": 1000,
+          "position_at_anchor_ms": 0,
+          "rate": 2.0
+        }
+      },
+      "at": 1250,
+      "expect": {
+        "type": "Float",
+        "value": 0.9
+      }
+    },
+    {
+      "name": "a track played from part way through starts there",
+      "driving": {
+        "track": {
+          "points": [
+            {
+              "ms": 0,
+              "value": {
+                "type": "Float",
+                "value": 0.1
+              }
+            },
+            {
+              "ms": 500,
+              "value": {
+                "type": "Float",
+                "value": 0.9
+              }
+            }
+          ],
+          "anchor_ms": 1000,
+          "position_at_anchor_ms": 500,
+          "rate": 1.0
+        }
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.9
+      }
+    },
+    {
+      "name": "the programmer still wins over a track",
+      "driving": {
+        "programmer": {
+          "type": "Float",
+          "value": 0.3
+        },
+        "track": {
+          "points": [
+            {
+              "ms": 0,
+              "value": {
+                "type": "Float",
+                "value": 0.9
+              }
+            }
+          ],
+          "anchor_ms": 1000,
+          "position_at_anchor_ms": 0,
+          "rate": 1.0
+        }
+      },
+      "at": 2000,
+      "expect": {
+        "type": "Float",
+        "value": 0.3
+      }
+    },
+    {
+      "name": "a track beats the fade under it",
+      "driving": {
+        "track": {
+          "points": [
+            {
+              "ms": 0,
+              "value": {
+                "type": "Float",
+                "value": 0.9
+              }
+            }
+          ],
+          "anchor_ms": 1000,
+          "position_at_anchor_ms": 0,
+          "rate": 1.0
+        },
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "at": 2000,
+      "expect": {
+        "type": "Float",
+        "value": 0.9
+      }
     }
   ]
 }

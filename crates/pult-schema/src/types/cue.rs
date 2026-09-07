@@ -13,8 +13,12 @@ pub enum FollowMode {
     Manual,
     /// Auto-fire after the previous cue completes, plus a delay.
     FollowAfter { delay_ms: u32 },
-    /// Fire at a specific SMPTE timecode position.
-    Timecode { hours: u8, minutes: u8, seconds: u8, frames: u8 },
+    // There was a `Timecode { hours, minutes, seconds, frames }` here, unimplemented
+    // since task 3 and deliberately waiting for this design rather than getting a
+    // stopgap. It is gone rather than implemented: a position written on a cue is a
+    // clock a cue cannot see, and the same fact written as a `timelines` event is a
+    // list an operator can read, reorder and drag. One song Going cues in three
+    // sequences was the case it could never have carried.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

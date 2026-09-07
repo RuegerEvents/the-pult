@@ -549,6 +549,13 @@ async fn set_preferences(Json(body): Json<serde_json::Value>) -> Result<Json<ser
         asked.network = serde_json::from_value(network.clone())
             .map_err(|e| bad_request(&format!("network: {e}")))?;
     }
+    // And `[audio]`, whole, for exactly the reason `[network]` is: two keys are one
+    // screen and one decision, and an operator who cleared a device has to end up with
+    // "said nothing, use the default" rather than with what was there before.
+    if let Some(audio) = body.get("audio") {
+        asked.audio = serde_json::from_value(audio.clone())
+            .map_err(|e| bad_request(&format!("audio: {e}")))?;
+    }
     if let Some(ms) = number("homeFadeMs")? {
         asked.home_fade_ms = ms;
     }
@@ -643,6 +650,10 @@ fn as_json(prefs: &infra::preferences::Preferences) -> serde_json::Value {
         // — and absent is a different answer from empty: it means this station has
         // said nothing, and every interface is used, which is what it always did.
         "network": prefs.network,
+        // Which sound card plays a timeline and which one timecode arrives on. Absent
+        // is a value here too: it means the system default, which is what a console
+        // whose operator has never opened this panel gets.
+        "audio": prefs.audio,
     })
 }
 

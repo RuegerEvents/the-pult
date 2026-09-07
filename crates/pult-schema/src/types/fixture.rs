@@ -954,6 +954,10 @@ pub fn driving<'a>(
 ) -> pult_render::Driving<'a> {
     pult_render::Driving {
         programmer: held.filter(|entry| entry.effect.is_none()).map(|entry| &entry.value),
+        // A recording is a timeline's, and this function is handed a fixture. The
+        // callers that hold the playing timelines — the DMX patch and the browser's
+        // evaluator — fill it in over the top of what this answers.
+        track: None,
         effect: fixture.live_effects.get(key),
         fade: fixture.live_fades.get(key),
         home: home_value_ref_by_key(fixture, fixture_type, key),

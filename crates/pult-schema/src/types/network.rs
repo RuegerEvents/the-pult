@@ -159,6 +159,13 @@ pub enum NetService {
     OpenHaunt,
     /// One configured output, by its row id.
     Output(Uuid),
+    /// One configured input, by its row id.
+    ///
+    /// Separate from `Output` rather than a shared `Row(Uuid)` because the panel
+    /// prints what a service *is*, and "the guest console's cable is not there" and
+    /// "the stage rack's cable is not there" are two different faults an operator has
+    /// to be able to tell apart.
+    Input(Uuid),
 }
 
 /// What one service was told, what it managed, and what went wrong.

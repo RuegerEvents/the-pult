@@ -1473,6 +1473,8 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
+            input: None,
+            audio: None,
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,

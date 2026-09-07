@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS groups (
     query TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS inputs (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    node_id TEXT,
+    interfaces TEXT NOT NULL,
+    universes TEXT NOT NULL,
+    enabled INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS layers (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
@@ -201,6 +211,21 @@ CREATE TABLE IF NOT EXISTS symbols (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
     geometry TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS timelines (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    audio TEXT,
+    peaks TEXT,
+    detected TEXT,
+    source TEXT NOT NULL,
+    grid TEXT NOT NULL,
+    markers TEXT NOT NULL,
+    events TEXT NOT NULL,
+    tracks TEXT NOT NULL,
+    speed_master TEXT,
+    node_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (

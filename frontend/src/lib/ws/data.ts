@@ -11,6 +11,7 @@ import type { Flow } from '../generated/Flow.js';
 import type { FlowEdge } from '../generated/FlowEdge.js';
 import type { FlowNode } from '../generated/FlowNode.js';
 import type { Group } from '../generated/Group.js';
+import type { InputConfig } from '../generated/InputConfig.js';
 import type { Layer } from '../generated/Layer.js';
 import type { Layout } from '../generated/Layout.js';
 import type { NamedAsset } from '../generated/NamedAsset.js';
@@ -28,6 +29,7 @@ import type { StagePlan } from '../generated/StagePlan.js';
 import type { Station } from '../generated/Station.js';
 import type { StationNetwork } from '../generated/StationNetwork.js';
 import type { Symbol } from '../generated/Symbol.js';
+import type { Timeline } from '../generated/Timeline.js';
 import type { User } from '../generated/User.js';
 import type { Version } from '../generated/Version.js';
 
@@ -59,6 +61,10 @@ export type FlowNodeEntity = PathProxy<FlowNode> & {
 };
 
 export type GroupEntity = PathProxy<Group> & {
+  delete(): Promise<void>;
+};
+
+export type InputConfigEntity = PathProxy<InputConfig> & {
   delete(): Promise<void>;
 };
 
@@ -127,6 +133,14 @@ export type StationNetworkEntity = PathProxy<StationNetwork> & {
 
 export type SymbolEntity = PathProxy<Symbol> & {
   delete(): Promise<void>;
+};
+
+export type TimelineEntity = PathProxy<Timeline> & {
+  delete(): Promise<void>;
+  locate(args: { positionMs: number, at?: number }): Promise<void>;
+  play(args: { at?: number, fromMs?: number }): Promise<void>;
+  record(args: { inputId: string | null }): Promise<void>;
+  stop(args: { at?: number }): Promise<void>;
 };
 
 export type UserEntity = PathProxy<User> & {
@@ -235,6 +249,20 @@ export type GroupCollection = {
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: GroupEntity;
+};
+
+export type InputConfigCollection = {
+  get(): Promise<InputConfig[]>;
+  set(value: InputConfig[]): Promise<void>;
+  subscribe(cb: (value: InputConfig[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: InputConfig[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): InputConfigEntity;
+  nth(n: number): InputConfigEntity;
+  create(entity: InputConfig): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: InputConfigEntity;
 };
 
 export type LayerCollection = {
@@ -461,6 +489,20 @@ export type SymbolCollection = {
   [n: number]: SymbolEntity;
 };
 
+export type TimelineCollection = {
+  get(): Promise<Timeline[]>;
+  set(value: Timeline[]): Promise<void>;
+  subscribe(cb: (value: Timeline[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Timeline[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): TimelineEntity;
+  nth(n: number): TimelineEntity;
+  create(entity: Timeline): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: TimelineEntity;
+};
+
 export type UserCollection = {
   get(): Promise<User[]>;
   set(value: User[]): Promise<void>;
@@ -500,6 +542,7 @@ export type DataRoot = {
   flow_edges: FlowEdgeCollection;
   flow_nodes: FlowNodeCollection;
   groups: GroupCollection;
+  inputs: InputConfigCollection;
   layers: LayerCollection;
   layouts: LayoutCollection;
   named_assets: NamedAssetCollection;
@@ -517,6 +560,7 @@ export type DataRoot = {
   stations: StationCollection;
   station_networks: StationNetworkCollection;
   symbols: SymbolCollection;
+  timelines: TimelineCollection;
   users: UserCollection;
   versions: VersionCollection;
 };

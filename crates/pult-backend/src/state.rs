@@ -33,6 +33,11 @@ pub struct AppState {
     pub log_watchers: crate::logging::Watchers,
     /// Who is watching what an output is putting on the wire.
     pub viewers: crate::infra::connectors::Viewers,
+    /// The listening side, for `input.grab` — the one RPC that reads a wire. `None`
+    /// where a station was built without inputs, which a test may do.
+    pub input: Option<crate::infra::connectors::input::InputHandle>,
+    /// The sound, for the three audio RPCs.
+    pub audio: Option<crate::infra::audio::AudioHandle>,
     /// What the browsers this station is serving say they are costing themselves.
     /// LOCAL: a page belongs to the station holding its socket and to no other.
     pub clients: crate::infra::clients::ClientRegistry,

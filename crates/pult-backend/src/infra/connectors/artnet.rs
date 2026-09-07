@@ -142,6 +142,42 @@ pub fn art_dmx(universe: u16, sequence: u8, channels: &[u8; UNIVERSE_SIZE]) -> V
     packet
 }
 
+/// One ArtDmx packet, read.
+///
+/// No source identity in it, which is the whole of what makes an Art-Net merge
+/// different from an sACN one: the protocol carries neither a CID nor a priority, so
+/// the only thing that can tell two senders apart is the address the datagram came
+/// from, and the only defined merge is highest-takes-precedence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReceivedArtDmx {
+    pub universe: u16,
+    pub sequence: u8,
+    pub channels: [u8; UNIVERSE_SIZE],
+}
+
+/// Read an ArtDmx packet, or answer `None` for anything else on port 6454.
+///
+/// Which is most of what arrives there: ArtPoll and ArtPollReply are how nodes find
+/// each other and a controller that read one as a universe would put a node's name
+/// into somebody's dimmers. The length field is big-endian in a header that is
+/// otherwise little-endian, and is the one field easiest to read backwards — a packet
+/// of 512 slots read the other way claims 2 and the rest of the rig reads as dark.
+pub fn parse_art_dmx(packet: &[u8]) -> Option<ReceivedArtDmx> {
+    if packet.len() < 18 || &packet[..8] != HEADER {
+        return None;
+    }
+    if u16::from_le_bytes([packet[8], packet[9]]) != OP_DMX {
+        return None;
+    }
+    let sequence = packet[12];
+    let universe = ((packet[15] as u16 & 0x7f) << 8) | packet[14] as u16;
+    let claimed = u16::from_be_bytes([packet[16], packet[17]]) as usize;
+    let slots = claimed.min(UNIVERSE_SIZE).min(packet.len() - 18);
+    let mut channels = [0u8; UNIVERSE_SIZE];
+    channels[..slots].copy_from_slice(&packet[18..18 + slots]);
+    Some(ReceivedArtDmx { universe, sequence, channels })
+}
+
 fn is_broadcast(addr: &SocketAddr) -> bool {
     match addr {
         SocketAddr::V4(v4) => v4.ip().is_broadcast() || v4.ip().octets()[3] == 255,

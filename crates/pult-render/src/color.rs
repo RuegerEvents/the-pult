@@ -106,6 +106,62 @@ pub fn level_from(
     derive(emitter, [rgb[0].clamp(0.0, 1.0), rgb[1].clamp(0.0, 1.0), rgb[2].clamp(0.0, 1.0)])
 }
 
+/// A colour from the levels its emitters are actually at: [`mix`] backwards.
+///
+/// What reading a fixture off a wire comes to. A console holds one colour and a
+/// fixture has emitters, so decoding an incoming universe means going the other way —
+/// and the only answer that is exact on *every* fixture is the one that keeps what it
+/// cannot derive.
+///
+/// So: `r`, `g` and `b` come from the emitters that are primaries by
+/// [`primary_channel`]'s own rule, which is the same rule [`derive`] passes them
+/// through going out — the first emitter matching each channel wins, and a channel no
+/// emitter is a primary for is zero. Then every emitter whose given level differs from
+/// what that colour would derive for it becomes an **override**. Which makes the round
+/// trip exact by construction rather than by luck: a CMY head has no primaries at all
+/// and comes back as three overrides over black; an RGBW head whose white is at
+/// something other than `min(r,g,b)` comes back with the white pinned; a plain RGB par
+/// comes back with no overrides at all, which is the colour somebody can then edit.
+///
+/// Half a byte of tolerance, because the levels being read back came off a wire as
+/// bytes and re-deriving them in floating point does not land on the same number
+/// twice. Tighter and every emitter of every fixture would be pinned, which would make
+/// an operator's next colour command do nothing.
+pub fn unmix(levels: &[(EmitterSpec, f32)]) -> Color {
+    let mut rgb = [0.0f32; 3];
+    let mut taken = [false; 3];
+    for (emitter, level) in levels {
+        if emitter.subtractive {
+            continue;
+        }
+        let Some(channel) = emitter
+            .rgb
+            .or_else(|| rgb_from_name(&emitter.name))
+            .and_then(primary_channel)
+        else {
+            continue;
+        };
+        if !taken[channel] {
+            taken[channel] = true;
+            rgb[channel] = level.clamp(0.0, 1.0);
+        }
+    }
+
+    let none = BTreeMap::new();
+    let mut overrides = BTreeMap::new();
+    for (emitter, level) in levels {
+        let level = level.clamp(0.0, 1.0);
+        if (level - level_from(rgb, &none, emitter)).abs() > TOLERANCE {
+            overrides.insert(emitter.name.clone(), level);
+        }
+    }
+
+    Color { r: rgb[0], g: rgb[1], b: rgb[2], overrides }
+}
+
+/// Half a byte at eight bits: the smallest difference a wire can actually carry.
+const TOLERANCE: f32 = 0.5 / 255.0;
+
 /// One emitter's level, from the colour alone.
 fn derive(emitter: &EmitterSpec, target: [f32; 3]) -> f32 {
     let Some(rgb) = emitter.rgb.or_else(|| rgb_from_name(&emitter.name)) else {
@@ -387,6 +443,69 @@ mod tests {
             ),
             vec![0.5]
         );
+    }
+
+    /// The round trip is the whole point of [`unmix`], and it is asserted rather than
+    /// reasoned about: a decoder that came back with a colour mixing to *different*
+    /// levels would repatch a guest console's rig on the way through this one.
+    fn round_trips(name: &str, emitters: &[EmitterSpec], levels: &[f32]) {
+        let given: Vec<(EmitterSpec, f32)> =
+            emitters.iter().cloned().zip(levels.iter().copied()).collect();
+        let color = unmix(&given);
+        let back: Vec<f32> = mix(&color, emitters).into_iter().map(|(_, l)| l).collect();
+        for (at, (got, wanted)) in back.iter().zip(levels).enumerate() {
+            assert!(
+                (got - wanted).abs() <= 0.5 / 255.0,
+                "{name}: emitter {at} came back at {got}, not {wanted} ({color:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn levels_read_off_a_wire_mix_back_to_themselves() {
+        let rgb = vec![
+            additive("Red", [1.0, 0.0, 0.0]),
+            additive("Green", [0.0, 1.0, 0.0]),
+            additive("Blue", [0.0, 0.0, 1.0]),
+        ];
+        round_trips("rgb", &rgb, &[1.0, 0.5, 0.0]);
+        round_trips("rgb, dark", &rgb, &[0.0, 0.0, 0.0]);
+
+        round_trips("rgbw", &rgbw(), &[1.0, 1.0, 1.0, 1.0]);
+        // The case the overrides exist for: a white nothing derived would put there.
+        round_trips("rgbw, white pinned high", &rgbw(), &[0.2, 0.2, 0.2, 1.0]);
+        round_trips("rgbw, white off", &rgbw(), &[0.6, 0.6, 0.6, 0.0]);
+
+        let rgbauv = vec![
+            additive("Red", [1.0, 0.0, 0.0]),
+            additive("Green", [0.0, 1.0, 0.0]),
+            additive("Blue", [0.0, 0.0, 1.0]),
+            additive("Amber", [1.0, 0.55, 0.0]),
+            additive("UV", [0.25, 0.0, 1.0]),
+        ];
+        round_trips("rgba+uv", &rgbauv, &[0.9, 0.4, 0.1, 0.7, 0.3]);
+
+        let cmy = vec![
+            EmitterSpec { name: "Cyan".into(), rgb: Some([0.0, 1.0, 1.0]), subtractive: true },
+            EmitterSpec { name: "Magenta".into(), rgb: Some([1.0, 0.0, 1.0]), subtractive: true },
+            EmitterSpec { name: "Yellow".into(), rgb: Some([1.0, 1.0, 0.0]), subtractive: true },
+        ];
+        round_trips("cmy", &cmy, &[0.3, 0.6, 0.9]);
+        round_trips("cmy, open", &cmy, &[0.0, 0.0, 0.0]);
+    }
+
+    /// A plain RGB par pins nothing, which is what makes a grabbed colour something an
+    /// operator can then edit rather than three numbers welded to their emitters.
+    #[test]
+    fn a_colour_the_mix_can_derive_carries_no_overrides() {
+        let rgb = vec![
+            additive("Red", [1.0, 0.0, 0.0]),
+            additive("Green", [0.0, 1.0, 0.0]),
+            additive("Blue", [0.0, 0.0, 1.0]),
+        ];
+        let color = unmix(&rgb.iter().cloned().zip([1.0, 0.5, 0.25]).collect::<Vec<_>>());
+        assert_eq!(color.overrides, BTreeMap::new());
+        assert_eq!((color.r, color.g, color.b), (1.0, 0.5, 0.25));
     }
 
     #[test]

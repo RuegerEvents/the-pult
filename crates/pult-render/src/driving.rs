@@ -3,8 +3,8 @@
 //! The console keeps *what is driving* a parameter — a fade anchored in time, an
 //! effect anchored in time, the programmer over the top, the home value underneath —
 //! and nobody keeps the answer. This is the function that turns the first into the
-//! second, and it is the whole of the priority rule: the programmer wins, then an
-//! effect, then a fade, then where the parameter rests.
+//! second, and it is the whole of the priority rule: the programmer wins, then a
+//! recorded track, then an effect, then a fade, then where the parameter rests.
 //!
 //! The order matters less than it looks, because the station only ever publishes the
 //! winner of the two middle layers: a fade under an effect is not listed at all. What
@@ -14,21 +14,31 @@
 //! A fade that has arrived is deliberately still a fade. It is the only record of
 //! where the parameter got to — nothing stores the number any more — and evaluating a
 //! finished fade is exactly the constant it landed on.
+//!
+//! A **track** sits between the programmer and the effect, which is the one place it
+//! can go: a recording is somebody else's console asserting a value, so it has to
+//! beat the playback it was recorded over and lose to the operator standing at this
+//! desk. It is also the only layer that can be present and say nothing — before its
+//! first change point it has captured nothing, and what is under it shows through.
 
 use crate::effect::{fade_value_at, effect_value_at, RunningEffect, RunningFade};
+use crate::track::TrackAt;
 use crate::value::ParameterValue;
 
 /// The layers acting on one parameter, highest priority first.
 ///
-/// Every field is optional and all four may be absent, which is a parameter nothing
-/// has ever driven and whose type declares no default — the one case that has no
-/// value at all.
+/// Every field is optional and all of them may be absent, which is a parameter
+/// nothing has ever driven and whose type declares no default — the one case that has
+/// no value at all.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Driving<'a> {
     /// A plain value the programmer is holding. A programmer *effect* is not here:
     /// the station resolves it against its speed master and publishes it as the
     /// running effect below, which is what keeps rate-following out of this crate.
     pub programmer: Option<&'a ParameterValue>,
+    /// A playing recording, and where its playhead is. Present only while a timeline
+    /// carrying it is running: a stopped track is not a layer, it is a file.
+    pub track: Option<TrackAt<'a>>,
     pub effect: Option<&'a RunningEffect>,
     pub fade: Option<&'a RunningFade>,
     pub home: Option<&'a ParameterValue>,
@@ -38,15 +48,19 @@ impl<'a> Driving<'a> {
     /// True when some layer is asserting something, home or not.
     pub fn is_empty(&self) -> bool {
         self.programmer.is_none()
+            && self.track.is_none()
             && self.effect.is_none()
             && self.fade.is_none()
             && self.home.is_none()
     }
 
-    /// True when playback or the programmer is asserting something — that is, when
-    /// this parameter is being driven rather than merely resting.
+    /// True when playback, a recording or the programmer is asserting something —
+    /// that is, when this parameter is being driven rather than merely resting.
     pub fn is_driven(&self) -> bool {
-        self.programmer.is_some() || self.effect.is_some() || self.fade.is_some()
+        self.programmer.is_some()
+            || self.track.is_some()
+            || self.effect.is_some()
+            || self.fade.is_some()
     }
 }
 
@@ -57,6 +71,11 @@ impl<'a> Driving<'a> {
 pub fn value_at(driving: &Driving<'_>, now_ms: u64) -> Option<ParameterValue> {
     if let Some(held) = driving.programmer {
         return Some(held.clone());
+    }
+    // A recording that has not reached its first change point is a layer that is
+    // present and asserting nothing, so this falls through rather than returning.
+    if let Some(recorded) = driving.track.and_then(|track| track.value_at(now_ms)) {
+        return Some(recorded.clone());
     }
     if let Some(effect) = driving.effect {
         return Some(effect_value_at(effect, now_ms));
@@ -77,6 +96,13 @@ pub fn settles_at(driving: &Driving<'_>) -> Option<u64> {
     if driving.programmer.is_some() {
         return Some(0);
     }
+    // A playing recording is an effect as far as a frame rate is concerned: the next
+    // change point can be anywhere, so there is no moment after which nothing more
+    // will happen. Which is also why a stopped timeline hands over no track at all —
+    // otherwise a settled show would never drop to its keep-alive again.
+    if driving.track.is_some() {
+        return None;
+    }
     if driving.effect.is_some() {
         return None;
     }
@@ -90,6 +116,7 @@ pub fn settles_at(driving: &Driving<'_>) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::effect::{Curve, Direction, Easing, EffectSource, Shape};
+    use crate::track::{TrackAt, TrackPoint, Transport};
     use uuid::Uuid;
 
     fn a_fade(from: f32, to: f32, t0: u64, duration_ms: u32) -> RunningFade {
@@ -167,5 +194,65 @@ mod tests {
         assert_eq!(settles_at(&Driving { fade: Some(&fade), ..Default::default() }), Some(1_400));
         assert_eq!(settles_at(&Driving { effect: Some(&effect), ..Default::default() }), None);
         assert_eq!(settles_at(&Driving::default()), Some(0));
+    }
+
+    // ── A recording as a layer ────────────────────────────────────────────────
+
+    fn a_track(points: &[(u32, f32)], transport: Transport) -> (Vec<TrackPoint>, Transport) {
+        (
+            points
+                .iter()
+                .map(|(ms, v)| TrackPoint { ms: *ms, value: ParameterValue::Float(*v) })
+                .collect(),
+            transport,
+        )
+    }
+
+    fn rolling(at: u64) -> Transport {
+        Transport { anchor_ms: at, position_at_anchor_ms: 0, rate: 1.0 }
+    }
+
+    #[test]
+    fn a_track_beats_a_fade_and_the_programmer_beats_it() {
+        let (points, transport) = a_track(&[(0, 0.9)], rolling(1_000));
+        let fade = a_fade(0.0, 0.1, 0, 10);
+        let held = ParameterValue::Float(0.2);
+
+        let over_fade = Driving {
+            track: Some(TrackAt { points: &points, transport }),
+            fade: Some(&fade),
+            ..Default::default()
+        };
+        assert_eq!(value_at(&over_fade, 1_500), Some(ParameterValue::Float(0.9)));
+
+        let over_everything = Driving { programmer: Some(&held), ..over_fade };
+        assert_eq!(value_at(&over_everything, 1_500), Some(ParameterValue::Float(0.2)));
+    }
+
+    /// The one layer that can be present and assert nothing: a recording that starts
+    /// a second in says nothing about the first second, and whatever is under it goes
+    /// on showing.
+    #[test]
+    fn before_its_first_point_a_track_lets_what_is_under_it_through() {
+        let (points, transport) = a_track(&[(1_000, 1.0)], rolling(0));
+        let home = ParameterValue::Float(0.25);
+        let driving = Driving {
+            track: Some(TrackAt { points: &points, transport }),
+            home: Some(&home),
+            ..Default::default()
+        };
+        assert_eq!(value_at(&driving, 500), Some(ParameterValue::Float(0.25)));
+        assert_eq!(value_at(&driving, 1_500), Some(ParameterValue::Float(1.0)));
+        assert!(driving.is_driven(), "it is still a layer, even where it says nothing");
+    }
+
+    /// A playing recording has no moment after which nothing more happens, so a
+    /// connector asking whether it may drop to its keep-alive is told no.
+    #[test]
+    fn a_playing_track_never_settles() {
+        let (points, transport) = a_track(&[(0, 1.0)], rolling(0));
+        let driving =
+            Driving { track: Some(TrackAt { points: &points, transport }), ..Default::default() };
+        assert_eq!(settles_at(&driving), None);
     }
 }

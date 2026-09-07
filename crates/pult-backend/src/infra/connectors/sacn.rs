@@ -98,6 +98,75 @@ fn flags_and_length(length: usize) -> [u8; 2] {
     ((0x7000 | (length as u16 & 0x0fff)) as u16).to_be_bytes()
 }
 
+/// One E1.31 data packet, read.
+///
+/// Everything a merge needs and nothing else. The **CID** is the source's identity —
+/// fixed for the life of a sender, and the field that lets two consoles on one universe
+/// be told apart when their addresses are both behind the same switch. The **priority**
+/// is what E1.31 has and Art-Net has not, and is why an sACN merge is defined rather
+/// than a guess.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReceivedE131 {
+    pub cid: [u8; 16],
+    pub priority: u8,
+    pub sequence: u8,
+    pub universe: u16,
+    /// The 512 slots, start code stripped. Short packets are padded with zero, which
+    /// is what a receiver does: a sender is allowed to send fewer slots and the rest
+    /// are not "unchanged", they are unlit.
+    pub channels: [u8; UNIVERSE_SIZE],
+}
+
+/// Read an E1.31 data packet, or answer `None` for anything else on the port.
+///
+/// Every check here is one a real network will exercise. A universe discovery packet
+/// and a synchronization packet arrive on the same port and are not data; a preview
+/// packet is a previz's rehearsal and must not reach a rig; and a *terminated* packet
+/// is a sender saying it has stopped, which reads as a source going away rather than
+/// as a frame of zeros. Refusing by returning `None` rather than by erroring, because
+/// a UDP port on a show LAN is a place where things that are not for you arrive
+/// constantly and a log line per packet would be the whole log.
+pub fn parse_e131(packet: &[u8]) -> Option<ReceivedE131> {
+    if packet.len() < 126 {
+        return None;
+    }
+    if &packet[4..16] != ACN_IDENTIFIER {
+        return None;
+    }
+    if u32::from_be_bytes(packet[18..22].try_into().ok()?) != VECTOR_ROOT_DATA {
+        return None;
+    }
+    if u32::from_be_bytes(packet[40..44].try_into().ok()?) != VECTOR_FRAMING_DATA {
+        return None;
+    }
+    let priority = packet[108];
+    let sequence = packet[111];
+    let options = packet[112];
+    // Bit 6 is preview, bit 5 is stream-terminated. Both mean "not a frame for the
+    // lamps", for different reasons.
+    if options & 0b1100_0000 != 0 {
+        return None;
+    }
+    let universe = u16::from_be_bytes([packet[113], packet[114]]);
+    if packet[117] != VECTOR_DMP_SET_PROPERTY {
+        return None;
+    }
+    // The count includes the start code, so 513 is a full universe. A sender may send
+    // fewer; one claiming more than fits is malformed and the slice is what bounds it.
+    let count = u16::from_be_bytes([packet[123], packet[124]]) as usize;
+    if count == 0 || packet[125] != 0x00 {
+        // Start code other than zero: RDM, or somebody's per-packet text. Not DMX.
+        return None;
+    }
+    let slots = (count - 1).min(UNIVERSE_SIZE).min(packet.len().saturating_sub(126));
+    let mut channels = [0u8; UNIVERSE_SIZE];
+    channels[..slots].copy_from_slice(&packet[126..126 + slots]);
+
+    let mut cid = [0u8; 16];
+    cid.copy_from_slice(&packet[22..38]);
+    Some(ReceivedE131 { cid, priority, sequence, universe, channels })
+}
+
 // ── The plugin ────────────────────────────────────────────────────────────────
 
 pub struct SacnOutput {

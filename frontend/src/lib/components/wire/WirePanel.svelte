@@ -16,6 +16,12 @@
 	 * holding a socket can say what went through it: the ask crosses the sync link
 	 * and that station's connector answers.
 	 *
+	 * **And it offers inputs beside them**, through the same `output.watch` with the
+	 * input's row id. That is deliberate on the station's side too: an input's viewers
+	 * land in the same table an output's do, so a peer's input is watched down the link
+	 * with nothing added to either protocol. The two are told apart here by which
+	 * collection the id came out of, and nowhere else.
+	 *
 	 * **What is drawn comes from the connector.** This file knows nothing about
 	 * Art-Net, sACN or OpenHaunt. A connector answers with sections in named shapes
 	 * and `views.ts` turns a shape into a component, so an output with a viewer of
@@ -24,7 +30,13 @@
 
 	import { onMount } from 'svelte';
 
-	import type { OutputConfig, OutputStatus, OutputView } from '$lib/generated/index.js';
+	import type {
+		InputConfig,
+		InputStatus,
+		OutputConfig,
+		OutputStatus,
+		OutputView
+	} from '$lib/generated/index.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { Wire, wireKey } from '$lib/wire.js';
 	import { viewFor } from './views.js';
@@ -34,6 +46,8 @@
 
 	let outputs = $state<OutputConfig[]>([]);
 	let statuses = $state<Record<string, OutputStatus>>({});
+	let inputs = $state<InputConfig[]>([]);
+	let inputStatuses = $state<Record<string, InputStatus>>({});
 	let thisStation = $state<string | null>(null);
 
 	let wire = $state(new Wire());
@@ -51,10 +65,38 @@
 	const station = (output: OutputConfig) => output.node_id ?? thisStation ?? '';
 	const keyOf = (output: OutputConfig) => wireKey(station(output), output.id);
 
-	/** Outputs worth offering: everything the show has, since a peer's can be asked for. */
-	const offered = $derived(outputs.filter((output) => output.enabled));
+	/** One line in the picker, whichever direction it goes. */
+	type Watchable = { key: string; id: string; name: string; node: string; incoming: boolean };
 
-	const selected = $derived(offered.find((output) => keyOf(output) === watching) ?? null);
+	/**
+	 * What can be looked at: every enabled output, since a peer's can be asked for, and
+	 * every enabled input that some station is listening on.
+	 *
+	 * An input that names no station is left out rather than offered and silent: nobody
+	 * holds a socket for it, so there is nothing for anybody to answer with.
+	 */
+	const offered = $derived<Watchable[]>([
+		...outputs
+			.filter((output) => output.enabled)
+			.map((output) => ({
+				key: keyOf(output),
+				id: output.id,
+				name: output.name,
+				node: station(output),
+				incoming: false
+			})),
+		...inputs
+			.filter((input) => input.enabled && input.node_id)
+			.map((input) => ({
+				key: wireKey(input.node_id as string, input.id),
+				id: input.id,
+				name: input.name,
+				node: input.node_id as string,
+				incoming: true
+			}))
+	]);
+
+	const selected = $derived(offered.find((each) => each.key === watching) ?? null);
 	const view = $derived.by((): OutputView | undefined => {
 		version;
 		return watching ? wire.view(watching) : undefined;
@@ -64,9 +106,14 @@
 	const silence = $derived.by(() => {
 		if (!selected) return null;
 		if (view) return null;
-		const elsewhere = selected.node_id && selected.node_id !== thisStation;
+		const elsewhere = selected.node !== thisStation;
 		if (Date.now() - asked_at < 2000) return 'asking…';
 		if (elsewhere) return 'That station has not answered. It may be running an older build, or gone.';
+		if (selected.incoming) {
+			return inputStatuses[selected.id]
+				? 'Nothing has arrived on this input yet.'
+				: 'This input is not listening on this station.';
+		}
 		if (!statuses[selected.id]) return 'This output is not running on this station.';
 		return 'This connector does not describe what it sends.';
 	});
@@ -103,6 +150,11 @@
 				if (first) watch(keyOf(first), null);
 			}
 		});
+		const stopInputs = data.inputs.subscribeDeep((v) => { inputs = v; });
+		const applyInputStatus = (v: unknown) => {
+			if (v && typeof v === 'object') inputStatuses = v as Record<string, InputStatus>;
+		};
+		const stopInputStatus = client.subscribe('input_status', applyInputStatus);
 
 		const applyStatus = (v: unknown) => {
 			if (v && typeof v === 'object') statuses = v as Record<string, OutputStatus>;
@@ -120,6 +172,7 @@
 
 		const fetchLocal = () => {
 			client.get(['output_status']).then(applyStatus);
+			client.get(['input_status']).then(applyInputStatus);
 			client.get(['session']).then(applySession);
 			// A reconnect is a new socket and so a new session: the station forgot
 			// what this browser was watching when the old one closed, and nothing
@@ -136,6 +189,8 @@
 		return () => {
 			letGo();
 			stopOutputs();
+			stopInputs();
+			stopInputStatus();
 			stopStatus();
 			stopSession();
 			stopTraffic();
@@ -153,11 +208,11 @@
 			onchange={(e) => watch(e.currentTarget.value || null, null)}
 		>
 			<option value="">nothing</option>
-			{#each offered as output (output.id)}
-				<option value={keyOf(output)}>
-					{output.name}
-					{#if output.node_id && output.node_id !== thisStation}
-						· {output.node_id.slice(0, 8)}…
+			{#each offered as each (each.key)}
+				<option value={each.key}>
+					{each.incoming ? '← ' : ''}{each.name}
+					{#if each.node && each.node !== thisStation}
+						· {each.node.slice(0, 8)}…
 					{/if}
 				</option>
 			{/each}
@@ -166,11 +221,11 @@
 
 	{#if offered.length === 0}
 		<p class="empty">
-			Nothing is being sent anywhere. Add an output in the Outputs panel to put the show on a
-			wire.
+			Nothing is being sent or listened to. Add an output in the I/O panel to put the show on
+			a wire, or an input to read somebody else's.
 		</p>
 	{:else if !selected}
-		<p class="empty">Pick an output to see what it is putting on the wire.</p>
+		<p class="empty">Pick a wire to see what is on it.</p>
 	{:else if silence}
 		<p class="empty">{silence}</p>
 	{:else if view}
@@ -189,7 +244,9 @@
 		{/each}
 		<p class="foot">
 			Drawn ten times a second while you are looking, and not sent again when nothing has
-			changed — so a settled rig holds still rather than going blank.
+			changed — so a settled rig holds still rather than going blank. An input shows the
+			<em>merged</em> image: highest priority present, and the highest of each slot among
+			equals.
 		</p>
 	{/if}
 </div>

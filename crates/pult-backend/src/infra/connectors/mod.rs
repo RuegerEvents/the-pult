@@ -27,6 +27,7 @@ use pult_schema::{
         },
         programmer::ProgrammerValue,
         station::FrameCost,
+        timeline::Timeline,
     },
 };
 use tokio::sync::{mpsc, watch};
@@ -35,6 +36,7 @@ use uuid::Uuid;
 
 pub mod artnet;
 pub mod dmx;
+pub mod input;
 pub mod openhaunt;
 pub mod sacn;
 pub mod viewers;
@@ -201,6 +203,11 @@ pub enum OutputCommand {
         fixtures: Vec<Fixture>,
         fixture_types: Vec<FixtureType>,
         programmer: Vec<ProgrammerValue>,
+        /// Which recordings are playing and where their playheads are. Carried with
+        /// the patch rather than pushed separately because a track is a `Driving`
+        /// layer like the rest: a connector holding a patch is holding everything
+        /// that decides what leaves this station.
+        timelines: Vec<Timeline>,
         changed: Vec<Uuid>,
     },
     /// The `outputs` collection changed. Reconcile against it.
@@ -220,11 +227,16 @@ impl OutputHandle {
         fixtures: Vec<Fixture>,
         fixture_types: Vec<FixtureType>,
         programmer: Vec<ProgrammerValue>,
+        timelines: Vec<Timeline>,
         changed: Vec<Uuid>,
     ) {
-        let _ = self
-            .0
-            .try_send(OutputCommand::Patch { fixtures, fixture_types, programmer, changed });
+        let _ = self.0.try_send(OutputCommand::Patch {
+            fixtures,
+            fixture_types,
+            programmer,
+            timelines,
+            changed,
+        });
     }
 
     /// Hand over the configured outputs. Same rule: never block the engine.
@@ -426,6 +438,11 @@ pub struct OutputManager {
     /// rather than about looking at them, and is why the manager's constructor did
     /// not change shape.
     watching: Option<Watching>,
+    /// The recordings this station has decoded, shared with the engine — which reads
+    /// the same ones to work out where a stopping track was, so the two cannot
+    /// disagree about it. `None` in every test that is about frames rather than about
+    /// timelines, which is why it is not a constructor argument.
+    tracks: Option<crate::infra::tracks::TrackCache>,
     /// The last thing the engine said was driving the rig.
     ///
     /// Held across frames, and that is the whole of what this change did here: a
@@ -455,12 +472,20 @@ impl OutputManager {
                 addressed: Vec::new(),
                 coverage: None,
                 patch: None,
+                tracks: None,
                 watching: None,
                 frame_costs,
             },
             OutputHandle(tx),
             costs_rx,
         )
+    }
+
+    /// Where a recording's bytes come from. Set after construction, the way
+    /// [`OutputManager::watchable`] is and for the same reason.
+    pub fn with_tracks(mut self, tracks: crate::infra::tracks::TrackCache) -> Self {
+        self.tracks = Some(tracks);
+        self
     }
 
     /// Let somebody look at what these connectors are putting on the wire.
@@ -535,8 +560,15 @@ impl OutputManager {
                     match cmd {
                         OutputCommand::Stop => break,
                         OutputCommand::Configure(outputs) => self.reconcile(outputs).await,
-                        OutputCommand::Patch { fixtures, fixture_types, programmer, changed } => {
-                            self.take_patch(fixtures, fixture_types, programmer, changed).await;
+                        OutputCommand::Patch {
+                            fixtures,
+                            fixture_types,
+                            programmer,
+                            timelines,
+                            changed,
+                        } => {
+                            self.take_patch(fixtures, fixture_types, programmer, timelines, changed)
+                                .await;
                         }
                     }
                 }
@@ -670,6 +702,7 @@ impl OutputManager {
         fixtures: Vec<Fixture>,
         fixture_types: Vec<FixtureType>,
         programmer: Vec<ProgrammerValue>,
+        timelines: Vec<Timeline>,
         changed: Vec<Uuid>,
     ) {
         let addressed: Vec<_> =
@@ -678,9 +711,12 @@ impl OutputManager {
             self.addressed = addressed;
             self.publish_coverage(&fixtures).await;
         }
-        self.patch = Some(Patch::new(fixtures, fixture_types, programmer));
+        let playing = playing_tracks(&self.tracks, &timelines).await;
+        self.patch =
+            Some(Patch::new(fixtures, fixture_types, programmer).playing(playing));
         self.draw(changed).await;
     }
+
 
     /// Draw the connectors whose own frame has come due.
     async fn draw_due_frames(&mut self) {
@@ -916,6 +952,37 @@ impl OutputManager {
             let _ = self.engine.set(path, Lifecycle::Local, json).await;
         }
     }
+}
+
+/// Which recordings are rolling, decoded.
+///
+/// Read when the patch arrives rather than in a frame, because a frame is forty times
+/// a second and a timeline starting is once a song. A track whose asset this station
+/// has not got is simply absent — the show goes on running with whatever is under it,
+/// which is what a peer that has not yet sent the file looks like and is a great deal
+/// better than a rig that stops.
+///
+/// A free function for the reason [`build`] is one: the manager holds boxed plugins
+/// across this await, and taking `&self` would require the whole manager to be `Sync`,
+/// which a plugin is not and does not need to be.
+async fn playing_tracks(
+    cache: &Option<crate::infra::tracks::TrackCache>,
+    timelines: &[Timeline],
+) -> Vec<(std::sync::Arc<pult_render::Track>, pult_render::Transport)> {
+    let Some(cache) = cache else { return Vec::new() };
+    let mut playing = Vec::new();
+    for timeline in timelines.iter().filter(|timeline| timeline.running) {
+        for track in timeline.tracks.iter().filter(|track| track.enabled) {
+            let Some(decoded) = cache.get(&track.asset).await else { continue };
+            // A take's own nudge moves the playhead the other way: a track that
+            // arrived 40 ms late is played 40 ms earlier.
+            let mut transport = timeline.transport();
+            transport.position_at_anchor_ms =
+                transport.position_at_anchor_ms.saturating_add_signed(-track.offset_ms as i64);
+            playing.push((decoded, transport));
+        }
+    }
+    playing
 }
 
 /// Wait for the set of viewers to change, or for ever where nothing can watch.

@@ -181,6 +181,25 @@ pub enum Datum {
     Centre,
 }
 
+/// What the beat detector found, before anybody agreed to it.
+///
+/// Kept beside `grid` rather than written into it, and that is the whole discipline:
+/// **the detector proposes and the operator confirms.** A console that silently
+/// rewrote the grid of a show somebody had already programmed against would be worse
+/// than one that could not detect anything at all — so this is drawn over the waveform,
+/// and one button turns it into segments.
+///
+/// Milliseconds rather than seconds, so it is the same unit as everything else written
+/// against a position and nothing in a panel has to convert.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Detected {
+    pub beats_ms: Vec<u32>,
+    /// The "one" of each bar. A subset of `beats_ms`: the detector snaps each downbeat
+    /// onto the nearest beat before reporting it, so a grid's bar lines always sit on
+    /// its beat lines.
+    pub downbeats_ms: Vec<u32>,
+}
+
 /// Dimensions along the bars, for the crew hanging the rig.
 ///
 /// A plan says where a light is; it does not say how far along the truss to slide it,
@@ -676,8 +695,6 @@ pub enum FollowMode {
     Manual,
     /// Auto-fire after the previous cue completes, plus a delay.
     FollowAfter { delay_ms: u32 },
-    /// Fire at a specific SMPTE timecode position.
-    Timecode { hours: u8, minutes: u8, seconds: u8, frames: u8 },
 }
 
 /// What one output connector's frames cost, over one reporting window.
@@ -781,6 +798,18 @@ pub struct GeometryRef {
     pub transform: Transform,
 }
 
+/// One stretch of the beat grid: a tempo, from a position, in a time signature.
+///
+/// Segments rather than one tempo, because a song has a rallentando in it and a show
+/// has an interval. The detector proposes these and the operator drags them; nothing
+/// here computes one.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GridSegment {
+    pub at_ms: u32,
+    pub bpm: f32,
+    pub beats_per_bar: u8,
+}
+
 /// A saved selection: a name and the question it stands for.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Group {
@@ -835,6 +864,40 @@ pub enum Ink {
     Mono,
     ByLayer,
     ByClass,
+}
+
+/// One configured input.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct InputConfig {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: InputKind,
+    /// Which station holds the socket. `None` is nobody, and stays nobody: see the
+    /// module header for why there is no leader fallback here.
+    pub node_id: Option<NodeId>,
+    /// Which interface to listen on, per station — an address on a NIC for Art-Net,
+    /// and for sACN the interface each multicast group is joined on, which is the
+    /// setting that actually decides whether the packets arrive.
+    ///
+    /// A map for the reason an output's is one: the row replicates and `en5` names a
+    /// different cable on every machine.
+    #[serde(default)]
+    pub interfaces: BTreeMap<NodeId, String>,
+    /// Wire universe → patch universe. Empty listens to nothing.
+    #[serde(default)]
+    pub universes: BTreeMap<u16, u16>,
+    pub enabled: bool,
+}
+
+/// Which protocol an input listens for.
+///
+/// No OpenHaunt: a node reports its own sensed values through its own protocol, and
+/// those are already a fixture's `sensed_values`. This enum is about somebody else's
+/// console putting a universe on a wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum InputKind {
+    Artnet,
+    Sacn,
 }
 
 /// Why an interface setting could not be turned into an address to bind.
@@ -949,6 +1012,18 @@ pub enum LineMode {
     Wireframe,
 }
 
+/// The frame rates timecode is actually generated at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LtcRate {
+    F24,
+    F25,
+    F30,
+    /// 29.97 non-drop: the frame *count* runs at 30 and the clock is slow.
+    F2997,
+    /// 29.97 drop-frame, which skips frame numbers so the clock stays honest.
+    F2997Df,
+}
+
 /// What the whole machine is doing, whoever is doing it.
 ///
 /// Distinct from the console's own figures on purpose, and never to be summed with
@@ -993,6 +1068,14 @@ pub struct MachineStats {
     /// long before it is a processing one, and a console that throttles at the top of
     /// the show has no other way of saying why.
     pub cpu_temperature_c: Option<f32>,
+}
+
+/// A named position: "chorus 2", "blackout", "the bit with the confetti".
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Marker {
+    pub id: Uuid,
+    pub at_ms: u32,
+    pub name: String,
 }
 
 /// Where a fixture is clamped on the piece it hangs off.
@@ -1089,6 +1172,13 @@ pub enum NetService {
     OpenHaunt,
     /// One configured output, by its row id.
     Output(Uuid),
+    /// One configured input, by its row id.
+    ///
+    /// Separate from `Output` rather than a shared `Row(Uuid)` because the panel
+    /// prints what a service *is*, and "the guest console's cable is not there" and
+    /// "the stage rack's cable is not there" are two different faults an operator has
+    /// to be able to tell apart.
+    Input(Uuid),
 }
 
 #[derive(
@@ -2258,6 +2348,132 @@ pub struct TextBlock {
     pub size_mm: f32,
     #[serde(default)]
     pub bold: bool,
+}
+
+/// A position, and everything written against it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Timeline {
+    pub id: Uuid,
+    pub name: String,
+    /// The audio asset this timeline runs against, where there is one.
+    ///
+    /// Played by the station [`Timeline::node_id`] names, off the audio callback's own
+    /// sample clock — see `infra/audio` — so the sound is the reference and everything
+    /// else follows the anchor it writes. A timeline with **no** audio is an ordinary
+    /// stopwatch and runs exactly as it did before any of this existed, which is what
+    /// "timecode without timecode" means and is the property that must not be lost.
+    #[serde(default)]
+    pub audio: Option<String>,
+    /// The reduced waveform of [`Timeline::audio`], as its own asset sha.
+    ///
+    /// Computed once by whichever station first held the file and written here, so
+    /// every browser in the building fetches one small asset rather than decoding
+    /// fifty megabytes. A field rather than a lookup because the alternative — deriving
+    /// the peaks asset's name from the audio's — would be a second content-addressing
+    /// scheme, and a tablet would have to ask for a sha that might not exist yet.
+    #[serde(default)]
+    pub peaks: Option<String>,
+    /// What the beat detector last found. See [`Detected`] on why this is not `grid`.
+    #[serde(default)]
+    pub detected: Option<Detected>,
+    pub source: TimelineSource,
+    #[serde(default)]
+    pub grid: Vec<GridSegment>,
+    #[serde(default)]
+    pub markers: Vec<Marker>,
+    #[serde(default)]
+    pub events: Vec<TimelineEvent>,
+    #[serde(default)]
+    pub tracks: Vec<TimelineTrack>,
+    /// A speed master this timeline drives from its grid.
+    ///
+    /// While the timeline runs, the **leader** writes that master's `bpm` and `t0` at
+    /// each grid segment it crosses — a bounded step in phase, which is the discipline
+    /// `types::speedmaster` already lives by. When the timeline stops the master keeps
+    /// its last tempo, because an operator who has been chasing a song still wants the
+    /// chases running at its tempo in the applause.
+    #[serde(default)]
+    pub speed_master: Option<Uuid>,
+    /// Which station plays the audio, `None` for the leader — the rule outputs follow.
+    ///
+    /// And which station listens for LTC, where [`TimelineSource::Ltc`] is the source:
+    /// one machine has both the speakers and the timecode input, and splitting them
+    /// would mean chasing a clock this station cannot hear.
+    #[serde(default)]
+    pub node_id: Option<NodeId>,
+    /// The transport, replicated so every station and every browser reads the same
+    /// playhead out of the same four numbers.
+    #[serde(default)]
+    pub running: bool,
+    #[serde(default)]
+    pub anchor_ms: u64,
+    #[serde(default)]
+    pub position_at_anchor_ms: u64,
+    #[serde(default)]
+    pub rate: f32,
+    /// The input a take is being recorded from, if one is armed.
+    ///
+    /// SYNCED rather than LOCAL because the station that *arms* it is usually not the
+    /// station holding the socket: an operator at the booth arms a recording from the
+    /// stage rack's input, and the rack has to hear about it.
+    #[serde(default)]
+    pub recording: Option<Uuid>,
+}
+
+/// What a timeline does to a sequence, and when.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TimelineAction {
+    GoToCue { sequence_id: Uuid, cue_id: Uuid },
+    GoNext { sequence_id: Uuid },
+    Off { sequence_id: Uuid },
+}
+
+/// A Go written against a position.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TimelineEvent {
+    pub id: Uuid,
+    pub at_ms: u32,
+    pub action: TimelineAction,
+}
+
+/// Where a timeline's position comes from.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TimelineSource {
+    /// The console's own clock, moved by the transport commands.
+    Internal,
+    /// Linear timecode arriving on an audio input.
+    ///
+    /// The frame rate is **declared, never sniffed**: 29.97 drop-frame and 30 differ
+    /// by one frame in a thousand, and a console that guessed would be right all
+    /// afternoon and wrong at the performance. What the wire carries is a frame
+    /// *count*; whether thirty of them is a second is not in the signal at all.
+    ///
+    /// `offset_frames` is signed and is subtracted from the decoded position, because
+    /// a show that starts at `01:00:00:00` is the normal case rather than the odd one:
+    /// timecode from an hour is how a reel says "this is the programme and not the
+    /// leader".
+    Ltc { fps: LtcRate, offset_frames: i64 },
+}
+
+/// One recording on a timeline.
+///
+/// `asset` is the sha of a `application/vnd.pult.track` in the content-addressed store,
+/// which is the whole of what a track is: the codec is
+/// [`pult_render::track`], so the station reading it for a wire and the browser reading
+/// it for the screen are the same parser compiled twice.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TimelineTrack {
+    pub id: Uuid,
+    pub name: String,
+    /// The asset sha.
+    pub asset: String,
+    /// Which input it was recorded from, where it was recorded here. Kept so a take
+    /// can be re-recorded from the same place without anybody remembering which cable
+    /// it came in on.
+    pub input_id: Option<Uuid>,
+    /// Nudge, in milliseconds. Signed: a take is as often early as late.
+    pub offset_ms: i32,
+    pub enabled: bool,
 }
 
 /// Where something is, what it is turned to, and how big it is.

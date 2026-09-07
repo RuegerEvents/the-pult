@@ -40,6 +40,20 @@ export type Preferences = {
 	 * is a different answer from naming a cable that is not there.
 	 */
 	network: NetworkPrefs;
+	/**
+	 * Which sound card plays a timeline's audio, and which one timecode arrives on.
+	 *
+	 * A key being absent is a value here too: it means this station has said nothing,
+	 * and the system default is used — which is a different answer from naming a device
+	 * that is not here, and the second one is refused visibly.
+	 */
+	audio: AudioPrefs;
+};
+
+/** The `[audio]` section of `preferences.toml`. */
+export type AudioPrefs = {
+	output?: string | null;
+	input?: string | null;
 };
 
 const url = () => `${backendOrigin(window.location)}/api/preferences`;
@@ -75,6 +89,8 @@ export async function writePreferences(
 			// the operator cleared has to become "said nothing" rather than keep what
 			// it had, and a field-by-field merge cannot express that.
 			| 'network'
+			// And `[audio]`, for exactly the same reason.
+			| 'audio'
 		>
 	>
 ): Promise<Preferences | null> {

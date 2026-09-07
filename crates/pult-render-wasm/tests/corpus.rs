@@ -14,6 +14,7 @@ use std::collections::HashMap;
 
 use pult_render::{
     effect::{RunningEffect, RunningFade},
+    track::{TrackAt, TrackPoint, Transport},
     value::ParameterValue,
     Driving,
 };
@@ -36,12 +37,39 @@ struct Case {
 struct DrivenBy {
     #[serde(default)]
     programmer: Option<ParameterValue>,
+    /// A recording spelled out inline, which is the only form a corpus case can take:
+    /// every other consumer loads a track once by its sha and names it per timeline.
+    /// The wasm `DrivenBy` reads the same shape, which is what makes this file the
+    /// guard for the track layer as well as for the rest.
+    #[serde(default)]
+    track: Option<TrackPlay>,
     #[serde(default)]
     effect: Option<RunningEffect>,
     #[serde(default)]
     fade: Option<RunningFade>,
     #[serde(default)]
     home: Option<ParameterValue>,
+}
+
+#[derive(Deserialize)]
+struct TrackPlay {
+    points: Vec<TrackPoint>,
+    anchor_ms: u64,
+    position_at_anchor_ms: u64,
+    rate: f32,
+}
+
+impl TrackPlay {
+    fn at(&self) -> TrackAt<'_> {
+        TrackAt {
+            points: &self.points,
+            transport: Transport {
+                anchor_ms: self.anchor_ms,
+                position_at_anchor_ms: self.position_at_anchor_ms,
+                rate: self.rate,
+            },
+        }
+    }
 }
 
 /// Close enough that a difference is a bug rather than a rounding.
@@ -86,6 +114,7 @@ fn every_case_in_the_corpus_evaluates_to_what_it_says() {
         *seen.entry(case.name.as_str()).or_default() += 1;
         let driving = Driving {
             programmer: case.driving.programmer.as_ref(),
+            track: case.driving.track.as_ref().map(TrackPlay::at),
             effect: case.driving.effect.as_ref(),
             fade: case.driving.fade.as_ref(),
             home: case.driving.home.as_ref(),

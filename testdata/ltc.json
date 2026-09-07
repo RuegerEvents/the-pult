@@ -1,0 +1,237 @@
+{
+  "note": "LTC positions and what they are on the clock. Read by crates/pult-audio's ltc tests. The drop-frame rows are the point: 29.97df skips the numbers :00 and :01 at the top of every minute except every tenth, so the frame number is not the count of frames elapsed and reading it as one drifts 108 frames an hour.",
+  "cases": [
+    {
+      "rate": "F24",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 0
+    },
+    {
+      "rate": "F24",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 12,
+      "ms": 500
+    },
+    {
+      "rate": "F24",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 1,
+      "frames": 0,
+      "ms": 1000
+    },
+    {
+      "rate": "F24",
+      "hours": 1,
+      "minutes": 23,
+      "seconds": 45,
+      "frames": 23,
+      "ms": 5025958
+    },
+    {
+      "rate": "F25",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 0
+    },
+    {
+      "rate": "F25",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 1,
+      "ms": 40
+    },
+    {
+      "rate": "F25",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 1,
+      "frames": 0,
+      "ms": 1000
+    },
+    {
+      "rate": "F25",
+      "hours": 1,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 3600000
+    },
+    {
+      "rate": "F25",
+      "hours": 23,
+      "minutes": 59,
+      "seconds": 59,
+      "frames": 24,
+      "ms": 86399960
+    },
+    {
+      "rate": "F30",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 0
+    },
+    {
+      "rate": "F30",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 15,
+      "ms": 500
+    },
+    {
+      "rate": "F30",
+      "hours": 0,
+      "minutes": 1,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 60000
+    },
+    {
+      "rate": "F30",
+      "hours": 2,
+      "minutes": 30,
+      "seconds": 15,
+      "frames": 29,
+      "ms": 9015967
+    },
+    {
+      "rate": "F2997",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 0
+    },
+    {
+      "rate": "F2997",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 1,
+      "frames": 0,
+      "ms": 1001
+    },
+    {
+      "rate": "F2997",
+      "hours": 0,
+      "minutes": 1,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 60060
+    },
+    {
+      "rate": "F2997",
+      "hours": 1,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 3603600
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 59,
+      "frames": 29,
+      "ms": 60027
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 1,
+      "seconds": 0,
+      "frames": 2,
+      "ms": 60060
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 1,
+      "seconds": 0,
+      "frames": 3,
+      "ms": 60093
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 1,
+      "seconds": 59,
+      "frames": 29,
+      "ms": 120020
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 2,
+      "seconds": 0,
+      "frames": 2,
+      "ms": 120053
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 9,
+      "seconds": 59,
+      "frames": 29,
+      "ms": 599966
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 10,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 599999
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 10,
+      "seconds": 0,
+      "frames": 1,
+      "ms": 600033
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 19,
+      "seconds": 59,
+      "frames": 29,
+      "ms": 1199965
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 20,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 1199999
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 1,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 3599996
+    },
+    {
+      "rate": "F2997Df",
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 0,
+      "frames": 0,
+      "ms": 0
+    }
+  ]
+}

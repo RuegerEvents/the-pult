@@ -41,6 +41,10 @@ type Instance = {
 	watch(keys: unknown): void;
 	evaluate(nowMs: number): Float32Array;
 	text(key: string, nowMs: number): string | undefined;
+	load_track(sha: string, bytes: Uint8Array): void;
+	play_track(sha: string, anchorMs: number, positionAtAnchorMs: number, rate: number): void;
+	stop_track(sha: string): void;
+	forget_track(sha: string): void;
 };
 
 type Wasm = {
@@ -85,6 +89,43 @@ export function setDriving(driving: Record<string, DrivenBy>): void {
 /** Replace what is driving one parameter, leaving the rest alone. */
 export function setOneDriving(key: string, drivenBy: DrivenBy | null): void {
 	instance?.set_one(key, drivenBy);
+}
+
+/**
+ * Hand over a recording's bytes, decoded once.
+ *
+ * The same bytes the station reads, through the same parser — there is no JSON form of
+ * a track anywhere, deliberately, for the reason there is no TypeScript form of the
+ * evaluator. A recording is the largest thing that has ever driven a parameter and two
+ * readers of it would disagree exactly where it is longest.
+ */
+export function loadTrack(sha: string, bytes: Uint8Array): void {
+	instance?.load_track(sha, bytes);
+}
+
+/**
+ * This recording is running, anchored here.
+ *
+ * The transport is the timeline's own row, so a page and a connector work out the same
+ * playhead from the same four numbers with nothing ticking on either side.
+ */
+export function playTrack(
+	sha: string,
+	anchorMs: number,
+	positionAtAnchorMs: number,
+	rate: number
+): void {
+	instance?.play_track(sha, anchorMs, positionAtAnchorMs, rate);
+}
+
+/** This recording is no longer running. The bytes stay loaded. */
+export function stopTrack(sha: string): void {
+	instance?.stop_track(sha);
+}
+
+/** The show no longer carries this recording at all. */
+export function forgetTrack(sha: string): void {
+	instance?.forget_track(sha);
 }
 
 /** Say which parameters are being shown, and in what order the answers come back. */

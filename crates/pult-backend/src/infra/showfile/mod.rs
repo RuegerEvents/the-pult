@@ -137,7 +137,14 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 /// 3. A show became a folder, and the assets moved out of the file into `assets/`
 ///    beside it. The `bytes` column is gone, so a generation 2 file's rows claim
 ///    assets whose bytes nothing can find.
-pub(super) const SCHEMA_GENERATION: i64 = 4;
+/// 4. A rig became something you could build: a `SceneObject` gained its catalogue
+///    piece and a `Fixture` gained a `Mount`, so a placement written before it means
+///    something else.
+/// 5. `FollowMode::Timecode` is gone, replaced by the `timelines` collection. A cue
+///    stored with it is a JSON variant nothing in this build can name, and a
+///    `follow_mode` that fails to parse is exactly the silent `None` the stamp exists
+///    to catch.
+pub(super) const SCHEMA_GENERATION: i64 = 5;
 
 /// Say plainly that a showfile is from another build, instead of panicking somewhere
 /// deep in a generated `from_columns`.

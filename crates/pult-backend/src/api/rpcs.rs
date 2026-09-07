@@ -134,6 +134,25 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     // for the reason `parameter.value` is one: none of this is anybody's to undo,
     // and a log that wrote history every time somebody looked at it would be a
     // strange thing indeed.
+    // The sound. Three calls: what this machine has, what is in a song, and whether
+    // this station has the big model. All three reach a device, a decoder or the
+    // internet, and none of them changes the show — which is exactly what an RPC is
+    // for and why none of them is an entity command.
+    LocalRpcMeta {
+        method: "audio.devices",
+        args_schema: "[]",
+        doc: "What this station can play a timeline through and listen for timecode on.",
+    },
+    LocalRpcMeta {
+        method: "timeline.detect",
+        args_schema: r#"[{"name":"timelineId","type":"string","optional":false}]"#,
+        doc: "Find the beats and downbeats in a timeline's audio; answers them and writes them to `detected`, which an operator then confirms into `grid`.",
+    },
+    LocalRpcMeta {
+        method: "timeline.model",
+        args_schema: r#"[{"name":"full","type":"boolean","optional":true}]"#,
+        doc: "Whether this station has the full-accuracy beat model, and with `full` fetch it into the config directory.",
+    },
     LocalRpcMeta {
         method: "log.tail",
         args_schema: r#"[{"name":"limit","type":"number","optional":true},{"name":"level","type":"string","optional":true}]"#,
@@ -218,6 +237,15 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: "[]",
         doc: "The shows this console can offer: where they live, which were opened recently, what is in the shows directory, and the demos it can make.",
     },
+    // Reading a wire, as an act. On the *listening* station, deliberately: a socket is
+    // one machine's, and a cross-station grab would mean shipping a universe across
+    // the link carrying the show for a button press. Refused by name instead, so the
+    // page can say which console to open.
+    LocalRpcMeta {
+        method: "input.grab",
+        args_schema: r#"[{"name":"fixtureIds","type":"array","optional":false},{"name":"inputId","type":"string","optional":true}]"#,
+        doc: "Decode what is arriving on an input for these fixtures and put it in the programmer.",
+    },
     LocalRpcMeta {
         method: "client.report",
         args_schema: r#"[{"name":"stats","type":"object","optional":false}]"#,
@@ -261,6 +289,14 @@ pub struct LocalRpcDeps {
     pub node_id: pult_schema::events::operation::NodeId,
     /// Who is watching what an output is putting on the wire.
     pub viewers: crate::infra::connectors::Viewers,
+    /// The listening side, for the one call that reads a wire. `None` where there is
+    /// no input manager behind these deps, which is what a test constructs — and what
+    /// makes `input.grab` say so rather than panic.
+    pub input: Option<crate::infra::connectors::input::InputHandle>,
+    /// The sound, for the three calls that reach a device or a model. `None` where
+    /// there is no audio manager behind these deps, which is what a test constructs —
+    /// and what makes those three say so rather than panic.
+    pub audio: Option<crate::infra::audio::AudioHandle>,
     /// Where a show act goes, and what this station has open.
     pub shows: crate::ShowsHandle,
     /// What the browsers on this station are saying about themselves.
@@ -269,6 +305,10 @@ pub struct LocalRpcDeps {
     /// a test constructs. A plugin's deps carry one and still cannot report: the call
     /// needs a `caller`, and a plugin has no browser to be.
     pub clients: Option<crate::infra::clients::ClientRegistry>,
+}
+
+fn no_audio() -> String {
+    "this station has no audio manager".to_string()
 }
 
 fn no_log() -> String {
@@ -362,6 +402,40 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                 _ => None,
             };
             what_is_it_doing(&deps.engine, fixture_id, kind).await
+        }
+        "input.grab" => {
+            let fixture_ids: Vec<uuid::Uuid> =
+                serde_json::from_value(args.get("fixtureIds").cloned().unwrap_or_default())
+                    .map_err(|e| format!("invalid fixtureIds: {e}"))?;
+            let input_id = match args.get("inputId") {
+                Some(v) if !v.is_null() => Some(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("invalid inputId: {e}"))?,
+                ),
+                _ => None,
+            };
+            grab_into_the_programmer(deps, input_id, fixture_ids).await
+        }
+        "audio.devices" => {
+            let audio = deps.audio.as_ref().ok_or_else(no_audio)?;
+            serde_json::to_value(audio.devices().await).map_err(|e| e.to_string())
+        }
+        "timeline.detect" => {
+            let audio = deps.audio.as_ref().ok_or_else(no_audio)?;
+            let timeline_id: uuid::Uuid = serde_json::from_value(args["timelineId"].clone())
+                .map_err(|e| format!("invalid timelineId: {e}"))?;
+            let found = audio.detect(timeline_id).await?;
+            serde_json::to_value(found).map_err(|e| e.to_string())
+        }
+        "timeline.model" => {
+            // A read unless `full` is true, and even then it answers at once and
+            // downloads on a task — eighty megabytes is not something to hold an RPC
+            // open for, and a browser asking again is how it watches the progress.
+            let state = match args.get("full").and_then(|v| v.as_bool()).unwrap_or(false) {
+                true => crate::infra::audio::models::fetch().await,
+                false => crate::infra::audio::models::state().await,
+            };
+            serde_json::to_value(state).map_err(|e| e.to_string())
         }
         "log.tail" => {
             let log = deps.log.as_ref().ok_or_else(no_log)?;
@@ -618,6 +692,12 @@ pub fn is_local_rpc(method: &str) -> bool {
         || method.starts_with("paperwork.")
         || method.starts_with("log.")
         || method.starts_with("output.")
+        || method.starts_with("input.")
+        || method.starts_with("audio.")
+        // Singular, and it does not collide with the `timelines` collection: an
+        // entity command is a *path* write (`["timelines", id, "play"]`) and never
+        // reaches this function, which only ever sees the name of a `Call`.
+        || method.starts_with("timeline.")
         || method.starts_with("client.")
         || method.starts_with("xchange.")
 }
@@ -890,6 +970,117 @@ async fn what_is_it_doing(
     serde_json::to_value(values).map_err(|e| e.to_string())
 }
 
+/// Read a wire and put what is on it into the programmer.
+///
+/// The act a grab is: decode now, write once, under the caller's authorship and in one
+/// gesture, so an operator's Ctrl-Z takes the whole grab back rather than one parameter
+/// of it.
+///
+/// It refuses **by name** when this station is not listening on that input, because the
+/// alternative — asking the station that is — would mean putting a universe on the link
+/// carrying the show every time somebody pressed a button. The page can read `node_id`
+/// off the row and say which console to open.
+async fn grab_into_the_programmer(
+    deps: &LocalRpcDeps,
+    input_id: Option<uuid::Uuid>,
+    fixture_ids: Vec<uuid::Uuid>,
+) -> Result<Value, String> {
+    use pult_schema::{
+        lifecycle::Lifecycle,
+        types::programmer::{programmer_entry_id, ProgrammerValue},
+    };
+
+    if fixture_ids.is_empty() {
+        return Err("nothing is selected".to_string());
+    }
+    let input = deps
+        .input
+        .as_ref()
+        .ok_or_else(|| "this station has no inputs; it was started without them".to_string())?;
+    let values = input.grab(input_id, fixture_ids).await?;
+    if values.is_empty() {
+        return Err("nothing on that input reaches those fixtures".to_string());
+    }
+
+    // The kind, not only the key: a programmer entry carries the `ParameterKind`, and
+    // the wire only ever said which key it was. The type is what knows the difference.
+    let rig = deps.engine.get(vec![PathSegment::Key("fixtures".into())]).await;
+    let fixtures: Vec<Fixture> = rig.ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    let types = deps.engine.get(vec![PathSegment::Key("fixture_types".into())]).await;
+    let types: Vec<FixtureType> =
+        types.ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    let held = deps.engine.get(vec![PathSegment::Key("programmer_values".into())]).await;
+    let held: Vec<ProgrammerValue> =
+        held.ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+
+    let user_id = asking_user(deps);
+    let gesture = uuid::Uuid::new_v4();
+    let mut written = 0usize;
+
+    for (fixture_id, key, value) in values {
+        let Some(kind) = fixtures
+            .iter()
+            .find(|fixture| fixture.id == fixture_id)
+            .and_then(|fixture| types.iter().find(|t| t.id == fixture.fixture_type_id))
+            .and_then(|fixture_type| {
+                output_parameters(fixture_type)
+                    .find(|p| parameter_key(&p.kind) == key)
+                    .map(|p| p.kind.clone())
+            })
+        else {
+            continue;
+        };
+        let Ok(entry_id) = programmer_entry_id(&fixture_id.to_string(), &key).parse::<uuid::Uuid>()
+        else {
+            continue;
+        };
+        let Ok(value) = serde_json::to_value(&value) else { continue };
+
+        // A parked value is the operator's decision and a grab is not allowed to
+        // overrule it, exactly as sending a fixture home is not.
+        if held.iter().any(|entry| entry.id == entry_id && entry.locked) {
+            continue;
+        }
+        // The id is derived from the fixture and the key, so a grab over a parameter
+        // an operator already has hold of moves that entry rather than making a
+        // second one holding the same thing.
+        let holding = held.iter().any(|entry| entry.id == entry_id);
+        let (path, body) = if holding {
+            (
+                vec![
+                    PathSegment::Key("programmer_values".into()),
+                    PathSegment::Id(entry_id),
+                    PathSegment::Key("value".into()),
+                ],
+                value,
+            )
+        } else {
+            (
+                vec![
+                    PathSegment::Key("programmer_values".into()),
+                    PathSegment::Key("__create".into()),
+                ],
+                serde_json::json!({
+                    "id": entry_id,
+                    "fixture_id": fixture_id,
+                    "parameter_kind": kind,
+                    "value": value,
+                    "locked": false,
+                }),
+            )
+        };
+        if deps
+            .engine
+            .set_as(user_id, Some(gesture), path, Lifecycle::Synced, body)
+            .await
+            .is_ok()
+        {
+            written += 1;
+        }
+    }
+    Ok(serde_json::json!({ "written": written }))
+}
+
 /// The fixtures a group picks out of the rig as it is now.
 ///
 /// Reads the rig every time and caches nothing, which is what makes a group survive
@@ -1115,6 +1306,8 @@ mod tests {
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
+            input: None,
+            audio: None,
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,
@@ -1214,6 +1407,8 @@ mod tests {
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
+            input: None,
+            audio: None,
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,

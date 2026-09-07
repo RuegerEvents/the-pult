@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 pult-schema = { path = "../pult-schema" }
 pult-render = { workspace = true }
+pult-audio = { workspace = true }
 pult-gdtf = { workspace = true }
 pult-mvr = { workspace = true }
 pult-mvr-xchange = { workspace = true }
@@ -42,6 +43,12 @@ mdns-sd = { workspace = true }
 socket2 = { workspace = true }
 tokio-tungstenite = { workspace = true }
 sysinfo = { workspace = true }
+
+# Sound: the device and the decoder. `pult-audio` is the arithmetic and has no OS in
+# it at all; these two are the OS, and they live here for the same reason
+# `infra/interop/gdtf` is here rather than in `pult-gdtf`.
+cpal = { workspace = true }
+symphonia = { workspace = true }
 reqwest = { workspace = true }
 rumqttd = { workspace = true }
 rumqttc = { workspace = true }

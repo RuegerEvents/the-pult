@@ -251,6 +251,13 @@ pub struct Playback {
     motion: HashMap<Uuid, (HashMap<String, RunningEffect>, HashMap<String, RunningFade>)>,
     /// Sequences with a follow cue due, and the console millisecond it is due at.
     follows: HashMap<Uuid, u64>,
+    /// Keys a stopping recording was holding, and what it was holding them at.
+    ///
+    /// Queued rather than acted on where it is noticed, because letting go of a key is
+    /// a change to what playback is asserting and this object is the only thing
+    /// allowed to make one. Drained at the top of the next pass, which the engine asks
+    /// for immediately.
+    releasing_tracks: Vec<(Key, ParameterValue)>,
 }
 
 impl Playback {
@@ -266,7 +273,16 @@ impl Playback {
 
     /// True while something is outstanding that a pass would act on.
     pub fn has_work(&self) -> bool {
-        !self.follows.is_empty()
+        !self.follows.is_empty() || !self.releasing_tracks.is_empty()
+    }
+
+    /// A recording has stopped, and these are the keys it was holding.
+    ///
+    /// The value is where the track had got to at the moment it stopped, sampled by
+    /// the caller — which has the decoded asset and this does not.
+    pub fn release_tracks(&mut self, keys: Vec<(Uuid, String, ParameterValue)>) {
+        self.releasing_tracks
+            .extend(keys.into_iter().map(|(fixture_id, key, value)| ((fixture_id, key), value)));
     }
 
     /// True when nothing is driving anything and nothing is remembered.
@@ -281,6 +297,7 @@ impl Playback {
             && self.effects.is_empty()
             && self.motion.is_empty()
             && self.follows.is_empty()
+            && self.releasing_tracks.is_empty()
     }
 
     /// What one parameter is putting out at `wall_ms`, from playback's own layers.
@@ -300,6 +317,10 @@ impl Playback {
                 Some(Held::Value(value)) => Some(value),
                 _ => None,
             },
+            // Playback works out what it is *about to publish*, and a recording is
+            // not one of its layers: a track is asserted at the connector and in the
+            // browser out of an asset this pass has never read.
+            track: None,
             effect: match &held {
                 Some(Held::Effect(effect)) => Some(effect),
                 _ => self.effects.get(at).or_else(|| fixture.live_effects.get(&at.1)),
@@ -323,10 +344,66 @@ impl Playback {
     /// what any parameter is worth.
     pub fn pass(&mut self, wall_ms: u64, view: &ShowView<'_>) -> Vec<PlaybackEffect> {
         let mut effects = Vec::new();
+        self.let_go_of_stopped_tracks(wall_ms, view);
         self.track_cue_changes(wall_ms, view, &mut effects);
         self.emit_motion(view, &mut effects);
         self.fire_due_follows(wall_ms, &mut effects);
         effects
+    }
+
+    /// Put back what a stopped recording was holding.
+    ///
+    /// A track sits above playback and below the programmer, so when one stops the
+    /// parameter has to get from where the recording left it to whatever playback
+    /// holds underneath — over the show's own `home_fade_ms`, because letting go is a
+    /// move like any other and a head that snaps reads as a fault.
+    ///
+    /// Two of these rules are the ones a sequence release already follows and one is
+    /// its own. **A parameter the programmer holds is untouched**, because it is the
+    /// operator's and the overlay puts it back itself. **An effect underneath is left
+    /// alone**: an effect beats a fade, so a release fade under one would be invisible,
+    /// and the effect showing through at once is what actually happens.
+    ///
+    /// And the destination is the stack beneath **evaluated at the moment the release
+    /// lands**, not at the moment it starts. A cue's fade still in flight underneath
+    /// cannot be joined — the model has one fade per key — so this is the honest
+    /// approximation: the parameter arrives where playback would have had it, rather
+    /// than arriving where playback *was* and then being wrong for the rest of the
+    /// cue.
+    fn let_go_of_stopped_tracks(&mut self, wall_ms: u64, view: &ShowView<'_>) {
+        let releasing = std::mem::take(&mut self.releasing_tracks);
+        for (at, from) in releasing {
+            if held_by_the_programmer(view, &at).is_some() {
+                continue;
+            }
+            if self.effects.contains_key(&at)
+                || view
+                    .fixture(at.0)
+                    .is_some_and(|fixture| fixture.live_effects.contains_key(&at.1))
+            {
+                continue;
+            }
+            let lands_at = wall_ms.saturating_add(view.home_fade_ms as u64);
+            let Some(to) = self.value_at(view, &at, lands_at) else { continue };
+            if to == from {
+                continue;
+            }
+            let (fixture_id, key) = at;
+            self.fades.retain(|f| !(f.fixture_id == fixture_id && f.key == key));
+            let easing = view.fade_curves.for_key(&key);
+            self.fades.push(Fade {
+                fixture_id,
+                key,
+                running: RunningFade {
+                    from,
+                    to,
+                    t0: wall_ms,
+                    duration_ms: view.home_fade_ms,
+                    easing,
+                    cue_id: Uuid::nil(),
+                },
+            });
+        }
     }
 
     /// Drive one parameter to a value outright, with nothing to fade from.
@@ -480,7 +557,6 @@ impl Playback {
             // "After the previous cue completes, plus a delay": the fade has to land first.
             self.follows.insert(sequence.id, latest_end + delay_ms as u64);
         }
-        // Timecode follows need a timecode source, which does not exist yet.
     }
 
     /// Send one parameter home over `duration_ms`, from wherever it is now.

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/pult-macros",
+    "crates/pult-audio",
     "crates/pult-render",
     "crates/pult-render-wasm",
     "crates/pult-schema",
@@ -20,6 +21,7 @@ members = [
 # `wasm-bindgen` into a native build of the console.
 default-members = [
     "crates/pult-macros",
+    "crates/pult-audio",
     "crates/pult-render",
     # In, despite being the browser's half: its tests are the corpus that holds the
     # two compilations of the evaluator to each other, and a guard outside the default
@@ -67,6 +69,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # TypeScript gen
 pult-render = { path = "crates/pult-render" }
+pult-audio = { path = "crates/pult-audio" }
 pult-gdtf = { path = "crates/pult-gdtf" }
 pult-mvr = { path = "crates/pult-mvr" }
 pult-mvr-xchange = { path = "crates/pult-mvr-xchange" }
@@ -163,3 +166,40 @@ mime_guess = "2"
 # Naming HTTP request parts in the plugin runtime's outbound gate (already in
 # the tree via axum and reqwest)
 http = "1"
+
+# Sound. The device is `cpal` (Apache-2.0) and the decoder `symphonia` (MPL-2.0,
+# file-level copyleft, so linking it costs nothing this repository has to answer for
+# — the note is in NOTICE). `symphonia`'s codecs are named rather than taken
+# wholesale: a console plays a stem or a click track, and every extra decoder is
+# another parser reading a file somebody emailed.
+cpal = "0.18"
+symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4", "flac", "wav", "pcm"] }
+
+# The beat detector's runtime: pure Rust, no C, no ONNX Runtime to install.
+# `fft` supplies the STFT operator the mel front end is built out of.
+rten = { version = "0.26", features = ["fft"] }
+rten-tensor = "0.26"
+
+# The inference runtime, optimised even in a debug build.
+#
+# Measured before it was written here: the beat detector's own test takes **63 seconds**
+# unoptimised and **0.44 seconds** at `--release`, on the same machine and the same
+# thirty seconds of audio. That is not a slow debug build, it is a matrix kernel whose
+# whole point is SIMD running as scalar Rust — and it is the difference between "detect
+# the beats" being a button somebody presses while developing and being one they learn
+# not to. Nothing else in the workspace is opted in: this is the one dependency whose
+# unoptimised form is unusable rather than merely slower.
+[profile.dev.package.rten]
+opt-level = 3
+[profile.dev.package.rten-gemm]
+opt-level = 3
+[profile.dev.package.rten-tensor]
+opt-level = 3
+[profile.dev.package.rten-vecmath]
+opt-level = 3
+[profile.dev.package.rten-simd]
+opt-level = 3
+[profile.dev.package.rten-base]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3

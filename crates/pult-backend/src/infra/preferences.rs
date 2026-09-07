@@ -203,6 +203,16 @@ pub struct Preferences {
     /// unchanged and behaves identically.
     #[serde(default)]
     pub network: crate::infra::net::NetworkPrefs,
+    /// Which sound card plays a timeline's audio, and which one timecode arrives on.
+    ///
+    /// A station preference and never show data, for the reason `[network]` is one:
+    /// which device is in which machine is a fact about the machine, and the same show
+    /// opened on the desk and on the stage rack must not fight over it. Empty is the
+    /// system default, which is what a console whose operator has never opened the
+    /// Settings panel gets — and a device this machine has not got is refused visibly
+    /// rather than falling back, the rule `Network::bind` follows for a cable.
+    #[serde(default)]
+    pub audio: crate::infra::audio::AudioPrefs,
     /// The sACN priority slot this station last held.
     ///
     /// Remembered rather than recomputed so that a console rebooting mid-show comes
@@ -291,6 +301,7 @@ impl Default for Preferences {
             mvr_xchange_keep: default_xchange_keep(),
             mvr_xchange_max_file_mb: default_xchange_max_file_mb(),
             network: crate::infra::net::NetworkPrefs::default(),
+            audio: crate::infra::audio::AudioPrefs::default(),
             sacn_slot: None,
         }
     }

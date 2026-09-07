@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::model::playback::parameter_key;
 
+pub mod decode;
 pub mod encode;
 
 /// A DMX universe: 512 channels, indexed from 0 for channel 1.
@@ -81,6 +82,21 @@ pub struct Patch {
     /// Not derivable from `placed`: a fixture whose parameters are all inputs, or all
     /// on ports, places no channel and still occupies its universe.
     universes: Vec<u16>,
+    /// The recordings that are playing, and where each playhead is.
+    ///
+    /// Owned as `Arc`s because a patch is rebuilt whenever the show changes and a
+    /// recording is not the show: a cue taken in the middle of a song must not cost a
+    /// re-decode of the song.
+    tracks: Vec<(std::sync::Arc<pult_render::Track>, pult_render::Transport)>,
+    /// Where each driven parameter is in `tracks`, so a frame does not scan every key
+    /// of every playing recording once per fixture.
+    ///
+    /// Nested by fixture so the inner lookup takes a `&str` and a frame allocates no
+    /// key. A parameter in two playing recordings resolves to the one with the latest
+    /// anchor — the take that was started most recently — which is the same rule the
+    /// browser's evaluator follows and for the same reason: layering two takes is a
+    /// merge nothing has decided.
+    track_index: HashMap<Uuid, HashMap<String, (usize, usize)>>,
 }
 
 /// One parameter of one fixture, and every byte it reaches.
@@ -94,8 +110,17 @@ struct PlacedParameter {
     /// Where in `Patch::programmer` this parameter's held entry is, if anything is
     /// holding it. Resolved here so a frame does not build a key to look it up with.
     held: Option<usize>,
-    /// What to send when nothing is driving it.
+    /// What to send when nothing is driving it, and — read backwards — the *kind* of
+    /// thing a byte arriving on these channels means.
     default: ParameterValue,
+    /// Every emitter of this parameter, in the order the type lists them.
+    ///
+    /// On the parameter rather than only on the channels, because *decoding* a colour
+    /// is a question about the whole parameter: `unmix` is handed one level per
+    /// emitter at once and picks the primaries out of that list, so it has to see the
+    /// list the mixer saw and in the same order. Empty for everything that is not a
+    /// colour.
+    emitters: Vec<EmitterSpec>,
     channels: Vec<PlacedChannel>,
 }
 
@@ -134,10 +159,47 @@ impl Patch {
             settles_at: Some(0),
             placed: Vec::new(),
             universes: Vec::new(),
+            tracks: Vec::new(),
+            track_index: HashMap::new(),
         };
         patch.settles_at = patch.work_out_when_it_settles();
         (patch.placed, patch.universes) = patch.place_channels();
         patch
+    }
+
+    /// The recordings a running timeline is playing.
+    ///
+    /// Taken after construction the way a connector's universe filter is, because the
+    /// two questions are separate: what the show is driving comes from the engine's
+    /// pass, and which takes are rolling comes from the `timelines` collection and a
+    /// cache of decoded assets.
+    pub fn playing(
+        mut self,
+        tracks: Vec<(std::sync::Arc<pult_render::Track>, pult_render::Transport)>,
+    ) -> Self {
+        let mut index: HashMap<Uuid, HashMap<String, (usize, usize)>> = HashMap::new();
+        for (at, (track, transport)) in tracks.iter().enumerate() {
+            for (key_at, key) in track.keys.iter().enumerate() {
+                let per_fixture = index.entry(key.fixture_id).or_default();
+                let beats = match per_fixture.get(&key.key) {
+                    Some((other, _)) => transport.anchor_ms >= tracks[*other].1.anchor_ms,
+                    None => true,
+                };
+                if beats {
+                    per_fixture.insert(key.key.clone(), (at, key_at));
+                }
+            }
+        }
+        self.tracks = tracks;
+        self.track_index = index;
+        self
+    }
+
+    /// The recording asserting this parameter, if one is.
+    fn track_at(&self, fixture_id: Uuid, key: &str) -> Option<pult_render::TrackAt<'_>> {
+        let (track, key_at) = *self.track_index.get(&fixture_id)?.get(key)?;
+        let (track, transport) = &self.tracks[track];
+        Some(pult_render::TrackAt { points: &track.keys[key_at].points, transport: *transport })
     }
 
     /// Work out where every parameter of every DMX fixture lands.
@@ -228,6 +290,7 @@ impl Patch {
                             .get(&(fixture.id, layout.parameter_key.clone()))
                             .copied(),
                         default: (*default).clone(),
+                        emitters: emitters.iter().map(encode::spec_of).collect(),
                         channels: vec![channel],
                     }),
                 }
@@ -247,7 +310,10 @@ impl Patch {
             .held
             .get(&(fixture.id, key.to_string()))
             .and_then(|at| self.programmer.get(*at));
-        driving(fixture, self.fixture_type(fixture), held, key)
+        pult_render::Driving {
+            track: self.track_at(fixture.id, key),
+            ..driving(fixture, self.fixture_type(fixture), held, key)
+        }
     }
 
     /// What one parameter is putting out at `now_ms`.
@@ -255,8 +321,82 @@ impl Patch {
         pult_render::value_at(&self.driving(fixture, key), now_ms)
     }
 
+    /// Read a set of received universes back into parameter values.
+    ///
+    /// The whole of what makes a grab and a recording *values* rather than bytes: an
+    /// image arriving from somebody else's console goes through this patch's own modes
+    /// on the way in, so what lands in the programmer or in a track is
+    /// `(fixture, key, value)` — the same shape a cue capture has, and the reason a
+    /// recording made from a guest console can be played back onto a rig that has
+    /// since been repatched.
+    ///
+    /// Only the universes actually handed over are read. A fixture with two breaks,
+    /// one of them in a universe this input does not carry, is decoded from the half
+    /// that arrived rather than being skipped — which for a head whose dimmer is on
+    /// another break is the difference between a grab that works and one that silently
+    /// does nothing.
+    pub fn decode(
+        &self,
+        images: &HashMap<u16, [u8; UNIVERSE_SIZE]>,
+    ) -> Vec<(Uuid, String, ParameterValue)> {
+        let mut out = Vec::new();
+        for parameter in &self.placed {
+            let fixture = &self.fixtures[parameter.fixture];
+            let value = match parameter.default {
+                // Every emitter channel at once — see `decode`'s module header. An
+                // emitter the mode places no channel for is left out rather than read
+                // as zero: nothing on the wire said anything about it, and a level of
+                // zero would be pinned as an override and turn that die off.
+                ParameterValue::Color { .. } => {
+                    let levels: Vec<(pult_render::color::EmitterSpec, f32)> = parameter
+                        .emitters
+                        .iter()
+                        .filter_map(|emitter| {
+                            let channel = parameter.channels.iter().find(|channel| {
+                                channel.emitter.as_ref().is_some_and(|e| e.name == emitter.name)
+                            })?;
+                            let image = images.get(&channel.universe)?;
+                            Some((
+                                emitter.clone(),
+                                decode::level_of(image, channel.address, &channel.layout),
+                            ))
+                        })
+                        .collect();
+                    if levels.is_empty() {
+                        continue;
+                    }
+                    decode::color_from(&levels)
+                }
+                _ => {
+                    let Some((channel, image)) = parameter
+                        .channels
+                        .iter()
+                        .find_map(|channel| Some((channel, images.get(&channel.universe)?)))
+                    else {
+                        continue;
+                    };
+                    let raw = decode::read_bytes(image, channel.address, &channel.layout.offsets);
+                    let Some(value) = decode::value_for(&channel.layout, raw, &parameter.default)
+                    else {
+                        continue;
+                    };
+                    value
+                }
+            };
+            out.push((fixture.id, parameter.key.clone(), value));
+        }
+        out
+    }
+
     /// True while anything in the patch is still moving at `now_ms`.
+    ///
+    /// A playing recording always counts: its next change point can be anywhere, so
+    /// there is no moment after which nothing more happens and a connector must not
+    /// drop to its keep-alive while a take is rolling.
     pub fn is_moving(&self, now_ms: u64) -> bool {
+        if !self.tracks.is_empty() {
+            return true;
+        }
         match self.settles_at {
             None => true,
             Some(at) => now_ms < at,
@@ -330,12 +470,15 @@ pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Univer
         let fixture = &patch.fixtures[parameter.fixture];
         // Once, however many bytes it comes to: an RGBW head's colour is one
         // evaluation and four writes, not four of each.
-        let driving = driving(
-            fixture,
-            patch.fixture_type(fixture),
-            parameter.held.and_then(|at| patch.programmer.get(at)),
-            &parameter.key,
-        );
+        let driving = pult_render::Driving {
+            track: patch.track_at(fixture.id, &parameter.key),
+            ..driving(
+                fixture,
+                patch.fixture_type(fixture),
+                parameter.held.and_then(|at| patch.programmer.get(at)),
+                &parameter.key,
+            )
+        };
         let value = pult_render::value_at(&driving, now_ms);
         let value = value.as_ref().unwrap_or(&parameter.default);
 

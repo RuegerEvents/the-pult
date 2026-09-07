@@ -12,6 +12,21 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Added
 
+- **A song the console can hear.** A timeline can now run against an audio file: one
+  station plays it — the one its `node_id` names, or the leader — and the *audio
+  callback's own sample clock* is the reference, so when the sound and the show's
+  anchor differ by more than 20 ms the station rewrites the anchor and every other
+  station and browser follows the loudspeakers. The timeline panel draws the waveform
+  from a reduction the station computed once, with the beat grid, the markers and the
+  events over it, all draggable. **Detect beats** runs Beat This! (CPJKU, MIT) through
+  the pure-Rust `rten`, proposes beats and downbeats over the waveform, and writes a
+  grid only when somebody accepts it; a running timeline drives a speed master's tempo
+  from that grid. **LTC** arriving on an audio input chases the show — the frame rate
+  declared and never sniffed, drift under 20 ms taken up by resampling within ±2% and
+  more by a locate — and losing lock stops nothing. Which sound card plays and which
+  one listens is `[audio]` in `preferences.toml`, set from the Settings panel; a device
+  this machine has not got is refused visibly rather than quietly replaced.
+
 - **Which cable each service goes out on.** A console with a house LAN beside an
   isolated lighting network can now say which one the page, session discovery,
   MVR-xchange, OpenHaunt and each output use — by interface name or by address, in a
@@ -528,3 +543,18 @@ rig.
 - **One artifact per product.** The frontend is built into the server binary, so
   a station serves its own console — and any tablet on the network gets the same
   one.
+
+## Third-party notices
+
+Everything this console links is permissively licensed except one, and it is worth
+naming here rather than leaving somebody to find it in a lockfile.
+
+**`symphonia`** — the audio decoder — is **MPL-2.0**, which is file-level copyleft: it
+obliges anyone distributing a modified *symphonia source file* to publish that file, and
+places no condition on the program that links it. This repository does not modify it.
+
+**Beat This!** — the beat detector's inference path and its model weights — is MIT,
+© Institute of Computational Perception, JKU Linz, by way of the MIT-licensed
+`beat-this-rs`. The vendored code carries its attribution in
+`crates/pult-audio/src/beats.rs` and the licence sits beside the models in
+`crates/pult-audio/models/`.

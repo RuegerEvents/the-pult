@@ -60,6 +60,20 @@ pub const GDTF_MIME: &str = "application/vnd.gdtf+zip";
 pub const MVR_MIME: &str = "application/vnd.mvr-scene+zip";
 
 /// A mesh, as the two formats an MVR carries them in.
+/// A recording: change points against a position, in `pult_render::track`'s format.
+///
+/// Content-addressed like everything else here, which is what makes a take immutable:
+/// a track is what came down a wire between two moments and cannot be edited into
+/// something else without becoming a different asset.
+pub const TRACK_MIME: &str = "application/vnd.pult.track";
+
+/// A reduced waveform, in `pult_audio::peaks`'s format.
+///
+/// An asset rather than something derived on demand, and content-addressed like
+/// everything else here — which is what lets a browser cache it for ever and lets a
+/// tablet fetch one small file instead of decoding fifty megabytes it would then throw
+/// away. Written by the station that plays the audio; see `infra/audio`.
+pub const PEAKS_MIME: &str = "application/vnd.pult.peaks";
 pub const GLB_MIME: &str = "model/gltf-binary";
 pub const TDS_MIME: &str = "model/3ds";
 
@@ -78,6 +92,10 @@ pub fn mime_for_name(name: &str) -> Option<&'static str> {
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gdtf" => GDTF_MIME,
+        "wav" | "wave" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "m4a" | "mp4" | "aac" => "audio/mp4",
         _ => return None,
     })
 }
@@ -113,6 +131,24 @@ pub const ACCEPTED: &[(&str, usize)] = &[
     // anything an exporter produces on purpose.
     (GLB_MIME, 128 * 1024 * 1024),
     (TDS_MIME, 128 * 1024 * 1024),
+    // 64 MB. A change point is about twenty bytes and a recording only writes one when
+    // a value actually moves, so a two-hour take of a rig where everything is chasing
+    // is comfortably inside this — and a file larger than it is a recorder that has
+    // stopped deduplicating rather than a long show.
+    (TRACK_MIME, 64 * 1024 * 1024),
+    // 256 MB each. A show's audio is stems and click tracks rather than a music
+    // library, and 256 MB is about four hours of 16-bit stereo wav — well past
+    // anything anybody carries into a venue as one file, and the same ceiling a GDTF
+    // gets. The four kinds are the four things a show actually arrives as: wav and
+    // flac out of an editing session, mp3 and m4a out of everywhere else.
+    ("audio/wav", 256 * 1024 * 1024),
+    ("audio/mpeg", 256 * 1024 * 1024),
+    ("audio/flac", 256 * 1024 * 1024),
+    ("audio/mp4", 256 * 1024 * 1024),
+    // 8 MB. A reduced waveform is four bytes per bin at a hundred bins a second, so
+    // this is nine hours of audio — and a file bigger than it is a bug in the reducer
+    // rather than a long show.
+    (PEAKS_MIME, 8 * 1024 * 1024),
 ];
 
 /// The largest anything may be, which is what the HTTP body limit has to be set to.

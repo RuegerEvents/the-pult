@@ -10,7 +10,9 @@ pub mod station;
 pub mod client;
 pub mod devices;
 pub mod openhaunt;
+pub mod input;
 pub mod output;
+pub mod timeline;
 pub mod flow;
 pub mod stage;
 pub mod programmer;
@@ -55,6 +57,13 @@ pub use openhaunt::{EffectCapability, PortEffectCapability};
 pub use output::{
     contentions, OutputConfig, OutputConfigCreate, OutputConfigPatch, OutputContention,
     OutputCoverage, OutputGap, OutputKind, OutputStatus, OutputStatuses,
+};
+pub use input::{
+    InputConfig, InputConfigCreate, InputConfigPatch, InputKind, InputStatus, InputStatuses,
+};
+pub use timeline::{
+    GridSegment, LtcRate, Marker, Timeline, TimelineAction, TimelineCreate, TimelineEvent,
+    TimelinePatch, TimelineSource, TimelineTrack,
 };
 pub use station::{FrameCost, MachineStats, PeerLink, PeerLinks, Station, StationCreate, StationPatch};
 pub use network::{

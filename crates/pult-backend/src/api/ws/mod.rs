@@ -406,6 +406,8 @@ async fn handle_client_message(
                     log_watchers: state.log_watchers.clone(),
                     node_id: state.node_id,
                     viewers: state.viewers.clone(),
+                    input: state.input.clone(),
+                    audio: state.audio.clone(),
                     sync: Some(state.sync.clone()),
                     // Which browser is asking, so a watch can end when it does.
                     caller: Some(session_id),

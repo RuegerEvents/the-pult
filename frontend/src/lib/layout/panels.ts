@@ -43,6 +43,7 @@ import ObjectPanel from '$lib/components/stage/ObjectPanel.svelte';
 import PiecesPanel from '$lib/components/stage/PiecesPanel.svelte';
 import ToolsPanel from '$lib/components/stage/ToolsPanel.svelte';
 import PaperworkPanel from '$lib/components/paperwork/PaperworkPanel.svelte';
+import TimelinePanel from '$lib/components/timeline/TimelinePanel.svelte';
 
 export type PanelId = keyof typeof PANELS;
 
@@ -94,7 +95,13 @@ export const PANELS = {
 	object: { title: 'Object', component: ObjectPanel, fills: false, editable: true },
 	patch: { title: 'Patch', component: PatchPanel, fills: false, editable: true },
 	flows: { title: 'Flows', component: FlowEditor, fills: true, editable: true },
-	outputs: { title: 'Outputs', component: OutputsPanel, fills: false },
+	// Both directions in one panel: an input is an output read backwards and has the
+	// same fields, so learning a second vocabulary for the same cable would be the
+	// only thing separating them bought.
+	outputs: { title: 'I/O', component: OutputsPanel, fills: false },
+	// A position, and what is written against it: events that Go cues, markers, and
+	// the takes recorded off an input.
+	timeline: { title: 'Timeline', component: TimelinePanel, fills: false },
 	// Where an output is configured is the panel above; this is what it is actually
 	// putting on the wire. Asked for while somebody is looking rather than published,
 	// so a console with it shut costs the station nothing.

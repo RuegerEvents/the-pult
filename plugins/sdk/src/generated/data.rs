@@ -53,6 +53,44 @@ pub struct SequenceOffArgs {
     pub at: Option<f64>,
 }
 
+/// Arguments for `timelines.locate`.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineLocateArgs {
+    pub position_ms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<f64>,
+}
+
+/// Arguments for `timelines.play`.
+///
+/// Every field is optional, so `&Default::default()` is a whole call.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelinePlayArgs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_ms: Option<f64>,
+}
+
+/// Arguments for `timelines.record`.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineRecordArgs {
+    pub input_id: serde_json::Value,
+}
+
+/// Arguments for `timelines.stop`.
+///
+/// Every field is optional, so `&Default::default()` is a whole call.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineStopArgs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<f64>,
+}
+
 // ── cues ────────────────────────────────────────────────────────────────
 
 /// A single lighting state snapshot with timing information.
@@ -1311,6 +1349,164 @@ impl GroupEntity {
     /// PERSISTED.
     pub fn query(&self) -> Field<SelectionQuery> {
         self.at.field("query")
+    }
+}
+
+// ── inputs ──────────────────────────────────────────────────────────────
+
+/// One configured input.
+///
+/// The `inputs` collection.
+pub fn inputs() -> InputConfigCollection {
+    InputConfigCollection { at: Collection::at("inputs") }
+}
+
+/// The `inputs` collection, reached by [`inputs()`].
+pub struct InputConfigCollection {
+    at: Collection,
+}
+
+impl InputConfigCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<InputConfig>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> InputConfigEntity {
+        InputConfigEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> InputConfigEntity {
+        InputConfigEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &InputConfig) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `inputs` row, reached by [`InputConfigCollection::by_id`] or
+/// [`InputConfigCollection::nth`].
+pub struct InputConfigEntity {
+    at: Entity,
+}
+
+impl InputConfigEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<InputConfig, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &InputConfig) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// PERSISTED.
+    pub fn kind(&self) -> Field<InputKind> {
+        self.at.field("kind")
+    }
+
+    /// Which station holds the socket. `None` is nobody, and stays nobody: see the
+    /// module header for why there is no leader fallback here.
+    ///
+    /// PERSISTED.
+    pub fn node_id(&self) -> Field<Option<NodeId>> {
+        self.at.field("node_id")
+    }
+
+    /// Which interface to listen on, per station — an address on a NIC for Art-Net,
+    /// and for sACN the interface each multicast group is joined on, which is the
+    /// setting that actually decides whether the packets arrive.
+    ///
+    /// A map for the reason an output's is one: the row replicates and `en5` names a
+    /// different cable on every machine.
+    ///
+    /// PERSISTED.
+    pub fn interfaces(&self) -> Field<BTreeMap<NodeId, String>> {
+        self.at.field("interfaces")
+    }
+
+    /// Wire universe → patch universe. Empty listens to nothing.
+    ///
+    /// PERSISTED.
+    pub fn universes(&self) -> Field<BTreeMap<u16, u16>> {
+        self.at.field("universes")
+    }
+
+    /// PERSISTED.
+    pub fn enabled(&self) -> Field<bool> {
+        self.at.field("enabled")
     }
 }
 
@@ -4174,6 +4370,291 @@ impl SymbolEntity {
     /// PERSISTED.
     pub fn geometry(&self) -> Field<Vec<GeometryRef>> {
         self.at.field("geometry")
+    }
+}
+
+// ── timelines ───────────────────────────────────────────────────────────
+
+/// A position, and everything written against it.
+///
+/// The `timelines` collection.
+pub fn timelines() -> TimelineCollection {
+    TimelineCollection { at: Collection::at("timelines") }
+}
+
+/// The `timelines` collection, reached by [`timelines()`].
+pub struct TimelineCollection {
+    at: Collection,
+}
+
+impl TimelineCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<Timeline>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> TimelineEntity {
+        TimelineEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> TimelineEntity {
+        TimelineEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &Timeline) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `timelines` row, reached by [`TimelineCollection::by_id`] or
+/// [`TimelineCollection::nth`].
+pub struct TimelineEntity {
+    at: Entity,
+}
+
+impl TimelineEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<Timeline, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &Timeline) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// The audio asset this timeline runs against, where there is one.
+    ///
+    /// Played by the station [`Timeline::node_id`] names, off the audio callback's own
+    /// sample clock — see `infra/audio` — so the sound is the reference and everything
+    /// else follows the anchor it writes. A timeline with **no** audio is an ordinary
+    /// stopwatch and runs exactly as it did before any of this existed, which is what
+    /// "timecode without timecode" means and is the property that must not be lost.
+    ///
+    /// PERSISTED.
+    pub fn audio(&self) -> Field<Option<String>> {
+        self.at.field("audio")
+    }
+
+    /// The reduced waveform of [`Timeline::audio`], as its own asset sha.
+    ///
+    /// Computed once by whichever station first held the file and written here, so
+    /// every browser in the building fetches one small asset rather than decoding
+    /// fifty megabytes. A field rather than a lookup because the alternative — deriving
+    /// the peaks asset's name from the audio's — would be a second content-addressing
+    /// scheme, and a tablet would have to ask for a sha that might not exist yet.
+    ///
+    /// PERSISTED.
+    pub fn peaks(&self) -> Field<Option<String>> {
+        self.at.field("peaks")
+    }
+
+    /// What the beat detector last found. See [`Detected`] on why this is not `grid`.
+    ///
+    /// PERSISTED.
+    pub fn detected(&self) -> Field<Option<Detected>> {
+        self.at.field("detected")
+    }
+
+    /// PERSISTED.
+    pub fn source(&self) -> Field<TimelineSource> {
+        self.at.field("source")
+    }
+
+    /// PERSISTED.
+    pub fn grid(&self) -> Field<Vec<GridSegment>> {
+        self.at.field("grid")
+    }
+
+    /// PERSISTED.
+    pub fn markers(&self) -> Field<Vec<Marker>> {
+        self.at.field("markers")
+    }
+
+    /// PERSISTED.
+    pub fn events(&self) -> Field<Vec<TimelineEvent>> {
+        self.at.field("events")
+    }
+
+    /// PERSISTED.
+    pub fn tracks(&self) -> Field<Vec<TimelineTrack>> {
+        self.at.field("tracks")
+    }
+
+    /// A speed master this timeline drives from its grid.
+    ///
+    /// While the timeline runs, the **leader** writes that master's `bpm` and `t0` at
+    /// each grid segment it crosses — a bounded step in phase, which is the discipline
+    /// `types::speedmaster` already lives by. When the timeline stops the master keeps
+    /// its last tempo, because an operator who has been chasing a song still wants the
+    /// chases running at its tempo in the applause.
+    ///
+    /// PERSISTED.
+    pub fn speed_master(&self) -> Field<Option<Uuid>> {
+        self.at.field("speed_master")
+    }
+
+    /// Which station plays the audio, `None` for the leader — the rule outputs follow.
+    ///
+    /// And which station listens for LTC, where [`TimelineSource::Ltc`] is the source:
+    /// one machine has both the speakers and the timecode input, and splitting them
+    /// would mean chasing a clock this station cannot hear.
+    ///
+    /// PERSISTED.
+    pub fn node_id(&self) -> Field<Option<NodeId>> {
+        self.at.field("node_id")
+    }
+
+    /// The transport, replicated so every station and every browser reads the same
+    /// playhead out of the same four numbers.
+    ///
+    /// SYNCED.
+    pub fn running(&self) -> Field<bool> {
+        self.at.field("running")
+    }
+
+    /// SYNCED.
+    pub fn anchor_ms(&self) -> Field<u64> {
+        self.at.field("anchor_ms")
+    }
+
+    /// SYNCED.
+    pub fn position_at_anchor_ms(&self) -> Field<u64> {
+        self.at.field("position_at_anchor_ms")
+    }
+
+    /// SYNCED.
+    pub fn rate(&self) -> Field<f32> {
+        self.at.field("rate")
+    }
+
+    /// The input a take is being recorded from, if one is armed.
+    ///
+    /// SYNCED rather than LOCAL because the station that *arms* it is usually not the
+    /// station holding the socket: an operator at the booth arms a recording from the
+    /// stage rack's input, and the rack has to hear about it.
+    ///
+    /// SYNCED.
+    pub fn recording(&self) -> Field<Option<Uuid>> {
+        self.at.field("recording")
+    }
+
+    /// Put the playhead somewhere, running or not.
+    ///
+    /// Args: `{ "positionMs": <timeline ms>, "at"?: <console unix ms> }`.
+    ///
+    /// The command `timelines.locate`, which the station applies to the row and
+    /// replicates like any other write.
+    pub fn locate(&self, args: &TimelineLocateArgs) -> Result<(), String> {
+        self.at.command("locate", args)
+    }
+
+    /// Start running from where the playhead is, or from `fromMs`.
+    ///
+    /// Args: `{ "at": <console unix ms>, "fromMs": <timeline ms> }`, both optional.
+    /// `at` is carried for the reason a Go carries it: every station anchors the same
+    /// millisecond rather than whenever its own actor got here, and the position is a
+    /// function of that anchor everywhere.
+    ///
+    /// The command `timelines.play`, which the station applies to the row and
+    /// replicates like any other write.
+    pub fn play(&self, args: &TimelinePlayArgs) -> Result<(), String> {
+        self.at.command("play", args)
+    }
+
+    /// Arm, or disarm, recording from an input.
+    ///
+    /// Args: `{ "inputId": "<uuid>" | null }`. Arming is a *state*, not an act: the
+    /// station holding that input's socket records from the next play to the next
+    /// stop, so an operator can arm at half past six and press play at the top of the
+    /// show. `null` disarms, which is also what the recording station writes back when
+    /// it has stored the take.
+    ///
+    /// The command `timelines.record`, which the station applies to the row and
+    /// replicates like any other write.
+    pub fn record(&self, args: &TimelineRecordArgs) -> Result<(), String> {
+        self.at.command("record", args)
+    }
+
+    /// Stop, leaving the playhead where it had got to.
+    ///
+    /// Not a locate to zero: an operator who stops in the middle of a song and presses
+    /// play again means from there.
+    ///
+    /// The command `timelines.stop`, which the station applies to the row and
+    /// replicates like any other write.
+    pub fn stop(&self, args: &TimelineStopArgs) -> Result<(), String> {
+        self.at.command("stop", args)
     }
 }
 

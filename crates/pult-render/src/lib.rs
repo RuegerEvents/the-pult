@@ -16,6 +16,7 @@
 pub mod color;
 pub mod driving;
 pub mod effect;
+pub mod track;
 pub mod value;
 
 pub use driving::{settles_at, value_at, Driving};
@@ -24,5 +25,6 @@ pub use effect::{
     fade_value_at, step_value, Curve, Direction, Easing, EffectSource, RunningEffect, RunningFade,
     Shape, Step,
 };
-pub use color::{level_from, level_of, mix, Color, EmitterSpec};
+pub use color::{level_from, level_of, mix, unmix, Color, EmitterSpec};
+pub use track::{decode, encode, sample, Track, TrackAt, TrackError, TrackKey, TrackPoint, Transport};
 pub use value::{interpolate, ParameterValue};

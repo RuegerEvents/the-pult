@@ -730,3 +730,201 @@ fn a_keep_alive_is_not_a_change() {
          report every idle universe as busy"
     );
 }
+
+// ── Reading a wire back ───────────────────────────────────────────────────────
+
+/// The gate on decoding, and it is a corpus rather than a list of expected numbers:
+/// render a patch, read the universes back as values, drive the same patch from those
+/// values, and require the bytes to be identical. A decoder that is wrong about a
+/// width, an offset order, a named range or an emitter fails here, and the failure
+/// names the fixture rather than a byte.
+fn survives_a_round_trip(name: &str, fixtures: Vec<Fixture>, types: Vec<FixtureType>) {
+    let patch = patch(fixtures.clone(), types.clone());
+    let before = render(&patch, 0);
+
+    let images: HashMap<u16, [u8; UNIVERSE_SIZE]> =
+        before.iter().map(|universe| (universe.number, universe.channels)).collect();
+    let read = patch.decode(&images);
+    assert!(!read.is_empty(), "{name}: nothing was decoded at all");
+
+    // Put what was read back on the fixtures as landed fades — the only way a
+    // parameter holds a value here — and render again.
+    let mut driven = fixtures;
+    for (fixture_id, key, value) in read {
+        let fixture = driven.iter_mut().find(|f| f.id == fixture_id).expect("a patched fixture");
+        holding(fixture, &key, value);
+    }
+    let after = render(&patch::Patch::new(driven, types, vec![]), 0);
+
+    assert_eq!(before.len(), after.len(), "{name}: a universe appeared or vanished");
+    for (before, after) in before.iter().zip(after.iter()) {
+        assert_eq!(before.number, after.number, "{name}: universes came back in a new order");
+        let differing: Vec<usize> = (0..UNIVERSE_SIZE)
+            .filter(|slot| before.channels[*slot] != after.channels[*slot])
+            .collect();
+        assert!(
+            differing.is_empty(),
+            "{name}: universe {} came back different at slots {:?} ({:?} against {:?})",
+            before.number,
+            &differing[..differing.len().min(8)],
+            differing.iter().take(8).map(|s| before.channels[*s]).collect::<Vec<_>>(),
+            differing.iter().take(8).map(|s| after.channels[*s]).collect::<Vec<_>>(),
+        );
+    }
+}
+
+/// A shim so the helper above can say `patch::Patch::new` without shadowing the
+/// `patch` function every other test here calls.
+mod patch {
+    pub use super::super::Patch;
+}
+
+fn an_emitter(name: &str, rgb: [f32; 3]) -> Emitter {
+    Emitter {
+        name: name.into(),
+        rgb: Some(Vec3 { x: rgb[0], y: rgb[1], z: rgb[2] }),
+        subtractive: false,
+    }
+}
+
+/// A colour fixture whose emitters occupy one byte each from the start address.
+fn a_colour_head(emitters: Vec<Emitter>) -> FixtureType {
+    let colour = ParameterDefinition {
+        emitters: emitters.clone(),
+        ..ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
+    };
+    a_modal_type(
+        vec![colour],
+        vec![DmxMode {
+            name: "Colour".into(),
+            breaks: vec![emitters.len() as u16],
+            channels: emitters
+                .iter()
+                .enumerate()
+                .map(|(index, emitter)| DmxChannelLayout {
+                    emitter: Some(emitter.name.clone()),
+                    ..channel("ColorRgb", 0, vec![index as u16 + 1])
+                })
+                .collect(),
+        }],
+    )
+}
+
+#[test]
+fn a_plain_rgb_head_reads_back_as_the_bytes_it_went_out_as() {
+    let ft = a_colour_head(rgb_emitters());
+    let mut fixture = a_modal_fixture(&ft, "Colour", vec![(1, 1)]);
+    holding(&mut fixture, "ColorRgb", ParameterValue::rgb(1.0, 0.4, 0.0));
+    survives_a_round_trip("rgb", vec![fixture], vec![ft]);
+}
+
+/// The case `unmix` exists for: a white die at something the mix would never derive.
+/// Without the overrides this comes back as a colour whose white is `min(r,g,b)` and
+/// the byte changes, which is a guest console's rig quietly repatched on the way
+/// through this one.
+#[test]
+fn an_rgbw_head_keeps_a_white_the_mix_would_not_have_derived() {
+    let mut emitters = rgb_emitters();
+    emitters.push(an_emitter("White", [1.0, 1.0, 1.0]));
+    let ft = a_colour_head(emitters);
+
+    let mut fixture = a_modal_fixture(&ft, "Colour", vec![(1, 1)]);
+    let mut overrides = std::collections::BTreeMap::new();
+    overrides.insert("White".to_string(), 1.0);
+    holding(
+        &mut fixture,
+        "ColorRgb",
+        ParameterValue::Color { r: 0.2, g: 0.2, b: 0.2, overrides },
+    );
+    survives_a_round_trip("rgbw", vec![fixture], vec![ft]);
+}
+
+#[test]
+fn a_sixteen_bit_intensity_reads_back_at_its_own_width() {
+    let ft = a_modal_type(
+        vec![dimmer()],
+        vec![DmxMode {
+            name: "16-bit".into(),
+            breaks: vec![2],
+            // Coarse then fine, nine slots apart: the arrangement a real head uses and
+            // the one a reader that sorted its offsets would get backwards.
+            channels: vec![channel("Intensity", 0, vec![1, 10])],
+        }],
+    );
+    let mut fixture = a_modal_fixture(&ft, "16-bit", vec![(1, 20)]);
+    holding(&mut fixture, "Intensity", ParameterValue::Float(0.371_234));
+    survives_a_round_trip("16-bit intensity", vec![fixture], vec![ft]);
+}
+
+#[test]
+fn a_gobo_wheel_reads_back_as_the_slot_rather_than_as_the_byte() {
+    let ranges = |from: u32, to: u32, name: &str| ChannelFunctionRange {
+        name: name.into(),
+        attribute: String::new(),
+        dmx_from: from,
+        dmx_to: to,
+        physical_from: 0.0,
+        physical_to: 0.0,
+    };
+    let ft = a_modal_type(
+        vec![ParameterDefinition::new(ParameterKind::Gobo(1), ParameterValue::Int(0))],
+        vec![DmxMode {
+            name: "Wheel".into(),
+            breaks: vec![1],
+            channels: vec![DmxChannelLayout {
+                functions: vec![
+                    ranges(0, 9, "Open"),
+                    ranges(10, 19, "Breakup"),
+                    ranges(20, 29, "Dots"),
+                ],
+                ..channel("Gobo:1", 0, vec![1])
+            }],
+        }],
+    );
+    let mut fixture = a_modal_fixture(&ft, "Wheel", vec![(1, 5)]);
+    holding(&mut fixture, "Gobo:1", ParameterValue::Int(2));
+    survives_a_round_trip("gobo wheel", vec![fixture.clone()], vec![ft.clone()]);
+
+    // And the value itself, not only the bytes: what a grab writes into the programmer
+    // has to be "the third gobo", or an operator's next `+1` lands somewhere else.
+    holding(&mut fixture, "Gobo:1", ParameterValue::Int(2));
+    let patch = patch(vec![fixture], vec![ft]);
+    let images: HashMap<u16, [u8; UNIVERSE_SIZE]> =
+        render(&patch, 0).iter().map(|u| (u.number, u.channels)).collect();
+    assert_eq!(patch.decode(&images)[0].2, ParameterValue::Int(2));
+}
+
+/// A whole rig at once, which is what a grab actually decodes.
+#[test]
+fn a_universe_of_several_fixtures_comes_back_as_all_of_them() {
+    let dim = a_type(vec![dimmer()]);
+    let mut one = a_fixture(&dim, 1, 1);
+    holding(&mut one, "Intensity", ParameterValue::Float(1.0));
+    let mut two = a_fixture(&dim, 1, 2);
+    holding(&mut two, "Intensity", ParameterValue::Float(0.2));
+
+    let rgb = a_colour_head(rgb_emitters());
+    let mut head = a_modal_fixture(&rgb, "Colour", vec![(1, 10)]);
+    holding(&mut head, "ColorRgb", ParameterValue::rgb(0.0, 1.0, 0.5));
+
+    survives_a_round_trip("a rig", vec![one, two, head], vec![dim, rgb]);
+}
+
+/// A universe nobody handed over says nothing, rather than reading as a rig at zero —
+/// which for a grab would black out every fixture the input does not carry.
+#[test]
+fn a_fixture_in_a_universe_that_did_not_arrive_is_not_decoded() {
+    let ft = a_type(vec![dimmer()]);
+    let here = a_fixture(&ft, 1, 1);
+    let elsewhere = a_fixture(&ft, 4, 1);
+    let ids = (here.id, elsewhere.id);
+    let patch = patch(vec![here, elsewhere], vec![ft]);
+
+    let images: HashMap<u16, [u8; UNIVERSE_SIZE]> =
+        [(1u16, [77u8; UNIVERSE_SIZE])].into_iter().collect();
+    let read = patch.decode(&images);
+
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].0, ids.0);
+    assert!(read.iter().all(|(id, _, _)| *id != ids.1));
+}

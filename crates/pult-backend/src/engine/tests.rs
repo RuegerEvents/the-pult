@@ -3202,6 +3202,8 @@ mod groups {
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
+            input: None,
+            audio: None,
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,
