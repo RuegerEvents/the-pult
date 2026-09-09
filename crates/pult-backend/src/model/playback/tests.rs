@@ -2205,9 +2205,9 @@ fn a_cue_effect_gives_the_numbers_it_always_gave() {
 
 // ── Presets ───────────────────────────────────────────────────────────────────
 
-/// Editing a preset reaches the cues that are **standing**, which is the whole reason
-/// a palette is worth having: change *warm* and the look on stage changes, rather than
-/// changing the next time somebody takes the cue.
+/// An edit to a cue that is standing moves the rig — a palette edit and an Update
+/// alike, because they are one rule: a standing fade whose capture no longer agrees
+/// with where it is going is restarted from where the parameter is.
 mod presets {
     use pult_schema::types::preset::{Preset, PresetValue};
 
@@ -2298,7 +2298,7 @@ mod presets {
         let effects = {
             let view =
                 ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &edited);
-            playback.pass_with_presets_changed(WALL + 5_000, &view, true)
+            playback.pass_after_edits(WALL + 5_000, &view, true)
         };
         apply(&mut fixtures, &effects);
 
@@ -2308,10 +2308,10 @@ mod presets {
         assert_eq!(landed, Some(ParameterValue::Float(0.3)), "and arrives at the new value");
     }
 
-    /// A pass that is *not* told the presets moved leaves standing fades alone — which
-    /// is what stops every Go walking the rig looking for a palette nobody edited.
+    /// A pass that is *not* told anything was edited leaves standing fades alone —
+    /// which is what stops a pass woken by a fader walking the rig.
     #[test]
-    fn an_ordinary_pass_does_not_go_looking_for_preset_changes() {
+    fn an_ordinary_pass_does_not_go_looking_for_edits() {
         let fixture = a_fixture();
         let preset = a_preset(fixture.id, 0.9);
         let mut capture = intensity(fixture.id, 0.1);
@@ -2341,7 +2341,7 @@ mod presets {
         let effects = {
             let view =
                 ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &edited);
-            playback.pass_with_presets_changed(WALL + 5_000, &view, false)
+            playback.pass_after_edits(WALL + 5_000, &view, false)
         };
         apply(&mut fixtures, &effects);
 
@@ -2378,5 +2378,125 @@ mod presets {
             Some(ParameterValue::Float(0.1)),
             "the literal, which is what the capture was stored as"
         );
+    }
+}
+
+/// The same rule, reached the other way: Update writes the cue a value is driven by,
+/// and the stage keeps looking the way the operator set it rather than snapping back
+/// to what the cue said a moment ago. Which is what Update means on every other desk.
+mod editing_a_standing_cue {
+    use super::*;
+
+    #[test]
+    fn changing_a_capture_moves_what_it_is_driving() {
+        let fixture = a_fixture();
+        let cue = a_cue(0, vec![intensity(fixture.id, 0.9)]);
+        let sequences = [a_sequence(&[&cue], Some(0))];
+        let mut cues = [cue];
+        let mut fixtures = vec![fixture.clone()];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, fixture.id, "Intensity", 0), Some(ParameterValue::Float(0.9)));
+
+        // The operator nudges the light and presses Update: the capture changes, and
+        // nothing else about the show does.
+        cues[0].captures = vec![intensity(fixture.id, 0.5)];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass_after_edits(WALL + 5_000, &view, true)
+        };
+        apply(&mut fixtures, &effects);
+
+        assert_eq!(
+            live(&fixtures, fixture.id, "Intensity", 5_000),
+            Some(ParameterValue::Float(0.9)),
+            "it starts from where the parameter actually is"
+        );
+        assert_eq!(
+            live(&fixtures, fixture.id, "Intensity", 7_000),
+            Some(ParameterValue::Float(0.5)),
+            "and arrives at what the cue now says, with nobody pressing Go"
+        );
+    }
+
+    /// **A cue captures the same key for every fixture in it**, so an edit to one lamp
+    /// must move that lamp and no other. The first version of this indexed the captures
+    /// by parameter alone, collapsed a whole system into whichever fixture came last,
+    /// and restarted twenty fades to a value that was not theirs. `demo.sh --demo
+    /// theatre` is what found it; this is what would have.
+    #[test]
+    fn editing_one_fixtures_capture_leaves_the_others_where_they_are() {
+        let one = a_fixture();
+        let mut two = a_fixture();
+        two.name = "Spot 2".into();
+        let cue = a_cue(0, vec![intensity(one.id, 0.3), intensity(two.id, 0.9)]);
+        let sequences = [a_sequence(&[&cue], Some(0))];
+        let mut cues = [cue];
+        let mut fixtures = vec![one.clone(), two.clone()];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+
+        // One of them is edited. The other says exactly what it said.
+        cues[0].captures = vec![intensity(one.id, 0.5), intensity(two.id, 0.9)];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass_after_edits(WALL + 5_000, &view, true)
+        };
+        apply(&mut fixtures, &effects);
+
+        assert_eq!(
+            live(&fixtures, two.id, "Intensity", 9_000),
+            Some(ParameterValue::Float(0.9)),
+            "the fixture nobody edited was moved to somebody else's value"
+        );
+        assert_eq!(
+            live(&fixtures, one.id, "Intensity", 9_000),
+            Some(ParameterValue::Float(0.5)),
+            "and the one that was edited followed"
+        );
+    }
+
+    /// A store that rewrites a cue's captures without changing any of their values —
+    /// a merge, which rewrites the whole array — moves nothing.
+    #[test]
+    fn rewriting_a_capture_to_the_same_value_moves_nothing() {
+        let fixture = a_fixture();
+        let cue = a_cue(0, vec![intensity(fixture.id, 0.9)]);
+        let sequences = [a_sequence(&[&cue], Some(0))];
+        let mut cues = [cue];
+        let mut fixtures = vec![fixture.clone()];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+
+        cues[0].captures = vec![intensity(fixture.id, 0.9)];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass_after_edits(WALL + 5_000, &view, true)
+        };
+        apply(&mut fixtures, &effects);
+
+        let fade = fixtures[0].live_fades.get("Intensity").expect("still driven by the cue");
+        assert_eq!(fade.t0, WALL, "the fade was not restarted, because nothing changed");
     }
 }

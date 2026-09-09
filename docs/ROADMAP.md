@@ -5342,11 +5342,19 @@ that flickers. `testdata/tracking.json` holds the two together and is read by
 `cues.test.ts` and by `crates/pult-schema/tests/tracking_corpus.rs` — the arrangement
 `selection-queries.json` and `transforms.json` already have.
 
-**Update needs no target, and that is why it is one press.** A parameter being driven
-by a cue says which cue — `live_fades[key].cue_id`, `live_effects[key].source` — so
-`updateDriven` writes each held value into the cue driving it *now*, one gesture over
-however many cues it touches. Keys nothing is driving are the honest exception and are
-handed back rather than guessed at: the Store dialog opens with exactly those ticked.
+**Update needs no target, and that is why it is one press.** `updateDriven` writes each
+held value into the cue driving it *now*, one gesture over however many cues it touches.
+Keys nothing is driving are the honest exception and are handed back rather than guessed
+at: the Store dialog opens with exactly those ticked.
+
+*How* it knows is `drivingCues`, and the entry was wrong about it — see the traps.
+
+**An edit to a cue that is standing moves the rig**, which is the other half of Update
+meaning anything: change the value, press Update, and the stage keeps looking the way
+you set it rather than snapping back to what the cue said a moment ago. One rule covers
+that and a palette edit, because they are one thing —
+`Playback::repoint_edited_captures` restarts every standing fade whose capture no longer
+agrees with where the fade is going.
 
 **Cue only writes what the next cue was tracking into it.** For every key the store
 changes that the next cue does not capture itself, so the change stops at this cue's
@@ -5365,14 +5373,14 @@ playback pass and by `paperwork.cueValues`.
 
 **And editing one reaches the cues that are standing.** Which is the whole reason a
 palette is worth having: change *warm* and the look on stage changes, rather than
-changing the next time somebody takes the cue. `"presets"` joins
-`PLAYBACK_COLLECTIONS`; `Playback::repoint_presets` restarts every standing fade whose
-capture names a preset that now resolves elsewhere, from `value_at(now)` over
-`home_fade_ms` — the pattern `release_key` follows, and for the same reason: swapping
-a running fade's `to` in place would jump, because `from` is where it started and the
-eased position between them would move. The home fade is the duration on purpose: the
-capture's own time is how long *taking the cue* takes, and this is a value moving under
-one. Gated on its own version counter, so an ordinary Go never walks the fades.
+changing the next time somebody takes the cue. `"presets"` joins `PLAYBACK_COLLECTIONS`,
+and `repoint_edited_captures` — the same function Update leans on — restarts the fade
+from `value_at(now)` over `home_fade_ms`. The pattern `release_key` follows, and for the
+same reason: swapping a running fade's `to` in place would jump, because `from` is where
+it started and the eased position between them would move. The home fade is the duration
+on purpose: the capture's own time is how long *taking the cue* takes, and this is a
+value moving under one. Gated on a counter over `cues` and `presets`, so a pass woken by
+a fader never walks the fades.
 
 **A preset is any mix, and its group tags are derived.** One flat pool whose values may
 be a position and a colour together, because that is what a look is; the I/P/C/B/O tags
@@ -5444,6 +5452,27 @@ pan or tilt in it, so the entry's "two positions and three colours" could not be
 seeded. It gets three cyc colours and two front-wash states, which is what "any mix"
 means — an intensity look is as much a preset as a colour.
 
+**Update cannot read `live_fades`, and the entry said it could.** "Writes each key into
+the cue driving it now (`live_fades[key].cue_id`, `live_effects[key].source`)" is exactly
+backwards: `emit_motion` skips every fade and effect under a key the programmer holds —
+deliberately, since the programmer wins and a description nobody would evaluate is noise
+on the link — so at the moment Update needs the answer, the row is gone. Every press said
+"nothing here is being driven by a cue". The answer is the **latest capture of the key
+over the tracked stack of each live sequence**, with the sequence that went most recently
+winning a contested one, because that is what `start_capture` did to the parameter.
+`drivingCues` in `cues.ts` and the same walk in the plugin; `trackedThrough` again rather
+than a third rule.
+
+**And a cue captures the same key for every fixture in it.** The first
+`repoint_edited_captures` indexed a cue's captures by parameter alone, which collapsed a
+whole system into whichever lamp came last — and then restarted twenty fades to a value
+that was not theirs. Every unit test had one fixture in it and passed;
+`scripts/demo.sh --demo theatre` moved the whole Back wash on one colour edit. The index
+is keyed by cue, fixture *and* key, and there is now a test with two fixtures on one key.
+
+Worth keeping the shape of that one: **the by-hand gate found two defects the suite could
+not**, and both were about several of a thing where a test had one.
+
 #### What is not done
 
 - **Reordering a top-level collection.** A pool is in creation order plus the group
@@ -5465,7 +5494,8 @@ means — an intensity look is as much a preset as a colour.
 cd frontend && npm test                    # the sheet's colours, tracking, cue only, presets
 cargo test -p pult-schema preset           # value_in three ways, and an older capture
 cargo test -p pult-schema --test tracking_corpus   # the other half of the corpus
-cargo test -p pult-backend --lib playback::tests::presets   # a standing cue follows a palette
+cargo test -p pult-backend --lib playback::tests   # a standing cue follows an edit, and only it
+cargo test -p pult-backend --lib demo      # and the same against the theatre demo
 cargo test -p pult-backend --test counts   # a store across three cues is one undo
 scripts/demo.sh --demo theatre             # and by hand, against the gates in the entry
 ```

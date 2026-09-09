@@ -38,7 +38,7 @@ import {
 	sameValue,
 	storeCaptures
 } from '$lib/programmer.js';
-import { NO_CUE } from '$lib/sheet.js';
+import { drivingCues } from '$lib/cues.js';
 import { beginGesture, endGesture } from './gesture.js';
 import { collection, show, showData } from './show.js';
 
@@ -334,10 +334,12 @@ export async function storeInto(
  * Update: every held value into the cue that is **driving it now**.
  *
  * This is the verb every other desk has and this console did not, and the reason it
- * needs no target is that the console already knows one. A parameter being driven by
- * a cue says so — `live_fades[key].cue_id`, `live_effects[key].source` — so an
- * operator who has nudged a light in the middle of cue 12 means cue 12, and being
- * asked which cue they meant is being asked a question the desk can answer.
+ * needs no target is that the console already knows one: an operator who has nudged a
+ * light in the middle of cue 12 means cue 12, and being asked which cue they meant is
+ * being asked a question the desk can answer.
+ *
+ * *How* it answers is `drivingCues`, and not `live_fades[key].cue_id` — see the note
+ * there. A key the programmer holds is exactly the key playback stops publishing.
  *
  * Keys nothing is driving are the honest exception and are handed back rather than
  * guessed at: there is no cue they belong to, and the Store dialog opens with exactly
@@ -349,29 +351,26 @@ export async function storeInto(
  */
 export async function updateDriven(): Promise<{ updated: number; orphans: string[] }> {
 	const data = showData();
-	const fixtures = get(collection('fixtures'));
-	const cueList = get(cues);
-	const byFixture = new Map(fixtures.map((f) => [f.id, f]));
+	// Fetched rather than read out of the shared stores. `get()` on a lazy store runs
+	// its start function and hands back the *initial* value — an empty array — because
+	// the subscription behind it is a socket round trip; the note on `held` above says
+	// as much, and this is the other half of it. Update is one deliberate act, so one
+	// round trip costs nothing and reading a stale empty rig would answer "nothing here
+	// is driven by a cue" every time.
+	const [sequenceList, cueList] = await Promise.all([data.sequences.get(), data.cues.get()]);
+	const byId = new Map(cueList.map((c) => [c.id, c]));
+	const wanted = new Set(
+		held.map((entry) => `${entry.fixture_id}/${parameterKey(entry.parameter_kind)}`)
+	);
+	const driving = drivingCues(sequenceList, (id) => byId.get(id), wanted);
 
 	/** Entry ids, grouped by the cue driving each. */
 	const perCue = new Map<string, string[]>();
 	const orphans: string[] = [];
 
 	for (const entry of held) {
-		const fixture = byFixture.get(entry.fixture_id);
-		const key = parameterKey(entry.parameter_kind);
-		const effect = fixture?.live_effects?.[key];
-		const fade = fixture?.live_fades?.[key];
-		// An effect names its source as `{ Cue: id }` and a fade names a `cue_id` that
-		// is nil when no cue put it there — a release, or a send home. Either of those
-		// is a parameter no cue is driving.
-		const from =
-			effect && typeof effect.source === 'object' && 'Cue' in effect.source
-				? effect.source.Cue
-				: fade && fade.cue_id !== NO_CUE
-					? fade.cue_id
-					: null;
-		if (!from || !cueList.some((c) => c.id === from)) {
+		const from = driving.get(`${entry.fixture_id}/${parameterKey(entry.parameter_kind)}`);
+		if (!from) {
 			orphans.push(entry.id);
 			continue;
 		}

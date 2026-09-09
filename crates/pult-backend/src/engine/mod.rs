@@ -703,12 +703,12 @@ pub struct ShowEngine {
     /// The same for `inputs`, and its own flag rather than the same one: an input
     /// rebuilt because an output row was renamed would drop a socket mid-take.
     inputs_dirty: bool,
-    /// The version of `presets` when the playback pass last ran.
+    /// The version of `cues` and `presets` when the playback pass last ran.
     ///
     /// Its own counter rather than a share of `playback_seen`, because the question is
-    /// narrower: re-pointing a standing fade walks every fade, and a Go must not pay
-    /// for it.
-    presets_seen: u64,
+    /// narrower: re-pointing a standing fade walks every fade, and a pass woken by a
+    /// fader or a Go must not pay for it.
+    edits_seen: u64,
     /// The version of the collections the timeline pass reads, when it last ran.
     timelines_seen: u64,
     /// When the next timeline event is due, as of the last pass.
@@ -883,7 +883,7 @@ impl ShowEngine {
             collection_versions: HashMap::new(),
             everything_version: 0,
             playback_seen: 0,
-            presets_seen: 0,
+            edits_seen: 0,
             pushed_version: 0,
             outputs_dirty: true,
             inputs_dirty: true,
@@ -1272,12 +1272,12 @@ impl ShowEngine {
         if !follow_due && self.version_of(PLAYBACK_COLLECTIONS) == self.playback_seen {
             return Vec::new();
         }
-        // Whether the *palettes* have moved, which is a narrower question than whether
-        // the show has: a standing fade is only re-pointed when a preset was edited,
-        // so a pass over an ordinary Go never walks the fades looking for one.
-        let presets_now = self.version_of(&["presets"]);
-        let presets_changed = presets_now != self.presets_seen;
-        self.presets_seen = presets_now;
+        // Whether the cues or the palettes have moved, which is a narrower question
+        // than whether the show has: a standing fade is only re-pointed when what it is
+        // running on was edited, so a pass woken by a fader never walks the fades.
+        let edits_now = self.version_of(&["cues", "presets"]);
+        let edited = edits_now != self.edits_seen;
+        self.edits_seen = edits_now;
         self.playback_seen = self.version_of(PLAYBACK_COLLECTIONS);
 
         let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
@@ -1324,7 +1324,7 @@ impl ShowEngine {
                 fade_curves,
                 &presets,
             );
-            self.playback.pass_with_presets_changed(wall_ms, &view, presets_changed)
+            self.playback.pass_after_edits(wall_ms, &view, edited)
         };
 
         // A follower takes its cue positions from the leader, so only the leader

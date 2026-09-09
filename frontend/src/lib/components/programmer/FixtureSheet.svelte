@@ -30,7 +30,7 @@
 	import { recordingKeys } from '$lib/evaluator.js';
 	import { CURVE_LABELS, CURVES, fadeGroup } from '$lib/fade.js';
 	import { formatValue, kindLabel, parameterKey } from '$lib/patch.js';
-	import { asFloat, withFloat } from '$lib/programmer.js';
+	import { asFloat, hexToRgb, rgbToHex, withFloat } from '$lib/programmer.js';
 	import { SOURCE_LABELS, source, trackedSource, type Source } from '$lib/sheet.js';
 	import { collection } from '$lib/stores/show.js';
 	import { cueInView, presetInView, viewCue, viewPreset } from '$lib/stores/cues.js';
@@ -252,6 +252,27 @@
 		const n = asFloat(value);
 		return n === null ? '' : String(Math.round(n * 100));
 	};
+
+	/**
+	 * A colour is not a percentage.
+	 *
+	 * `withFloat` answers a `Color` unchanged — deliberately, since a colour has no
+	 * single number to move — so a percent box over one is a control that does nothing.
+	 * Every parameter an operator edits here is either a number or a colour, and the
+	 * inspector offers whichever it is.
+	 */
+	const isColour = (value: ParameterCapture['value']) => value.type === 'Color';
+
+	const withHex = (like: ParameterCapture['value'], hex: string): ParameterCapture['value'] | null => {
+		const rgb = hexToRgb(hex);
+		if (!rgb || like.type !== 'Color') return null;
+		// The per-emitter overrides are kept: they are somebody's answer about a
+		// particular head, and a colour picker is not the place to throw them away.
+		return { type: 'Color', value: { ...rgb, overrides: like.value.overrides } };
+	};
+
+	const hexOf = (value: ParameterCapture['value']) =>
+		value.type === 'Color' ? rgbToHex(value.value) : '#000000';
 </script>
 
 <div class="sheet">
@@ -336,18 +357,30 @@
 				{@const capture = pickedCapture}
 				<label>
 					value
-					<input
-						class="num"
-						type="number"
-						min="0"
-						max="100"
-						value={percentOf(capture.value)}
-						onchange={(e) => {
-							const n = Number(e.currentTarget.value);
-							if (Number.isFinite(n)) editCapture({ value: withFloat(capture.value, n / 100) });
-						}}
-					/>
-					<span class="unit">%</span>
+					{#if isColour(capture.value)}
+						<input
+							class="swatch"
+							type="color"
+							value={hexOf(capture.value)}
+							onchange={(e) => {
+								const next = withHex(capture.value, e.currentTarget.value);
+								if (next) editCapture({ value: next });
+							}}
+						/>
+					{:else}
+						<input
+							class="num"
+							type="number"
+							min="0"
+							max="100"
+							value={percentOf(capture.value)}
+							onchange={(e) => {
+								const n = Number(e.currentTarget.value);
+								if (Number.isFinite(n)) editCapture({ value: withFloat(capture.value, n / 100) });
+							}}
+						/>
+						<span class="unit">%</span>
+					{/if}
 				</label>
 				<label>
 					in
@@ -406,25 +439,39 @@
 				{#if value}
 					<label>
 						value
-						<input
-							class="num"
-							type="number"
-							min="0"
-							max="100"
-							value={percentOf(value.value)}
-							onchange={(e) => {
-								const n = Number(e.currentTarget.value);
-								if (Number.isFinite(n) && shownPreset) {
-									setPresetValue(
-										shownPreset,
-										picked!.fixtureId,
-										value.parameter_kind,
-										withFloat(value.value, n / 100)
-									);
-								}
-							}}
-						/>
-						<span class="unit">%</span>
+						{#if isColour(value.value)}
+							<input
+								class="swatch"
+								type="color"
+								value={hexOf(value.value)}
+								onchange={(e) => {
+									const next = withHex(value.value, e.currentTarget.value);
+									if (next && shownPreset) {
+										setPresetValue(shownPreset, picked!.fixtureId, value.parameter_kind, next);
+									}
+								}}
+							/>
+						{:else}
+							<input
+								class="num"
+								type="number"
+								min="0"
+								max="100"
+								value={percentOf(value.value)}
+								onchange={(e) => {
+									const n = Number(e.currentTarget.value);
+									if (Number.isFinite(n) && shownPreset) {
+										setPresetValue(
+											shownPreset,
+											picked!.fixtureId,
+											value.parameter_kind,
+											withFloat(value.value, n / 100)
+										);
+									}
+								}}
+							/>
+							<span class="unit">%</span>
+						{/if}
 					</label>
 					<button
 						class="chip"
@@ -446,22 +493,35 @@
 				</span>
 			{:else if fixture}
 				{@const column = columns.find((c) => c.key === picked?.key)}
+				{@const live = $output.value(fixture.id, picked.key)}
 				<label>
 					set to
-					<input
-						class="num"
-						type="number"
-						min="0"
-						max="100"
-						placeholder="%"
-						onchange={(e) => {
-							if (column) typeInto(fixture, column, e.currentTarget.value);
-							e.currentTarget.value = '';
-						}}
-					/>
-					<span class="unit">%</span>
+					{#if live && isColour(live)}
+						<input
+							class="swatch"
+							type="color"
+							value={hexOf(live)}
+							onchange={(e) => {
+								const next = withHex(live, e.currentTarget.value);
+								if (next && column) setValue([fixture.id], column.kind, next);
+							}}
+						/>
+					{:else}
+						<input
+							class="num"
+							type="number"
+							min="0"
+							max="100"
+							placeholder="%"
+							onchange={(e) => {
+								if (column) typeInto(fixture, column, e.currentTarget.value);
+								e.currentTarget.value = '';
+							}}
+						/>
+						<span class="unit">%</span>
+					{/if}
 				</label>
-				<span class="note">into the programmer, for every fixture selected</span>
+				<span class="note">into the programmer</span>
 			{/if}
 			<span class="spacer"></span>
 			<button class="chip" onclick={() => (picked = null)}>Close</button>
@@ -639,6 +699,15 @@
 	}
 	.num {
 		width: 4.5rem;
+	}
+	.swatch {
+		width: 2.4rem;
+		height: 1.5rem;
+		padding: 0;
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius);
+		background: none;
+		cursor: pointer;
 	}
 	.num,
 	.inspector select {

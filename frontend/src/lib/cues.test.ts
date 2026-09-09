@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	cueIdsThrough,
 	cueOnlyCompensation,
+	drivingCues,
 	insertNumber,
 	reorderCueIds,
 	trackedThrough
@@ -176,5 +177,73 @@ describe('cue only', () => {
 		const got = cueOnlyCompensation(cue([own]), ['f1/Intensity'], before);
 		expect(got).toHaveLength(2);
 		expect(got?.[0]).toBe(own);
+	});
+});
+
+describe('which cue is driving a key', () => {
+	const capture = (fixture: string, kind: 'Intensity' | 'Pan', v: number) =>
+		({
+			fixture_id: fixture,
+			parameter_kind: kind,
+			value: { type: 'Float', value: v },
+			fade_in_ms: 0,
+			fade_out_ms: 0,
+			delay_in_ms: 0,
+			effect: null,
+			easing: null,
+			preset: null
+		}) as Cue['captures'][number];
+
+	const cue = (id: string, captures: Cue['captures']) => ({ id, captures }) as Cue;
+	const seq = (id: string, ids: string[], active: number | null, wentAt: number | null) =>
+		({ id, name: id, cue_ids: ids, active_cue_index: active, went_at: wentAt }) as Sequence;
+
+	const cues = [
+		cue('a', [capture('f1', 'Intensity', 0.2), capture('f1', 'Pan', 0.5)]),
+		cue('b', [capture('f1', 'Intensity', 0.9)]),
+		cue('c', [capture('f1', 'Intensity', 0.4)]),
+		cue('d', [capture('f2', 'Intensity', 0.4)])
+	];
+	const byId = (id: string) => cues.find((c) => c.id === id);
+	const keys = new Set(['f1/Intensity', 'f1/Pan', 'f2/Intensity']);
+
+	/** The stack up to the active cue, which is what a Go put there. */
+	it('is the latest cue in the live stack that captures the key', () => {
+		const got = drivingCues([seq('s', ['a', 'b', 'c'], 1, 100)], byId, keys);
+		expect(got.get('f1/Intensity')).toBe('b');
+		expect(got.get('f1/Pan')).toBe('a');
+	});
+
+	it('says nothing about a cue the sequence has not reached', () => {
+		const got = drivingCues([seq('s', ['a', 'b', 'c'], 0, 100)], byId, keys);
+		expect(got.get('f1/Intensity')).toBe('a');
+	});
+
+	/** Nothing is on, so nothing is driving anything. */
+	it('says nothing at all for a sequence that is off', () => {
+		expect(drivingCues([seq('s', ['a', 'b'], null, 100)], byId, keys).size).toBe(0);
+	});
+
+	/**
+	 * `start_capture` takes a key off whatever had it, so where two live sequences both
+	 * capture one, the one that went most recently is what is actually driving it.
+	 */
+	it('gives a contested key to the sequence that went most recently', () => {
+		const first = seq('one', ['a'], 0, 100);
+		const later = seq('two', ['c'], 0, 500);
+		expect(drivingCues([first, later], byId, keys).get('f1/Intensity')).toBe('c');
+		expect(drivingCues([later, first], byId, keys).get('f1/Intensity')).toBe('c');
+	});
+
+	/** A sequence that has never gone is oldest, not newest. */
+	it('treats a sequence with no went_at as the oldest', () => {
+		const never = seq('one', ['a'], 0, null);
+		const went = seq('two', ['c'], 0, 1);
+		expect(drivingCues([never, went], byId, keys).get('f1/Intensity')).toBe('c');
+	});
+
+	it('only answers about the keys it was asked about', () => {
+		const got = drivingCues([seq('s', ['a', 'd'], 1, 100)], byId, new Set(['f2/Intensity']));
+		expect([...got.keys()]).toEqual(['f2/Intensity']);
 	});
 });

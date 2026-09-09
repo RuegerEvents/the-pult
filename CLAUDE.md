@@ -937,11 +937,24 @@ evaluated twice: `trackedThrough` in `cues.ts` mirrors `cue::tracked_through`, b
 cue clicked in a list has to colour the sheet in the same frame, and `testdata/tracking.json`
 holds the two together the way `selection-queries.json` holds `evaluate`.
 
-**Update needs no target.** A parameter being driven by a cue says which cue —
-`live_fades[key].cue_id`, `live_effects[key].source` — so `updateDriven` writes each held
-value into the cue driving it *now*, one gesture over however many cues it touches. Keys
+**Update needs no target**, and *which* cue is `drivingCues` — **not** `live_fades`.
+`emit_motion` skips every fade and effect under a key the programmer holds, deliberately,
+so at the moment Update needs the answer the row is gone. The answer is the latest
+capture of the key over the tracked stack of each live sequence, with the sequence that
+went most recently winning a contested one, because that is what `start_capture` did to
+the parameter — `trackedThrough` again rather than a third rule. `updateDriven` writes
+each held value into that cue, one gesture over however many cues it touches; keys
 nothing is driving are handed back rather than guessed at, and the Store dialog opens
-with exactly those ticked. **Cue only** is the other half: `cueOnlyCompensation` writes
+with exactly those ticked.
+
+**And an edit to a cue that is standing moves the rig**, which is what makes Update mean
+anything: the stage keeps looking the way you set it rather than snapping back.
+`Playback::repoint_edited_captures` restarts every standing fade whose capture no longer
+agrees with where it is going, from `value_at(now)` over `home_fade_ms` — the pattern
+`release_key` follows, because swapping a running fade's `to` in place would jump. Its
+index is keyed by cue, **fixture** and parameter: a cue captures the same key for every
+fixture in it, and an index without the fixture collapses a system into whichever lamp
+came last and then moves all of them. **Cue only** is the other half: `cueOnlyCompensation` writes
 what the *next* cue was tracking into it, for every key the store changes that the next
 cue does not capture itself, so a change stops at this cue's edge. The compensating
 capture carries the value and none of the timing — it is going into a different cue and
@@ -969,12 +982,10 @@ broken. `ParameterCapture::value_in` is the one resolution, called by `start_cap
 by the playback pass and by `paperwork.cueValues`.
 
 **And editing one reaches the cues that are standing**, which is the whole reason a
-palette is worth having. `"presets"` is in `PLAYBACK_COLLECTIONS`, and
-`Playback::repoint_presets` restarts every standing fade whose capture names a preset
-that now resolves elsewhere — from `value_at(now)` over `home_fade_ms`, the pattern
-`release_key` follows and for the same reason: swapping a running fade's `to` in place
-would jump, because `from` is where it started. Gated on its own version counter, so an
-ordinary Go never walks the fades looking for one.
+palette is worth having. `"presets"` is in `PLAYBACK_COLLECTIONS`, and the same
+`repoint_edited_captures` Update leans on does the work — one rule, because a palette
+edit and a cue edit are one thing. Gated on a counter over `cues` and `presets`, so a
+pass woken by a fader never walks the fades.
 
 **Moving a value breaks the link, in one write.** A fader, a typed number, an `at +10`
 each write the whole programmer row with `preset: null` rather than a value and a

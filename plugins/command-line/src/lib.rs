@@ -18,8 +18,8 @@ use pult_plugin_sdk::{
     self as sdk, data,
     host, output_line,
     schema::{
-        parameter_key, Cue, EffectSource, EffectSpec, FollowMode, ParameterCapture, Preset,
-        PresetValue,
+        parameter_key, Cue, EffectSpec, FollowMode, ParameterCapture, Preset, PresetValue,
+        Sequence,
     },
     surface, PultPlugin,
 };
@@ -667,36 +667,62 @@ impl CommandLine {
     /// driven by a cue says which cue, so there is no target to name. The keys nothing
     /// is driving are reported rather than guessed at — a plugin cannot open the store
     /// dialog, so it says how many are left and leaves them in the programmer.
+    ///
+    /// **Which cue is worked out from the live stacks, not from `live_fades`.** A key
+    /// the programmer holds is exactly the key playback stops publishing —
+    /// `emit_motion` skips every fade and effect under a held key — so at the moment
+    /// this needs an answer the row is gone. The answer is the latest capture of the
+    /// key over the tracked stack of each live sequence, which is what a Go would have
+    /// put there; where two sequences hold one, the one that went most recently wins,
+    /// because that is what `start_capture` did to the parameter. The browser's
+    /// `drivingCues` is the same rule.
     fn update(&self) -> Result<surface::ExecResponse, String> {
         let entries = data::programmer_values().get()?;
         if entries.is_empty() {
             return Err("the programmer is empty — nothing to update".into());
         }
-        let fixtures = data::fixtures().get()?;
         let cues = data::cues().get()?;
+        let sequences = data::sequences().get()?;
 
-        // Entry indices, grouped by the cue driving each.
+        // key -> (cue, when that sequence went). Walked oldest first, so a sequence that
+        // went later simply overwrites.
+        let mut driving: Vec<(String, uuid::Uuid, u64)> = Vec::new();
+        let mut live: Vec<&Sequence> =
+            sequences.iter().filter(|s| s.active_cue_index.is_some()).collect();
+        live.sort_by_key(|s| s.went_at.unwrap_or(0));
+        for sequence in live {
+            let Some(active) = sequence.active_cue_index else { continue };
+            let when = sequence.went_at.unwrap_or(0);
+            for id in sequence.cue_ids.iter().take(active + 1) {
+                let Some(cue) = cues.iter().find(|c| c.id == *id) else { continue };
+                for capture in &cue.captures {
+                    let at = format!(
+                        "{}/{}",
+                        capture.fixture_id,
+                        parameter_key(&capture.parameter_kind)
+                    );
+                    match driving.iter_mut().find(|(k, _, _)| *k == at) {
+                        Some(row) if row.2 <= when => {
+                            row.1 = cue.id;
+                            row.2 = when;
+                        }
+                        Some(_) => {}
+                        None => driving.push((at, cue.id, when)),
+                    }
+                }
+            }
+        }
+
+        // Entry captures, grouped by the cue driving each.
         let mut per_cue: Vec<(uuid::Uuid, Vec<ParameterCapture>)> = Vec::new();
         let mut orphans = 0usize;
         for entry in entries {
-            let key = parameter_key(&entry.parameter_kind);
-            let fixture = fixtures.iter().find(|f| f.id == entry.fixture_id);
-            let from = fixture.and_then(|f| {
-                match f.live_effects.get(&key).map(|e| &e.source) {
-                    Some(EffectSource::Cue(id)) => Some(*id),
-                    // A fade's `cue_id` is nil when no cue put it there — a release, or
-                    // a send home. That is a parameter no cue is driving.
-                    _ => f
-                        .live_fades
-                        .get(&key)
-                        .map(|fade| fade.cue_id)
-                        .filter(|id| !id.is_nil()),
-                }
-            });
-            let Some(cue_id) = from.filter(|id| cues.iter().any(|c| c.id == *id)) else {
+            let at = format!("{}/{}", entry.fixture_id, parameter_key(&entry.parameter_kind));
+            let Some((_, cue_id, _)) = driving.iter().find(|(k, _, _)| *k == at) else {
                 orphans += 1;
                 continue;
             };
+            let cue_id = *cue_id;
             let capture = ParameterCapture {
                 fixture_id: entry.fixture_id,
                 parameter_kind: entry.parameter_kind,

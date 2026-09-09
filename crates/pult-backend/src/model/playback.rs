@@ -360,13 +360,17 @@ impl Playback {
         effects
     }
 
-    /// Editing a preset reaches the cues that are **standing**, at once.
+    /// **An edit to a cue that is standing moves the rig.**
     ///
-    /// Which is the whole reason a palette is worth having: change *warm* and the look
-    /// on stage changes, rather than changing the next time somebody takes the cue. So
-    /// every fade a cue put there is checked against the capture that made it, and one
-    /// whose capture names a preset that now resolves somewhere else is *restarted*
-    /// from where the parameter is, over the show's own home fade.
+    /// Which is what Update means on every other desk: change the value, press Update,
+    /// and the stage keeps looking the way you set it rather than snapping back to what
+    /// the cue said a moment ago. It is also the whole reason a palette is worth having
+    /// — change *warm* and the look on stage changes, rather than changing the next
+    /// time somebody takes the cue.
+    ///
+    /// One rule for both, because they are one thing: a standing fade whose cue's
+    /// capture no longer agrees with where the fade is going is *restarted* from where
+    /// the parameter is, over the show's own home fade.
     ///
     /// Restarted rather than rewritten in place, and the difference matters: a fade
     /// half way through with its `to` swapped would jump, because `from` is where it
@@ -378,42 +382,65 @@ impl Playback {
     /// under one, and the show already has one figure for "a parameter is going
     /// somewhere nobody pressed Go for".
     ///
-    /// Only run when the presets have actually moved — the caller gates it — because
-    /// this walks every standing fade and a show whose palettes nobody is editing must
-    /// not pay for it.
-    fn repoint_presets(&mut self, wall_ms: u64, view: &ShowView<'_>) {
+    /// Only run when the cues or the presets have actually moved — the caller gates it
+    /// — and the index is built only for the cues the standing fades name, so a rig of
+    /// thousands costs a hash lookup each rather than a scan.
+    fn repoint_edited_captures(&mut self, wall_ms: u64, view: &ShowView<'_>) {
+        // Cue, then fixture, then key — three levels rather than one tuple, so a fade
+        // is looked up by the two ids and the key string it already holds and nothing
+        // is allocated per fade.
+        //
+        // **All three, and the fixture is the one that matters.** A cue captures the
+        // same key for every fixture in it, so an index keyed by the parameter alone
+        // collapses a whole system into whichever lamp came last — and then every fade
+        // in that system is compared against a value that is not its own and restarted
+        // to it. Which is a cue edit moving twenty lights nobody touched, and is what
+        // `demo.sh --demo theatre` found.
+        type ByFixture<'c> =
+            HashMap<Uuid, HashMap<String, &'c pult_schema::types::cue::ParameterCapture>>;
+        let mut wanted: HashMap<Uuid, ByFixture<'_>> = HashMap::new();
+        for fade in &self.fades {
+            if fade.running.cue_id.is_nil() || wanted.contains_key(&fade.running.cue_id) {
+                continue;
+            }
+            let Some(cue) = view.cues.get(&fade.running.cue_id) else { continue };
+            let mut by_fixture: ByFixture<'_> = HashMap::new();
+            for capture in &cue.captures {
+                // A cue that says one fixture's key twice is a show mid-edit; the last
+                // one is what `start_capture` would have applied.
+                by_fixture
+                    .entry(capture.fixture_id)
+                    .or_default()
+                    .insert(parameter_key(&capture.parameter_kind), capture);
+            }
+            wanted.insert(cue.id, by_fixture);
+        }
+
         // Which fades want moving, worked out before any of them is touched: starting
         // one changes what `value_at` answers for the next.
-        let mut moves: Vec<(Key, ParameterValue, ParameterValue)> = Vec::new();
+        let mut moves: Vec<(Key, Uuid, ParameterValue, ParameterValue)> = Vec::new();
         for fade in &self.fades {
             if fade.running.cue_id.is_nil() {
                 continue;
             }
-            let Some(cue) = view.cues.get(&fade.running.cue_id) else { continue };
-            let Some(capture) = cue.captures.iter().find(|c| {
-                c.fixture_id == fade.fixture_id && parameter_key(&c.parameter_kind) == fade.key
-            }) else {
+            let Some(capture) = wanted
+                .get(&fade.running.cue_id)
+                .and_then(|by_fixture| by_fixture.get(&fade.fixture_id))
+                .and_then(|by_key| by_key.get(fade.key.as_str()))
+            else {
                 continue;
             };
-            if capture.preset.is_none() {
-                continue;
-            }
             let to = capture.value_in(&view.presets);
             if *to == fade.running.to {
                 continue;
             }
             let at: Key = (fade.fixture_id, fade.key.clone());
-            let from = self.value_at(view, &at, wall_ms).unwrap_or_else(|| fade.running.from.clone());
-            moves.push((at, from, to.clone()));
+            let from =
+                self.value_at(view, &at, wall_ms).unwrap_or_else(|| fade.running.from.clone());
+            moves.push((at, fade.running.cue_id, from, to.clone()));
         }
 
-        for ((fixture_id, key), from, to) in moves {
-            let cue_id = self
-                .fades
-                .iter()
-                .find(|f| f.fixture_id == fixture_id && f.key == key)
-                .map(|f| f.running.cue_id)
-                .unwrap_or_else(Uuid::nil);
+        for ((fixture_id, key), cue_id, from, to) in moves {
             self.fades.retain(|f| !(f.fixture_id == fixture_id && f.key == key));
             let easing = view.fade_curves.for_key(&key);
             self.fades.push(Fade {
@@ -425,23 +452,23 @@ impl Playback {
                     t0: wall_ms,
                     duration_ms: view.home_fade_ms,
                     easing,
-                    // Still that cue's: the cue is asserting the same reference, and a
-                    // sheet asking "is this my cue's fade" is still owed a yes.
+                    // Still that cue's: the cue is asserting the same key, and a sheet
+                    // asking "is this my cue's fade" is still owed a yes.
                     cue_id,
                 },
             });
         }
     }
 
-    /// The same pass, told that the presets have moved since the last one.
-    pub fn pass_with_presets_changed(
+    /// The same pass, told whether the cues or the presets have moved since the last one.
+    pub fn pass_after_edits(
         &mut self,
         wall_ms: u64,
         view: &ShowView<'_>,
-        presets_changed: bool,
+        edited: bool,
     ) -> Vec<PlaybackEffect> {
-        if presets_changed {
-            self.repoint_presets(wall_ms, view);
+        if edited {
+            self.repoint_edited_captures(wall_ms, view);
         }
         self.pass(wall_ms, view)
     }

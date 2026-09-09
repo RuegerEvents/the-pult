@@ -210,3 +210,51 @@ export function cueOnlyCompensation(
 	}
 	return added.length === 0 ? null : [...next.captures, ...added];
 }
+
+/**
+ * Which cue is driving each parameter, for Update.
+ *
+ * **Not read off `live_fades`**, and that is the correction worth writing down: a key
+ * the programmer holds is exactly the key playback stops publishing. `emit_motion`
+ * skips every fade and effect under a held key, deliberately — the programmer wins and
+ * a description nobody would evaluate is noise on the link — so at the moment Update
+ * needs to know which cue a nudged value belongs to, `live_fades[key].cue_id` is gone.
+ *
+ * So the question is asked the way the console asks it everywhere else: **the latest
+ * capture of the key over the tracked stack of each live sequence**, which is what a Go
+ * would have put there and is `trackedThrough` again rather than a second rule.
+ *
+ * Where two live sequences both capture a key, the one that **went most recently**
+ * wins, because that is what playback did to the parameter: `start_capture` takes the
+ * key off whatever had it. A sequence that has never gone is treated as oldest.
+ *
+ * Keys nothing answers for are simply absent — those are the ones Update hands to the
+ * Store dialog rather than guessing at.
+ */
+export function drivingCues(
+	sequences: Sequence[],
+	byId: (id: string) => Cue | undefined,
+	keys: Set<string>
+): Map<string, string> {
+	const out = new Map<string, string>();
+	const wentAt = new Map<string, number>();
+	const live = [...sequences]
+		.filter((s) => s.active_cue_index !== null)
+		.sort((a, b) => (a.went_at ?? 0) - (b.went_at ?? 0));
+
+	for (const sequence of live) {
+		const through = sequence.cue_ids.slice(0, (sequence.active_cue_index ?? 0) + 1);
+		for (const { cue, capture } of trackedThrough(through, byId)) {
+			const at = `${capture.fixture_id}/${parameterKey(capture.parameter_kind)}`;
+			if (!keys.has(at)) continue;
+			const when = sequence.went_at ?? 0;
+			// Ascending order above means a later sequence simply overwrites, and the
+			// stamp is kept so an equal one does not flap.
+			if ((wentAt.get(at) ?? -1) <= when) {
+				out.set(at, cue.id);
+				wentAt.set(at, when);
+			}
+		}
+	}
+	return out;
+}

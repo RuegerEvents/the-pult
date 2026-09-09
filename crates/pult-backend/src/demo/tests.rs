@@ -222,6 +222,71 @@ async fn every_preset_names_only_fixtures_that_exist() {
     }
 }
 
+/// The demo, end to end: take the cue that references a palette, edit the palette, and
+/// the cyc moves. This is the by-hand gate in the task entry, as a test.
+#[tokio::test]
+async fn editing_a_demo_preset_moves_the_cue_that_is_standing() {
+    let engine = a_station().await;
+    seed(&engine, Demo::Theatre).await.expect("it seeds");
+
+    let cues: Vec<Cue> = read(&engine, "cues").await;
+    let sequences: Vec<Sequence> = read(&engine, "sequences").await;
+    let presets: Vec<pult_schema::types::Preset> = read(&engine, "presets").await;
+    let dawn = cues.iter().find(|c| c.name == "Dawn").expect("the Dawn cue");
+    let sky = presets.iter().find(|p| p.name == "Dawn sky").expect("the Dawn sky preset");
+    let sequence = sequences.iter().find(|s| s.cue_ids.contains(&dawn.id)).expect("its sequence");
+
+    engine
+        .set(
+            vec![
+                pult_schema::path::PathSegment::Key("sequences".into()),
+                pult_schema::path::PathSegment::Id(sequence.id),
+                pult_schema::path::PathSegment::Key("goToCue".into()),
+            ],
+            pult_schema::lifecycle::Lifecycle::Synced,
+            serde_json::json!({ "cueId": dawn.id }),
+        )
+        .await
+        .expect("it takes");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let cyc = read::<Fixture>(&engine, "fixtures")
+        .await
+        .into_iter()
+        .find(|f| f.name.starts_with("Cyc"))
+        .expect("a cyc batten");
+    let to_of = |f: &Fixture| f.live_fades.get("ColorRgb").map(|fade| fade.to.clone());
+    let before = to_of(&cyc).expect("the cue is driving its colour");
+
+    // Somebody edits the palette. Nothing else about the show changes.
+    let mut values = sky.values.clone();
+    for value in &mut values {
+        value.value = pult_schema::types::ParameterValue::rgb(0.1, 0.3, 1.0);
+    }
+    engine
+        .set(
+            vec![
+                pult_schema::path::PathSegment::Key("presets".into()),
+                pult_schema::path::PathSegment::Id(sky.id),
+                pult_schema::path::PathSegment::Key("values".into()),
+            ],
+            pult_schema::lifecycle::Lifecycle::Persisted,
+            serde_json::to_value(&values).unwrap(),
+        )
+        .await
+        .expect("the palette is written");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let after = read::<Fixture>(&engine, "fixtures")
+        .await
+        .into_iter()
+        .find(|f| f.id == cyc.id)
+        .and_then(|f| to_of(&f))
+        .expect("still driven");
+    assert_ne!(before, after, "the standing cue did not follow the palette");
+    assert_eq!(after, pult_schema::types::ParameterValue::rgb(0.1, 0.3, 1.0));
+}
+
 #[tokio::test]
 async fn haunt_seeds_a_rig_that_hangs_together() {
     seeds_a_rig_that_hangs_together(Demo::Haunt).await;

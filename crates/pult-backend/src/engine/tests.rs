@@ -4261,6 +4261,92 @@ mod home {
         assert!((level - 0.5).abs() < 1e-5, "0.4 and a tenth more, not 0.1: {row}");
     }
 
+    /// **Editing a preset moves the cue that is standing**, through the whole engine:
+    /// the browser writes a `presets` row, the playback pass notices, and the fixture's
+    /// `live_fades` starts going somewhere new with nobody pressing Go.
+    ///
+    /// The playback-level test is `model::playback::tests::presets`; this is the wiring
+    /// around it — that `"presets"` is in `PLAYBACK_COLLECTIONS`, that the pass reads
+    /// the collection, and that the edit gate lets it through.
+    #[tokio::test]
+    async fn editing_a_preset_moves_a_standing_cue() {
+        use pult_schema::types::preset::{Preset, PresetValue};
+
+        let h = harness().await;
+        let fixture =
+            a_patched_fixture(&h, vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0))])
+                .await;
+
+        let preset = Preset {
+            id: Uuid::new_v4(),
+            name: "Warm".into(),
+            values: vec![PresetValue {
+                fixture_id: fixture.id,
+                parameter_kind: ParameterKind::Intensity,
+                value: ParameterValue::Float(0.9),
+            }],
+        };
+        h.engine.set(create_path("presets"), Lifecycle::Persisted, json(&preset)).await.unwrap();
+
+        let mut cue = a_cue("Look", 1.0);
+        cue.captures = vec![pult_schema::types::cue::ParameterCapture {
+            fixture_id: fixture.id,
+            parameter_kind: ParameterKind::Intensity,
+            // The literal it was stored as, which is *not* what the preset says — so a
+            // fade that landed on 0.2 would mean the reference was never resolved.
+            value: ParameterValue::Float(0.2),
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+            delay_in_ms: 0,
+            effect: None,
+            easing: None,
+            preset: Some(preset.id),
+        }];
+        h.engine.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+
+        let sequence = a_sequence("Main", vec![cue.id]);
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
+        h.engine
+            .set(
+                field_path("sequences", sequence.id, "goNext"),
+                Lifecycle::Synced,
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let to = |row: &serde_json::Value| -> f64 {
+            row["live_fades"]["Intensity"]["to"]["value"].as_f64().unwrap_or(f64::NAN)
+        };
+        let row = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
+        assert!(
+            (to(&row) - 0.9).abs() < 1e-5,
+            "the Go took the preset's value, not the literal: {row}"
+        );
+
+        // Somebody edits the palette. Nothing else about the show changes.
+        h.engine
+            .set(
+                field_path("presets", preset.id, "values"),
+                Lifecycle::Persisted,
+                serde_json::json!([{
+                    "fixture_id": fixture.id,
+                    "parameter_kind": "Intensity",
+                    "value": { "type": "Float", "value": 0.35 },
+                }]),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let row = h.engine.get(entity_path("fixtures", fixture.id)).await.unwrap();
+        assert!(
+            (to(&row) - 0.35).abs() < 1e-5,
+            "the standing cue did not follow the palette: {row}"
+        );
+    }
+
     /// **Moving a value breaks its link to a preset.**
     ///
     /// A parameter somebody has nudged is no longer that palette's, and the whole row
