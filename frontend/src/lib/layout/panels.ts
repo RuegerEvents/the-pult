@@ -26,6 +26,7 @@ import FixtureTypeEditor from '$lib/components/FixtureTypeEditor.svelte';
 import PluginsPanel from '$lib/components/PluginsPanel.svelte';
 import SelectionPanel from '$lib/components/SelectionPanel.svelte';
 import SequenceRunner from '$lib/components/SequenceRunner.svelte';
+import CueSheet from '$lib/components/cues/CueSheet.svelte';
 import SessionPanel from '$lib/components/SessionPanel.svelte';
 import SettingsPanel from '$lib/components/SettingsPanel.svelte';
 import SpeedMastersPanel from '$lib/components/SpeedMastersPanel.svelte';
@@ -93,6 +94,11 @@ export type PanelMeta = {
 
 export const PANELS = {
 	playback: { title: 'Playback', component: SequenceRunner, fills: false, editable: true },
+	// The other half of the pair, and the reason the runner lost its cue expander: this
+	// is the *editor* of one sequence — numbers, both fade times, the curve, the follow —
+	// where the runner is every sequence at once with a Go under each thumb. A click on
+	// a row *shows* the cue in the fixture sheet; a double-click or the Go column takes.
+	cues: { title: 'Cues', component: CueSheet, fills: true, editable: true },
 	values: { title: 'Programmer', component: ValuesPanel, fills: true },
 	// The rig as a table, and the one panel that says *where* a value came from. It
 	// fills, because a sheet handed half its tile is a sheet with three rows in it.
