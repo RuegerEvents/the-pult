@@ -5466,6 +5466,16 @@ new competes on value; an item that makes it stop being wrong does not compete a
 and putting the two in one numbered list is what let this sit unplaced. If another is
 found, it goes at the top, and the reason is written here rather than argued again.
 
+**programming-workflow was added on 2026-09-09 and goes to the top**, ahead of
+everything numbered below, because it is the first entry here about the console being
+*used* rather than about what it can reach: the loop every other desk has — select, set,
+store, play, update — has no whole here, a cue's contents are visible nowhere, and there
+are no presets at all. The entry carries the decisions already taken, so the build starts
+from them rather than from the questions.
+
+0. **programming-workflow** — a fixture sheet, a cue sheet, store/update/clear as
+   verbs, presets, and a setup mode for the panels that are not work surfaces.
+   → none; the decisions are in the entry
 1. **3d-programmer-remainder** — blind, highlight, fan, and modifiers that are
    themselves dynamic. → none: the viewer landed as task 51
 2. **voice-input** — speech to the command line, grammar first and NL on parse
@@ -5632,6 +5642,126 @@ Token and cost accounting for the NL plugin, visible over the REST API.
   live where, kept up to date by whom?
 
 ### Programming model
+
+#### programming-workflow
+
+Added 2026-09-09, out of a second look at the workspace with the question "how does
+somebody actually program a show on this". Verified against the code the same day.
+
+**What is true today.** A cue's contents are visible nowhere: `SequenceRunner.svelte`
+prints `captures.length` and the only way to read or change a capture is Edit →
+programmer → Update, a `replace` store. Per-capture timing is settable in `StoreMenu`
+at store time and never shown again; a capture's `fade_out_ms` is reachable from no UI
+at all. There are no presets — a cue always copies literals, and the substitute is the
+programmer's `locked` parking, as `programmer.rs` says itself. There is no fixture sheet,
+although the model knows exactly the layers one would colour by (programmer > track >
+effect > fade > home) and `RunningFade.cue_id` names the cue. Update in the sense every
+desk has it — programmer into the running cue — is four clicks; "cue only" does not
+exist, so a store into cue 3 silently runs forward until the next capture. And the
+panels that are one-off setup (fixture types, session, plugins, versions, settings) sit
+in the `+` list beside the ones somebody keeps open; seven panels are placed by no
+preset. Three hand-rolled modals, no shared `Dialog`. One small bug on the way:
+`plugins/command-line/src/lib.rs` stores captures with `easing: Linear` where the browser
+writes `null` (inherit).
+
+**What every other desk shares** — grandMA3, Eos, Hog 4, Titan, MagicQ — is one loop,
+select → set → store → play → update, with a fixture sheet that says what the rig is
+doing and who is driving it, a cue sheet that says what a cue does, store options
+(merge/replace, cue only/track), Update into the cue a value came from, palettes as
+references, pools, and setup as a *mode* rather than a window in the workspace.
+
+**Decisions taken on 2026-09-09**, so they are not re-argued:
+
+| | |
+|---|---|
+| Scope | Presets now, a setup mode, track/cue only now. One task, six packages A–F, a commit per package. |
+| Update | Writes each programmer key into the cue **driving it now** (`live_fades[key].cue_id`, `live_effects[key].source`). Keys no cue drives: the store dialog opens with exactly those ticked. No target to pick. |
+| Store target | The sequence last stored into, "after the active cue" preselected; remembered per browser. |
+| Track / cue only | Track preselected; last choice in `localStorage`. Cue only writes the previously tracked value of every changed key into the next cue where that cue does not capture it itself. |
+| Cue row click | Click *shows* (fixture sheet goes into cue mode); double-click or the Go column takes. |
+| Playback vs cue sheet | Both: `playback` is the runner over every sequence (loses only its cue expander); `cues` is the editor of one. |
+| Keys | Ctrl/Cmd+Enter store, Ctrl/Cmd+U update, Esc clears the programmer, Esc Esc also the selection, **Space is Go** on the last-focused cue sheet — none focused, no Go and a toast. Never when a text field has focus. |
+| Sheet rows | The selection in its order; nothing selected → every fixture in patch order; a switch forces "all" with the selection marked. |
+| Sheet colours | MA-near: programmer amber (`--live`), hard in the shown cue white, tracked cyan, effect magenta, recording (track layer) green, home grey. Tokens in `styles/tokens.css`, reused by the programmer panel and the cue sheet. |
+| Preset contents | **Any mix** of groups — a look. One flat pool; group tags (I/P/C/B/O) *derived* from the keys, never stored; a group filter above. |
+| Preset with no selection | Applies to every fixture the preset knows; with a selection, the intersection, and the button says "4 of 6". |
+| Editing a preset | Long-press/right-click "update from programmer" (merge) **and** a preset mode in the fixture sheet with the same inspector the cue mode has. |
+| Preset live | Editing a preset reaches **running** cues at once, as a fade over `home_fade_ms` from wherever the parameter is. |
+| Breaking the link | A fader, typing, `at +10` (`__by`) write `preset: null` in the same write. Reference first, literal beside it: `value` is the store-time copy, never rewritten by a preset edit, and plays when the preset is gone or does not name the fixture. Deleting cascades nothing; the UI says "preset missing"; Ctrl-Z of the delete restores every link. |
+| Pools panel | Groups (recall of the query) and presets. Not sequences. |
+| Patch | Stays a panel **and** a setup section; Devices likewise; the fixture type editor only in setup. The "Patch" layout preset stays. |
+| Demos | Theatre: two positions and three colours; Club/Festival: colours; one cue per demo references one. The demo test checks every preset names only fixtures that exist. |
+| Command line | `fixture 1 thru 5 preset 3`, `preset "warm"`, `store preset "warm"`, **and** `update` as a first word (the same act as the button). |
+| `SCHEMA_GENERATION` | Stays 5: a new table and a `#[serde(default)]` key inside a JSON column are "a field added", the path `effect` and `easing` took. |
+
+**One point is open and must not be decided silently.** A top-level collection has only
+its creation order (`infra/showfile/order.rs`, `collection_order`) and no verb to reorder
+it, so "a pool the operator can sort" wants a `["presets", "__reorder"]` verb with
+`WriteJob::Order` and undo. Recommendation: creation order plus the filter in this task,
+the verb recorded under *What is not done*.
+
+**The six packages**, in build order; A–D touch no schema.
+
+- **A. `Dialog.svelte` and a setup mode.** One dialog primitive out of
+  `stage/DeletePrompt.svelte` (scrim, `role="dialog" aria-modal`, Escape, backdrop,
+  `onclose`); `StoreMenu` and the restore confirm in `ShowPanel` move onto it.
+  `components/setup/Setup.svelte` is a full-screen dialog with a section list — Patch,
+  Fixture types (`FixtureTypeEditor` + `FixtureTypeShare`, lifted out of
+  `PatchPanel.svelte`), Devices, I/O, Network, Session, Plugins, MVR-xchange, Show &
+  versions, Settings — each section the existing component, unchanged. `Setup ▾` in the
+  top bar; `revealPanel('show')` in `ShowMenu` becomes `openSetup('show')`.
+  `layout/panels.ts` gains `home: 'workspace' | 'setup' | 'both'`; the `+` menu lists
+  only `workspace`/`both`; the `setup` layout preset goes. Stations, System, Logs,
+  History, Speed masters, Wire, stage/*, Paperwork and Timeline stay panels, each for a
+  reason already in `panels.ts` (sparklines live in the panel, a mount subscribes, a
+  mount is `output.watch`).
+- **B. Fixture sheet** (`sheet`, `programmer/FixtureSheet.svelte`, `fills`). Columns
+  are the union of output parameters grouped by `fadeGroup(key)`. Live mode reads
+  `stores/output.ts` and colours by a pure `source(drivenBy, track, shownCue)` in
+  `lib/sheet.ts` over what `driving.ts::drivenBy` already assembles — no evaluator change.
+  Cue mode (`cueInView`) shows the tracked state up to a cue, hard vs tracked with the
+  origin cue's number, reaching no output; `trackedThrough` in `cues.ts` mirrors
+  `cue::tracked_through` and `testdata/tracking.json` holds the two together. Preset mode
+  shows a preset's values. An inspector strip edits one capture (value, fade in/out,
+  delay, curve, effect, preset chip) or one preset value.
+- **C. Cue sheet** (`cues`, `components/cues/CueSheet.svelte`, editable). Sequence tabs;
+  rows with number, name, fade in/out, curve, follow (+ after), captures, active; inline
+  edit behind the lock; insert-after, delete, drag-reorder taken from `SequenceRunner`,
+  whose expander goes. Go, Back, Off. Pointerdown sets `focusedCueSheet` for Space.
+- **D. Store, Update, Clear as verbs** (`programmer/Verbs.svelte` in the top bar, keymap
+  in `routes/+layout.svelte`). Store dialog with remembered target, Track / Cue only
+  (`cueOnlyCompensation` in `cues.ts`, one gesture), and a third target, Preset.
+  `updateDriven()` in `stores/programmer.ts`. Command line: `update`; `store` writes
+  `easing: None`.
+- **E. Presets.** `types/preset.rs` on the `Group` pattern: `Preset { id, name, values:
+  Vec<PresetValue{fixture_id, parameter_kind, value}> }`, `value_for`, `preset_index`;
+  `ParameterCapture.preset` and `ProgrammerValue.preset`, both `Option<Uuid>` with
+  `serde(default)`; `ParameterCapture::value_in(&index)` is the one resolution, used by
+  `start_capture` in `model/playback.rs` (`ShowView` gains `presets`, six `ShowView::new`
+  sites), `playback_pass`, and `paperwork_cue_values`. `"presets"` joins
+  `PLAYBACK_COLLECTIONS`, and when that version moves the pass re-resolves every
+  fade/effect whose capture names a preset, restarting from `value_at(now)` over
+  `home_fade_ms`. `nudge_programmer` writes `preset: null`. Frontend: `storeCaptures`
+  and `entriesFromCue` carry it, `applyPreset`, `presetValues`, `storePreset`;
+  `pools/PoolsPanel.svelte`; chips in the programmer, the cue sheet, the sheet cell.
+  Command line grammar and executor. Demo seeds. Codegen for the frontend and the SDK
+  mirror; roughly 24 `ParameterCapture` and 12 `ProgrammerValue` literals to touch.
+- **F. Layout presets, this document, CLAUDE.md.** `programming` becomes
+  `[rig | values, selection] / [sheet | cues, pools]`; `playback` `[playback | sheet]`;
+  `effects` gains `sheet` as a tab. This entry becomes task 68 with the traps and *What
+  is not done*: the reorder verb, global (type-wide) presets, preset + offset, and
+  blind/highlight/fan, which stay in `3d-programmer-remainder`, Mark/MIB, an effect pool.
+
+**Gates.** `npm test` (`sheet.test.ts`, `cues.test.ts` against `tracking.json`,
+`programmer.test.ts` round-trips with `preset`) and `npm run check` at zero warnings;
+`cargo test -p pult-schema` (`value_in` three ways, an older capture without `preset`
+loads); `cargo test -p pult-backend --lib engine` (a nudge breaks the link, a preset
+edit fades live), `--lib demo`, and `--test counts` (a cue-only store is **one** history
+row, an update across three cues is one); `cd plugins && cargo test`; `cargo test -p
+pult-codegen`. By hand on `scripts/demo.sh --demo theatre`: click a cue and the sheet
+shows hard against tracked with a preset chip; change a value, Ctrl+U, the sheet and
+the lamp agree; edit the preset and the standing cue fades; open Setup, make a fixture
+type, close it, the workspace is unchanged; Space with no cue sheet is a toast.
 
 #### 3d-programmer-remainder
 

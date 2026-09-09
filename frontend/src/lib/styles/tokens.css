@@ -33,6 +33,22 @@
 	--good: #22c55e;
 	--bad: #ef4444;
 
+	/*
+	 * Where a value came from, in the fixture sheet and everywhere that echoes it.
+	 *
+	 * MA-near deliberately: amber for the programmer and cyan for a tracked value are
+	 * what anybody who has stood behind a desk already reads without being told, and
+	 * a private palette would cost exactly that recognition for nothing. The
+	 * programmer's is `--live`, which is already the console's "this is reaching the
+	 * rig", so it is one colour and not two that have to be kept equal.
+	 */
+	--src-programmer: var(--live);
+	--src-cue: #fff;
+	--src-tracked: #22d3ee;
+	--src-effect: #e879f9;
+	--src-track: #4ade80;
+	--src-home: #6b7280;
+
 	--radius: 4px;
 	--font-md: 14px;
 	--font-sm: 12px;

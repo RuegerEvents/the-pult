@@ -34,6 +34,7 @@ import NetworkPanel from '$lib/components/NetworkPanel.svelte';
 import StationsPanel from '$lib/components/StationsPanel.svelte';
 import SystemPanel from '$lib/components/SystemPanel.svelte';
 import ValuesPanel from '$lib/components/programmer/ValuesPanel.svelte';
+import FixtureSheet from '$lib/components/programmer/FixtureSheet.svelte';
 import WirePanel from '$lib/components/wire/WirePanel.svelte';
 import XchangePanel from '$lib/components/XchangePanel.svelte';
 import PlanPanel from '$lib/components/stage/PlanPanel.svelte';
@@ -93,6 +94,9 @@ export type PanelMeta = {
 export const PANELS = {
 	playback: { title: 'Playback', component: SequenceRunner, fills: false, editable: true },
 	values: { title: 'Programmer', component: ValuesPanel, fills: true },
+	// The rig as a table, and the one panel that says *where* a value came from. It
+	// fills, because a sheet handed half its tile is a sheet with three rows in it.
+	sheet: { title: 'Fixtures', component: FixtureSheet, fills: true },
 	selection: { title: 'Selection', component: SelectionPanel, fills: true },
 	plan: { title: 'Plan', component: PlanPanel, fills: true, editable: true },
 	rig: { title: '3D Rig', component: RigPanel, fills: true },

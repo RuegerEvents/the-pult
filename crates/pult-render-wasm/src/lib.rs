@@ -358,6 +358,29 @@ impl Evaluator {
         self.packed.clone()
     }
 
+    /// Which of the watched parameters a recording is asserting at this moment.
+    ///
+    /// The fixture sheet's green, and the one layer a page cannot work out for
+    /// itself: a fade and an effect are rows on the fixture, and a take is bytes that
+    /// only ever cross this boundary. So it is asked for rather than derived, and it
+    /// is a *read* — `TrackAt::value_at`, which `composed` already uses, so there is
+    /// no second answer to when a recording is speaking.
+    ///
+    /// Which matters because **a track says nothing before its first point**: a key a
+    /// rolling take merely carries is not a key it is asserting, and colouring one
+    /// green would be the sheet claiming a source the lamps do not have.
+    ///
+    /// Asked only while a sheet is open and a timeline is running, so a settled
+    /// console pays nothing for it.
+    pub fn recording(&self, now_ms: f64) -> Vec<String> {
+        let now = now_ms.max(0.0) as u64;
+        self.watching
+            .iter()
+            .filter(|key| self.track_for(key).is_some_and(|at| at.value_at(now).is_some()))
+            .cloned()
+            .collect()
+    }
+
     /// One parameter's per-emitter overrides, for the colour control alone.
     ///
     /// Separate from [`Evaluator::evaluate`] for the reason [`Evaluator::text`] is: the
@@ -445,5 +468,42 @@ mod tests {
         evaluator.watching = vec!["nobody/Intensity".into()];
         evaluator.packed = vec![0.0; STRIDE];
         assert_eq!(evaluator.evaluate(1_000.0)[0], NONE);
+    }
+
+    /// The sheet's green, and the rule it rests on: a rolling take carrying a key is
+    /// not the same as one asserting it, because a track says nothing before its
+    /// first point.
+    #[test]
+    fn a_recording_is_reported_only_where_it_is_actually_asserting() {
+        use pult_render::track::{Track, TrackKey, TrackPoint};
+
+        // `uuid` is `pult-render`'s dependency and not this crate's, so the id is taken
+        // off the track rather than written — which is a dependency for one test.
+        let track = Track {
+            keys: vec![
+                TrackKey {
+                    fixture_id: Default::default(),
+                    key: "Intensity".into(),
+                    points: vec![TrackPoint { ms: 2_000, value: ParameterValue::Float(0.6) }],
+                },
+                TrackKey { fixture_id: Default::default(), key: "Pan".into(), points: vec![] },
+            ],
+        };
+        let fixture = track.keys[0].fixture_id;
+        let mut evaluator = Evaluator::default();
+        evaluator.load_track("sha", &pult_render::track::encode(&track)).unwrap();
+        evaluator.play_track("sha", 10_000.0, 0.0, 1.0);
+        evaluator.watching =
+            vec![format!("{fixture}/Intensity"), format!("{fixture}/Pan"), "nobody/Tilt".into()];
+
+        assert!(
+            evaluator.recording(11_000.0).is_empty(),
+            "a second into a take, before the first point, the recording says nothing"
+        );
+        assert_eq!(
+            evaluator.recording(13_000.0),
+            vec![format!("{fixture}/Intensity")],
+            "and once past it, exactly the key it is asserting"
+        );
     }
 }

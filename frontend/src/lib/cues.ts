@@ -8,6 +8,7 @@
  */
 
 import type { Cue, Sequence } from './generated/index.js';
+import { parameterKey } from './patch.js';
 import type { DataRoot } from './ws/data.js';
 
 export type NewCue = {
@@ -111,4 +112,45 @@ export function reorderCueIds(ids: string[], from: number, to: number): string[]
 	const [moved] = next.splice(from, 1);
 	next.splice(Math.max(0, Math.min(next.length, to)), 0, moved);
 	return next;
+}
+
+/**
+ * The latest capture of every key over a run of cues.
+ *
+ * The browser's copy of `pult_schema::types::cue::tracked_through`, and it is here
+ * for the reason `selection.ts` and `scene.ts` are: a cue clicked in a list has to
+ * colour a sheet in the same frame, and a round trip inside that is a sheet that
+ * flickers. The two are held together by `testdata/tracking.json`, which this file's
+ * test and `crates/pult-schema/tests/tracking_corpus.rs` both read.
+ *
+ * `through` is the cue ids in order, up to and including the one being looked at. A
+ * cue the show no longer has is **skipped rather than refused**: a sequence naming a
+ * deleted cue is a show mid-edit, not a reason to answer nothing.
+ *
+ * The order is part of the answer — keys in the order they were first captured,
+ * whichever cue later overrode them — because a sheet whose rows moved between two
+ * identical questions is a sheet nobody can read.
+ */
+export function trackedThrough(
+	through: string[],
+	byId: (id: string) => Cue | undefined
+): { cue: Cue; capture: Cue['captures'][number] }[] {
+	const order: string[] = [];
+	const latest = new Map<string, { cue: Cue; capture: Cue['captures'][number] }>();
+	for (const id of through) {
+		const cue = byId(id);
+		if (!cue) continue;
+		for (const capture of cue.captures) {
+			const key = `${capture.fixture_id}/${parameterKey(capture.parameter_kind)}`;
+			if (!latest.has(key)) order.push(key);
+			latest.set(key, { cue, capture });
+		}
+	}
+	return order.map((key) => latest.get(key)!);
+}
+
+/** The cue ids a sequence lists up to and including one of them, for `trackedThrough`. */
+export function cueIdsThrough(sequence: Sequence, cueId: string): string[] {
+	const at = sequence.cue_ids.indexOf(cueId);
+	return at < 0 ? [] : sequence.cue_ids.slice(0, at + 1);
 }

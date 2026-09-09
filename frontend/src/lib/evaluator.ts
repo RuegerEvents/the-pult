@@ -45,6 +45,7 @@ type Instance = {
 	play_track(sha: string, anchorMs: number, positionAtAnchorMs: number, rate: number): void;
 	stop_track(sha: string): void;
 	forget_track(sha: string): void;
+	recording(nowMs: number): string[];
 };
 
 type Wasm = {
@@ -126,6 +127,18 @@ export function stopTrack(sha: string): void {
 /** The show no longer carries this recording at all. */
 export function forgetTrack(sha: string): void {
 	instance?.forget_track(sha);
+}
+
+/**
+ * Which of the watched parameters a recording is asserting right now.
+ *
+ * The fixture sheet's one layer that cannot be read off a fixture row: a fade and an
+ * effect are `live_fades` and `live_effects`, and a take is bytes that only ever cross
+ * this boundary. Asked for rather than derived, and asked only while a sheet is open
+ * and a timeline is running — a settled console never calls it.
+ */
+export function recordingKeys(nowMs: number): string[] {
+	return instance?.recording(nowMs) ?? [];
 }
 
 /** Say which parameters are being shown, and in what order the answers come back. */

@@ -1,0 +1,345 @@
+{
+  "about": [
+    "One cue stack and a list of cases, read by two test suites:",
+    "crates/pult-schema/src/types/cue.rs's `tracked_through` and the",
+    "`trackedThrough` in frontend/src/lib/cues.ts. \"A cue is the stack up to it\"",
+    "is the rule the whole cue sheet draws — hard against tracked, and which cue a",
+    "tracked value came from — and the browser cannot round-trip to ask, because a",
+    "cue clicked in a list has to colour a sheet in the same frame.",
+    "",
+    "Each case names the cue ids a sequence lists up to and including the one being",
+    "looked at, and expects the latest capture of every key, in the order the keys",
+    "were first seen. That order is part of the answer: a HashMap's is not stable,",
+    "and a sheet whose rows moved between two identical questions would be a sheet",
+    "nobody could read.",
+    "",
+    "Cue 9 is in `cues` and in no case's `through` except case five, which passes an",
+    "id the lookup answers nothing for — a sequence naming a deleted cue, which is a",
+    "show mid-edit and not a reason to answer nothing."
+  ],
+  "cues": [
+    {
+      "id": "cccccccc-0000-4000-8000-000000000001",
+      "name": "Preset",
+      "number": 1.0,
+      "captures": [
+        {
+          "fixture_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "parameter_kind": "Intensity",
+          "value": {
+            "type": "Float",
+            "value": 0.5
+          },
+          "fade_in_ms": 0,
+          "fade_out_ms": 0,
+          "delay_in_ms": 0
+        },
+        {
+          "fixture_id": "aaaaaaaa-0000-4000-8000-000000000002",
+          "parameter_kind": "Intensity",
+          "value": {
+            "type": "Float",
+            "value": 0.2
+          },
+          "fade_in_ms": 0,
+          "fade_out_ms": 0,
+          "delay_in_ms": 0
+        },
+        {
+          "fixture_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "parameter_kind": "Pan",
+          "value": {
+            "type": "Float",
+            "value": 0.5
+          },
+          "fade_in_ms": 2000,
+          "fade_out_ms": 0,
+          "delay_in_ms": 0
+        }
+      ],
+      "follow_mode": "Manual",
+      "fade_in_ms": 500,
+      "fade_out_ms": 0,
+      "easing": null,
+      "is_active": false
+    },
+    {
+      "id": "cccccccc-0000-4000-8000-000000000002",
+      "name": "Build",
+      "number": 2.0,
+      "captures": [
+        {
+          "fixture_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "parameter_kind": "Intensity",
+          "value": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "fade_in_ms": 3000,
+          "fade_out_ms": 0,
+          "delay_in_ms": 0
+        },
+        {
+          "fixture_id": "aaaaaaaa-0000-4000-8000-000000000003",
+          "parameter_kind": "Intensity",
+          "value": {
+            "type": "Float",
+            "value": 0.8
+          },
+          "fade_in_ms": 0,
+          "fade_out_ms": 0,
+          "delay_in_ms": 0
+        }
+      ],
+      "follow_mode": "Manual",
+      "fade_in_ms": 500,
+      "fade_out_ms": 0,
+      "easing": null,
+      "is_active": false
+    },
+    {
+      "id": "cccccccc-0000-4000-8000-000000000003",
+      "name": "Cross",
+      "number": 3.0,
+      "captures": [
+        {
+          "fixture_id": "aaaaaaaa-0000-4000-8000-000000000002",
+          "parameter_kind": "Intensity",
+          "value": {
+            "type": "Float",
+            "value": 0.9
+          },
+          "fade_in_ms": 0,
+          "fade_out_ms": 0,
+          "delay_in_ms": 0
+        },
+        {
+          "fixture_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "parameter_kind": "Pan",
+          "value": {
+            "type": "Float",
+            "value": 0.25
+          },
+          "fade_in_ms": 0,
+          "fade_out_ms": 0,
+          "delay_in_ms": 0
+        }
+      ],
+      "follow_mode": "Manual",
+      "fade_in_ms": 500,
+      "fade_out_ms": 0,
+      "easing": null,
+      "is_active": false
+    },
+    {
+      "id": "cccccccc-0000-4000-8000-000000000009",
+      "name": "Orphan",
+      "number": 9.0,
+      "captures": [
+        {
+          "fixture_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "parameter_kind": "Intensity",
+          "value": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "fade_in_ms": 0,
+          "fade_out_ms": 0,
+          "delay_in_ms": 0
+        }
+      ],
+      "follow_mode": "Manual",
+      "fade_in_ms": 500,
+      "fade_out_ms": 0,
+      "easing": null,
+      "is_active": false
+    }
+  ],
+  "cases": [
+    {
+      "name": "one cue is its own captures, in the order it lists them",
+      "through": [
+        "cccccccc-0000-4000-8000-000000000001"
+      ],
+      "expected": [
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000001",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000001",
+          "value": {
+            "type": "Float",
+            "value": 0.5
+          }
+        },
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000002",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000001",
+          "value": {
+            "type": "Float",
+            "value": 0.2
+          }
+        },
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000001",
+          "key": "Pan",
+          "cue": "cccccccc-0000-4000-8000-000000000001",
+          "value": {
+            "type": "Float",
+            "value": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "name": "a later cue overrides a key and keeps its place in the order",
+      "through": [
+        "cccccccc-0000-4000-8000-000000000001",
+        "cccccccc-0000-4000-8000-000000000002"
+      ],
+      "expected": [
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000001",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000002",
+          "value": {
+            "type": "Float",
+            "value": 1.0
+          }
+        },
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000002",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000001",
+          "value": {
+            "type": "Float",
+            "value": 0.2
+          }
+        },
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000001",
+          "key": "Pan",
+          "cue": "cccccccc-0000-4000-8000-000000000001",
+          "value": {
+            "type": "Float",
+            "value": 0.5
+          }
+        },
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000003",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000002",
+          "value": {
+            "type": "Float",
+            "value": 0.8
+          }
+        }
+      ]
+    },
+    {
+      "name": "three deep: every key answers with the last cue that said it",
+      "through": [
+        "cccccccc-0000-4000-8000-000000000001",
+        "cccccccc-0000-4000-8000-000000000002",
+        "cccccccc-0000-4000-8000-000000000003"
+      ],
+      "expected": [
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000001",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000002",
+          "value": {
+            "type": "Float",
+            "value": 1.0
+          }
+        },
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000002",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000003",
+          "value": {
+            "type": "Float",
+            "value": 0.9
+          }
+        },
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000001",
+          "key": "Pan",
+          "cue": "cccccccc-0000-4000-8000-000000000003",
+          "value": {
+            "type": "Float",
+            "value": 0.25
+          }
+        },
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000003",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000002",
+          "value": {
+            "type": "Float",
+            "value": 0.8
+          }
+        }
+      ]
+    },
+    {
+      "name": "nothing before the first cue",
+      "through": [],
+      "expected": []
+    },
+    {
+      "name": "a cue the show no longer has is skipped, not refused",
+      "through": [
+        "cccccccc-0000-4000-8000-000000000001",
+        "cccccccc-0000-4000-8000-000000000404",
+        "cccccccc-0000-4000-8000-000000000003"
+      ],
+      "expected": [
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000001",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000001",
+          "value": {
+            "type": "Float",
+            "value": 0.5
+          }
+        },
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000002",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000003",
+          "value": {
+            "type": "Float",
+            "value": 0.9
+          }
+        },
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000001",
+          "key": "Pan",
+          "cue": "cccccccc-0000-4000-8000-000000000003",
+          "value": {
+            "type": "Float",
+            "value": 0.25
+          }
+        }
+      ]
+    },
+    {
+      "name": "an orphan cue reached directly is exactly itself",
+      "through": [
+        "cccccccc-0000-4000-8000-000000000009"
+      ],
+      "expected": [
+        {
+          "fixture": "aaaaaaaa-0000-4000-8000-000000000001",
+          "key": "Intensity",
+          "cue": "cccccccc-0000-4000-8000-000000000009",
+          "value": {
+            "type": "Float",
+            "value": 0.0
+          }
+        }
+      ]
+    }
+  ]
+}
