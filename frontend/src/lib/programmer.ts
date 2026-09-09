@@ -19,7 +19,7 @@ import type {
 } from './generated/index.js';
 import { fadeGroup } from './fade.js';
 import type { FadeGroup } from './generated/index.js';
-import { kindLabel, modeHas, modeOf, parameterKey } from './patch.js';
+import { displayLabel, modeHas, modeOf, parameterKey } from './patch.js';
 import type { Showing } from './stores/output.js';
 
 // ── Entry ids ─────────────────────────────────────────────────────────────────
@@ -126,7 +126,7 @@ export function editableParameters(
 			rows.set(key, {
 				kind: parameter.kind,
 				key,
-				label: kindLabel(parameter.kind),
+				label: displayLabel(parameter.kind),
 				defaultValue: parameter.default_value,
 				count: 1,
 				unreachable: reachable ? 0 : 1,

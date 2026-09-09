@@ -5470,8 +5470,16 @@ that was not theirs. Every unit test had one fixture in it and passed;
 `scripts/demo.sh --demo theatre` moved the whole Back wash on one colour edit. The index
 is keyed by cue, fixture *and* key, and there is now a test with two fixtures on one key.
 
-Worth keeping the shape of that one: **the by-hand gate found two defects the suite could
-not**, and both were about several of a thing where a test had one.
+**And an editable panel in Setup had no way to unlock.** The Edit toggle lives in the
+tile chrome — deliberately, so it is the same control in the same place on every panel
+that has one — and the Setup dialog is chrome that forgot it. Patch, Devices and Network
+could still be unlocked from a tile, since the toggle is one store per panel id; Plugins
+and Settings live only in Setup and were locked for good. Setup carries the toggle now,
+beside its title, where a tile puts it beside the tab strip.
+
+Worth keeping the shape of those: **the by-hand gate found three defects the suite could
+not**, two of them about several of a thing where a test had one, and the third about a
+control that only exists in a place no test renders.
 
 #### What is not done
 

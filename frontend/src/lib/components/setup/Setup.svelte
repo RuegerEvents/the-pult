@@ -19,7 +19,8 @@
 	 */
 
 	import Dialog from '$lib/components/Dialog.svelte';
-	import { PANELS, panelHome, type PanelId } from '$lib/layout/panels.js';
+	import EditToggle from '$lib/components/layout/EditToggle.svelte';
+	import { PANELS, panelHome, type PanelId, type PanelMeta } from '$lib/layout/panels.js';
 	import { closeSetup, openSetup, setupSection } from '$lib/stores/setup.js';
 
 	/**
@@ -35,10 +36,23 @@
 			? ($setupSection as PanelId)
 			: SECTIONS[0]) as PanelId
 	);
-	const Section = $derived(PANELS[current].component);
+	// Widened to `PanelMeta`, because `PANELS` is `as const satisfies` and the narrowed
+	// member type has no `editable` key at all on the entries that do not set one.
+	const meta: PanelMeta = $derived(PANELS[current]);
+	const Section = $derived(meta.component);
 </script>
 
+<!-- The Edit toggle belongs to the chrome and not to the panel — its own doc says so —
+     and in here *this* is the chrome. Without it every editable section would open
+     read-only with nothing to unlock it: Patch, Devices and Network could still be
+     unlocked from a tile, since the toggle is one store per panel id, but Plugins and
+     Settings live only here and would have been locked for good. -->
 <Dialog title="Setup" size="full" onclose={closeSetup}>
+	{#snippet actions()}
+		{#if meta.editable}
+			<EditToggle panel={current} />
+		{/if}
+	{/snippet}
 	<div class="setup">
 		<nav>
 			{#each SECTIONS as id (id)}

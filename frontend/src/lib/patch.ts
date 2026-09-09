@@ -101,6 +101,45 @@ export function defaultDirectionFor(kind: ParameterKind): ParameterDirection {
 		: 'Output';
 }
 
+/**
+ * What an operator calls a parameter.
+ *
+ * The third of three, and the console needed one: [`kindLabel`] answers "which of the
+ * fixed options is this", which is what the type editor's selector round-trips through
+ * and must not change, and [`parameterKindLabel`] answers "what is this called in
+ * `live_fades`". Neither is a name to put in front of somebody — a colour column
+ * headed `ColorRgb`, and an inspector saying `Cyc 1 · ColorRgb`, are the map key
+ * showing through.
+ *
+ * The schema spells it the way GDTF does and that stays; this is the label, and the
+ * console's own English is British. A numbered kind reads as the number an operator
+ * counts from — `Gobo 1`, not `Gobo:1` — and a named one is whatever the device
+ * called it, which is already the operator's word.
+ */
+export function displayLabel(kind: ParameterKind): string {
+	if (typeof kind === 'string') {
+		switch (kind) {
+			case 'ColorRgb':
+				return 'Colour';
+			case 'ColorTemperature':
+				return 'Colour temp.';
+			case 'GoboIndex':
+				return 'Gobo';
+			default:
+				return kind;
+		}
+	}
+	if ('Named' in kind) return kind.Named;
+	if ('ColorWheel' in kind) return `Colour wheel ${kind.ColorWheel}`;
+	if ('GoboRotation' in kind) return `Gobo rotation ${kind.GoboRotation}`;
+	if ('Gobo' in kind) return `Gobo ${kind.Gobo}`;
+	if ('Prism' in kind) return `Prism ${kind.Prism}`;
+	if ('Frost' in kind) return `Frost ${kind.Frost}`;
+	if ('Raw' in kind) return `Raw ${kind.Raw}`;
+	if ('Switch' in kind) return `Switch ${kind.Switch}`;
+	return `Contact ${kind.Contact}`;
+}
+
 /** A parameter kind as a string, including the tagged variants. */
 export function parameterKindLabel(kind: ParameterKind): string {
 	if (typeof kind === 'string') return kind;

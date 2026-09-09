@@ -24,12 +24,18 @@
 	 * marked in it rather than filtered to it.
 	 */
 
-	import type { Cue, Fixture, ParameterCapture, ParameterKind } from '$lib/generated/index.js';
+	import type {
+		Cue,
+		Fixture,
+		ParameterCapture,
+		ParameterKind,
+		ParameterValue
+	} from '$lib/generated/index.js';
 	import { cueIdsThrough, trackedThrough } from '$lib/cues.js';
 	import { drivenBy, drivingKey } from '$lib/driving.js';
 	import { recordingKeys } from '$lib/evaluator.js';
 	import { CURVE_LABELS, CURVES, fadeGroup } from '$lib/fade.js';
-	import { formatValue, kindLabel, parameterKey } from '$lib/patch.js';
+	import { displayLabel, formatValue, parameterKey } from '$lib/patch.js';
 	import { asFloat, hexToRgb, rgbToHex, withFloat } from '$lib/programmer.js';
 	import { SOURCE_LABELS, source, trackedSource, type Source } from '$lib/sheet.js';
 	import { collection } from '$lib/stores/show.js';
@@ -78,14 +84,36 @@
 	 */
 	const GROUPS = ['Intensity', 'Position', 'Color', 'Beam', 'Other'] as const;
 
+	type Column = {
+		key: string;
+		kind: ParameterKind;
+		label: string;
+		/**
+		 * What kind of value this parameter is, as its type declares it.
+		 *
+		 * Carried on the column rather than read off the live reading, because the
+		 * inspector needs the *shape* — a colour or a number — and the reading is
+		 * `null` for every parameter nothing is driving and until this browser knows
+		 * the station's clock. Deciding from it offered a percent box for a colour,
+		 * which is a control that does nothing: `withFloat` answers a `Color`
+		 * unchanged, there being no single number in one to move.
+		 */
+		shape: ParameterValue;
+	};
+
 	const columns = $derived.by(() => {
-		const found = new Map<string, { key: string; kind: ParameterKind; label: string }>();
+		const found = new Map<string, Column>();
 		for (const fixture of rows) {
 			for (const parameter of typeOf(fixture)?.parameters ?? []) {
 				if (parameter.direction !== 'Output') continue;
 				const key = parameterKey(parameter.kind);
 				if (!found.has(key)) {
-					found.set(key, { key, kind: parameter.kind, label: kindLabel(parameter.kind) });
+					found.set(key, {
+						key,
+						kind: parameter.kind,
+						label: displayLabel(parameter.kind),
+						shape: parameter.default_value
+					});
 				}
 			}
 		}
@@ -351,7 +379,9 @@
 		{@const fixture = rows.find((f) => f.id === picked?.fixtureId)}
 		<div class="inspector">
 			<span class="what">
-				{fixture?.name ?? '—'} · {picked.key}
+				<!-- `kindLabel`, not the raw map key: "Colour" is what an operator calls
+				     it and `ColorRgb` is what `live_fades` calls it. -->
+				{fixture?.name ?? '—'} · {columns.find((c) => c.key === picked?.key)?.label ?? picked.key}
 			</span>
 			{#if pickedCapture}
 				{@const capture = pickedCapture}
@@ -493,35 +523,39 @@
 				</span>
 			{:else if fixture}
 				{@const column = columns.find((c) => c.key === picked?.key)}
-				{@const live = $output.value(fixture.id, picked.key)}
-				<label>
-					set to
-					{#if live && isColour(live)}
-						<input
-							class="swatch"
-							type="color"
-							value={hexOf(live)}
-							onchange={(e) => {
-								const next = withHex(live, e.currentTarget.value);
-								if (next && column) setValue([fixture.id], column.kind, next);
-							}}
-						/>
-					{:else}
-						<input
-							class="num"
-							type="number"
-							min="0"
-							max="100"
-							placeholder="%"
-							onchange={(e) => {
-								if (column) typeInto(fixture, column, e.currentTarget.value);
-								e.currentTarget.value = '';
-							}}
-						/>
-						<span class="unit">%</span>
-					{/if}
-				</label>
-				<span class="note">into the programmer</span>
+				{#if column}
+					{@const now = $output.value(fixture.id, column.key)}
+					<label>
+						set to
+						{#if isColour(column.shape)}
+							<!-- The colour it is showing, so the picker opens on it rather than
+							     on black — and the declared shape when nothing is driving it. -->
+							<input
+								class="swatch"
+								type="color"
+								value={hexOf(now && isColour(now) ? now : column.shape)}
+								onchange={(e) => {
+									const next = withHex(now && isColour(now) ? now : column.shape, e.currentTarget.value);
+									if (next) setValue([fixture.id], column.kind, next);
+								}}
+							/>
+						{:else}
+							<input
+								class="num"
+								type="number"
+								min="0"
+								max="100"
+								placeholder="%"
+								onchange={(e) => {
+									typeInto(fixture, column, e.currentTarget.value);
+									e.currentTarget.value = '';
+								}}
+							/>
+							<span class="unit">%</span>
+						{/if}
+					</label>
+					<span class="note">into the programmer</span>
+				{/if}
 			{/if}
 			<span class="spacer"></span>
 			<button class="chip" onclick={() => (picked = null)}>Close</button>

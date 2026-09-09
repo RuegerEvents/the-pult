@@ -21,6 +21,7 @@
 		size = 'small',
 		onclose,
 		children,
+		actions,
 		footer
 	}: {
 		/** Named for the assistive tree, and printed in the header unless `bare`. */
@@ -29,6 +30,11 @@
 		size?: 'small' | 'wide' | 'full';
 		onclose: () => void;
 		children: Snippet;
+		/**
+		 * Controls that belong to the dialog's own chrome rather than to its content —
+		 * an Edit toggle, say. Beside the title, where a tile puts the same thing.
+		 */
+		actions?: Snippet;
 		/** The row of answers, if there is one. */
 		footer?: Snippet;
 	} = $props();
@@ -53,6 +59,8 @@
 	<div class="dialog {size}" role="dialog" aria-modal="true" aria-label={title} tabindex="-1">
 		<header>
 			<h2>{title}</h2>
+			<span class="spacer"></span>
+			{#if actions}{@render actions()}{/if}
 			<button class="icon" aria-label="Close" onclick={onclose}>✕</button>
 		</header>
 		<div class="body">
@@ -99,7 +107,6 @@
 	header {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
 		gap: 12px;
 		padding: 10px 14px;
 		border-bottom: 1px solid var(--line);
@@ -111,6 +118,9 @@
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		color: var(--text-dim);
+	}
+	.spacer {
+		flex: 1;
 	}
 	.icon {
 		background: none;

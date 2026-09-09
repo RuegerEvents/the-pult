@@ -835,6 +835,12 @@ a log subscribes while it is mounted, a wire view *is* an `output.watch`. And th
 modals that had each grown their own opinion about Escape and the backdrop are one
 `Dialog.svelte`.
 
+**Setup carries the Edit toggle**, because Setup is chrome. `EditToggle` belongs to the
+tile and not to the panel — it is the same control with the same meaning everywhere, and
+a panel's own buttons are what it must not be mistaken for — so every chrome that renders
+an `editable` panel has to carry one. The maximised view does; the Setup dialog did not,
+which left Plugins and Settings read-only with nothing anywhere to unlock them.
+
 The **`values` panel** is the programmer: it sets fixture parameters into a shared
 SYNCED `programmer_values` buffer that takes priority over playback until the values
 are cleared or stored into a cue. Programming also happens in the `plan` and `rig`
@@ -917,6 +923,13 @@ Seeded from a station preference the way `home_fade_ms` is.
 
 Select, set, store, play, update — the loop every other desk has. Four panels and three
 verbs, and the interesting part is how little of it is stored.
+
+**Three labels for a parameter, and they are not interchangeable.** `kindLabel` is the
+one the fixture type editor's selector round-trips through, `parameterKey` is what opens
+`live_fades`, and `displayLabel` is what an operator reads — *Colour*, not `ColorRgb`;
+*Gobo 2*, not `Gobo:2`. The schema spells colour the way GDTF does and that stays; the
+label is the console's own English. A column headed with the map key is the map showing
+through.
 
 **The `sheet` panel colours every cell by which layer is driving it**, and this console
 does not have to keep a flag to do that. The model already keeps *what is driving* each

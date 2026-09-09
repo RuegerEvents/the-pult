@@ -13,6 +13,7 @@ import {
 	DEFAULT_MODE,
 	defaultDirectionFor,
 	defaultValueFor,
+	displayLabel,
 	dmxAddress,
 	dmxBreaks,
 	droppedByMode,
@@ -431,5 +432,39 @@ describe('an address with more than one break', () => {
 	it('is empty for a fixture on a node', () => {
 		expect(dmxBreaks(onNode('1a2b3c').address)).toEqual([]);
 		expect(fixtureMode(onNode('1a2b3c').address)).toBeNull();
+	});
+});
+
+describe('what an operator calls a parameter', () => {
+	/**
+	 * The third label, and the reason there are three: `kindLabel` round-trips through
+	 * the type editor's selector and `parameterKindLabel` is the `live_fades` key.
+	 * Neither is a name to put in front of somebody.
+	 */
+	it('says colour rather than the map key', () => {
+		expect(displayLabel('ColorRgb')).toBe('Colour');
+		expect(displayLabel('ColorTemperature')).toBe('Colour temp.');
+		expect(displayLabel({ ColorWheel: 1 })).toBe('Colour wheel 1');
+	});
+
+	/** A number an operator counts from, not a tagged variant. */
+	it('numbers an indexed kind the way a person reads it', () => {
+		expect(displayLabel({ Gobo: 2 })).toBe('Gobo 2');
+		expect(displayLabel({ GoboRotation: 1 })).toBe('Gobo rotation 1');
+		expect(displayLabel({ Contact: 3 })).toBe('Contact 3');
+	});
+
+	it('leaves a plain kind alone and gives a named one its own name', () => {
+		expect(displayLabel('Intensity')).toBe('Intensity');
+		expect(displayLabel({ Named: 'Fog output' })).toBe('Fog output');
+	});
+
+	/**
+	 * And it is not the key: the two must not be confused, because one opens a map
+	 * and the other is read by a person.
+	 */
+	it('is not the map key', () => {
+		expect(parameterKey({ Gobo: 2 })).toBe('Gobo:2');
+		expect(displayLabel({ Gobo: 2 })).not.toBe(parameterKey({ Gobo: 2 }));
 	});
 });

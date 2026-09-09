@@ -20,7 +20,7 @@
 	import type { Cue, Easing, ParameterCapture, Sequence } from '$lib/generated/index.js';
 	import { createCue, cueIdsThrough, cueOnlyCompensation, DEFAULT_FADE_MS, trackedThrough } from '$lib/cues.js';
 	import { CURVE_LABELS, CURVES, curveForKey } from '$lib/fade.js';
-	import { formatValue, kindLabel, parameterKey } from '$lib/patch.js';
+	import { displayLabel, formatValue, parameterKey } from '$lib/patch.js';
 	import { clear, entries, storeInto, storePreset, updatePreset } from '$lib/stores/programmer.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { collection, show, showData } from '$lib/stores/show.js';
@@ -333,12 +333,12 @@
 									<input
 										type="checkbox"
 										checked={include.has(entry.id)}
-										aria-label="Store {nameOf(entry.fixture_id)} {kindLabel(entry.parameter_kind)}"
+										aria-label="Store {nameOf(entry.fixture_id)} {displayLabel(entry.parameter_kind)}"
 										onchange={(e) => tick(entry.id, e.currentTarget.checked)}
 									/>
 								</td>
 								<td>{nameOf(entry.fixture_id)}</td>
-								<td>{kindLabel(entry.parameter_kind)}</td>
+								<td>{displayLabel(entry.parameter_kind)}</td>
 								<td class="mono">
 									{#if entry.effect}
 										<!-- What is stored is the shape, not the value under it. -->
@@ -359,7 +359,7 @@
 										step="100"
 										placeholder="cue"
 										value={timingFor(entry.id).fade || ''}
-										aria-label="Fade for {kindLabel(entry.parameter_kind)}"
+										aria-label="Fade for {displayLabel(entry.parameter_kind)}"
 										onchange={(e) => setTiming(entry.id, { fade: Number(e.currentTarget.value) || 0 })}
 									/>
 								</td>
@@ -371,14 +371,14 @@
 										step="100"
 										placeholder="0"
 										value={timingFor(entry.id).delay || ''}
-										aria-label="Delay for {kindLabel(entry.parameter_kind)}"
+										aria-label="Delay for {displayLabel(entry.parameter_kind)}"
 										onchange={(e) => setTiming(entry.id, { delay: Number(e.currentTarget.value) || 0 })}
 									/>
 								</td>
 								<td>
 									<select
 										value={timingFor(entry.id).easing ?? ''}
-										aria-label="Curve for {kindLabel(entry.parameter_kind)}"
+										aria-label="Curve for {displayLabel(entry.parameter_kind)}"
 										onchange={(e) =>
 											setTiming(entry.id, {
 												easing: (e.currentTarget.value || null) as Easing | null
