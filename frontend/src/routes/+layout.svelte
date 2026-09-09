@@ -24,6 +24,8 @@
 	import { beginSwitch, endSwitch, switching } from '$lib/stores/switching.js';
 	import { switchFromClose } from '$lib/switching.js';
 	import LayoutBar from '$lib/components/layout/LayoutBar.svelte';
+	import Setup from '$lib/components/setup/Setup.svelte';
+	import { closeSetup, setupSection, toggleSetup } from '$lib/stores/setup.js';
 	import UserBar from '$lib/components/UserBar.svelte';
 	import '$lib/styles/tokens.css';
 	import '$lib/styles/controls.css';
@@ -116,6 +118,12 @@
 		}
 	}
 
+	// A show closing takes Setup with it: every section of it is about the open show,
+	// and a dialog that survived the close would come back over the next one.
+	$effect(() => {
+		if (!$station?.show) closeSetup();
+	});
+
 	let connected = $state(false);
 	/// Whether this browser has ever had the console, which decides what the cover
 	/// says: a first connection is being made, a later one has been lost.
@@ -179,6 +187,10 @@
 		{#if $station?.show}
 			<ShowMenu show={$station.show} />
 			<LayoutBar />
+			<!-- Setup is a mode, not a tile. See `components/setup/Setup.svelte`. -->
+			<button class="setup-btn" class:on={$setupSection !== null} onclick={toggleSetup}>
+				Setup<span class="caret">▾</span>
+			</button>
 		{/if}
 		<span class="spacer"></span>
 		<UserBar />
@@ -204,6 +216,13 @@
 {/if}
 
 <Toasts />
+
+<!-- Everything that is done once, over the workspace rather than inside it. At the
+     root because it is a mode of the whole window, and because the menu that opens
+     it lives in the top bar. -->
+{#if $setupSection !== null}
+	<Setup />
+{/if}
 
 <!-- "This bar has six lights on it." Mounted here rather than in a tile because a
      modal belongs to the window: the verb can be reached from Rig tools, from the
@@ -251,6 +270,26 @@
 
 	.spacer {
 		flex: 1;
+	}
+
+	.setup-btn {
+		background: none;
+		border: none;
+		color: var(--text-dim, #888);
+		font: inherit;
+		font-size: var(--font-sm, 12px);
+		font-weight: 600;
+		cursor: pointer;
+		padding: 4px 2px;
+		white-space: nowrap;
+	}
+	.setup-btn:hover,
+	.setup-btn.on {
+		color: var(--text-bright, #fff);
+	}
+	.caret {
+		margin-left: 5px;
+		color: var(--text-faint, #555);
 	}
 
 	.brand {

@@ -7,7 +7,6 @@
 	import { select, selected, toggle } from '$lib/stores/selection.js';
 	import { output, watching } from '$lib/stores/output.js';
 	import type { Cue, Fixture, FixtureType, ParameterValue } from '$lib/generated/index.js';
-	import FixtureTypeEditor from './FixtureTypeEditor.svelte';
 	import HomeValue from './HomeValue.svelte';
 	import {
 		addressLabel,
@@ -211,8 +210,9 @@
 </script>
 
 <div class="patch">
-	<FixtureTypeEditor />
-
+	<!-- The fixture type editor used to sit here, above the rig. It is a Setup
+	     section now: a type is made once and patched from all season, and it was
+	     taking the top third of the one panel somebody actually patches in. -->
 	<section class="block">
 		<header class="block-head">
 			<h2>Fixtures</h2>

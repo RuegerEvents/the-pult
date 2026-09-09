@@ -13,7 +13,7 @@
 
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { show as openShow } from '$lib/stores/show.js';
-	import { revealPanel } from '$lib/stores/layout.js';
+	import { openSetup } from '$lib/stores/setup.js';
 	import { addToast } from '$lib/toasts.js';
 	import { backendOrigin, type OpenShow } from '$lib/ws/endpoint.js';
 	import { focusOnMount, selectOnMount } from '$lib/actions.js';
@@ -127,7 +127,7 @@
 			<button
 				onclick={() => {
 					open = false;
-					revealPanel('show');
+					openSetup('show');
 				}}>Versions…</button
 			>
 			<button onclick={() => start('copy')}>Save as…</button>

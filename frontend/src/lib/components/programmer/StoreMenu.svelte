@@ -18,6 +18,7 @@
 	import { collection, show, showData } from '$lib/stores/show.js';
 	import { addToast } from '$lib/toasts.js';
 	import { focusOnMount } from '$lib/actions.js';
+	import Dialog from '$lib/components/Dialog.svelte';
 
 	let { onclose }: { onclose: () => void } = $props();
 
@@ -150,17 +151,13 @@
 	}
 </script>
 
-<div
-	class="scrim"
-	role="presentation"
-	onclick={onclose}
-	onkeydown={(e) => e.key === 'Escape' && onclose()}
->
-	<div class="menu" role="dialog" tabindex="-1" aria-label="Store" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-		<header>
-			<h2>Store</h2>
-			<button class="icon" aria-label="Close" onclick={onclose}>✕</button>
-		</header>
+<Dialog title="Store" {onclose}>
+	{#snippet footer()}
+		<button class="ghost" onclick={onclose}>Cancel</button>
+		<button class="primary" disabled={!canStore || storing} onclick={store}>
+			{storing ? 'Storing…' : 'Store'}
+		</button>
+	{/snippet}
 
 		{#if $entries.length === 0}
 			<p class="empty">The programmer is empty, so there is nothing to store.</p>
@@ -347,63 +344,9 @@
 			</div>
 		{/if}
 
-		<footer>
-			<button class="ghost" onclick={onclose}>Cancel</button>
-			<button class="primary" disabled={!canStore || storing} onclick={store}>
-				{storing ? 'Storing…' : 'Store'}
-			</button>
-		</footer>
-	</div>
-</div>
+</Dialog>
 
 <style>
-	.scrim {
-		position: fixed;
-		inset: 0;
-		z-index: 40;
-		display: grid;
-		place-items: center;
-		background: #000a;
-		padding: 20px;
-	}
-
-	.menu {
-		display: flex;
-		flex-direction: column;
-		width: min(560px, 100%);
-		max-height: 100%;
-		background: var(--bg-panel);
-		border: 1px solid var(--line-strong);
-		border-radius: 6px;
-		overflow: hidden;
-	}
-
-	header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 10px 14px;
-		border-bottom: 1px solid var(--line);
-	}
-	h2 {
-		font-size: var(--font-sm);
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-dim);
-	}
-
-	.icon {
-		background: none;
-		border: none;
-		color: var(--text-faint);
-		font: inherit;
-		cursor: pointer;
-	}
-	.icon:hover {
-		color: var(--bad);
-	}
-
 	.empty {
 		padding: 20px 14px;
 		color: var(--text-faint);
@@ -491,14 +434,6 @@
 	.text:focus {
 		outline: none;
 		border-color: var(--accent);
-	}
-
-	footer {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-		padding: 10px 14px;
-		border-top: 1px solid var(--line);
 	}
 
 	.ghost {

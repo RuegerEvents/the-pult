@@ -81,21 +81,6 @@ export const PRESETS: Preset[] = [
 		tree: split('Row', [tabs(['patch']), tabs(['devices', 'outputs'])], [0.66, 0.34])
 	},
 	{
-		key: 'setup',
-		name: 'Setup',
-		// A grid rather than three columns, so the two diagnostic panels sit next to
-		// each other: what is being sent, beside what sending it costs. Underneath,
-		// who is in the session beside what the show is.
-		tree: split(
-			'Column',
-			[
-				split('Row', [tabs(['outputs']), tabs(['system'])], [0.5, 0.5]),
-				split('Row', [tabs(['stations', 'network']), tabs(['show', 'session'])], [0.5, 0.5])
-			],
-			[0.5, 0.5]
-		)
-	},
-	{
 		key: 'effects',
 		name: 'Effects',
 		// Everything a chase is built from, in reach at once: the rig to pick heads

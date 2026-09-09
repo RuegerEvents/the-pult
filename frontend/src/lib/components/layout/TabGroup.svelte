@@ -4,12 +4,13 @@
 	 *
 	 * The `+` menu offers the panels that are not open anywhere, so opening one twice
 	 * is not something the workspace can be talked into — two copies of the 3D rig
-	 * would be two scenes rendering the same room.
+	 * would be two scenes rendering the same room. It also leaves out the ones whose
+	 * home is Setup: those are errands, and the Setup dialog is where they are.
 	 */
 
 	import type { LayoutNode } from '$lib/generated/index.js';
 	import { panelsIn, type Path } from '$lib/layout.js';
-	import { type PanelMeta } from '$lib/layout/panels.js';
+	import { panelHome, type PanelMeta } from '$lib/layout/panels.js';
 	import {
 		beginTabDrag,
 		closePanel,
@@ -30,7 +31,11 @@
 	// The merged registry: built-ins plus whatever the station's plugins offer
 	// right now. A panel id nobody recognises falls through to the message below.
 	const meta: PanelMeta | null = $derived(shown ? ($allPanels[shown] ?? null) : null);
-	const spare = $derived(Object.keys($allPanels).filter((id) => !panelsIn($tree).includes(id)));
+	const spare = $derived(
+		Object.keys($allPanels).filter(
+			(id) => !panelsIn($tree).includes(id) && panelHome($allPanels[id]) !== 'setup'
+		)
+	);
 	const titleOf = (id: string): string => $allPanels[id]?.title ?? id;
 
 	function show(panel: string) {

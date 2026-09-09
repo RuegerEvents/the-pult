@@ -22,6 +22,7 @@
 	import { asSize, parentPath } from '$lib/shows.js';
 	import { beginSwitch, endSwitch } from '$lib/stores/switching.js';
 	import { readPreferences } from '$lib/preferences.js';
+	import Dialog from '$lib/components/Dialog.svelte';
 	import type { Version } from '$lib/generated/index.js';
 
 	const client = getClientContext();
@@ -330,22 +331,21 @@
 </div>
 
 {#if confirming}
-	<div class="scrim">
-		<div class="dialog">
-			<h3>Restore “{label(confirming)}”?</h3>
+	{@const version = confirming}
+	<Dialog title="Restore" onclose={() => (confirming = null)}>
+		{#snippet footer()}
+			<button class="chip" onclick={() => (confirming = null)}>Cancel</button>
+			<button class="chip danger" onclick={() => restore(version)}>Restore</button>
+		{/snippet}
+		<div class="ask">
+			<h3>Restore “{label(version)}”?</h3>
 			<p>
-				The show goes back to how it was at {when(confirming.created_at)}. A version of
+				The show goes back to how it was at {when(version.created_at)}. A version of
 				what it is now is taken first, so this can be undone by restoring that one.
 			</p>
 			<p class="fine">The console restarts, and this page reloads onto the restored show.</p>
-			<div class="acts">
-				<button class="chip" onclick={() => (confirming = null)}>Cancel</button>
-				<button class="chip danger" onclick={() => confirming && restore(confirming)}
-					>Restore</button
-				>
-			</div>
 		</div>
-	</div>
+	</Dialog>
 {/if}
 
 <style>
@@ -559,40 +559,25 @@
 		flex-shrink: 0;
 	}
 
-	.scrim {
-		position: fixed;
-		inset: 0;
-		z-index: 90;
-		display: grid;
-		place-items: center;
-		background: rgb(0 0 0 / 55%);
-	}
-	.dialog {
-		width: min(420px, 90vw);
-		background: #222;
-		border: 1px solid #3a3a3a;
-		border-radius: 6px;
-		padding: 18px;
+	.ask {
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
+		padding: 18px;
+		max-width: 44ch;
 	}
-	.dialog h3 {
+	.ask h3 {
 		font-size: 0.95rem;
 		color: #fff;
 		font-weight: 600;
 	}
-	.dialog p {
+	.ask p {
 		font-size: 0.8rem;
 		color: #aaa;
 		line-height: 1.5;
 	}
-	.dialog .fine {
+	.ask .fine {
 		font-size: 0.72rem;
 		color: #666;
-	}
-	.dialog .acts {
-		justify-content: flex-end;
-		margin-top: 4px;
 	}
 </style>

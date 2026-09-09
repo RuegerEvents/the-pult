@@ -22,6 +22,7 @@ import HistoryPanel from '$lib/components/HistoryPanel.svelte';
 import SystemLogPanel from '$lib/components/SystemLogPanel.svelte';
 import OutputsPanel from '$lib/components/OutputsPanel.svelte';
 import PatchPanel from '$lib/components/PatchPanel.svelte';
+import FixtureTypeEditor from '$lib/components/FixtureTypeEditor.svelte';
 import PluginsPanel from '$lib/components/PluginsPanel.svelte';
 import SelectionPanel from '$lib/components/SelectionPanel.svelte';
 import SequenceRunner from '$lib/components/SequenceRunner.svelte';
@@ -72,6 +73,21 @@ export type PanelMeta = {
 	 * how the registry entry carries that without the tile knowing either way.
 	 */
 	props?: Record<string, unknown>;
+	/**
+	 * Where this panel belongs: in the workspace, in the setup dialog, or in both.
+	 *
+	 * The distinction is not "does it write the show" — the programmer writes
+	 * constantly. It is whether somebody *keeps it open*. A fixture type is made
+	 * once and then patched from for a season; a plugin is installed once. Those
+	 * are errands, and an errand that costs a tile is an errand that costs the
+	 * picture somebody is programming against. What stays a panel stays for a
+	 * reason written beside it: a sparkline is only a record because the panel
+	 * witnessed it, a log subscribes while it is mounted, a wire view *is* an
+	 * `output.watch`.
+	 *
+	 * Missing means `workspace`, which is what nearly all of them are.
+	 */
+	home?: 'workspace' | 'setup' | 'both';
 };
 
 export const PANELS = {
@@ -93,12 +109,16 @@ export const PANELS = {
 	pieces: { title: 'Pieces', component: PiecesPanel, fills: false },
 	tools: { title: 'Rig tools', component: ToolsPanel, fills: false },
 	object: { title: 'Object', component: ObjectPanel, fills: false, editable: true },
-	patch: { title: 'Patch', component: PatchPanel, fills: false, editable: true },
+	patch: { title: 'Patch', component: PatchPanel, fills: false, editable: true, home: 'both' },
+	// The fixture types themselves, which the Patch panel used to carry above the
+	// rig. Setup only: a type is made once and patched from all season, and it took
+	// the top third of the one panel somebody actually patches in.
+	fixturetypes: { title: 'Fixture types', component: FixtureTypeEditor, fills: false, home: 'setup' },
 	flows: { title: 'Flows', component: FlowEditor, fills: true, editable: true },
 	// Both directions in one panel: an input is an output read backwards and has the
 	// same fields, so learning a second vocabulary for the same cable would be the
 	// only thing separating them bought.
-	outputs: { title: 'I/O', component: OutputsPanel, fills: false },
+	outputs: { title: 'I/O', component: OutputsPanel, fills: false, home: 'both' },
 	// A position, and what is written against it: events that Go cues, markers, and
 	// the takes recorded off an input.
 	timeline: { title: 'Timeline', component: TimelinePanel, fills: false },
@@ -109,7 +129,7 @@ export const PANELS = {
 	// Other people's software on the network, and the rigs it is offering. Its own
 	// panel rather than a section of Rig tools: that is a strip of buttons, and this is
 	// a live list of who is there and what they have.
-	xchange: { title: 'MVR-xchange', component: XchangePanel, fills: false },
+	xchange: { title: 'MVR-xchange', component: XchangePanel, fills: false, home: 'both' },
 	stations: { title: 'Stations', component: StationsPanel, fills: false },
 	// The other half of the pair: Stations is who is here, this is what it costs —
 	// per station, per output connector, and per browser, which is the figure that
@@ -119,11 +139,11 @@ export const PANELS = {
 	// diagnostic: which cable each service goes out on, and — because the question
 	// "why can the previz not see us" is almost never asked at the broken console —
 	// every station's interfaces and every station's faults.
-	network: { title: 'Network', component: NetworkPanel, fills: false, editable: true },
-	plugins: { title: 'Plugins', component: PluginsPanel, fills: false, editable: true },
-	show: { title: 'Show', component: ShowPanel, fills: false },
-	session: { title: 'Session', component: SessionPanel, fills: false },
-	devices: { title: 'Devices', component: DevicesPanel, fills: false, editable: true },
+	network: { title: 'Network', component: NetworkPanel, fills: false, editable: true, home: 'both' },
+	plugins: { title: 'Plugins', component: PluginsPanel, fills: false, editable: true, home: 'setup' },
+	show: { title: 'Show', component: ShowPanel, fills: false, home: 'setup' },
+	session: { title: 'Session', component: SessionPanel, fills: false, home: 'setup' },
+	devices: { title: 'Devices', component: DevicesPanel, fills: false, editable: true, home: 'both' },
 	speedmasters: { title: 'Speed masters', component: SpeedMastersPanel, fills: false, editable: true },
 	// No edit toggle: this panel is an editor, and it writes to the programmer
 	// rather than to the show.
@@ -135,12 +155,16 @@ export const PANELS = {
 	// Not the History panel: that is the oplog, this is diagnostics. `fills`,
 	// because a log wants every line it can get rather than a fixed block.
 	logs: { title: 'System log', component: SystemLogPanel, fills: true },
-	settings: { title: 'Settings', component: SettingsPanel, fills: false, editable: true }
+	settings: { title: 'Settings', component: SettingsPanel, fills: false, editable: true, home: 'setup' }
 } as const satisfies Record<string, PanelMeta>;
 
 export const isPanel = (id: string): id is PanelId => id in PANELS;
 
 /** The panels, in menu order. */
 export const PANEL_IDS = Object.keys(PANELS) as PanelId[];
+
+/** Where a panel belongs. A plugin's panel has no opinion and gets the workspace. */
+export const panelHome = (meta: PanelMeta): 'workspace' | 'setup' | 'both' =>
+	meta.home ?? 'workspace';
 
 export const panelTitle = (id: string): string => (isPanel(id) ? PANELS[id].title : id);
