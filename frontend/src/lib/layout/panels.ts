@@ -25,6 +25,7 @@ import PatchPanel from '$lib/components/PatchPanel.svelte';
 import FixtureTypeEditor from '$lib/components/FixtureTypeEditor.svelte';
 import PluginsPanel from '$lib/components/PluginsPanel.svelte';
 import SelectionPanel from '$lib/components/SelectionPanel.svelte';
+import PoolsPanel from '$lib/components/pools/PoolsPanel.svelte';
 import SequenceRunner from '$lib/components/SequenceRunner.svelte';
 import CueSheet from '$lib/components/cues/CueSheet.svelte';
 import SessionPanel from '$lib/components/SessionPanel.svelte';
@@ -104,6 +105,10 @@ export const PANELS = {
 	// fills, because a sheet handed half its tile is a sheet with three rows in it.
 	sheet: { title: 'Fixtures', component: FixtureSheet, fills: true },
 	selection: { title: 'Selection', component: SelectionPanel, fills: true },
+	// Direct selects: the saved groups, and the presets. Not sequences — a pool of
+	// those would be an executor page, which is a bound physical thing and its own
+	// piece of work.
+	pools: { title: 'Pools', component: PoolsPanel, fills: false },
 	plan: { title: 'Plan', component: PlanPanel, fills: true, editable: true },
 	rig: { title: '3D Rig', component: RigPanel, fills: true },
 	layers: { title: 'Layers', component: LayersPanel, fills: false, editable: true },

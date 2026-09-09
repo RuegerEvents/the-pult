@@ -34,6 +34,8 @@
 	const unlocked = editing('cues');
 	const sequences = collection('sequences');
 	const cues = collection('cues');
+	/** How many of a cue's captures are references, for the Caps column. */
+	const referencing = (cue: Cue) => cue.captures.filter((c) => c.preset).length;
 
 	/** Which sequence's cues are on screen. Falls back to the first the show has. */
 	let chosen = $state<string | null>(null);
@@ -343,7 +345,20 @@
 									On Go
 								{/if}
 							</td>
-							<td class="count">{cue.captures.length}</td>
+							<td class="count">
+								{cue.captures.length}
+								<!-- How many of them are references rather than numbers, which is
+								     what says at a glance that editing a palette will move this
+								     cue. A capture whose preset is gone still counts: it is still
+								     a reference, and the sheet says "preset missing" where it is
+								     looked at. -->
+								{#if referencing(cue) > 0}
+									<span
+										class="refs"
+										title="{referencing(cue)} of them reference a preset"
+									>◇{referencing(cue)}</span>
+								{/if}
+							</td>
 							<td class="acts">
 								<button
 									class="icon"
@@ -610,8 +625,12 @@
 		font-size: var(--font-xs);
 	}
 	.count {
-		width: 3rem;
+		width: 4.5rem;
 		text-align: right;
+	}
+	.refs {
+		margin-left: 4px;
+		color: var(--src-tracked);
 	}
 	.follow {
 		display: flex;

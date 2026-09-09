@@ -1201,6 +1201,7 @@ async fn paperwork_cue_values(
     let fixtures: Vec<Fixture> = rows(engine, "fixtures").await?;
     let types: Vec<FixtureType> = rows(engine, "fixture_types").await?;
     let masters: Vec<pult_schema::types::SpeedMaster> = rows(engine, "speed_masters").await?;
+    let presets: Vec<pult_schema::types::Preset> = rows(engine, "presets").await?;
     let show: Option<pult_schema::types::Show> = engine
         .get(vec![PathSegment::Key("show".into())])
         .await
@@ -1214,6 +1215,10 @@ async fn paperwork_cue_values(
         fixtures.iter().map(|f| (f.id, f)).collect();
     let types_by_id: std::collections::HashMap<uuid::Uuid, &FixtureType> =
         types.iter().map(|t| (t.id, t)).collect();
+    // A capture may be a reference rather than a value, and it resolves in one place —
+    // so a sheet draws what a Go would put on stage rather than the literal the cue
+    // happened to be stored as.
+    let preset_index = pult_schema::types::preset_index(&presets);
 
     // A round number well past any anchor, so the arithmetic below never underflows
     // when a shot asks for a moment before the cue was taken.
@@ -1239,6 +1244,7 @@ async fn paperwork_cue_values(
             let kind = types_by_id.get(&fixture.fixture_type_id).copied();
             let home = pult_schema::types::home_value_by_key(fixture, kind, &key);
 
+            let to = capture.value_in(&preset_index);
             let value = if let Some(spec) = &capture.effect {
                 let running = crate::model::effects::resolve(
                     spec,
@@ -1252,11 +1258,11 @@ async fn paperwork_cue_values(
                 )
             } else {
                 // From home rather than from now: see the note above.
-                let from = home.clone().unwrap_or_else(|| capture.value.clone());
+                let from = home.clone().unwrap_or_else(|| to.clone());
                 let up = if capture.fade_in_ms > 0 { capture.fade_in_ms } else { cue.fade_in_ms };
                 let running = RunningFade {
                     from,
-                    to: capture.value.clone(),
+                    to: to.clone(),
                     t0: anchor + capture.delay_in_ms as u64,
                     duration_ms: up,
                     easing: curves.resolve(capture.easing, cue.easing, &key),

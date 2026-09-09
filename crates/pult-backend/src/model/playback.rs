@@ -24,6 +24,7 @@ use pult_schema::types::{
     cue::{Cue, FollowMode},
     effect::{EffectSource, Easing, RunningEffect, RunningFade},
     fixture::{home_value_by_key, Fixture, FixtureType, ParameterValue},
+    preset::{preset_index, Preset},
     programmer::ProgrammerValue,
     sequence::Sequence,
     show::FadeCurves,
@@ -93,6 +94,12 @@ pub struct ShowView<'a> {
     /// What shape a fade has when neither the capture nor the cue says one. Show
     /// data for the same reason `home_fade_ms` is.
     pub fade_curves: FadeCurves,
+    /// The presets a capture may be a reference to, by id.
+    ///
+    /// Here and not resolved by the caller because a capture resolves in one place,
+    /// [`ParameterCapture::value_in`], and a pass that took resolved values would
+    /// have decided the question somewhere else.
+    pub presets: HashMap<Uuid, &'a Preset>,
 }
 
 impl<'a> ShowView<'a> {
@@ -105,6 +112,7 @@ impl<'a> ShowView<'a> {
         speed_masters: &'a [SpeedMaster],
         home_fade_ms: u32,
         fade_curves: FadeCurves,
+        presets: &'a [Preset],
     ) -> Self {
         Self {
             sequences,
@@ -116,6 +124,7 @@ impl<'a> ShowView<'a> {
             speed_masters,
             home_fade_ms,
             fade_curves,
+            presets: preset_index(presets),
         }
     }
 
@@ -349,6 +358,92 @@ impl Playback {
         self.emit_motion(view, &mut effects);
         self.fire_due_follows(wall_ms, &mut effects);
         effects
+    }
+
+    /// Editing a preset reaches the cues that are **standing**, at once.
+    ///
+    /// Which is the whole reason a palette is worth having: change *warm* and the look
+    /// on stage changes, rather than changing the next time somebody takes the cue. So
+    /// every fade a cue put there is checked against the capture that made it, and one
+    /// whose capture names a preset that now resolves somewhere else is *restarted*
+    /// from where the parameter is, over the show's own home fade.
+    ///
+    /// Restarted rather than rewritten in place, and the difference matters: a fade
+    /// half way through with its `to` swapped would jump, because `from` is where it
+    /// started and the eased position between them would move. Fading from
+    /// `value_at(now)` is the same thing `release_key` does, for the same reason.
+    ///
+    /// The home fade is the duration on purpose. The capture's own time is how long
+    /// *taking the cue* takes; this is not a cue being taken, it is a value moving
+    /// under one, and the show already has one figure for "a parameter is going
+    /// somewhere nobody pressed Go for".
+    ///
+    /// Only run when the presets have actually moved — the caller gates it — because
+    /// this walks every standing fade and a show whose palettes nobody is editing must
+    /// not pay for it.
+    fn repoint_presets(&mut self, wall_ms: u64, view: &ShowView<'_>) {
+        // Which fades want moving, worked out before any of them is touched: starting
+        // one changes what `value_at` answers for the next.
+        let mut moves: Vec<(Key, ParameterValue, ParameterValue)> = Vec::new();
+        for fade in &self.fades {
+            if fade.running.cue_id.is_nil() {
+                continue;
+            }
+            let Some(cue) = view.cues.get(&fade.running.cue_id) else { continue };
+            let Some(capture) = cue.captures.iter().find(|c| {
+                c.fixture_id == fade.fixture_id && parameter_key(&c.parameter_kind) == fade.key
+            }) else {
+                continue;
+            };
+            if capture.preset.is_none() {
+                continue;
+            }
+            let to = capture.value_in(&view.presets);
+            if *to == fade.running.to {
+                continue;
+            }
+            let at: Key = (fade.fixture_id, fade.key.clone());
+            let from = self.value_at(view, &at, wall_ms).unwrap_or_else(|| fade.running.from.clone());
+            moves.push((at, from, to.clone()));
+        }
+
+        for ((fixture_id, key), from, to) in moves {
+            let cue_id = self
+                .fades
+                .iter()
+                .find(|f| f.fixture_id == fixture_id && f.key == key)
+                .map(|f| f.running.cue_id)
+                .unwrap_or_else(Uuid::nil);
+            self.fades.retain(|f| !(f.fixture_id == fixture_id && f.key == key));
+            let easing = view.fade_curves.for_key(&key);
+            self.fades.push(Fade {
+                fixture_id,
+                key,
+                running: RunningFade {
+                    from,
+                    to,
+                    t0: wall_ms,
+                    duration_ms: view.home_fade_ms,
+                    easing,
+                    // Still that cue's: the cue is asserting the same reference, and a
+                    // sheet asking "is this my cue's fade" is still owed a yes.
+                    cue_id,
+                },
+            });
+        }
+    }
+
+    /// The same pass, told that the presets have moved since the last one.
+    pub fn pass_with_presets_changed(
+        &mut self,
+        wall_ms: u64,
+        view: &ShowView<'_>,
+        presets_changed: bool,
+    ) -> Vec<PlaybackEffect> {
+        if presets_changed {
+            self.repoint_presets(wall_ms, view);
+        }
+        self.pass(wall_ms, view)
     }
 
     /// Put back what a stopped recording was holding.
@@ -693,6 +788,11 @@ impl Playback {
         {
             let key = parameter_key(&capture.parameter_kind);
             let at = (capture.fixture_id, key.clone());
+            // What this capture actually asserts: the preset it names where that
+            // resolves, and the literal it was stored as otherwise. One resolution,
+            // in the schema, so the pass, the paperwork RPC and a Go cannot disagree
+            // about a cue pointed at a palette somebody deleted.
+            let to = capture.value_in(&view.presets).clone();
 
             // Where the parameter is *now*, before this capture takes the key off
             // whatever had it. A cue re-taken mid-fade fades on from here.
@@ -724,7 +824,7 @@ impl Playback {
             let from = showing
                 // A fixture whose type has gone: nothing can say where it rests, so
                 // the cue lands rather than fading from a zero nobody vouched for.
-                .unwrap_or_else(|| capture.value.clone());
+                .unwrap_or_else(|| to.clone());
 
             // A capture's own time wins; zero means "use the cue's". Which of the two
             // the parameter takes is decided by where it is going — a split fade is
@@ -735,14 +835,14 @@ impl Playback {
                 (0, cue_out) => cue_out,
                 (own, _) => own,
             };
-            let duration_ms = if descending(&from, &capture.value) { down } else { up };
+            let duration_ms = if descending(&from, &to) { down } else { up };
 
             let fade = Fade {
                 fixture_id: capture.fixture_id,
                 key: key.clone(),
                 running: RunningFade {
                     from,
-                    to: capture.value.clone(),
+                    to,
                     t0: anchor + capture.delay_in_ms as u64,
                     duration_ms,
                     // The same three steps the times above take, in the same order

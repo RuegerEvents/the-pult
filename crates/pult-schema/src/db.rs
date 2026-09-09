@@ -22,9 +22,19 @@ impl ColumnGetter for sqlx::sqlite::SqliteRow {
 
 // ── Generic query functions ───────────────────────────────────────────────────
 
+/// Column names as SQL identifiers.
+///
+/// Quoted, always. `Preset::values` is the one that found this — `values` is a SQL
+/// keyword and the unquoted DDL was a syntax error — and the fix is the class rather
+/// than the field, because the next `order`, `group` or `index` somebody names would
+/// have failed the same way at the moment a show was first opened.
+fn quoted(names: &[&str]) -> String {
+    names.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ")
+}
+
 pub async fn get_all<T: PultSqlRow>(pool: &SqlitePool) -> Result<Vec<T>> {
     let table = T::table_name().expect("get_all requires an entity with a table name");
-    let cols = T::column_names().join(", ");
+    let cols = quoted(T::column_names());
     let rows = sqlx::query(&format!("SELECT {cols} FROM {table}"))
         .fetch_all(pool)
         .await?;
@@ -34,9 +44,9 @@ pub async fn get_all<T: PultSqlRow>(pool: &SqlitePool) -> Result<Vec<T>> {
 pub async fn get_by_id<T: PultSqlRow>(pool: &SqlitePool, id: Uuid) -> Result<Option<T>> {
     let table = T::table_name().expect("get_by_id requires an entity with a table name");
     let pk = T::primary_key_field().expect("get_by_id requires an entity with a primary key");
-    let cols = T::column_names().join(", ");
+    let cols = quoted(T::column_names());
     let id_str = id.to_string();
-    let row = sqlx::query(&format!("SELECT {cols} FROM {table} WHERE {pk} = ?1"))
+    let row = sqlx::query(&format!("SELECT {cols} FROM {table} WHERE \"{pk}\" = ?1"))
         .bind(&id_str)
         .fetch_optional(pool)
         .await?;
@@ -54,13 +64,13 @@ pub async fn upsert<T: PultSqlRow>(pool: &SqlitePool, entity: &T) -> Result<()> 
         .iter()
         .enumerate()
         .filter(|(_, c)| **c != pk)
-        .map(|(i, c)| format!("{c} = ?{}", i + 1))
+        .map(|(i, c)| format!("\"{c}\" = ?{}", i + 1))
         .collect();
 
     let sql = format!(
         "INSERT INTO {table} ({cols}) VALUES ({placeholders}) \
-         ON CONFLICT({pk}) DO UPDATE SET {updates}",
-        cols = col_names.join(", "),
+         ON CONFLICT(\"{pk}\") DO UPDATE SET {updates}",
+        cols = quoted(col_names),
         placeholders = placeholders.join(", "),
         updates = updates.join(", "),
     );
@@ -81,7 +91,7 @@ pub async fn upsert<T: PultSqlRow>(pool: &SqlitePool, entity: &T) -> Result<()> 
 pub async fn delete<T: PultSqlRow>(pool: &SqlitePool, id: Uuid) -> Result<()> {
     let table = T::table_name().expect("delete requires an entity with a table name");
     let pk = T::primary_key_field().expect("delete requires an entity with a primary key");
-    sqlx::query(&format!("DELETE FROM {table} WHERE {pk} = ?1"))
+    sqlx::query(&format!("DELETE FROM {table} WHERE \"{pk}\" = ?1"))
         .bind(id.to_string())
         .execute(pool)
         .await?;

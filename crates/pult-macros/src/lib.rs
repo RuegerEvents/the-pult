@@ -456,7 +456,7 @@ fn sql_info_for_field(field_name: &str, ty: &Type, fi: &syn::Ident) -> SqlInfo {
         // then converts the text `101` to the number 101 on the way in, `get_text`
         // finds no text on the way out, and the field reads back as `None` — the same
         // silent loss an unparseable optional column has, with no bad data to blame.
-        let col_def = format!("{field_name} TEXT");
+        let col_def = format!("\"{field_name}\" TEXT");
         // A missing, NULL, or unreadable column reads as None rather than panicking.
         // This is the column a newly added optional field has on every existing row,
         // and a panic here would take the process down while opening a show.
@@ -478,62 +478,62 @@ fn sql_info_for_field(field_name: &str, ty: &Type, fi: &syn::Ident) -> SqlInfo {
 
     match name.as_str() {
         "Uuid" => SqlInfo {
-            col_def: format!("{field_name} TEXT NOT NULL"),
+            col_def: format!("\"{field_name}\" TEXT NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Text(self.#fi.to_string()) },
             read_expr: quote! { ::uuid::Uuid::parse_str(&row.get_text(#field_name).unwrap()).unwrap() },
         },
         "String" => SqlInfo {
-            col_def: format!("{field_name} TEXT NOT NULL"),
+            col_def: format!("\"{field_name}\" TEXT NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Text(self.#fi.clone()) },
             read_expr: quote! { row.get_text(#field_name).unwrap() },
         },
         "u8" => SqlInfo {
-            col_def: format!("{field_name} INTEGER NOT NULL"),
+            col_def: format!("\"{field_name}\" INTEGER NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Int(self.#fi as i64) },
             read_expr: quote! { row.get_int(#field_name).unwrap() as u8 },
         },
         "u16" => SqlInfo {
-            col_def: format!("{field_name} INTEGER NOT NULL"),
+            col_def: format!("\"{field_name}\" INTEGER NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Int(self.#fi as i64) },
             read_expr: quote! { row.get_int(#field_name).unwrap() as u16 },
         },
         "u32" => SqlInfo {
-            col_def: format!("{field_name} INTEGER NOT NULL"),
+            col_def: format!("\"{field_name}\" INTEGER NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Int(self.#fi as i64) },
             read_expr: quote! { row.get_int(#field_name).unwrap() as u32 },
         },
         "i32" => SqlInfo {
-            col_def: format!("{field_name} INTEGER NOT NULL"),
+            col_def: format!("\"{field_name}\" INTEGER NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Int(self.#fi as i64) },
             read_expr: quote! { row.get_int(#field_name).unwrap() as i32 },
         },
         "i64" | "u64" => SqlInfo {
-            col_def: format!("{field_name} INTEGER NOT NULL"),
+            col_def: format!("\"{field_name}\" INTEGER NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Int(self.#fi as i64) },
             read_expr: quote! { row.get_int(#field_name).unwrap() },
         },
         "f32" => SqlInfo {
-            col_def: format!("{field_name} REAL NOT NULL"),
+            col_def: format!("\"{field_name}\" REAL NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Real(self.#fi as f64) },
             read_expr: quote! { row.get_real(#field_name).unwrap() as f32 },
         },
         "f64" => SqlInfo {
-            col_def: format!("{field_name} REAL NOT NULL"),
+            col_def: format!("\"{field_name}\" REAL NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Real(self.#fi) },
             read_expr: quote! { row.get_real(#field_name).unwrap() },
         },
         "bool" => SqlInfo {
-            col_def: format!("{field_name} INTEGER NOT NULL"),
+            col_def: format!("\"{field_name}\" INTEGER NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Int(self.#fi as i64) },
             read_expr: quote! { row.get_int(#field_name).unwrap() != 0 },
         },
         "DateTime" => SqlInfo {
-            col_def: format!("{field_name} TEXT NOT NULL"),
+            col_def: format!("\"{field_name}\" TEXT NOT NULL"),
             bind_expr: quote! { ::pult_schema::sql::SqlLiteral::Text(self.#fi.to_rfc3339()) },
             read_expr: quote! { row.get_text(#field_name).unwrap().parse().unwrap() },
         },
         _ => SqlInfo {
-            col_def: format!("{field_name} TEXT NOT NULL"),
+            col_def: format!("\"{field_name}\" TEXT NOT NULL"),
             bind_expr: quote! {
                 ::pult_schema::sql::SqlLiteral::Text(::serde_json::to_string(&self.#fi).unwrap())
             },

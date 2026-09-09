@@ -17,7 +17,10 @@ use core::{
 use pult_plugin_sdk::{
     self as sdk, data,
     host, output_line,
-    schema::{parameter_key, Cue, EffectSource, EffectSpec, FollowMode, ParameterCapture},
+    schema::{
+        parameter_key, Cue, EffectSource, EffectSpec, FollowMode, ParameterCapture, Preset,
+        PresetValue,
+    },
     surface, PultPlugin,
 };
 use serde_json::{json, Value};
@@ -109,6 +112,15 @@ impl CommandLine {
                 self.set_field(&table, target, &field, value)
             }
             Command::Store { sequence, cue } => self.store(sequence, cue),
+            Command::Preset(target) => {
+                let selection = selection_of(ctx);
+                let (name, n) = self.recall_preset(&target, &selection)?;
+                Ok(lines_response(vec![output_line(
+                    "result",
+                    format!("preset \"{name}\" on {n} {}", if n == 1 { "fixture" } else { "fixtures" }),
+                )]))
+            }
+            Command::StorePreset(target) => self.store_preset(target),
             Command::Update => self.update(),
             Command::Rpc { method, args } => {
                 let args: Value = args.into_iter().collect::<serde_json::Map<_, _>>().into();
@@ -207,6 +219,10 @@ impl CommandLine {
             Some(Then::Home) => {
                 self.send_home(&selected)?;
                 text.push_str(", home");
+            }
+            Some(Then::Preset(target)) => {
+                let (name, n) = self.recall_preset(&target, &selected)?;
+                text.push_str(&format!(", preset \"{name}\" on {n}"));
             }
             None => {}
         }
@@ -355,6 +371,114 @@ impl CommandLine {
         Ok(())
     }
 
+    // ── Presets ───────────────────────────────────────────────────────────────
+
+    /// Recall a preset into the programmer, over a selection or over everything it
+    /// knows.
+    ///
+    /// Each entry carries the **reference and the value it resolved to** — the rule
+    /// `crates/pult-schema/src/types/preset.rs` states and `applyPreset` in the
+    /// browser follows: the reference is what makes a later edit reach the cue, and
+    /// the value is what plays when the preset is gone.
+    fn recall_preset(&self, target: &Target, selection: &[String]) -> Result<(String, usize), String> {
+        let (id, name) = resolve("presets", target)?;
+        let preset: Preset = serde_json::from_value(host::get(&["presets", &id])?)
+            .map_err(|e| format!("that preset does not parse: {e}"))?;
+
+        let held: Vec<String> = collection("programmer_values")?
+            .iter()
+            .filter_map(|e| e.get("id").and_then(Value::as_str).map(String::from))
+            .collect();
+
+        let mut written = 0;
+        for value in &preset.values {
+            let fixture_id = value.fixture_id.to_string();
+            // Nothing selected means every fixture the preset knows: recalling *warm*
+            // means warm. With a selection it is the intersection.
+            if !selection.is_empty() && !selection.contains(&fixture_id) {
+                continue;
+            }
+            let key = parameter_key(&value.parameter_kind);
+            let entry_id = core::entry_id(&fixture_id, &key);
+            let row = json!({
+                "id": entry_id,
+                "fixture_id": fixture_id,
+                "parameter_kind": value.parameter_kind,
+                "value": value.value,
+                "effect": null,
+                "preset": preset.id,
+                "locked": false,
+            });
+            if held.contains(&entry_id) {
+                // The whole row, because the reference and the value have to land
+                // together — see the note on `flush` in `stores/programmer.ts`.
+                host::set(&["programmer_values", &entry_id], &row)?;
+            } else {
+                host::set(&["programmer_values", "__create"], &row)?;
+            }
+            written += 1;
+        }
+        Ok((name, written))
+    }
+
+    /// The programmer as a preset: a new one, or merged into one that exists.
+    ///
+    /// An effect is left out, for the reason the browser leaves one out: a preset is a
+    /// look, and a shape is an instruction with an anchor in it.
+    fn store_preset(&self, target: Target) -> Result<surface::ExecResponse, String> {
+        let entries = data::programmer_values().get()?;
+        if entries.is_empty() {
+            return Err("the programmer is empty — nothing to keep".into());
+        }
+        let values: Vec<PresetValue> = entries
+            .into_iter()
+            .filter(|entry| entry.effect.is_none())
+            .map(|entry| PresetValue {
+                fixture_id: entry.fixture_id,
+                parameter_kind: entry.parameter_kind,
+                value: entry.value,
+            })
+            .collect();
+        if values.is_empty() {
+            return Err("the programmer holds only shapes, and a preset is a look".into());
+        }
+
+        // An existing preset is merged into; anything else makes one.
+        let existing = resolve("presets", &target).ok();
+        match existing {
+            Some((id, name)) => {
+                let id = uuid(&id)?;
+                let old = data::presets().by_id(id).get()?;
+                let key = |v: &PresetValue| format!("{}/{}", v.fixture_id, parameter_key(&v.parameter_kind));
+                let taken: Vec<String> = values.iter().map(&key).collect();
+                let merged: Vec<PresetValue> = old
+                    .values
+                    .into_iter()
+                    .filter(|v| !taken.contains(&key(v)))
+                    .chain(values)
+                    .collect();
+                let n = merged.len();
+                data::presets().by_id(id).values().set(merged)?;
+                Ok(lines_response(vec![output_line(
+                    "result",
+                    format!("\"{name}\" now says {n} things — every cue using it followed"),
+                )]))
+            }
+            None => {
+                let name = match &target {
+                    Target::Name(name) => name.clone(),
+                    Target::Index(n) => format!("Preset {n}"),
+                };
+                let n = values.len();
+                data::presets().create(&Preset { id: uuid::Uuid::new_v4(), name: name.clone(), values })?;
+                Ok(lines_response(vec![output_line(
+                    "result",
+                    format!("stored \"{name}\" — {n} values"),
+                )]))
+            }
+        }
+    }
+
     // ── Entities ──────────────────────────────────────────────────────────────
 
     fn entity_command(
@@ -469,6 +593,9 @@ impl CommandLine {
                 // `Linear` here pinned every capture stored from the command line
                 // against a show that says otherwise.
                 easing: None,
+                // Reference first, literal beside it: a value recalled from a preset
+                // carries the preset into the cue.
+                preset: entry.preset,
             })
             .collect();
 
@@ -579,6 +706,7 @@ impl CommandLine {
                 delay_in_ms: 0,
                 effect: entry.effect.map(|spec| EffectSpec { t0: None, ..spec }),
                 easing: None,
+                preset: entry.preset,
             };
             match per_cue.iter_mut().find(|(id, _)| *id == cue_id) {
                 Some((_, list)) => list.push(capture),

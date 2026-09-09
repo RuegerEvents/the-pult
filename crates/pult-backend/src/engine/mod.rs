@@ -703,6 +703,12 @@ pub struct ShowEngine {
     /// The same for `inputs`, and its own flag rather than the same one: an input
     /// rebuilt because an output row was renamed would drop a socket mid-take.
     inputs_dirty: bool,
+    /// The version of `presets` when the playback pass last ran.
+    ///
+    /// Its own counter rather than a share of `playback_seen`, because the question is
+    /// narrower: re-pointing a standing fade walks every fade, and a Go must not pay
+    /// for it.
+    presets_seen: u64,
     /// The version of the collections the timeline pass reads, when it last ran.
     timelines_seen: u64,
     /// When the next timeline event is due, as of the last pass.
@@ -784,6 +790,10 @@ const PLAYBACK_COLLECTIONS: &[&str] = &[
     // asserting — so a play, a stop or a locate is a change to the show playback
     // reads, in exactly the way a Go is.
     "timelines",
+    // A capture may be a reference rather than a value, so editing a palette changes
+    // what the cues that are *standing* assert — which is the whole reason a palette
+    // is worth having. See `Playback::repoint_presets`.
+    "presets",
 ];
 
 /// What the timeline pass reads. Its own list rather than a share of the playback
@@ -873,6 +883,7 @@ impl ShowEngine {
             collection_versions: HashMap::new(),
             everything_version: 0,
             playback_seen: 0,
+            presets_seen: 0,
             pushed_version: 0,
             outputs_dirty: true,
             inputs_dirty: true,
@@ -1261,6 +1272,12 @@ impl ShowEngine {
         if !follow_due && self.version_of(PLAYBACK_COLLECTIONS) == self.playback_seen {
             return Vec::new();
         }
+        // Whether the *palettes* have moved, which is a narrower question than whether
+        // the show has: a standing fade is only re-pointed when a preset was edited,
+        // so a pass over an ordinary Go never walks the fades looking for one.
+        let presets_now = self.version_of(&["presets"]);
+        let presets_changed = presets_now != self.presets_seen;
+        self.presets_seen = presets_now;
         self.playback_seen = self.version_of(PLAYBACK_COLLECTIONS);
 
         let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
@@ -1286,6 +1303,7 @@ impl ShowEngine {
         let fixture_types: Vec<FixtureType> = self.read_collection("fixture_types");
         let masters: Vec<pult_schema::types::speedmaster::SpeedMaster> =
             self.read_collection("speed_masters");
+        let presets: Vec<pult_schema::types::preset::Preset> = self.read_collection("presets");
         let home_fade_ms = self.home_fade_ms();
         let fade_curves = self.fade_curves();
 
@@ -1304,8 +1322,9 @@ impl ShowEngine {
                 &masters,
                 home_fade_ms,
                 fade_curves,
+                &presets,
             );
-            self.playback.pass(wall_ms, &view)
+            self.playback.pass_with_presets_changed(wall_ms, &view, presets_changed)
         };
 
         // A follower takes its cue positions from the leader, so only the leader
@@ -2134,13 +2153,19 @@ impl ShowEngine {
             )
             .map_err(|e| bad(&format!("the held value does not parse: {e}")))?;
             let next = current.nudged(by).map_err(|reason| bad(&reason))?;
+            // The whole row rather than its `value` field, because **moving a value
+            // breaks its link to a preset**: a parameter somebody has nudged is no
+            // longer that palette's, and saying so in a second write would leave a
+            // moment in which the show says both. One write, one absolute, one row.
+            let mut row = row;
+            row["value"] = serde_json::to_value(next)?;
+            row["preset"] = serde_json::Value::Null;
             return Ok((
                 vec![
                     PathSegment::Key("programmer_values".into()),
                     PathSegment::Id(entry_id),
-                    PathSegment::Key("value".into()),
                 ],
-                serde_json::to_value(next)?,
+                row,
             ));
         }
 

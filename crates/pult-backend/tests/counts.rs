@@ -223,6 +223,108 @@ async fn one_gesture_is_one_row_however_many_writes_it_took() {
     );
 }
 
+/// A cue-only store and an Update across three cues are each **one Ctrl-Z**.
+///
+/// Both are one act and both are several writes to *different* rows: a cue-only store
+/// writes the cue and the compensation in the one after it, and an Update writes every
+/// cue driving a key the operator has hold of. The oplog folds repeats of one path
+/// inside a gesture into one row and cannot fold writes to different rows — so what is
+/// asserted here is the thing that actually matters: every write carries the same
+/// gesture, and one undo takes all of them back.
+///
+/// The writes are made the way the browser makes them rather than by the browser,
+/// because the property under test belongs to the engine: that a gesture holds across a
+/// burst spanning several rows, which is exactly what `stores/gesture.ts` relies on.
+#[tokio::test]
+async fn a_store_and_an_update_are_each_one_undo() {
+    let station = a_station().await;
+    let fixtures = a_rig(&station, 3).await;
+    let who = Uuid::new_v4();
+
+    let cue = |number: f64| {
+        serde_json::json!({
+            "id": Uuid::new_v4(),
+            "name": format!("Cue {number}"),
+            "number": number,
+            "captures": [],
+            "follow_mode": "Manual",
+            "fade_in_ms": 0,
+            "fade_out_ms": 0,
+            "easing": null,
+            "is_active": false,
+        })
+    };
+    let cues: Vec<serde_json::Value> = (1..=3).map(|n| cue(n as f64)).collect();
+    for row in &cues {
+        create(&station, "cues", row.clone()).await;
+    }
+
+    let capture = |fixture: Uuid, level: f32| {
+        serde_json::json!({
+            "fixture_id": fixture,
+            "parameter_kind": "Intensity",
+            "value": { "type": "Float", "value": level },
+            "fade_in_ms": 0,
+            "fade_out_ms": 0,
+            "delay_in_ms": 0,
+            "effect": null,
+            "easing": null,
+            "preset": null,
+        })
+    };
+
+    let ids: Vec<Uuid> =
+        cues.iter().map(|row| serde_json::from_value(row["id"].clone()).unwrap()).collect();
+    let gesture = Uuid::new_v4();
+    for (index, id) in ids.iter().enumerate() {
+        station
+            .engine
+            .set_as(
+                who,
+                Some(gesture),
+                vec![
+                    PathSegment::Key("cues".into()),
+                    PathSegment::Id(*id),
+                    PathSegment::Key("captures".into()),
+                ],
+                Lifecycle::Persisted,
+                serde_json::json!([capture(fixtures[index], 0.5)]),
+            )
+            .await
+            .expect("the store writes");
+    }
+
+    let history = station.engine.history(50).await;
+    let gestures: std::collections::HashSet<_> =
+        history.iter().filter_map(|entry| entry.gesture).collect();
+    assert_eq!(
+        gestures.len(),
+        1,
+        "a store across three cues was {} acts. Cue only and Update are each one, and \
+         an operator taking one back must not have to guess how many presses it takes.",
+        gestures.len()
+    );
+
+    // And one undo puts all three back, which is what "one Ctrl-Z" actually means.
+    station.engine.undo(who, false).await;
+    for id in &ids {
+        let captures = station
+            .engine
+            .get(vec![
+                PathSegment::Key("cues".into()),
+                PathSegment::Id(*id),
+                PathSegment::Key("captures".into()),
+            ])
+            .await
+            .expect("the cue is readable");
+        assert_eq!(
+            captures.as_array().map(Vec::len),
+            Some(0),
+            "one undo left a cue still holding what the store put in it"
+        );
+    }
+}
+
 /// The same, for the thing an operator drags far more often than a light: a truss.
 ///
 /// A gizmo writes a placement per animation frame, and moving a bar across a stage is

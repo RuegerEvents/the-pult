@@ -2,245 +2,251 @@
 -- Run: cargo run -p pult-codegen -- generate
 
 CREATE TABLE IF NOT EXISTS cues (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    number REAL NOT NULL,
-    captures TEXT NOT NULL,
-    follow_mode TEXT NOT NULL,
-    fade_in_ms INTEGER NOT NULL,
-    fade_out_ms INTEGER NOT NULL,
-    easing TEXT
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "number" REAL NOT NULL,
+    "captures" TEXT NOT NULL,
+    "follow_mode" TEXT NOT NULL,
+    "fade_in_ms" INTEGER NOT NULL,
+    "fade_out_ms" INTEGER NOT NULL,
+    "easing" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fixtures (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    fixture_type_id TEXT NOT NULL,
-    address TEXT NOT NULL,
-    position TEXT,
-    parent TEXT,
-    mount TEXT,
-    layer TEXT,
-    class TEXT,
-    focus TEXT,
-    fixture_number TEXT,
-    unit_number TEXT,
-    home_values TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "fixture_type_id" TEXT NOT NULL,
+    "address" TEXT NOT NULL,
+    "position" TEXT,
+    "parent" TEXT,
+    "mount" TEXT,
+    "layer" TEXT,
+    "class" TEXT,
+    "focus" TEXT,
+    "fixture_number" TEXT,
+    "unit_number" TEXT,
+    "home_values" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS fixture_types (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    manufacturer TEXT NOT NULL,
-    short_name TEXT NOT NULL,
-    long_name TEXT NOT NULL,
-    description TEXT NOT NULL,
-    channel_count INTEGER NOT NULL,
-    parameters TEXT NOT NULL,
-    dmx_modes TEXT NOT NULL,
-    physical TEXT NOT NULL,
-    geometry TEXT NOT NULL,
-    source TEXT NOT NULL,
-    plan_symbol TEXT NOT NULL,
-    thumbnail TEXT
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "manufacturer" TEXT NOT NULL,
+    "short_name" TEXT NOT NULL,
+    "long_name" TEXT NOT NULL,
+    "description" TEXT NOT NULL,
+    "channel_count" INTEGER NOT NULL,
+    "parameters" TEXT NOT NULL,
+    "dmx_modes" TEXT NOT NULL,
+    "physical" TEXT NOT NULL,
+    "geometry" TEXT NOT NULL,
+    "source" TEXT NOT NULL,
+    "plan_symbol" TEXT NOT NULL,
+    "thumbnail" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS flows (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    enabled INTEGER NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "enabled" INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS flow_edges (
-    id TEXT NOT NULL PRIMARY KEY,
-    flow_id TEXT NOT NULL,
-    from_node TEXT NOT NULL,
-    from_port INTEGER NOT NULL,
-    to_node TEXT NOT NULL,
-    to_port INTEGER NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "flow_id" TEXT NOT NULL,
+    "from_node" TEXT NOT NULL,
+    "from_port" INTEGER NOT NULL,
+    "to_node" TEXT NOT NULL,
+    "to_port" INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS flow_nodes (
-    id TEXT NOT NULL PRIMARY KEY,
-    flow_id TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    x REAL NOT NULL,
-    y REAL NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "flow_id" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "x" REAL NOT NULL,
+    "y" REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS groups (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    query TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "query" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS inputs (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    node_id TEXT,
-    interfaces TEXT NOT NULL,
-    universes TEXT NOT NULL,
-    enabled INTEGER NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "node_id" TEXT,
+    "interfaces" TEXT NOT NULL,
+    "universes" TEXT NOT NULL,
+    "enabled" INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS layers (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    locked INTEGER NOT NULL,
-    sort_order INTEGER NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "locked" INTEGER NOT NULL,
+    "sort_order" INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS layouts (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    tree TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "tree" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS named_assets (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    asset TEXT NOT NULL,
-    mime TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "asset" TEXT NOT NULL,
+    "mime" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS outputs (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    target TEXT,
-    universes TEXT NOT NULL,
-    enabled INTEGER NOT NULL,
-    node_id TEXT,
-    interfaces TEXT NOT NULL,
-    priority TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "target" TEXT,
+    "universes" TEXT NOT NULL,
+    "enabled" INTEGER NOT NULL,
+    "node_id" TEXT,
+    "interfaces" TEXT NOT NULL,
+    "priority" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS plugin_data (
-    id TEXT NOT NULL PRIMARY KEY,
-    plugin_id TEXT NOT NULL,
-    store TEXT NOT NULL,
-    key TEXT NOT NULL,
-    value TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "plugin_id" TEXT NOT NULL,
+    "store" TEXT NOT NULL,
+    "key" TEXT NOT NULL,
+    "value" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS plugin_packages (
-    id TEXT NOT NULL PRIMARY KEY,
-    plugin_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    version TEXT NOT NULL,
-    api TEXT NOT NULL,
-    sha256 TEXT NOT NULL,
-    enabled INTEGER NOT NULL,
-    stage TEXT NOT NULL,
-    config TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "plugin_id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "version" TEXT NOT NULL,
+    "api" TEXT NOT NULL,
+    "sha256" TEXT NOT NULL,
+    "enabled" INTEGER NOT NULL,
+    "stage" TEXT NOT NULL,
+    "config" TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS presets (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "values" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS classes (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS scene_objects (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    transform TEXT NOT NULL,
-    parent TEXT,
-    layer TEXT,
-    class TEXT,
-    geometry TEXT NOT NULL,
-    symbol TEXT,
-    catalogue TEXT,
-    properties TEXT NOT NULL,
-    locked INTEGER NOT NULL,
-    weight_kg TEXT
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "transform" TEXT NOT NULL,
+    "parent" TEXT,
+    "layer" TEXT,
+    "class" TEXT,
+    "geometry" TEXT NOT NULL,
+    "symbol" TEXT,
+    "catalogue" TEXT,
+    "properties" TEXT NOT NULL,
+    "locked" INTEGER NOT NULL,
+    "weight_kg" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sequences (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    cue_ids TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "cue_ids" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sheets (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    sort_order INTEGER NOT NULL,
-    paper TEXT NOT NULL,
-    landscape INTEGER NOT NULL,
-    frame INTEGER NOT NULL,
-    title_block INTEGER NOT NULL,
-    blocks TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "sort_order" INTEGER NOT NULL,
+    "paper" TEXT NOT NULL,
+    "landscape" INTEGER NOT NULL,
+    "frame" INTEGER NOT NULL,
+    "title_block" INTEGER NOT NULL,
+    "blocks" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS show (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    history_depth INTEGER NOT NULL,
-    home_fade_ms INTEGER NOT NULL,
-    haze_density REAL NOT NULL,
-    haze_turbulence REAL NOT NULL,
-    fade_curves TEXT NOT NULL,
-    production TEXT NOT NULL,
-    mvr_xchange TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "created_at" TEXT NOT NULL,
+    "history_depth" INTEGER NOT NULL,
+    "home_fade_ms" INTEGER NOT NULL,
+    "haze_density" REAL NOT NULL,
+    "haze_turbulence" REAL NOT NULL,
+    "fade_curves" TEXT NOT NULL,
+    "production" TEXT NOT NULL,
+    "mvr_xchange" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS speed_masters (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    bpm REAL NOT NULL,
-    multiplier REAL NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "bpm" REAL NOT NULL,
+    "multiplier" REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS stage_plans (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    asset TEXT NOT NULL,
-    width_px INTEGER NOT NULL,
-    height_px INTEGER NOT NULL,
-    origin TEXT NOT NULL,
-    metres_per_pixel REAL NOT NULL,
-    rotation_deg REAL NOT NULL,
-    opacity REAL NOT NULL,
-    visible INTEGER NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "asset" TEXT NOT NULL,
+    "width_px" INTEGER NOT NULL,
+    "height_px" INTEGER NOT NULL,
+    "origin" TEXT NOT NULL,
+    "metres_per_pixel" REAL NOT NULL,
+    "rotation_deg" REAL NOT NULL,
+    "opacity" REAL NOT NULL,
+    "visible" INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    geometry TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "geometry" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS timelines (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    audio TEXT,
-    peaks TEXT,
-    detected TEXT,
-    source TEXT NOT NULL,
-    grid TEXT NOT NULL,
-    markers TEXT NOT NULL,
-    events TEXT NOT NULL,
-    tracks TEXT NOT NULL,
-    speed_master TEXT,
-    node_id TEXT
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "audio" TEXT,
+    "peaks" TEXT,
+    "detected" TEXT,
+    "source" TEXT NOT NULL,
+    "grid" TEXT NOT NULL,
+    "markers" TEXT NOT NULL,
+    "events" TEXT NOT NULL,
+    "tracks" TEXT NOT NULL,
+    "speed_master" TEXT,
+    "node_id" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT NOT NULL,
-    colour TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "colour" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS versions (
-    id TEXT NOT NULL PRIMARY KEY,
-    name TEXT,
-    created_at TEXT NOT NULL,
-    user_id TEXT,
-    automatic INTEGER NOT NULL,
-    clock TEXT NOT NULL
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT,
+    "created_at" TEXT NOT NULL,
+    "user_id" TEXT,
+    "automatic" INTEGER NOT NULL,
+    "clock" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS collection_order (

@@ -198,6 +198,9 @@ export function cueOnlyCompensation(
 			// A stored effect drops its anchor, the same rule `storeCaptures` follows:
 			// the cue's own `went_at` is what it is measured from on every Go.
 			effect: tracked.effect ? { ...tracked.effect, t0: null } : null,
+			// The reference comes with it: a compensating value that dropped the palette
+			// would be the one cue in the show whose "warm" stopped following warm.
+			preset: tracked.preset ?? null,
 			fade_in_ms: 0,
 			fade_out_ms: 0,
 			delay_in_ms: 0,

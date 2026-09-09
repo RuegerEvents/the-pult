@@ -21,7 +21,7 @@
 	import { createCue, cueIdsThrough, cueOnlyCompensation, DEFAULT_FADE_MS, trackedThrough } from '$lib/cues.js';
 	import { CURVE_LABELS, CURVES, curveForKey } from '$lib/fade.js';
 	import { formatValue, kindLabel, parameterKey } from '$lib/patch.js';
-	import { clear, entries, storeInto } from '$lib/stores/programmer.js';
+	import { clear, entries, storeInto, storePreset, updatePreset } from '$lib/stores/programmer.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { collection, show, showData } from '$lib/stores/show.js';
 	import { addToast } from '$lib/toasts.js';
@@ -41,6 +41,7 @@
 	const fixtures = collection('fixtures');
 	const sequences = collection('sequences');
 	const cues = collection('cues');
+	const presets = collection('presets');
 
 	const SEQUENCE_KEY = 'pult.store.sequence';
 	const TRACKING_KEY = 'pult.store.tracking';
@@ -61,7 +62,17 @@
 	};
 
 	let sequenceId = $state<string | null>(remembered(SEQUENCE_KEY));
-	let target = $state<'new' | 'existing'>('new');
+	/**
+	 * A cue, or a preset.
+	 *
+	 * The third target is here rather than only on the Pools panel because the store
+	 * dialog is where an operator already is when they have built something worth
+	 * keeping, and "this is a look I will want again" is a decision made at exactly
+	 * that moment.
+	 */
+	let target = $state<'new' | 'existing' | 'preset'>('new');
+	let presetTarget = $state<string | null>(null);
+	let presetName = $state('');
 	let cueId = $state<string | null>(null);
 	let name = $state('');
 	let mode = $state<'merge' | 'replace'>('merge');
@@ -116,8 +127,9 @@
 
 	const canStore = $derived(
 		include.size > 0 &&
-			!!sequence &&
-			(target === 'new' ? name.trim().length > 0 : cue !== null)
+			(target === 'preset'
+				? presetTarget !== null || presetName.trim().length > 0
+				: !!sequence && (target === 'new' ? name.trim().length > 0 : cue !== null))
 	);
 
 	/**
@@ -195,6 +207,28 @@
 		return { next, before };
 	}
 
+	/**
+	 * The other kind of store: a look somebody will want again.
+	 *
+	 * No cue-only, no timing, no target sequence — a preset is values and a name, and
+	 * merging into one that exists is the same act as *Update from programmer* on the
+	 * pool button, so it goes through the same function.
+	 */
+	async function storeAsPreset() {
+		storing = true;
+		try {
+			const existing = $presets.find((p) => p.id === presetTarget) ?? null;
+			if (existing) await updatePreset(existing, include);
+			else await storePreset(presetName.trim(), include);
+			if (!keep) await clear({ keepLocked: true });
+			onclose();
+		} catch (e) {
+			addToast(e instanceof Error ? e.message : 'that would not store');
+		} finally {
+			storing = false;
+		}
+	}
+
 	/** Which parameters this store actually changes, as `"fixture/key"`. */
 	const changedKeys = () =>
 		$entries
@@ -202,7 +236,9 @@
 			.map((entry) => `${entry.fixture_id}/${parameterKey(entry.parameter_kind)}`);
 
 	async function store() {
-		if (!sequence || storing) return;
+		if (storing) return;
+		if (target === 'preset') return storeAsPreset();
+		if (!sequence) return;
 		storing = true;
 		remember(SEQUENCE_KEY, sequence.id);
 		remember(TRACKING_KEY, tracking);
@@ -238,6 +274,9 @@
 								// A stored effect drops its anchor: the cue's `went_at` is
 								// what it is measured from on every Go.
 								effect: entry.effect ? { ...entry.effect, t0: null } : null,
+								// The palette this value came from, if it came from one. The
+								// literal beside it is what plays if the preset is deleted.
+								preset: entry.preset ?? null,
 								// `null` is not "linear": it is this capture saying nothing, so
 								// the cue answers, and the show answers for the cue.
 								easing: t.easing,
@@ -361,6 +400,37 @@
 			</div>
 
 			<div class="target">
+				<div class="choice">
+					<label><input type="radio" value="new" bind:group={target} /> Cue</label>
+					<label><input type="radio" value="preset" bind:group={target} /> Preset</label>
+				</div>
+
+				{#if target === 'preset'}
+					<label class="field">
+						Into
+						<select
+							value={presetTarget ?? ''}
+							onchange={(e) => (presetTarget = e.currentTarget.value || null)}
+						>
+							<option value="">a new preset…</option>
+							{#each $presets as p (p.id)}
+								<option value={p.id}>{p.name}</option>
+							{/each}
+						</select>
+					</label>
+					{#if presetTarget === null}
+						<input class="text" placeholder="Preset name…" bind:value={presetName} />
+					{:else}
+						<p class="note">
+							Merged into it — everything it already says about other parameters is
+							kept, and every cue referencing it follows at once.
+						</p>
+					{/if}
+					<label class="check">
+						<input type="checkbox" bind:checked={keep} />
+						Keep the programmer after storing
+					</label>
+				{:else}
 				<label class="field">
 					Sequence
 					<select
@@ -484,6 +554,7 @@
 					<input type="checkbox" bind:checked={keep} />
 					Keep the programmer after storing
 				</label>
+				{/if}
 			</div>
 		{/if}
 

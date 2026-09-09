@@ -33,7 +33,8 @@
 	import { asFloat, withFloat } from '$lib/programmer.js';
 	import { SOURCE_LABELS, source, trackedSource, type Source } from '$lib/sheet.js';
 	import { collection } from '$lib/stores/show.js';
-	import { cueInView, presetInView, viewCue } from '$lib/stores/cues.js';
+	import { cueInView, presetInView, viewCue, viewPreset } from '$lib/stores/cues.js';
+	import { setPresetValue } from '$lib/stores/programmer.js';
 	import { output, watching } from '$lib/stores/output.js';
 	import { byKey, setValue } from '$lib/stores/programmer.js';
 	import { select, selected, selection } from '$lib/stores/selection.js';
@@ -45,6 +46,7 @@
 	const cues = collection('cues');
 	const sequences = collection('sequences');
 	const timelines = collection('timelines');
+	const presets = collection('presets');
 
 	/** Show the whole patch with the selection marked, rather than the selection alone. */
 	let all = $state(false);
@@ -95,6 +97,16 @@
 	// ── What is being looked at ─────────────────────────────────────────────────
 
 	const shownCue = $derived($cues.find((c) => c.id === $cueInView) ?? null);
+	const shownPreset = $derived($presets.find((p) => p.id === $presetInView) ?? null);
+	/** A preset's values, keyed the way a cell asks for them. */
+	const presetCells = $derived(
+		new Map(
+			(shownPreset?.values ?? []).map((v) => [
+				drivingKey(v.fixture_id, parameterKey(v.parameter_kind)),
+				v
+			])
+		)
+	);
 	const sequenceOf = (cue: Cue) => $sequences.find((s) => s.cue_ids.includes(cue.id)) ?? null;
 
 	/**
@@ -164,11 +176,25 @@
 
 	function cell(fixture: Fixture, key: string): Cell {
 		const at = drivingKey(fixture.id, key);
+		if (shownPreset) {
+			// A preset says nothing about most of the rig, and an empty cell is the
+			// honest way to draw that: it is not a zero, and it is not a home value.
+			const value = presetCells.get(at);
+			return value
+				? { text: formatValue(value.value), source: 'cue', from: null }
+				: { text: '', source: 'none', from: null };
+		}
 		if (shownCue) {
 			const entry = tracked.get(at);
 			if (!entry) return { text: '', source: 'none', from: null };
+			// A capture that names a preset shows the palette rather than the number,
+			// because that is what it *is* — and one whose preset is gone says so, since
+			// the number it is running on is the literal it was stored with.
+			const named = entry.capture.preset
+				? ($presets.find((p) => p.id === entry.capture.preset)?.name ?? 'preset missing')
+				: null;
 			return {
-				text: entry.capture.effect ? '∿' : formatValue(entry.capture.value),
+				text: named ?? (entry.capture.effect ? '∿' : formatValue(entry.capture.value)),
 				source: trackedSource(entry.cue, shownCue.id),
 				from: entry.cue.id === shownCue.id ? null : entry.cue.number.toFixed(1)
 			};
@@ -236,8 +262,10 @@
 			</span>
 			<span class="note">what taking it would assert — nothing here reaches the rig</span>
 			<button class="chip" onclick={() => viewCue(null)}>Show the rig</button>
-		{:else if $presetInView}
-			<span class="mode">Preset</span>
+		{:else if shownPreset}
+			<span class="mode">Preset <strong>{shownPreset.name}</strong></span>
+			<span class="note">what it says, and nowhere it says nothing</span>
+			<button class="chip" onclick={() => viewPreset(null)}>Show the rig</button>
 		{:else}
 			<span class="mode">Live</span>
 			<span class="note">what the rig is doing, and what is driving it</span>
@@ -372,6 +400,46 @@
 						{/each}
 					</select>
 				</label>
+			{:else if shownPreset}
+				{@const value = presetCells.get(drivingKey(picked.fixtureId, picked.key))}
+				{@const column = columns.find((c) => c.key === picked?.key)}
+				{#if value}
+					<label>
+						value
+						<input
+							class="num"
+							type="number"
+							min="0"
+							max="100"
+							value={percentOf(value.value)}
+							onchange={(e) => {
+								const n = Number(e.currentTarget.value);
+								if (Number.isFinite(n) && shownPreset) {
+									setPresetValue(
+										shownPreset,
+										picked!.fixtureId,
+										value.parameter_kind,
+										withFloat(value.value, n / 100)
+									);
+								}
+							}}
+						/>
+						<span class="unit">%</span>
+					</label>
+					<button
+						class="chip"
+						onclick={() =>
+							shownPreset &&
+							setPresetValue(shownPreset, picked!.fixtureId, value.parameter_kind, null)}
+						>Remove</button
+					>
+					<span class="note">every cue referencing this preset follows, at once</span>
+				{:else if column}
+					<span class="note">
+						This preset says nothing about it. Set it in the programmer and use
+						<em>Update from programmer</em>.
+					</span>
+				{/if}
 			{:else if shownCue}
 				<span class="note">
 					This cue does not capture it — what is shown is tracked from an earlier one.

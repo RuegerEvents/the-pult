@@ -26,7 +26,8 @@ use uuid::Uuid;
 use super::{
     id,
     kit::{
-        a_clamped_fixture, a_cue, a_fixture, a_piece, a_stack, a_type, aimed, capture, colour, facing, hue, intensity,
+        a_clamped_fixture, a_cue, a_fixture, a_piece, a_preset, a_preset_value, a_stack, a_type,
+        aimed, capture, colour, facing, from_preset, intensity,
         level, pan, posed, production, strobe_rate, tilt, truss_run, under, weighing,
         Addresses,
     },
@@ -243,6 +244,24 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         ),
     ];
 
+    // Two colour palettes, and the two cues below reference them — so editing *Warm*
+    // while its cue is standing changes what the washes are doing, with nobody
+    // pressing Go. Which is the only way to see what a preset is for.
+    let warm_rgb = ParameterValue::rgb(1.0, 0.55, 0.2);
+    let blue_rgb = ParameterValue::rgb(0.05, 0.1, 0.9);
+    let warm = a_preset(
+        into,
+        "Warm",
+        washes.iter().map(|f| a_preset_value(*f, ParameterKind::ColorRgb, warm_rgb.clone())).collect(),
+    )
+    .await?;
+    let deep_blue = a_preset(
+        into,
+        "Deep blue",
+        washes.iter().map(|f| a_preset_value(*f, ParameterKind::ColorRgb, blue_rgb.clone())).collect(),
+    )
+    .await?;
+
     let wash_looks = vec![
         with_fade(
             a_cue(
@@ -257,7 +276,15 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             a_cue(
                 "Warm",
                 2.0,
-                washes.iter().flat_map(|f| [level(*f, 0.7), hue(*f, 1.0, 0.55, 0.2)]).collect(),
+                washes
+                    .iter()
+                    .flat_map(|f| {
+                        [
+                            level(*f, 0.7),
+                            from_preset(*f, ParameterKind::ColorRgb, warm_rgb.clone(), warm),
+                        ]
+                    })
+                    .collect(),
             ),
             4_000,
         ),
@@ -265,7 +292,15 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             a_cue(
                 "Deep blue",
                 3.0,
-                washes.iter().flat_map(|f| [level(*f, 0.5), hue(*f, 0.05, 0.1, 0.9)]).collect(),
+                washes
+                    .iter()
+                    .flat_map(|f| {
+                        [
+                            level(*f, 0.5),
+                            from_preset(*f, ParameterKind::ColorRgb, blue_rgb.clone(), deep_blue),
+                        ]
+                    })
+                    .collect(),
             ),
             4_000,
         ),

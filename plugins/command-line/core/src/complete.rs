@@ -111,8 +111,21 @@ fn expectations_after(catalog: &Catalog, tokens: &[Token]) -> Vec<Expectation> {
             3 => vec![Expectation::Value { hint: "a value".into() }],
             _ => Vec::new(),
         },
+        "preset" => match rest.len() {
+            0 => vec![Expectation::EntityRef { table: "presets".into() }],
+            _ => Vec::new(),
+        },
+        "store" if rest.first().is_some_and(|t| t.text.eq_ignore_ascii_case("preset")) => {
+            match rest.len() {
+                1 => vec![Expectation::EntityRef { table: "presets".into() }],
+                _ => Vec::new(),
+            }
+        }
         "store" => match rest.len() {
-            0 => vec![keyword("sequence", "which sequence to store into")],
+            0 => vec![
+                keyword("sequence", "which sequence to store into"),
+                keyword("preset", "keep it as a look instead"),
+            ],
             1 => vec![Expectation::EntityRef { table: "sequences".into() }],
             2 => vec![keyword("cue", "which cue to store as")],
             3 => vec![Expectation::EntityRef { table: "cues".into() }],
@@ -174,6 +187,7 @@ fn first_words(catalog: &Catalog) -> Vec<Expectation> {
         keyword("set", "change one field of an entry"),
         keyword("store", "programmer into a cue"),
         keyword("update", "held values into the cues driving them"),
+        keyword("preset", "recall a preset onto the selection"),
         keyword("help", "how any of this works"),
     ];
     for table in catalog.entity_words() {

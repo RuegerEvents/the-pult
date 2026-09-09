@@ -23,11 +23,21 @@ import type {
 	EffectSpec,
 	ParameterKind,
 	ParameterValue,
+	Preset,
+	PresetValue,
 	ProgrammerValue,
 	Sequence
 } from '$lib/generated/index.js';
 import { parameterKey } from '$lib/patch.js';
-import { entryId, entriesFromCue, sameValue, storeCaptures } from '$lib/programmer.js';
+import {
+	applyPreset,
+	entryId,
+	entriesFromCue,
+	mergePresetValues,
+	presetValues,
+	sameValue,
+	storeCaptures
+} from '$lib/programmer.js';
 import { NO_CUE } from '$lib/sheet.js';
 import { beginGesture, endGesture } from './gesture.js';
 import { collection, show, showData } from './show.js';
@@ -103,7 +113,17 @@ async function flush(): Promise<void> {
 		const existing = current.get(id);
 		if (existing) {
 			if (sameValue(existing.value, value)) continue;
-			await data.programmer_values.byId(id).value.set(value);
+			// **Moving a value breaks its link to a preset**, and it has to be one
+			// write: a value and a `preset: null` sent separately leave a moment in
+			// which the show says the parameter is still that palette's while holding
+			// a number the palette does not say. So a row that carries a reference is
+			// written whole, and everything else keeps the cheap field write a fader
+			// does a few hundred of.
+			if (existing.preset) {
+				await data.programmer_values.byId(id).set({ ...existing, value, preset: null });
+			} else {
+				await data.programmer_values.byId(id).value.set(value);
+			}
 		} else {
 			await data.programmer_values.create({
 				id,
@@ -111,6 +131,9 @@ async function flush(): Promise<void> {
 				parameter_kind: kind,
 				value,
 				effect: null,
+				// A value typed or dragged is nobody's palette. Recalling a preset is the
+				// one path that writes one — see `applyPreset`.
+				preset: null,
 				locked: false
 			});
 		}
@@ -172,6 +195,7 @@ export async function setEffect(
 				// Where the parameter falls back to if the effect cannot be rendered.
 				value: spec.low,
 				effect: anchored,
+				preset: null,
 				locked: false
 			});
 		}
@@ -370,4 +394,83 @@ export async function updateDriven(): Promise<{ updated: number; orphans: string
 	}
 
 	return { updated: perCue.size, orphans };
+}
+
+// ── Presets ───────────────────────────────────────────────────────────────────
+
+/**
+ * Recall a preset into the programmer.
+ *
+ * One gesture, so a preset applied to forty heads is one Ctrl-Z. Each entry carries
+ * the reference **and** the value it resolved to — see `applyPreset` for why both.
+ *
+ * With nothing selected it applies to every fixture the preset knows; with a selection
+ * it is the intersection. A preset that reaches none of the selection writes nothing
+ * rather than clearing what is held, which is what an operator means by a button that
+ * does not apply here.
+ */
+export async function recallPreset(preset: Preset, selection: string[]): Promise<number> {
+	const rows = applyPreset(preset, selection);
+	if (rows.length === 0) return 0;
+	const data = showData();
+	const current = new Map(held.map((entry) => [entry.id, entry]));
+	beginGesture();
+	try {
+		for (const row of rows) {
+			// A pending fader move would land after this and cover it.
+			pending.delete(row.id);
+			if (current.has(row.id)) await data.programmer_values.byId(row.id).set(row);
+			else await data.programmer_values.create(row);
+		}
+	} finally {
+		endGesture();
+	}
+	return rows.length;
+}
+
+/** Make a preset out of what the programmer is holding. */
+export async function storePreset(name: string, include?: Set<string>): Promise<Preset> {
+	const chosen = include ?? new Set(held.map((entry) => entry.id));
+	const preset: Preset = {
+		id: crypto.randomUUID(),
+		name,
+		values: presetValues(held, chosen)
+	};
+	await showData().presets.create(preset);
+	return preset;
+}
+
+/**
+ * Fold what the programmer is holding into a preset that already exists.
+ *
+ * A merge rather than a replace, for the reason a store into a cue is: a preset that
+ * also holds a position should not lose it because somebody re-grabbed the colour.
+ * The right-click verb on a pool button, and the one that makes a palette live —
+ * every standing cue that references it moves as soon as this lands.
+ */
+export async function updatePreset(preset: Preset, include?: Set<string>): Promise<number> {
+	const chosen = include ?? new Set(held.map((entry) => entry.id));
+	const incoming = presetValues(held, chosen);
+	if (incoming.length === 0) return 0;
+	await showData()
+		.presets.byId(preset.id)
+		.values.set(mergePresetValues(preset.values, incoming));
+	return incoming.length;
+}
+
+/** Edit one value of a preset in place — the sheet's inspector, in preset mode. */
+export async function setPresetValue(
+	preset: Preset,
+	fixtureId: string,
+	kind: ParameterKind,
+	value: ParameterValue | null
+): Promise<void> {
+	const key = parameterKey(kind);
+	const at = (v: PresetValue) => `${v.fixture_id}/${parameterKey(v.parameter_kind)}`;
+	const without = preset.values.filter((v) => at(v) !== `${fixtureId}/${key}`);
+	const next =
+		value === null
+			? without
+			: [...without, { fixture_id: fixtureId, parameter_kind: kind, value }];
+	await showData().presets.byId(preset.id).values.set(next);
 }

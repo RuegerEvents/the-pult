@@ -18,6 +18,7 @@ import type { NamedAsset } from '../generated/NamedAsset.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { PluginDatum } from '../generated/PluginDatum.js';
 import type { PluginPackage } from '../generated/PluginPackage.js';
+import type { Preset } from '../generated/Preset.js';
 import type { ProgrammerValue } from '../generated/ProgrammerValue.js';
 import type { SceneClass } from '../generated/SceneClass.js';
 import type { SceneObject } from '../generated/SceneObject.js';
@@ -89,6 +90,10 @@ export type PluginDatumEntity = PathProxy<PluginDatum> & {
 };
 
 export type PluginPackageEntity = PathProxy<PluginPackage> & {
+  delete(): Promise<void>;
+};
+
+export type PresetEntity = PathProxy<Preset> & {
   delete(): Promise<void>;
 };
 
@@ -349,6 +354,20 @@ export type PluginPackageCollection = {
   [n: number]: PluginPackageEntity;
 };
 
+export type PresetCollection = {
+  get(): Promise<Preset[]>;
+  set(value: Preset[]): Promise<void>;
+  subscribe(cb: (value: Preset[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Preset[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): PresetEntity;
+  nth(n: number): PresetEntity;
+  create(entity: Preset): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: PresetEntity;
+};
+
 export type ProgrammerValueCollection = {
   get(): Promise<ProgrammerValue[]>;
   set(value: ProgrammerValue[]): Promise<void>;
@@ -549,6 +568,7 @@ export type DataRoot = {
   outputs: OutputConfigCollection;
   plugin_data: PluginDatumCollection;
   plugin_packages: PluginPackageCollection;
+  presets: PresetCollection;
   programmer_values: ProgrammerValueCollection;
   classes: SceneClassCollection;
   scene_objects: SceneObjectCollection;

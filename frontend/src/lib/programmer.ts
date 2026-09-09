@@ -13,8 +13,12 @@ import type {
 	ParameterCapture,
 	ParameterKind,
 	ParameterValue,
+	Preset,
+	PresetValue,
 	ProgrammerValue
 } from './generated/index.js';
+import { fadeGroup } from './fade.js';
+import type { FadeGroup } from './generated/index.js';
 import { kindLabel, modeHas, modeOf, parameterKey } from './patch.js';
 import type { Showing } from './stores/output.js';
 
@@ -203,6 +207,11 @@ export function storeCaptures(
 				fixture_id: entry.fixture_id,
 				parameter_kind: entry.parameter_kind,
 				value: entry.value,
+				// Reference first, literal beside it: the capture carries the preset the
+				// entry was recalled from *and* the number it resolved to, so a station
+				// that has never heard of the preset still shows the right value and a
+				// deleted preset leaves the cue running exactly as it was.
+				preset: entry.preset ?? null,
 				fade_in_ms: kept?.fade_in_ms ?? 0,
 				fade_out_ms: kept?.fade_out_ms ?? 0,
 				delay_in_ms: kept?.delay_in_ms ?? 0,
@@ -239,9 +248,104 @@ export function entriesFromCue(cue: Cue): ProgrammerValue[] {
 		// Back into the programmer, and anchored now: the operator is holding it
 		// again rather than replaying it from where the cue put it.
 		effect: capture.effect ? { ...capture.effect, t0: Date.now() } : null,
+		// And the reference comes back with it, so editing a cue and updating it does
+		// not quietly turn every palette reference in it into a literal.
+		preset: capture.preset ?? null,
 		locked: false
 	}));
 }
+
+// ── Presets ───────────────────────────────────────────────────────────────────
+
+/**
+ * What recalling a preset writes into the programmer.
+ *
+ * **Both**, always: the reference *and* the value it resolves to right now. The
+ * reference is what makes an edit reach the cue later; the value is what plays when
+ * the preset is gone, and what a station that never received the preset shows.
+ *
+ * `selection` narrows it. With nothing selected a preset applies to every fixture it
+ * knows — recalling *warm* means warm — and with a selection it is the intersection,
+ * which is what lets one look be applied to half a rig.
+ */
+export function applyPreset(preset: Preset, selection: string[]): ProgrammerValue[] {
+	const wanted = selection.length > 0 ? new Set(selection) : null;
+	return preset.values
+		.filter((value) => !wanted || wanted.has(value.fixture_id))
+		.map((value) => ({
+			id: entryId(value.fixture_id, parameterKey(value.parameter_kind)),
+			fixture_id: value.fixture_id,
+			parameter_kind: value.parameter_kind,
+			value: value.value,
+			effect: null,
+			preset: preset.id,
+			locked: false
+		}));
+}
+
+/**
+ * How many of a preset's fixtures the current selection would actually reach, so a
+ * button can say "4 of 6" rather than pretending it will do the whole thing.
+ */
+export function presetReach(preset: Preset, selection: string[]): { of: number; all: number } {
+	const fixtures = [...new Set(preset.values.map((v) => v.fixture_id))];
+	if (selection.length === 0) return { of: fixtures.length, all: fixtures.length };
+	const wanted = new Set(selection);
+	return { of: fixtures.filter((id) => wanted.has(id)).length, all: fixtures.length };
+}
+
+/**
+ * What the programmer becomes, as a preset's values.
+ *
+ * An effect is left out: a preset is a look, and a shape is an instruction with an
+ * anchor in it. Storing one would be storing a chase that every cue referencing the
+ * preset would then restart at a moment nobody chose.
+ */
+export function presetValues(entries: ProgrammerValue[], include: Set<string>): PresetValue[] {
+	return entries
+		.filter((entry) => include.has(entry.id) && !entry.effect)
+		.map((entry) => ({
+			fixture_id: entry.fixture_id,
+			parameter_kind: entry.parameter_kind,
+			value: entry.value
+		}));
+}
+
+/**
+ * A preset's values with more merged into it, keyed the way everything else is.
+ *
+ * *Update from programmer* is a merge rather than a replace: a preset that also holds
+ * a position should not lose it because somebody re-grabbed the colour.
+ */
+export function mergePresetValues(existing: PresetValue[], incoming: PresetValue[]): PresetValue[] {
+	const key = (v: PresetValue) => `${v.fixture_id}/${parameterKey(v.parameter_kind)}`;
+	const taken = new Set(incoming.map(key));
+	return [...existing.filter((v) => !taken.has(key(v))), ...incoming];
+}
+
+/**
+ * Which fade groups a preset touches, derived from its keys and never stored.
+ *
+ * A preset that grows a colour is a colour preset from that moment, and nobody has to
+ * reclassify anything — which is the whole reason the pool is flat and the tags are
+ * computed. See `crates/pult-schema/src/types/preset.rs`.
+ */
+export function presetGroups(preset: Preset): FadeGroup[] {
+	const found = new Set<FadeGroup>();
+	for (const value of preset.values) found.add(fadeGroup(parameterKey(value.parameter_kind)));
+	return (['Intensity', 'Position', 'Color', 'Beam', 'Other'] as FadeGroup[]).filter((g) =>
+		found.has(g)
+	);
+}
+
+/** The one-letter tags a pool button wears: I, P, C, B, O. */
+export const GROUP_TAGS: Record<FadeGroup, string> = {
+	Intensity: 'I',
+	Position: 'P',
+	Color: 'C',
+	Beam: 'B',
+	Other: 'O'
+};
 
 // ── Values ────────────────────────────────────────────────────────────────────
 

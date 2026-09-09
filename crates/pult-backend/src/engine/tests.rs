@@ -1367,6 +1367,7 @@ fn an_intensity_cue(fixture_id: Uuid, level: f32, fade_in_ms: u32) -> Cue {
         delay_in_ms: 0,
         effect: None,
         easing: Some(Easing::Linear),
+        preset: None,
     }];
     cue
 }
@@ -2118,6 +2119,7 @@ mod watching_playback {
                 delay_in_ms: 0,
                 effect: None,
                 easing: Some(Easing::Linear),
+                preset: None,
             }],
             follow_mode: FollowMode::Manual,
             fade_in_ms: 0,
@@ -2216,6 +2218,7 @@ mod watching_playback {
                 delay_in_ms: 0,
                 effect: None,
                 easing: Some(Easing::Linear),
+                preset: None,
             }],
             follow_mode: FollowMode::Manual,
             fade_in_ms: 0,
@@ -2320,6 +2323,7 @@ mod watching_playback {
                 delay_in_ms: 0,
                 effect: None,
                 easing: Some(Easing::Linear),
+                preset: None,
             })
             .collect();
         let cue = Cue {
@@ -3537,6 +3541,7 @@ mod relative {
             value: ParameterValue::Float(value),
             effect: None,
             locked: false,
+            preset: None,
         }
     }
 
@@ -3978,6 +3983,7 @@ mod home {
             value: ParameterValue::Float(value),
             effect: None,
             locked: false,
+            preset: None,
         }
     }
 
@@ -4253,6 +4259,47 @@ mod home {
         let row = h.engine.get(held(fixture.id, &ParameterKind::Intensity)).await.unwrap();
         let level = row["value"]["value"].as_f64().unwrap();
         assert!((level - 0.5).abs() < 1e-5, "0.4 and a tenth more, not 0.1: {row}");
+    }
+
+    /// **Moving a value breaks its link to a preset.**
+    ///
+    /// A parameter somebody has nudged is no longer that palette's, and the whole row
+    /// goes in one write so there is never a moment in which the show says both.
+    #[tokio::test]
+    async fn a_nudge_lets_go_of_the_preset_it_was_holding() {
+        let h = harness().await;
+        let fixture =
+            a_patched_fixture(&h, vec![a_parameter(ParameterKind::Intensity, ParameterValue::Float(0.0))])
+                .await;
+
+        let mut entry = a_programmer_value(fixture.id, ParameterKind::Intensity, 0.5);
+        entry.preset = Some(Uuid::new_v4());
+        h.engine
+            .set(create_path("programmer_values"), Lifecycle::Synced, json(&entry))
+            .await
+            .unwrap();
+
+        h.engine
+            .set(
+                vec![
+                    PathSegment::Key("programmer_values".into()),
+                    PathSegment::Key("__by".into()),
+                ],
+                Lifecycle::Synced,
+                json!({
+                    "fixtureId": fixture.id,
+                    "parameterKind": ParameterKind::Intensity,
+                    "by": 0.1,
+                }),
+            )
+            .await
+            .unwrap();
+
+        let row = h.engine.get(held(fixture.id, &ParameterKind::Intensity)).await.unwrap();
+        assert!(row["preset"].is_null(), "the link is gone: {row}");
+        let level = row["value"]["value"].as_f64().unwrap();
+        assert!((level - 0.6).abs() < 1e-5, "and the value moved: {row}");
+        assert_eq!(row["locked"], json!(false), "and the rest of the row survived: {row}");
     }
 
     /// One act, one Ctrl-Z. A fixture with four parameters is four writes, and an

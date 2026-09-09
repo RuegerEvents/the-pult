@@ -108,6 +108,13 @@ impl<'a> Parser<'a> {
                 Ok(Command::SetField { table, target, field, value })
             }
             "update" => Ok(Command::Update),
+            // Before the catalogue fall-through, the way `group` is: what an operator
+            // means by "preset 3" is the look it stands for, not the row.
+            "preset" => Ok(Command::Preset(self.target()?)),
+            "store" if self.peek().is_some_and(|t| t.text.eq_ignore_ascii_case("preset")) => {
+                self.next();
+                Ok(Command::StorePreset(self.target()?))
+            }
             "store" => {
                 self.keyword("sequence")?;
                 let sequence = self.target()?;
@@ -142,7 +149,7 @@ impl<'a> Parser<'a> {
     /// What could begin a line, for the error under an unknown first word.
     fn first_words(&self) -> Vec<String> {
         let mut words: Vec<String> = ["help", "clear", "at", "full", "out", "home", "create",
-            "delete", "rename", "set", "store", "update"]
+            "delete", "rename", "set", "store", "update", "preset"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -384,6 +391,10 @@ impl<'a> Parser<'a> {
                 self.next();
                 Some(Then::Home)
             }
+            Some(t) if t.text.eq_ignore_ascii_case("preset") => {
+                self.next();
+                Some(Then::Preset(self.target()?))
+            }
             _ => None,
         };
         Ok(Command::Select { ops, at })
@@ -524,11 +535,17 @@ impl<'a> Parser<'a> {
 }
 
 /// A word that ends a selection and begins what to do with it.
+/// Words that end a selection and begin what to do with it.
+///
+/// `preset` is one of them, and it has to be checked here rather than fall through to
+/// the catalogue: `presets` is a collection like any other, so without this
+/// `fixture 1 thru 5 preset 3` would read the word as "now select presets".
 fn is_level_word(word: &str) -> bool {
     word.eq_ignore_ascii_case("at")
         || word.eq_ignore_ascii_case("full")
         || word.eq_ignore_ascii_case("out")
         || word.eq_ignore_ascii_case("home")
+        || word.eq_ignore_ascii_case("preset")
 }
 
 fn number_value(n: f64) -> Value {
@@ -811,6 +828,40 @@ mod tests {
                 value: Value::from(4),
             }
         );
+        assert_eq!(
+            parse_ok("store sequence 2 cue 3"),
+            Command::Store { sequence: Target::Index(2), cue: Target::Index(3) }
+        );
+    }
+
+    /// A preset is recalled by name or by number, on its own or as the tail of a
+    /// selection — the shape `at` and `home` already have, and for the same reason:
+    /// what a preset *means* is a question about the show that this side cannot ask.
+    #[test]
+    fn a_preset_is_recalled_by_name_or_by_number() {
+        assert_eq!(parse_ok("preset 3"), Command::Preset(Target::Index(3)));
+        assert_eq!(
+            parse_ok("preset \"warm\""),
+            Command::Preset(Target::Name("warm".into()))
+        );
+        assert_eq!(
+            parse_ok("fixture 1 thru 5 preset 3"),
+            Command::Select {
+                ops: vec![(SelOp::Replace, fixtures(1, 5))],
+                at: Some(Then::Preset(Target::Index(3)))
+            }
+        );
+    }
+
+    /// `store preset` is a different act from `store sequence`, and the word after
+    /// `store` is what decides which.
+    #[test]
+    fn store_preset_is_told_from_store_sequence_by_the_next_word() {
+        assert_eq!(
+            parse_ok("store preset \"warm\""),
+            Command::StorePreset(Target::Name("warm".into()))
+        );
+        assert_eq!(parse_ok("store preset 2"), Command::StorePreset(Target::Index(2)));
         assert_eq!(
             parse_ok("store sequence 2 cue 3"),
             Command::Store { sequence: Target::Index(2), cue: Target::Index(3) }

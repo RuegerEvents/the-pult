@@ -6,16 +6,22 @@ import type {
 	FixtureType,
 	ParameterCapture,
 	ParameterValue,
+	Preset,
 	ProgrammerValue
 } from './generated/index.js';
 import {
+	applyPreset,
 	asFloat,
 	commonValue,
 	editableParameters,
 	entriesFromCue,
 	entryId,
 	hexToRgb,
+	mergePresetValues,
 	nudge,
+	presetGroups,
+	presetReach,
+	presetValues,
 	rgbToHex,
 	storeCaptures,
 	withFloat
@@ -155,6 +161,7 @@ describe('storing', () => {
 		parameter_kind: 'Intensity',
 		value: { type: 'Float', value: 0.7 },
 		effect: null,
+		preset: null,
 		locked: false,
 		...over
 	});
@@ -168,6 +175,7 @@ describe('storing', () => {
 		delay_in_ms: 0,
 		effect: null,
 		easing: 'Linear',
+		preset: null,
 		...over
 	});
 
@@ -223,6 +231,7 @@ describe('loading a cue back into the programmer', () => {
 				fade_out_ms: 0,
 				delay_in_ms: 0,
 				effect: null,
+				preset: null,
 				easing: 'Linear'
 			}
 		],
@@ -337,6 +346,7 @@ describe('an effect through store and back', () => {
 		parameter_kind: 'Intensity',
 		value: { type: 'Float', value: 0 },
 		effect: spec(1_000),
+		preset: null,
 		locked: false
 	};
 
@@ -385,5 +395,107 @@ describe('an effect through store and back', () => {
 			easing: null,
 			is_active: false
 		})[0].effect).toBeNull();
+	});
+});
+
+describe('presets', () => {
+	const value = (n: number): ParameterValue => ({ type: 'Float', value: n });
+	const preset: Preset = {
+		id: 'p1',
+		name: 'Warm',
+		values: [
+			{ fixture_id: 'f1', parameter_kind: 'Intensity', value: value(0.8) },
+			{ fixture_id: 'f1', parameter_kind: 'Pan', value: value(0.25) },
+			{ fixture_id: 'f2', parameter_kind: 'Intensity', value: value(0.4) }
+		]
+	};
+
+	/**
+	 * **Both**, always. The reference is what makes an edit reach the cue later; the
+	 * value is what plays when the preset is gone.
+	 */
+	it('writes the reference and the value it resolved to', () => {
+		const [first] = applyPreset(preset, []);
+		expect(first.preset).toBe('p1');
+		expect(first.value).toEqual(value(0.8));
+	});
+
+	it('applies to every fixture it knows when nothing is selected', () => {
+		expect(applyPreset(preset, []).map((e) => e.fixture_id)).toEqual(['f1', 'f1', 'f2']);
+	});
+
+	it('is the intersection when there is a selection', () => {
+		expect(applyPreset(preset, ['f2']).map((e) => e.fixture_id)).toEqual(['f2']);
+		expect(applyPreset(preset, ['f9'])).toEqual([]);
+	});
+
+	/** The ids are derived the same way a fader derives them, so a recall patches
+	 *  the row a fader would have patched rather than adding a rival one beside it. */
+	it('derives the same entry ids a fader would', () => {
+		const [first] = applyPreset(preset, ['f1']);
+		expect(first.id).toBe(entryId('f1', 'Intensity'));
+	});
+
+	it('says how much of itself a selection would reach', () => {
+		expect(presetReach(preset, [])).toEqual({ of: 2, all: 2 });
+		expect(presetReach(preset, ['f2'])).toEqual({ of: 1, all: 2 });
+	});
+
+	/** A shape is an instruction with an anchor in it, not a look. */
+	it('leaves an effect out of what it stores', () => {
+		const held: ProgrammerValue[] = [
+			{ id: 'a', fixture_id: 'f1', parameter_kind: 'Intensity', value: value(0.5), effect: null, preset: null, locked: false },
+			{
+				id: 'b',
+				fixture_id: 'f1',
+				parameter_kind: 'Pan',
+				value: value(0.5),
+				effect: {
+					effect_id: 'e',
+					curve: { Shape: 'Sine' },
+					rate: { Hz: 1 },
+					low: value(0),
+					high: value(1),
+					width: 0.5,
+					direction: 'Forward',
+					phase: 0,
+					spread: 'Linear',
+					t0: null
+				},
+				preset: null,
+				locked: false
+			}
+		];
+		expect(presetValues(held, new Set(['a', 'b']))).toHaveLength(1);
+	});
+
+	/** A preset that also holds a position should not lose it because somebody
+	 *  re-grabbed the colour. */
+	it('merges rather than replacing when it is updated', () => {
+		const merged = mergePresetValues(preset.values, [
+			{ fixture_id: 'f1', parameter_kind: 'Intensity', value: value(0.2) }
+		]);
+		expect(merged).toHaveLength(3);
+		expect(merged.find((v) => v.fixture_id === 'f1' && v.parameter_kind === 'Pan')).toBeTruthy();
+		expect(
+			merged.find((v) => v.fixture_id === 'f1' && v.parameter_kind === 'Intensity')?.value
+		).toEqual(value(0.2));
+	});
+
+	/** Derived from the keys and never stored, which is why the pool can be flat. */
+	it('works out its own group tags', () => {
+		expect(presetGroups(preset)).toEqual(['Intensity', 'Position']);
+	});
+
+	it('carries the reference through a store and back', () => {
+		const held: ProgrammerValue[] = [
+			{ id: 'a', fixture_id: 'f1', parameter_kind: 'Intensity', value: value(0.8), effect: null, preset: 'p1', locked: false }
+		];
+		const [capture] = storeCaptures([], held, 'replace', new Set(['a']));
+		expect(capture.preset).toBe('p1');
+		expect(capture.value).toEqual(value(0.8));
+
+		const [back] = entriesFromCue({ id: 'c', name: 'x', number: 1, captures: [capture], follow_mode: 'Manual', fade_in_ms: 0, fade_out_ms: 0, easing: null, is_active: false });
+		expect(back.preset).toBe('p1');
 	});
 });

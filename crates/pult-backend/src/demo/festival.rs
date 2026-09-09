@@ -36,7 +36,8 @@ use uuid::Uuid;
 use super::{
     id,
     kit::{
-        a_clamped_fixture, a_cue, a_fixture, a_piece, a_stack, a_type_with_beam, aimed, boom,
+        a_clamped_fixture, a_cue, a_fixture, a_piece, a_preset, a_preset_value, a_stack,
+        a_type_with_beam, aimed, boom, from_preset,
         posed, production, weighing,
         capture, colour, facing, hue, intensity, level, on, pan, strobe_rate, tilt, truss_run,
         under, Addresses,
@@ -372,6 +373,23 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     let coloured = |on: &[Uuid], at: f32, r: f32, g: f32, b: f32| -> Vec<ParameterCapture> {
         on.iter().flat_map(|f| [level(*f, at), hue(*f, r, g, b)]).collect()
     };
+    // Two colour palettes over the beams, and the "Beam chase" cue below references
+    // the first — so editing *Beam cyan* while it is standing changes the back wall
+    // with nobody pressing Go.
+    let cyan = ParameterValue::rgb(0.2, 0.9, 1.0);
+    let magenta = ParameterValue::rgb(1.0, 0.1, 0.7);
+    let beam_cyan = a_preset(
+        into,
+        "Beam cyan",
+        beams.iter().map(|f| a_preset_value(*f, ParameterKind::ColorRgb, cyan.clone())).collect(),
+    )
+    .await?;
+    a_preset(
+        into,
+        "Beam magenta",
+        beams.iter().map(|f| a_preset_value(*f, ParameterKind::ColorRgb, magenta.clone())).collect(),
+    )
+    .await?;
     // Pan spread evenly across a system, so a row of heads fans out rather than all
     // pointing the same way.
     let fanned = |on: &[Uuid], from: f32, to: f32| -> Vec<ParameterCapture> {
@@ -531,7 +549,12 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                     "Beam chase",
                     1.0,
                     joined(vec![
-                        beams.iter().flat_map(|f| [hue(*f, 0.2, 0.9, 1.0)]).collect(),
+                        beams
+                            .iter()
+                            .map(|f| {
+                                from_preset(*f, ParameterKind::ColorRgb, cyan.clone(), beam_cyan)
+                            })
+                            .collect(),
                         fanned(&beams, 0.42, 0.58),
                         shaped(&beams, ParameterKind::Intensity, Shape::SawDown, on_beat(1.0),
                                ParameterValue::Float(0.0), ParameterValue::Float(1.0), 0.5,

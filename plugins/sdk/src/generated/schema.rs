@@ -1308,6 +1308,17 @@ pub struct ParameterCapture {
     /// would be this console rewriting somebody's cue.
     #[serde(default)]
     pub easing: Option<Easing>,
+    /// The preset this capture is a reference to, if it is one.
+    ///
+    /// **Reference first, literal beside it.** `value` stays the copy taken when the
+    /// capture was stored and is never rewritten by a preset edit; it is what plays
+    /// when the preset has been deleted or does not name this fixture. So deleting a
+    /// preset cascades nothing, and Ctrl-Z of the delete restores every link at once
+    /// because no link was ever broken.
+    ///
+    /// Resolved in exactly one place, [`ParameterCapture::value_in`].
+    #[serde(default)]
+    pub preset: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1577,6 +1588,24 @@ pub enum PluginStage {
     Both,
 }
 
+/// A named look that cues and the programmer can point at.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Preset {
+    pub id: Uuid,
+    pub name: String,
+    /// What it says, per fixture and parameter. A preset that names no fixture at all
+    /// is legal and does nothing — which is what one being built looks like.
+    pub values: Vec<PresetValue>,
+}
+
+/// One parameter of one fixture, as a preset holds it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PresetValue {
+    pub fixture_id: Uuid,
+    pub parameter_kind: ParameterKind,
+    pub value: ParameterValue,
+}
+
 /// What a title block says, beside the drawing's own name and scale.
 ///
 /// Every field may be empty, and an empty one is *omitted* rather than printed as a
@@ -1625,6 +1654,16 @@ pub struct ProgrammerValue {
     /// the same act of taking hold of one parameter.
     #[serde(default)]
     pub effect: Option<EffectSpec>,
+    /// The preset this entry is a reference to, if it is one.
+    ///
+    /// Recalling a preset writes the reference *and* the value it resolved to, so a
+    /// store carries the reference into the capture and a station that has never
+    /// heard of the preset still shows the right number. Anything that changes the
+    /// value by hand — a fader, a typed number, an `at +10` — writes `preset: null`
+    /// in the same write, because a value somebody has moved is no longer that
+    /// preset's.
+    #[serde(default)]
+    pub preset: Option<Uuid>,
     /// Parked: survives Clear and Store, so one value can go into several cues.
     ///
     /// The spec calls this the parking function and asks for it explicitly — a value

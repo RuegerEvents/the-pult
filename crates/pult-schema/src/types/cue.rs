@@ -54,6 +54,35 @@ pub struct ParameterCapture {
     /// would be this console rewriting somebody's cue.
     #[serde(default)]
     pub easing: Option<Easing>,
+    /// The preset this capture is a reference to, if it is one.
+    ///
+    /// **Reference first, literal beside it.** `value` stays the copy taken when the
+    /// capture was stored and is never rewritten by a preset edit; it is what plays
+    /// when the preset has been deleted or does not name this fixture. So deleting a
+    /// preset cascades nothing, and Ctrl-Z of the delete restores every link at once
+    /// because no link was ever broken.
+    ///
+    /// Resolved in exactly one place, [`ParameterCapture::value_in`].
+    #[serde(default)]
+    pub preset: Option<Uuid>,
+}
+
+impl ParameterCapture {
+    /// What this capture actually asserts: the preset it names where that resolves,
+    /// and the literal it was stored as otherwise.
+    ///
+    /// The one resolution, called by `start_capture`, by the playback pass and by the
+    /// paperwork RPC. Two of them would disagree about exactly the cue somebody had
+    /// pointed at a palette they then deleted.
+    pub fn value_in<'a>(
+        &'a self,
+        presets: &std::collections::HashMap<Uuid, &'a super::preset::Preset>,
+    ) -> &'a ParameterValue {
+        self.preset
+            .and_then(|id| presets.get(&id))
+            .and_then(|preset| preset.value_for(self.fixture_id, &self.parameter_kind))
+            .unwrap_or(&self.value)
+    }
 }
 
 /// A single lighting state snapshot with timing information.
@@ -124,6 +153,7 @@ mod tests {
                 t0: None,
             }),
             easing: Some(Easing::EaseInOut),
+            preset: None,
         };
 
         let back: ParameterCapture =
@@ -163,6 +193,78 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(inheriting.easing, None, "nothing said: the cue's, then the show's");
+    }
+
+    /// A capture stored before presets existed has no `preset` key, and reads as one
+    /// that names none — which is the whole of what "adding a field" has to mean for
+    /// a showfile this generation still opens.
+    #[test]
+    fn an_older_capture_loads_with_no_preset() {
+        let older: ParameterCapture = serde_json::from_value(serde_json::json!({
+            "fixture_id": Uuid::nil(),
+            "parameter_kind": "Intensity",
+            "value": serde_json::to_value(ParameterValue::Float(0.5)).unwrap(),
+            "fade_in_ms": 0,
+            "fade_out_ms": 0,
+            "delay_in_ms": 0,
+        }))
+        .unwrap();
+        assert_eq!(older.preset, None);
+    }
+
+    /// The three ways a capture resolves: no reference, a reference that resolves,
+    /// and a reference that does not — which is a preset deleted, or one that does
+    /// not name this fixture. The literal is the answer in two of them, which is why
+    /// deleting a preset cascades nothing.
+    #[test]
+    fn value_in_resolves_three_ways() {
+        use crate::types::preset::{Preset, PresetValue};
+        use std::collections::HashMap;
+
+        let fixture = Uuid::from_u128(10);
+        let preset = Preset {
+            id: Uuid::from_u128(1),
+            name: "Warm".into(),
+            values: vec![PresetValue {
+                fixture_id: fixture,
+                parameter_kind: ParameterKind::Intensity,
+                value: ParameterValue::Float(0.8),
+            }],
+        };
+        let index: HashMap<Uuid, &Preset> = [(preset.id, &preset)].into_iter().collect();
+
+        let capture = |preset: Option<Uuid>, fixture_id: Uuid| ParameterCapture {
+            fixture_id,
+            parameter_kind: ParameterKind::Intensity,
+            value: ParameterValue::Float(0.2),
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+            delay_in_ms: 0,
+            effect: None,
+            easing: None,
+            preset,
+        };
+
+        assert_eq!(
+            capture(None, fixture).value_in(&index),
+            &ParameterValue::Float(0.2),
+            "no reference: the literal"
+        );
+        assert_eq!(
+            capture(Some(preset.id), fixture).value_in(&index),
+            &ParameterValue::Float(0.8),
+            "a reference that resolves: the preset"
+        );
+        assert_eq!(
+            capture(Some(preset.id), Uuid::from_u128(99)).value_in(&index),
+            &ParameterValue::Float(0.2),
+            "a preset that does not name this fixture: the literal it was stored as"
+        );
+        assert_eq!(
+            capture(Some(Uuid::from_u128(404)), fixture).value_in(&HashMap::new()),
+            &ParameterValue::Float(0.2),
+            "a preset that is gone: the literal, and nothing cascaded"
+        );
     }
 }
 

@@ -68,6 +68,10 @@ pub enum Command {
     },
     /// `store sequence 2 cue 3` — programmer into a cue.
     Store { sequence: Target, cue: Target },
+    /// `preset 3`, `preset "warm"` — recall a preset onto whatever is selected.
+    Preset(Target),
+    /// `store preset "warm"` — the programmer as a preset, new or merged into one.
+    StorePreset(Target),
     /// `update` — every held value into the cue that is driving it now.
     ///
     /// No target, and that is the point: a parameter being driven by a cue says which
@@ -96,10 +100,17 @@ pub enum Target {
 /// `fixture 1 thru 5 at 80` and `fixture 1 thru 5 home` are the same shape of line —
 /// select these, then do this to them — and the difference is only whether the
 /// operator named a number or asked for the one the station knows.
-#[derive(Debug, Clone, Copy, PartialEq)]
+// Not `Copy` since `Then::Preset` carries a `Target`, which may be a name.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Then {
     At(Level),
     Home,
+    /// `fixture 1 thru 5 preset 3` — a look, by reference.
+    ///
+    /// Carries the preset rather than what it says, for the reason [`Then::Home`]
+    /// carries no value: what a preset means for a fixture is a question about the
+    /// show, and this side cannot read one.
+    Preset(Target),
 }
 
 /// A level, said as a destination or as a change.

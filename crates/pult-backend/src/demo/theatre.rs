@@ -12,7 +12,7 @@
 
 use anyhow::Result;
 use pult_schema::types::{
-    fixture::{Fixture, FixtureType, ParameterKind, Vec3},
+    fixture::{Fixture, FixtureType, ParameterKind, ParameterValue, Vec3},
     mount::Mount,
     group::{Group, SelectionClause, SelectionCombine, SelectionOrder, SelectionQuery,
             SelectionTerm},
@@ -23,7 +23,8 @@ use pult_schema::types::{
 use super::{
     id,
     kit::{
-        a_clamped_fixture, a_cue, a_piece, a_stack, a_type, boom, capture, colour, facing,
+        a_clamped_fixture, a_cue, a_piece, a_preset, a_preset_value, a_stack, a_type, boom,
+        capture, colour, facing, from_preset,
         intensity, level, on, posed, production, sky, truss_run, under, weighing,
         Addresses,
     },
@@ -224,16 +225,76 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         ("Blackout", &[], 0, 3_000),
     ];
 
+    // Five presets, and a cue that references three of them.
+    //
+    // Three colours on the cyc and two states of the front wash, which is what this
+    // rig can actually hold: a theatre of profiles, fresnels and a cyc batten has no
+    // pan or tilt in it, so there is no position to make a palette of. A preset is
+    // *any mix* — see `types/preset.rs` — so an intensity look is as much a preset as
+    // a colour, and that is what the two front ones are.
+    let cyc = system_of("Cyc");
+    let front = system_of("Front");
+    let colour_preset = |name: &str, step: usize| {
+        let values = cyc
+            .iter()
+            .map(|f| a_preset_value(f.id, ParameterKind::ColorRgb, sky(step)))
+            .collect::<Vec<_>>();
+        (name.to_string(), values)
+    };
+    let dawn_sky = a_preset(into, "Dawn sky", colour_preset("Dawn sky", 8).1).await?;
+    a_preset(into, "Storm sky", colour_preset("Storm sky", 5).1).await?;
+    a_preset(into, "Night sky", colour_preset("Night sky", 0).1).await?;
+    let front_full = a_preset(
+        into,
+        "Front full",
+        front
+            .iter()
+            .map(|f| a_preset_value(f.id, ParameterKind::Intensity, ParameterValue::Float(0.90)))
+            .collect(),
+    )
+    .await?;
+    a_preset(
+        into,
+        "Front half",
+        front
+            .iter()
+            .map(|f| a_preset_value(f.id, ParameterKind::Intensity, ParameterValue::Float(0.45)))
+            .collect(),
+    )
+    .await?;
+
     let mut cues = Vec::new();
     for (index, (name, levels, fade_in, fade_out)) in states.iter().enumerate() {
         let mut captures = Vec::new();
         for (system, at) in levels.iter() {
             for fixture in system_of(system) {
-                captures.push(level(fixture.id, *at));
+                // "Dawn" is the cue that references its palettes, so editing *Dawn sky*
+                // while it is standing moves the cloth — which is the whole of what a
+                // preset is for, and is invisible until one cue uses one.
+                if *name == "Dawn" && *system == "Front" {
+                    captures.push(from_preset(
+                        fixture.id,
+                        ParameterKind::Intensity,
+                        ParameterValue::Float(0.90),
+                        front_full,
+                    ));
+                } else {
+                    captures.push(level(fixture.id, *at));
+                }
                 // The cyc mixes, so its colour is part of the state rather than
                 // something somebody gelled in the morning.
                 if *system == "Cyc" {
-                    captures.push(capture(fixture.id, ParameterKind::ColorRgb, sky(index)));
+                    let colour = sky(index);
+                    if *name == "Dawn" {
+                        captures.push(from_preset(
+                            fixture.id,
+                            ParameterKind::ColorRgb,
+                            sky(8),
+                            dawn_sky,
+                        ));
+                    } else {
+                        captures.push(capture(fixture.id, ParameterKind::ColorRgb, colour));
+                    }
                 }
             }
         }

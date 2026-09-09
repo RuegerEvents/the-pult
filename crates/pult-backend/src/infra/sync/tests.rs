@@ -1385,6 +1385,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
         delay_in_ms: 0,
         effect: None,
         easing: Some(Easing::EaseInOut),
+        preset: None,
     };
     let cue = Cue {
         id: Uuid::new_v4(),

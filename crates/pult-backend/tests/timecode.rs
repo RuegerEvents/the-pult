@@ -219,6 +219,7 @@ async fn a_timeline_event_goes_the_cue_it_names() {
             delay_in_ms: 0,
             easing: None,
             effect: None,
+            preset: None,
         }],
         easing: None,
         is_active: false,

@@ -208,17 +208,21 @@ async fn a_required_column_nothing_filled_in(
     for meta in pult_schema::registry::EntityMeta::all_with_tables() {
         let (Some(table), Some(defs)) = (meta.table_name, (meta.column_defs)()) else { continue };
 
+        // The names are quoted in the generated DDL — `values` is a SQL keyword — so
+        // they are unquoted here and quoted again where they go back into SQL below.
         let required: Vec<String> = defs
             .split(',')
             .filter(|def| def.contains("NOT NULL"))
-            .filter_map(|def| def.trim().split_whitespace().next().map(str::to_string))
+            .filter_map(|def| {
+                def.trim().split_whitespace().next().map(|c| c.trim_matches('"').to_string())
+            })
             .collect();
         if required.is_empty() {
             continue;
         }
 
         let any_null =
-            required.iter().map(|c| format!("{c} IS NULL")).collect::<Vec<_>>().join(" OR ");
+            required.iter().map(|c| format!("\"{c}\" IS NULL")).collect::<Vec<_>>().join(" OR ");
         let broken: i64 =
             sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE {any_null}"))
                 .fetch_one(pool)
@@ -229,7 +233,7 @@ async fn a_required_column_nothing_filled_in(
 
         for column in required {
             let count: i64 = sqlx::query_scalar(&format!(
-                "SELECT COUNT(*) FROM {table} WHERE {column} IS NULL"
+                "SELECT COUNT(*) FROM {table} WHERE \"{column}\" IS NULL"
             ))
             .fetch_one(pool)
             .await?;
@@ -276,7 +280,12 @@ async fn add_missing_columns(pool: &SqlitePool) -> Result<()> {
 
         for def in defs.split(',') {
             let def = def.trim();
-            let Some(column) = def.split_whitespace().next() else { continue };
+            // Column names are quoted in the generated DDL — `values` is a SQL keyword
+            // and `Preset::values` is the field that found that out — so the name has
+            // to be unquoted before it is compared with what PRAGMA reports.
+            let Some(column) = def.split_whitespace().next().map(|c| c.trim_matches('"')) else {
+                continue;
+            };
             if existing.iter().any(|c| c == column) {
                 continue;
             }

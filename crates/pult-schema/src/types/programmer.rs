@@ -50,6 +50,17 @@ pub struct ProgrammerValue {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub effect: Option<EffectSpec>,
+    /// The preset this entry is a reference to, if it is one.
+    ///
+    /// Recalling a preset writes the reference *and* the value it resolved to, so a
+    /// store carries the reference into the capture and a station that has never
+    /// heard of the preset still shows the right number. Anything that changes the
+    /// value by hand — a fader, a typed number, an `at +10` — writes `preset: null`
+    /// in the same write, because a value somebody has moved is no longer that
+    /// preset's.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub preset: Option<Uuid>,
     /// Parked: survives Clear and Store, so one value can go into several cues.
     ///
     /// The spec calls this the parking function and asks for it explicitly — a value

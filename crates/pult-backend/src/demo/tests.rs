@@ -175,6 +175,53 @@ async fn seeds_a_rig_that_hangs_together(demo: Demo) {
     }
 }
 
+/// A preset names fixtures, and a preset naming one the show has not got is a button
+/// that quietly does less than it looks like it will — which is exactly what nobody
+/// notices until the show. Also that at least one cue in the demos that carry
+/// palettes actually *references* one, because a preset nothing points at
+/// demonstrates nothing.
+#[tokio::test]
+async fn every_preset_names_only_fixtures_that_exist() {
+    for demo in [Demo::Haunt, Demo::Theatre, Demo::Club, Demo::Festival] {
+        let engine = a_station().await;
+        seed(&engine, demo).await.expect("it seeds");
+        let fixtures: Vec<Fixture> = read(&engine, "fixtures").await;
+        let presets: Vec<pult_schema::types::Preset> = read(&engine, "presets").await;
+        let cues: Vec<Cue> = read(&engine, "cues").await;
+        let known: HashSet<_> = fixtures.iter().map(|f| f.id).collect();
+
+        for preset in &presets {
+            assert!(!preset.values.is_empty(), "{}: {} says nothing", demo.id(), preset.name);
+            for value in &preset.values {
+                assert!(
+                    known.contains(&value.fixture_id),
+                    "{}: preset {} names a fixture that is not patched",
+                    demo.id(),
+                    preset.name,
+                );
+            }
+        }
+
+        if presets.is_empty() {
+            continue;
+        }
+        let ids: HashSet<_> = presets.iter().map(|p| p.id).collect();
+        let referenced = cues
+            .iter()
+            .flat_map(|cue| &cue.captures)
+            .filter_map(|capture| capture.preset)
+            .collect::<HashSet<_>>();
+        assert!(
+            !referenced.is_empty(),
+            "{}: it has palettes and no cue points at one",
+            demo.id()
+        );
+        for id in referenced {
+            assert!(ids.contains(&id), "{}: a cue references a preset that is gone", demo.id());
+        }
+    }
+}
+
 #[tokio::test]
 async fn haunt_seeds_a_rig_that_hangs_together() {
     seeds_a_rig_that_hangs_together(Demo::Haunt).await;

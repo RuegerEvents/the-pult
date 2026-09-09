@@ -399,7 +399,22 @@ pub fn capture(fixture: Uuid, kind: ParameterKind, value: ParameterValue) -> Par
         // curve. A demo writing `Linear` here would be a demo that could never show
         // what the setting does.
         easing: None,
+        preset: None,
     }
+}
+
+/// The same capture, pointed at a preset.
+///
+/// The literal goes in beside the reference, which is the rule everywhere: `value` is
+/// what plays if the preset is deleted, and the demos are where that is easiest to
+/// see — delete *Warm* and the cue that used it goes on running exactly as it did.
+pub fn from_preset(
+    fixture: Uuid,
+    kind: ParameterKind,
+    value: ParameterValue,
+    preset: Uuid,
+) -> ParameterCapture {
+    ParameterCapture { preset: Some(preset), ..capture(fixture, kind, value) }
 }
 
 pub fn level(fixture: Uuid, at: f32) -> ParameterCapture {
@@ -429,6 +444,31 @@ pub fn a_cue(name: &str, number: f64, captures: Vec<ParameterCapture>) -> Cue {
 /// `start` takes the first cue, which is what anchors `went_at` — an effect with no
 /// anchor renders nothing, so a demo that wants something moving the moment it opens
 /// has to go through the sequence's own Go rather than write `active_cue_index`.
+/// A preset: a name and what it says, for the fixtures given.
+///
+/// Seeded like anything else, over `EngineHandle`, so validation and the oplog are
+/// what they are for a person. The demos each carry a couple because a palette is
+/// invisible until a cue references one — and the point of the feature is what
+/// happens when you edit it while that cue is standing.
+pub async fn a_preset(
+    into: &Seeder,
+    name: &str,
+    values: Vec<pult_schema::types::preset::PresetValue>,
+) -> Result<Uuid> {
+    let preset = pult_schema::types::preset::Preset { id: id(), name: name.into(), values };
+    into.create("presets", &preset).await?;
+    Ok(preset.id)
+}
+
+/// One value of one fixture, as a preset holds it.
+pub fn a_preset_value(
+    fixture: Uuid,
+    kind: ParameterKind,
+    value: ParameterValue,
+) -> pult_schema::types::preset::PresetValue {
+    pult_schema::types::preset::PresetValue { fixture_id: fixture, parameter_kind: kind, value }
+}
+
 pub async fn a_stack(into: &Seeder, name: &str, cues: Vec<Cue>, start: bool) -> Result<Uuid> {
     for cue in &cues {
         into.create("cues", cue).await?;

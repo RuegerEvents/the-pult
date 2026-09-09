@@ -40,7 +40,7 @@ fn view<'a>(
     programmer: &'a [ProgrammerValue],
     masters: &'a [pult_schema::types::speedmaster::SpeedMaster],
 ) -> ShowView<'a> {
-    ShowView::new(sequences, cues, fixtures, the_type(), programmer, masters, 0, curves())
+    ShowView::new(sequences, cues, fixtures, the_type(), programmer, masters, 0, curves(), &[])
 }
 
 /// Linear everywhere, which is *not* what a new show has.
@@ -147,6 +147,7 @@ fn intensity(fixture_id: Uuid, value: f32) -> ParameterCapture {
         delay_in_ms: 0,
         effect: None,
         easing: Some(Easing::Linear),
+        preset: None,
     }
 }
 
@@ -673,6 +674,7 @@ fn a_parameter_with_no_order_takes_the_in_time() {
         delay_in_ms: 0,
         effect: None,
         easing: Some(Easing::Linear),
+        preset: None,
     };
     let mut cue = a_cue(1000, vec![capture]);
     cue.fade_out_ms = 8000;
@@ -709,6 +711,7 @@ fn colour_fades_channel_by_channel() {
         delay_in_ms: 0,
         effect: None,
         easing: Some(Easing::Linear),
+        preset: None,
     };
     let cue = a_cue(0, vec![capture]);
     let mut fixtures = vec![fixture.clone()];
@@ -743,6 +746,7 @@ fn a_boolean_switches_at_the_top_of_the_fade_not_the_end() {
         delay_in_ms: 0,
         effect: None,
         easing: Some(Easing::Linear),
+        preset: None,
     };
     let cue = a_cue(0, vec![capture]);
     let mut fixtures = vec![fixture.clone()];
@@ -894,7 +898,7 @@ fn a_deleted_sequence_releases_its_cue() {
 /// the fixture and the parameter, and it is the *frontend* that derives the id from
 /// those two so that two consoles converge on one row.
 fn held(fixture_id: Uuid, kind: ParameterKind, value: ParameterValue) -> ProgrammerValue {
-    ProgrammerValue { id: Uuid::new_v4(), fixture_id, parameter_kind: kind, value, effect: None, locked: false }
+    ProgrammerValue { preset: None, id: Uuid::new_v4(), fixture_id, parameter_kind: kind, value, effect: None, locked: false }
 }
 
 fn held_intensity(fixture_id: Uuid, level: f32) -> ProgrammerValue {
@@ -1043,6 +1047,7 @@ fn a_first_fade_starts_from_where_the_parameter_rests() {
             delay_in_ms: 0,
             easing: Some(Easing::Linear),
             effect: None,
+            preset: None,
         }],
     );
     let mut fixtures = vec![fixture.clone()];
@@ -1177,6 +1182,7 @@ fn the_programmer_leaves_parameters_it_does_not_hold_alone() {
                 delay_in_ms: 0,
                 effect: None,
                 easing: Some(Easing::Linear),
+                preset: None,
             },
         ],
     );
@@ -1235,6 +1241,7 @@ fn held_effect(fixture_id: Uuid, spec: EffectSpec) -> ProgrammerValue {
         value: ParameterValue::Float(0.0),
         effect: Some(spec),
         locked: false,
+        preset: None,
     }
 }
 
@@ -1246,6 +1253,7 @@ fn held_value(fixture_id: Uuid, value: f32) -> ProgrammerValue {
         value: ParameterValue::Float(value),
         effect: None,
         locked: false,
+        preset: None,
     }
 }
 
@@ -1737,7 +1745,7 @@ fn view_fading_home<'a>(
     programmer: &'a [ProgrammerValue],
     home_fade_ms: u32,
 ) -> ShowView<'a> {
-    ShowView::new(sequences, cues, fixtures, the_type(), programmer, &[], home_fade_ms, curves())
+    ShowView::new(sequences, cues, fixtures, the_type(), programmer, &[], home_fade_ms, curves(), &[])
 }
 
 #[test]
@@ -2002,6 +2010,7 @@ fn a_position_cue(fixture_id: Uuid, cue_curve: Option<Easing>, capture_curve: Op
         delay_in_ms: 0,
         effect: None,
         easing: capture_curve,
+        preset: None,
     };
     Cue { easing: cue_curve, ..a_cue(4_000, vec![capture]) }
 }
@@ -2022,6 +2031,7 @@ fn view_with_curves<'a>(
         &[],
         0,
         FadeCurves { position: Easing::EaseOut, ..curves() },
+        &[],
     )
 }
 
@@ -2106,6 +2116,7 @@ fn going_home_takes_the_shows_curve_too() {
                 // A home time, or the release lands at once and has no shape to have.
                 2_000,
                 FadeCurves { position: Easing::EaseOut, ..curves() },
+                &[],
             );
             playback.pass(at, &view)
         };
@@ -2189,5 +2200,183 @@ fn a_cue_effect_gives_the_numbers_it_always_gave() {
     for (at_ms, want) in [(0u64, 0.5f32), (250, 1.0), (500, 0.5), (750, 0.0), (1_000, 0.5)] {
         let got = as_float(live_at(&fixtures, fixture.id, "Intensity", at_ms));
         assert!((got - want).abs() < 1e-5, "at {at_ms} ms: expected {want}, got {got}");
+    }
+}
+
+// ── Presets ───────────────────────────────────────────────────────────────────
+
+/// Editing a preset reaches the cues that are **standing**, which is the whole reason
+/// a palette is worth having: change *warm* and the look on stage changes, rather than
+/// changing the next time somebody takes the cue.
+mod presets {
+    use pult_schema::types::preset::{Preset, PresetValue};
+
+    use super::*;
+
+    fn a_preset(fixture_id: Uuid, level: f32) -> Preset {
+        Preset {
+            id: Uuid::new_v4(),
+            name: "Warm".into(),
+            values: vec![PresetValue {
+                fixture_id,
+                parameter_kind: ParameterKind::Intensity,
+                value: ParameterValue::Float(level),
+            }],
+        }
+    }
+
+    /// A capture that names a preset asserts the preset's value, not the literal it
+    /// was stored as.
+    #[test]
+    fn a_go_takes_the_preset_and_not_the_literal() {
+        let fixture = a_fixture();
+        let preset = a_preset(fixture.id, 0.9);
+        let mut capture = intensity(fixture.id, 0.1);
+        capture.preset = Some(preset.id);
+        let cue = a_cue(0, vec![capture]);
+        let sequences = [a_sequence(&[&cue], Some(0))];
+        let cues = [cue];
+        let mut fixtures = vec![fixture.clone()];
+        let presets = [preset];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view = ShowView::new(
+                &sequences,
+                &cues,
+                &fixtures,
+                the_type(),
+                &[],
+                &[],
+                0,
+                curves(),
+                &presets,
+            );
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+
+        assert_eq!(
+            live(&fixtures, fixture.id, "Intensity", 0),
+            Some(ParameterValue::Float(0.9)),
+            "the preset's value reached the lamp, not the 0.1 the cue was stored as"
+        );
+    }
+
+    /// And editing it moves what is already on stage, over the show's home fade — with
+    /// nobody pressing Go.
+    #[test]
+    fn editing_a_preset_fades_a_standing_cue_to_the_new_value() {
+        let fixture = a_fixture();
+        let preset = a_preset(fixture.id, 0.9);
+        let mut capture = intensity(fixture.id, 0.1);
+        capture.preset = Some(preset.id);
+        let cue = a_cue(0, vec![capture]);
+        let sequences = [a_sequence(&[&cue], Some(0))];
+        let cues = [cue];
+        let mut fixtures = vec![fixture.clone()];
+
+        let mut playback = Playback::default();
+        let before = [preset.clone()];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &before);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+
+        // Somebody edits the palette. Nothing else about the show changes: no Go, no
+        // cue edit, no programmer.
+        let edited = [Preset {
+            values: vec![PresetValue {
+                fixture_id: fixture.id,
+                parameter_kind: ParameterKind::Intensity,
+                value: ParameterValue::Float(0.3),
+            }],
+            ..preset
+        }];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &edited);
+            playback.pass_with_presets_changed(WALL + 5_000, &view, true)
+        };
+        apply(&mut fixtures, &effects);
+
+        let at_start = live(&fixtures, fixture.id, "Intensity", 5_000);
+        assert_eq!(at_start, Some(ParameterValue::Float(0.9)), "it starts from where it is");
+        let landed = live(&fixtures, fixture.id, "Intensity", 5_000 + 2_000);
+        assert_eq!(landed, Some(ParameterValue::Float(0.3)), "and arrives at the new value");
+    }
+
+    /// A pass that is *not* told the presets moved leaves standing fades alone — which
+    /// is what stops every Go walking the rig looking for a palette nobody edited.
+    #[test]
+    fn an_ordinary_pass_does_not_go_looking_for_preset_changes() {
+        let fixture = a_fixture();
+        let preset = a_preset(fixture.id, 0.9);
+        let mut capture = intensity(fixture.id, 0.1);
+        capture.preset = Some(preset.id);
+        let cue = a_cue(0, vec![capture]);
+        let sequences = [a_sequence(&[&cue], Some(0))];
+        let cues = [cue];
+        let mut fixtures = vec![fixture.clone()];
+
+        let mut playback = Playback::default();
+        let before = [preset.clone()];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &before);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+
+        let edited = [Preset {
+            values: vec![PresetValue {
+                fixture_id: fixture.id,
+                parameter_kind: ParameterKind::Intensity,
+                value: ParameterValue::Float(0.3),
+            }],
+            ..preset
+        }];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &edited);
+            playback.pass_with_presets_changed(WALL + 5_000, &view, false)
+        };
+        apply(&mut fixtures, &effects);
+
+        assert_eq!(
+            live(&fixtures, fixture.id, "Intensity", 9_000),
+            Some(ParameterValue::Float(0.9)),
+            "nothing moved, because nothing said the palettes had"
+        );
+    }
+
+    /// A preset that is deleted cascades nothing: every cue that used it goes on
+    /// running exactly as it last did, on the literal it was stored as.
+    #[test]
+    fn a_deleted_preset_leaves_the_cue_running_on_its_literal() {
+        let fixture = a_fixture();
+        let gone = Uuid::new_v4();
+        let mut capture = intensity(fixture.id, 0.1);
+        capture.preset = Some(gone);
+        let cue = a_cue(0, vec![capture]);
+        let sequences = [a_sequence(&[&cue], Some(0))];
+        let cues = [cue];
+        let mut fixtures = vec![fixture.clone()];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 0, curves(), &[]);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+
+        assert_eq!(
+            live(&fixtures, fixture.id, "Intensity", 0),
+            Some(ParameterValue::Float(0.1)),
+            "the literal, which is what the capture was stored as"
+        );
     }
 }
