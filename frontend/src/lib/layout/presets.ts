@@ -19,21 +19,29 @@ export const PRESETS: Preset[] = [
 	{
 		key: 'programming',
 		name: 'Programming',
-		// The rig to point things in, the values to set them with, and the cue list
-		// underneath to store them into: the spec's programmer, in one screen.
+		// The whole loop on one screen: the rig to point things in and the programmer
+		// to set them with above, and below the two sheets — what the rig is doing and
+		// what each cue does — with the pools beside them to recall from. Which is
+		// select, set, store, play, update, in the order somebody works in.
 		tree: split(
 			'Column',
 			[
-				split('Row', [tabs(['rig']), split('Column', [tabs(['values']), tabs(['selection'])], [0.62, 0.38])], [0.6, 0.4]),
-				tabs(['playback'])
+				split(
+					'Row',
+					[tabs(['rig']), split('Column', [tabs(['values']), tabs(['selection'])], [0.62, 0.38])],
+					[0.6, 0.4]
+				),
+				split('Row', [tabs(['sheet']), tabs(['cues', 'pools'])], [0.58, 0.42])
 			],
-			[0.75, 0.25]
+			[0.55, 0.45]
 		)
 	},
 	{
 		key: 'playback',
 		name: 'Playback',
-		tree: split('Row', [tabs(['playback']), tabs(['plan'])], [0.65, 0.35])
+		// Running a show: every sequence with a Go under it, and the sheet beside it
+		// saying what the rig is actually doing and which cue put it there.
+		tree: split('Row', [tabs(['playback']), tabs(['sheet'])], [0.5, 0.5])
 	},
 	{
 		key: 'plan-rig',
@@ -90,7 +98,7 @@ export const PRESETS: Preset[] = [
 			'Column',
 			[
 				split('Row', [tabs(['rig', 'plan']), tabs(['effects'])], [0.5, 0.5]),
-				split('Row', [tabs(['speedmasters']), tabs(['values'])], [0.42, 0.58])
+				split('Row', [tabs(['speedmasters']), tabs(['values', 'sheet'])], [0.42, 0.58])
 			],
 			[0.55, 0.45]
 		)

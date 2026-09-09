@@ -813,12 +813,27 @@ read in two directions — and the **`timeline` panel** is a position with a wav
 beat grid, events, markers and takes written against it. See *A recording is a function
 of time* and *A song the console can hear*.
 
+The **`sheet` panel** is the rig as a table and the **`cues` panel** the editor of one
+sequence; **`pools`** is the direct selects — saved groups and presets, not sequences.
+See *The loop, and a colour that says where a value came from*.
+
 The frontend opens onto a **tiled workspace** rather than a sidebar and tabs. Panels
 live in a tree of splits and tab groups: drag a tab to a tile's edge to divide it or
 to its middle to stack it, drag the gutters to resize, and pick a layout from the menu
 in the top bar. Presets are built in; *Save as…* writes an arrangement into the show
 as a `layouts` row. Which layout this browser is looking at is kept in `localStorage`,
 not in the show.
+
+**Setup is a mode, not nine panels.** `PanelMeta.home` in `layout/panels.ts` is
+`workspace | setup | both`: patching, fixture types, devices, I/O, network, session,
+plugins, MVR-xchange, the show and the settings are *errands*, and an errand that costs
+a tile costs the picture somebody is programming against. `components/setup/Setup.svelte`
+is a full-screen dialog whose every section is the panel component **unchanged**, which
+is the whole trick and why it was cheap. What stayed a panel stayed for a reason written
+beside it in `panels.ts` — a sparkline is only a record because the panel witnessed it,
+a log subscribes while it is mounted, a wire view *is* an `output.watch`. And the three
+modals that had each grown their own opinion about Escape and the backdrop are one
+`Dialog.svelte`.
 
 The **`values` panel** is the programmer: it sets fixture parameters into a shared
 SYNCED `programmer_values` buffer that takes priority over playback until the values
@@ -897,6 +912,89 @@ the whole point: a dimmer has run linear since dimmers had handles, and a head t
 runs linear into a mark and stops dead reads as a fault. **A release takes the show's
 curve too** — letting go of a mark is a move, and nothing above it can say otherwise.
 Seeded from a station preference the way `home_fade_ms` is.
+
+## The loop, and a colour that says where a value came from
+
+Select, set, store, play, update — the loop every other desk has. Four panels and three
+verbs, and the interesting part is how little of it is stored.
+
+**The `sheet` panel colours every cell by which layer is driving it**, and this console
+does not have to keep a flag to do that. The model already keeps *what is driving* each
+parameter, so `frontend/src/lib/sheet.ts`'s `source(drivenBy, track, shownCue)` reads
+the answer off `driving.ts`'s four layers and the panel *calls* that rule rather than
+restating it — the discipline `stats.ts`'s `struggling()` already follows. Programmer
+amber, recording green, effect magenta, this cue white, tracked cyan, home grey;
+MA-near deliberately, because an operator who has stood behind a grandMA reads amber as
+the programmer without being told. The one layer a page cannot read off a fixture row
+is the recording — a take is bytes that never leave the wasm — so `Evaluator::recording`
+answers which watched keys one is asserting, as a read over `TrackAt::value_at`, and
+only while a timeline is running.
+
+**Looking at a cue is not taking it.** A click on a `cues` row sets `cueInView` and the
+sheet draws the stack *up to* that cue, hard against tracked, reaching no output at all;
+a double-click or the Go column takes. Which means "a cue is the stack up to it" is now
+evaluated twice: `trackedThrough` in `cues.ts` mirrors `cue::tracked_through`, because a
+cue clicked in a list has to colour the sheet in the same frame, and `testdata/tracking.json`
+holds the two together the way `selection-queries.json` holds `evaluate`.
+
+**Update needs no target.** A parameter being driven by a cue says which cue —
+`live_fades[key].cue_id`, `live_effects[key].source` — so `updateDriven` writes each held
+value into the cue driving it *now*, one gesture over however many cues it touches. Keys
+nothing is driving are handed back rather than guessed at, and the Store dialog opens
+with exactly those ticked. **Cue only** is the other half: `cueOnlyCompensation` writes
+what the *next* cue was tracking into it, for every key the store changes that the next
+cue does not capture itself, so a change stops at this cue's edge. The compensating
+capture carries the value and none of the timing — it is going into a different cue and
+should move the way that cue moves. Both are one gesture, so each is one Ctrl-Z.
+
+**Space is Go on the cue sheet touched last**, and with none focused there is no Go and
+a toast. A console with three of them open has to answer which, and answering it by
+picking one is a look on stage nobody asked for.
+
+## A preset is a reference, and the literal sits beside it
+
+`presets` is a PERSISTED collection of `Preset { id, name, values }`, one flat pool
+whose values may be **any mix** — a preset *is* a look, and a look is usually a position
+and a colour together. The I/P/C/B/O tags an operator filters by are **derived from the
+keys and never stored**, so a preset that grows a colour is a colour preset from that
+moment and nobody has to reclassify it.
+
+**Reference first, literal beside it.** `ParameterCapture.preset` and
+`ProgrammerValue.preset` are `Option<Uuid>`; `value` stays the copy taken when the
+capture was stored and is **never** rewritten by a preset edit — it is a record of what
+the cue was stored as, not a cache of what the preset now says. So deleting a preset
+**cascades nothing**: every cue that used it goes on running exactly as it did, the UI
+says "preset missing", and Ctrl-Z of the delete restores every link because no link was
+broken. `ParameterCapture::value_in` is the one resolution, called by `start_capture`,
+by the playback pass and by `paperwork.cueValues`.
+
+**And editing one reaches the cues that are standing**, which is the whole reason a
+palette is worth having. `"presets"` is in `PLAYBACK_COLLECTIONS`, and
+`Playback::repoint_presets` restarts every standing fade whose capture names a preset
+that now resolves elsewhere — from `value_at(now)` over `home_fade_ms`, the pattern
+`release_key` follows and for the same reason: swapping a running fade's `to` in place
+would jump, because `from` is where it started. Gated on its own version counter, so an
+ordinary Go never walks the fades looking for one.
+
+**Moving a value breaks the link, in one write.** A fader, a typed number, an `at +10`
+each write the whole programmer row with `preset: null` rather than a value and a
+clearing write — two writes leave a moment in which the show says the parameter is still
+that palette's while holding a number the palette does not say.
+
+Two smaller things worth holding on to. **`values` is a SQL keyword**, which
+`Preset::values` found: identifiers are quoted in the macro's `column_defs`, in `db.rs`
+and in both migration passes, which unquote before comparing against `PRAGMA table_info`.
+And **a guest can now spell a parameter key**: `pult-codegen` mirrors `parameter_key`
+into the SDK by an explicit list — the mirror carries shapes and not code, and that is
+the stated exception — because a fourth hand-written spelling would be a plugin reading
+a key nothing writes.
+
+```
+cd frontend && npm test                              # the sheet's colours, tracking, cue only, presets
+cargo test -p pult-schema --test tracking_corpus     # the other half of that corpus
+cargo test -p pult-backend --lib playback::tests::presets   # a standing cue follows a palette
+cargo test -p pult-backend --test counts             # a store across three cues is one undo
+```
 
 ## A piece says where it connects, and a light says what it is clamped to
 
