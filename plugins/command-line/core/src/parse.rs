@@ -107,6 +107,7 @@ impl<'a> Parser<'a> {
                 let value = self.scalar("a value")?;
                 Ok(Command::SetField { table, target, field, value })
             }
+            "update" => Ok(Command::Update),
             "store" => {
                 self.keyword("sequence")?;
                 let sequence = self.target()?;
@@ -141,7 +142,7 @@ impl<'a> Parser<'a> {
     /// What could begin a line, for the error under an unknown first word.
     fn first_words(&self) -> Vec<String> {
         let mut words: Vec<String> = ["help", "clear", "at", "full", "out", "home", "create",
-            "delete", "rename", "set", "store"]
+            "delete", "rename", "set", "store", "update"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -814,6 +815,14 @@ mod tests {
             parse_ok("store sequence 2 cue 3"),
             Command::Store { sequence: Target::Index(2), cue: Target::Index(3) }
         );
+    }
+
+    /// Update takes no target, which is the whole reason it is one word: a driven
+    /// parameter already says which cue is driving it.
+    #[test]
+    fn update_is_a_word_on_its_own() {
+        assert_eq!(parse_ok("update"), Command::Update);
+        assert!(parse(&test_catalog(), "update sequence 2").is_err());
     }
 
     #[test]

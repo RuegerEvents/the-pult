@@ -68,6 +68,12 @@ pub enum Command {
     },
     /// `store sequence 2 cue 3` — programmer into a cue.
     Store { sequence: Target, cue: Target },
+    /// `update` — every held value into the cue that is driving it now.
+    ///
+    /// No target, and that is the point: a parameter being driven by a cue says which
+    /// cue, so an operator who has nudged a light in the middle of cue 12 means cue 12.
+    /// The same act as the button in the top bar.
+    Update,
     /// `session join <id>`, `device adopt <serial>` — a station RPC.
     Rpc {
         method: String,

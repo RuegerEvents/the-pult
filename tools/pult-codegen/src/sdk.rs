@@ -76,7 +76,33 @@ struct Source {
     /// What `types/` re-exports from `pult-render`, with the module it came from —
     /// these are not mirrored, they are the same types.
     from_render: BTreeMap<String, String>,
+    /// The few free functions a guest needs, mirrored verbatim. See [`MIRRORED_FNS`].
+    functions: BTreeMap<String, Item>,
 }
+
+/// Functions carried into the mirror, by name.
+///
+/// The mirror carries shapes and not code, deliberately — a `Default` written by hand
+/// stays with the console. This is the one exception and it is a named list rather
+/// than a rule, because most of `pult-schema`'s functions reach things a guest has
+/// not got.
+///
+/// `parameter_key` earns it: it is how `live_fades`, `live_effects`, `home_values` and
+/// `sensed_values` are keyed, its own doc says three places derive it, and a fourth
+/// spelling would be a plugin reading a key nothing writes. Mirrored rather than
+/// re-implemented, so it cannot drift from the map it opens.
+const MIRRORED_FNS: &[&str] = &["parameter_key"];
+
+/// Types from `pult-render` that come over whether or not a mirrored field mentions
+/// one.
+///
+/// Reachability walks the *mirror's* fields, and a type reached only through another
+/// `pult-render` type is invisible to it: `RunningEffect` is the evaluator's own, so
+/// nothing here ever looks inside it and `EffectSource` — which is the answer to
+/// "which cue is driving this parameter" — never arrived. A plugin that can read
+/// `live_effects` and cannot say what is in one is a plugin that has been handed half
+/// an answer.
+const ALWAYS_FROM_RENDER: &[&str] = &["EffectSource"];
 
 impl Source {
     /// `types/` is where the show's shapes live; `events/` is where two of them —
@@ -85,6 +111,7 @@ impl Source {
     fn read(dirs: &[PathBuf]) -> Result<Self> {
         let mut items = BTreeMap::new();
         let mut from_render = BTreeMap::new();
+        let mut functions = BTreeMap::new();
 
         let mut paths: Vec<PathBuf> = Vec::new();
         for dir in dirs {
@@ -112,11 +139,17 @@ impl Source {
                     Item::Use(u) if matches!(u.vis, syn::Visibility::Public(_)) => {
                         collect_render_reexports(&u.tree, &mut Vec::new(), &mut from_render);
                     }
+                    Item::Fn(f)
+                        if matches!(f.vis, syn::Visibility::Public(_))
+                            && MIRRORED_FNS.contains(&f.sig.ident.to_string().as_str()) =>
+                    {
+                        functions.insert(f.sig.ident.to_string(), item);
+                    }
                     _ => {}
                 }
             }
         }
-        Ok(Source { items, from_render })
+        Ok(Source { items, from_render, functions })
     }
 
     fn knows(&self, name: &str) -> bool {
@@ -579,6 +612,13 @@ fn render_schema(source: &Source, wanted: &BTreeSet<String>) -> Result<(String, 
         }
     }
 
+    // And the handful of functions that come over whole. See `MIRRORED_FNS`.
+    for name in MIRRORED_FNS {
+        if let Some(item) = source.functions.get(*name) {
+            items.push(quote! { #item });
+        }
+    }
+
     let file: syn::File = syn::parse2(quote! {
         //! The show's types, as a plugin sees them.
         //!
@@ -1024,7 +1064,8 @@ pub fn render(workspace: &Path) -> Result<Vec<(PathBuf, String)>> {
 
     let entities = EntityMeta::all_with_tables();
     let roots: Vec<&str> = entities.iter().map(|m| m.entity_name).collect();
-    let wanted = reachable(&source, &roots);
+    let mut wanted = reachable(&source, &roots);
+    wanted.extend(ALWAYS_FROM_RENDER.iter().map(|n| (*n).to_string()));
 
     let mut commands: HashMap<&str, Vec<&'static CommandRegistration>> = HashMap::new();
     for cmd in inventory::iter::<CommandRegistration>() {

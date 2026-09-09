@@ -2,7 +2,13 @@ import { readFileSync } from 'node:fs';
 
 import { describe, it, expect } from 'vitest';
 
-import { cueIdsThrough, insertNumber, reorderCueIds, trackedThrough } from './cues.js';
+import {
+	cueIdsThrough,
+	cueOnlyCompensation,
+	insertNumber,
+	reorderCueIds,
+	trackedThrough
+} from './cues.js';
 import { parameterKey } from './patch.js';
 import type { Cue, ParameterValue, Sequence } from './generated/index.js';
 
@@ -117,5 +123,58 @@ describe('the cues a sequence lists up to one of them', () => {
 	/** A cue that is not in this sequence tracks through nothing rather than through all of it. */
 	it('answers nothing for a cue the sequence does not list', () => {
 		expect(cueIdsThrough(sequence, 'z')).toEqual([]);
+	});
+});
+
+describe('cue only', () => {
+	const capture = (fixture: string, kind: 'Intensity' | 'Pan', v: number) =>
+		({
+			fixture_id: fixture,
+			parameter_kind: kind,
+			value: { type: 'Float', value: v },
+			fade_in_ms: 2000,
+			fade_out_ms: 900,
+			delay_in_ms: 100,
+			effect: null,
+			easing: 'EaseIn'
+		}) as Cue['captures'][number];
+
+	const cue = (captures: Cue['captures']) => ({ id: 'next', captures }) as Cue;
+
+	it('writes what the next cue was tracking into it, so the change stops here', () => {
+		const before = new Map([['f1/Intensity', capture('f1', 'Intensity', 0.3)]]);
+		const got = cueOnlyCompensation(cue([]), ['f1/Intensity'], before);
+		expect(got).toHaveLength(1);
+		expect(got?.[0].value).toEqual({ type: 'Float', value: 0.3 });
+	});
+
+	/**
+	 * The value is going into a *different* cue, so it should move the way that cue
+	 * moves. Copying the earlier cue's timing would give one parameter of the next cue
+	 * a fade nobody set on it.
+	 */
+	it('carries the value and none of the timing', () => {
+		const before = new Map([['f1/Intensity', capture('f1', 'Intensity', 0.3)]]);
+		const got = cueOnlyCompensation(cue([]), ['f1/Intensity'], before);
+		expect(got?.[0]).toMatchObject({ fade_in_ms: 0, fade_out_ms: 0, delay_in_ms: 0, easing: null });
+	});
+
+	it('leaves a key the next cue already captures alone', () => {
+		const own = capture('f1', 'Intensity', 0.9);
+		const before = new Map([['f1/Intensity', capture('f1', 'Intensity', 0.3)]]);
+		expect(cueOnlyCompensation(cue([own]), ['f1/Intensity'], before)).toBeNull();
+	});
+
+	/** Nothing was tracking, so there is nothing to preserve and nothing to write. */
+	it('says nothing about a key nothing was tracking', () => {
+		expect(cueOnlyCompensation(cue([]), ['f1/Intensity'], new Map())).toBeNull();
+	});
+
+	it('appends to what the next cue already says rather than replacing it', () => {
+		const own = capture('f2', 'Pan', 0.5);
+		const before = new Map([['f1/Intensity', capture('f1', 'Intensity', 0.3)]]);
+		const got = cueOnlyCompensation(cue([own]), ['f1/Intensity'], before);
+		expect(got).toHaveLength(2);
+		expect(got?.[0]).toBe(own);
 	});
 });

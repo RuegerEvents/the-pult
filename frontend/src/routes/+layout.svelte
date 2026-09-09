@@ -26,6 +26,10 @@
 	import LayoutBar from '$lib/components/layout/LayoutBar.svelte';
 	import Setup from '$lib/components/setup/Setup.svelte';
 	import { closeSetup, setupSection, toggleSetup } from '$lib/stores/setup.js';
+	import Verbs from '$lib/components/programmer/Verbs.svelte';
+	import { focusedCueSheet } from '$lib/stores/cues.js';
+	import { clear } from '$lib/stores/programmer.js';
+	import { clearSelection } from '$lib/stores/selection.js';
 	import UserBar from '$lib/components/UserBar.svelte';
 	import '$lib/styles/tokens.css';
 	import '$lib/styles/controls.css';
@@ -75,6 +79,20 @@
 	// with nobody in front of it, so this cannot be something a panel opts into.
 	reportBrowserStats(client, frameMeter);
 
+	/** The verbs in the top bar, so the keymap can press the same buttons. */
+	let verbs = $state<ReturnType<typeof Verbs> | null>(null);
+	/**
+	 * When Escape was last pressed, for the second one.
+	 *
+	 * Esc gives the rig back to playback; Esc Esc also drops the selection. Two acts
+	 * rather than one because they are separate on purpose — the spec keeps the buffer
+	 * and the selection apart, so a look can be parked and reached again from a
+	 * different selection — and because dropping a hard-won selection by reflex is a
+	 * minute of clicking to get back.
+	 */
+	let lastEscape = 0;
+	const ESCAPE_AGAIN_MS = 600;
+
 	/**
 	 * Ctrl-Z anywhere that is not a text field.
 	 *
@@ -100,11 +118,65 @@
 			takeAVersion();
 			return;
 		}
-		const action = shortcutFor(event, isTextField(event.target));
+		// Everything below is a console verb rather than a browser one, and none of it
+		// may fire while somebody is typing: a cue being renamed contains spaces, and
+		// Space is Go.
+		const typing = isTextField(event.target);
+
+		// The three verbs, and the cue sheet's Go. Ctrl/Cmd+Enter and Ctrl/Cmd+U are
+		// what every other desk puts under a thumb; Space is Go, on the cue sheet
+		// touched last.
+		if (!typing && $station?.show) {
+			if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+				event.preventDefault();
+				void verbs?.openStore();
+				return;
+			}
+			if (event.key.toLowerCase() === 'u' && (event.ctrlKey || event.metaKey)) {
+				event.preventDefault();
+				void verbs?.update();
+				return;
+			}
+			if (event.key === 'Escape') {
+				event.preventDefault();
+				const now = Date.now();
+				if (now - lastEscape < ESCAPE_AGAIN_MS) clearSelection();
+				lastEscape = now;
+				void clear({ keepLocked: true });
+				return;
+			}
+			if (event.key === ' ') {
+				event.preventDefault();
+				void goOnFocusedSheet();
+				return;
+			}
+		}
+
+		const action = shortcutFor(event, typing);
 		if (!action) return;
 		event.preventDefault();
 		if (action === 'undo') undo();
 		else redo();
+	}
+
+	/**
+	 * Space: Go on the cue sheet touched last.
+	 *
+	 * With none focused there is **no Go and a toast**, never a guess. A console with
+	 * three cue sheets open has to answer which one Space means, and answering it by
+	 * picking one is a look on stage nobody asked for.
+	 */
+	async function goOnFocusedSheet() {
+		const sequenceId = $focusedCueSheet;
+		if (!sequenceId) {
+			addToast('Space is Go on a cue sheet — click one first');
+			return;
+		}
+		try {
+			await data.sequences.byId(sequenceId).goNext({ at: Date.now() });
+		} catch (e) {
+			addToast(`${e}`);
+		}
 	}
 
 	/** Save: a checkpoint, with no name. The Show panel is where one is given a name. */
@@ -191,6 +263,10 @@
 			<button class="setup-btn" class:on={$setupSection !== null} onclick={toggleSetup}>
 				Setup<span class="caret">▾</span>
 			</button>
+			<!-- The three verbs, in the chrome rather than in a panel: an operator
+			     programming in the rig, in the plan or from the command line means the
+			     same three things. -->
+			<Verbs bind:this={verbs} />
 		{/if}
 		<span class="spacer"></span>
 		<UserBar />

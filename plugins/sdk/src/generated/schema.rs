@@ -23,7 +23,9 @@ use uuid::Uuid;
 /// every guest is weight for nothing.
 pub type Timestamp = String;
 
-pub use pult_render::effect::{Curve, Direction, Easing, RunningEffect, RunningFade};
+pub use pult_render::effect::{
+    Curve, Direction, Easing, EffectSource, RunningEffect, RunningFade,
+};
 
 pub use pult_render::value::ParameterValue;
 
@@ -2742,4 +2744,39 @@ pub struct XchangeSettings {
     /// The host to join in [`XchangeMode::WebSocket`]. Ignored in the other two.
     #[serde(default)]
     pub url: String,
+}
+
+/// The map key for a parameter, in `home_values`, `sensed_values`, `live_fades` and
+/// `live_effects` alike.
+///
+/// Here rather than in the backend because three places derive it — the engine, the
+/// browser, and the command-line plugin — and a fourth spelling of it would be a
+/// fixture whose values quietly land under a key nothing reads.
+pub fn parameter_key(kind: &ParameterKind) -> String {
+    match kind {
+        ParameterKind::Intensity => "Intensity".into(),
+        ParameterKind::ColorRgb => "ColorRgb".into(),
+        ParameterKind::Pan => "Pan".into(),
+        ParameterKind::Tilt => "Tilt".into(),
+        ParameterKind::GoboIndex => "GoboIndex".into(),
+        ParameterKind::Zoom => "Zoom".into(),
+        ParameterKind::Focus => "Focus".into(),
+        ParameterKind::Iris => "Iris".into(),
+        ParameterKind::Shutter => "Shutter".into(),
+        ParameterKind::Strobe => "Strobe".into(),
+        ParameterKind::Gobo(n) => format!("Gobo:{n}"),
+        ParameterKind::GoboRotation(n) => format!("GoboRotation:{n}"),
+        ParameterKind::ColorWheel(n) => format!("ColorWheel:{n}"),
+        ParameterKind::Prism(n) => format!("Prism:{n}"),
+        ParameterKind::Frost(n) => format!("Frost:{n}"),
+        ParameterKind::ColorTemperature => "ColorTemperature".into(),
+        ParameterKind::Raw(channel) => format!("Raw:{channel}"),
+        ParameterKind::Switch(n) => format!("Switch:{n}"),
+        ParameterKind::Contact(n) => format!("Contact:{n}"),
+        ParameterKind::Temperature => "Temperature".into(),
+        ParameterKind::Humidity => "Humidity".into(),
+        ParameterKind::AirQuality => "AirQuality".into(),
+        ParameterKind::Text => "Text".into(),
+        ParameterKind::Named(name) => format!("Named:{name}"),
+    }
 }

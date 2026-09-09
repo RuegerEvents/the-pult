@@ -394,7 +394,11 @@ async fn a_station_runs_the_reference_plugins() {
         captures.iter().any(|c| c["fixture_id"] == json!(spot)),
         "the nudged fixture among them: {cue}"
     );
-    assert_eq!(captures[0]["easing"], json!("Linear"), "and the shape of its fade: {cue}");
+    // `null`, not `"Linear"`: the capture says nothing, so the cue answers and the
+    // show answers for the cue. This asserted `Linear` for as long as the plugin wrote
+    // one — which was for as long as the checked-in component was stale, since the
+    // plugin's source had not compiled since fade curves landed.
+    assert_eq!(captures[0]["easing"], json!(null), "and its fade shape is inherited: {cue}");
 
     let sequences = running
         .engine

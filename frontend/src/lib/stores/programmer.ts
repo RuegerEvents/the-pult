@@ -28,6 +28,8 @@ import type {
 } from '$lib/generated/index.js';
 import { parameterKey } from '$lib/patch.js';
 import { entryId, entriesFromCue, sameValue, storeCaptures } from '$lib/programmer.js';
+import { NO_CUE } from '$lib/sheet.js';
+import { beginGesture, endGesture } from './gesture.js';
 import { collection, show, showData } from './show.js';
 
 // ── What is in the buffer ─────────────────────────────────────────────────────
@@ -300,4 +302,72 @@ export async function storeInto(
 ): Promise<void> {
 	const captures = storeCaptures(cue.captures, held, mode, include);
 	await showData().cues.byId(cue.id).captures.set(captures);
+}
+
+// ── Update ────────────────────────────────────────────────────────────────────
+
+/**
+ * Update: every held value into the cue that is **driving it now**.
+ *
+ * This is the verb every other desk has and this console did not, and the reason it
+ * needs no target is that the console already knows one. A parameter being driven by
+ * a cue says so — `live_fades[key].cue_id`, `live_effects[key].source` — so an
+ * operator who has nudged a light in the middle of cue 12 means cue 12, and being
+ * asked which cue they meant is being asked a question the desk can answer.
+ *
+ * Keys nothing is driving are the honest exception and are handed back rather than
+ * guessed at: there is no cue they belong to, and the Store dialog opens with exactly
+ * those ticked.
+ *
+ * One gesture over however many cues it touches, so an Update across three cues is
+ * one Ctrl-Z. A merge rather than a replace, and the timing is kept — `storeCaptures`
+ * is where both of those rules live, and this does not restate them.
+ */
+export async function updateDriven(): Promise<{ updated: number; orphans: string[] }> {
+	const data = showData();
+	const fixtures = get(collection('fixtures'));
+	const cueList = get(cues);
+	const byFixture = new Map(fixtures.map((f) => [f.id, f]));
+
+	/** Entry ids, grouped by the cue driving each. */
+	const perCue = new Map<string, string[]>();
+	const orphans: string[] = [];
+
+	for (const entry of held) {
+		const fixture = byFixture.get(entry.fixture_id);
+		const key = parameterKey(entry.parameter_kind);
+		const effect = fixture?.live_effects?.[key];
+		const fade = fixture?.live_fades?.[key];
+		// An effect names its source as `{ Cue: id }` and a fade names a `cue_id` that
+		// is nil when no cue put it there — a release, or a send home. Either of those
+		// is a parameter no cue is driving.
+		const from =
+			effect && typeof effect.source === 'object' && 'Cue' in effect.source
+				? effect.source.Cue
+				: fade && fade.cue_id !== NO_CUE
+					? fade.cue_id
+					: null;
+		if (!from || !cueList.some((c) => c.id === from)) {
+			orphans.push(entry.id);
+			continue;
+		}
+		perCue.set(from, [...(perCue.get(from) ?? []), entry.id]);
+	}
+
+	if (perCue.size > 0) {
+		beginGesture();
+		try {
+			for (const [cueId, ids] of perCue) {
+				const cue = cueList.find((c) => c.id === cueId);
+				if (!cue) continue;
+				await data.cues.byId(cueId).captures.set(
+					storeCaptures(cue.captures, held, 'merge', new Set(ids))
+				);
+			}
+		} finally {
+			endGesture();
+		}
+	}
+
+	return { updated: perCue.size, orphans };
 }

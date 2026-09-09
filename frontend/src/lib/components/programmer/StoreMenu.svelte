@@ -8,36 +8,89 @@
 	 *
 	 * Merge is the default and Replace is only offered for a cue that already exists,
 	 * because there is nothing to replace in a cue being made here and now.
+	 *
+	 * Two things it remembers, both per browser. **Which sequence** was last stored
+	 * into, because an operator building act two stores into act two twenty times
+	 * running and picking it each time is twenty pointless decisions. And **track or
+	 * cue only**, because that is a way of working rather than a per-cue choice.
 	 */
 
-	import type { Cue, Easing, Sequence } from '$lib/generated/index.js';
-	import { createCue, DEFAULT_FADE_MS } from '$lib/cues.js';
+	import { untrack } from 'svelte';
+
+	import type { Cue, Easing, ParameterCapture, Sequence } from '$lib/generated/index.js';
+	import { createCue, cueIdsThrough, cueOnlyCompensation, DEFAULT_FADE_MS, trackedThrough } from '$lib/cues.js';
 	import { CURVE_LABELS, CURVES, curveForKey } from '$lib/fade.js';
 	import { formatValue, kindLabel, parameterKey } from '$lib/patch.js';
 	import { clear, entries, storeInto } from '$lib/stores/programmer.js';
+	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { collection, show, showData } from '$lib/stores/show.js';
 	import { addToast } from '$lib/toasts.js';
 	import { focusOnMount } from '$lib/actions.js';
 	import Dialog from '$lib/components/Dialog.svelte';
 
-	let { onclose }: { onclose: () => void } = $props();
+	let {
+		onclose,
+		/**
+		 * The entries to open with ticked. Everything, unless Update handed over the
+		 * keys no cue is driving — which is the one case where a subset is the answer
+		 * rather than a guess.
+		 */
+		preselect = null
+	}: { onclose: () => void; preselect?: string[] | null } = $props();
 
 	const fixtures = collection('fixtures');
 	const sequences = collection('sequences');
 	const cues = collection('cues');
 
-	let sequenceId = $state<string | null>(null);
+	const SEQUENCE_KEY = 'pult.store.sequence';
+	const TRACKING_KEY = 'pult.store.tracking';
+
+	const remembered = (key: string): string | null => {
+		try {
+			return localStorage.getItem(key);
+		} catch {
+			return null;
+		}
+	};
+	const remember = (key: string, value: string) => {
+		try {
+			localStorage.setItem(key, value);
+		} catch {
+			// A browser with storage off still stores cues; it just asks every time.
+		}
+	};
+
+	let sequenceId = $state<string | null>(remembered(SEQUENCE_KEY));
 	let target = $state<'new' | 'existing'>('new');
 	let cueId = $state<string | null>(null);
 	let name = $state('');
 	let mode = $state<'merge' | 'replace'>('merge');
+	/**
+	 * Track or cue only.
+	 *
+	 * Track is preselected because tracking is what this playback does and what a
+	 * designer means most of the time: a look built in cue 3 should still be there in
+	 * cue 4. Cue only is the answer when one moment is being fixed rather than the
+	 * look being changed — see `cueOnlyCompensation`.
+	 */
+	let tracking = $state<'track' | 'cueOnly'>(
+		remembered(TRACKING_KEY) === 'cueOnly' ? 'cueOnly' : 'track'
+	);
 	let keep = $state(false);
 	let storing = $state(false);
 
 	/// What the operator has unticked. Everything else is stored, so an entry that
 	/// arrives while the menu is open — another console programming alongside — is
 	/// included rather than silently left out.
-	let dropped = $state(new Set<string>());
+	// The initial value on purpose: `preselect` is what Update handed over at the
+	// moment the dialog opened, and an entry arriving afterwards is included rather
+	// than being silently dropped by a list that was made before it existed.
+	let dropped = $state(
+		untrack(
+			() =>
+				new Set(preselect ? $entries.filter((e) => !preselect.includes(e.id)).map((e) => e.id) : [])
+		)
+	);
 	const include = $derived(
 		new Set($entries.filter((entry) => !dropped.has(entry.id)).map((entry) => entry.id))
 	);
@@ -49,6 +102,15 @@
 		sequence ? sequence.cue_ids.map((id) => $cues.find((c) => c.id === id)).filter((c): c is Cue => !!c) : []
 	);
 	const cue = $derived(cuesInSequence.find((c) => c.id === cueId) ?? null);
+	/**
+	 * Where a new cue goes: after the one that is up, which is where somebody
+	 * programming a show in order means. Appended when nothing is up.
+	 */
+	const afterActive = $derived(
+		sequence?.active_cue_index != null ? (sequence.cue_ids[sequence.active_cue_index] ?? null) : null
+	);
+	let after = $state<string | null | undefined>(undefined);
+	const insertAfter = $derived(after === undefined ? afterActive : after);
 	const nameOf = (fixtureId: string) =>
 		$fixtures.find((f) => f.id === fixtureId)?.name ?? fixtureId.slice(0, 6);
 
@@ -106,16 +168,63 @@
 		dropped = next;
 	}
 
+	/**
+	 * The cue a compensating value would go into, and what it is tracking now.
+	 *
+	 * Read *before* the store, because cue only preserves what the next cue was
+	 * showing — which is a fact about the show as it stands and not about the show the
+	 * store is about to make.
+	 */
+	function nextCueAndTracked(
+		storedInto: string
+	): { next: Cue; before: Map<string, ParameterCapture> } | null {
+		if (!sequence) return null;
+		const at = sequence.cue_ids.indexOf(storedInto);
+		const nextId = at >= 0 ? sequence.cue_ids[at + 1] : undefined;
+		if (!nextId) return null;
+		const next = $cues.find((c) => c.id === nextId);
+		if (!next) return null;
+		const byId = new Map($cues.map((c) => [c.id, c]));
+		const before = new Map<string, ParameterCapture>();
+		for (const entry of trackedThrough(cueIdsThrough(sequence, storedInto), (id) => byId.get(id))) {
+			before.set(
+				`${entry.capture.fixture_id}/${parameterKey(entry.capture.parameter_kind)}`,
+				entry.capture
+			);
+		}
+		return { next, before };
+	}
+
+	/** Which parameters this store actually changes, as `"fixture/key"`. */
+	const changedKeys = () =>
+		$entries
+			.filter((entry) => include.has(entry.id))
+			.map((entry) => `${entry.fixture_id}/${parameterKey(entry.parameter_kind)}`);
+
 	async function store() {
 		if (!sequence || storing) return;
 		storing = true;
+		remember(SEQUENCE_KEY, sequence.id);
+		remember(TRACKING_KEY, tracking);
+		// One gesture over the cue being stored into *and* the compensation in the one
+		// after it: cue only is a single act, and it is one Ctrl-Z.
+		beginGesture();
 		try {
+			const changed = changedKeys();
+			const compensation = tracking === 'cueOnly';
+			// Taken before anything is written, because it is what the next cue was
+			// tracking rather than what it will be.
+			const ahead = compensation
+				? nextCueAndTracked(target === 'new' ? (insertAfter ?? '') : (cueId ?? ''))
+				: null;
+
 			if (target === 'new') {
 				await createCue(showData(), sequence, $cues, {
 					name: name.trim(),
 					fadeInMs: cueFadeIn,
 					fadeOutMs: cueFadeOut,
 					easing: cueEasing,
+					after: insertAfter ?? undefined,
 					followMode:
 						followMode === 'Manual' ? 'Manual' : { FollowAfter: { delay_ms: followDelay } },
 					captures: $entries
@@ -141,11 +250,17 @@
 			} else if (cue) {
 				await storeInto(cue, mode, include);
 			}
+
+			if (ahead) {
+				const compensated = cueOnlyCompensation(ahead.next, changed, ahead.before);
+				if (compensated) await showData().cues.byId(ahead.next.id).captures.set(compensated);
+			}
 			if (!keep) await clear({ keepLocked: true });
 			onclose();
 		} catch (e) {
 			addToast(e instanceof Error ? e.message : 'that would not store');
 		} finally {
+			endGesture();
 			storing = false;
 		}
 	}
@@ -280,6 +395,22 @@
 						use:focusOnMount
 						onkeydown={(e) => e.key === 'Enter' && canStore && store()}
 					/>
+					<!-- Where it goes. Preselected after the cue that is up, which is where
+					     somebody programming a show in order means. -->
+					<label class="field">
+						After
+						<select
+							value={insertAfter ?? ''}
+							onchange={(e) => (after = e.currentTarget.value || null)}
+						>
+							<option value="">the end of the list</option>
+							{#each cuesInSequence as c (c.id)}
+								<option value={c.id}>
+									{c.number.toFixed(1)} · {c.name}{c.id === afterActive ? ' (up now)' : ''}
+								</option>
+							{/each}
+						</select>
+					</label>
 					<!-- The cue's own timing, which every capture above falls back to. -->
 					<div class="timing">
 						<label class="field">
@@ -336,6 +467,18 @@
 							: 'The cue will say only what is ticked above.'}
 					</p>
 				{/if}
+
+				<!-- Track or cue only, which is the difference between changing the look
+				     and fixing one moment of it. -->
+				<div class="choice">
+					<label><input type="radio" value="track" bind:group={tracking} /> Track</label>
+					<label><input type="radio" value="cueOnly" bind:group={tracking} /> Cue only</label>
+				</div>
+				<p class="note">
+					{tracking === 'track'
+						? 'The change carries forward until a later cue says otherwise.'
+						: 'The next cue is given what it is showing now, so the change stops here.'}
+				</p>
 
 				<label class="check">
 					<input type="checkbox" bind:checked={keep} />

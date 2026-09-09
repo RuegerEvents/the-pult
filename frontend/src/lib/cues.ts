@@ -154,3 +154,56 @@ export function cueIdsThrough(sequence: Sequence, cueId: string): string[] {
 	const at = sequence.cue_ids.indexOf(cueId);
 	return at < 0 ? [] : sequence.cue_ids.slice(0, at + 1);
 }
+
+/**
+ * What the *next* cue has to say so that a store into this one does not track forward.
+ *
+ * Storing into cue 3 in a tracking playback changes cue 3 and, silently, every cue
+ * after it that does not capture the same key — which is right when a designer is
+ * changing the look and wrong when they are fixing one moment. Every other desk calls
+ * the second one *cue only*, and this is it: for each key the store changes, if the
+ * next cue does not capture that key itself, the value it was **tracking** before the
+ * store is written into it, so the change stops at this cue's edge.
+ *
+ * Three things fall out of the rule and are worth stating.
+ *
+ * The compensating capture carries the value and nothing else — no fade time, no
+ * delay, no curve. Those are copied from nowhere on purpose: the value is being put
+ * into a different cue, and it should move the way *that* cue moves.
+ *
+ * A key nothing was tracking before needs no compensation. There was nothing to
+ * preserve, so the next cue goes on saying nothing about it and whatever is beneath
+ * shows through, exactly as it did.
+ *
+ * And the last cue of a sequence has no next, so cue only does nothing there — which
+ * is not a special case but the same rule with nothing to write into.
+ */
+export function cueOnlyCompensation(
+	next: Cue,
+	changed: string[],
+	before: Map<string, Cue['captures'][number]>
+): Cue['captures'] | null {
+	const already = new Set(
+		next.captures.map((c) => `${c.fixture_id}/${parameterKey(c.parameter_kind)}`)
+	);
+	const added: Cue['captures'] = [];
+	for (const key of changed) {
+		if (already.has(key)) continue;
+		const tracked = before.get(key);
+		if (!tracked) continue;
+		added.push({
+			fixture_id: tracked.fixture_id,
+			parameter_kind: tracked.parameter_kind,
+			value: tracked.value,
+			// A stored effect drops its anchor, the same rule `storeCaptures` follows:
+			// the cue's own `went_at` is what it is measured from on every Go.
+			effect: tracked.effect ? { ...tracked.effect, t0: null } : null,
+			fade_in_ms: 0,
+			fade_out_ms: 0,
+			delay_in_ms: 0,
+			easing: null
+		});
+		already.add(key);
+	}
+	return added.length === 0 ? null : [...next.captures, ...added];
+}

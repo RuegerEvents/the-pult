@@ -44,6 +44,8 @@ Selecting fixtures
 What you set lives in the programmer until you store it:
 
   store sequence 2 cue 3  programmer into cue 3 of sequence 2
+  update                  every held value into the cue driving it now — no
+                          target, because a driven parameter says which cue
 "#;
 
 fn overview(catalog: &Catalog) -> String {

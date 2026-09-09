@@ -173,6 +173,7 @@ fn first_words(catalog: &Catalog) -> Vec<Expectation> {
         keyword("rename", "change an entry's name"),
         keyword("set", "change one field of an entry"),
         keyword("store", "programmer into a cue"),
+        keyword("update", "held values into the cues driving them"),
         keyword("help", "how any of this works"),
     ];
     for table in catalog.entity_words() {

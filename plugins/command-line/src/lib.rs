@@ -17,7 +17,7 @@ use core::{
 use pult_plugin_sdk::{
     self as sdk, data,
     host, output_line,
-    schema::{Cue, EffectSpec, Easing, FollowMode, ParameterCapture},
+    schema::{parameter_key, Cue, EffectSource, EffectSpec, FollowMode, ParameterCapture},
     surface, PultPlugin,
 };
 use serde_json::{json, Value};
@@ -109,6 +109,7 @@ impl CommandLine {
                 self.set_field(&table, target, &field, value)
             }
             Command::Store { sequence, cue } => self.store(sequence, cue),
+            Command::Update => self.update(),
             Command::Rpc { method, args } => {
                 let args: Value = args.into_iter().collect::<serde_json::Map<_, _>>().into();
                 let result = host::call(&method, &args)?;
@@ -463,7 +464,11 @@ impl CommandLine {
                 // A stored effect drops its anchor: the cue's `went_at` is what it
                 // is measured from on every Go.
                 effect: entry.effect.map(|spec| EffectSpec { t0: None, ..spec }),
-                easing: Easing::Linear,
+                // `None`, not `Linear`. Nothing said, so the cue answers and the show
+                // answers for the cue — the same rule the store menu follows. Writing
+                // `Linear` here pinned every capture stored from the command line
+                // against a show that says otherwise.
+                easing: None,
             })
             .collect();
 
@@ -513,6 +518,9 @@ impl CommandLine {
                     follow_mode: FollowMode::Manual,
                     fade_in_ms: 500,
                     fade_out_ms: 500,
+                    // The cue says nothing either, so the show's own curve per
+                    // parameter group answers.
+                    easing: None,
                     is_active: false,
                 })?;
                 let mut ids = cue_ids;
@@ -524,6 +532,78 @@ impl CommandLine {
                 )]))
             }
         }
+    }
+
+    /// `update` — every held value into the cue that is driving it now.
+    ///
+    /// The same act as the button in the top bar, and the same rule: a parameter being
+    /// driven by a cue says which cue, so there is no target to name. The keys nothing
+    /// is driving are reported rather than guessed at — a plugin cannot open the store
+    /// dialog, so it says how many are left and leaves them in the programmer.
+    fn update(&self) -> Result<surface::ExecResponse, String> {
+        let entries = data::programmer_values().get()?;
+        if entries.is_empty() {
+            return Err("the programmer is empty — nothing to update".into());
+        }
+        let fixtures = data::fixtures().get()?;
+        let cues = data::cues().get()?;
+
+        // Entry indices, grouped by the cue driving each.
+        let mut per_cue: Vec<(uuid::Uuid, Vec<ParameterCapture>)> = Vec::new();
+        let mut orphans = 0usize;
+        for entry in entries {
+            let key = parameter_key(&entry.parameter_kind);
+            let fixture = fixtures.iter().find(|f| f.id == entry.fixture_id);
+            let from = fixture.and_then(|f| {
+                match f.live_effects.get(&key).map(|e| &e.source) {
+                    Some(EffectSource::Cue(id)) => Some(*id),
+                    // A fade's `cue_id` is nil when no cue put it there — a release, or
+                    // a send home. That is a parameter no cue is driving.
+                    _ => f
+                        .live_fades
+                        .get(&key)
+                        .map(|fade| fade.cue_id)
+                        .filter(|id| !id.is_nil()),
+                }
+            });
+            let Some(cue_id) = from.filter(|id| cues.iter().any(|c| c.id == *id)) else {
+                orphans += 1;
+                continue;
+            };
+            let capture = ParameterCapture {
+                fixture_id: entry.fixture_id,
+                parameter_kind: entry.parameter_kind,
+                value: entry.value,
+                fade_in_ms: 0,
+                fade_out_ms: 0,
+                delay_in_ms: 0,
+                effect: entry.effect.map(|spec| EffectSpec { t0: None, ..spec }),
+                easing: None,
+            };
+            match per_cue.iter_mut().find(|(id, _)| *id == cue_id) {
+                Some((_, list)) => list.push(capture),
+                None => per_cue.push((cue_id, vec![capture])),
+            }
+        }
+
+        for (cue_id, captures) in &per_cue {
+            let old = data::cues().by_id(*cue_id).get()?;
+            // Merge, and the timing an operator set on a capture is kept: the
+            // programmer carries values and never a fade time.
+            let merged = merge_kept(old.captures, captures.clone());
+            data::cues().by_id(*cue_id).captures().set(merged)?;
+        }
+
+        let updated = per_cue.len();
+        let text = match (updated, orphans) {
+            (0, _) => "nothing here is being driven by a cue".to_string(),
+            (n, 0) => format!("updated {n} {}", if n == 1 { "cue" } else { "cues" }),
+            (n, left) => format!(
+                "updated {n} {} — {left} left, which no cue is driving",
+                if n == 1 { "cue" } else { "cues" }
+            ),
+        };
+        Ok(lines_response(vec![output_line("result", text)]))
     }
 
     // ── Completion ────────────────────────────────────────────────────────────
@@ -652,6 +732,32 @@ fn merge_captures(
     let key = |c: &ParameterCapture| format!("{}/{:?}", c.fixture_id, c.parameter_kind);
     let taken: Vec<String> = stored.iter().map(&key).collect();
     existing.into_iter().filter(|c| !taken.contains(&key(c))).chain(stored).collect()
+}
+
+/// The same merge, but a capture the cue already had keeps its own timing.
+///
+/// Which is what makes Update safe to press: the programmer holds values and never a
+/// fade time, a delay or a curve, so a merge that wrote zeroes would throw away, every
+/// time, timing an operator set in a control that is not on this screen. The browser's
+/// `storeCaptures` has said this since effects landed; this is the same rule.
+fn merge_kept(
+    existing: Vec<ParameterCapture>,
+    stored: Vec<ParameterCapture>,
+) -> Vec<ParameterCapture> {
+    let key = |c: &ParameterCapture| format!("{}/{:?}", c.fixture_id, c.parameter_kind);
+    let kept: Vec<ParameterCapture> = stored
+        .into_iter()
+        .map(|mut capture| {
+            if let Some(before) = existing.iter().find(|c| key(c) == key(&capture)) {
+                capture.fade_in_ms = before.fade_in_ms;
+                capture.fade_out_ms = before.fade_out_ms;
+                capture.delay_in_ms = before.delay_in_ms;
+                capture.easing = before.easing;
+            }
+            capture
+        })
+        .collect();
+    merge_captures(existing, kept)
 }
 
 /// A uuid the show already gave out, back as one.
