@@ -9,11 +9,13 @@ members = [
     "crates/pult-gdtf",
     "crates/pult-mvr",
     "crates/pult-mvr-xchange",
+    "crates/pult-wing",
     "crates/pult-backend",
     "crates/pult-gui",
     "tools/pult-codegen",
     "tools/openhaunt-node-sim",
     "tools/openhaunt-node-sim-gui",
+    "tools/wing-explorer",
 ]
 # The desktop shells and the browser evaluator are members so that one lockfile covers
 # everything and CI can build them with `--locked`, but not default members: a plain
@@ -31,9 +33,11 @@ default-members = [
     "crates/pult-gdtf",
     "crates/pult-mvr",
     "crates/pult-mvr-xchange",
+    "crates/pult-wing",
     "crates/pult-backend",
     "tools/pult-codegen",
     "tools/openhaunt-node-sim",
+    "tools/wing-explorer",
 ]
 
 [workspace.package]

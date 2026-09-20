@@ -1,0 +1,21 @@
+[package]
+name = "wing-explorer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+# The station's half of the wing, and a window onto it. `pult-wing` is the protocol with
+# no OS in it; this is the part that owns a USB handle, keeps the wing alive and serves
+# a panel — the split `pult-mvr-xchange` and `infra/interop/xchange` already have.
+[dependencies]
+pult-wing = { path = "../../crates/pult-wing" }
+rusb = "0.9"
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "pult-wing"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+# Pure, in the shape `pult-gdtf` and `pult-mvr-xchange` already have: the MA wing
+# protocol on paper — the chunk grammar, what each block of bytes means, and the
+# control map that names an index — with no USB, no socket, no runtime and no clock.
+# Everything here is testable against `testdata/wing-frames.json` with no wing in the
+# machine, which is the whole reason the transport is somebody else's problem.
+#
+# The certificate exchange (container 0x0029) is deliberately absent. It is the onPC
+# licence dongle, nothing here needs it, and the corpus does not carry it either.
+[dependencies]
+# For MA's `hardware_configurations.xml`, which is read where it lies rather than
+# converted into anything this repository has to carry. Parsing a string is not an OS,
+# so the crate stays pure.
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

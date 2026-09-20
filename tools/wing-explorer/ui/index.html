@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wing Explorer</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1d2026; --edge: #2c3038; --ink: #e6e8ec;
+    --dim: #868c99; --live: #f0b429; --touch: #4aa3df; --led: #7bd88f;
+    --warn: #e06c6c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; gap: 18px; align-items: baseline; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--edge);
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  #status { color: var(--dim); }
+  #status.running { color: var(--led); }
+  #status.lost { color: var(--warn); }
+  main { padding: 18px 20px 40px; }
+  .wrap { overflow-x: auto; }
+  svg { display: block; background: var(--panel); border-radius: 10px; }
+  .grp { fill: none; stroke: var(--edge); stroke-width: 1; rx: 8; }
+  .grp-title { fill: var(--dim); font-size: 10px; letter-spacing: .08em;
+               text-transform: uppercase; }
+  .key { fill: #262a32; stroke: #363c46; stroke-width: 1; rx: 4; cursor: pointer; }
+  .key.down { fill: var(--live); stroke: var(--live); }
+  .key.touch.down { fill: var(--touch); stroke: var(--touch); }
+  .key-label { fill: var(--ink); font-size: 9px; pointer-events: none;
+               text-anchor: middle; dominant-baseline: middle; }
+  .key.down + .key-label { fill: #17191d; font-weight: 600; }
+  .fader-track { fill: #101216; stroke: #363c46; rx: 4; }
+  .fader-knob { fill: #5b6270; rx: 3; }
+  .fader-knob.asserted { fill: var(--touch); }
+  .fader-grab { fill: transparent; cursor: ns-resize; }
+
+  .enc { fill: #262a32; stroke: #4a515e; stroke-width: 2; }
+  .enc.down { fill: var(--live); stroke: var(--live); }
+  .enc-outer { fill: none; stroke: #363c46; stroke-width: 6; }
+  .enc-mark { stroke: var(--live); stroke-width: 3; stroke-linecap: round; }
+  .enc-mark.outer { stroke: var(--touch); }
+  .key.blank { fill: #1a1d23; stroke: #2c3038; stroke-dasharray: 3 3; cursor: default; }
+  .key-label.dim { fill: var(--dim); }
+  .tiny { fill: var(--dim); font-size: 8px; text-anchor: middle; }
+  .controls { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 18px; }
+  fieldset { border: 1px solid var(--edge); border-radius: 8px; padding: 10px 14px 14px; }
+  legend { color: var(--dim); font-size: 10px; letter-spacing: .08em;
+           text-transform: uppercase; padding: 0 6px; }
+  button {
+    background: #262a32; color: var(--ink); border: 1px solid #363c46;
+    border-radius: 5px; padding: 5px 11px; cursor: pointer; font: inherit;
+  }
+  button:hover { border-color: #4a515e; }
+  button.on { background: var(--live); color: #17191d; border-color: var(--live); }
+  input[type=range] { width: 200px; vertical-align: middle; }
+  #log { margin-top: 16px; max-height: 190px; overflow: auto;
+         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  #log div { padding: 1px 0; color: var(--dim); }
+  #log b { color: var(--ink); font-weight: 600; }
+  .note { color: var(--dim); font-size: 11px; margin-top: 10px; max-width: 70ch; }
+  .hint { color: var(--dim); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="module">Wing Explorer</h1>
+  <span id="status">connecting…</span>
+  <span id="loading"></span>
+</header>
+
+<main>
+  <div class="wrap"><svg id="panel"></svg></div>
+
+  <div class="controls">
+    <fieldset>
+      <legend>Demo programs</legend>
+      <div id="demos" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+    </fieldset>
+    <fieldset>
+      <legend>LEDs</legend>
+      <label>all
+        <input id="all" type="range" min="0" max="255" value="30">
+        <span id="allv">30</span>
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Faders</legend>
+      <span class="hint">drag one on the panel to drive it; double-click to release</span>
+    </fieldset>
+  </div>
+
+  <p class="note" id="note"></p>
+  <div id="log"></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
+const DETENTS = 24;   // clicks in one full turn of an encoder
+
+let map = { hardkeys: {}, faders: {}, encoders: {}, leds: [] };
+let layout = null;
+const nodes = { keys: {}, faders: {}, encoders: {} };
+const encoderAngle = {};
+
+function el(name, attrs, parent) {
+  const n = document.createElementNS(SVGNS, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+
+// What is printed on a key comes from the layout where it says so — the desk reads
+// "Go+" where MA's table says DEF_GO — and from MA's table otherwise.
+const legends = {};
+function keyLabel(index) {
+  if (legends[index]) return legends[index];
+  const c = map.hardkeys[index];
+  if (!c) return String(index);
+  if (c.Code === "EXEC" || c.Code === "FADER") return c.ExecutorIndex || c.Code;
+  return (c.Code || c.label || String(index)).replace(/_/g, " ");
+}
+
+function draw() {
+  const svg = $("panel");
+  svg.innerHTML = "";
+  svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
+  svg.setAttribute("width", layout.width);
+  svg.setAttribute("height", layout.height);
+
+  for (const g of layout.groups) {
+    el("rect", { class: "grp", x: g.x, y: g.y, width: g.w, height: g.h }, svg);
+    el("text", { class: "grp-title", x: g.x + 10, y: g.y + 14 }, svg).textContent = g.title;
+  }
+
+  for (const it of layout.items) {
+    if (it.kind === "blank") drawBlank(svg, it);
+    else if (it.kind === "key") drawKey(svg, it);
+    else if (it.kind === "fader") drawFader(svg, it);
+    else if (it.kind === "encoder") drawEncoder(svg, it);
+  }
+}
+
+// A key the panel has but nothing arrives from. Drawn, and visibly not bound.
+function drawBlank(svg, it) {
+  const r = el("rect", {
+    class: "key blank", x: it.x, y: it.y, width: it.w, height: it.h,
+  }, svg);
+  r.appendChild(el("title", {})).textContent =
+    (it.label || "") + " — on the panel, but no bit moves for it";
+  el("text", {
+    class: "key-label dim", x: it.x + it.w / 2, y: it.y + it.h / 2 + 0.5,
+    "font-size": 8,
+  }, svg).textContent = it.label || "";
+}
+
+function drawKey(svg, it) {
+  if (it.legend) legends[it.index] = it.legend;
+  const c = map.hardkeys[it.index];
+  const cls = "key" + (c && c.Code === "FADER" ? " touch" : "");
+  // Some keys are round on the desk - the little button at each encoder's corner -
+  // and a drawing of a panel should look like the panel.
+  const r = it.round
+    ? el("circle", { class: cls, cx: it.x + it.w / 2, cy: it.y + it.h / 2, r: it.w / 2 }, svg)
+    : el("rect", { class: cls, x: it.x, y: it.y, width: it.w, height: it.h }, svg);
+  r.addEventListener("click", () => flash(it.index));
+  if (!it.round) {
+    const t = el("text", {
+      class: "key-label", x: it.x + it.w / 2, y: it.y + it.h / 2 + 0.5,
+      "font-size": it.compact ? 8 : 9,
+    }, svg);
+    t.textContent = keyLabel(it.index);
+  }
+  nodes.keys[it.index] = r;
+  r.appendChild(el("title", {})).textContent =
+    `hardkey ${it.index} — ${(map.hardkeys[it.index] || {}).label || "unassigned"}`;
+}
+
+function drawFader(svg, it) {
+  el("rect", { class: "fader-track", x: it.x, y: it.y, width: it.w, height: it.h }, svg);
+  const knob = el("rect", {
+    class: "fader-knob", x: it.x + 2, y: it.y + it.h - 12, width: it.w - 4, height: 10,
+  }, svg);
+  el("text", { class: "tiny", x: it.x + it.w / 2, y: it.y + it.h + 12 }, svg)
+    .textContent = (map.faders[it.index] || {}).ExecutorIndex || it.index;
+  nodes.faders[it.index] = { knob, geom: it };
+
+  // Drag the fader itself. A wide invisible strip rather than the knob, so that a
+  // grab anywhere on the travel works — a 10px knob is a hard target, and these are
+  // motorised, so the desk follows the pointer.
+  const grab = el("rect", {
+    class: "fader-grab", x: it.x - 4, y: it.y - 6, width: it.w + 8, height: it.h + 12,
+  }, svg);
+  const valueAt = (evt) => {
+    const p = svg.createSVGPoint();
+    p.x = evt.clientX;
+    p.y = evt.clientY;
+    const { y } = p.matrixTransform(svg.getScreenCTM().inverse());
+    const frac = 1 - (y - it.y) / it.h;
+    return Math.round(Math.max(0, Math.min(1, frac)) * 4096);
+  };
+  let pending = null;
+  const push = () => {
+    if (pending === null) return;
+    send({ kind: "setFader", index: it.index, value: pending });
+    pending = null;
+  };
+  grab.addEventListener("pointerdown", (evt) => {
+    grab.setPointerCapture(evt.pointerId);
+    knob.classList.add("asserted");
+    pending = valueAt(evt);
+    setFader(it.index, pending);
+    push();
+    evt.preventDefault();
+  });
+  grab.addEventListener("pointermove", (evt) => {
+    if (!grab.hasPointerCapture(evt.pointerId)) return;
+    // One write per animation frame, not per pointer event: the same rule the rig
+    // editor follows for dragging a truss.
+    const first = pending === null;
+    pending = valueAt(evt);
+    setFader(it.index, pending);
+    if (first) requestAnimationFrame(push);
+  });
+  const done = (evt) => {
+    if (grab.hasPointerCapture(evt.pointerId)) grab.releasePointerCapture(evt.pointerId);
+    push();
+  };
+  grab.addEventListener("pointerup", done);
+  grab.addEventListener("pointercancel", done);
+  // Double-click hands the fader back: these motors hold a position against a hand,
+  // so there has to be a way to stop driving one.
+  grab.addEventListener("dblclick", () => {
+    send({ kind: "releaseFader", index: it.index });
+    knob.classList.remove("asserted");
+  });
+  grab.appendChild(el("title", {})).textContent = "drag to drive, double-click to release";
+  if (it.touch != null) {
+    // The touch contact is a hardkey; showing it on the fader is the whole point of
+    // having worked out that they name the same executor.
+    const ring = el("rect", {
+      class: "key touch", x: it.x - 1, y: it.y - 1,
+      width: it.w + 2, height: it.h + 2, fill: "none",
+    }, svg);
+    ring.style.fill = "none";
+    nodes.keys[it.touch] = ring;
+  }
+}
+
+function drawEncoder(svg, it) {
+  // Inside and outside are the two concentric rings of one physical encoder, and they
+  // turn independently — so they get a needle each, on their own radius. Sharing one
+  // made an outer turn look exactly like an inner one.
+  if (it.outer != null) {
+    el("circle", { class: "enc-outer", cx: it.x, cy: it.y, r: it.r + 6 }, svg);
+    const outerMark = el("line", {
+      class: "enc-mark outer", x1: it.x, y1: it.y - it.r - 1, x2: it.x, y2: it.y - it.r - 11,
+    }, svg);
+    nodes.encoders[it.outer] = { mark: outerMark, geom: it, radius: it.r + 6, inner: it.r + 1 };
+    encoderAngle[it.outer] = 0;
+  }
+  const knob = el("circle", { class: "enc", cx: it.x, cy: it.y, r: it.r }, svg);
+  // Pushing the knob is a hardkey of its own, so the knob is that key's indicator.
+  if (it.press != null) {
+    nodes.keys[it.press] = knob;
+    knob.appendChild(el("title", {})).textContent =
+      `${keyLabel(it.press)} — push`;
+  }
+  const mark = el("line", {
+    class: "enc-mark", x1: it.x, y1: it.y, x2: it.x, y2: it.y - it.r + 5,
+  }, svg);
+  el("text", { class: "tiny", x: it.x, y: it.y + it.r + 14 }, svg)
+    .textContent = (map.encoders[it.index] || {}).Type || `enc ${it.index}`;
+  nodes.encoders[it.index] = { mark, geom: it, radius: it.r - 5, inner: 0 };
+  encoderAngle[it.index] = 0;
+}
+
+function setKey(index, down) {
+  const n = nodes.keys[index];
+  if (n) n.classList.toggle("down", down);
+}
+
+function setFader(index, value) {
+  const f = nodes.faders[index];
+  if (!f) return;
+  f.value = value;
+  const frac = Math.max(0, Math.min(1, value / 4096));
+  const travel = f.geom.h - 12;
+  f.knob.setAttribute("y", f.geom.y + 2 + (1 - frac) * travel);
+}
+
+function turnEncoder(index, delta) {
+  const e = nodes.encoders[index];
+  if (!e) return;
+  // 24 detents to a revolution, so 15 degrees a click and the needle sits where the
+  // knob does. It was briefly 30, to make a click easier to see — but that was
+  // compensating for a decode bug that swallowed most of them, and once the clicks
+  // all arrive the honest angle is the right one.
+  encoderAngle[index] = (encoderAngle[index] || 0) + delta * (360 / DETENTS);
+  const a = (encoderAngle[index] * Math.PI) / 180;
+  const sin = Math.sin(a), cos = Math.cos(a);
+  e.mark.setAttribute("x1", e.geom.x + sin * e.inner);
+  e.mark.setAttribute("y1", e.geom.y - cos * e.inner);
+  e.mark.setAttribute("x2", e.geom.x + sin * e.radius);
+  e.mark.setAttribute("y2", e.geom.y - cos * e.radius);
+}
+
+function flash(index) {
+  setKey(index, true);
+  setTimeout(() => setKey(index, false), 120);
+}
+
+function log(html) {
+  const d = document.createElement("div");
+  d.innerHTML = html;
+  const box = $("log");
+  box.prepend(d);
+  while (box.children.length > 200) box.lastChild.remove();
+}
+
+// --- the socket -------------------------------------------------------------
+let ws;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { $("status").textContent = "connected"; };
+  ws.onclose = () => {
+    $("status").textContent = "socket closed — retrying";
+    $("status").className = "lost";
+    setTimeout(connect, 1500);
+  };
+  ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+}
+
+function send(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+}
+
+function handle(m) {
+  switch (m.kind) {
+    case "hello": {
+      map = m;
+      layout = m.layout;
+      $("module").textContent = m.module || "Wing Explorer";
+      $("note").textContent = layout.note || "";
+      draw();
+      buildDemos(m.demos, m.demo);
+      break;
+    }
+    case "status":
+      $("status").textContent = `${m.state} — ${m.detail}`;
+      $("status").className = m.state;
+      if (m.state === "running") $("loading").textContent = "";
+      break;
+    case "deviceType":
+      log(`<b>${m.name}</b> — ${m.digitalIn} digital inputs`);
+      break;
+    case "loading":
+      $("loading").textContent =
+        `loading application ${Math.round((m.sent / m.total) * 100)}%`;
+      break;
+    case "events":
+      for (const e of m.events) event(e);
+      break;
+  }
+}
+
+function event(e) {
+  if (e.kind === "key") {
+    setKey(e.index, e.down);
+    if (e.down) log(`key <b>${keyLabel(e.index)}</b> <span>#${e.index}</span>`);
+  } else if (e.kind === "fader") {
+    setFader(e.index, e.value);
+    log(`fader <b>${e.index}</b> → ${e.value}`);
+  } else if (e.kind === "encoder") {
+    turnEncoder(e.index, e.delta);
+    log(`encoder <b>${e.index}</b> ${e.delta > 0 ? "+" : ""}${e.delta}`);
+  } else if (e.kind === "digital") {
+    log(`digital <b>0x${e.bits.toString(16).padStart(2, "0")}</b>`);
+  }
+}
+
+// --- the controls -----------------------------------------------------------
+function buildDemos(demos, current) {
+  const box = $("demos");
+  box.innerHTML = "";
+  for (const d of demos || []) {
+    const b = document.createElement("button");
+    b.textContent = d.slug;
+    b.title = d.describe;
+    b.className = d.slug === current ? "on" : "";
+    b.onclick = () => {
+      send({ kind: "demo", slug: d.slug });
+      [...box.children].forEach((c) => c.classList.toggle("on", c === b));
+    };
+    box.appendChild(b);
+  }
+}
+
+$("all").addEventListener("input", (e) => {
+  $("allv").textContent = e.target.value;
+  send({ kind: "allLeds", level: +e.target.value });
+});
+connect();
+</script>
+</body>
+</html>
