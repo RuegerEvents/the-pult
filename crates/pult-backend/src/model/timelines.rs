@@ -30,7 +30,7 @@
 
 use std::collections::HashMap;
 
-use pult_schema::types::timeline::Timeline;
+use pult_schema::types::timeline::{AtEnd, Timeline};
 use uuid::Uuid;
 
 /// One thing a timeline wants done.
@@ -65,12 +65,23 @@ pub struct TimelineTempo {
     pub t0: u64,
 }
 
+/// A timeline that has reached its [`Timeline::end`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimelineEnded {
+    pub timeline_id: Uuid,
+    /// The wall millisecond the end fell at, which is what the stop or the loop's
+    /// play anchors on — so a loop does not drift by a pass's lateness each time round.
+    pub at: u64,
+    pub then: AtEnd,
+}
+
 /// What one pass came to.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TimelinePass {
     pub fire: Vec<TimelineFire>,
     pub stopped: Vec<TimelineStopped>,
     pub masters: Vec<TimelineTempo>,
+    pub ended: Vec<TimelineEnded>,
 }
 
 /// What each timeline was doing at the end of the last pass.
@@ -115,7 +126,20 @@ impl Timelines {
         self.seen.retain(|id, _| timelines.iter().any(|timeline| timeline.id == *id));
 
         for timeline in timelines {
-            let position = timeline.position_at(wall_ms);
+            let running_to = timeline.position_at(wall_ms);
+            // Nothing past the end is crossed: the leader stops or loops the timeline
+            // at it, and an event after the end is one the timeline never reaches.
+            let end = end_of(timeline);
+            let position = end.map_or(running_to, |end| running_to.min(end));
+            if timeline.running {
+                if let Some(end) = end.filter(|end| running_to >= *end) {
+                    out.ended.push(TimelineEnded {
+                        timeline_id: timeline.id,
+                        at: wall_at(timeline, wall_ms, running_to - end),
+                        then: timeline.end.map_or(AtEnd::Stop, |e| e.then),
+                    });
+                }
+            }
             let before = self.seen.get(&timeline.id).copied();
             let was_running = before.is_some_and(|seen| seen.running);
             // The segment the playhead is in, whatever the timeline is doing: kept in
@@ -127,7 +151,7 @@ impl Timelines {
                 if was_running {
                     out.stopped.push(TimelineStopped {
                         timeline_id: timeline.id,
-                        position_ms: position,
+                        position_ms: running_to,
                         tracks: timeline
                             .tracks
                             .iter()
@@ -144,7 +168,7 @@ impl Timelines {
                     Seen {
                         running: false,
                         fired_to: before.and_then(|s| s.fired_to),
-                        position_ms: position,
+                        position_ms: running_to,
                         at_ms: wall_ms,
                         segment,
                     },
@@ -174,7 +198,7 @@ impl Timelines {
                     Seen {
                         running: true,
                         fired_to: Some(position),
-                        position_ms: position,
+                        position_ms: running_to,
                         at_ms: wall_ms,
                         segment,
                     },
@@ -192,23 +216,16 @@ impl Timelines {
             for event in timeline.crossed(fired_to, position) {
                 // The wall millisecond the *event* fell at, worked out backwards from
                 // the playhead — so a pass that ran 40 ms late still anchors the cue
-                // where it belonged. A rate of zero, and a position before the anchor,
-                // both fall back to now rather than dividing by nothing.
-                let late = position.saturating_sub(event.at_ms as u64);
-                let rate = timeline.rate.max(0.0);
-                let at = if rate > 0.0 {
-                    wall_ms.saturating_sub((late as f64 / rate as f64) as u64)
-                } else {
-                    wall_ms
-                };
-                out.fire.push(fire_at(event, at));
+                // where it belonged.
+                let late = running_to.saturating_sub(event.at_ms as u64);
+                out.fire.push(fire_at(event, wall_at(timeline, wall_ms, late)));
             }
             self.seen.insert(
                 timeline.id,
                 Seen {
                     running: true,
                     fired_to: Some(position),
-                    position_ms: position,
+                    position_ms: running_to,
                     at_ms: wall_ms,
                     segment,
                 },
@@ -228,11 +245,38 @@ impl Timelines {
             .filter(|timeline| timeline.running && timeline.rate > 0.0)
             .filter_map(|timeline| {
                 let position = timeline.position_at(wall_ms);
-                let next = timeline.next_event_after(position)?;
-                let ahead = (next.at_ms as u64).saturating_sub(position);
+                let event = timeline.next_event_after(position).map(|next| next.at_ms as u64);
+                // The end is a deadline like an event: a scare that has finished
+                // must stop on time rather than whenever something else wakes the
+                // engine.
+                let end = end_of(timeline).filter(|end| *end > position);
+                let next = match (event, end) {
+                    (Some(a), Some(b)) => a.min(b),
+                    (a, b) => a.or(b)?,
+                };
+                let ahead = next.saturating_sub(position);
                 Some(wall_ms + (ahead as f64 / timeline.rate as f64) as u64)
             })
             .min()
+    }
+}
+
+/// Where a timeline ends, if it does. An end at zero is no end: a loop there would
+/// start again on every pass.
+fn end_of(timeline: &Timeline) -> Option<u64> {
+    timeline.end.map(|end| end.at_ms).filter(|at| *at > 0)
+}
+
+/// The wall millisecond a timeline was `behind` milliseconds of timeline ago.
+///
+/// A rate of zero, and a position before the anchor, both fall back to now rather
+/// than dividing by nothing.
+fn wall_at(timeline: &Timeline, wall_ms: u64, behind: u64) -> u64 {
+    let rate = timeline.rate.max(0.0);
+    if rate > 0.0 {
+        wall_ms.saturating_sub((behind as f64 / rate as f64) as u64)
+    } else {
+        wall_ms
     }
 }
 
@@ -294,6 +338,7 @@ mod tests {
             tracks: Vec::new(),
             speed_master: None,
             node_id: None,
+            end: None,
             running: false,
             anchor_ms: 0,
             position_at_anchor_ms: 0,
@@ -352,6 +397,58 @@ mod tests {
 
         // And nothing fires again as it carries on from there.
         assert!(timelines.pass(12_500, &[located]).fire.is_empty());
+    }
+
+    fn ending(mut timeline: Timeline, at_ms: u64, then: AtEnd) -> Timeline {
+        timeline.end = Some(pult_schema::types::timeline::TimelineEnd { at_ms, then });
+        timeline
+    }
+
+    /// A scare has to finish, or a flow told to ignore a running timeline ignores it
+    /// for the rest of the night.
+    #[test]
+    fn a_timeline_reaching_its_end_says_so_once_anchored_where_the_end_fell() {
+        let mut timelines = Timelines::default();
+        let timeline =
+            ending(playing(a_timeline(vec![go_next(500, 1), go_next(3_000, 2)]), 10_000, 0), 2_000, AtEnd::Stop);
+
+        assert!(timelines.pass(11_000, std::slice::from_ref(&timeline)).ended.is_empty());
+        let pass = timelines.pass(12_300, std::slice::from_ref(&timeline));
+        assert_eq!(
+            pass.ended,
+            vec![TimelineEnded { timeline_id: timeline.id, at: 12_000, then: AtEnd::Stop }],
+        );
+        assert!(
+            pass.fire.iter().all(|f| f.sequence_id != Uuid::from_u128(2)),
+            "an event past the end is never reached",
+        );
+    }
+
+    #[test]
+    fn the_end_is_a_deadline() {
+        let timelines = Timelines::default();
+        let timeline = ending(playing(a_timeline(Vec::new()), 10_000, 0), 4_000, AtEnd::Loop);
+        assert_eq!(timelines.next_deadline(11_000, &[timeline]), Some(14_000));
+    }
+
+    #[test]
+    fn an_end_at_zero_is_no_end() {
+        let mut timelines = Timelines::default();
+        let timeline = ending(playing(a_timeline(Vec::new()), 10_000, 0), 0, AtEnd::Loop);
+        assert!(timelines.pass(10_500, &[timeline]).ended.is_empty(), "or it would loop on every pass");
+    }
+
+    /// A loop is a play from zero anchored on the end, and the events at the top of
+    /// the bed fire again on the way round.
+    #[test]
+    fn a_loop_round_fires_the_start_again() {
+        let mut timelines = Timelines::default();
+        let timeline = ending(playing(a_timeline(vec![go_next(0, 1)]), 10_000, 0), 1_000, AtEnd::Loop);
+        assert_eq!(timelines.pass(10_000, std::slice::from_ref(&timeline)).fire.len(), 1);
+        assert_eq!(timelines.pass(11_050, std::slice::from_ref(&timeline)).ended[0].at, 11_000);
+
+        let round = playing(timeline.clone(), 11_000, 0);
+        assert_eq!(timelines.pass(11_050, &[round]).fire.len(), 1, "the top of the bed again");
     }
 
     /// Pressing play must not re-fire everything before the playhead.

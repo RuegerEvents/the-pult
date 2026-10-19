@@ -21,6 +21,7 @@ struct Draw {
     flows: Vec<Flow>,
     nodes: Vec<FlowNode>,
     edges: Vec<FlowEdge>,
+    variables: Vec<Variable>,
 }
 
 impl Draw {
@@ -82,7 +83,7 @@ impl Draw {
     }
 
     fn graph(&self) -> FlowGraph<'_> {
-        FlowGraph { flows: &self.flows, nodes: &self.nodes, edges: &self.edges }
+        FlowGraph { flows: &self.flows, nodes: &self.nodes, edges: &self.edges, variables: &self.variables }
     }
 }
 
@@ -120,7 +121,7 @@ fn fired(effects: &[FlowEffect]) -> Vec<Uuid> {
         .iter()
         .filter_map(|e| match e {
             FlowEffect::Fire { node_id, .. } => Some(*node_id),
-            FlowEffect::SetActive { .. } => None,
+            FlowEffect::SetActive { .. } | FlowEffect::ChainCut { .. } => None,
         })
         .collect()
 }
@@ -638,4 +639,290 @@ fn a_diamond_fires_its_action_once() {
         flows.tick(Instant::now(), &graph, &[an_edge(fixture, "Contact:0", Some(false), true)]);
 
     assert_eq!(fired(&effects), vec![action], "two paths to one action are still one action");
+}
+
+// ── Variables: a flow that remembers ──────────────────────────────────────────
+
+use pult_schema::types::variable::{VariableKind, VariableOp};
+
+impl Draw {
+    fn variable(&mut self, name: &str) -> Uuid {
+        let id = Uuid::new_v4();
+        self.variables.push(Variable {
+            id,
+            name: name.into(),
+            kind: VariableKind::Number,
+            initial: 0.0,
+            min: Some(0.0),
+            max: None,
+            value: None,
+        });
+        id
+    }
+
+    fn reads(&mut self, variable_id: Uuid) -> Uuid {
+        self.node(FlowNodeKind::Source(TriggerSource::Variable { variable_id }))
+    }
+
+    fn does(&mut self, action: TriggerAction) -> Uuid {
+        self.node(FlowNodeKind::Action(action))
+    }
+
+    fn value(&self, id: Uuid) -> f64 {
+        self.variables.iter().find(|v| v.id == id).unwrap().current()
+    }
+
+    /// One tick, then what the engine would do with its variable writes — applied
+    /// after the pass, which is the rule the module docs promise.
+    fn run(&mut self, flows: &mut Flows, now: Instant, inputs: &[InputEvent]) -> Vec<FlowEffect> {
+        let effects = flows.tick(now, &self.graph(), inputs);
+        for effect in &effects {
+            if let FlowEffect::Fire { action: TriggerAction::SetVariable { variable_id, op }, .. } =
+                effect
+            {
+                let v = self.variables.iter_mut().find(|v| v.id == *variable_id).unwrap();
+                v.value = v.after(*op);
+            }
+        }
+        effects
+    }
+}
+
+fn set(variable_id: Uuid, op: VariableOp) -> TriggerAction {
+    TriggerAction::SetVariable { variable_id, op }
+}
+
+fn play(timeline_id: Uuid) -> TriggerAction {
+    TriggerAction::PlayTimeline { timeline_id, if_running: Default::default() }
+}
+
+/// One maze area, drawn entirely in show data: a PIR at the way in and one at the
+/// way out, a count of who is inside, and a scare that only the first group walking
+/// into an empty area sets off.
+struct Area {
+    draw: Draw,
+    entry: Uuid,
+    exit: Uuid,
+    inside: Uuid,
+    scare: Uuid,
+}
+
+fn an_area() -> Area {
+    let entry = Uuid::new_v4();
+    let exit = Uuid::new_v4();
+    let mut draw = Draw::new();
+    let inside = draw.variable("Area 1 inside");
+
+    let walked_in = draw.source(entry, ParameterKind::Contact(0));
+    let entered = draw.condition(TriggerCondition::RisingEdge);
+    let occupied = draw.reads(inside);
+    let free = draw.node(FlowNodeKind::Not);
+    let only_if_free = draw.node(FlowNodeKind::Gate);
+    let scare = draw.does(play(Uuid::from_u128(66)));
+    let count_in = draw.does(set(inside, VariableOp::Add(1.0)));
+    draw.wire(walked_in, entered);
+    draw.wire(occupied, free);
+    draw.wire_port(entered, only_if_free, 0);
+    draw.wire_port(free, only_if_free, 1);
+    draw.wire(only_if_free, scare);
+    draw.wire(entered, count_in);
+
+    let walked_out = draw.source(exit, ParameterKind::Contact(0));
+    let left = draw.condition(TriggerCondition::RisingEdge);
+    let count_out = draw.does(set(inside, VariableOp::Add(-1.0)));
+    draw.wire(walked_out, left);
+    draw.wire(left, count_out);
+
+    Area { draw, entry, exit, inside, scare }
+}
+
+#[test]
+fn the_first_group_into_an_empty_area_sets_off_the_scare_and_the_next_does_not() {
+    let mut area = an_area();
+    let mut flows = Flows::default();
+    let now = Instant::now();
+    let walk_in = |flows: &mut Flows, area: &mut Area| {
+        area.draw.run(flows, now, &[an_edge(area.entry, "Contact:0", Some(false), true)]);
+        area.draw.run(flows, now, &[an_edge(area.entry, "Contact:0", Some(true), false)])
+    };
+    // The first look records the variable rather than firing anything that reads it.
+    area.draw.run(&mut flows, now, &[]);
+
+    let first = area.draw.run(&mut flows, now, &[an_edge(area.entry, "Contact:0", Some(false), true)]);
+    assert!(fired(&first).contains(&area.scare), "an empty area scares");
+    // Only the pass after the write sees it: within a pass the gate read *free*.
+    area.draw.run(&mut flows, now, &[an_edge(area.entry, "Contact:0", Some(true), false)]);
+    assert_eq!(area.draw.value(area.inside), 1.0);
+
+    let second = walk_in(&mut flows, &mut area);
+    assert!(!fired(&second).contains(&area.scare), "an occupied area does not scare again");
+    assert_eq!(area.draw.value(area.inside), 2.0);
+
+    // Both groups leave, and the area is free for the next one.
+    for _ in 0..2 {
+        area.draw.run(&mut flows, now, &[an_edge(area.exit, "Contact:0", Some(false), true)]);
+        area.draw.run(&mut flows, now, &[an_edge(area.exit, "Contact:0", Some(true), false)]);
+    }
+    assert_eq!(area.draw.value(area.inside), 0.0);
+    area.draw.run(&mut flows, now, &[]);
+    let next = area.draw.run(&mut flows, now, &[an_edge(area.entry, "Contact:0", Some(false), true)]);
+    assert!(fired(&next).contains(&area.scare), "an emptied area scares the next group");
+}
+
+#[test]
+fn an_area_freed_while_its_pir_is_still_warm_does_not_scare_anybody() {
+    // The defect `Gate` exists to rule out: with an `And` and an edge after it, the
+    // count falling to zero while the entry PIR is still high is a rising edge.
+    let mut area = an_area();
+    let mut flows = Flows::default();
+    let now = Instant::now();
+    area.draw.run(&mut flows, now, &[]);
+    area.draw.run(&mut flows, now, &[an_edge(area.entry, "Contact:0", Some(false), true)]);
+    area.draw.run(&mut flows, now, &[]);
+
+    // Still standing in the doorway, warm, when the exit reports.
+    let effects = area.draw.run(&mut flows, now, &[an_edge(area.exit, "Contact:0", Some(false), true)]);
+    let after = area.draw.run(&mut flows, now, &[]);
+    assert_eq!(area.draw.value(area.inside), 0.0);
+    assert!(!fired(&effects).contains(&area.scare));
+    assert!(!fired(&after).contains(&area.scare), "nobody walked in");
+}
+
+#[test]
+fn a_count_cannot_go_below_nobody() {
+    let mut area = an_area();
+    let mut flows = Flows::default();
+    let now = Instant::now();
+    area.draw.run(&mut flows, now, &[]);
+    area.draw.run(&mut flows, now, &[an_edge(area.exit, "Contact:0", Some(false), true)]);
+    assert_eq!(area.draw.value(area.inside), 0.0, "an exit walked through twice clamps at the floor");
+}
+
+#[test]
+fn the_traffic_light_goes_green_when_the_second_area_empties() {
+    let mut draw = Draw::new();
+    let lamp = Uuid::new_v4();
+    let second = draw.variable("Area 2 inside");
+    let occupied = draw.reads(second);
+    let emptied = draw.condition(TriggerCondition::FallingEdge);
+    let filled = draw.condition(TriggerCondition::RisingEdge);
+    let green = draw.does(TriggerAction::SetParameter {
+        fixture_id: lamp,
+        parameter: ParameterKind::Contact(0),
+        value: ParameterValue::Bool(true),
+    });
+    let red = draw.does(TriggerAction::SetParameter {
+        fixture_id: lamp,
+        parameter: ParameterKind::Contact(0),
+        value: ParameterValue::Bool(false),
+    });
+    draw.wire(occupied, emptied);
+    draw.wire(occupied, filled);
+    draw.wire(emptied, green);
+    draw.wire(filled, red);
+    let mut flows = Flows::default();
+    let now = Instant::now();
+    draw.run(&mut flows, now, &[]);
+
+    // A phone, a peer or another flow — whoever writes it, the change is seen.
+    draw.variables[0].value = Some(1.0);
+    assert_eq!(fired(&draw.run(&mut flows, now, &[])), vec![red]);
+    draw.variables[0].value = Some(2.0);
+    assert!(fired(&draw.run(&mut flows, now, &[])).is_empty(), "still somebody in there");
+    draw.variables[0].value = None;
+    assert_eq!(fired(&draw.run(&mut flows, now, &[])), vec![green], "a reset is the area emptying");
+}
+
+#[test]
+fn a_variable_seen_for_the_first_time_fires_nothing() {
+    let mut draw = Draw::new();
+    let v = draw.variable("Lit");
+    draw.variables[0].value = Some(3.0);
+    let read = draw.reads(v);
+    let changed = draw.condition(TriggerCondition::AnyChange);
+    let action = draw.action();
+    draw.wire(read, changed);
+    draw.wire(changed, action);
+    let mut flows = Flows::default();
+
+    // A station promoted mid-show meets every variable at once.
+    assert!(fired(&draw.run(&mut flows, Instant::now(), &[])).is_empty());
+}
+
+#[test]
+fn a_gate_reads_its_level_from_before_the_pass() {
+    let mut draw = Draw::new();
+    let button = draw.node(FlowNodeKind::Button);
+    let flag = draw.variable("Armed");
+    let armed = draw.reads(flag);
+    let gate = draw.node(FlowNodeKind::Gate);
+    let fire = draw.action();
+    let arm = draw.does(set(flag, VariableOp::Set(1.0)));
+    draw.wire_port(button, gate, 0);
+    draw.wire_port(armed, gate, 1);
+    draw.wire(gate, fire);
+    draw.wire(button, arm);
+    let mut flows = Flows::default();
+    let now = Instant::now();
+    draw.run(&mut flows, now, &[]);
+
+    draw.nodes.iter_mut().find(|n| n.id == button).unwrap().last_fired_at = Some(chrono::Utc::now());
+    let first = draw.run(&mut flows, now, &[]);
+    assert!(!fired(&first).contains(&fire), "the arm in the same press is not seen by the gate");
+    assert!(fired(&first).contains(&arm));
+
+    draw.nodes.iter_mut().find(|n| n.id == button).unwrap().last_fired_at =
+        Some(chrono::Utc::now() + chrono::Duration::seconds(1));
+    assert!(fired(&draw.run(&mut flows, now, &[])).contains(&fire), "the next press is");
+}
+
+#[test]
+fn a_feedback_loop_through_a_variable_is_cut_and_says_so() {
+    let mut draw = Draw::new();
+    let v = draw.variable("Spin");
+    let read = draw.reads(v);
+    let changed = draw.condition(TriggerCondition::AnyChange);
+    let again = draw.does(set(v, VariableOp::Add(1.0)));
+    draw.wire(read, changed);
+    draw.wire(changed, again);
+    let mut flows = Flows::default();
+    let now = Instant::now();
+    draw.run(&mut flows, now, &[]);
+    draw.variables[0].value = Some(1.0);
+
+    let mut cut = false;
+    for _ in 0..(MAX_CHAIN + 4) {
+        let effects = draw.run(&mut flows, now, &[]);
+        if effects.iter().any(|e| matches!(e, FlowEffect::ChainCut { .. })) {
+            cut = true;
+            break;
+        }
+    }
+    assert!(cut, "an oscillator is stopped");
+    let spun_to = draw.value(v);
+    assert!(fired(&draw.run(&mut flows, now, &[])).is_empty(), "and stays stopped");
+    assert_eq!(draw.value(v), spun_to);
+}
+
+#[test]
+fn feedback_that_settles_is_not_cut() {
+    // A count clamped at a ceiling stops writing, so the chain ends by itself.
+    let mut draw = Draw::new();
+    let v = draw.variable("Up to three");
+    draw.variables[0].max = Some(3.0);
+    let read = draw.reads(v);
+    let changed = draw.condition(TriggerCondition::AnyChange);
+    let again = draw.does(set(v, VariableOp::Add(1.0)));
+    draw.wire(read, changed);
+    draw.wire(changed, again);
+    let mut flows = Flows::default();
+    let now = Instant::now();
+    draw.run(&mut flows, now, &[]);
+    draw.variables[0].value = Some(1.0);
+
+    for _ in 0..8 {
+        let effects = draw.run(&mut flows, now, &[]);
+        assert!(!effects.iter().any(|e| matches!(e, FlowEffect::ChainCut { .. })));
+    }
+    assert_eq!(draw.value(v), 3.0);
 }

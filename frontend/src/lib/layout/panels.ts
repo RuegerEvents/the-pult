@@ -48,6 +48,7 @@ import PiecesPanel from '$lib/components/stage/PiecesPanel.svelte';
 import ToolsPanel from '$lib/components/stage/ToolsPanel.svelte';
 import PaperworkPanel from '$lib/components/paperwork/PaperworkPanel.svelte';
 import TimelinePanel from '$lib/components/timeline/TimelinePanel.svelte';
+import VariablesPanel from '$lib/components/VariablesPanel.svelte';
 
 export type PanelId = keyof typeof PANELS;
 
@@ -130,6 +131,9 @@ export const PANELS = {
 	// the top third of the one panel somebody actually patches in.
 	fixturetypes: { title: 'Fixture types', component: FixtureTypeEditor, fills: false, home: 'setup' },
 	flows: { title: 'Flows', component: FlowEditor, fills: true, editable: true },
+	// What the flows remember. A workspace panel rather than an errand: it is watched
+	// and set during a show — whether area 2 is empty, a count put right by hand.
+	variables: { title: 'Variables', component: VariablesPanel, fills: false, editable: true },
 	// Both directions in one panel: an input is an output read backwards and has the
 	// same fields, so learning a second vocabulary for the same cable would be the
 	// only thing separating them bought.

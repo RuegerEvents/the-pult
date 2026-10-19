@@ -23,6 +23,24 @@
 //! that did not change this tick without reaching into engine state, and a source
 //! nothing has ever reported reads as false — which is the honest answer on a cold
 //! start rather than a guess.
+//!
+//! # Variables, and what a flow sees of its own writes
+//!
+//! A variable is read out of the graph rather than out of `levels`, because unlike a
+//! parameter it has a value before anything has reported one: its initial value.
+//! Its *changes* are found by comparing what the graph holds with what the last tick
+//! saw, so a write from a flow, from a phone and from a peer all reach a source the
+//! same way, and a variable seen for the first time is recorded rather than fired —
+//! the rule a button follows, and for the same reason: a station promoted mid-show
+//! must not fire every flow that reads one.
+//!
+//! **Nothing a flow writes is visible inside the pass that wrote it.** An action is
+//! an effect the engine applies afterwards, so a [`FlowNodeKind::Gate`] reads the
+//! value from before the pulse. That is what makes "PIR → gate on *free* → scare"
+//! beside "PIR → set *occupied*" fire the scare once and then lock it out. The write
+//! is seen on the next pass, and a run of passes each reacting only to the last one's
+//! variable writes is cut at [`MAX_CHAIN`]: feedback that settles works, and an
+//! oscillator stops and says so.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -32,6 +50,7 @@ use chrono::{DateTime, Utc};
 use pult_schema::types::{
     fixture::ParameterValue,
     flow::{Flow, FlowEdge, FlowNode, FlowNodeKind, TriggerAction, TriggerCondition, TriggerSource},
+    variable::Variable,
 };
 use uuid::Uuid;
 
@@ -46,6 +65,12 @@ pub struct InputEvent {
     pub current: ParameterValue,
 }
 
+/// How many passes in a row may react only to the previous pass's variable writes
+/// before the chain is cut. Generous for anything that settles — a count clamped at a
+/// bound stops writing in one — and small enough that an oscillator is noticed in a
+/// fraction of a second rather than spinning the engine.
+pub const MAX_CHAIN: u32 = 16;
+
 /// What a flow tick asks the engine to do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowEffect {
@@ -53,6 +78,28 @@ pub enum FlowEffect {
     Fire { node_id: Uuid, action: TriggerAction },
     /// A node lit up or went dark.
     SetActive { node_id: Uuid, active: bool },
+    /// A feedback loop through variables was cut: these variables changed, and
+    /// nothing reading them was told. The engine says so in the log.
+    ChainCut { variables: Vec<Uuid> },
+}
+
+/// What a level is read from: a fixture parameter, keyed as the input events name
+/// it, or a show variable.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Signal {
+    Parameter(Uuid, String),
+    Variable(Uuid),
+}
+
+impl Signal {
+    fn of(source: &TriggerSource) -> Signal {
+        match source {
+            TriggerSource::Parameter { fixture_id, parameter } => {
+                Signal::Parameter(*fixture_id, crate::model::playback::parameter_key(parameter))
+            }
+            TriggerSource::Variable { variable_id } => Signal::Variable(*variable_id),
+        }
+    }
 }
 
 /// The graph as the engine reads it out of show state.
@@ -60,11 +107,16 @@ pub struct FlowGraph<'a> {
     pub flows: &'a [Flow],
     pub nodes: &'a [FlowNode],
     pub edges: &'a [FlowEdge],
+    pub variables: &'a [Variable],
 }
 
 impl FlowGraph<'_> {
     fn node(&self, id: Uuid) -> Option<&FlowNode> {
         self.nodes.iter().find(|n| n.id == id)
+    }
+
+    fn variable(&self, id: Uuid) -> Option<&Variable> {
+        self.variables.iter().find(|v| v.id == id)
     }
 
     /// Is this node in a flow that is switched on? A node whose flow was deleted
@@ -90,7 +142,14 @@ pub struct Flows {
     /// Delay nodes whose pulse is held, and when it is due.
     pending: Vec<(Uuid, Instant)>,
     /// The last value seen for each parameter, keyed as the input events name it.
-    levels: HashMap<(Uuid, String), ParameterValue>,
+    levels: HashMap<Signal, ParameterValue>,
+    /// What each variable held at the end of the last tick, which is how a change to
+    /// one is noticed whoever made it.
+    variables: HashMap<Uuid, f64>,
+    /// Whether the last tick asked for a variable to be written, and how many ticks in
+    /// a row have reacted to nothing else. See [`MAX_CHAIN`].
+    wrote_variables: bool,
+    chain: u32,
     /// Which nodes are currently reported as lit, so the engine is only told about
     /// changes rather than the same truth forty times a second.
     lit: HashSet<Uuid>,
@@ -107,6 +166,27 @@ impl Flows {
     /// Is there anything to do even with no input? A delay still has to expire.
     pub fn has_work(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    /// The variables whose value moved since the last tick, as before-and-after.
+    ///
+    /// A variable seen for the first time is recorded and not reported, and one that
+    /// has gone is forgotten.
+    fn variable_changes(&mut self, graph: &FlowGraph) -> Vec<(Signal, Option<ParameterValue>, ParameterValue)> {
+        let mut changes = Vec::new();
+        for variable in graph.variables {
+            let now = variable.current();
+            match self.variables.insert(variable.id, now) {
+                Some(before) if before != now => changes.push((
+                    Signal::Variable(variable.id),
+                    Some(ParameterValue::Float(before as f32)),
+                    ParameterValue::Float(now as f32),
+                )),
+                _ => {}
+            }
+        }
+        self.variables.retain(|id, _| graph.variable(*id).is_some());
+        changes
     }
 
     /// When the soonest held pulse comes due.
@@ -151,31 +231,61 @@ impl Flows {
         }
         self.buttons.retain(|id, _| graph.node(*id).is_some());
 
-        for input in inputs {
-            let key = (input.fixture_id, input.key.clone());
-            // The engine's own before-and-after, not this module's cached level: a
-            // contact pressed and released between two ticks arrives as two events,
-            // and only the reported `previous` still knows that happened.
-            let previous = input.previous.clone();
-            self.levels.insert(key.clone(), input.current.clone());
+        let mut changes: Vec<(Signal, Option<ParameterValue>, ParameterValue)> = inputs
+            .iter()
+            .map(|input| {
+                let signal = Signal::Parameter(input.fixture_id, input.key.clone());
+                // The engine's own before-and-after, not this module's cached level: a
+                // contact pressed and released between two ticks arrives as two events,
+                // and only the reported `previous` still knows that happened.
+                self.levels.insert(signal.clone(), input.current.clone());
+                (signal, input.previous.clone(), input.current.clone())
+            })
+            .collect();
 
-            // Only conditions downstream of a source that watches *this* parameter
-            // can have changed. Everything else still reads the same level it did.
+        // Variables, and the chain rule: a tick that has nothing to react to but the
+        // last tick's own variable writes is one more link, and past the limit what
+        // changed is recorded and not passed on.
+        let moved = self.variable_changes(graph);
+        let pressed = !lit.is_empty();
+        if !moved.is_empty() && inputs.is_empty() && !pressed && self.wrote_variables {
+            self.chain += 1;
+        } else {
+            self.chain = 0;
+        }
+        if self.chain > MAX_CHAIN {
+            effects.push(FlowEffect::ChainCut {
+                variables: moved
+                    .iter()
+                    .filter_map(|(signal, ..)| match signal {
+                        Signal::Variable(id) => Some(*id),
+                        Signal::Parameter(..) => None,
+                    })
+                    .collect(),
+            });
+            self.chain = 0;
+        } else {
+            changes.extend(moved);
+        }
+
+        for (signal, previous, current) in &changes {
+            // Only conditions downstream of a source that watches *this* signal can
+            // have changed. Everything else still reads the same level it did.
             for node in graph.nodes.iter().filter(|n| graph.live(n)) {
                 let FlowNodeKind::Source(source) = &node.kind else { continue };
-                if !watches(source, input) {
+                if Signal::of(source) != *signal {
                     continue;
                 }
-                if as_bool(Some(&input.current)).unwrap_or(false) {
+                if as_bool(Some(current)).unwrap_or(false) {
                     lit.insert(node.id);
                 }
                 self.propagate_level(
                     now,
                     graph,
                     node.id,
-                    &key,
+                    signal,
                     previous.as_ref(),
-                    &input.current,
+                    current,
                     &mut lit,
                     &mut effects,
                 );
@@ -215,6 +325,9 @@ impl Flows {
         }
         self.lit = lit;
 
+        self.wrote_variables = effects.iter().any(|effect| {
+            matches!(effect, FlowEffect::Fire { action: TriggerAction::SetVariable { .. }, .. })
+        });
         effects
     }
 
@@ -225,7 +338,7 @@ impl Flows {
         now: Instant,
         graph: &FlowGraph,
         from: Uuid,
-        changed: &(Uuid, String),
+        changed: &Signal,
         previous: Option<&ParameterValue>,
         current: &ParameterValue,
         lit: &mut HashSet<Uuid>,
@@ -284,7 +397,7 @@ impl Flows {
         &self,
         graph: &FlowGraph,
         condition_id: Uuid,
-        changed: &(Uuid, String),
+        changed: &Signal,
         previous: Option<&ParameterValue>,
         current: &ParameterValue,
     ) -> Option<(Option<ParameterValue>, ParameterValue)> {
@@ -321,15 +434,7 @@ impl Flows {
         }
         let node = graph.node(node_id)?;
         match &node.kind {
-            FlowNodeKind::Source(TriggerSource::Parameter { fixture_id, parameter }) => {
-                let key = crate::model::playback::parameter_key(parameter);
-                Some(
-                    self.levels
-                        .get(&(*fixture_id, key))
-                        .and_then(|v| as_bool(Some(v)))
-                        .unwrap_or(false),
-                )
-            }
+            FlowNodeKind::Source(source) => Some(self.truth_of(graph, &Signal::of(source))),
             FlowNodeKind::And => Some(
                 self.port_level(graph, node_id, 0, seen) && self.port_level(graph, node_id, 1, seen),
             ),
@@ -338,6 +443,17 @@ impl Flows {
             ),
             FlowNodeKind::Not => Some(!self.port_level(graph, node_id, 0, seen)),
             _ => None,
+        }
+    }
+
+    /// A source's level as a truth value: what the rig last reported for a
+    /// parameter, what the graph holds for a variable.
+    fn truth_of(&self, graph: &FlowGraph, signal: &Signal) -> bool {
+        match signal {
+            Signal::Parameter(..) => {
+                self.levels.get(signal).and_then(|v| as_bool(Some(v))).unwrap_or(false)
+            }
+            Signal::Variable(id) => graph.variable(*id).is_some_and(|v| v.current() != 0.0),
         }
     }
 
@@ -364,7 +480,7 @@ impl Flows {
         &self,
         graph: &FlowGraph,
         node_id: Uuid,
-        changed: &(Uuid, String),
+        changed: &Signal,
         previous: Option<&ParameterValue>,
         seen: &mut HashSet<Uuid>,
     ) -> Option<bool> {
@@ -373,12 +489,12 @@ impl Flows {
         }
         let node = graph.node(node_id)?;
         match &node.kind {
-            FlowNodeKind::Source(TriggerSource::Parameter { fixture_id, parameter }) => {
-                let key = (*fixture_id, crate::model::playback::parameter_key(parameter));
-                if key == *changed {
+            FlowNodeKind::Source(source) => {
+                let signal = Signal::of(source);
+                if signal == *changed {
                     Some(as_bool(previous).unwrap_or(false))
                 } else {
-                    Some(self.levels.get(&key).and_then(|v| as_bool(Some(v))).unwrap_or(false))
+                    Some(self.truth_of(graph, &signal))
                 }
             }
             FlowNodeKind::And => Some(
@@ -401,7 +517,7 @@ impl Flows {
         graph: &FlowGraph,
         node_id: Uuid,
         port: u8,
-        changed: &(Uuid, String),
+        changed: &Signal,
         previous: Option<&ParameterValue>,
         seen: &mut HashSet<Uuid>,
     ) -> bool {
@@ -454,6 +570,15 @@ impl Flows {
                             action: action.clone(),
                         });
                     }
+                    // The pulse goes on only while the level on port 1 is true, read
+                    // as it stood before this pass wrote anything. A pulse arriving on
+                    // the level port is a drawing the editor refuses, and stops here.
+                    FlowNodeKind::Gate if edge.to_port == 0 => {
+                        if self.port_level(graph, target.id, 1, &mut HashSet::new()) {
+                            lit.insert(target.id);
+                            queue.push(target.id);
+                        }
+                    }
                     // Nothing else takes a pulse. The editor will not draw such an
                     // edge, and an imported graph that has one simply stops here.
                     _ => {}
@@ -462,16 +587,6 @@ impl Flows {
         }
     }
 
-}
-
-/// Is this input the thing the source is watching?
-fn watches(source: &TriggerSource, input: &InputEvent) -> bool {
-    match source {
-        TriggerSource::Parameter { fixture_id, parameter } => {
-            *fixture_id == input.fixture_id
-                && crate::model::playback::parameter_key(parameter) == input.key
-        }
-    }
 }
 
 fn fires(

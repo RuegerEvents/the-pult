@@ -35,6 +35,7 @@ const aTimeline = (over: Partial<Timeline> = {}): Timeline => ({
 	tracks: [aTrack()],
 	speed_master: null,
 	node_id: null,
+	end: null,
 	running: true,
 	anchor_ms: 1000,
 	position_at_anchor_ms: 500,

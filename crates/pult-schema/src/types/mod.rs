@@ -28,6 +28,7 @@ pub mod preset;
 pub mod version;
 pub mod paperwork;
 pub mod xchange;
+pub mod variable;
 
 pub use fixture::{home_value, home_value_by_key, output_parameters, parameter_key, Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
@@ -36,6 +37,7 @@ pub use effect::{
     Curve, Direction, Easing, EffectSpec, EffectSource, Rate, RunningEffect, RunningFade, Shape,
     Spread, Step,
 };
+pub use variable::{Variable, VariableCreate, VariableKind, VariableOp, VariablePatch};
 pub use speedmaster::{SpeedMaster, SpeedMasterCreate, SpeedMasterPatch};
 pub use user::{colour_for, User, UserCreate, UserPatch, USER_COLOURS};
 pub use show::{Show, ShowCreate, ShowPatch};
@@ -63,7 +65,7 @@ pub use input::{
     InputConfig, InputConfigCreate, InputConfigPatch, InputKind, InputStatus, InputStatuses,
 };
 pub use timeline::{
-    GridSegment, LtcRate, Marker, Timeline, TimelineAction, TimelineCreate, TimelineEvent,
+    AtEnd, GridSegment, LtcRate, Marker, Timeline, TimelineAction, TimelineCreate, TimelineEnd, TimelineEvent,
     TimelinePatch, TimelineSource, TimelineTrack,
 };
 pub use station::{FrameCost, MachineStats, PeerLink, PeerLinks, Station, StationCreate, StationPatch};

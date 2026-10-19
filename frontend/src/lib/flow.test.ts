@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { FlowEdge, FlowNode, FlowNodeKind } from './generated/index.js';
+import type { FlowEdge, FlowNode, FlowNodeKind, VariableOp } from './generated/index.js';
 import {
 	actionOf,
 	canConnect,
@@ -9,11 +9,16 @@ import {
 	conditionFrom,
 	conditionLabel,
 	graphOf,
+	currentValue,
 	inputPorts,
 	nextNodePosition,
 	nodeCategory,
 	nodeTag,
 	outputPorts,
+	variableLabel,
+	variableOpFrom,
+	variableOpLabel,
+	variableOpParts,
 	thresholdOf
 } from './flow.js';
 
@@ -80,6 +85,54 @@ describe('ports', () => {
 	it('gives and/or two levels in and one out', () => {
 		expect(inputPorts('And')).toEqual(['Level', 'Level']);
 		expect(outputPorts('Or')).toEqual(['Level']);
+	});
+
+	it('lets a gate take a pulse and the level that decides it', () => {
+		// Mirrors `FlowNodeKind::Gate`: the pulse on port 0, the level on port 1.
+		expect(inputPorts('Gate')).toEqual(['Pulse', 'Level']);
+		expect(outputPorts('Gate')).toEqual(['Pulse']);
+	});
+});
+
+describe('a gate', () => {
+	const nodes = [node('c', CONDITION), node('s', SOURCE), node('g', 'Gate'), node('a', ACTION)];
+
+	it('takes the pulse on its first port and the level on its second', () => {
+		expect(canConnect(nodes, [], { node: 'c', port: 0 }, { node: 'g', port: 0 })).toBe(true);
+		expect(canConnect(nodes, [], { node: 's', port: 0 }, { node: 'g', port: 1 })).toBe(true);
+	});
+
+	it('refuses them the other way round', () => {
+		expect(canConnect(nodes, [], { node: 's', port: 0 }, { node: 'g', port: 0 })).toBe(false);
+		expect(canConnect(nodes, [], { node: 'c', port: 0 }, { node: 'g', port: 1 })).toBe(false);
+	});
+
+	it('passes a pulse on to an action', () => {
+		expect(canConnect(nodes, [], { node: 'g', port: 0 }, { node: 'a', port: 0 })).toBe(true);
+	});
+});
+
+describe('variables', () => {
+	const flag = { kind: 'Flag' as const, value: null, initial: 1 };
+	const count = { kind: 'Number' as const, value: 3, initial: 0 };
+
+	it('reads an unwritten variable as its initial value', () => {
+		expect(currentValue(flag)).toBe(1);
+		expect(variableLabel(flag)).toBe('on');
+		expect(variableLabel(count)).toBe('3');
+	});
+
+	it('round-trips every op through the editor', () => {
+		const ops: VariableOp[] = [{ Set: 4 }, { Add: 1 }, { Add: -1 }, 'Toggle', 'Reset'];
+		for (const op of ops) {
+			const { tag, amount } = variableOpParts(op);
+			expect(variableOpFrom(tag, amount)).toEqual(op);
+		}
+	});
+
+	it('says what an op does', () => {
+		expect(variableOpLabel({ Add: -1 })).toBe('subtract 1');
+		expect(variableOpLabel({ Set: 0 })).toBe('set to 0');
 	});
 });
 

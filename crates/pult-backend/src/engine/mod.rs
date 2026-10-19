@@ -352,6 +352,13 @@ pub enum EngineCommand {
         value: serde_json::Value,
         reply: oneshot::Sender<Result<(), BackendError>>,
     },
+    /// Change a show variable, unattributed. In the actor so two PIRs counting in the
+    /// same millisecond both count.
+    SetVariable {
+        variable_id: Uuid,
+        op: pult_schema::types::VariableOp,
+        reply: oneshot::Sender<Result<(), BackendError>>,
+    },
     /// How many driven parameters the flow sampler is keeping a sample of.
     ///
     /// Test-only, and the one thing about the sampler that cannot be observed from
@@ -499,6 +506,21 @@ impl EngineHandle {
         let (tx, rx) = oneshot::channel();
         self.0
             .send(EngineCommand::SetSensedValue { fixture_id, key, value, reply: tx })
+            .await
+            .map_err(|_| BackendError::ChannelClosed)?;
+        rx.await?
+    }
+
+    /// Change a show variable. Unattributed, so it is never a History row and nothing
+    /// Ctrl-Z can take back — the `variable.*` RPCs are this.
+    pub async fn set_variable(
+        &self,
+        variable_id: Uuid,
+        op: pult_schema::types::VariableOp,
+    ) -> Result<(), BackendError> {
+        let (tx, rx) = oneshot::channel();
+        self.0
+            .send(EngineCommand::SetVariable { variable_id, op, reply: tx })
             .await
             .map_err(|_| BackendError::ChannelClosed)?;
         rx.await?
@@ -1126,6 +1148,10 @@ impl ShowEngine {
                     self.touch_everything();
                     let _ = reply.send(result);
                 }
+                EngineCommand::SetVariable { variable_id, op, reply } => {
+                    let result = self.set_variable(variable_id, op).await;
+                    let _ = reply.send(result);
+                }
                 EngineCommand::SetSensedValue { fixture_id, key, value, reply } => {
                     let result = self.set_sensed_value(fixture_id, key, value).await;
                     if result.is_ok() {
@@ -1426,6 +1452,19 @@ impl ShowEngine {
                 self.set_master_field(tempo.master_id, "bpm", serde_json::json!(tempo.bpm)).await;
                 self.set_master_field(tempo.master_id, "t0", serde_json::json!(tempo.t0)).await;
             }
+            // A timeline at its end stops there or starts again, as the timeline's own
+            // command — so it replicates as the one operation a Stop button would be —
+            // anchored on the millisecond the end fell at.
+            for ended in pass.ended {
+                let (command, args) = match ended.then {
+                    pult_schema::types::AtEnd::Stop => ("stop", serde_json::json!({ "at": ended.at })),
+                    pult_schema::types::AtEnd::Loop => {
+                        ("play", serde_json::json!({ "fromMs": 0, "at": ended.at }))
+                    }
+                };
+                let path = entity_field_path("timelines", ended.timeline_id, command);
+                self.run_synced_command(path, args).await;
+            }
         }
         for stopped in pass.stopped {
             self.let_go_of(stopped).await;
@@ -1610,7 +1649,8 @@ impl ShowEngine {
         }
         let nodes: Vec<pult_schema::types::flow::FlowNode> = self.read_collection("flow_nodes");
         let edges: Vec<pult_schema::types::flow::FlowEdge> = self.read_collection("flow_edges");
-        let graph = FlowGraph { flows: &flows, nodes: &nodes, edges: &edges };
+        let variables: Vec<pult_schema::types::Variable> = self.read_collection("variables");
+        let graph = FlowGraph { flows: &flows, nodes: &nodes, edges: &edges, variables: &variables };
         let effects =
             self.flows.tick(tokio::time::Instant::now().into_std(), &graph, &inputs);
 
@@ -1623,6 +1663,13 @@ impl ShowEngine {
                 FlowEffect::SetActive { node_id, active } => {
                     let path = entity_field_path("flow_nodes", node_id, "active");
                     self.write_synced(path, serde_json::Value::Bool(active)).await;
+                }
+                FlowEffect::ChainCut { variables } => {
+                    warn!(
+                        "[flows] cut a feedback loop: {} passes in a row reacted only to their own \
+                         variable writes, so the last change to {variables:?} reached nothing",
+                        crate::model::flows::MAX_CHAIN
+                    );
                 }
                 FlowEffect::Fire { node_id, action } => {
                     self.run_flow_action(action).await;
@@ -1645,12 +1692,35 @@ impl ShowEngine {
                 let path = entity_field_path("sequences", sequence_id, "goToCue");
                 self.run_synced_command(path, serde_json::json!({ "cueId": cue_id })).await;
             }
+            TriggerAction::SetVariable { variable_id, op } => {
+                if let Err(e) = self.set_variable(variable_id, op).await {
+                    warn!("[flows] could not set variable {variable_id}: {e}");
+                }
+            }
+            TriggerAction::PlayTimeline { timeline_id, if_running } => {
+                let running = self
+                    .state
+                    .entity("timelines", timeline_id)
+                    .and_then(|row| row.get("running"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if running && if_running == pult_schema::types::flow::IfRunning::Ignore {
+                    return;
+                }
+                let at = pult_schema::types::sequence::now_ms();
+                let path = entity_field_path("timelines", timeline_id, "play");
+                self.run_synced_command(path, serde_json::json!({ "fromMs": 0, "at": at })).await;
+            }
+            TriggerAction::StopTimeline { timeline_id } => {
+                let at = pult_schema::types::sequence::now_ms();
+                let path = entity_field_path("timelines", timeline_id, "stop");
+                self.run_synced_command(path, serde_json::json!({ "at": at })).await;
+            }
             TriggerAction::SetParameter { fixture_id, parameter, value } => {
                 // A drive, not a stored value: it takes the key from whatever fade or
                 // effect had it and parks the parameter there, so a connector and a
                 // browser see the same thing every other layer produces. A cue taken
-                // afterwards takes the key back. Last writer wins, which is a design
-                // question and not a bug to fix in passing.
+                // afterwards takes the key back. Last writer wins, in both directions.
                 let key = crate::model::playback::parameter_key(&parameter);
                 self.playback.set_parameter(
                     fixture_id,
@@ -1664,6 +1734,27 @@ impl ShowEngine {
                 self.playback_seen = self.playback_seen.wrapping_sub(1);
             }
         }
+    }
+
+    /// Change a show variable, resolved against what it holds now and clamped to its
+    /// bounds. Unattributed always, whoever asked — see `types::variable`.
+    pub(crate) async fn set_variable(
+        &mut self,
+        variable_id: Uuid,
+        op: pult_schema::types::VariableOp,
+    ) -> Result<(), BackendError> {
+        let path = entity_field_path("variables", variable_id, "value");
+        let variable: pult_schema::types::Variable = self
+            .state
+            .entity("variables", variable_id)
+            .and_then(|row| serde_json::from_value(row.clone()).ok())
+            .ok_or_else(|| BackendError::PathNotFound(path.clone()))?;
+        let next = variable.after(op);
+        if next == variable.value {
+            return Ok(());
+        }
+        self.write_synced(path, serde_json::to_value(next).unwrap_or_default()).await;
+        Ok(())
     }
 
     /// Write one replicated field and tell everyone who needs to know.
@@ -2567,7 +2658,9 @@ impl ShowEngine {
         // only woken by an input or a running delay. Named here for the same reason
         // `outputs` is: the alternative is polling every graph forty times a second
         // for something that almost never changes.
-        if table == "flow_nodes" {
+        // And a variable, which a flow reads and anybody may write — a flow, a phone,
+        // a peer — so the change is noticed here rather than at each of them.
+        if table == "flow_nodes" || table == "variables" {
             self.flows_dirty = true;
         }
 

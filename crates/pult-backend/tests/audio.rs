@@ -91,6 +91,7 @@ fn a_timeline(source: TimelineSource, events: Vec<TimelineEvent>) -> Timeline {
         tracks: Vec::new(),
         speed_master: None,
         node_id: None,
+        end: None,
         running: false,
         anchor_ms: 0,
         position_at_anchor_ms: 0,

@@ -22,6 +22,7 @@ fn a_timeline(node: Option<NodeId>) -> Timeline {
         tracks: Vec::new(),
         speed_master: None,
         node_id: node,
+        end: None,
         running: false,
         anchor_ms: 0,
         position_at_anchor_ms: 0,

@@ -330,6 +330,17 @@ pub struct Timeline {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub node_id: Option<NodeId>,
+    /// Where the timeline ends, and what it does there. `None` runs for ever, as a
+    /// timeline always has.
+    ///
+    /// A scare is a timeline, and a scare has to *finish*: until it does it is still
+    /// running, and a flow told to ignore a running timeline would ignore it for the
+    /// rest of the night. Acted on by the leader, as an event is, and anchored on the
+    /// wall millisecond the end fell at rather than whenever the pass got there — so a
+    /// loop does not drift by a pass's lateness every time round.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub end: Option<TimelineEnd>,
 
     /// The transport, replicated so every station and every browser reads the same
     /// playhead out of the same four numbers.
@@ -429,6 +440,23 @@ impl Timeline {
     }
 }
 
+/// Where a timeline ends, and what it does when it gets there.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TimelineEnd {
+    pub at_ms: u64,
+    pub then: AtEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum AtEnd {
+    /// Stop with the playhead on the end.
+    Stop,
+    /// Start again from zero: an ambient bed.
+    Loop,
+}
+
 /// The `at` a transport command was given, or now.
 ///
 /// The same rule [`crate::types::sequence`]'s `went_at` follows, and it has to be the
@@ -514,6 +542,7 @@ mod tests {
             tracks: Vec::new(),
             speed_master: None,
             node_id: None,
+            end: None,
             running: false,
             anchor_ms: 0,
             position_at_anchor_ms: 0,

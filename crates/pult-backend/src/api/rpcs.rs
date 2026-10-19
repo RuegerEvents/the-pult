@@ -143,6 +143,30 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: "[]",
         doc: "What this station can play a timeline through and listen for timecode on.",
     },
+    // A show variable's value. RPCs rather than a field write or an entity command,
+    // because both of those carry the caller's user id, and a phone resetting a maze
+    // area would then be a row in the History panel and something for Ctrl-Z. A flow
+    // writes the same way, so who changed a count is never the question undo answers.
+    LocalRpcMeta {
+        method: "variable.set",
+        args_schema: r#"[{"name":"variableId","type":"string","optional":false},{"name":"value","type":"number","optional":false}]"#,
+        doc: "Set a show variable, clamped to its bounds. Not undoable and not in History.",
+    },
+    LocalRpcMeta {
+        method: "variable.add",
+        args_schema: r#"[{"name":"variableId","type":"string","optional":false},{"name":"by","type":"number","optional":false}]"#,
+        doc: "Add to a show variable (negative to subtract), clamped to its bounds.",
+    },
+    LocalRpcMeta {
+        method: "variable.toggle",
+        args_schema: r#"[{"name":"variableId","type":"string","optional":false}]"#,
+        doc: "Zero becomes one and anything else zero.",
+    },
+    LocalRpcMeta {
+        method: "variable.reset",
+        args_schema: r#"[{"name":"variableId","type":"string","optional":false}]"#,
+        doc: "Put a show variable back at its initial value.",
+    },
     LocalRpcMeta {
         method: "timeline.detect",
         args_schema: r#"[{"name":"timelineId","type":"string","optional":false}]"#,
@@ -419,6 +443,24 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
         "audio.devices" => {
             let audio = deps.audio.as_ref().ok_or_else(no_audio)?;
             serde_json::to_value(audio.devices().await).map_err(|e| e.to_string())
+        }
+        "variable.set" | "variable.add" | "variable.toggle" | "variable.reset" => {
+            use pult_schema::types::VariableOp;
+            let variable_id: uuid::Uuid = serde_json::from_value(args["variableId"].clone())
+                .map_err(|e| format!("invalid variableId: {e}"))?;
+            let number = |name: &str| {
+                args.get(name)
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| format!("{method} needs a number `{name}`"))
+            };
+            let op = match method {
+                "variable.set" => VariableOp::Set(number("value")?),
+                "variable.add" => VariableOp::Add(number("by")?),
+                "variable.toggle" => VariableOp::Toggle,
+                _ => VariableOp::Reset,
+            };
+            deps.engine.set_variable(variable_id, op).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
         }
         "timeline.detect" => {
             let audio = deps.audio.as_ref().ok_or_else(no_audio)?;
@@ -698,6 +740,7 @@ pub fn is_local_rpc(method: &str) -> bool {
         // entity command is a *path* write (`["timelines", id, "play"]`) and never
         // reaches this function, which only ever sees the name of a `Call`.
         || method.starts_with("timeline.")
+        || method.starts_with("variable.")
         || method.starts_with("client.")
         || method.starts_with("xchange.")
 }

@@ -2104,7 +2104,7 @@ fn going_home_takes_the_shows_curve_too() {
     let mut fixtures = vec![fixture.clone()];
 
     let mut playback = Playback::default();
-    let mut run = |playback: &mut Playback, at: u64, fixtures: &mut Vec<Fixture>, sequences: &[Sequence]| {
+    let run = |playback: &mut Playback, at: u64, fixtures: &mut Vec<Fixture>, sequences: &[Sequence]| {
         let effects = {
             let view = ShowView::new(
                 sequences,

@@ -21,7 +21,9 @@
 		FlowEdge,
 		FlowNode,
 		FlowNodeKind,
-		Sequence
+		Sequence,
+		Timeline,
+		Variable
 	} from '$lib/generated/index.js';
 	import { canConnect, graphOf, nextNodePosition, nodeTag } from '$lib/flow.js';
 
@@ -43,6 +45,8 @@
 	let types = $state<FixtureType[]>([]);
 	let sequences = $state<Sequence[]>([]);
 	let cues = $state<Cue[]>([]);
+	let variables = $state<Variable[]>([]);
+	let timelines = $state<Timeline[]>([]);
 
 	let selectedId = $state<string | null>(null);
 	// A flow's name is how an operator finds it in a list of twenty, so renaming is
@@ -63,7 +67,9 @@
 		get fixtures() { return fixtures; },
 		get types() { return types; },
 		get sequences() { return sequences; },
-		get cues() { return cues; }
+		get cues() { return cues; },
+		get variables() { return variables; },
+		get timelines() { return timelines; }
 	});
 
 	const nodeTypes: NodeTypes = {
@@ -73,6 +79,7 @@
 		And: LogicNode,
 		Or: LogicNode,
 		Not: LogicNode,
+		Gate: LogicNode,
 		Delay: DelayNode,
 		Action: ActionNode
 	};
@@ -192,6 +199,14 @@
 	/// What a new node of each kind starts out as. A source with no fixture to watch
 	/// would be a node that cannot be finished, so the palette waits for a rig.
 	const palette = $derived.by((): { label: string; kind: FlowNodeKind; ready: boolean }[] => {
+		// An action starts as whatever the show has something to aim it at.
+		const thenKind: FlowNodeKind | null = sequences[0]
+			? { Action: { GoNext: { sequence_id: sequences[0].id } } }
+			: timelines[0]
+				? { Action: { PlayTimeline: { timeline_id: timelines[0].id, if_running: 'Ignore' } } }
+				: variables[0]
+					? { Action: { SetVariable: { variable_id: variables[0].id, op: { Add: 1 } } } }
+					: null;
 		const fixture = fixtures[0];
 		const type = fixture && types.find((t) => t.id === fixture.fixture_type_id);
 		const parameter = type?.parameters[0];
@@ -201,16 +216,22 @@
 				kind: { Source: { Parameter: { fixture_id: fixture?.id ?? '', parameter: parameter?.kind ?? 'Intensity' } } },
 				ready: Boolean(fixture && parameter)
 			},
+			{
+				label: 'Read',
+				kind: { Source: { Variable: { variable_id: variables[0]?.id ?? '' } } },
+				ready: variables.length > 0
+			},
 			{ label: 'Button', kind: 'Button', ready: true },
 			{ label: 'When', kind: { Condition: 'RisingEdge' }, ready: true },
 			{ label: 'And', kind: 'And', ready: true },
 			{ label: 'Or', kind: 'Or', ready: true },
 			{ label: 'Not', kind: 'Not', ready: true },
+			{ label: 'Only if', kind: 'Gate', ready: true },
 			{ label: 'Wait', kind: { Delay: { ms: 1000 } }, ready: true },
 			{
 				label: 'Then',
-				kind: { Action: { GoNext: { sequence_id: sequences[0]?.id ?? '' } } },
-				ready: sequences.length > 0
+				kind: thenKind ?? 'Button',
+				ready: thenKind !== null
 			}
 		];
 	});
@@ -226,7 +247,9 @@
 			data.fixtures.subscribeDeep((v) => { fixtures = v; }),
 			data.fixture_types.subscribeDeep((v) => { types = v; }),
 			data.sequences.subscribeDeep((v) => { sequences = v; }),
-			data.cues.subscribeDeep((v) => { cues = v; })
+			data.cues.subscribeDeep((v) => { cues = v; }),
+			data.variables.subscribeDeep((v) => { variables = v; }),
+			data.timelines.subscribeDeep((v) => { timelines = v; })
 		];
 		return () => stops.forEach((stop) => stop());
 	});
@@ -297,8 +320,8 @@
 		{/if}
 
 		<p class="note">
-			Only the console leading the session fires a flow. A flow that sets a parameter a cue is
-			also fading will lose to it on the next tick.
+			Only the console leading the session fires a flow. A flow's own variable writes are seen
+			on the next pass, never inside the one that made them.
 		</p>
 	</aside>
 
@@ -312,7 +335,7 @@
 					<button
 						class="ghost"
 						disabled={!item.ready}
-						title={item.ready ? '' : 'Needs a patched fixture and a sequence first'}
+						title={item.ready ? '' : 'Needs something in the show to point at first'}
 						onclick={() => addNode(item.kind)}
 					>
 						{item.label}

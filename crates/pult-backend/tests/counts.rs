@@ -550,3 +550,113 @@ async fn a_settled_rig_changes_no_universes() {
          dedup has stopped working and every idle show is flooding its network."
     );
 }
+
+/// A maze running all night writes **no** History rows.
+///
+/// Every PIR edge is a sensed value, every edge a flow counts is a variable write, and
+/// a night is thousands of each. All of it is unattributed — the oplog keeps it for a
+/// peer catching up and prunes it by age — so none of it is a row in the History panel
+/// or something for Ctrl-Z. If this counts above zero, an operator's own edits are
+/// being pushed out of their undo by people walking through a maze.
+#[tokio::test]
+async fn a_pir_counting_into_a_variable_writes_no_history() {
+    use pult_schema::types::{
+        flow::{Flow, FlowEdge, FlowNode, FlowNodeKind, TriggerAction, TriggerCondition, TriggerSource},
+        Variable, VariableKind, VariableOp,
+    };
+
+    let station = a_station().await;
+    let pir = a_rig(&station, 1).await[0];
+    let inside = Uuid::new_v4();
+    create(
+        &station,
+        "variables",
+        serde_json::to_value(Variable {
+            id: inside,
+            name: "Area 1 inside".into(),
+            kind: VariableKind::Number,
+            initial: 0.0,
+            min: Some(0.0),
+            max: None,
+            value: None,
+        })
+        .unwrap(),
+    )
+    .await;
+
+    let flow = Uuid::new_v4();
+    create(&station, "flows", serde_json::json!(Flow { id: flow, name: "Count in".into(), enabled: true })).await;
+    let node = |kind: FlowNodeKind| FlowNode {
+        id: Uuid::new_v4(),
+        flow_id: flow,
+        kind,
+        x: 0.0,
+        y: 0.0,
+        active: false,
+        last_fired_at: None,
+    };
+    let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
+        fixture_id: pir,
+        parameter: ParameterKind::Contact(0),
+    }));
+    let edge = node(FlowNodeKind::Condition(TriggerCondition::RisingEdge));
+    let count = node(FlowNodeKind::Action(TriggerAction::SetVariable {
+        variable_id: inside,
+        op: VariableOp::Add(1.0),
+    }));
+    for (from, to) in [(&source, &edge), (&edge, &count)] {
+        create(
+            &station,
+            "flow_edges",
+            serde_json::to_value(FlowEdge {
+                id: Uuid::new_v4(),
+                flow_id: flow,
+                from_node: from.id,
+                from_port: 0,
+                to_node: to.id,
+                to_port: 0,
+            })
+            .unwrap(),
+        )
+        .await;
+    }
+    for n in [&source, &edge, &count] {
+        create(&station, "flow_nodes", serde_json::to_value(n).unwrap()).await;
+    }
+
+    let value = || async {
+        station
+            .engine
+            .get(vec![
+                PathSegment::Key("variables".into()),
+                PathSegment::Id(inside),
+                PathSegment::Key("value".into()),
+            ])
+            .await
+            .ok()
+            .and_then(|v| v.as_f64())
+    };
+    for walked in 1..=5 {
+        for closed in [true, false] {
+            station
+                .engine
+                .set_sensed_value(pir, "Contact:0".into(), serde_json::json!({ "type": "Bool", "value": closed }))
+                .await
+                .expect("the PIR reports");
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while value().await != Some(walked as f64) {
+            assert!(tokio::time::Instant::now() < deadline, "group {walked} was never counted");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+    // A phone resetting it is the same kind of write.
+    station.engine.set_variable(inside, VariableOp::Reset).await.expect("a reset lands");
+
+    let rows = station.engine.history(50).await.len();
+    assert_eq!(
+        rows, 0,
+        "five groups through a PIR and a reset became {rows} History rows. None of that is \
+         anybody's edit, and every row of it pushes an operator's own work out of Ctrl-Z."
+    );
+}

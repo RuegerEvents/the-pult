@@ -7,9 +7,9 @@
 //! replaced. What the graph adds is everything a row could not say: two contacts
 //! into an `And`, one delay feeding three actions, a condition reused twice.
 //!
-//! `TriggerSource` is an enum with one variant so far. OSC, MIDI, and "a cue
-//! finished" all belong beside `Parameter`, and each one becomes a node the editor
-//! can place without anything here changing shape.
+//! `TriggerSource` is a parameter or a show variable. OSC, MIDI, and "a cue
+//! finished" all belong beside them, and each one becomes a node the editor can
+//! place without anything here changing shape.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,10 @@ use uuid::Uuid;
 
 use crate::{
     pult_commands,
-    types::fixture::{ParameterKind, ParameterValue},
+    types::{
+        fixture::{ParameterKind, ParameterValue},
+        variable::VariableOp,
+    },
     PultSchema,
 };
 
@@ -31,6 +34,9 @@ pub enum TriggerSource {
     /// One parameter of one fixture. A contact on an I/O node, a temperature, or
     /// anything else a device reports.
     Parameter { fixture_id: Uuid, parameter: ParameterKind },
+    /// A show variable, read as a level: a flag is true when on, a number when off
+    /// zero, and the conditions compare the number itself.
+    Variable { variable_id: Uuid },
 }
 
 /// When a condition passes a signal on.
@@ -55,6 +61,24 @@ pub enum TriggerAction {
     GoNext { sequence_id: Uuid },
     GoToCue { sequence_id: Uuid, cue_id: Uuid },
     SetParameter { fixture_id: Uuid, parameter: ParameterKind, value: ParameterValue },
+    /// Change a show variable, resolved against what it holds when the change lands.
+    SetVariable { variable_id: Uuid, op: VariableOp },
+    /// Play a timeline from its start.
+    PlayTimeline { timeline_id: Uuid, if_running: IfRunning },
+    StopTimeline { timeline_id: Uuid },
+}
+
+/// What a play does to a timeline that is already running.
+///
+/// `Ignore` is the default because a scare is a timeline, and a PIR that is still
+/// warm from the last group must not start the scream again halfway through. A
+/// longer lockout is a variable's job, not this one's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum IfRunning {
+    #[default]
+    Ignore,
+    Restart,
 }
 
 // ── Nodes ─────────────────────────────────────────────────────────────────────
@@ -78,6 +102,14 @@ pub enum FlowNodeKind {
     Not,
     /// Holds a pulse back.
     Delay { ms: u32 },
+    /// Lets a pulse through only while a level is true: a pulse in on port 0, the
+    /// level on port 1.
+    ///
+    /// The one way a level can decide whether a pulse goes on. Without it, "the PIR
+    /// fired *and* the area is free" is two levels into an `And` and an edge after
+    /// that — which also fires when the area *becomes* free while the PIR is still
+    /// warm, and that is a scare nobody walked into.
+    Gate,
     /// Does something to the show. Consumes a pulse.
     Action(TriggerAction),
 }
@@ -106,6 +138,7 @@ impl FlowNodeKind {
             FlowNodeKind::Condition(_) | FlowNodeKind::Not => &[PortKind::Level],
             FlowNodeKind::And | FlowNodeKind::Or => &[PortKind::Level, PortKind::Level],
             FlowNodeKind::Delay { .. } | FlowNodeKind::Action(_) => &[PortKind::Pulse],
+            FlowNodeKind::Gate => &[PortKind::Pulse, PortKind::Level],
         }
     }
 
@@ -114,9 +147,10 @@ impl FlowNodeKind {
         match self {
             FlowNodeKind::Source(_) => &[PortKind::Level],
             FlowNodeKind::And | FlowNodeKind::Or | FlowNodeKind::Not => &[PortKind::Level],
-            FlowNodeKind::Button | FlowNodeKind::Condition(_) | FlowNodeKind::Delay { .. } => {
-                &[PortKind::Pulse]
-            }
+            FlowNodeKind::Button
+            | FlowNodeKind::Condition(_)
+            | FlowNodeKind::Delay { .. }
+            | FlowNodeKind::Gate => &[PortKind::Pulse],
             FlowNodeKind::Action(_) => &[],
         }
     }

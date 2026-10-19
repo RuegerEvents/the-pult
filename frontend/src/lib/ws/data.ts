@@ -32,6 +32,7 @@ import type { StationNetwork } from '../generated/StationNetwork.js';
 import type { Symbol } from '../generated/Symbol.js';
 import type { Timeline } from '../generated/Timeline.js';
 import type { User } from '../generated/User.js';
+import type { Variable } from '../generated/Variable.js';
 import type { Version } from '../generated/Version.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
@@ -149,6 +150,10 @@ export type TimelineEntity = PathProxy<Timeline> & {
 };
 
 export type UserEntity = PathProxy<User> & {
+  delete(): Promise<void>;
+};
+
+export type VariableEntity = PathProxy<Variable> & {
   delete(): Promise<void>;
 };
 
@@ -536,6 +541,20 @@ export type UserCollection = {
   [n: number]: UserEntity;
 };
 
+export type VariableCollection = {
+  get(): Promise<Variable[]>;
+  set(value: Variable[]): Promise<void>;
+  subscribe(cb: (value: Variable[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Variable[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): VariableEntity;
+  nth(n: number): VariableEntity;
+  create(entity: Variable): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: VariableEntity;
+};
+
 export type VersionCollection = {
   get(): Promise<Version[]>;
   set(value: Version[]): Promise<void>;
@@ -582,6 +601,7 @@ export type DataRoot = {
   symbols: SymbolCollection;
   timelines: TimelineCollection;
   users: UserCollection;
+  variables: VariableCollection;
   versions: VersionCollection;
 };
 

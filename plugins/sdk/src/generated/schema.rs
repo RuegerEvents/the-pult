@@ -29,6 +29,14 @@ pub use pult_render::effect::{
 
 pub use pult_render::value::ParameterValue;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AtEnd {
+    /// Stop with the playhead on the end.
+    Stop,
+    /// Start again from zero: an ambient bed.
+    Loop,
+}
+
 /// A named slice of a channel's range: "Open", "Breakup", "Strobe".
 ///
 /// Both ends filled in, unlike GDTF's own form, which gives only the start of each
@@ -687,6 +695,14 @@ pub enum FlowNodeKind {
     Not,
     /// Holds a pulse back.
     Delay { ms: u32 },
+    /// Lets a pulse through only while a level is true: a pulse in on port 0, the
+    /// level on port 1.
+    ///
+    /// The one way a level can decide whether a pulse goes on. Without it, "the PIR
+    /// fired *and* the area is free" is two levels into an `And` and an edge after
+    /// that — which also fires when the area *becomes* free while the PIR is still
+    /// warm, and that is a scare nobody walked into.
+    Gate,
     /// Does something to the show. Consumes a pulse.
     Action(TriggerAction),
 }
@@ -847,6 +863,27 @@ pub enum Grouping {
     FixtureType,
     /// One list, no subtotals.
     Flat,
+}
+
+/// What a play does to a timeline that is already running.
+///
+/// `Ignore` is the default because a scare is a timeline, and a PIR that is still
+/// warm from the last group must not start the scream again halfway through. A
+/// longer lockout is a variable's job, not this one's.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum IfRunning {
+    #[default]
+    Ignore,
+    Restart,
 }
 
 /// What colours a drafting viewport.
@@ -2442,6 +2479,16 @@ pub struct Timeline {
     /// would mean chasing a clock this station cannot hear.
     #[serde(default)]
     pub node_id: Option<NodeId>,
+    /// Where the timeline ends, and what it does there. `None` runs for ever, as a
+    /// timeline always has.
+    ///
+    /// A scare is a timeline, and a scare has to *finish*: until it does it is still
+    /// running, and a flow told to ignore a running timeline would ignore it for the
+    /// rest of the night. Acted on by the leader, as an event is, and anchored on the
+    /// wall millisecond the end fell at rather than whenever the pass got there — so a
+    /// loop does not drift by a pass's lateness every time round.
+    #[serde(default)]
+    pub end: Option<TimelineEnd>,
     /// The transport, replicated so every station and every browser reads the same
     /// playhead out of the same four numbers.
     #[serde(default)]
@@ -2467,6 +2514,13 @@ pub enum TimelineAction {
     GoToCue { sequence_id: Uuid, cue_id: Uuid },
     GoNext { sequence_id: Uuid },
     Off { sequence_id: Uuid },
+}
+
+/// Where a timeline ends, and what it does when it gets there.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TimelineEnd {
+    pub at_ms: u64,
+    pub then: AtEnd,
 }
 
 /// A Go written against a position.
@@ -2537,6 +2591,11 @@ pub enum TriggerAction {
     GoNext { sequence_id: Uuid },
     GoToCue { sequence_id: Uuid, cue_id: Uuid },
     SetParameter { fixture_id: Uuid, parameter: ParameterKind, value: ParameterValue },
+    /// Change a show variable, resolved against what it holds when the change lands.
+    SetVariable { variable_id: Uuid, op: VariableOp },
+    /// Play a timeline from its start.
+    PlayTimeline { timeline_id: Uuid, if_running: IfRunning },
+    StopTimeline { timeline_id: Uuid },
 }
 
 /// When a condition passes a signal on.
@@ -2559,6 +2618,9 @@ pub enum TriggerSource {
     /// One parameter of one fixture. A contact on an I/O node, a temperature, or
     /// anything else a device reports.
     Parameter { fixture_id: Uuid, parameter: ParameterKind },
+    /// A show variable, read as a level: a flag is true when on, a number when off
+    /// zero, and the conditions compare the number itself.
+    Variable { variable_id: Uuid },
 }
 
 /// One person working on the show.
@@ -2571,6 +2633,43 @@ pub struct User {
     /// Persisted rather than derived from the id, so somebody who dislikes the one
     /// they were given can change it and it stays changed.
     pub colour: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Variable {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: VariableKind,
+    pub initial: f64,
+    /// Bounds a write is clamped to. A count with a floor of zero cannot be driven
+    /// negative by an exit somebody walked through twice.
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    /// What it holds now. `None` is the initial value — see the module docs.
+    pub value: Option<f64>,
+}
+
+/// What a variable holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum VariableKind {
+    /// On or off. Held as 0 and 1, so a flag reads as a level and a number alike.
+    Flag,
+    Number,
+}
+
+/// A change to a variable, resolved against what it holds when it lands.
+///
+/// A change rather than a destination where it can be, for the reason `__by` is one:
+/// two PIRs reporting in the same millisecond must both count.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum VariableOp {
+    Set(f64),
+    /// Increment and decrement are `Add(1.0)` and `Add(-1.0)`.
+    Add(f64),
+    /// Zero becomes one and anything else becomes zero.
+    Toggle,
+    /// Back to the initial value.
+    Reset,
 }
 
 /// A point in the rig, in metres, from whatever origin the show uses.

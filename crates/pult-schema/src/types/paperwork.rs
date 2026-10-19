@@ -1309,10 +1309,6 @@ fn picture(mode: PictureMode) -> ViewStyle {
     ViewStyle::Picture { mode, work_light: 1.0, dpi: 300, cues: Vec::new() }
 }
 
-fn viewport(rect: Rect, title: &str, view: ViewPreset, style: ViewStyle) -> SheetBlock {
-    labelled(rect, title, view, style, Vec::new())
-}
-
 /// The same, with labels on the heads.
 ///
 /// **What to label depends on how big the drawing is**, and the default set says so by

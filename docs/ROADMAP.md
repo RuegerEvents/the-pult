@@ -5509,6 +5509,107 @@ scripts/demo.sh --demo theatre             # and by hand, against the gates in t
 ```
 
 
+### 69. A flow that remembers
+
+`flow-state`, built 2026-10-19 for the first gig the console runs: a haunt maze where
+an area has a PIR at each door, its scare must not fire again while somebody is
+inside, and a light at the entrance goes green when the second area is empty. The
+rule the gig set is that none of that is in code. Occupancy, lockout and the traffic
+light are show data built out of four general parts, and the flows test suite builds
+both of them from those parts alone.
+
+**What went in.** A `variables` collection; a flow source that reads a variable and an
+action that changes one; a `Gate` node; flow actions that play and stop a timeline; a
+timeline `end` that stops or loops; four `variable.*` station RPCs; and a Variables
+panel. `SCHEMA_GENERATION` stays 5. The new table is free, and `Timeline::end` is one
+`Option` column with `#[serde(default)]`, so an existing show opens with every
+timeline running on as before.
+
+**The definition is the show's and the value is the session's.** Name, kind, initial
+value and bounds are PERSISTED. The value is SYNCED, so a hot spare that takes over
+knows whether area 2 is occupied, and it is an `Option` where `None` *is* the initial
+value. A SYNCED field is never read back from a showfile, so opening a show starts
+every variable at its initial value with no reset code at all.
+
+**A value is written unattributed, by everybody.** A PIR edge was already an oplog line,
+because a sensed value is a SYNCED write, but it was never a History row:
+`recent_by_people` filters on `user_id`. A flow's variable write is the same kind of
+line. A phone's write has to be too, or a reset would be a row in the History panel
+and something for Ctrl-Z. A field write and an entity command both carry the caller,
+so the values go through `variable.set`, `variable.add`, `variable.toggle` and
+`variable.reset`, resolved in the actor the way `__by` is, so that two PIRs counting
+in the same millisecond both count. `a_pir_counting_into_a_variable_writes_no_history`
+in the counts test is the gate.
+
+**A change is found by comparing, not by being told.** `Flows` keeps what each variable
+held at the end of the last tick and diffs the graph against it. So a flow's write, a
+phone's and a peer's all reach a `Read` node by the same path. A variable seen for the
+first time is recorded and not fired, which is the rule a button already followed and
+for the same reason: a station promoted mid-show meets every variable at once.
+
+**A level now decides whether a pulse goes through.** `Gate` takes a pulse on port 0 and
+a level on port 1. The alternative was already drawable, two levels into an `And` and
+an edge after it, and it is wrong in a way that matters in a maze: the count dropping
+to zero while the entry PIR is still warm *is* a rising edge of the `And`, and that is
+a scare nobody walked into. `an_area_freed_while_its_pir_is_still_warm_does_not_scare_anybody`
+is that case.
+
+**The cycle rule task 12 left open, answered.** Nothing a flow writes is visible inside
+the pass that wrote it: actions are effects the engine applies afterwards, and a gate
+reads the value from before the pulse. That is what makes "PIR → only if *free* →
+scare" beside "PIR → *inside* + 1" fire the scare once and then lock it out, with no
+ordering between the two branches to get right. The write is seen on the next pass. A
+run of passes that react only to the previous pass's variable writes is cut at
+`MAX_CHAIN` (16), with a `warn`. Feedback that settles (a count clamped at a bound
+stops writing) is never cut; an oscillator stops and says which variables it was
+spinning.
+
+**A scare has to finish.** A flow told to ignore a running timeline would otherwise
+ignore it all night, because a timeline ran for ever. `Timeline::end` is a position and
+`Stop` or `Loop`. The leader acts on it the way it acts on an event, as the timeline's
+own `stop` or `play { fromMs: 0 }`, anchored on the wall millisecond the end fell at, so
+a loop does not drift by a pass's lateness each time round. The end is a deadline in
+`next_deadline`, nothing past it is crossed, and an end at zero is no end, because a
+loop there would start again on every pass.
+
+**SetParameter against a running fade was already answered.** The editor's note said a
+fade wins; `Playback::set_parameter` says the last writer wins in both directions. The
+note now says that. The action also learned to pick a
+parameter and a value, which the editor never offered: it set whatever the
+fixture's first parameter defaulted to, so a traffic light could not be built at all.
+
+#### Traps
+
+- **The routing list.** A new RPC prefix has to be in `is_local_rpc` as well as in
+  `LOCAL_RPCS`, or the WebSocket sends it to the entity dispatcher.
+  `the_table_and_the_dispatcher_agree` caught it.
+- **A new collection's table comes from codegen.** `001_initial.sql` is generated, so a
+  collection that exists in the schema and not in that file is "no such table" on the
+  first create. Run `pult-codegen` before the first test that writes one.
+- **Jump detection reads the raw playhead.** Clamping the stored position to the end
+  made the pass after the end look like a locate, and fire the tracked state.
+  `Seen::position_ms` keeps the unclamped figure; only what is crossed is clamped.
+
+#### What is not done
+
+- **Loop and audio.** A looping timeline with audio relies on the playing station
+  following the anchor a `play` writes. That is the next item's to confirm: audio clips
+  with their own loop flag and routing.
+- **A text variable.** Flags and numbers only. "Which act is on" is a number and a label
+  until something wants text.
+- **A changes-between-ticks history.** A variable set to 1 and back to 0 between two
+  flow passes is seen as no change. A PIR's own edges are not affected (they arrive as
+  events), only a value written and unwritten faster than the engine looks.
+
+```
+cargo test -p pult-schema variable                    # ops, bounds, a flag
+cargo test -p pult-backend --lib model::flows         # occupancy, the light, the gate, the chain
+cargo test -p pult-backend --lib model::timelines     # an end, a loop, a deadline
+cargo test -p pult-backend --test counts              # a night of PIRs is no History
+cd frontend && npx vitest run src/lib/flow.test.ts
+```
+
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -5851,6 +5952,11 @@ Token and cost accounting for the NL plugin, visible over the REST API.
 **Built on 2026-09-09 as task 68.** The entry that was here — the decisions taken, the
 six packages, the gates — is that task's record now, including the two places the entry
 turned out to be wrong. It stayed unnumbered for less than a day.
+
+#### flow-state
+
+**Built on 2026-10-19 as task 69.** The questions that were here, and their answers,
+are that task's record now.
 
 #### 3d-programmer-remainder
 

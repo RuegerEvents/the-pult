@@ -231,13 +231,23 @@ CREATE TABLE IF NOT EXISTS timelines (
     "events" TEXT NOT NULL,
     "tracks" TEXT NOT NULL,
     "speed_master" TEXT,
-    "node_id" TEXT
+    "node_id" TEXT,
+    "end" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
     "colour" TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS variables (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "initial" REAL NOT NULL,
+    "min" TEXT,
+    "max" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS versions (

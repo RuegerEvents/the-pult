@@ -14,7 +14,8 @@ import type {
 	PortKind,
 	TriggerAction,
 	TriggerCondition,
-	TriggerSource
+	TriggerSource,
+	VariableOp
 } from './generated/index.js';
 import { kindLabel } from './patch.js';
 
@@ -59,6 +60,9 @@ export function inputPorts(kind: FlowNodeKind): PortKind[] {
 		case 'And':
 		case 'Or':
 			return ['Level', 'Level'];
+		// The pulse to let through, and the level that decides whether it goes.
+		case 'Gate':
+			return ['Pulse', 'Level'];
 		default:
 			return ['Pulse'];
 	}
@@ -75,6 +79,7 @@ export function outputPorts(kind: FlowNodeKind): PortKind[] {
 		case 'Button':
 		case 'Condition':
 		case 'Delay':
+		case 'Gate':
 			return ['Pulse'];
 		default:
 			return [];
@@ -106,6 +111,54 @@ export function canConnect(
 	return !edges.some((e) => e.to_node === to.node && e.to_port === to.port);
 }
 
+// ── Variables ─────────────────────────────────────────────────────────────────
+
+/** What a variable holds now: its value, or its initial value when it has none. */
+export const currentValue = (variable: { value: number | null; initial: number }): number =>
+	variable.value ?? variable.initial;
+
+/** A variable's value as an operator reads it: on and off for a flag, the number otherwise. */
+export function variableLabel(variable: {
+	kind: 'Flag' | 'Number';
+	value: number | null;
+	initial: number;
+}): string {
+	const value = currentValue(variable);
+	if (variable.kind === 'Flag') return value !== 0 ? 'on' : 'off';
+	return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+/** What a `SetVariable` op says, in words. */
+export function variableOpLabel(op: VariableOp): string {
+	if (op === 'Toggle') return 'toggle';
+	if (op === 'Reset') return 'reset';
+	if ('Set' in op) return `set to ${op.Set}`;
+	return op.Add >= 0 ? `add ${op.Add}` : `subtract ${-op.Add}`;
+}
+
+/** The op an editor's tag and number make. */
+export function variableOpFrom(tag: string, amount: number): VariableOp {
+	switch (tag) {
+		case 'Set':
+			return { Set: amount };
+		case 'Add':
+			return { Add: amount };
+		case 'Subtract':
+			return { Add: -Math.abs(amount) };
+		case 'Toggle':
+			return 'Toggle';
+		default:
+			return 'Reset';
+	}
+}
+
+/** The editor's tag and number for an op, the inverse of `variableOpFrom`. */
+export function variableOpParts(op: VariableOp): { tag: string; amount: number } {
+	if (op === 'Toggle' || op === 'Reset') return { tag: op, amount: 1 };
+	if ('Set' in op) return { tag: 'Set', amount: op.Set };
+	return op.Add < 0 ? { tag: 'Subtract', amount: -op.Add } : { tag: 'Add', amount: op.Add };
+}
+
 // ── Labels ────────────────────────────────────────────────────────────────────
 
 /** Which family a node belongs to, for colouring it. */
@@ -118,6 +171,7 @@ export function nodeCategory(kind: FlowNodeKind): 'source' | 'logic' | 'timing' 
 		case 'And':
 		case 'Or':
 		case 'Not':
+		case 'Gate':
 			return 'logic';
 		case 'Delay':
 			return 'timing';

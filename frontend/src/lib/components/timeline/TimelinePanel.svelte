@@ -166,6 +166,7 @@
 			// The leader, which is the rule outputs follow. Nothing plays audio yet, so
 			// this is only what it will mean.
 			node_id: null,
+			end: null,
 			running: false,
 			anchor_ms: 0,
 			position_at_anchor_ms: 0,
@@ -480,6 +481,40 @@
 				title="Delete timeline"
 				onclick={() => data.timelines.byId(timeline.id).delete()}>×</button
 			>
+		</section>
+
+		<!-- A scare has to finish, or a flow told to leave a running timeline alone
+		     leaves it alone all night; an ambient bed goes round. -->
+		<section class="block row ends">
+			<span class="hint">Ends</span>
+			<input
+				class="text-input narrow"
+				placeholder="never"
+				value={timeline.end ? clock(timeline.end.at_ms) : ''}
+				onchange={(e) => {
+					const text = e.currentTarget.value.trim();
+					const ms = text ? parsePosition(text) : null;
+					data.timelines
+						.byId(timeline.id)
+						.end.set(ms ? { at_ms: ms, then: timeline.end?.then ?? 'Stop' } : null);
+				}}
+			/>
+			{#if timeline.end}
+				{@const end = timeline.end}
+				<select
+					class="text-input"
+					value={end.then}
+					onchange={(e) =>
+						data.timelines
+							.byId(timeline.id)
+							.end.set({ ...end, then: e.currentTarget.value as 'Stop' | 'Loop' })}
+				>
+					<option value="Stop">and stops</option>
+					<option value="Loop">and starts again</option>
+				</select>
+			{:else}
+				<span class="hint">runs until somebody stops it</span>
+			{/if}
 		</section>
 
 		{#if problem}<p class="problem">{problem}</p>{/if}

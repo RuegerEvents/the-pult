@@ -1,5 +1,12 @@
 import { getContext, setContext } from 'svelte';
-import type { Cue, Fixture, FixtureType, Sequence } from '$lib/generated/index.js';
+import type {
+	Cue,
+	Fixture,
+	FixtureType,
+	Sequence,
+	Timeline,
+	Variable
+} from '$lib/generated/index.js';
 
 /**
  * What a node needs to know about the rest of the show.
@@ -13,6 +20,8 @@ export type FlowContext = {
 	readonly types: FixtureType[];
 	readonly sequences: Sequence[];
 	readonly cues: Cue[];
+	readonly variables: Variable[];
+	readonly timelines: Timeline[];
 };
 
 const KEY = 'pult:flow';

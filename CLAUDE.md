@@ -919,6 +919,18 @@ runs linear into a mark and stops dead reads as a fault. **A release takes the s
 curve too** — letting go of a mark is a move, and nothing above it can say otherwise.
 Seeded from a station preference the way `home_fade_ms` is.
 
+## A flow remembers, and nothing it writes is seen in the same pass
+
+`variables` are what a flow holds between events: occupancy, counts, a maze that is open.
+The definition is PERSISTED; the value is SYNCED and `None` means "at the initial value",
+so opening a show resets every one with no code. **Values are written unattributed by
+everybody**, a flow and a phone alike, through the `variable.*` RPCs: a field write or a
+command carries the caller, and a night of PIR counts would push an operator's own edits
+out of Ctrl-Z. `Flows` finds a change by diffing what the graph holds, so every writer
+reaches a `Read` node the same way. **A flow's write is seen on the next pass, never
+inside the one that made it**, and a `Gate` reads its level from before the pulse. That
+is the whole cycle rule, plus a cut at `MAX_CHAIN` passes that react to nothing else.
+
 ## The loop, and a colour that says where a value came from
 
 Select, set, store, play, update — the loop every other desk has. Four panels and three

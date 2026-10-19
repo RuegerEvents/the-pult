@@ -251,6 +251,7 @@ async fn a_timeline_event_goes_the_cue_it_names() {
         tracks: Vec::new(),
         speed_master: None,
         node_id: None,
+        end: None,
         running: false,
         anchor_ms: 0,
         position_at_anchor_ms: 0,

@@ -4718,6 +4718,20 @@ impl TimelineEntity {
         self.at.field("node_id")
     }
 
+    /// Where the timeline ends, and what it does there. `None` runs for ever, as a
+    /// timeline always has.
+    ///
+    /// A scare is a timeline, and a scare has to *finish*: until it does it is still
+    /// running, and a flow told to ignore a running timeline would ignore it for the
+    /// rest of the night. Acted on by the leader, as an event is, and anchored on the
+    /// wall millisecond the end fell at rather than whenever the pass got there — so a
+    /// loop does not drift by a pass's lateness every time round.
+    ///
+    /// PERSISTED.
+    pub fn end(&self) -> Field<Option<TimelineEnd>> {
+        self.at.field("end")
+    }
+
     /// The transport, replicated so every station and every browser reads the same
     /// playhead out of the same four numbers.
     ///
@@ -4929,6 +4943,156 @@ impl UserEntity {
     /// PERSISTED.
     pub fn colour(&self) -> Field<String> {
         self.at.field("colour")
+    }
+}
+
+// ── variables ───────────────────────────────────────────────────────────
+
+///
+/// The `variables` collection.
+pub fn variables() -> VariableCollection {
+    VariableCollection { at: Collection::at("variables") }
+}
+
+/// The `variables` collection, reached by [`variables()`].
+pub struct VariableCollection {
+    at: Collection,
+}
+
+impl VariableCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<Variable>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> VariableEntity {
+        VariableEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> VariableEntity {
+        VariableEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &Variable) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `variables` row, reached by [`VariableCollection::by_id`] or
+/// [`VariableCollection::nth`].
+pub struct VariableEntity {
+    at: Entity,
+}
+
+impl VariableEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<Variable, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &Variable) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// PERSISTED.
+    pub fn kind(&self) -> Field<VariableKind> {
+        self.at.field("kind")
+    }
+
+    /// PERSISTED.
+    pub fn initial(&self) -> Field<f64> {
+        self.at.field("initial")
+    }
+
+    /// Bounds a write is clamped to. A count with a floor of zero cannot be driven
+    /// negative by an exit somebody walked through twice.
+    ///
+    /// PERSISTED.
+    pub fn min(&self) -> Field<Option<f64>> {
+        self.at.field("min")
+    }
+
+    /// PERSISTED.
+    pub fn max(&self) -> Field<Option<f64>> {
+        self.at.field("max")
+    }
+
+    /// What it holds now. `None` is the initial value — see the module docs.
+    ///
+    /// SYNCED.
+    pub fn value(&self) -> Field<Option<f64>> {
+        self.at.field("value")
     }
 }
 
