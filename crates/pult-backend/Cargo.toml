@@ -49,6 +49,7 @@ sysinfo = { workspace = true }
 # `infra/interop/gdtf` is here rather than in `pult-gdtf`.
 cpal = { workspace = true }
 symphonia = { workspace = true }
+crossbeam-queue = { workspace = true }
 reqwest = { workspace = true }
 rumqttd = { workspace = true }
 rumqttc = { workspace = true }

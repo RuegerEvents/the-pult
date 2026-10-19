@@ -237,8 +237,7 @@ async fn a_timeline_event_goes_the_cue_it_names() {
     let timeline = Timeline {
         id: uuid::Uuid::new_v4(),
         name: "Song".into(),
-        audio: None,
-        peaks: None,
+        clips: Vec::new(),
         detected: None,
         source: TimelineSource::Internal,
         grid: Vec::new(),

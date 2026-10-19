@@ -1108,7 +1108,7 @@ each is one Ctrl-Z. Two selections, deliberately separate: a `SelectionQuery` is
 question about the *rig* and `at 50` means the fixtures it answers, so `selectedObjects`
 is its own store and a truss is never in that scope.
 
-`SCHEMA_GENERATION` is 5.
+`SCHEMA_GENERATION` is 6.
 
 ```
 cargo test -p pult-schema                          # the corpora, the glb, the joints
@@ -1660,7 +1660,7 @@ else on the machine is listening to the same show LAN, so `SO_REUSEADDR` (and
 multicast group is joined *on* an interface as a separate act, and binding a receiver to
 a unicast address is what stops broadcast Art-Net arriving at all.
 
-`SCHEMA_GENERATION` is 5. `FollowMode::Timecode` is gone — a position written on a cue
+`SCHEMA_GENERATION` is 6. `FollowMode::Timecode` is gone — a position written on a cue
 is a clock the cue cannot see, and the same fact as a `timelines` event is a list an
 operator can read and drag.
 
@@ -1703,9 +1703,21 @@ every browser's playhead visibly stuttering. **Audio never gates the transport**
 timeline with no audio, or on a station with no device, runs exactly as task 66 left it,
 and reports *nothing* rather than an empty status row.
 
+**A timeline's sound is clips, each going somewhere, and one stream carries all of
+them.** `Timeline::clips` is files at positions, trimmed, with their own gain, loop and
+`AudioDestination` — `Station { channels }` counting from one, and a node's port next.
+Every running timeline a station plays is a *deck* in one mixer in one callback, at the
+device's full channel count (`pult_audio::mix`), so each timeline anchors itself off one
+sample clock and two cannot drift apart. The callback takes decks over a lock-free
+queue and hands back what they replaced to be dropped elsewhere: **it never locks,
+allocates or frees.** A channel the device has not got refuses that clip by name on
+the status row — never folded onto a channel that exists, which is somebody else's
+speaker. The device is open while anything here *has* a clip, running or not, because a
+scare a flow starts cannot wait for CoreAudio.
+
 **Peaks are an asset, computed once by the station that plays the file.** Min and max
 per bin at a hundred bins a second, as `i16`, under `application/vnd.pult.peaks`;
-`Timeline::peaks` is the sha. Min and max because a waveform is read as an envelope and
+`AudioClip::peaks` is the sha. Min and max because a waveform is read as an envelope and
 a snare that peaks for two milliseconds is invisible in its bin's mean; `i16` because
 the sixteenth bit of a column's height is not a thing anybody can see and it halves what
 the tablet downloads. Computed by the *playing* station, so two of them do not race to
@@ -1759,7 +1771,7 @@ queue a `cpal` input thread pushes them into, so a generated LTC stream exercise
 real decoder, the real chase, the real anchor write and the real firing.
 
 ```
-cargo test -p pult-audio                             # peaks, LTC, the detector, the chase
+cargo test -p pult-audio                             # peaks, LTC, the detector, the chase, the mix
 cargo test -p pult-backend --lib infra::audio        # who plays, and the two conversions
 cargo test -p pult-backend --lib model::timelines    # the speed-master step
 cargo test -p pult-backend --test audio              # timecode in, an anchor and a Go out

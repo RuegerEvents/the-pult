@@ -11,12 +11,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+	channelsText,
 	clampView,
+	clipLanes,
+	clipSpan,
 	clock,
+	dragClip,
 	decodePeaks,
 	gridLines,
 	MIN_SPAN_MS,
 	msOf,
+	parseChannels,
 	parsePosition,
 	snap,
 	xOf,
@@ -188,5 +193,51 @@ describe('reading a position', () => {
 		expect(parsePosition('4000')).toBe(4_000);
 		expect(parsePosition('')).toBeNull();
 		expect(parsePosition('what')).toBeNull();
+	});
+});
+
+describe('clips on a timeline', () => {
+	const clip = { start_ms: 10_000, offset_ms: 2_000, length_ms: null, looped: false };
+
+	it('spans its trimmed region, or to the end of the timeline if it loops', () => {
+		expect(clipSpan(clip, 12_000, 60_000)).toEqual({ fromMs: 10_000, toMs: 20_000, regionMs: 10_000 });
+		expect(clipSpan({ ...clip, length_ms: 3_000 }, 12_000, 60_000).toMs).toBe(13_000);
+		expect(clipSpan({ ...clip, looped: true }, 12_000, 60_000).toMs).toBe(60_000);
+		// No waveform yet: drawn as a stub rather than not at all.
+		expect(clipSpan(clip, null, 60_000).toMs).toBe(12_000);
+	});
+
+	it('puts overlapping clips on lanes of their own', () => {
+		expect(
+			clipLanes([
+				{ fromMs: 0, toMs: 10_000 },
+				{ fromMs: 2_000, toMs: 3_000 },
+				{ fromMs: 10_000, toMs: 12_000 }
+			])
+		).toEqual([0, 1, 0]);
+	});
+
+	it('moves on the body, and keeps the sound under the front edge when trimming it', () => {
+		const grabbed = { start_ms: 10_000, offset_ms: 2_000, length_ms: null };
+		expect(dragClip('body', 0, 500, 12_000, grabbed)).toEqual({ start_ms: 10_500, offset_ms: 2_000, length_ms: null });
+		expect(dragClip('front', 0, 1_000, 12_000, grabbed)).toEqual({ start_ms: 11_000, offset_ms: 3_000, length_ms: 9_000 });
+		// Not before the start of the file.
+		expect(dragClip('front', 0, -5_000, 12_000, grabbed).offset_ms).toBe(0);
+	});
+
+	it('trims the back, never inside out, and back to the end is the rest of the file', () => {
+		const grabbed = { start_ms: 10_000, offset_ms: 2_000, length_ms: null };
+		expect(dragClip('back', 0, -4_000, 12_000, grabbed).length_ms).toBe(6_000);
+		expect(dragClip('back', 0, -40_000, 12_000, grabbed).length_ms).toBe(50);
+		expect(dragClip('back', 0, 40_000, 12_000, { ...grabbed, length_ms: 4_000 }).length_ms).toBeNull();
+	});
+
+	it('reads channels the way a patch bay writes them', () => {
+		expect(parseChannels('5, 6')).toEqual([5, 6]);
+		expect(parseChannels('1-4 9')).toEqual([1, 2, 3, 4, 9]);
+		expect(parseChannels('0')).toBeNull();
+		expect(parseChannels('left')).toBeNull();
+		expect(channelsText([8, 5, 6, 7])).toBe('5-8');
+		expect(channelsText([1, 3])).toBe('1, 3');
 	});
 });

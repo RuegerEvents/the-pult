@@ -4636,30 +4636,21 @@ impl TimelineEntity {
         self.at.field("name")
     }
 
-    /// The audio asset this timeline runs against, where there is one.
+    /// The sound on this timeline: files at positions, each going somewhere.
     ///
     /// Played by the station [`Timeline::node_id`] names, off the audio callback's own
     /// sample clock — see `infra/audio` — so the sound is the reference and everything
-    /// else follows the anchor it writes. A timeline with **no** audio is an ordinary
+    /// else follows the anchor it writes. A timeline with **no** clips is an ordinary
     /// stopwatch and runs exactly as it did before any of this existed, which is what
     /// "timecode without timecode" means and is the property that must not be lost.
     ///
-    /// PERSISTED.
-    pub fn audio(&self) -> Field<Option<String>> {
-        self.at.field("audio")
-    }
-
-    /// The reduced waveform of [`Timeline::audio`], as its own asset sha.
-    ///
-    /// Computed once by whichever station first held the file and written here, so
-    /// every browser in the building fetches one small asset rather than decoding
-    /// fifty megabytes. A field rather than a lookup because the alternative — deriving
-    /// the peaks asset's name from the audio's — would be a second content-addressing
-    /// scheme, and a tablet would have to ask for a sha that might not exist yet.
+    /// A list rather than one file because a scare is a scream in one zone *and* a bang
+    /// in another, and making that two timelines started together would be two things
+    /// to keep in step that one clock already keeps in step for free.
     ///
     /// PERSISTED.
-    pub fn peaks(&self) -> Field<Option<String>> {
-        self.at.field("peaks")
+    pub fn clips(&self) -> Field<Vec<AudioClip>> {
+        self.at.field("clips")
     }
 
     /// What the beat detector last found. See [`Detected`] on why this is not `grid`.

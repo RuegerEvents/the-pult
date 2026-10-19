@@ -1,7 +1,8 @@
 //! The sound card, and everything about it that blocks.
 //!
 //! Three things live here and nothing else does: enumerating what the machine has,
-//! playing a decoded file out of it, and reading timecode into it. All three are
+//! mixing every playing clip out of it through one stream, and reading timecode into
+//! it. All three are
 //! `cpal`, and all three are **on threads of their own**.
 //!
 //! # Why threads rather than tasks
@@ -39,11 +40,12 @@
 //! reading a status row.
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use crossbeam_queue::ArrayQueue;
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
@@ -147,87 +149,123 @@ fn find(
 
 // ── Playing ───────────────────────────────────────────────────────────────────
 
+/// How many timelines may sound at once on one station. Allocated when the device opens,
+/// so a deck arriving never grows a list inside the callback.
+pub const MAX_DECKS: usize = 64;
+
+/// What the manager asks of the callback. Carried over a bounded lock-free queue: the
+/// callback takes what is waiting at the top of each buffer and never waits for more.
+enum Command {
+    /// A deck, new or rebuilt. `keep_cursor` carries on from where the old one was —
+    /// see [`pult_audio::Mixer::put`].
+    Put { deck: Box<pult_audio::Deck>, keep_cursor: bool },
+    Remove(u128),
+    Seek(u128, f64),
+    Rate(u128, f64),
+}
+
+/// Where one deck has got to, read back by the manager. One per slot, written by the
+/// callback after every buffer.
+#[derive(Debug, Default)]
+struct Slot {
+    /// In timeline milliseconds ×1000. Fixed point rather than a float because there is
+    /// no atomic f64, and rounding to the millisecond in the callback would quantise the
+    /// drift figure to the thing it is trying to measure.
+    position_micros: AtomicU64,
+    sounding: AtomicBool,
+}
+
 /// What the callback and the manager share.
 ///
-/// Atomics rather than a lock, because the other side of every one of these is a
-/// real-time audio callback: a callback that blocked on a mutex the manager happened to
-/// be holding would drop a buffer, and a dropped buffer is an audible click.
-#[derive(Debug)]
+/// Atomics and lock-free queues rather than a lock, because the other side of every one
+/// of these is a real-time audio callback: a callback that blocked on a mutex the
+/// manager happened to be holding would drop a buffer, and a dropped buffer is an
+/// audible click.
 struct Shared {
-    /// Where the callback has read up to, in **source milliseconds ×1000**. Fixed
-    /// point rather than a float because there is no atomic f64 and rounding a
-    /// position to the millisecond in the callback would quantise the drift figure to
-    /// the thing it is trying to measure.
-    position_micros: AtomicU64,
-    /// The chase's ratio, in parts per million away from one.
-    rate_ppm: AtomicI64,
-    /// A position the callback should jump to, in source milliseconds. `-1` is none.
-    seek_to_ms: AtomicI64,
+    commands: ArrayQueue<Command>,
+    /// What the callback has finished with, to be dropped on the manager's side. A
+    /// deck holds `Arc`s to decoded files, and freeing forty megabytes of samples is not
+    /// something to do between two buffers.
+    trash: ArrayQueue<Box<pult_audio::Deck>>,
+    slots: Vec<Slot>,
     /// What the device says is between the callback and the loudspeaker, in
     /// microseconds. Written by the callback because only it is told.
     latency_micros: AtomicU64,
-    /// The file has been played to its end.
-    finished: AtomicBool,
     stop: AtomicBool,
 }
 
-/// A file, playing.
+/// The one output stream a station mixes every clip into.
 ///
 /// Dropping it stops the sound: the thread notices, drops the stream, and exits.
-pub struct Player {
+pub struct Output {
     shared: Arc<Shared>,
     pub device_name: String,
-    /// How long the file is, so the manager can tell "finished" from "stalled".
-    pub duration_ms: u64,
+    pub channels: u16,
+    pub sample_rate: u32,
 }
 
-impl Drop for Player {
+impl Drop for Output {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
     }
 }
 
-impl Player {
-    /// Open a device and start playing from a position.
+impl Output {
+    /// Open a device, with nothing playing yet.
     ///
     /// The whole of this happens on a thread of its own, including finding the device —
     /// which is an enumeration, and blocks. What comes back over the oneshot is either
     /// a handle or the reason there is not one, in words a panel can print.
-    pub async fn start(
-        device: Option<String>,
-        samples: Arc<Vec<f32>>,
-        channels: u16,
-        sample_rate: u32,
-        from_ms: u64,
-    ) -> Result<Player, String> {
+    pub async fn open(device: Option<String>) -> Result<Output, String> {
         let shared = Arc::new(Shared {
-            position_micros: AtomicU64::new(from_ms * 1_000),
-            rate_ppm: AtomicI64::new(0),
-            seek_to_ms: AtomicI64::new(-1),
+            commands: ArrayQueue::new(4 * MAX_DECKS),
+            trash: ArrayQueue::new(8 * MAX_DECKS),
+            slots: (0..MAX_DECKS).map(|_| Slot::default()).collect(),
             latency_micros: AtomicU64::new(0),
-            finished: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
-        let duration_ms = match (samples.len(), channels.max(1), sample_rate) {
-            (_, _, 0) => 0,
-            (len, ch, rate) => (len as u64 / ch as u64) * 1_000 / rate as u64,
-        };
         let (ready, started) = oneshot::channel();
         let for_thread = shared.clone();
 
         // A named thread, so a stalled console's stack traces say which of these it is.
         std::thread::Builder::new()
             .name("audio-out".into())
-            .spawn(move || play_thread(device, samples, channels, sample_rate, for_thread, ready))
+            .spawn(move || play_thread(device, for_thread, ready))
             .map_err(|e| format!("no thread for audio playback: {e}"))?;
 
-        let device_name = started
+        let (device_name, channels, sample_rate) = started
             .await
             .map_err(|_| "the audio thread stopped before it said anything".to_string())??;
-        Ok(Player { shared, device_name, duration_ms })
+        Ok(Output { shared, device_name, channels, sample_rate })
     }
 
-    /// Where the sound *coming out of the loudspeaker* is, in source milliseconds.
+    fn send(&self, command: Command) -> Result<(), String> {
+        self.shared
+            .commands
+            .push(command)
+            .map_err(|_| "the audio callback is not taking commands".to_string())
+    }
+
+    /// Start a deck, or replace the one with its id. `deck.tag` is the slot its cursor
+    /// is read back from.
+    pub fn put(&self, deck: pult_audio::Deck, keep_cursor: bool) -> Result<(), String> {
+        self.send(Command::Put { deck: Box::new(deck), keep_cursor })
+    }
+
+    pub fn remove(&self, id: u128) {
+        let _ = self.send(Command::Remove(id));
+    }
+
+    pub fn seek(&self, id: u128, timeline_ms: u64) {
+        let _ = self.send(Command::Seek(id, timeline_ms as f64));
+    }
+
+    /// Run at this multiple of real time until told otherwise. `1.0` is normal.
+    pub fn set_rate(&self, id: u128, ratio: f32) {
+        let _ = self.send(Command::Rate(id, ratio as f64));
+    }
+
+    /// Where the sound *coming out of the loudspeaker* is on a deck's timeline.
     ///
     /// The callback's own cursor **minus the device's reported latency**, and that
     /// subtraction is the whole point: a callback that has just filled a buffer has
@@ -235,39 +273,33 @@ impl Player {
     /// show to the read position would run every cue a buffer early — which at a
     /// conservative 512 frames and 44.1 kHz is 12 ms, and on a machine set up for
     /// safety rather than latency is five times that.
-    pub fn position_ms(&self) -> u64 {
-        let cursor = self.shared.position_micros.load(Ordering::Relaxed) / 1_000;
-        let latency = self.shared.latency_micros.load(Ordering::Relaxed) / 1_000;
-        cursor.saturating_sub(latency)
+    pub fn position_ms(&self, slot: usize) -> u64 {
+        let Some(slot) = self.shared.slots.get(slot) else { return 0 };
+        let cursor = slot.position_micros.load(Ordering::Relaxed) / 1_000;
+        cursor.saturating_sub(self.latency_ms())
     }
 
-    pub fn seek(&self, position_ms: u64) {
-        self.shared.seek_to_ms.store(position_ms as i64, Ordering::Relaxed);
+    /// What is between the callback and the loudspeaker. A deck is started this far
+    /// *ahead* of where the show is, so that what is heard is where the show is.
+    pub fn latency_ms(&self) -> u64 {
+        self.shared.latency_micros.load(Ordering::Relaxed) / 1_000
     }
 
-    /// Run at this multiple of real time until told otherwise. `1.0` is normal.
-    pub fn set_rate(&self, ratio: f32) {
-        let ppm = ((ratio as f64 - 1.0) * 1_000_000.0).round() as i64;
-        self.shared.rate_ppm.store(ppm, Ordering::Relaxed);
+    /// Whether anything on a deck was audible in the last buffer.
+    pub fn sounding(&self, slot: usize) -> bool {
+        self.shared.slots.get(slot).is_some_and(|s| s.sounding.load(Ordering::Relaxed))
     }
 
-    pub fn rate(&self) -> f32 {
-        1.0 + self.shared.rate_ppm.load(Ordering::Relaxed) as f32 / 1_000_000.0
-    }
-
-    /// The file has run out. Not an error: a song is shorter than the act it is in.
-    pub fn finished(&self) -> bool {
-        self.shared.finished.load(Ordering::Relaxed)
+    /// Drop what the callback has finished with, here and not there.
+    pub fn collect(&self) {
+        while self.shared.trash.pop().is_some() {}
     }
 }
 
 fn play_thread(
     device: Option<String>,
-    samples: Arc<Vec<f32>>,
-    source_channels: u16,
-    source_rate: u32,
     shared: Arc<Shared>,
-    ready: oneshot::Sender<Result<String, String>>,
+    ready: oneshot::Sender<Result<(String, u16, u32), String>>,
 ) {
     let host = cpal::default_host();
     let found = match find(&host, device.as_deref(), true) {
@@ -289,19 +321,18 @@ fn play_thread(
         }
     };
     let format = supported.sample_format();
+    // The device's whole channel count, always: a Dante Virtual Soundcard opened at
+    // sixty-four channels is sixty-four zones, and a stream opened at two would be the
+    // first two of them.
     let config: cpal::StreamConfig = supported.into();
-    let device_channels = config.channels.max(1) as usize;
+    let device_channels = config.channels.max(1);
     let device_rate = config.sample_rate.max(1);
-    let source_channels = source_channels.max(1) as usize;
-    let source_frames = samples.len() / source_channels;
 
-    // How far the source cursor moves per output frame at rate 1. A 44.1 kHz file on a
-    // 48 kHz device reads 0.919 source frames per output frame, which is a resample by
-    // construction — there is no separate "convert the file first" step, because the
-    // chase has to be able to change this number anyway.
-    let base_step = source_rate as f64 / device_rate as f64;
-    let mut cursor = shared.position_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0
-        * source_rate as f64;
+    // Every rate conversion happens inside the mixer — a 44.1 kHz file on a 48 kHz
+    // device is read at 0.919 source frames per output frame — because the chase has to
+    // be able to change that ratio anyway, and there is no separate step to convert a
+    // file first.
+    let mut mixer = pult_audio::Mixer::new(device_channels as usize, device_rate, MAX_DECKS);
 
     let for_callback = shared.clone();
     let fill = move |out: &mut [f32], info: &cpal::OutputCallbackInfo| {
@@ -310,31 +341,36 @@ fn play_thread(
             timestamp.playback.saturating_duration_since(timestamp.callback).as_micros() as u64,
             Ordering::Relaxed,
         );
-        let seek = for_callback.seek_to_ms.swap(-1, Ordering::Relaxed);
-        if seek >= 0 {
-            cursor = seek as f64 * source_rate as f64 / 1_000.0;
-            for_callback.finished.store(false, Ordering::Relaxed);
-        }
-        let step = base_step
-            * (1.0 + for_callback.rate_ppm.load(Ordering::Relaxed) as f64 / 1_000_000.0);
-
-        for frame in out.chunks_mut(device_channels) {
-            let at = cursor;
-            for (channel, slot) in frame.iter_mut().enumerate() {
-                // Mono out of a stereo file goes to every output channel, and a stereo
-                // file keeps its sides — which is what a stem for a show is mixed as.
-                let source_channel = if source_channels == 1 { 0 } else { channel % source_channels };
-                *slot = read(&samples, source_channels, source_channel, at);
+        while let Some(command) = for_callback.commands.pop() {
+            match command {
+                Command::Put { deck, keep_cursor } => match mixer.put(deck, keep_cursor) {
+                    Ok(Some(old)) | Err(old) => {
+                        // Should the trash ever be full the deck is dropped here. It is
+                        // eight times the decks that can exist, and emptied every
+                        // twenty-five milliseconds.
+                        let _ = for_callback.trash.push(old);
+                    }
+                    Ok(None) => {}
+                },
+                Command::Remove(id) => {
+                    if let Some(old) = mixer.remove(id) {
+                        if let Some(slot) = for_callback.slots.get(old.tag) {
+                            slot.sounding.store(false, Ordering::Relaxed);
+                        }
+                        let _ = for_callback.trash.push(old);
+                    }
+                }
+                Command::Seek(id, at) => mixer.seek(id, at),
+                Command::Rate(id, rate) => mixer.set_rate(id, rate),
             }
-            cursor += step;
         }
-        if cursor >= source_frames as f64 {
-            for_callback.finished.store(true, Ordering::Relaxed);
+        mixer.render(out);
+        for deck in mixer.decks() {
+            if let Some(slot) = for_callback.slots.get(deck.tag) {
+                slot.position_micros.store((deck.cursor_ms.max(0.0) * 1_000.0) as u64, Ordering::Relaxed);
+                slot.sounding.store(deck.sounding, Ordering::Relaxed);
+            }
         }
-        for_callback.position_micros.store(
-            (cursor.max(0.0) / source_rate as f64 * 1_000_000.0) as u64,
-            Ordering::Relaxed,
-        );
     };
 
     let complain = |e: cpal::Error| warn!("[audio] output stream: {e}");
@@ -358,7 +394,7 @@ fn play_thread(
         let _ = ready.send(Err(format!("{name} would not start: {e}")));
         return;
     }
-    let _ = ready.send(Ok(name));
+    let _ = ready.send(Ok((name, device_channels, device_rate)));
 
     // The thread's whole remaining job is to keep the stream alive, because dropping a
     // `cpal::Stream` stops it. Woken every so often only to notice that the handle has
@@ -368,30 +404,6 @@ fn play_thread(
     }
     drop(stream);
     debug!("[audio] output stream closed");
-}
-
-/// One source sample at a fractional frame position, interpolated.
-///
-/// The same linear read `pult_audio::resample::sample_at` documents, per channel of an
-/// interleaved buffer. It is here rather than there because the interleaving is a fact
-/// about a decoded file and not about resampling.
-fn read(samples: &[f32], channels: usize, channel: usize, frame: f64) -> f32 {
-    if frame < 0.0 {
-        return 0.0;
-    }
-    let base = frame.floor() as usize;
-    let index = base * channels + channel;
-    let next = index + channels;
-    match (samples.get(index), samples.get(next)) {
-        (Some(a), Some(b)) => {
-            let fraction = (frame - base as f64) as f32;
-            a * (1.0 - fraction) + b * fraction
-        }
-        (Some(a), None) => *a,
-        // Past the end of the file is silence rather than a wrap: a song that has
-        // finished has finished, and the timeline goes on running.
-        _ => 0.0,
-    }
 }
 
 /// Build an output stream for a device that does not want f32.

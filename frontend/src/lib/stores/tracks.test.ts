@@ -25,8 +25,7 @@ const aTrack = (over: Partial<TimelineTrack> = {}): TimelineTrack => ({
 const aTimeline = (over: Partial<Timeline> = {}): Timeline => ({
 	id: 'timeline',
 	name: 'Song',
-	audio: null,
-	peaks: null,
+	clips: [],
 	detected: null,
 	source: 'Internal',
 	grid: [],

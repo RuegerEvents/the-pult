@@ -169,8 +169,8 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     },
     LocalRpcMeta {
         method: "timeline.detect",
-        args_schema: r#"[{"name":"timelineId","type":"string","optional":false}]"#,
-        doc: "Find the beats and downbeats in a timeline's audio; answers them and writes them to `detected`, which an operator then confirms into `grid`.",
+        args_schema: r#"[{"name":"timelineId","type":"string","optional":false},{"name":"clipId","type":"string","optional":true}]"#,
+        doc: "Find the beats and downbeats in one of a timeline's clips (the first unless `clipId` names another), in timeline positions; answers them and writes them to `detected`, which an operator then confirms into `grid`.",
     },
     LocalRpcMeta {
         method: "timeline.model",
@@ -466,7 +466,13 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             let audio = deps.audio.as_ref().ok_or_else(no_audio)?;
             let timeline_id: uuid::Uuid = serde_json::from_value(args["timelineId"].clone())
                 .map_err(|e| format!("invalid timelineId: {e}"))?;
-            let found = audio.detect(timeline_id).await?;
+            let clip_id = match args.get("clipId") {
+                Some(v) if !v.is_null() => Some(
+                    serde_json::from_value(v.clone()).map_err(|e| format!("invalid clipId: {e}"))?,
+                ),
+                _ => None,
+            };
+            let found = audio.detect(timeline_id, clip_id).await?;
             serde_json::to_value(found).map_err(|e| e.to_string())
         }
         "timeline.model" => {

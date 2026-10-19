@@ -7,13 +7,15 @@
 //! own suite does, and it is why an LTC decoder can be exercised against every frame
 //! rate at four sample rates in a few milliseconds.
 //!
-//! Five modules, and each is one question:
+//! Six modules, and each is one question:
 //!
 //! - [`peaks`] — what does this file look like, small enough to send to a tablet?
 //! - [`ltc`] — what does this cable say the time is?
 //! - [`beats`] — where are the beats, and which of them are the "one"?
 //! - [`lock`] — how do we chase a clock that is not ours without the show jumping?
 //! - [`resample`] — the two rate changes the other four need.
+//! - [`mix`] — several clips on several timelines, one sound card: where each one is,
+//!   which channel it goes to, and the sum.
 //!
 //! What is *not* here is anything that talks to hardware. The device, the decoding of
 //! an mp3, the file the peaks are stored as and the transport they are written into
@@ -25,12 +27,14 @@
 pub mod beats;
 pub mod lock;
 pub mod ltc;
+pub mod mix;
 pub mod peaks;
 pub mod resample;
 
 pub use beats::{grid_from_beats, Detected, Detector, GridSegment};
 pub use lock::{chase, Chase};
 pub use ltc::{Decoder, Lock, LtcFrame, LtcRate};
+pub use mix::{Deck, Mixer, Placement, RouteError, Source, Voice};
 pub use peaks::Peaks;
 
 use thiserror::Error;

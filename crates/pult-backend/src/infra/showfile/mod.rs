@@ -144,7 +144,9 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 ///    stored with it is a JSON variant nothing in this build can name, and a
 ///    `follow_mode` that fails to parse is exactly the silent `None` the stamp exists
 ///    to catch.
-pub(super) const SCHEMA_GENERATION: i64 = 5;
+/// 6. A timeline's one `audio` file became `clips`, each with its own place, trim and
+///    destination. A generation-5 timeline's file would be dropped without a word.
+pub(super) const SCHEMA_GENERATION: i64 = 6;
 
 /// Say plainly that a showfile is from another build, instead of panicking somewhere
 /// deep in a generated `from_columns`.

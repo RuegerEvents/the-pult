@@ -12,8 +12,7 @@ fn a_timeline(node: Option<NodeId>) -> Timeline {
     Timeline {
         id: Uuid::from_u128(1),
         name: "Act 1".into(),
-        audio: Some("abc".into()),
-        peaks: None,
+        clips: Vec::new(),
         detected: None,
         source: TimelineSource::Internal,
         grid: Vec::new(),
@@ -114,4 +113,68 @@ fn the_transport_is_the_three_numbers_that_move_a_playhead() {
     assert_eq!(transport_of(&timeline), (5, 7, 1.0));
     timeline.rate = 0.5;
     assert_ne!(transport_of(&timeline), (5, 7, 1.0));
+}
+
+fn a_clip(start_ms: u64, offset_ms: u64, length_ms: Option<u64>) -> AudioClip {
+    AudioClip {
+        id: Uuid::from_u128(9),
+        name: "Scream".into(),
+        asset: "abc".into(),
+        peaks: None,
+        start_ms,
+        offset_ms,
+        length_ms,
+        gain_db: 0.0,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        looped: false,
+        destination: AudioDestination::Station { channels: vec![3] },
+    }
+}
+
+/// The drift is measured against where the *sound* is, and the sound wraps at a
+/// looping end by itself. Measured against the unfolded transport, the moment between
+/// the deck wrapping and the leader relocating would read as a whole loop's drift.
+#[test]
+fn a_position_past_the_end_is_folded_the_way_the_deck_folds_it() {
+    let mut timeline = a_timeline(None);
+    assert_eq!(folded(&timeline, 12_345), 12_345, "a timeline with no end runs on");
+    timeline.end = Some(pult_schema::types::timeline::TimelineEnd { at_ms: 10_000, then: AtEnd::Loop });
+    assert_eq!(folded(&timeline, 10_250), 250);
+    timeline.end = Some(pult_schema::types::timeline::TimelineEnd { at_ms: 10_000, then: AtEnd::Stop });
+    assert_eq!(folded(&timeline, 10_250), 10_000);
+    timeline.end = Some(pult_schema::types::timeline::TimelineEnd { at_ms: 0, then: AtEnd::Loop });
+    assert_eq!(folded(&timeline, 10_250), 10_250, "an end at zero is no end");
+}
+
+/// A beat found in the file lands on the timeline where the clip puts that part of the
+/// file, and one in the part the trim leaves out is no beat at all.
+#[test]
+fn a_detected_beat_is_moved_onto_the_timeline_through_the_clip() {
+    let clip = a_clip(10_000, 2_000, Some(5_000));
+    assert_eq!(clip_to_timeline(&clip, 1_999), None, "before the trim");
+    assert_eq!(clip_to_timeline(&clip, 2_000), Some(10_000));
+    assert_eq!(clip_to_timeline(&clip, 4_500), Some(12_500));
+    assert_eq!(clip_to_timeline(&clip, 7_000), None, "past the length");
+}
+
+#[test]
+fn a_clips_placement_is_what_the_mixer_is_handed() {
+    let mut clip = a_clip(1_000, 250, None);
+    clip.gain_db = -6.0;
+    clip.looped = true;
+    let placed = placement(&clip);
+    assert_eq!(placed.start_ms, 1_000.0);
+    assert_eq!(placed.offset_ms, 250.0);
+    assert!(placed.looped);
+    assert!((placed.gain - 0.501).abs() < 0.001, "-6 dB is about half");
+}
+
+/// What decides whether the device has to be open: any clip this station mixes itself.
+#[test]
+fn a_timeline_with_clips_wants_the_output_and_one_without_does_not() {
+    let mut timeline = a_timeline(None);
+    assert_eq!(station_clips(&timeline).count(), 0);
+    timeline.clips.push(a_clip(0, 0, None));
+    assert_eq!(station_clips(&timeline).count(), 1);
 }

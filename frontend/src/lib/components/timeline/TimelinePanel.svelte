@@ -32,6 +32,8 @@
 
 	import { focusOnMount } from '$lib/actions.js';
 	import type {
+		AudioClip,
+		AudioOutput,
 		AudioStatus,
 		Cue,
 		Detected,
@@ -46,7 +48,7 @@
 		TimelineEvent
 	} from '$lib/generated/index.js';
 	import { selection } from '$lib/stores/selection.js';
-	import { clock, parsePosition } from '$lib/waveform.js';
+	import { channelsText, clock, parseChannels, parsePosition } from '$lib/waveform.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { consoleNow } from '$lib/ws/clock.js';
 	import Waveform from './Waveform.svelte';
@@ -61,6 +63,10 @@
 	let masters = $state<SpeedMaster[]>([]);
 	let stations = $state<Station[]>([]);
 	let audioStatus = $state<Record<string, AudioStatus>>({});
+	/** The device this station mixes into, which is what a clip's channels are picked from. */
+	let audioOutput = $state<AudioOutput | null>(null);
+	/** The clip the editor below is showing. */
+	let clipId = $state<string | null>(null);
 	let chosen = $state<string | null>(null);
 	let creating = $state(false);
 	let newName = $state('');
@@ -154,8 +160,7 @@
 		await data.timelines.create({
 			id,
 			name,
-			audio: null,
-			peaks: null,
+			clips: [],
 			detected: null,
 			source: 'Internal',
 			grid: [],
@@ -215,6 +220,45 @@
 	/** What this station says about this timeline's audio, if anything. */
 	const sound = $derived(timeline ? (audioStatus[timeline.id] ?? null) : null);
 
+	/** The clip being edited: the one picked, or the first. */
+	const clip = $derived(
+		timeline ? (timeline.clips.find((c) => c.id === clipId) ?? timeline.clips[0] ?? null) : null
+	);
+
+	/**
+	 * How many channels there are to offer. The device this station has open, or — where
+	 * it has none, or this browser is on a station that is not the one playing — sixteen,
+	 * which is a number to type past rather than a limit.
+	 */
+	const channelCount = $derived(
+		audioOutput?.open && audioOutput.channels > 0 ? audioOutput.channels : 16
+	);
+
+	/** `clips` is one column, so every edit rewrites the whole list. */
+	async function setClip(id: string, change: Partial<AudioClip>) {
+		if (!timeline) return;
+		await data.timelines
+			.byId(timeline.id)
+			.clips.set(timeline.clips.map((each) => (each.id === id ? { ...each, ...change } : each)));
+	}
+
+	async function removeClip(id: string) {
+		if (!timeline) return;
+		await data.timelines
+			.byId(timeline.id)
+			.clips.set(timeline.clips.filter((each) => each.id !== id));
+		if (clipId === id) clipId = null;
+	}
+
+	/** A channel on or off in a clip's destination, which is how the chips below work. */
+	function toggleChannel(target: AudioClip, channel: number) {
+		const now = target.destination.Station.channels;
+		const next = now.includes(channel)
+			? now.filter((c) => c !== channel)
+			: [...now, channel].sort((a, b) => a - b);
+		void setClip(target.id, { destination: { Station: { channels: next } } });
+	}
+
 	/** Which station plays it, in words. */
 	const playedBy = $derived.by(() => {
 		if (!timeline) return '';
@@ -254,13 +298,28 @@
 			if (!response.ok) throw new Error(await response.text());
 			const { sha256 } = (await response.json()) as { sha256: string };
 			if (!timeline) return;
-			// The waveform is the station's to compute, so it is cleared here rather
-			// than kept: a new file with the old file's picture is worse than no
-			// picture at all.
-			await data.timelines.byId(timeline.id).peaks.set(null);
-			await data.timelines.byId(timeline.id).detected.set(null);
-			await data.timelines.byId(timeline.id).audio.set(sha256);
-			proposal = null;
+			// At the playhead, which is where somebody listening to a timeline wants the
+			// sound they are adding, and out of the first two channels until somebody says
+			// otherwise. The waveform is the station's to compute.
+			const id = crypto.randomUUID();
+			await data.timelines.byId(timeline.id).clips.set([
+				...timeline.clips,
+				{
+					id,
+					name: file.name.replace(/\.[^.]+$/, ''),
+					asset: sha256,
+					peaks: null,
+					start_ms: Math.round(position ?? 0),
+					offset_ms: 0,
+					length_ms: null,
+					gain_db: 0,
+					fade_in_ms: 0,
+					fade_out_ms: 0,
+					looped: false,
+					destination: { Station: { channels: [1, 2] } }
+				}
+			]);
+			clipId = id;
 		} catch (e) {
 			problem = `That file could not be stored: ${e}`;
 		} finally {
@@ -274,7 +333,10 @@
 		problem = null;
 		busy = 'Listening to the whole song…';
 		try {
-			proposal = (await client.call('timeline.detect', { timelineId: timeline.id })) as Detected;
+			proposal = (await client.call('timeline.detect', {
+				timelineId: timeline.id,
+				clipId: clip?.id ?? null
+			})) as Detected;
 			if (proposal.beats_ms.length === 0) {
 				problem = 'Nothing in that file reads as a pulse.';
 				proposal = null;
@@ -396,8 +458,13 @@
 			if (v && typeof v === 'object') audioStatus = v as Record<string, AudioStatus>;
 		};
 		stops.push(client.subscribe('audio_status', applyAudio));
+		const applyOutput = (v: unknown) => {
+			if (v && typeof v === 'object') audioOutput = v as AudioOutput;
+		};
+		stops.push(client.subscribe('audio_output', applyOutput));
 		const fetchLocal = () => {
 			void client.get(['audio_status']).then(applyAudio);
+			void client.get(['audio_output']).then(applyOutput);
 		};
 		fetchLocal();
 		stops.push(client.addConnectListener(fetchLocal));
@@ -521,7 +588,15 @@
 		{#if busy}<p class="hint">{busy}</p>{/if}
 
 		<section class="block">
-			<Waveform {timeline} {proposal} {snapping} onLocate={locate} />
+			<Waveform
+				{timeline}
+				{proposal}
+				{snapping}
+				onLocate={locate}
+				selectedClip={clip?.id ?? null}
+				onSelectClip={(id) => (clipId = id)}
+				faulted={sound?.clip_faults ?? {}}
+			/>
 		</section>
 
 		<section class="block">
@@ -536,24 +611,24 @@
 			</header>
 
 			<div class="rows-grid">
-				<span class="label">Audio file</span>
+				<span class="label">Clips</span>
 				<div class="row">
-					{#if timeline.audio}
-						<span class="what">{timeline.audio.slice(0, 8)}…</span>
+					{#each timeline.clips as each (each.id)}
 						<button
-							class="ghost"
-							onclick={async () => {
-								await data.timelines.byId(timeline.id).audio.set(null);
-								await data.timelines.byId(timeline.id).peaks.set(null);
-								await data.timelines.byId(timeline.id).detected.set(null);
-								proposal = null;
-							}}>Remove</button
+							class="chip"
+							class:picked={each.id === clip?.id}
+							class:faulty={!!sound?.clip_faults?.[each.id]}
+							onclick={() => (clipId = each.id)}
 						>
+							{each.name || 'clip'} · {clock(each.start_ms)} · ch {channelsText(
+								each.destination.Station.channels
+							) || '—'}{each.looped ? ' · loop' : ''}
+						</button>
 					{:else}
 						<span class="what">none</span>
-					{/if}
+					{/each}
 					<label class="ghost file">
-						{uploading ? 'Storing…' : timeline.audio ? 'Replace…' : 'Add a file…'}
+						{uploading ? 'Storing…' : '+ Clip from a file…'}
 						<input
 							type="file"
 							accept=".wav,.mp3,.flac,.m4a,.mp4,.aac,audio/*"
@@ -565,6 +640,140 @@
 							}}
 						/>
 					</label>
+				</div>
+
+				{#if clip}
+					{@const editing = clip}
+					<span class="label">Clip</span>
+					<div class="row">
+						<input
+							class="text-input"
+							value={editing.name}
+							onchange={(e) => setClip(editing.id, { name: e.currentTarget.value })}
+						/>
+						<span class="what">starts at</span>
+						<input
+							class="text-input narrow"
+							value={clock(editing.start_ms)}
+							onchange={(e) => {
+								const ms = parsePosition(e.currentTarget.value);
+								if (ms !== null) setClip(editing.id, { start_ms: Math.max(0, ms) });
+							}}
+						/>
+						<span class="what">gain</span>
+						<input
+							class="text-input tiny"
+							type="number"
+							step="0.5"
+							value={editing.gain_db}
+							onchange={(e) => {
+								const db = Number(e.currentTarget.value);
+								if (Number.isFinite(db)) setClip(editing.id, { gain_db: Math.min(12, db) });
+							}}
+						/>
+						<span class="what">dB</span>
+						<label class="checkbox">
+							<input
+								type="checkbox"
+								checked={editing.looped}
+								onchange={(e) => setClip(editing.id, { looped: e.currentTarget.checked })}
+							/>
+							loop
+						</label>
+						<button class="danger" title="Remove this clip" onclick={() => removeClip(editing.id)}
+							>×</button
+						>
+					</div>
+
+					<span class="label">Trim</span>
+					<div class="row">
+						<span class="what">from</span>
+						<input
+							class="text-input narrow"
+							value={clock(editing.offset_ms)}
+							onchange={(e) => {
+								const ms = parsePosition(e.currentTarget.value);
+								if (ms !== null) setClip(editing.id, { offset_ms: Math.max(0, ms) });
+							}}
+						/>
+						<span class="what">for</span>
+						<input
+							class="text-input narrow"
+							placeholder="the rest"
+							value={editing.length_ms === null ? '' : clock(editing.length_ms)}
+							onchange={(e) => {
+								const text = e.currentTarget.value.trim();
+								const ms = text ? parsePosition(text) : null;
+								setClip(editing.id, { length_ms: ms && ms > 0 ? ms : null });
+							}}
+						/>
+						<span class="what">fade in</span>
+						<input
+							class="text-input tiny"
+							type="number"
+							min="0"
+							value={editing.fade_in_ms}
+							onchange={(e) =>
+								setClip(editing.id, {
+									fade_in_ms: Math.max(0, Math.round(Number(e.currentTarget.value) || 0))
+								})}
+						/>
+						<span class="what">out</span>
+						<input
+							class="text-input tiny"
+							type="number"
+							min="0"
+							value={editing.fade_out_ms}
+							disabled={editing.looped}
+							onchange={(e) =>
+								setClip(editing.id, {
+									fade_out_ms: Math.max(0, Math.round(Number(e.currentTarget.value) || 0))
+								})}
+						/>
+						<span class="what">ms</span>
+					</div>
+
+					<span class="label">Goes to</span>
+					<div class="row">
+						<input
+							class="text-input narrow"
+							title="Output channels, counting from 1: 5, 6 or 1-4"
+							value={channelsText(editing.destination.Station.channels)}
+							onchange={(e) => {
+								const channels = parseChannels(e.currentTarget.value);
+								if (channels) setClip(editing.id, { destination: { Station: { channels } } });
+								else problem = 'Channels count from 1, written like 5, 6 or 1-4.';
+							}}
+						/>
+						<div class="channels">
+							{#each Array.from({ length: Math.min(64, channelCount) }, (_, i) => i + 1) as channel (channel)}
+								<button
+									class="channel"
+									class:on={editing.destination.Station.channels.includes(channel)}
+									title="Channel {channel}"
+									onclick={() => toggleChannel(editing, channel)}>{channel}</button
+								>
+							{/each}
+						</div>
+					</div>
+					{#if sound?.clip_faults?.[editing.id]}
+						<span class="label"></span>
+						<div class="row"><span class="bad">{sound.clip_faults[editing.id]}</span></div>
+					{/if}
+				{/if}
+
+				<span class="label">Output</span>
+				<div class="row">
+					{#if audioOutput?.open}
+						<span class="good">{audioOutput.device}</span>
+						<span class="what"
+							>{audioOutput.channels} channels at {audioOutput.sample_rate} Hz, on this station</span
+						>
+					{:else if audioOutput?.fault}
+						<span class="bad">{audioOutput.fault}</span>
+					{:else}
+						<span class="what">closed: nothing this station plays has a clip</span>
+					{/if}
 				</div>
 
 				<span class="label">Played by</span>
@@ -587,7 +796,7 @@
 						{:else if sound.fault}
 							<span class="bad">{sound.fault}</span>
 						{/if}
-					{:else if timeline.audio}
+					{:else if timeline.clips.length > 0}
 						<span class="what">nothing on this station is playing it</span>
 					{/if}
 				</div>
@@ -696,7 +905,7 @@
 						<button class="primary" onclick={useProposal}>Use this grid</button>
 						<button class="ghost" onclick={() => (proposal = null)}>Discard</button>
 					{:else}
-						<button class="ghost" onclick={detect} disabled={!timeline.audio || busy !== null}>
+						<button class="ghost" onclick={detect} disabled={!clip || busy !== null}>
 							Detect beats
 						</button>
 					{/if}
@@ -1059,6 +1268,13 @@
 	.link { background: none; border: none; color: #2f6fd0; font: inherit; padding: 0; cursor: pointer; text-decoration: underline; }
 	.text-input { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 4px 6px; font: inherit; }
 	.text-input.narrow { width: 84px; }
+	.text-input.tiny { width: 56px; }
+	.chip { background: #18263b; border: 1px solid #2f6fd0; border-radius: 3px; color: #cfe0ff; padding: 3px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+	.chip.picked { background: #1d3354; border-color: #7fb0f5; }
+	.chip.faulty { border-color: #e05555; }
+	.channels { display: flex; flex-wrap: wrap; gap: 2px; max-width: 560px; }
+	.channel { width: 26px; height: 22px; background: #171717; border: 1px solid #333; border-radius: 2px; color: #777; font: inherit; font-size: 11px; padding: 0; cursor: pointer; }
+	.channel.on { background: #2f6fd0; border-color: #2f6fd0; color: #fff; }
 	.text-input.name { width: 160px; }
 	.primary { background: #2f6fd0; border: none; border-radius: 3px; color: #fff; padding: 5px 12px; font: inherit; cursor: pointer; }
 	.ghost { background: none; border: 1px solid #3a3a3a; border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; cursor: pointer; }

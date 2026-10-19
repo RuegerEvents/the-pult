@@ -273,26 +273,20 @@ pub struct Timeline {
     pub id: Uuid,
     #[pult(lifecycle = PERSISTED)]
     pub name: String,
-    /// The audio asset this timeline runs against, where there is one.
+    /// The sound on this timeline: files at positions, each going somewhere.
     ///
     /// Played by the station [`Timeline::node_id`] names, off the audio callback's own
     /// sample clock — see `infra/audio` — so the sound is the reference and everything
-    /// else follows the anchor it writes. A timeline with **no** audio is an ordinary
+    /// else follows the anchor it writes. A timeline with **no** clips is an ordinary
     /// stopwatch and runs exactly as it did before any of this existed, which is what
     /// "timecode without timecode" means and is the property that must not be lost.
-    #[serde(default)]
-    #[pult(lifecycle = PERSISTED)]
-    pub audio: Option<String>,
-    /// The reduced waveform of [`Timeline::audio`], as its own asset sha.
     ///
-    /// Computed once by whichever station first held the file and written here, so
-    /// every browser in the building fetches one small asset rather than decoding
-    /// fifty megabytes. A field rather than a lookup because the alternative — deriving
-    /// the peaks asset's name from the audio's — would be a second content-addressing
-    /// scheme, and a tablet would have to ask for a sha that might not exist yet.
+    /// A list rather than one file because a scare is a scream in one zone *and* a bang
+    /// in another, and making that two timelines started together would be two things
+    /// to keep in step that one clock already keeps in step for free.
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
-    pub peaks: Option<String>,
+    pub clips: Vec<AudioClip>,
     /// What the beat detector last found. See [`Detected`] on why this is not `grid`.
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
@@ -457,6 +451,83 @@ pub enum AtEnd {
     Loop,
 }
 
+/// One file on a timeline: where it starts, what of it plays, how loud, and where to.
+///
+/// Positions are milliseconds like everything else on a timeline. The trim is
+/// `offset_ms` into the file and `length_ms` of it from there, `None` being the rest of
+/// the file, so a clip dragged shorter keeps its file rather than becoming another one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AudioClip {
+    pub id: Uuid,
+    /// What it is called on the timeline: the file's name when it was added.
+    #[serde(default)]
+    pub name: String,
+    /// The audio asset, by sha256.
+    pub asset: String,
+    /// The reduced waveform of [`AudioClip::asset`], as its own asset sha.
+    ///
+    /// Computed once by whichever station first held the file and written here, so
+    /// every browser in the building fetches one small asset rather than decoding
+    /// fifty megabytes. A field rather than a lookup because the alternative — deriving
+    /// the peaks asset's name from the audio's — would be a second content-addressing
+    /// scheme, and a tablet would have to ask for a sha that might not exist yet.
+    #[serde(default)]
+    pub peaks: Option<String>,
+    /// Where the clip starts on the timeline.
+    #[serde(default)]
+    pub start_ms: u64,
+    /// How far into the file it starts.
+    #[serde(default)]
+    pub offset_ms: u64,
+    /// How much of the file it plays, from `offset_ms`. `None` is to the end.
+    #[serde(default)]
+    pub length_ms: Option<u64>,
+    /// In decibels, so zero is the file as it was mixed and a fader reads the way every
+    /// other fader in the building does.
+    #[serde(default)]
+    pub gain_db: f32,
+    #[serde(default)]
+    pub fade_in_ms: u32,
+    /// Not applied to a looped clip, which has no last time round to fade out of.
+    #[serde(default)]
+    pub fade_out_ms: u32,
+    /// Go round the trimmed region for as long as the timeline runs: an ambient bed.
+    #[serde(default)]
+    pub looped: bool,
+    pub destination: AudioDestination,
+}
+
+impl AudioClip {
+    /// The gain as the mixer wants it.
+    pub fn gain(&self) -> f32 {
+        10f32.powf(self.gain_db / 20.0)
+    }
+}
+
+/// Where a clip's sound comes out.
+///
+/// Per clip, because one scare plays out of the zone speaker and a prop at once. An
+/// enum because the station is not the only thing with a loudspeaker: a node's audio
+/// port is the next variant, and a clip routed there is played by the node rather than
+/// mixed here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum AudioDestination {
+    /// Output channels of the playing station's device, counting from one the way a
+    /// patch bay and Dante Controller do. A mono file goes to each of them; a file with
+    /// as many channels, or a multiple, goes across them in order; anything else is
+    /// its downmix on each. A channel the device has not got is a fault on the
+    /// timeline's status row — never folded onto one it has.
+    Station { channels: Vec<u16> },
+}
+
+impl Default for AudioDestination {
+    fn default() -> Self {
+        AudioDestination::Station { channels: vec![1, 2] }
+    }
+}
+
 /// The `at` a transport command was given, or now.
 ///
 /// The same rule [`crate::types::sequence`]'s `went_at` follows, and it has to be the
@@ -504,6 +575,11 @@ pub struct AudioStatus {
     pub drift_ms: i32,
     /// Where timecode chasing has got to, where this timeline chases any.
     pub ltc: Option<LtcStatus>,
+    /// Clips that are not playing and why, keyed by clip id: a channel the device has
+    /// not got, a file that would not decode. Per clip because the rest of the
+    /// timeline goes on sounding.
+    #[serde(default)]
+    pub clip_faults: std::collections::BTreeMap<String, String>,
 }
 
 /// What the timecode input is doing.
@@ -524,6 +600,23 @@ pub struct LtcStatus {
 /// Every timeline's audio status, keyed by timeline id: the LOCAL `audio_status` path.
 pub type AudioStatuses = std::collections::BTreeMap<String, AudioStatus>;
 
+/// The output device this station mixes every clip into: the LOCAL `audio_output` path.
+///
+/// What the clip editor needs to offer channels to route to. LOCAL for the reason
+/// `audio_status` is, which has a consequence worth knowing: a browser is told about
+/// the device of the station it is connected to, and the station playing a timeline
+/// may be another one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AudioOutput {
+    /// Open now, because something on this station has clips to play.
+    pub open: bool,
+    pub device: Option<String>,
+    pub channels: u16,
+    pub sample_rate: u32,
+    pub fault: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,8 +625,7 @@ mod tests {
         Timeline {
             id: Uuid::from_u128(1),
             name: "Act 1".into(),
-            audio: None,
-            peaks: None,
+            clips: Vec::new(),
             detected: None,
             source: TimelineSource::Internal,
             grid: Vec::new(),

@@ -102,6 +102,10 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     // else is playing it".
     ("audio_status", || serde_json::to_value(
         pult_schema::types::timeline::AudioStatuses::default()).unwrap_or_default()),
+    // The one device every clip on this station is mixed into: whether it is open,
+    // and how many channels it has, which is what a clip's destination is picked from.
+    ("audio_output", || serde_json::to_value(
+        pult_schema::types::timeline::AudioOutput::default()).unwrap_or_default()),
     ("output_coverage", || serde_json::to_value(OutputCoverage::default()).unwrap_or_default()),
     ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
     ("clients", || serde_json::to_value(ClientStatsMap::default()).unwrap_or_default()),

@@ -81,8 +81,7 @@ fn a_timeline(source: TimelineSource, events: Vec<TimelineEvent>) -> Timeline {
     Timeline {
         id: uuid::Uuid::new_v4(),
         name: "Act 1".into(),
-        audio: None,
-        peaks: None,
+        clips: Vec::new(),
         detected: None,
         source,
         grid: Vec::new(),

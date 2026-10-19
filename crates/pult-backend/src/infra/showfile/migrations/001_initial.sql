@@ -222,8 +222,7 @@ CREATE TABLE IF NOT EXISTS symbols (
 CREATE TABLE IF NOT EXISTS timelines (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
-    "audio" TEXT,
-    "peaks" TEXT,
+    "clips" TEXT NOT NULL,
     "detected" TEXT,
     "source" TEXT NOT NULL,
     "grid" TEXT NOT NULL,

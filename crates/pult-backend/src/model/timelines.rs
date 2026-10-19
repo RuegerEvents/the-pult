@@ -328,8 +328,7 @@ mod tests {
         Timeline {
             id: Uuid::from_u128(1),
             name: "Song".into(),
-            audio: None,
-            peaks: None,
+            clips: Vec::new(),
             detected: None,
             source: TimelineSource::Internal,
             grid: Vec::new(),

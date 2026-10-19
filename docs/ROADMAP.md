@@ -5609,6 +5609,113 @@ cargo test -p pult-backend --test counts              # a night of PIRs is no Hi
 cd frontend && npx vitest run src/lib/flow.test.ts
 ```
 
+### 70. A scream in one zone, and a bed in two others
+
+`audio-clips-and-routing`, built 2026-10-20 for the same gig as task 69. A haunt plays
+out of Dante Virtual Soundcard with more than eight zones: a scream in the speaker of
+the area it is for, the ambience in the others, and a scare that is a scream *and* a
+bang. A timeline had one file and played it to every channel of one device.
+
+**What went in.** `Timeline::audio` and `peaks` became `clips: Vec<AudioClip>`. A clip is
+an asset, a start on the timeline, a trim (`offset_ms` into the file and `length_ms` of
+it), gain in dB, fades, a loop flag, its own `peaks`, and a `destination`. A stored shape
+changed, so `SCHEMA_GENERATION` is 6 and a generation-5 show is refused by name rather
+than opened with its audio silently gone. Also new: `pult_audio::mix`, the arithmetic of
+all of it; the LOCAL `audio_output` path; `clip_faults` on each timeline's status row; a
+`clipId` on `timeline.detect`; and clips as blocks on lanes in the waveform, dragged to
+move and trimmed at their edges.
+
+**A destination is per clip, and an enum.** `AudioDestination::Station { channels }`
+names output channels counting from one, the way a patch bay and Dante Controller do.
+Item 4 of the gig adds `Node { … }`, which a node plays from its own flash or from a
+stream. Per clip rather than per timeline because one scare plays out of the zone
+speaker and a prop at once.
+
+**Three routing rules, and a refusal.** A mono file goes to every channel it names. A
+file with as many channels as it names, or a multiple, goes across them in order, so
+stereo to `[5, 6]` is left on 5 and right on 6. Anything else is the downmix on each
+channel, because stereo to one zone speaker should be the whole song and not its left
+side. A channel the device has not got refuses *that clip*, by name, on the status row,
+and the rest of the timeline goes on sounding. It is never folded onto a channel the
+device has, because that is somebody else's speaker and nobody at the desk can tell it
+from silence.
+
+**One stream, a deck per timeline.** Each timeline used to open its own `cpal` stream.
+CoreAudio would mix two of them on one device, but two callbacks are two clocks. Now
+every running timeline a station plays is a *deck* in one mixer inside one callback, at
+the device's full channel count. Each deck has its own cursor, advanced from the same
+sample count. So **each timeline anchors itself**, as task 67 had it, and two timelines on
+one station cannot drift apart. The drift rule is unchanged: measured off the deck's
+cursor minus the device latency, rewritten past 20 ms. It is now measured only while
+something on the deck is audible, for the reason a finished file was not measured
+before.
+
+**The callback neither locks nor allocates nor frees.** Decks arrive over a bounded
+`crossbeam_queue::ArrayQueue`, built off the audio thread. What a deck replaces goes
+back over a second queue and is dropped by the manager on its 25 ms tick: a deck holds
+`Arc`s to decoded files, and releasing forty megabytes of samples between two buffers is
+a click. An edit to a running timeline (a clip dragged) builds a new deck that carries
+on from the old one's cursor rather than from where the manager last thought it was.
+
+**The device stays open while anything here has a clip, running or not**, and every
+clip's file is decoded as soon as it is on a timeline. A scare is a timeline a flow
+starts, and opening CoreAudio or decoding an mp3 takes longer than a scare may take to
+begin. Closed when nothing this station plays has a clip, so a console with no sound in
+its show holds no device.
+
+**A loop at the timeline's end follows the anchor, and does not wait for it.** The deck
+knows the end and wraps there itself, sample-accurately, or holds there silent at a
+stopping one. When the leader's relocate arrives it lands where the sound already is,
+so a foreign transport change is followed only if it is more than 20 ms from where the
+sound is. Otherwise each lap would be a seek and a click. Drift is measured against the
+transport *folded* the same way, or the moment between the deck wrapping and the
+relocate arriving reads as a whole lap of drift. Watched on a live station: an ambience
+looping at 16 s held 8–11 ms from the anchor across every lap.
+
+**A deck starts a latency ahead.** A deck put in at the show's position is heard a
+device latency later, so it starts that far ahead, and so does a seek. Without it, every
+play and every locate began 10 ms behind on a laptop and 50 on a machine set up for
+safety, which the drift rule then corrected with one needless anchor write.
+
+#### Traps
+
+- **The waveform write was a ping-pong.** `clips` is one column, so writing one clip's
+  peaks writes the list. The timelines arriving at the manager are behind its own writes.
+  Each stale copy without a waveform started the reduction and the write again, and with
+  two files on a timeline they overwrote each other for as long as the station ran. It
+  showed as `reduced to a waveform` in the log every second. The manager now remembers
+  each file's reduction (`reduced`) and each clip it has written (`peaks_written`).
+- **The chase test fails on this machine with or without this task.**
+  `a_station_chases_timecode_and_fires_what_it_crosses` fails run alone on 88b13e1 and on
+  `aadf237` as well as here, and passes in the full suite. The listener opens the
+  machine's real input, and a microphone at another rate resets the decoder. That
+  belongs to task 67's open item about `device.rs`, not to this one.
+- **A shared target directory with a second worktree went stale.** After building an old
+  commit from `/tmp` into the same `target/`, `pult-audio` was not rebuilt and the
+  backend could not find `mix`. `touch` fixed it. Compare across commits with the same
+  target (memory: like for like), and touch a crate that seems to have forgotten itself.
+
+#### What is not done
+
+- **Node destinations.** The variant is named and the node half (firmware and protocol)
+  is written. The console half is item 4.
+- **A per-zone level.** A clip has a gain and the zone has none. A Dante zone that wants
+  turning down is turned down in Dante Controller or on the amp.
+- **Crossfaded loop seams.** A looped region wraps hard. An ambient bed made to loop
+  loops cleanly, and a region trimmed out of the middle of a song clicks at the seam.
+- **A browser on a station that is not the playing one** is offered sixteen channels to
+  route to, because `audio_output` is LOCAL and describes the device of the station it
+  is connected to.
+- **Never run against DVS itself.** Built and watched against a six-channel virtual device
+  (NDI Audio). Sixty-four channels at Dante's buffer sizes is what the to-test file asks
+  for.
+
+```
+cargo test -p pult-audio mix                          # placement, routing, decks, the end
+cargo test -p pult-backend --lib infra::audio         # folding, a beat moved through a clip
+cd frontend && npx vitest run src/lib/waveform.test.ts
+```
+
 
 ## What is next
 
