@@ -385,6 +385,34 @@ impl Mixer {
     }
 }
 
+/// One clip's region, rendered once into a buffer of its own: what a node is sent to
+/// keep, rather than what a station mixes live.
+///
+/// The same arithmetic as a deck, which is the point — the trim, the fades and the
+/// downmix a node plays have to be the ones the station would have played. Looping is
+/// left to whoever plays the result, so a looped placement is rendered as one time
+/// round of its region with no fade on either end.
+pub fn bounce(source: &Source, placement: Placement, channels: usize, sample_rate: u32) -> Vec<f32> {
+    let channels = channels.max(1);
+    let region = placement.region_ms(source.duration_ms());
+    let frames = (region * sample_rate as f64 / 1_000.0).round() as usize;
+    let outputs: Vec<u16> = (1..=channels as u16).collect();
+    let Ok(routes) = route(source.channels, &outputs, channels) else { return Vec::new() };
+    let placement = Placement {
+        start_ms: 0.0,
+        looped: false,
+        fade_in_ms: if placement.looped { 0.0 } else { placement.fade_in_ms },
+        fade_out_ms: if placement.looped { 0.0 } else { placement.fade_out_ms },
+        ..placement
+    };
+    let mut mixer = Mixer::new(channels, sample_rate, 1);
+    let voice = Voice { source: source.clone(), placement, routes };
+    let _ = mixer.put(Box::new(Deck::new(0, 0.0, vec![voice])), false);
+    let mut out = vec![0.0f32; frames * channels];
+    mixer.render(&mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,6 +623,30 @@ mod tests {
         render(&mut mixer, 10);
         assert_eq!(mixer.decks().iter().find(|d| d.id == 1).unwrap().cursor_ms, 5.0);
         assert_eq!(mixer.decks().iter().find(|d| d.id == 2).unwrap().cursor_ms, 1_010.0);
+    }
+
+    /// What a node keeps is the region the timeline plays: trimmed, at the rate asked
+    /// for, and down to the node's channels.
+    #[test]
+    fn a_bounce_is_the_trimmed_region_at_the_asked_rate() {
+        let source = counting(2, 1_000);
+        let placement = Placement { offset_ms: 100.0, length_ms: Some(200.0), ..placed(50.0) };
+        let out = bounce(&source, placement, 1, RATE);
+        assert_eq!(out.len(), 200, "200 ms at 1 kHz, wherever the clip starts on the timeline");
+        // Mono from stereo is the downmix: the two channels' frame 100, averaged.
+        assert!((out[0] - (0.100 + 0.1001) / 2.0).abs() < 1e-6, "{}", out[0]);
+
+        let doubled = bounce(&source, placement, 2, RATE * 2);
+        assert_eq!(doubled.len(), 2 * 400, "twice the rate, twice the frames");
+    }
+
+    #[test]
+    fn a_looped_bounce_is_one_time_round_with_no_fades() {
+        let source = constant(1, 1_000, 0.5);
+        let placement = Placement { looped: true, fade_in_ms: 500.0, ..placed(0.0) };
+        let out = bounce(&source, placement, 1, RATE);
+        assert_eq!(out.len(), 1_000);
+        assert_eq!(out[0], 0.5, "a fade-in baked into a loop would be heard on every lap");
     }
 
     impl Mixer {

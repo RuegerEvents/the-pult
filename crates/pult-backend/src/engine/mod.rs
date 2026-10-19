@@ -106,6 +106,11 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     // and how many channels it has, which is what a clip's destination is picked from.
     ("audio_output", || serde_json::to_value(
         pult_schema::types::timeline::AudioOutput::default()).unwrap_or_default()),
+    // What the station driving the OpenHaunt nodes has made of each one's clip store.
+    // LOCAL for the reason `audio_status` is: it is this station's conversation with
+    // the node, and a follower is having none.
+    ("node_audio", || serde_json::to_value(
+        pult_schema::types::devices::NodeAudioStates::default()).unwrap_or_default()),
     ("output_coverage", || serde_json::to_value(OutputCoverage::default()).unwrap_or_default()),
     ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
     ("clients", || serde_json::to_value(ClientStatsMap::default()).unwrap_or_default()),

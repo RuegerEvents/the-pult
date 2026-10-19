@@ -32,7 +32,28 @@ use pult_schema::{
     },
 };
 
+/// Preferences of this binary's own, naming devices no machine has.
+///
+/// Without this a station started here reads the real `preferences.toml` and opens the
+/// machine's real default input to chase timecode — and a microphone at another rate
+/// resets the decoder between every buffer the test pushes, which is how the chase test
+/// failed run alone on a laptop and passed in the full suite. Named rather than left
+/// out, because told nothing is the system default. Once per process: an env var is.
+fn hermetic_preferences() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let path = std::env::temp_dir().join(format!("pult-audio-prefs-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &path,
+            "[audio]\ninput = \"no input device in tests\"\noutput = \"no output device in tests\"\n",
+        )
+        .expect("a preferences file");
+        std::env::set_var("PULT_PREFERENCES", &path);
+    });
+}
+
 async fn a_station() -> Running {
+    hermetic_preferences();
     let show = std::env::temp_dir().join(format!("pult-audio-{}.pult", uuid::Uuid::new_v4()));
     pult_backend::start(Config {
         port: 0,

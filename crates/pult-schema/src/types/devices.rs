@@ -63,6 +63,18 @@ pub struct DiscoveredDevice {
     /// the description matters.
     #[serde(default)]
     pub effects: Option<EffectCapability>,
+    /// What the node can play, from the `audio` object of the same `/info` body. None
+    /// on a node without a loudspeaker, and on firmware older than audio.
+    ///
+    /// Beside `description` rather than in it, for the reason `effects` is: the fixture
+    /// type's id hashes the description, and a node that learnt to make sound must not
+    /// orphan every parameter patched against the type it had before.
+    #[serde(default)]
+    pub audio: Option<NodeAudio>,
+    /// What the node last said on `audio/status`: its voices, its stream, whether it
+    /// has the console's clock.
+    #[serde(default)]
+    pub audio_status: Option<NodeAudioStatus>,
     /// The module switches mains voltage. The panel says so before anything is
     /// adopted, because the consequence of a mistake here is not a dark light.
     pub is_mains: bool,
@@ -72,6 +84,138 @@ pub struct DiscoveredDevice {
     pub adopted_fixture_id: Option<Uuid>,
     pub health: Option<DeviceHealth>,
     pub last_seen: DateTime<Utc>,
+}
+
+/// A node's loudspeaker, as `GET /api/v1/info` describes it. See the OpenHaunt
+/// protocol's audio extension (`node/docs/13-audio.md`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeAudio {
+    /// The rate the node mixes at. Anything else it is sent is resampled there.
+    pub rate: u32,
+    /// How many clips play at once. The stream is one more, beside these.
+    pub voices: u32,
+    pub outputs: Vec<NodeAudioOutput>,
+    pub clips: NodeClipBudget,
+    #[serde(default)]
+    pub stream: Option<NodeStreamCaps>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeAudioOutput {
+    /// `line` or `speaker` on the V0 boards.
+    pub id: String,
+    pub name: String,
+    /// `line` or `amp`. An amp output is not a line out, and the panel says so.
+    pub kind: String,
+    pub channels: u16,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeClipBudget {
+    #[serde(default)]
+    pub formats: Vec<String>,
+    pub bytes_total: u64,
+    pub bytes_free: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeStreamCaps {
+    pub payload: String,
+    pub max_buffer_ms: u32,
+}
+
+impl NodeAudio {
+    /// The `audio` object of an `/info` body. None where it is absent, which is what a
+    /// node without a loudspeaker says.
+    pub fn from_info(info: &serde_json::Value) -> Option<NodeAudio> {
+        serde_json::from_value(info.get("audio")?.clone()).ok()
+    }
+
+    /// The most channels any output takes: two on a board with a line out, one where
+    /// there is only the amplifier. Never more than two, which is what the node takes.
+    pub fn channels(&self) -> u16 {
+        self.outputs.iter().map(|o| o.channels).max().unwrap_or(1).clamp(1, 2)
+    }
+}
+
+/// One `openhaunt/<sn>/audio/status` message.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeAudioStatus {
+    #[serde(default)]
+    pub voices: Vec<NodeVoice>,
+    #[serde(default)]
+    pub stream: Option<NodeStreamStatus>,
+    #[serde(default)]
+    pub underruns: u64,
+    #[serde(default)]
+    pub master: f32,
+    /// The node has the console's clock. Until it does, every `at` is off by however
+    /// far apart the two clocks are.
+    #[serde(default)]
+    pub locked: bool,
+    #[serde(default)]
+    #[ts(type = "string | null")]
+    pub reported_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeVoice {
+    pub voice: String,
+    #[serde(default)]
+    pub clip: String,
+    #[serde(default)]
+    pub pos_ms: u64,
+    #[serde(default, rename = "loop")]
+    pub looped: bool,
+    #[serde(default)]
+    pub gain: f32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeStreamStatus {
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
+    pub depth_ms: u32,
+    #[serde(default)]
+    pub late: u64,
+    #[serde(default)]
+    pub missing: u64,
+    #[serde(default)]
+    pub resyncs: u64,
+}
+
+/// What the station driving the nodes has made of each one's clip store: the LOCAL
+/// `node_audio` path, keyed by serial.
+///
+/// LOCAL, and written only by that station, for the reason `output_status` is: it is
+/// this station's conversation with the node, and a follower is having none.
+pub type NodeAudioStates = BTreeMap<String, NodeAudioState>;
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeAudioState {
+    /// The clips the node holds, by the sha of the bytes it holds.
+    pub stored: Vec<String>,
+    pub bytes_total: u64,
+    pub bytes_free: u64,
+    /// The clip being uploaded now, if one is.
+    pub uploading: Option<String>,
+    /// How many clips the show wants on this node and does not have yet.
+    pub pending: u32,
+    /// An RTP stream is going to this node.
+    pub streaming: bool,
+    /// Why something is not on the node, in words.
+    pub fault: Option<String>,
 }
 
 /// This node's view of the OpenHaunt devices around it.

@@ -5717,6 +5717,114 @@ cd frontend && npx vitest run src/lib/waveform.test.ts
 ```
 
 
+### 71. A scream from the skeleton itself
+
+`node-audio`, built 2026-10-20 for the Heinz Horror Garten. Task 70 named
+`AudioDestination::Node` and left it empty. The node half was already written: firmware
+`7a76c24` and the protocol in `OpenHaunt/node/docs/13-audio.md`. A node keeps WAV
+clips by sha256, starts them on named voices at a show time, and takes one L16 RTP
+stream at a playout delay the console chooses. This is the console's half.
+
+**What went in.** `AudioDestination::Node { serial, mode }` and `NodeAudioMode` (`Clip`
+by default, or `Stream`). `DiscoveredDevice` gains `audio` (read from the `/info` body)
+and `audio_status` (from MQTT `audio/status`). The directory entry gains `audio` and
+`on_broker`. `node_audio` is a new LOCAL path holding each node's store as the station
+driving it sees it. `pult_audio` gains `wav` (PCM16 and IMA ADPCM, written and read),
+`rtp` (an L16 packetiser) and `mix::bounce`. `infra/audio/nodes.rs` does the rest. The
+simulator gained a loudspeaker (`--audio`, or `audio` in a config file) that keeps what it
+was sent, so the console can be tested against it end to end.
+
+**Clip or stream is the operator's choice, per clip, and clip is the default.** It is
+not worked out from the file. A clip that grew past the node's store and quietly became
+a stream would change its latency and start depending on the wifi, with nothing at the
+desk saying so. A clip that does not fit is refused on the clip, by name, as
+`does not fit on the node`.
+
+**What a node keeps is the region the timeline plays.** It is trimmed, faded,
+resampled and written once (`mix::bounce` and `wav::encode`), so a node looping it
+loops exactly what a deck would. Ten seconds or less goes as PCM at the node's rate,
+because ADPCM's noise floor is audible under a quiet sting. Anything longer goes as
+ADPCM at 32 kHz, which is a quarter of the size. Both encodings are deterministic, so
+the sha is the same on every station and after every restart. **Gain travels on
+`play`**, not in the file, so a fader dragged in rehearsal does not rewrite flash. A
+node cannot amplify, so above 0 dB plays at 0 dB.
+
+**The station driving the nodes is the one that talks to them.** That is the leader:
+it holds the broker and publishes `openhaunt/clock`, and every `at` is read against
+that clock. `Timeline::node_id` still decides which station mixes the *station* clips,
+so a scare with a scream in Dante and a bang on a prop can be played by two machines.
+
+**`at` is the show time this time round of the clip starts**, worked out from the anchor
+(`nodes::occurrence`). It is sent at most two seconds ahead, because the protocol does
+not say how long a node holds a command. A locate into the middle of a clip sends the
+start in the past and no offset, and the node joins where the clip would be by now. A
+looping timeline is a new time round per lap. A resend is suppressed within
+`DRIFT_MS`, so the leader's relocate at the top of a lap, which lands a millisecond
+off, is not a second `play`.
+
+**Uploads are off the loop, one per node, and only once a clip has settled.** A PUT of
+megabytes into flash stops the node's caches for every sector erase, and a trim being
+dragged is a new file every frame. So `nodes::plan` hands each idle node one request,
+in this order: ask what it holds, delete what nothing wants, then upload what has
+stood still for `SETTLE_MS`. Delete comes before upload so that yesterday's scream is
+not what makes today's not fit.
+
+**A stream is a thread timed from the show clock**, not from a sound card: the node has
+its own DAC and plays each sample at the show time the session maps it to. The thread
+renders the node's stream clips with the same `Mixer`, puts every deck back at the
+transport's position for the next frame whenever the timeline changes, and repeats the
+session's `start` every five seconds with the same mapping. That re-anchors nothing,
+and a node that rebooted mid-stream picks the session back up. A station that falls
+more than 500 ms behind moves the mapping on rather than sending a backlog nobody will
+hear.
+
+#### Traps
+
+- **Nothing may be deleted before the timelines arrive.** At start-up nothing is
+  wanted yet, so every clip on every node looks unwanted. `plan` deletes only after
+  `saw_timelines`.
+- **A node on mDNS is not a node on the broker.** Audio has no HTTP form of `play`. A
+  node that was resolved but has not connected yet would miss a command that the
+  console had marked as sent. `on_broker` went into the directory, and a node becoming
+  reachable has its sent voices and its store view forgotten, so everything is sent
+  again.
+- **A voice name made from the head of two uuids** was `0000000.0000000` for every
+  clip in a test, because `Uuid::from_u128` keeps the high bits zero. The tail is just
+  as random in a v4, and differs in tests too.
+- **The chase test was hermetic only by luck.** A station started in `tests/audio.rs`
+  read the real `preferences.toml` and opened the machine's default input. It now names
+  devices no machine has, through `PULT_PREFERENCES`. Run alone today it passed both
+  with and without that change, so task 70's failure was not reproduced. It is just no
+  longer possible.
+- **This machine's mDNS does not carry the simulator's announcements**, not even to
+  `dns-sd`. The screenshots came from a throwaway harness that starts a station and two
+  simulators in one process and resolves them by hand. The e2e tests resolve by hand
+  for the same reason, and always have.
+
+#### What is not done
+
+- **Never run against a node.** The firmware it talks to has not met hardware either.
+  Every figure here (the 150 ms delay, two seconds of lookahead, the settle time) is a
+  default nobody has heard yet.
+- **No output choice per clip.** A node has one I2S bus, so every output plays the same
+  mix. Enabling one is `audio/output`, and nothing in the console sends it yet.
+- **A timeline played at a rate other than 1** has its starts placed correctly, but the
+  node plays the clip at normal speed.
+- **Holes in the protocol, decided here.** It does not say how far ahead a node will
+  hold a `play`, or whether a replacing `play` takes over when it arrives or at its
+  `at`. The console sends at most two seconds early and stops a voice that is sounding
+  before replaying it later. It does not say which UDP port a stream should use either;
+  the console uses 5004 for every node, since each has one stream.
+
+```
+cargo test -p pult-audio wav rtp mix                # the files, the packets, the bounce
+cargo test -p pult-backend --lib infra::audio       # when, what next, how a voice is named
+cargo test -p pult-backend --lib devices::e2e_tests # upload, play, stop, delete, and a stream
+cd frontend && npx vitest run src/lib/destination.test.ts
+cargo run -p openhaunt-node-sim -- --module contact --serial area2 --audio
+```
+
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

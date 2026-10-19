@@ -86,9 +86,9 @@ pub struct AudioClip {
 /// Where a clip's sound comes out.
 ///
 /// Per clip, because one scare plays out of the zone speaker and a prop at once. An
-/// enum because the station is not the only thing with a loudspeaker: a node's audio
-/// port is the next variant, and a clip routed there is played by the node rather than
-/// mixed here.
+/// enum because the station is not the only thing with a loudspeaker: a clip routed to
+/// an OpenHaunt node is played by the node, from its own flash or from a stream, rather
+/// than mixed here. See `infra/audio/nodes.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AudioDestination {
     /// Output channels of the playing station's device, counting from one the way a
@@ -97,6 +97,12 @@ pub enum AudioDestination {
     /// its downmix on each. A channel the device has not got is a fault on the
     /// timeline's status row — never folded onto one it has.
     Station { channels: Vec<u16> },
+    /// An OpenHaunt node's loudspeaker, by the node's serial: the key the device list,
+    /// the fixture's address and every MQTT topic already use.
+    ///
+    /// Which of a node's outputs is not here, because it cannot be: a node has one I2S
+    /// bus and every output plays the same mix. Enabling one is a fact about the node.
+    Node { serial: String, #[serde(default)] mode: NodeAudioMode },
 }
 
 /// A named slice of a channel's range: "Open", "Breakup", "Strobe".
@@ -1280,6 +1286,31 @@ pub enum NetService {
     /// "the stage rack's cable is not there" are two different faults an operator has
     /// to be able to tell apart.
     Input(Uuid),
+}
+
+/// How a clip reaches a node.
+///
+/// Per clip and chosen by the operator, never worked out: a clip that grew past the
+/// node's store and quietly became a stream would change its latency and start
+/// depending on the wifi, with nothing at the desk saying so.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum NodeAudioMode {
+    /// Uploaded to the node's flash ahead of time and started there at a show time.
+    /// Immune to the network once it is there, and the right thing for a scare.
+    #[default]
+    Clip,
+    /// Sent as it plays, over RTP from the station driving the nodes, a playout delay
+    /// ahead. No size limit, and it needs the network for as long as it sounds.
+    Stream,
 }
 
 #[derive(

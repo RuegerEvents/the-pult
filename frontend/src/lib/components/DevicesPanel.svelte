@@ -5,6 +5,7 @@
 	import { select, selected, toggle } from '$lib/stores/selection.js';
 	import { editing } from '$lib/stores/editing.js';
 	import OutputGaps from './OutputGaps.svelte';
+	import { bytesText } from '$lib/destination.js';
 	import type { DevicesState, DiscoveredDevice } from '$lib/generated/index.js';
 
 	const client = getClientContext();
@@ -215,6 +216,31 @@
 									</dd>
 									{#if h.errors.length > 0}
 										<dt>Errors</dt><dd class="bad">{h.errors.join(', ')}</dd>
+									{/if}
+								{/if}
+								{#if device.audio}
+									{@const a = device.audio}
+									<!-- What the node said its loudspeaker is. An amp output is a
+									     bridged speaker drive, never a line out, and says so. -->
+									<dt>Sound</dt>
+									<dd>
+										{a.outputs
+											.map((o) => `${o.name} (${o.kind === 'amp' ? 'speaker drive, not line level' : `${o.channels} ch line`})`)
+											.join(', ')}
+										· {a.voices} voices at {a.rate / 1000} kHz
+										· {bytesText(a.clips.bytes_free)} of {bytesText(a.clips.bytes_total)} free
+									</dd>
+									{#if device.audio_status}
+										{@const st = device.audio_status}
+										<dt>Playing</dt>
+										<dd class:bad={!st.locked || st.underruns > 0}>
+											{st.voices.length
+												? st.voices.map((v) => v.voice).join(', ')
+												: 'nothing'}
+											{#if st.stream?.active}· stream {st.stream.depth_ms} ms deep, {st.stream.missing} missing, {st.stream.late} late{/if}
+											{#if st.underruns > 0}· {st.underruns} underruns{/if}
+											{#if !st.locked}· not locked to the console's clock{/if}
+										</dd>
 									{/if}
 								{/if}
 							</dl>

@@ -9,7 +9,13 @@
 use openhaunt_node_sim::{Input, ModuleKind, SimConfig, SimHandle};
 use pult_schema::{path::PathSegment, types::openhaunt};
 
+use std::sync::Arc;
+
+use pult_schema::events::operation::NodeId;
+use uuid::Uuid;
+
 use super::tests::*;
+use crate::infra::showfile;
 
 /// Start a node and hand it to the manager as though mDNS had found it.
 async fn a_simulated_node(h: &Harness, module: ModuleKind, serial: &str) -> SimHandle {
@@ -429,4 +435,218 @@ async fn a_node_that_can_trace_a_shape_is_left_to_get_on_with_it() {
         crate::infra::devices::mqtt::CLOCK_TOPIC,
         "the node subscribes to the topic the console publishes",
     );
+}
+
+// ── A node's loudspeaker ──────────────────────────────────────────────────────
+
+/// A second of a 440 Hz sine, mono, as the WAV an operator would have dropped on a
+/// timeline.
+fn a_scream() -> Vec<u8> {
+    let samples: Vec<f32> =
+        (0..48_000).map(|n| (n as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.5).collect();
+    pult_audio::wav::encode(&samples, 1, 48_000, pult_audio::wav::Encoding::Pcm16).unwrap()
+}
+
+fn a_timeline_with(clip: pult_schema::types::timeline::AudioClip, anchor_ms: u64) -> pult_schema::types::timeline::Timeline {
+    pult_schema::types::timeline::Timeline {
+        id: uuid::Uuid::new_v4(),
+        name: "Scare".into(),
+        clips: vec![clip],
+        detected: None,
+        source: pult_schema::types::timeline::TimelineSource::Internal,
+        grid: Vec::new(),
+        markers: Vec::new(),
+        events: Vec::new(),
+        tracks: Vec::new(),
+        speed_master: None,
+        node_id: None,
+        end: None,
+        running: true,
+        anchor_ms,
+        position_at_anchor_ms: 0,
+        rate: 1.0,
+        recording: None,
+    }
+}
+
+/// The whole of a clip's life on a node: made for it, uploaded and verified by sha,
+/// played at the show time the anchor says, stopped with the timeline, and deleted
+/// when nothing on any timeline wants it any more. Every step over the real HTTP and
+/// the real broker, to a node that shares no code with the console.
+#[tokio::test]
+async fn a_clip_routed_to_a_node_is_uploaded_played_stopped_and_let_go_of() {
+    use pult_schema::types::timeline::{AudioClip, AudioDestination, NodeAudioMode};
+
+    let h = harness().await;
+    let mut config = SimConfig::new(ModuleKind::DryContact, "e2e-audio");
+    config.node.audio = Some(openhaunt_node_sim::audio::default_description());
+    let sim = openhaunt_node_sim::start(config).await.expect("the simulator starts");
+    h.resolve_at("e2e-audio", ModuleKind::DryContact.type_id(), loopback(sim.http_addr)).await;
+    h.devices.adopt("e2e-audio".into()).await.unwrap();
+    eventually("the node to describe its loudspeaker", || async {
+        h.state().await.discovered.get("e2e-audio").is_some_and(|d| d.audio.is_some())
+    })
+    .await;
+
+    // A station that leads, with somewhere to keep the file.
+    let net = crate::infra::net::Network::unconfigured();
+    net.set_standing(crate::infra::net::Standing { is_leader: true, sacn_slot: None });
+    let dir = std::env::temp_dir().join(format!("pult-node-audio-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pool = Arc::new(showfile::open_in_memory().await.unwrap());
+    let assets = crate::infra::assets::AssetStore::new(Some(dir), pool);
+    let asset = assets.put("audio/wav", &a_scream()).await.unwrap();
+    let (manager, audio) = crate::infra::audio::AudioManager::new(
+        NodeId(Uuid::new_v4()),
+        h.engine.clone(),
+        net,
+        Default::default(),
+        Some(assets),
+    );
+    tokio::spawn(manager.with_nodes(h.directory.clone(), h.devices.clone()).run());
+
+    let anchor = pult_schema::clock::now_ms();
+    let clip = AudioClip {
+        id: uuid::Uuid::new_v4(),
+        name: "Scream".into(),
+        asset,
+        peaks: None,
+        start_ms: 0,
+        offset_ms: 0,
+        length_ms: None,
+        gain_db: -6.0,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        // Looped, so it is still sounding when the upload has settled and landed.
+        looped: true,
+        destination: AudioDestination::Node { serial: "e2e-audio".into(), mode: NodeAudioMode::Clip },
+    };
+    let mut timeline = a_timeline_with(clip.clone(), anchor);
+    audio.timelines(vec![timeline.clone()]);
+
+    let held = sim.audio.clone();
+    eventually("the clip to be on the node", || {
+        let held = held.clone();
+        async move { held.clip_count() == 1 }
+    })
+    .await;
+
+    let mut commands = sim.audio_commands.clone();
+    let voice = crate::infra::audio::nodes::voice_name(timeline.id, clip.id);
+    eventually("a play at the anchor", || {
+        let commands = commands.clone();
+        let voice = voice.clone();
+        async move {
+            commands.borrow().iter().any(|(verb, body)| {
+                verb == "play" && body["voice"] == serde_json::json!(voice) && body["at"] == serde_json::json!(anchor)
+            })
+        }
+    })
+    .await;
+    let play = commands
+        .borrow_and_update()
+        .iter()
+        .find(|(verb, _)| verb == "play")
+        .map(|(_, body)| body.clone())
+        .unwrap();
+    assert_eq!(play["loop"], serde_json::json!(true));
+    let gain = play["gain"].as_f64().unwrap();
+    assert!((gain - 0.501).abs() < 0.01, "-6 dB travels as a gain on play, not in the file: {gain}");
+
+    timeline.running = false;
+    audio.timelines(vec![timeline.clone()]);
+    eventually("a stop for the voice", || {
+        let commands = commands.clone();
+        let voice = voice.clone();
+        async move {
+            commands.borrow().iter().any(|(verb, body)| verb == "stop" && body["voice"] == serde_json::json!(voice))
+        }
+    })
+    .await;
+
+    timeline.clips.clear();
+    audio.timelines(vec![timeline]);
+    eventually("the clip to be deleted", || {
+        let held = held.clone();
+        async move { held.clip_count() == 0 }
+    })
+    .await;
+}
+
+/// A stream-mode clip is sent as it plays: the node is told where the session starts,
+/// and RTP packets arrive on the port it named.
+#[tokio::test]
+async fn a_stream_mode_clip_reaches_the_node_as_rtp() {
+    use pult_schema::types::timeline::{AudioClip, AudioDestination, NodeAudioMode};
+
+    let h = harness().await;
+    let mut config = SimConfig::new(ModuleKind::DryContact, "e2e-stream");
+    config.node.audio = Some(openhaunt_node_sim::audio::default_description());
+    let sim = openhaunt_node_sim::start(config).await.expect("the simulator starts");
+    h.resolve_at("e2e-stream", ModuleKind::DryContact.type_id(), loopback(sim.http_addr)).await;
+    h.devices.adopt("e2e-stream".into()).await.unwrap();
+    eventually("the node on the broker", || async {
+        h.directory.borrow().entries.get("e2e-stream").is_some_and(|e| e.on_broker && e.audio.is_some())
+    })
+    .await;
+
+    let net = crate::infra::net::Network::unconfigured();
+    net.set_standing(crate::infra::net::Standing { is_leader: true, sacn_slot: None });
+    let dir = std::env::temp_dir().join(format!("pult-node-stream-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pool = Arc::new(showfile::open_in_memory().await.unwrap());
+    let assets = crate::infra::assets::AssetStore::new(Some(dir), pool);
+    let asset = assets.put("audio/wav", &a_scream()).await.unwrap();
+    let (manager, audio) = crate::infra::audio::AudioManager::new(
+        NodeId(Uuid::new_v4()),
+        h.engine.clone(),
+        net,
+        Default::default(),
+        Some(assets),
+    );
+    tokio::spawn(manager.with_nodes(h.directory.clone(), h.devices.clone()).run());
+
+    let clip = AudioClip {
+        id: uuid::Uuid::new_v4(),
+        name: "Bed".into(),
+        asset,
+        peaks: None,
+        start_ms: 0,
+        offset_ms: 0,
+        length_ms: None,
+        gain_db: 0.0,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        looped: true,
+        destination: AudioDestination::Node { serial: "e2e-stream".into(), mode: NodeAudioMode::Stream },
+    };
+    let mut timeline = a_timeline_with(clip, pult_schema::clock::now_ms());
+    audio.timelines(vec![timeline.clone()]);
+
+    let commands = sim.audio_commands.clone();
+    eventually("a stream start", || {
+        let commands = commands.clone();
+        async move {
+            commands.borrow().iter().any(|(verb, body)| verb == "stream" && body["op"] == serde_json::json!("start"))
+        }
+    })
+    .await;
+    let held = sim.audio.clone();
+    eventually("packets on the stream port", || {
+        let held = held.clone();
+        async move { held.stream_packets() > 10 }
+    })
+    .await;
+    // Nothing was uploaded: a streamed clip never goes to the store.
+    assert_eq!(sim.audio.clip_count(), 0);
+
+    timeline.running = false;
+    audio.timelines(vec![timeline]);
+    eventually("a stream stop", || {
+        let commands = commands.clone();
+        async move {
+            commands.borrow().iter().any(|(verb, body)| verb == "stream" && body["op"] == serde_json::json!("stop"))
+        }
+    })
+    .await;
 }

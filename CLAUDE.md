@@ -1715,6 +1715,14 @@ the status row — never folded onto a channel that exists, which is somebody el
 speaker. The device is open while anything here *has* a clip, running or not, because a
 scare a flow starts cannot wait for CoreAudio.
 
+**A node's loudspeaker is somewhere a clip can go.** `AudioDestination::Node` hands a
+clip to an OpenHaunt node, which plays it from its own flash at a show time or from an
+RTP stream. The operator picks which per clip; nothing works it out from the file.
+**The station driving the nodes is the one that speaks to them**, because the broker
+and `openhaunt/clock` are its own. What is uploaded is the region the timeline plays,
+written deterministically so the sha never changes. Gain travels on `play`, so a fader
+never rewrites flash. See `infra/audio/nodes.rs` and task 71.
+
 **Peaks are an asset, computed once by the station that plays the file.** Min and max
 per bin at a hundred bins a second, as `i16`, under `application/vnd.pult.peaks`;
 `AudioClip::peaks` is the sha. Min and max because a waveform is read as an envelope and

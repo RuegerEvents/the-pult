@@ -76,6 +76,7 @@
 pub mod decode;
 pub mod device;
 pub mod models;
+pub mod nodes;
 
 use std::collections::{HashMap, HashSet};
 use pult_schema::{
@@ -119,6 +120,10 @@ pub struct AudioPrefs {
     pub output: Option<String>,
     /// Where timecode comes in.
     pub input: Option<String>,
+    /// How far ahead a stream to an OpenHaunt node is sent: the playout delay the node
+    /// buffers. 150 ms when unsaid, which rides out ordinary wifi and still feels
+    /// immediate for a triggered scare.
+    pub node_stream_delay_ms: Option<u32>,
 }
 
 pub enum AudioCommand {
@@ -245,6 +250,8 @@ pub struct AudioManager {
     /// Why a clip is not playing while the rest of its timeline is, keyed by timeline
     /// and then by clip.
     clip_faults: HashMap<Uuid, std::collections::BTreeMap<String, String>>,
+    /// What the OpenHaunt nodes' loudspeakers hold and are told. See [`nodes`].
+    nodes: nodes::Nodes,
 }
 
 impl AudioManager {
@@ -265,7 +272,7 @@ impl AudioManager {
                 node_id,
                 engine,
                 net,
-                prefs,
+                prefs: prefs.clone(),
                 assets,
                 rx,
                 samples_tx,
@@ -281,9 +288,21 @@ impl AudioManager {
                 refused: HashSet::new(),
                 faults: HashMap::new(),
                 clip_faults: HashMap::new(),
+                nodes: nodes::Nodes::new(prefs.node_stream_delay_ms),
             },
             AudioHandle(tx),
         )
+    }
+
+    /// Where the OpenHaunt nodes are and how to talk to them, so a clip can be routed
+    /// to one. A manager without them plays only its own device.
+    pub fn with_nodes(
+        mut self,
+        directory: tokio::sync::watch::Receiver<crate::infra::devices::DeviceDirectory>,
+        devices: crate::infra::devices::DeviceHandle,
+    ) -> Self {
+        self.nodes.attach(directory, devices);
+        self
     }
 
     pub async fn run(mut self) {
@@ -306,6 +325,7 @@ impl AudioManager {
                         AudioCommand::Stop => break,
                         AudioCommand::Timelines(timelines) => {
                             self.timelines = timelines;
+                            self.nodes.saw_timelines();
                             self.reconcile().await;
                         }
                         AudioCommand::Timecode { timeline_id, samples, sample_rate } => {
@@ -327,7 +347,11 @@ impl AudioManager {
                     let Some((timeline_id, samples, sample_rate)) = got else { break };
                     self.take_timecode(timeline_id, &samples, sample_rate).await;
                 }
-                _ = steer.tick() => self.steer().await,
+                Some(done) = self.nodes.results.recv() => self.node_request_done(done).await,
+                _ = steer.tick() => {
+                    self.steer().await;
+                    self.schedule_nodes(pult_schema::clock::now_ms());
+                }
                 _ = report.tick() => {
                     // Where a device appearing or disappearing is acted on, and where a
                     // failover changes which station is playing — neither changes the
@@ -379,6 +403,7 @@ impl AudioManager {
         if let Some(output) = &self.output {
             output.collect();
         }
+        self.reconcile_nodes().await;
     }
 
     /// Open the device while anything this station plays has a clip on it, and close
@@ -532,23 +557,8 @@ impl AudioManager {
         clip: &AudioClip,
         device_channels: Option<usize>,
     ) -> Result<Option<pult_audio::Voice>, String> {
-        let AudioDestination::Station { channels } = &clip.destination;
-        if self.refused.contains(&clip.asset) {
-            return Err("the file would not decode".into());
-        }
-        let decoded = match self.cache.get(&clip.asset) {
-            Some(decoded) => decoded,
-            None => {
-                let bytes = self.asset_bytes(&clip.asset).await?;
-                match self.cache.decode(&clip.asset, bytes).await {
-                    Ok(decoded) => decoded,
-                    Err(e) => {
-                        self.refused.insert(clip.asset.clone());
-                        return Err(e);
-                    }
-                }
-            }
-        };
+        let AudioDestination::Station { channels } = &clip.destination else { return Ok(None) };
+        let decoded = self.decoded(&clip.asset).await?;
         let Some(device_channels) = device_channels else { return Ok(None) };
         let routes = pult_audio::mix::route(decoded.channels as usize, channels, device_channels)
             .map_err(|e| e.to_string())?;
@@ -561,6 +571,25 @@ impl AudioManager {
             placement: placement(clip),
             routes,
         }))
+    }
+
+    /// A file, decoded, from the cache or from wherever its bytes are. A file that
+    /// would not decode is remembered as such and not tried again.
+    async fn decoded(&mut self, sha: &str) -> Result<std::sync::Arc<decode::Decoded>, String> {
+        if self.refused.contains(sha) {
+            return Err("the file would not decode".into());
+        }
+        if let Some(decoded) = self.cache.get(sha) {
+            return Ok(decoded);
+        }
+        let bytes = self.asset_bytes(sha).await?;
+        match self.cache.decode(sha, bytes).await {
+            Ok(decoded) => Ok(decoded),
+            Err(e) => {
+                self.refused.insert(sha.to_string());
+                Err(e)
+            }
+        }
     }
 
     /// An asset's bytes, from here or from a peer.
@@ -962,12 +991,16 @@ impl AudioManager {
         let now = pult_schema::clock::now_ms();
         let mut statuses = AudioStatuses::new();
         for timeline in &self.timelines {
-            if !self.plays(timeline) {
+            // A timeline another station plays still gets a row here where this one is
+            // the station driving its nodes and a node clip of it is not playing.
+            let node_faults = self.nodes.faults.get(&timeline.id);
+            if !self.plays(timeline) && node_faults.is_none() {
                 continue;
             }
             let playing = self.playing.get(&timeline.id);
             let chasing = self.chasing.get(&timeline.id);
-            let clip_faults = self.clip_faults.get(&timeline.id).cloned().unwrap_or_default();
+            let mut clip_faults = self.clip_faults.get(&timeline.id).cloned().unwrap_or_default();
+            clip_faults.extend(node_faults.cloned().unwrap_or_default());
             if playing.is_none()
                 && chasing.is_none()
                 && !self.faults.contains_key(&timeline.id)

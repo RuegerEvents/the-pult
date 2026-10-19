@@ -21,6 +21,7 @@ use std::{
     time::Duration,
 };
 
+pub mod audio;
 pub mod motion;
 
 use anyhow::Result;
@@ -198,6 +199,10 @@ pub struct NodeConfig {
     /// unprompted. None leaves the node quiet until something drives it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_ms: Option<u64>,
+    /// The `audio` object `/api/v1/info` answers with, for a node with a loudspeaker.
+    /// Absent is a node without one. See [`audio::default_description`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<Value>,
 }
 
 fn yes() -> bool {
@@ -385,6 +390,7 @@ impl ModuleKind {
             http_port: 0,
             advertise: false,
             auto_ms: None,
+            audio: None,
         }
     }
 
@@ -580,6 +586,10 @@ pub struct SimHandle {
     pub inputs: mpsc::Sender<Input>,
     /// The whole node in one value, for a window onto it. See [`Snapshot`].
     pub snapshot: watch::Receiver<Snapshot>,
+    /// Every `audio/<verb>` this node was sent, in order, as `(verb, body)`.
+    pub audio_commands: watch::Receiver<Vec<(String, Value)>>,
+    /// Its loudspeaker: the clips it holds and the stream packets it has had.
+    pub audio: Arc<audio::Audio>,
     /// Put the node away: its HTTP socket, its mDNS registration, its MQTT
     /// connection, its sACN socket. What a window needs in order to start a
     /// differently-configured node in its place without closing.
@@ -653,6 +663,8 @@ struct Node {
     motions: Arc<Mutex<BTreeMap<u8, motion::Motion>>>,
     /// What this node thinks the console's clock reads.
     clock: Arc<Mutex<motion::ClockOffset>>,
+    /// Its loudspeaker, if its config gives it one.
+    audio: Arc<audio::Audio>,
 }
 
 impl Node {
@@ -761,6 +773,7 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
     let (broker_tx, broker_rx) = watch::channel(None::<String>);
     let (inputs, inputs_rx) = mpsc::channel(64);
     let (frames_tx, sacn_frames) = mpsc::channel(64);
+    let (audio_tx, audio_commands) = watch::channel(Vec::new());
     let (snapshot_tx, snapshot) = watch::channel(Snapshot {
         config: (*node_config).clone(),
         http_addr: String::new(),
@@ -783,10 +796,12 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         snapshot: Arc::new(snapshot_tx),
         motions: Arc::new(Mutex::new(BTreeMap::new())),
         clock: Arc::new(Mutex::new(motion::ClockOffset::default())),
+        audio: Arc::new(audio::Audio::new(audio_tx)),
     };
     let stop = Stopper::default();
 
     let http_addr = serve_http(node.clone(), &stop, broker_tx).await?;
+    let audio_handle = node.audio.clone();
 
     // A node listens for sACN exactly when it says it forwards a universe. There
     // is no module id involved: the description is the whole of the answer.
@@ -813,6 +828,8 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
 
     info!("[sim] {} on {http_addr}", node_config.serial);
     Ok(SimHandle {
+        audio_commands,
+        audio: audio_handle,
         http_addr,
         sacn_addr,
         received_config,
@@ -866,6 +883,11 @@ async fn serve_http(
             }),
         )
         .route("/api/v1/identify", post(identify))
+        .route("/api/v1/audio/clips", get(list_clips))
+        .route(
+            "/api/v1/audio/clips/{sha}",
+            axum::routing::put(put_clip).delete(delete_clip),
+        )
         .route("/api/v1/ota", post(|| async { Json(json!({ "ok": false, "error": "no ota here" })) }))
         .with_state(node);
 
@@ -903,7 +925,46 @@ async fn info(State(node): State<Node>) -> Json<Value> {
     if let Some(dmx) = &node.config.dmx {
         info["dmx"] = json!(dmx);
     }
+    if let Some(audio) = &node.config.audio {
+        info["audio"] = node.audio.describe(audio);
+    }
     Json(info)
+}
+
+fn no_audio() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (axum::http::StatusCode::NOT_FOUND, "this node has no loudspeaker").into_response()
+}
+
+async fn list_clips(State(node): State<Node>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match &node.config.audio {
+        Some(described) => Json(node.audio.list(described)).into_response(),
+        None => no_audio(),
+    }
+}
+
+async fn put_clip(
+    State(node): State<Node>,
+    axum::extract::Path(sha): axum::extract::Path<String>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let Some(described) = &node.config.audio else { return no_audio() };
+    let status = node.audio.put(described, &sha, body.to_vec());
+    axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::OK).into_response()
+}
+
+async fn delete_clip(
+    State(node): State<Node>,
+    axum::extract::Path(sha): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if node.config.audio.is_none() {
+        return no_audio();
+    }
+    let status = node.audio.delete(&sha);
+    axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::OK).into_response()
 }
 
 async fn read_state(State(node): State<Node>) -> Json<Value> {
@@ -978,6 +1039,11 @@ async fn run_mqtt(
     // Not under this node's serial. The console publishes one clock for every node
     // on the broker, because the whole point is that they agree with each other.
     let _ = client.subscribe(motion::CLOCK_TOPIC, QoS::AtLeastOnce).await;
+    if node.config.audio.is_some() {
+        let _ = client.subscribe(format!("openhaunt/{serial}/audio/+"), QoS::AtLeastOnce).await;
+    }
+    let mut audio_status = tokio::time::interval(Duration::from_secs(1));
+    let mut was_playing = false;
 
     let mut health = tokio::time::interval(Duration::from_secs(10));
     let mut ticker = auto.map(tokio::time::interval);
@@ -990,6 +1056,11 @@ async fn run_mqtt(
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
                     if publish.topic == motion::CLOCK_TOPIC {
                         take_clock_sample(&node, &publish.payload, publish.retain);
+                    } else if let Some(verb) = publish.topic.strip_prefix(&format!("openhaunt/{serial}/audio/")) {
+                        if verb != "status" {
+                            let body = serde_json::from_slice(&publish.payload).unwrap_or(Value::Null);
+                            node.audio.command(verb, body).await;
+                        }
                     } else {
                         apply_output(&node, &publish.topic, &publish.payload);
                     }
@@ -1008,6 +1079,18 @@ async fn run_mqtt(
 
             Some(input) = inputs.recv() => {
                 publish_input(&client, &node, input).await;
+            }
+
+            // Once a second while something plays, and once more when it goes quiet:
+            // the rule the firmware follows.
+            _ = audio_status.tick(), if node.config.audio.is_some() => {
+                let status = node.audio.status();
+                if status.is_some() || was_playing {
+                    let body = status.clone().unwrap_or_else(|| json!({ "voices": [], "underruns": 0, "master": 1.0, "locked": true }));
+                    let topic = format!("openhaunt/{serial}/audio/status");
+                    let _ = client.publish(topic, QoS::AtLeastOnce, false, body.to_string()).await;
+                }
+                was_playing = status.is_some();
             }
 
             _ = health.tick() => {

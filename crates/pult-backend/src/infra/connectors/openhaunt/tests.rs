@@ -85,7 +85,7 @@ fn directory(entries: Vec<(&str, DeviceEntry)>) -> watch::Receiver<DeviceDirecto
 }
 
 fn an_entry(ip: &str, module_type: u16, universe: Option<u16>, online: bool) -> DeviceEntry {
-    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universe, online, effects: None }
+    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universe, online, effects: None, audio: None, on_broker: true }
 }
 
 /// The same node, with one port that says what it can trace for itself.

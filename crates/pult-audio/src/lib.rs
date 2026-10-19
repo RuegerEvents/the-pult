@@ -30,6 +30,8 @@ pub mod ltc;
 pub mod mix;
 pub mod peaks;
 pub mod resample;
+pub mod rtp;
+pub mod wav;
 
 pub use beats::{grid_from_beats, Detected, Detector, GridSegment};
 pub use lock::{chase, Chase};

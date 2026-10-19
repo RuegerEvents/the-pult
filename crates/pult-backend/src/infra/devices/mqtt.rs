@@ -13,14 +13,17 @@
 
 use std::time::Duration;
 
-use pult_schema::types::{devices::DeviceHealth, fixture::ParameterValue};
+use pult_schema::types::{
+    devices::{DeviceHealth, NodeAudioStatus},
+    fixture::ParameterValue,
+};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 /// Everything the console subscribes to, as one wildcard per shape.
 const SUBSCRIPTIONS: &[&str] =
-    &["openhaunt/+/status", "openhaunt/+/input/+", "openhaunt/+/health"];
+    &["openhaunt/+/status", "openhaunt/+/input/+", "openhaunt/+/health", "openhaunt/+/audio/status"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MqttEvent {
@@ -31,6 +34,8 @@ pub enum MqttEvent {
     /// moment the console got round to reading the socket.
     Input { serial: String, port: u8, value: ParameterValue, node_ts: Option<u64> },
     Health { serial: String, health: DeviceHealth },
+    /// What a node's loudspeaker is doing, once a second while it is doing anything.
+    AudioStatus { serial: String, status: NodeAudioStatus },
 }
 
 // ── Parsing ───────────────────────────────────────────────────────────────────
@@ -63,6 +68,11 @@ pub fn parse(topic: &str, payload: &[u8]) -> Option<MqttEvent> {
         ("health", None) => {
             let body: serde_json::Value = serde_json::from_slice(payload).ok()?;
             Some(MqttEvent::Health { serial, health: health(&body) })
+        }
+        ("audio", Some("status")) => {
+            let mut status: NodeAudioStatus = serde_json::from_slice(payload).ok()?;
+            status.reported_at = Some(chrono::Utc::now());
+            Some(MqttEvent::AudioStatus { serial, status })
         }
         _ => None,
     }
@@ -106,6 +116,12 @@ pub fn output_topic(serial: &str, port: u8) -> String {
 /// The topic a node listens on for a shape to trace on one of its output ports.
 pub fn effect_topic(serial: &str, port: u8) -> String {
     format!("openhaunt/{serial}/output/{port}/effect")
+}
+
+/// The topic a node's loudspeaker listens on for one verb: `play`, `stop`, `gain`,
+/// `output`, `stream`.
+pub fn audio_topic(serial: &str, verb: &str) -> String {
+    format!("openhaunt/{serial}/audio/{verb}")
 }
 
 /// Where the console publishes what time it thinks it is.

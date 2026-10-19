@@ -607,7 +607,7 @@ pub async fn start(config: Config) -> Result<Running> {
     let (output_mgr, output, frame_costs) = OutputManager::new(
         node_id,
         engine_handle.clone(),
-        Some((device_directory, device_handle.clone())),
+        Some((device_directory.clone(), device_handle.clone())),
         net.clone(),
     );
     // The recordings this station has decoded, shared between the connectors and the
@@ -649,6 +649,9 @@ pub async fn start(config: Config) -> Result<Running> {
         crate::infra::preferences::load().audio,
         Some(assets.clone()),
     );
+    // And a node's loudspeaker is somewhere a clip can go, reached through the same
+    // directory and the same broker the output side drives the nodes' ports through.
+    let audio_mgr = audio_mgr.with_nodes(device_directory, device_handle.clone());
     tasks.push(tokio::spawn(audio_mgr.run()));
     engine.set_audio(audio.clone());
 

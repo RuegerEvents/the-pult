@@ -20,7 +20,7 @@ use pult_schema::{
     lifecycle::Lifecycle,
     path::{Path, PathPattern, PathSegment},
     types::{
-        devices::{DevicesState, DiscoveredDevice},
+        devices::{DevicesState, DiscoveredDevice, NodeAudio},
         openhaunt::EffectCapability,
         fixture::{Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDirection},
         openhaunt,
@@ -73,6 +73,9 @@ pub enum DeviceCommand {
     SetOutput { serial: String, port: u8, value: serde_json::Value },
     /// Hand one output port a shape to trace, or `None` to take it back.
     SetEffect { serial: String, port: u8, payload: Option<serde_json::Value> },
+    /// Tell a node's loudspeaker something: `play`, `stop`, `gain`, `stream`, under
+    /// `openhaunt/<sn>/audio/`.
+    Audio { serial: String, verb: &'static str, payload: serde_json::Value },
     Event(DeviceEvent),
     Stop,
 }
@@ -110,6 +113,14 @@ impl DeviceHandle {
     pub fn set_effect(&self, serial: String, port: u8, payload: Option<serde_json::Value>) {
         let _ = self.0.try_send(DeviceCommand::SetEffect { serial, port, payload });
     }
+
+    /// Tell a node's loudspeaker something. Never blocks, for the same reason, and
+    /// callable from a thread that is not the runtime's: the stream sender is one.
+    pub fn audio(&self, serial: String, verb: &'static str, payload: serde_json::Value) {
+        if self.0.try_send(DeviceCommand::Audio { serial, verb, payload }).is_err() {
+            debug!("[devices] the device manager is behind; an audio command was dropped");
+        }
+    }
 }
 
 // ── Directory ─────────────────────────────────────────────────────────────────
@@ -137,6 +148,12 @@ pub struct DeviceEntry {
     /// whether to send a description or a stream of samples, and this is where it
     /// looks.
     pub effects: Option<EffectCapability>,
+    /// What the node's loudspeaker can do, where it has one. Here for the reason
+    /// `effects` is: the audio manager is handed the directory, not the device list.
+    pub audio: Option<NodeAudio>,
+    /// Connected to this station's broker, which is the only way a node hears an audio
+    /// command. Online on mDNS and not yet on the broker is a node that would miss one.
+    pub on_broker: bool,
 }
 
 // ── Manager ───────────────────────────────────────────────────────────────────
@@ -239,6 +256,9 @@ impl DeviceManager {
                         }
                         DeviceCommand::SetEffect { serial, port, payload } => {
                             self.set_effect(&serial, port, payload).await;
+                        }
+                        DeviceCommand::Audio { serial, verb, payload } => {
+                            self.send_audio(&serial, verb, payload);
                         }
                     }
                 }
@@ -387,13 +407,13 @@ impl DeviceManager {
                 }
             }
             MqttEvent::Status { serial, online } => {
-                if online {
-                    self.on_broker.insert(serial.clone());
+                let moved = if online {
+                    self.on_broker.insert(serial.clone())
                 } else {
-                    self.on_broker.remove(&serial);
-                }
+                    self.on_broker.remove(&serial)
+                };
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
-                if device.online == online {
+                if device.online == online && !moved {
                     return;
                 }
                 device.online = online;
@@ -403,6 +423,13 @@ impl DeviceManager {
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
                 device.health = Some(health);
                 self.publish().await;
+            }
+            MqttEvent::AudioStatus { serial, status } => {
+                let Some(device) = self.state.discovered.get_mut(&serial) else { return };
+                device.audio_status = Some(status);
+                // The LOCAL state only: the directory carries what a node *can* do, and
+                // a status once a second would wake everything watching it for nothing.
+                self.push_state().await;
             }
         }
     }
@@ -466,6 +493,12 @@ impl DeviceManager {
                         .discovered
                         .get(&serial)
                         .and_then(|d| d.effects.clone()),
+                    audio: self.state.discovered.get(&serial).and_then(|d| d.audio.clone()),
+                    audio_status: self
+                        .state
+                        .discovered
+                        .get(&serial)
+                        .and_then(|d| d.audio_status.clone()),
                     // The TXT record is enough to warn; `/api/v1/info` confirms below.
                     is_mains: txt.get("mains").map(|v| v == "1").unwrap_or(false),
                     online: true,
@@ -482,13 +515,14 @@ impl DeviceManager {
                 info!("[devices] {} ({}) at {ip}:{port}", device.name, device.module_name);
                 self.state.discovered.insert(serial.clone(), device);
 
-                if let Some((mains, description, effects)) =
+                if let Some((mains, description, effects, audio)) =
                     self.ask_the_node_what_it_is(&serial).await
                 {
                     if let Some(device) = self.state.discovered.get_mut(&serial) {
                         device.is_mains = mains;
                         device.description = Some(description);
                         device.effects = effects;
+                        device.audio = audio;
                     }
                 }
                 self.reconcile_adoptions().await;
@@ -540,16 +574,18 @@ impl DeviceManager {
     async fn ask_the_node_what_it_is(
         &self,
         serial: &str,
-    ) -> Option<(bool, openhaunt::NodeDescription, Option<EffectCapability>)> {
+    ) -> Option<(bool, openhaunt::NodeDescription, Option<EffectCapability>, Option<NodeAudio>)> {
         let info: serde_json::Value = self.get_json(serial, "info").await?;
         let mains = info["module"]["flags"]
             .as_u64()
             .is_some_and(|flags| flags as u32 & openhaunt::MODULE_FLAG_MAINS != 0);
         let effects = openhaunt::effect_capability_from(&info);
+        // Out of the raw body for the reason `effects` is, below.
+        let audio = NodeAudio::from_info(&info);
         // The whole body, not just the two keys: `ports` and `dmx` both default,
         // so firmware that predates self-description parses as having neither.
         let description = serde_json::from_value(info).unwrap_or_default();
-        Some((mains, description, effects))
+        Some((mains, description, effects, audio))
     }
 
     /// Work out which devices are adopted, from the fixtures rather than from memory.
@@ -720,6 +756,21 @@ impl DeviceManager {
         }
     }
 
+    /// Tell a node's loudspeaker something.
+    ///
+    /// MQTT only: the audio extension has no HTTP form of `play`, and a node that has
+    /// not reached the broker yet has not got the console's clock either, so a time
+    /// sent to it would be a time it cannot place.
+    fn send_audio(&self, serial: &str, verb: &str, payload: serde_json::Value) {
+        match &self.mqtt {
+            Some(mqtt) if self.on_broker.contains(serial) => {
+                let body = serde_json::to_vec(&payload).unwrap_or_default();
+                mqtt.publish(mqtt::audio_topic(serial, verb), body, false);
+            }
+            _ => debug!("[devices] {serial} is not on the broker; audio/{verb} not sent"),
+        }
+    }
+
     /// Say what time it is, for the nodes tracing a shape against it.
     ///
     /// Only while this station is actually driving devices. A follower publishing its
@@ -855,6 +906,8 @@ impl DeviceManager {
                             universe: universes.get(&d.serial).copied().flatten(),
                             online: d.online,
                             effects: d.effects.clone(),
+                            audio: d.audio.clone(),
+                            on_broker: self.on_broker.contains(&d.serial),
                         },
                     )
                 })

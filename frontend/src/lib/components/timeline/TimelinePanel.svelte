@@ -37,7 +37,9 @@
 		AudioStatus,
 		Cue,
 		Detected,
+		DevicesState,
 		GridSegment,
+		NodeAudioState,
 		InputConfig,
 		LtcRate,
 		Sequence,
@@ -49,6 +51,13 @@
 	} from '$lib/generated/index.js';
 	import { selection } from '$lib/stores/selection.js';
 	import { channelsText, clock, parseChannels, parsePosition } from '$lib/waveform.js';
+	import {
+		audioNodes,
+		bytesText,
+		destinationText,
+		nodeOf,
+		stationChannels
+	} from '$lib/destination.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { consoleNow } from '$lib/ws/clock.js';
 	import Waveform from './Waveform.svelte';
@@ -65,6 +74,11 @@
 	let audioStatus = $state<Record<string, AudioStatus>>({});
 	/** The device this station mixes into, which is what a clip's channels are picked from. */
 	let audioOutput = $state<AudioOutput | null>(null);
+	/** The OpenHaunt nodes this station can see, and what their loudspeakers can do. */
+	let devices = $state<DevicesState | null>(null);
+	/** What the station driving the nodes has made of each one's clip store. */
+	let nodeAudio = $state<Record<string, NodeAudioState>>({});
+	const nodes = $derived(audioNodes(devices));
 	/** The clip the editor below is showing. */
 	let clipId = $state<string | null>(null);
 	let chosen = $state<string | null>(null);
@@ -252,7 +266,7 @@
 
 	/** A channel on or off in a clip's destination, which is how the chips below work. */
 	function toggleChannel(target: AudioClip, channel: number) {
-		const now = target.destination.Station.channels;
+		const now = stationChannels(target.destination) ?? [];
 		const next = now.includes(channel)
 			? now.filter((c) => c !== channel)
 			: [...now, channel].sort((a, b) => a - b);
@@ -462,9 +476,19 @@
 			if (v && typeof v === 'object') audioOutput = v as AudioOutput;
 		};
 		stops.push(client.subscribe('audio_output', applyOutput));
+		const applyDevices = (v: unknown) => {
+			if (v && typeof v === 'object') devices = v as DevicesState;
+		};
+		stops.push(client.subscribe('devices', applyDevices));
+		const applyNodeAudio = (v: unknown) => {
+			if (v && typeof v === 'object') nodeAudio = v as Record<string, NodeAudioState>;
+		};
+		stops.push(client.subscribe('node_audio', applyNodeAudio));
 		const fetchLocal = () => {
 			void client.get(['audio_status']).then(applyAudio);
 			void client.get(['audio_output']).then(applyOutput);
+			void client.get(['devices']).then(applyDevices);
+			void client.get(['node_audio']).then(applyNodeAudio);
 		};
 		fetchLocal();
 		stops.push(client.addConnectListener(fetchLocal));
@@ -620,9 +644,10 @@
 							class:faulty={!!sound?.clip_faults?.[each.id]}
 							onclick={() => (clipId = each.id)}
 						>
-							{each.name || 'clip'} · {clock(each.start_ms)} · ch {channelsText(
-								each.destination.Station.channels
-							) || '—'}{each.looped ? ' · loop' : ''}
+							{each.name || 'clip'} · {clock(each.start_ms)} · {destinationText(
+								each.destination,
+								nodes
+							)}{each.looped ? ' · loop' : ''}
 						</button>
 					{:else}
 						<span class="what">none</span>
@@ -735,26 +760,99 @@
 
 					<span class="label">Goes to</span>
 					<div class="row">
-						<input
-							class="text-input narrow"
-							title="Output channels, counting from 1: 5, 6 or 1-4"
-							value={channelsText(editing.destination.Station.channels)}
+						<select
+							class="text-input"
+							value={nodeOf(editing.destination)?.serial ?? ''}
 							onchange={(e) => {
-								const channels = parseChannels(e.currentTarget.value);
-								if (channels) setClip(editing.id, { destination: { Station: { channels } } });
-								else problem = 'Channels count from 1, written like 5, 6 or 1-4.';
+								const serial = e.currentTarget.value;
+								setClip(editing.id, {
+									destination: serial
+										? { Node: { serial, mode: nodeOf(editing.destination)?.mode ?? 'Clip' } }
+										: { Station: { channels: [1, 2] } }
+								});
 							}}
-						/>
-						<div class="channels">
-							{#each Array.from({ length: Math.min(64, channelCount) }, (_, i) => i + 1) as channel (channel)}
-								<button
-									class="channel"
-									class:on={editing.destination.Station.channels.includes(channel)}
-									title="Channel {channel}"
-									onclick={() => toggleChannel(editing, channel)}>{channel}</button
+						>
+							<option value="">this station's channels</option>
+							{#each nodes as node (node.serial)}
+								<option value={node.serial}
+									>{node.name} — {node.outputs}{node.online ? '' : ' (offline)'}</option
 								>
 							{/each}
-						</div>
+							{#if nodeOf(editing.destination) && !nodes.some((n) => n.serial === nodeOf(editing.destination)?.serial)}
+								<option value={nodeOf(editing.destination)?.serial}
+									>{nodeOf(editing.destination)?.serial} (not found)</option
+								>
+							{/if}
+						</select>
+						{#if stationChannels(editing.destination)}
+							{@const channels = stationChannels(editing.destination) ?? []}
+							<input
+								class="text-input narrow"
+								title="Output channels, counting from 1: 5, 6 or 1-4"
+								value={channelsText(channels)}
+								onchange={(e) => {
+									const parsed = parseChannels(e.currentTarget.value);
+									if (parsed) setClip(editing.id, { destination: { Station: { channels: parsed } } });
+									else problem = 'Channels count from 1, written like 5, 6 or 1-4.';
+								}}
+							/>
+							<div class="channels">
+								{#each Array.from({ length: Math.min(64, channelCount) }, (_, i) => i + 1) as channel (channel)}
+									<button
+										class="channel"
+										class:on={channels.includes(channel)}
+										title="Channel {channel}"
+										onclick={() => toggleChannel(editing, channel)}>{channel}</button
+									>
+								{/each}
+							</div>
+						{:else}
+							{@const node = nodeOf(editing.destination)}
+							{#if node}
+								<div class="seg" role="group" aria-label="How the clip reaches the node">
+									<button
+										class:on={node.mode === 'Clip'}
+										title="Uploaded to the node's flash ahead of time, and started there. Immune to the network once it is there."
+										onclick={() =>
+											setClip(editing.id, { destination: { Node: { serial: node.serial, mode: 'Clip' } } })}
+										>Stored on the node</button
+									>
+									<button
+										class:on={node.mode === 'Stream'}
+										title="Sent as it plays, a playout delay ahead. No size limit, and it needs the network for as long as it sounds."
+										onclick={() =>
+											setClip(editing.id, {
+												destination: { Node: { serial: node.serial, mode: 'Stream' } }
+											})}>Streamed</button
+									>
+								</div>
+								{@const store = nodeAudio[node.serial]}
+								{@const status = devices?.discovered[node.serial]?.audio_status}
+								{#if store}
+									<span class="what"
+										>{store.stored.length} clip{store.stored.length === 1 ? '' : 's'} on it, {bytesText(
+											store.bytes_free
+										)} free{store.uploading ? ' · uploading…' : ''}{store.pending && !store.uploading
+											? ` · ${store.pending} waiting`
+											: ''}{store.streaming ? ' · streaming' : ''}</span
+									>
+								{/if}
+								{#if status}
+									{#if !status.locked}
+										<span class="bad">the node has not got the console's clock</span>
+									{:else if status.underruns > 0}
+										<span class="bad">{status.underruns} underruns</span>
+									{:else}
+										<span class="good"
+											>{status.voices.length} voice{status.voices.length === 1 ? '' : 's'} sounding{status
+												.stream?.active
+												? `, stream ${status.stream.depth_ms} ms buffered`
+												: ''}</span
+										>
+									{/if}
+								{/if}
+							{/if}
+						{/if}
 					</div>
 					{#if sound?.clip_faults?.[editing.id]}
 						<span class="label"></span>
@@ -1272,6 +1370,10 @@
 	.chip { background: #18263b; border: 1px solid #2f6fd0; border-radius: 3px; color: #cfe0ff; padding: 3px 8px; font: inherit; font-size: 12px; cursor: pointer; }
 	.chip.picked { background: #1d3354; border-color: #7fb0f5; }
 	.chip.faulty { border-color: #e05555; }
+	.seg { display: inline-flex; }
+	.seg button { height: 22px; background: #171717; border: 1px solid #333; color: #999; font: inherit; font-size: 11px; padding: 0 8px; cursor: pointer; }
+	.seg button + button { border-left: none; }
+	.seg button.on { background: #2f6fd0; border-color: #2f6fd0; color: #fff; }
 	.channels { display: flex; flex-wrap: wrap; gap: 2px; max-width: 560px; }
 	.channel { width: 26px; height: 22px; background: #171717; border: 1px solid #333; border-radius: 2px; color: #777; font: inherit; font-size: 11px; padding: 0; cursor: pointer; }
 	.channel.on { background: #2f6fd0; border-color: #2f6fd0; color: #fff; }
