@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { PultWsClient } from '$lib/ws/client.js';
 	import { backendOrigin, wsUrl } from '$lib/ws/endpoint.js';
@@ -31,10 +32,21 @@
 	import { clear } from '$lib/stores/programmer.js';
 	import { clearSelection } from '$lib/stores/selection.js';
 	import UserBar from '$lib/components/UserBar.svelte';
+	import { connection } from '$lib/stores/connection.js';
+	import { isSurfacePath } from '$lib/surface.js';
 	import '$lib/styles/tokens.css';
 	import '$lib/styles/controls.css';
 
 	let { children } = $props();
+
+	/**
+	 * A phone surface (`/surface/<id>`) is the console with none of the desk around
+	 * it: no top bar, no keymap — Space is Go on a desk and a stray keyboard on a
+	 * phone must not be — and no cover over the page when the socket drops. The
+	 * surface draws its own disconnected state, over the last known values, because
+	 * a maze runner needs to see what the page last said and that it is stale.
+	 */
+	const chromeless = $derived(isSurfacePath(page.url.pathname));
 
 	// The backend serves this page, so where it is is where we came from. `?port=`
 	// still names a second station on the same host, which is what demo.sh --two
@@ -101,6 +113,7 @@
 	 * means that fixture.
 	 */
 	function onKey(event: KeyboardEvent) {
+		if (chromeless) return;
 		// Ctrl/Cmd+K lands in a command line, wherever one is open. Allowed even
 		// from a text field: the browsers' own use of the key is a search bar,
 		// and stealing it from an input is exactly what an operator mid-rename
@@ -221,7 +234,7 @@
 			covering = true;
 			return;
 		}
-		if (connected) {
+		if (connected || (chromeless && everConnected)) {
 			covering = false;
 			return;
 		}
@@ -234,8 +247,15 @@
 	});
 
 	onMount(() => {
-		client.onConnect = () => { connected = true; everConnected = true; };
-		client.onDisconnect = () => { connected = false; };
+		client.onConnect = () => {
+			connected = true;
+			everConnected = true;
+			connection.set({ connected, everConnected });
+		};
+		client.onDisconnect = () => {
+			connected = false;
+			connection.set({ connected, everConnected });
+		};
 		// A station making way for another says so in its close frame, which is how
 		// the tablet on somebody else's socket draws "Opening Festival…" rather than
 		// "the console stopped answering".
@@ -252,26 +272,28 @@
 <svelte:window onkeydown={onKey} />
 
 <div class="shell">
-	<header class="topbar">
-		<span class="brand" title={$station ? `station ${$station.nodeId}` : address}>
-			the-pult{#if $station}<span class="version">{$station.version}</span>{/if}
-		</span>
-		{#if $station?.show}
-			<ShowMenu show={$station.show} />
-			<LayoutBar />
-			<!-- Setup is a mode, not a tile. See `components/setup/Setup.svelte`. -->
-			<button class="setup-btn" class:on={$setupSection !== null} onclick={toggleSetup}>
-				Setup<span class="caret">▾</span>
-			</button>
-			<!-- The three verbs, in the chrome rather than in a panel: an operator
-			     programming in the rig, in the plan or from the command line means the
-			     same three things. -->
-			<Verbs bind:this={verbs} />
-		{/if}
-		<span class="spacer"></span>
-		<UserBar />
-		<ConnectionStatus {connected} />
-	</header>
+	{#if !chromeless}
+		<header class="topbar">
+			<span class="brand" title={$station ? `station ${$station.nodeId}` : address}>
+				the-pult{#if $station}<span class="version">{$station.version}</span>{/if}
+			</span>
+			{#if $station?.show}
+				<ShowMenu show={$station.show} />
+				<LayoutBar />
+				<!-- Setup is a mode, not a tile. See `components/setup/Setup.svelte`. -->
+				<button class="setup-btn" class:on={$setupSection !== null} onclick={toggleSetup}>
+					Setup<span class="caret">▾</span>
+				</button>
+				<!-- The three verbs, in the chrome rather than in a panel: an operator
+				     programming in the rig, in the plan or from the command line means the
+				     same three things. -->
+				<Verbs bind:this={verbs} />
+			{/if}
+			<span class="spacer"></span>
+			<UserBar />
+			<ConnectionStatus {connected} />
+		</header>
+	{/if}
 	<main>
 		{@render children()}
 	</main>

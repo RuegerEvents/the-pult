@@ -29,6 +29,7 @@ pub mod version;
 pub mod paperwork;
 pub mod xchange;
 pub mod variable;
+pub mod surface;
 
 pub use fixture::{home_value, home_value_by_key, output_parameters, parameter_key, Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
@@ -38,6 +39,7 @@ pub use effect::{
     Spread, Step,
 };
 pub use variable::{Variable, VariableCreate, VariableKind, VariableOp, VariablePatch};
+pub use surface::{ColourStop, Surface, SurfaceCreate, SurfacePatch, SurfaceTile, TileSize, TileTarget};
 pub use speedmaster::{SpeedMaster, SpeedMasterCreate, SpeedMasterPatch};
 pub use user::{colour_for, User, UserCreate, UserPatch, USER_COLOURS};
 pub use show::{Show, ShowCreate, ShowPatch};

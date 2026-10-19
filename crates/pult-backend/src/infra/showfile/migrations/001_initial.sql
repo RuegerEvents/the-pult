@@ -213,6 +213,12 @@ CREATE TABLE IF NOT EXISTS stage_plans (
     "visible" INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS surfaces (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "tiles" TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS symbols (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,

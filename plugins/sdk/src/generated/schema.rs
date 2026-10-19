@@ -171,6 +171,14 @@ pub struct ClockSync {
     pub measured_at: Option<Timestamp>,
 }
 
+/// One colour of a readout, from `at` upwards.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ColourStop {
+    pub at: f64,
+    /// A CSS colour, `#rrggbb`.
+    pub colour: String,
+}
+
 /// A socket on the fixture.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Connector {
@@ -2458,6 +2466,27 @@ pub struct StationNetwork {
     pub changed_at: Timestamp,
 }
 
+/// One page of tiles.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Surface {
+    pub id: Uuid,
+    pub name: String,
+    /// The tiles, in reading order, as one JSON column.
+    pub tiles: Vec<SurfaceTile>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SurfaceTile {
+    /// Stable across reorders, so a tile being dragged keeps its identity.
+    pub id: Uuid,
+    /// What the tile says. Empty means the name of what it points at.
+    pub label: String,
+    /// A CSS colour for the tile itself, `#rrggbb`.
+    pub colour: Option<String>,
+    pub size: TileSize,
+    pub target: TileTarget,
+}
+
 /// A piece of geometry drawn once and placed many times.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Symbol {
@@ -2519,6 +2548,52 @@ pub struct TextBlock {
     pub size_mm: f32,
     #[serde(default)]
     pub bold: bool,
+}
+
+/// How much of a row a tile takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TileSize {
+    /// Half a phone's width: two to a row.
+    Half,
+    /// The whole width.
+    Full,
+}
+
+/// What a tile shows, or does when it is pressed.
+///
+/// Tagged by `kind` so the browser discriminates on a field, as `LayoutNode` does.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum TileTarget {
+    /// A label across the page, and nothing else. What makes "Area 1" and
+    /// "Area 2" two groups of tiles rather than one list of six.
+    Heading,
+    /// Press a flow's `Button` node, exactly as its own Press does.
+    FlowButton { node_id: Uuid },
+    /// What a variable holds: a flag as a light, a number as a figure.
+    VariableReadout {
+        variable_id: Uuid,
+        /// The colour for each value, the highest stop not above it winning. Empty
+        /// means the tile's own colour when the value is on and grey when off.
+        stops: Vec<ColourStop>,
+    },
+    /// Change a variable. Unattributed, through the `variable.*` RPCs, so a phone
+    /// resetting an area writes no row in the History panel.
+    VariableSetter { variable_id: Uuid, op: VariableOp },
+    /// Play or stop a timeline, with whether it is running and where it is.
+    Timeline {
+        timeline_id: Uuid,
+        /// Play from the top rather than from where it stopped: a scare, as
+        /// against an ambience that carries on.
+        from_start: bool,
+    },
+    /// Go on a sequence.
+    SequenceGo { sequence_id: Uuid },
+    /// Take a sequence off.
+    SequenceOff { sequence_id: Uuid },
+    /// What one parameter of one fixture is putting out now — a traffic light's
+    /// colour, a relay — evaluated in the page the way the sheet does it.
+    Parameter { fixture_id: Uuid, parameter: ParameterKind },
 }
 
 /// A position, and everything written against it.

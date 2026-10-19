@@ -5825,6 +5825,120 @@ cargo run -p openhaunt-node-sim -- --module contact --serial area2 --audio
 ```
 
 
+### 72. A page of big buttons, for the phone at the maze entrance
+
+`surfaces`, built 2026-10-20 for the Heinz Horror Garten. Task 15 left a line that has
+been true ever since: *nothing is responsive*. A tree of tiles on a phone is a tree of
+very small tiles. A maze runner at the entrance does not want the desk shrunk. They want
+one page that says whether area 2 is empty, a button that clears it, whether the light
+is green, and the ambience on and off. That page has to be show data, because nothing
+about a maze may be written in code. There was no *What is next* entry for it. The one
+written for this task had five questions, answered below, and left the list when it was
+built.
+
+**What went in.** `Surface { id, name, tiles }` is a PERSISTED collection, and
+`SurfaceTile { id, label, colour, size, target }` is one JSON column of it, the way
+`Layout::tree` is. A `TileTarget` is one of:
+
+- `Heading`;
+- `FlowButton { node_id }`;
+- `VariableReadout { variable_id, stops }`;
+- `VariableSetter { variable_id, op }`;
+- `Timeline { timeline_id, from_start }`;
+- `SequenceGo` or `SequenceOff { sequence_id }`;
+- `Parameter { fixture_id, parameter }`.
+
+`frontend/src/lib/surface.ts` holds everything worked out from those: names, colours,
+positions, edits and the link. `SurfaceTiles.svelte` draws them, `SurfacePanel.svelte`
+is the editor, and `routes/surface/[[id]]` is the phone. The QR code comes from
+`qrcode-generator` (MIT, no dependencies, drawn in the page).
+
+**What a tile can point at is the show's own nouns, and no new acts.** Every press goes
+the way the thing's own panel already sends it:
+
+- a flow button through its `press` command;
+- a variable through the unattributed `variable.*` RPCs of task 69, so a phone resetting
+  an area is not a row in History;
+- a timeline or a sequence with the console millisecond it was taken at, refused rather
+  than guessed while the page has no clock offset.
+
+A second path for any of them would have been a second set of rules about who wrote
+what.
+
+**A heading is a tile.** The surface for one maze has the same readout and the same
+reset per area, and six identical tiles in a column cannot be read at a glance.
+`Heading` is the cheapest grouping there is: a label across the page, with no nesting
+for the editor to manage.
+
+**A readout's colour is a list of stops, not a pair.** The highest stop at or below the
+value wins, and below every stop the lowest one wins. So a flag is `{0: green, 1: red}`
+and a count can be green, amber and red. A count somebody drove to −1 by hand still reads
+as "empty" rather than as a tile with no state. With no stops, a flag is the tile's colour
+when on and grey when off. **A relay that is on is drawn in the tile's own colour**: the
+first screenshot had the traffic light's red relay as a green tile reading "on", which is
+exactly backwards for the person deciding whether to send a group in.
+
+**A parameter readout reads an input from what the device said and an output from the
+evaluator.** A PIR contact is sensed, so it is state and is read off `sensed_values`. A
+relay or a colour is driven, so it goes through `stores/output.ts`'s `watching`, like
+the sheet. Before the page knows the station's clock that shows a dash, which is
+`consoleNow()`'s rule.
+
+**The phone is `/surface/<id>`, and the server did not learn the route.** `api/spa.rs`
+already hands the app to any path it holds no file for, so a deep link survives a
+reload. `/surface` alone is the list. The root layout drops its top bar, its keymap
+(Space is Go on a desk, and a phone with a keyboard attached must not Go) and its
+cover on that path.
+
+**Disconnected, the phone keeps its page.** The workspace answers a lost socket with a
+full-screen cover. On a phone that would hide the last thing the runner knew, so the
+surface dims its tiles, makes them unpressable, and puts a banner over them with "try
+again now". A press that went nowhere would read as one that worked. The cover still
+shows before the first connection, when there is nothing behind it. The
+`stores/connection.ts` store is how the page learns this, because only the layout holds
+the socket's callbacks.
+
+**The link a phone is given is never `localhost`.** A desk opened at `localhost` would
+hand the phone an address that is the phone itself. The `stations` row's `http_addr` is
+no help either, because it is what the listener *bound*: `0.0.0.0` on a station told
+nothing. So the link is built from the station's own interface inventory
+(`station_networks`): the IPv4 addresses of interfaces that are up and not loopback or
+link-local, with a VPN tunnel last. There is a picker when there are several.
+
+**Locked, the panel is the surface.** A desk can run the maze from the same tiles, and
+the link and QR sit beside it. Unlocked, it is the tile list with the preview beside it
+at a phone's width. Every edit is one write of the tile list inside a gesture, so one
+change is one Ctrl-Z.
+
+#### Traps
+
+- **`npm i` rewrote the lockfile's view of Playwright.** Playwright is in the
+  committed lockfile but not in `package.json`, as an optional instrument (`demo.sh
+  --measure-browser`). Installing anything prunes it out of both the lockfile and
+  `node_modules`. The lockfile here was rebuilt from the committed one with the one new
+  package added. Whoever adds a dependency next will meet this too.
+- **A preview stacked under its editor is a preview nobody sees.** The first editor put
+  it below a list fourteen tiles long. It now sits beside the list at a phone's width,
+  and only stacks when the tile is narrower than both.
+
+#### What is not done
+
+- **Never opened on a real phone.** The screenshots are a 390 × 844 viewport at three
+  times density in Chromium. Safari's handling of `100dvh`, the safe-area insets and a
+  socket in a backgrounded tab are unverified.
+- **No editing on the phone**, deliberately: a surface is built at a desk. There is no
+  drag to reorder either, only up and down.
+- **No surface is seeded** into a new show or the demos.
+- **A station with its HTTP listener restricted to one cable** may list an address in the
+  picker that the listener is not on. The picker offers every address; it does not read
+  the `http` binding.
+
+```
+cd frontend && npx vitest run src/lib/surface.test.ts   # names, colours, positions, edits, the link
+cargo test -p pult-schema surface                        # a tile's shape on the wire
+```
+
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

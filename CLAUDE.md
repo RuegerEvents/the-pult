@@ -813,6 +813,12 @@ read in two directions — and the **`timeline` panel** is a position with a wav
 beat grid, events, markers and takes written against it. See *A recording is a function
 of time* and *A song the console can hear*.
 
+The **`surface` panel** builds the pages a phone runs the show from, and
+`/surface/<id>` is one of them full-screen with none of the desk round it. A tile
+points at something the show already has and presses it the way that thing's own panel
+does, so a surface adds no acts. Disconnected, a surface dims rather than covering
+itself. See task 72.
+
 The **`sheet` panel** is the rig as a table and the **`cues` panel** the editor of one
 sequence; **`pools`** is the direct selects — saved groups and presets, not sequences.
 See *The loop, and a colour that says where a value came from*.

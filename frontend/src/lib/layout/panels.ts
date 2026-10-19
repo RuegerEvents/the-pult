@@ -49,6 +49,7 @@ import ToolsPanel from '$lib/components/stage/ToolsPanel.svelte';
 import PaperworkPanel from '$lib/components/paperwork/PaperworkPanel.svelte';
 import TimelinePanel from '$lib/components/timeline/TimelinePanel.svelte';
 import VariablesPanel from '$lib/components/VariablesPanel.svelte';
+import SurfacePanel from '$lib/components/surface/SurfacePanel.svelte';
 
 export type PanelId = keyof typeof PANELS;
 
@@ -134,6 +135,10 @@ export const PANELS = {
 	// What the flows remember. A workspace panel rather than an errand: it is watched
 	// and set during a show — whether area 2 is empty, a count put right by hand.
 	variables: { title: 'Variables', component: VariablesPanel, fills: false, editable: true },
+	// The pages a phone runs the show from. A panel rather than an errand, because
+	// locked it *is* the surface — a desk can press the same tiles — and `/surface/<id>`
+	// is the same component with no workspace round it.
+	surface: { title: 'Surfaces', component: SurfacePanel, fills: false, editable: true },
 	// Both directions in one panel: an input is an output read backwards and has the
 	// same fields, so learning a second vocabulary for the same cable would be the
 	// only thing separating them bought.
