@@ -1650,6 +1650,17 @@ On stop it encodes, `AssetStore::put`s under `application/vnd.pult.track`, appen
 `TimelineTrack` and clears `recording`. Selection-scoped recording was declined: a take
 made with the wrong selection is missing fixtures nobody notices until playback.
 
+**Or from the programmer**, `RecordSource::Programmer`, recorded by the **leader**: every
+key that changes while the timeline rolls, from its first touch. The engine feeds the
+take a snapshot after each write it applies, and tells the input manager about a moved
+transport *before* that, or the first move after a loop wraps lands on the lap that
+ended. **A pass is spliced into the take already playing the key**, from first touch to
+the stop, and the old take resumes there (`model::takes::merge`). A second track would
+not layer: the evaluator takes one track per key, and a started track never goes quiet
+again. A jump closes the pass, so a looping timeline is a rehearsal where every touched
+lap is a pass. The faders are given back at the final stop, because programmer beats
+track.
+
 **Stopping a timeline lets its keys go.** The engine samples each enabled track at the
 stop position — through `infra/tracks.rs`, the *same* cache the output manager reads, so
 the two cannot disagree about what a stopping track was showing — and hands them to

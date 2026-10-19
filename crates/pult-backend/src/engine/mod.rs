@@ -109,6 +109,10 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     // What the station driving the OpenHaunt nodes has made of each one's clip store.
     // LOCAL for the reason `audio_status` is: it is this station's conversation with
     // the node, and a follower is having none.
+    // What is being recorded on this station, per timeline: keys and points so far.
+    // LOCAL because a take in progress is in this machine's memory and no other's.
+    ("takes", || serde_json::to_value(
+        pult_schema::types::timeline::TakeStatuses::default()).unwrap_or_default()),
     ("node_audio", || serde_json::to_value(
         pult_schema::types::devices::NodeAudioStates::default()).unwrap_or_default()),
     ("output_coverage", || serde_json::to_value(OutputCoverage::default()).unwrap_or_default()),
@@ -751,6 +755,17 @@ pub struct ShowEngine {
     /// `PLAYBACK_COLLECTIONS`, which already makes `next_wake` answer zero — so a pass
     /// always runs before this can be read stale.
     timelines_deadline: Option<u64>,
+    /// Whether the input manager was last told this station leads, so a failover
+    /// reaches it even when no timeline moved.
+    input_leading: Option<bool>,
+    /// The timelines' version as the input manager was last told it.
+    input_timelines_seen: u64,
+    /// A timeline armed at the programmer is running here, and this station leads:
+    /// every programmer write is a snapshot for the take. False on every station
+    /// nobody is recording on, which is what keeps an idle console from sending any.
+    programmer_armed: bool,
+    /// The programmer's version as the take was last told it.
+    programmer_fed: u64,
     /// Whether the plugins have been handed a patch with something in it. An
     /// empty show pushes nothing — except once, when the last fixture goes, so
     /// what the plugins know does not outlive it.
@@ -920,6 +935,10 @@ impl ShowEngine {
             inputs_dirty: true,
             timelines_seen: 0,
             timelines_deadline: None,
+            input_leading: None,
+            input_timelines_seen: u64::MAX,
+            programmer_armed: false,
+            programmer_fed: 0,
             pushed_fixtures: false,
             flows_dirty: true,
             watched: Default::default(),
@@ -1015,6 +1034,9 @@ impl ShowEngine {
                         self.flush_collections();
                     }
                     self.push_output_config().await;
+                    // Before the timelines pass, so the last move before a Stop that
+                    // arrived in the same burst is in the take rather than after it.
+                    self.feed_take();
                     // Before playback, so a Go a timeline fires is a change playback
                     // sees on the very next pass rather than a tick later.
                     self.timelines_pass().await;
@@ -1418,6 +1440,7 @@ impl ShowEngine {
         // engine for an event nothing will fire.
         self.timelines_deadline = self.timelines.next_deadline(wall_ms, &timelines);
         let moved = self.version_of(TIMELINE_COLLECTIONS) != self.timelines_seen;
+        let told = self.input_leading != Some(!self.state.is_follower());
         // A running timeline is looked at on every tick it gets, and **not** gated on
         // its own next deadline having arrived. That was the first version and it
         // never fired anything: by the time the engine woke at the deadline, the
@@ -1426,17 +1449,14 @@ impl ShowEngine {
         // deadline's job is to decide *when* to wake — it is in `next_wake` — and the
         // pass's job is to decide what has been crossed. A running timeline with no
         // events left is not a cost either way: nothing schedules a wake for it.
-        if !moved && !timelines.iter().any(|timeline| timeline.running) {
+        if !moved && !told && !timelines.iter().any(|timeline| timeline.running) {
             return;
         }
         self.timelines_seen = self.version_of(TIMELINE_COLLECTIONS);
+        self.tell_input(&timelines);
+        // A take that has just started wants its baseline now.
+        self.feed_take();
         if moved {
-            // What is armed, and where its playhead is: the two things the listening
-            // side needs to know whether it is recording, and at what
-            // position each change point falls.
-            if let Some(input) = &self.input {
-                input.timelines(timelines.clone());
-            }
             if let Some(audio) = &self.audio {
                 audio.timelines(timelines.clone());
             }
@@ -1479,6 +1499,67 @@ impl ShowEngine {
             self.let_go_of(stopped).await;
         }
         self.timelines_deadline = self.timelines.next_deadline(wall_ms, &timelines);
+    }
+
+    /// Tell the input manager what is armed, where each playhead is, and who leads —
+    /// if any of it changed since it last heard. The leader records the programmer.
+    fn tell_input(&mut self, timelines: &[pult_schema::types::timeline::Timeline]) {
+        let leading = !self.state.is_follower();
+        let version = self.version_of(TIMELINE_COLLECTIONS);
+        if version == self.input_timelines_seen && self.input_leading == Some(leading) {
+            return;
+        }
+        self.input_timelines_seen = version;
+        self.input_leading = Some(leading);
+        if let Some(input) = &self.input {
+            input.timelines(timelines.to_vec(), leading);
+        }
+        let armed = leading
+            && timelines.iter().any(|timeline| {
+                timeline.running
+                    && matches!(
+                        timeline.recording,
+                        Some(pult_schema::types::timeline::RecordSource::Programmer { .. })
+                    )
+            });
+        // A take that has just started is handed the programmer as it is, which is
+        // the baseline its first look primes with rather than records.
+        if armed && !self.programmer_armed {
+            self.programmer_fed = self.version_of(&["programmer_values"]).wrapping_sub(1);
+        }
+        self.programmer_armed = armed;
+    }
+
+    /// Hand the programmer to a take recorded from it, if one is and it has moved.
+    ///
+    /// Here, at the moment the engine has applied the write, rather than on a
+    /// subscription somewhere else: the moment is the change point's position, and
+    /// this is the one place that knows it.
+    ///
+    /// A transport that moved since the input manager last heard is told *first*,
+    /// which is the whole of the ordering rule: a loop wraps inside one timelines pass
+    /// and the next write after it is seen by the next one, so a snapshot sent ahead of
+    /// the new transport would be placed on the lap that had already ended.
+    fn feed_take(&mut self) {
+        if self.version_of(TIMELINE_COLLECTIONS) != self.input_timelines_seen {
+            let timelines: Vec<pult_schema::types::timeline::Timeline> =
+                self.read_collection("timelines");
+            self.tell_input(&timelines);
+        }
+        if !self.programmer_armed {
+            return;
+        }
+        let version = self.version_of(&["programmer_values"]);
+        if version == self.programmer_fed {
+            return;
+        }
+        self.programmer_fed = version;
+        if let Some(input) = &self.input {
+            input.programmer(
+                self.read_collection("programmer_values"),
+                pult_schema::types::sequence::now_ms(),
+            );
+        }
     }
 
     /// One field of a speed master, written and replicated as the engine's own.

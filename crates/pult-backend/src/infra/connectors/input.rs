@@ -46,6 +46,7 @@ use pult_schema::{
     types::{
         fixture::{Fixture, FixtureType, ParameterValue},
         input::{InputConfig, InputKind, InputStatus, InputStatuses},
+        programmer::ProgrammerValue,
         network::NetService,
         output::{OutputSection, OutputView, SectionBody, UniverseFrame, UniverseSummary, UniverseTraffic},
         timeline::{Timeline, TimelineTrack},
@@ -72,7 +73,15 @@ pub enum InputCommand {
     /// The `inputs` collection changed. Reconcile against it.
     Configure(Vec<InputConfig>),
     /// The `timelines` collection changed: what is armed and where its playhead is.
-    Timelines(Vec<Timeline>),
+    ///
+    /// With whether this station is leading, which is who records the programmer: it
+    /// is SYNCED, every station sees every write, and a take stored by all of them
+    /// would be the same take three times.
+    Timelines { timelines: Vec<Timeline>, leading: bool },
+    /// What the programmer holds, at the console millisecond the engine applied it.
+    /// Sent by the leader's engine only while a timeline armed at the programmer is
+    /// running, so an idle console sends nothing.
+    Programmer { values: Vec<ProgrammerValue>, at_ms: u64 },
     /// Decode what is on the wire now for these fixtures.
     Grab {
         input_id: Option<Uuid>,
@@ -94,8 +103,17 @@ impl InputHandle {
     }
 
     /// Hand over the timelines: which is armed, and where each playhead is.
-    pub fn timelines(&self, timelines: Vec<Timeline>) {
-        let _ = self.0.try_send(InputCommand::Timelines(timelines));
+    pub fn timelines(&self, timelines: Vec<Timeline>, leading: bool) {
+        let _ = self.0.try_send(InputCommand::Timelines { timelines, leading });
+    }
+
+    /// Hand over the programmer, for a take recorded from it.
+    ///
+    /// Dropped on a full queue like the two above, which costs a change point and
+    /// nothing worse: the next snapshot is the whole programmer again, so the take
+    /// still ends up holding where the fader went.
+    pub fn programmer(&self, values: Vec<ProgrammerValue>, at_ms: u64) {
+        let _ = self.0.try_send(InputCommand::Programmer { values, at_ms });
     }
 
     /// What these fixtures are being told to do, right now, by whoever is on the wire.
@@ -258,6 +276,13 @@ pub struct InputManager {
     configured: Vec<InputConfig>,
     timelines: Vec<Timeline>,
     recording: Option<Recording>,
+    /// A take from the programmer, in progress. Beside `recording` rather than in it:
+    /// a guest console on a wire and an operator at this desk can both be recorded at
+    /// once, onto different timelines.
+    take: Option<programmer::ProgrammerTake>,
+    /// Whether this station leads the session, as the engine last said. The leader
+    /// records the programmer.
+    leading: bool,
     watching: Option<Watching>,
 }
 
@@ -268,7 +293,9 @@ impl InputManager {
         net: crate::infra::net::NetHandle,
         assets: Option<AssetStore>,
     ) -> (Self, InputHandle) {
-        let (tx, rx) = mpsc::channel(8);
+        // Deep enough for a fader's programmer snapshots between two looks; see
+        // `InputHandle::programmer` for what a dropped one costs.
+        let (tx, rx) = mpsc::channel(64);
         // Deep enough that a burst across several universes does not drop a frame of
         // a take, shallow enough that a manager that has stalled does not accumulate
         // seconds of stale wire. A dropped frame here is a change point that was
@@ -287,6 +314,8 @@ impl InputManager {
                 configured: Vec::new(),
                 timelines: Vec::new(),
                 recording: None,
+                take: None,
+                leading: false,
                 watching: None,
             },
             InputHandle(tx),
@@ -327,9 +356,17 @@ impl InputManager {
                     match cmd {
                         InputCommand::Stop => break,
                         InputCommand::Configure(inputs) => self.reconcile(inputs).await,
-                        InputCommand::Timelines(timelines) => {
+                        InputCommand::Timelines { timelines, leading } => {
+                            self.leading = leading;
+                            // Before the new transports replace the old: whether the
+                            // playhead jumped is a question about both.
+                            self.take_jumped(&timelines).await;
                             self.timelines = timelines;
                             self.reconcile_recording().await;
+                            self.reconcile_take().await;
+                        }
+                        InputCommand::Programmer { values, at_ms } => {
+                            self.observe_programmer(&values, at_ms);
                         }
                         InputCommand::Grab { input_id, fixture_ids, reply } => {
                             let _ = reply.send(self.grab(input_id, &fixture_ids).await);
@@ -343,6 +380,7 @@ impl InputManager {
                 _ = report.tick() => {
                     self.measure_rates();
                     self.publish_status().await;
+                    self.publish_takes().await;
                     // Where a cable coming or going is acted on, exactly as on the
                     // output side: neither changes the show, so nothing else in this
                     // loop would ever notice.
@@ -462,7 +500,7 @@ impl InputManager {
         // Resolved to a pair of ids before anything is decided, so the match below
         // does not hold a borrow of `self.timelines` across the writes it makes.
         let wanted: Option<(Uuid, Uuid)> = self.timelines.iter().find_map(|timeline| {
-            let input = timeline.recording?;
+            let input = timeline.recording?.input()?;
             (timeline.running && self.listening.contains_key(&input))
                 .then_some((timeline.id, input))
         });
@@ -940,6 +978,8 @@ fn parse(
         }
     }
 }
+
+mod programmer;
 
 #[cfg(test)]
 mod tests;

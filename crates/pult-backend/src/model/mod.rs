@@ -3,3 +3,4 @@ pub mod effects;
 pub mod playback;
 pub mod flows;
 pub mod timelines;
+pub mod takes;

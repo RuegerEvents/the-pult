@@ -1844,6 +1844,20 @@ pub enum Rate {
     Master { id: Uuid, multiplier: f32 },
 }
 
+/// What a take is recorded from.
+///
+/// Two sources and one shape at the end of either: decoded values against a position.
+/// An input is somebody else's console on a wire, decoded through the patch; the
+/// programmer is the operator at this one, already a value. Neither is bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RecordSource {
+    /// What an input hears, recorded by the station holding its socket.
+    Input(Uuid),
+    /// Every programmer key that changes while the timeline rolls, recorded by the
+    /// leader. `release` gives those keys back to the take when it is stored.
+    Programmer { release: bool },
+}
+
 /// A rectangle on the sheet, in millimetres from its top-left corner.
 ///
 /// Millimetres rather than fractions of the page, because a viewport at 1:50 is a
@@ -2662,13 +2676,14 @@ pub struct Timeline {
     pub position_at_anchor_ms: u64,
     #[serde(default)]
     pub rate: f32,
-    /// The input a take is being recorded from, if one is armed.
+    /// What a take is being recorded from, if one is armed.
     ///
     /// SYNCED rather than LOCAL because the station that *arms* it is usually not the
-    /// station holding the socket: an operator at the booth arms a recording from the
-    /// stage rack's input, and the rack has to hear about it.
+    /// station recording: an operator at the booth arms a recording from the stage
+    /// rack's input, and the rack has to hear about it; a tablet arms the programmer,
+    /// and the leader records it.
     #[serde(default)]
-    pub recording: Option<Uuid>,
+    pub recording: Option<RecordSource>,
 }
 
 /// What a timeline does to a sequence, and when.
@@ -2727,7 +2742,7 @@ pub struct TimelineTrack {
     pub asset: String,
     /// Which input it was recorded from, where it was recorded here. Kept so a take
     /// can be re-recorded from the same place without anybody remembering which cable
-    /// it came in on.
+    /// it came in on. `None` is a take recorded from the programmer.
     pub input_id: Option<Uuid>,
     /// Nudge, in milliseconds. Signed: a take is as often early as late.
     pub offset_ms: i32,

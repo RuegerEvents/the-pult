@@ -45,6 +45,7 @@
 		Sequence,
 		SpeedMaster,
 		Station,
+		TakeStatus,
 		Timeline,
 		TimelineAction,
 		TimelineEvent
@@ -58,6 +59,7 @@
 		nodeOf,
 		stationChannels
 	} from '$lib/destination.js';
+	import { armArgs, armChoice, PROGRAMMER, releases, takeSummary, trackSource } from '$lib/takes.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { consoleNow } from '$lib/ws/clock.js';
 	import Waveform from './Waveform.svelte';
@@ -78,6 +80,9 @@
 	let devices = $state<DevicesState | null>(null);
 	/** What the station driving the nodes has made of each one's clip store. */
 	let nodeAudio = $state<Record<string, NodeAudioState>>({});
+	/** What this station is recording, per timeline. LOCAL: a take in progress is in the
+	 *  recording station's memory, so a page on another station sees "armed" and not this. */
+	let takes = $state<Record<string, TakeStatus>>({});
 	const nodes = $derived(audioNodes(devices));
 	/** The clip the editor below is showing. */
 	let clipId = $state<string | null>(null);
@@ -162,9 +167,9 @@
 		await data.timelines.byId(timeline.id).locate({ positionMs, at: stamp });
 	}
 
-	async function arm(inputId: string | null) {
+	async function arm(choice: string, release: boolean) {
 		if (!timeline) return;
-		await data.timelines.byId(timeline.id).record({ inputId });
+		await data.timelines.byId(timeline.id).record(armArgs(choice, release));
 	}
 
 	async function createTimeline() {
@@ -484,11 +489,16 @@
 			if (v && typeof v === 'object') nodeAudio = v as Record<string, NodeAudioState>;
 		};
 		stops.push(client.subscribe('node_audio', applyNodeAudio));
+		const applyTakes = (v: unknown) => {
+			if (v && typeof v === 'object') takes = v as Record<string, TakeStatus>;
+		};
+		stops.push(client.subscribe('takes', applyTakes));
 		const fetchLocal = () => {
 			void client.get(['audio_status']).then(applyAudio);
 			void client.get(['audio_output']).then(applyOutput);
 			void client.get(['devices']).then(applyDevices);
 			void client.get(['node_audio']).then(applyNodeAudio);
+			void client.get(['takes']).then(applyTakes);
 		};
 		fetchLocal();
 		stops.push(client.addConnectListener(fetchLocal));
@@ -1254,21 +1264,45 @@
 				<div class="head-controls">
 					<select
 						class="text-input"
-						value={timeline.recording ?? ''}
-						onchange={(e) => arm(e.currentTarget.value || null)}
+						value={armChoice(timeline.recording)}
+						onchange={(e) => arm(e.currentTarget.value, releases(timeline.recording))}
 					>
 						<option value="">not recording</option>
+						<option value={PROGRAMMER}>record from the programmer</option>
 						{#each inputs.filter((i) => i.enabled) as input (input.id)}
 							<option value={input.id}>record from {input.name}</option>
 						{/each}
 					</select>
+					{#if armChoice(timeline.recording) === PROGRAMMER}
+						<label class="release" title="When the take is stored, give the keys it recorded back to it. Off, the faders stay held and beat the take until you clear them.">
+							<input
+								type="checkbox"
+								checked={releases(timeline.recording)}
+								onchange={(e) => arm(PROGRAMMER, e.currentTarget.checked)}
+							/>
+							give the faders back
+						</label>
+					{/if}
 					<button class="ghost" onclick={grab} title="Decode what is on the wire now into the programmer">
 						Grab selection
 					</button>
 				</div>
 			</header>
 
-			{#if timeline.recording}
+			{#if takes[timeline.id]}
+				<p class="recording-now">
+					<span class="dot"></span>{takeSummary(takes[timeline.id])}
+				</p>
+			{/if}
+			{#if timeline.recording && 'Programmer' in timeline.recording}
+				<p class="hint">
+					Armed. From the next Play to the next Stop, every programmer key that moves is
+					recorded, from the moment you first touch it. A key that already has a take is
+					written into that take from your first touch to the Stop, and the take carries on
+					from there; anything else goes into a new one. On a looping timeline every lap you
+					touch is a pass, so go round until the jaw is right.
+				</p>
+			{:else if timeline.recording}
 				<p class="hint">
 					Armed. The station holding that input records from the next Play to the next Stop,
 					and writes the take here.
@@ -1309,6 +1343,7 @@
 											)}
 									/>
 								</td>
+								<td class="what">from {trackSource(track, inputs)}</td>
 								<td class="what">{track.asset.slice(0, 8)}…</td>
 								<td>
 									<button
@@ -1340,6 +1375,11 @@
 	.block { margin-bottom: 24px; }
 	.block-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 	.head-controls { display: flex; align-items: center; gap: 6px; }
+	.release { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #aaa; white-space: nowrap; }
+	.recording-now { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #f66; margin: 0 0 8px; }
+	.recording-now .dot { width: 8px; height: 8px; border-radius: 50%; background: #e33; animation: blink 1s steps(2, start) infinite; }
+	@keyframes blink { to { visibility: hidden; } }
+	@media (prefers-reduced-motion: reduce) { .recording-now .dot { animation: none; } }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
 	h3 { font-size: 12px; font-weight: 600; color: #ccc; margin: 0; }
 	.transport { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

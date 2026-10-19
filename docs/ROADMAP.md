@@ -5939,6 +5939,116 @@ cargo test -p pult-schema surface                        # a tile's shape on the
 ```
 
 
+### 73. A jaw on a fader, to a voice
+
+Programmer takes, built 2026-10-21 for the Heinz Horror Garten. A skeleton's mouth has
+to move with its voice, and the way that gets made is somebody listening to the clip and
+moving a fader. Then the head on a second pass, then the arms, and a better second half
+of the jaw on a fourth. Task 66 recorded only from an armed DMX input. The *What is
+next* entry written for this had eight questions, answered below, and left the list
+when it was built.
+
+**`Timeline::recording` is a source, not an input.** `RecordSource` is `Input(id)` or
+`Programmer { release }`, still SYNCED and still armed with the timeline's own `record`
+command: `{ inputId }` as before, or `{ programmer: true, release? }`. Nothing about it
+is persisted, so no stored shape changed and `SCHEMA_GENERATION` stays 6.
+
+**Touch-scoped, not selection-scoped.** A pass records every key that *changes* while
+the timeline rolls, from the moment it is first touched. A key already held when the
+pass began, and never moved, is not in it. That is what lets the head be recorded over
+the jaw without the jaw being recorded again, and it cannot be missing a fixture the way
+the selection-scoped recording task 66 declined could: whatever you moved is in it.
+A held *effect* is not recorded. It is a shape with no change points.
+
+**The leader records it.** The programmer is SYNCED, so every station sees every write,
+and a take stored by each of them would be one take three times. The leader already
+fires the events and owns the show clock. The engine hands the input manager a
+snapshot of the programmer after each write it applies, while a timeline armed at the
+programmer is running here and this station leads, and at no other time. The input
+manager learns who leads with the timelines. A failover mid-pass ends the pass on the
+old leader, which stores what it has, and starts one on the new.
+
+**A change is timed when the leader applied it, with no `at` of its own.** A fader on a
+tablet is a network hop late: a few milliseconds on a wired show network, tens on a busy
+wifi. That is small beside the reaction time of a hand following a voice, and it is what
+a track's `offset_ms` nudge already exists for. Stamping every write with the page's
+`at` would have meant every writer of the programmer carrying one (faders, the values
+panel, the command line, a wing, a plugin) for a correction smaller than the thing
+being recorded.
+
+**A pass is spliced into the take that is playing the key.** This is the decision that
+cost the most thought. The evaluator takes one track per key, the latest in the list,
+and a track that has started never says nothing again. So a second track carrying the
+jaw would not *layer* over the first: it would hide it from its own first point and
+hold its last value for the rest of the song. `model::takes::merge` instead splices each
+key a pass touched into the track already asserting it. The old take runs up to the first
+touch, then the pass, then the old take again from the moment the pass ended, resuming
+at the value it had there. A key no track holds goes into a new one. That is punch-in on
+touch with latch to the stop, and it means a skeleton built from four passes is usually
+one or two takes, each of them one write of `tracks`, so each pass is one Ctrl-Z.
+
+**The faders are given back when the take is stored**, as an option that defaults on.
+Programmer beats track, so a jaw fader still held after the Stop beats the jaw take for
+ever and the operator plays it back and sees nothing move. Released the way Clear does,
+entry by entry, and a parked entry stays parked.
+
+**No thinning.** A fader writes at frame rate and the pass keeps every change. A point is
+nine bytes, so a jaw at 60 Hz is about half a kilobyte a second, and a thirty-second
+scare with four keys is under seventy. Simplifying within half a byte was considered and
+declined: the articulation of a mouth is exactly the detail a line simplification
+rounds off, and there is no size problem to solve. A value that did not move still
+writes nothing.
+
+**A loop is a rehearsal.** Task 69's looping end is what an operator wants for this: the
+scare going round while they get the jaw right. So a jump closes the pass, stores it, and
+starts the next one at once, still armed, carrying on from what the programmer held. Every
+lap you touch is a pass and each one is spliced into the take the last one made. The
+faders are given back only at the final stop, since releasing on a wrap would take the
+fader out of a hand that is still moving it. Rehearsing to the sound needs nothing extra:
+a timeline's clips play while it records, because recording only reads the transport.
+
+#### Traps
+
+- **A snapshot sent before the transport it belongs to is put on the wrong lap.** A loop
+  wraps inside one timelines pass, and the timelines are only handed to the input manager
+  by the *next* one. The first write after a wrap was placed against the old transport,
+  at a position past the end of the loop, and clamped into the lap that had already ended.
+  `feed_take` now tells the input manager about any transport that moved before it sends a
+  snapshot. The ordering rule is that simple, and the looping test is what found it.
+- **A loop can be shorter than a second.** The first jump rule was symmetric at a second,
+  which is the clock's step threshold, and an 800 ms scare never wrapped as far as it
+  could see. Backwards is now 20 ms, the threshold under which the audio station corrects
+  nothing at all, so anything further back is a loop or a locate. Reading a real backward
+  correction as a jump stores a pass early and splices the next into it, which plays the
+  same. Forwards stays a second, the largest correction the chase makes without locating.
+- **Two points at one position are one point.** When a pass runs right up to the
+  punch-out, the old take's resume would land on the pass's last point and replace it.
+  It goes a millisecond later instead.
+
+#### What is not done
+
+- **The last move before a Stop, in the same burst of writes, is lost.** The engine
+  feeds the take at the end of a burst, so a fader write and a Stop applied together
+  are seen in the order the passes run, not the order they arrived. A per-write hook in
+  `apply_set` would fix it. The case is a hand moving a fader and pressing Stop within
+  the same millisecond.
+- **A take is still held in memory until it is stored**, as task 66's are. A looping
+  rehearsal stores every lap, so it loses at most one.
+- **A page on another station sees "armed" and not the count.** `takes` is LOCAL to the
+  recording station, which holds the pass in its memory.
+- **An input take does not split at a loop.** Its change points would run backwards at
+  the wrap. It wants the same `jumped` rule, and the same splice.
+- **After a splice, the pass's last value holds until the old take's first point**, where
+  the old take had not started yet at the punch-out. A track cannot say "nothing" again
+  once it has started, so there is no way back to the layer underneath.
+- **Never tried on a skeleton.** The test drives an Art-Net output at a socket it holds.
+
+```
+cargo test -p pult-backend --lib model::takes   # touch, splice, resume, the jump rule
+cargo test -p pult-backend --test takes          # a take stored, played, overdubbed and looped
+cd frontend && npx vitest run src/lib/takes.test.ts
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

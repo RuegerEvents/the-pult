@@ -176,7 +176,7 @@ pub struct TimelineTrack {
     pub asset: String,
     /// Which input it was recorded from, where it was recorded here. Kept so a take
     /// can be re-recorded from the same place without anybody remembering which cable
-    /// it came in on.
+    /// it came in on. `None` is a take recorded from the programmer.
     pub input_id: Option<Uuid>,
     /// Nudge, in milliseconds. Signed: a take is as often early as late.
     pub offset_ms: i32,
@@ -244,23 +244,80 @@ impl Timeline {
         Ok(())
     }
 
-    /// Arm, or disarm, recording from an input.
+    /// Arm, or disarm, a recording.
     ///
-    /// Args: `{ "inputId": "<uuid>" | null }`. Arming is a *state*, not an act: the
-    /// station holding that input's socket records from the next play to the next
-    /// stop, so an operator can arm at half past six and press play at the top of the
-    /// show. `null` disarms, which is also what the recording station writes back when
-    /// it has stored the take.
-    #[pult_command(args = "{ inputId: string | null }")]
+    /// Args: `{ "inputId": "<uuid>" | null }` records what that input hears, and
+    /// `{ "programmer": true, "release"?: bool }` records what the operator does — every
+    /// programmer key that changes while the timeline rolls. Arming is a *state*, not
+    /// an act: the recording station records from the next play to the next stop, so
+    /// an operator can arm at half past six and press play at the top of the show.
+    /// Nothing named, or `inputId: null`, disarms, which is also what the recording
+    /// station writes back when it has stored the take.
+    ///
+    /// `release` (default true) gives the keys a programmer pass recorded back to the
+    /// take when it is stored. Without it the fader the operator is still holding beats
+    /// the take it just made, for ever, because the programmer is above a track.
+    #[pult_command(args = "{ inputId?: string | null, programmer?: boolean, release?: boolean }")]
     pub fn record(
         &mut self,
         args: serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if args.get("programmer").and_then(|v| v.as_bool()) == Some(true) {
+            let release = args.get("release").and_then(|v| v.as_bool()).unwrap_or(true);
+            self.recording = Some(RecordSource::Programmer { release });
+            return Ok(());
+        }
         self.recording = match args.get("inputId") {
             None | Some(serde_json::Value::Null) => None,
-            Some(value) => Some(serde_json::from_value(value.clone())?),
+            Some(value) => Some(RecordSource::Input(serde_json::from_value(value.clone())?)),
         };
         Ok(())
+    }
+}
+
+/// What a take is recorded from.
+///
+/// Two sources and one shape at the end of either: decoded values against a position.
+/// An input is somebody else's console on a wire, decoded through the patch; the
+/// programmer is the operator at this one, already a value. Neither is bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum RecordSource {
+    /// What an input hears, recorded by the station holding its socket.
+    Input(Uuid),
+    /// Every programmer key that changes while the timeline rolls, recorded by the
+    /// leader. `release` gives those keys back to the take when it is stored.
+    Programmer { release: bool },
+}
+
+/// What one station is recording onto one timeline: the LOCAL `takes` path, keyed by
+/// timeline id.
+///
+/// LOCAL because it is a fact about the station recording — the leader for the
+/// programmer, the station holding the socket for an input — and a take in memory is
+/// on that machine and no other. A page on another station sees the timeline armed and
+/// not this.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TakeStatus {
+    pub source: RecordSource,
+    /// Keys touched in the pass in progress.
+    pub keys: u32,
+    /// Change points in the pass in progress.
+    pub points: u32,
+    /// Passes already stored by this take — one per lap of a looping timeline.
+    pub passes: u32,
+}
+
+pub type TakeStatuses = std::collections::BTreeMap<String, TakeStatus>;
+
+impl RecordSource {
+    /// The input, where this records from one.
+    pub fn input(&self) -> Option<Uuid> {
+        match self {
+            RecordSource::Input(id) => Some(*id),
+            RecordSource::Programmer { .. } => None,
+        }
     }
 }
 
@@ -350,14 +407,15 @@ pub struct Timeline {
     #[serde(default = "one")]
     #[pult(lifecycle = SYNCED)]
     pub rate: f32,
-    /// The input a take is being recorded from, if one is armed.
+    /// What a take is being recorded from, if one is armed.
     ///
     /// SYNCED rather than LOCAL because the station that *arms* it is usually not the
-    /// station holding the socket: an operator at the booth arms a recording from the
-    /// stage rack's input, and the rack has to hear about it.
+    /// station recording: an operator at the booth arms a recording from the stage
+    /// rack's input, and the rack has to hear about it; a tablet arms the programmer,
+    /// and the leader records it.
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
-    pub recording: Option<Uuid>,
+    pub recording: Option<RecordSource>,
 }
 
 fn one() -> f32 {
@@ -724,9 +782,20 @@ mod tests {
         let mut timeline = a_timeline();
         let input = Uuid::from_u128(7);
         timeline.record(serde_json::json!({ "inputId": input })).unwrap();
-        assert_eq!(timeline.recording, Some(input));
+        assert_eq!(timeline.recording, Some(RecordSource::Input(input)));
         timeline.record(serde_json::json!({ "inputId": serde_json::Value::Null })).unwrap();
         assert_eq!(timeline.recording, None);
+    }
+
+    #[test]
+    fn arming_the_programmer_releases_by_default() {
+        let mut timeline = a_timeline();
+        timeline.record(serde_json::json!({ "programmer": true })).unwrap();
+        assert_eq!(timeline.recording, Some(RecordSource::Programmer { release: true }));
+        timeline.record(serde_json::json!({ "programmer": true, "release": false })).unwrap();
+        assert_eq!(timeline.recording, Some(RecordSource::Programmer { release: false }));
+        timeline.record(serde_json::json!({})).unwrap();
+        assert_eq!(timeline.recording, None, "naming nothing disarms");
     }
 
     /// Half open at the bottom: an event fires once however the passes fall, and an

@@ -75,10 +75,17 @@ pub struct TimelinePlayArgs {
 }
 
 /// Arguments for `timelines.record`.
+///
+/// Every field is optional, so `&Default::default()` is a whole call.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineRecordArgs {
-    pub input_id: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_id: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub programmer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release: Option<bool>,
 }
 
 /// Arguments for `timelines.stop`.
@@ -4874,14 +4881,15 @@ impl TimelineEntity {
         self.at.field("rate")
     }
 
-    /// The input a take is being recorded from, if one is armed.
+    /// What a take is being recorded from, if one is armed.
     ///
     /// SYNCED rather than LOCAL because the station that *arms* it is usually not the
-    /// station holding the socket: an operator at the booth arms a recording from the
-    /// stage rack's input, and the rack has to hear about it.
+    /// station recording: an operator at the booth arms a recording from the stage
+    /// rack's input, and the rack has to hear about it; a tablet arms the programmer,
+    /// and the leader records it.
     ///
     /// SYNCED.
-    pub fn recording(&self) -> Field<Option<Uuid>> {
+    pub fn recording(&self) -> Field<Option<RecordSource>> {
         self.at.field("recording")
     }
 
@@ -4908,13 +4916,19 @@ impl TimelineEntity {
         self.at.command("play", args)
     }
 
-    /// Arm, or disarm, recording from an input.
+    /// Arm, or disarm, a recording.
     ///
-    /// Args: `{ "inputId": "<uuid>" | null }`. Arming is a *state*, not an act: the
-    /// station holding that input's socket records from the next play to the next
-    /// stop, so an operator can arm at half past six and press play at the top of the
-    /// show. `null` disarms, which is also what the recording station writes back when
-    /// it has stored the take.
+    /// Args: `{ "inputId": "<uuid>" | null }` records what that input hears, and
+    /// `{ "programmer": true, "release"?: bool }` records what the operator does — every
+    /// programmer key that changes while the timeline rolls. Arming is a *state*, not
+    /// an act: the recording station records from the next play to the next stop, so
+    /// an operator can arm at half past six and press play at the top of the show.
+    /// Nothing named, or `inputId: null`, disarms, which is also what the recording
+    /// station writes back when it has stored the take.
+    ///
+    /// `release` (default true) gives the keys a programmer pass recorded back to the
+    /// take when it is stored. Without it the fader the operator is still holding beats
+    /// the take it just made, for ever, because the programmer is above a track.
     ///
     /// The command `timelines.record`, which the station applies to the row and
     /// replicates like any other write.
