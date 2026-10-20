@@ -26,5 +26,5 @@ pub use effect::{
     RunningEffect, RunningFade, Shape, Step,
 };
 pub use color::{level_from, level_of, mix, unmix, Color, EmitterSpec};
-pub use track::{decode, encode, sample, Track, TrackAt, TrackError, TrackKey, TrackPoint, Transport};
+pub use track::{decode, encode, outline, sample, KeyOutline, Track, TrackAt, TrackError, TrackKey, TrackPoint, Transport};
 pub use value::{interpolate, ParameterValue};

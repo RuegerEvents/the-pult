@@ -11,7 +11,8 @@ import ListOrdered from '@lucide/svelte/icons/list-ordered';
 import Play from '@lucide/svelte/icons/play';
 
 import type { Cue, Sequence, Timeline } from '$lib/generated/index.js';
-import { registerKind } from '$lib/objects.js';
+import { copyName, registerKind } from '$lib/objects.js';
+import TimelineInspector from '$lib/components/timeline/inspectors/TimelineInspector.svelte';
 import { collection, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';
 import { consoleNow } from '$lib/ws/clock.js';
@@ -73,5 +74,24 @@ registerKind<Timeline>({
 		const proxy = showData().timelines.byId(timeline.id);
 		await (timeline.running ? proxy.stop({ at }) : proxy.play({ at }));
 	},
-	rename: (timeline, name) => showData().timelines.byId(timeline.id).name.set(name)
+	rename: (timeline, name) => showData().timelines.byId(timeline.id).name.set(name),
+	duplicate: async (timeline) => {
+		// A copy stopped and unarmed: a second running scare nobody started, or a second
+		// timeline recording into the first's takes, is not what "duplicate" means.
+		await showData().timelines.create({
+			...timeline,
+			id: crypto.randomUUID(),
+			name: copyName(timeline.name, get(timelines).map((t) => t.name)),
+			clips: timeline.clips.map((c) => ({ ...c, id: crypto.randomUUID() })),
+			events: timeline.events.map((e) => ({ ...e, id: crypto.randomUUID() })),
+			markers: timeline.markers.map((m) => ({ ...m, id: crypto.randomUUID() })),
+			tracks: timeline.tracks.map((t) => ({ ...t, id: crypto.randomUUID() })),
+			running: false,
+			anchor_ms: 0,
+			position_at_anchor_ms: 0,
+			recording: null
+		});
+	},
+	remove: (timeline) => showData().timelines.byId(timeline.id).delete(),
+	inspector: TimelineInspector
 });

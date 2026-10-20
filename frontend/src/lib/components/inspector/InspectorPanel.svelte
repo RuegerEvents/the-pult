@@ -45,8 +45,9 @@
 <div class="inspector">
 	{#if $subjectRows.length === 0}
 		<p class="empty">
-			Nothing to inspect. ⌘/Ctrl-click a preset, a group, an effect or a surface — or tap
-			the dot in its corner — and it opens here.
+			Nothing to inspect. Click a clip, an event or a take on a timeline, or ⌘/Ctrl-click
+			a preset, a group, an effect or a surface — or tap the dot in its corner — and it
+			opens here.
 		</p>
 	{:else}
 		{#each $subjectRows as { kind, rows } (kind.kind)}

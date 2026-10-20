@@ -112,7 +112,7 @@ export function defaultDirectionFor(kind: ParameterKind): ParameterDirection {
  * showing through.
  *
  * The schema spells it the way GDTF does and that stays; this is the label, and the
- * console's own English is British. A numbered kind reads as the number an operator
+ * console's own English is American. A numbered kind reads as the number an operator
  * counts from — `Gobo 1`, not `Gobo:1` — and a named one is whatever the device
  * called it, which is already the operator's word.
  */

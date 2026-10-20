@@ -190,6 +190,18 @@ pub fn shape_level(shape: JsValue, width: f32, traveled: f64, salt: u32) -> Resu
     Ok(pult_render::shape_level(shape, width, traveled, salt))
 }
 
+/// A recording outlined for drawing: per key, where it starts and stops and its level
+/// along the way, at most `budget` levels each — [`pult_render::outline`] over the
+/// same parse the station plays from.
+///
+/// Free rather than on [`Evaluator`] because a lane draws takes whether or not their
+/// timeline is running, and the evaluator holds only what is driving the rig.
+#[wasm_bindgen]
+pub fn track_outline(bytes: &[u8], budget: u32) -> Result<JsValue, JsValue> {
+    let track = pult_render::track::decode(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(pult_render::outline(&track, budget as usize).serialize(&plain_javascript())?)
+}
+
 /// A serializer that answers with plain objects and arrays.
 ///
 /// `serde_wasm_bindgen`'s default turns a map into a JS `Map`, which is right for a

@@ -832,9 +832,13 @@ The **`xchange` panel** is MVR-xchange: the group, who is in it, what they have
 committed, and the two acts. See *A rig can leave while it is still being drawn*.
 
 The **`outputs` panel is the I/O panel** — outputs and inputs, which are the same row
-read in two directions — and the **`timeline` panel** is a position with a waveform, a
-beat grid, events, markers and takes written against it. See *A recording is a function
-of time* and *A song the console can hear*.
+read in two directions — and the **`timeline` panel** is a list of timelines, lanes and
+an Inspector: markers, events, a lane per place sound goes and a lane per take, all
+against one ruler. A clip, an event, a marker, a tempo and a take are object kinds
+(`kinds/timeline.kind.ts`), so they are edited in the Inspector like a preset, and the
+panel docks the Inspector itself only while the layout has none. `timeline/lanes.ts` is
+the geometry. See task 80, *A recording is a function of time* and *A song the console
+can hear*.
 
 The **`surface` panel** builds the pages a phone runs the show from, and
 `/surface/<id>` is one of them full-screen with none of the desk round it. A tile

@@ -6699,6 +6699,122 @@ touched.
 - No per-kind field derivation from `EntityMeta`: each kind's inspector is written by
   hand, and a kind without one gets the name and the color only.
 
+### 80. A timeline is lanes, and what is on them is an object
+
+U3 of the UI direction (see *What is next*), built 2026-10-20: option A. Three defects went
+ahead of it, each a test hearing the machine rather than the console.
+
+**The panel.** A list of timelines on the left, the transport over full-height lanes in
+the middle, the Inspector on the right. `TimelinePanel.svelte` was 1427 lines in one
+scrolling column — header, transport, end, waveform, then Sound, Beat grid, Events,
+Markers and Recordings stacked as forms under it. It is now a shell over
+`TimelineList`, `Transport`, `Lanes` and six inspectors, and **nothing is a form under
+the canvas**: everything that was is either drawn on a lane or edited in the Inspector.
+
+**What is on a timeline is an object.** `kinds/timeline.kind.ts` registers clips,
+events, markers, tempo segments and takes as kinds, with rows read off the `timelines`
+collection — so a clip is still a field of its timeline in the schema, and only how it
+is reached changed. Clicking one makes it the subject; the Inspector edits it,
+whichever panel the Inspector is in; the context menu offers its verbs (go to,
+duplicate, rename, delete). A tap on one goes to it, which is what tapping a thing on a
+timeline does in every editor; a take's tap turns it on or off, since a take has no one
+place to go to. A tempo segment has no id in the schema, so its id is its timeline and
+its index (`segmentId`), and `grid` is kept sorted so that index does not move while it
+is being looked at.
+
+**The answers to U3's questions.**
+
+- *Lane order is fixed and nobody reorders lanes*: markers, events, one lane per place
+  sound goes (in the order its first sound starts), one lane per take. Worked out from
+  the content and never stored, because a stored order is one more thing that stops
+  matching the content the moment a clip is re-routed. The order is the order a scare is
+  read in: where you are, what fires, what is heard, what moves.
+- *A sound lane is a destination, not a clip*: everything going to the same speakers
+  shares a lane, so "what plays out of Area 2" is one row; clips on one destination that
+  overlap take rows inside it (`clipLanes`). After U4 the destination is a speaker zone.
+- *A take is one lane with a row per key*, named by parameter — "Jaw", "Pan" — with the
+  fixture said once on the take's own line when the take moved one fixture. Drawn from
+  `pult_render::outline` through a new `track_outline` in the wasm: the same parse of the
+  same bytes the station plays, so a lane cannot draw a take the lamps would not do, and
+  there is still no second reader of the track format. Drawn stepwise, because replay is.
+- *Zoom and snap on touch*: zoom has buttons (in, out, the whole timeline) beside the
+  wheel, and snap is a chip in the transport. Pinch was not built.
+- *Narrower than 760 px the list is a dropdown*, and narrower than 900 px the docked
+  Inspector hands over to the Inspector panel with a button that opens one.
+- *The beat grid draws on the lanes* — a bar line per downbeat, a beat where they fit —
+  and its tempo segments are triangles on the ruler with their tempo beside them,
+  draggable like anything else. The detector's proposal is drawn over the lanes in its
+  own green and changes nothing until *Use this grid*, in the timeline's inspector.
+
+**The Inspector is docked only when there is no Inspector panel.** The panel embeds
+`InspectorPanel` itself on its right — the same component, not a copy — while the
+layout has no Inspector panel or the timeline is maximized; otherwise it leaves the
+editing to the panel. Two places editing one clip would be two answers to "where do I
+change this", which is what the Inspector exists to end. With nothing picked up, the
+docked one shows the timeline's own settings (`TimelineInspector`: end and loop, who
+plays it, position from, speed master, beat grid, recording), which is also what the
+Inspector panel shows when the timeline itself is the subject — the transport's end and
+record chips select it.
+
+**Tap runs a timeline; selecting opens it.** The list is cards, and a card acts, so a
+tap plays or stops — which is what the list is for on a haunt night, twelve scares and
+a bed to fire from a tablet. Opening one is the edit act, so it is selecting it: the
+corner dot or ⌘-click, or picking up anything on it. Making a tap open was considered
+and turned down: natural at a desk, and a list that does nothing when pressed at the
+maze. A looping card says which lap it is on and its progress through the lap.
+
+**The grammar on the lanes.** Click picks up and the Inspector edits; ⌘/Ctrl- or
+Shift-click adds; a drag across empty lanes is a rubber band that takes anything it
+touches, even partly; right-click or a long-press is the menu; Delete removes what is
+picked up; a click on nothing locates and gives the Inspector back to the timeline; a
+double-click on the event or marker lane writes one there. A drag of several things
+moves them by one amount, measured from where the drag began, and stops them together
+at the top rather than squashing them onto it; an edge trims a clip, and only when that
+clip is the one thing picked up. `timeline/lanes.ts` is all of that as pure functions —
+layout, hit test, band, move, remove — under 19 tests.
+
+**Shared stores, not panel state.** `stores/timelines.ts` holds what the panel and the
+Inspector both read: the open timeline (per browser, remembered), the detector's
+proposal, the playhead clock, and the LOCAL paths — `audio_status`, `audio_output`,
+`devices`, `node_audio`, `takes` — through a new `localPath()` in `stores/show.ts`, shared
+and reference-counted like the collections and asked again on every reconnect.
+
+**The defects first.**
+
+- `a_node_is_told_every_broker…` subscribed straight after adopting, and on a loaded
+  machine the station published the list after the subscriber had arrived. A publish to
+  somebody already subscribed is delivered live with the retain flag clear, so the
+  assertion that the list was *retained* failed — 4 runs in 36 at twelve-way load. It
+  now waits for the list to exist and asks with a second, later client, which is what
+  the claim was about: 48 in 48 since.
+- The timecode round trip sent sACN to `127.0.0.1:5568` and listened there. That port is
+  shared, with `SO_REUSEPORT`, by everything on the machine speaking sACN, so a demo
+  running beside the suite took the test's packets and merged its own universe 1 into
+  the test's input. `InputConfig::port` (None is the protocol's own) lets an input listen
+  elsewhere — also what two stations on one machine need — and the test uses a free
+  port. A listener squatting on 5568 failed the old test and passes the new one.
+- `npm ci` refused the committed frontend lockfile: it lacked `@emnapi/core` and
+  `@emnapi/runtime`, the optional peers of the wasm bindings. Regenerated with
+  `--package-lock-only` from a clean copy, the smallest change; Playwright stays in
+  `package.json`.
+
+**The traps.**
+
+- *A gesture folds repeats of one path, not several paths.* A group drag writes `clips`
+  and `events` each frame and leaves two history rows carrying one gesture; one undo
+  takes both back. `dragging_a_clip_and_an_event_together_is_one_row` in the counts test
+  asserts exactly that, rows and undo, rather than "one row", which was the first guess
+  and wrong.
+- *A view stored for a 30-second minimum showed an 8-second scare as a sliver.* The
+  default view fits a sixth more than the furthest thing on the timeline, and never less
+  than ten seconds.
+- *A label column cannot hold "Skeleton 1 · Jaw" four times.* Hence the take's own name
+  line and parameter-only rows.
+
+**Not done.** Lane order is not user-settable, by decision. No pinch zoom. A take's
+outline is fetched per browser and kept for the page's life. The left list does not
+filter or group. Nothing here has been tried on a tablet.
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -6774,15 +6890,13 @@ and made these calls. Each one is the user's, with the reason given at the time.
 2. **U2, the design foundation.** Done as task 79 (2026-10-20): categories, icons and
    colors in `PanelMeta`; the picker modal; ⌘K; the card component; the shared context
    menu; the Inspector panel; no edit mode, with the Show lock.
-3. **U3, the timeline**, as option A, its inspector being the Inspector's component.
+3. **U3, the timeline.** Done as task 80 (2026-10-20): lanes, the timeline's things as
+   object kinds, the Inspector docked when there is no Inspector panel.
 4. **U4, audio zones**, plus naming devices and channels per station.
 5. **U5, multi-cell fixtures**, with strips moved onto them.
 
-**Questions each step has to answer** (U2's are answered in task 79)
+**Questions each step has to answer** (U2's are answered in task 79, U3's in task 80)
 
-- *U3.* Lane order and whether a user can reorder lanes; how a take's lanes group by
-  fixture; zoom and snap on touch; what the left list collapses to on a narrow tile;
-  how the beat grid and the detector's proposal draw on the ruler.
 - *U4.* Where a zone's channel map lives (a per-station map on the zone, the shape of
   `OutputConfig::interfaces`, is the precedent). Mono and stereo zones, and a zone a
   station has not mapped (a fault by name, like an unmapped channel today). Whether a

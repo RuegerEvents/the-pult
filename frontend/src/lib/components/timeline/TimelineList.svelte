@@ -1,0 +1,124 @@
+<script lang="ts">
+	/**
+	 * Every timeline, as cards: what each is doing, and which one is open.
+	 *
+	 * **A tap runs it**, which is the console's grammar — a card acts — and is what a
+	 * haunt needs from this list on the night: twelve scares and a bed, each a thing to
+	 * fire. Opening one is the edit act, so it is *selecting* it: ⌘/Ctrl-click, or the
+	 * dot in its corner. Considered and turned down: making a tap open the timeline,
+	 * which reads naturally at a desk and leaves a tablet at the maze with a list that
+	 * does nothing when it is pressed.
+	 *
+	 * Narrower than a card, the list is a dropdown, which is all a phone-width tile has
+	 * room for.
+	 */
+
+	import Plus from '@lucide/svelte/icons/plus';
+
+	import type { Timeline } from '$lib/generated/index.js';
+	import Card from '$lib/components/objects/Card.svelte';
+	import { canEdit } from '$lib/stores/showLock.js';
+	import { createTimeline, lapOf, now, openTimelineId, positionOf, timelines, toggle } from '$lib/stores/timelines.js';
+	import { clock } from '$lib/waveform.js';
+
+	let { open, narrow }: { open: Timeline | null; narrow: boolean } = $props();
+
+	let creating = $state(false);
+	let name = $state('');
+
+	async function create() {
+		const text = name.trim();
+		if (!text) return;
+		await createTimeline(text);
+		name = '';
+		creating = false;
+	}
+
+	function stateOf(timeline: Timeline, at: number | null): { text: string; progress: number | null } {
+		if (!timeline.running) {
+			return { text: timeline.end ? `stopped · ${clock(timeline.end.at_ms)}` : 'stopped', progress: null };
+		}
+		const position = positionOf(timeline, at);
+		if (position === null) return { text: 'running', progress: null };
+		const { position: inLap, lap } = lapOf(timeline, position);
+		if (timeline.end?.then === 'Loop') {
+			return { text: `going round · lap ${lap + 1} · ${clock(inLap)}`, progress: inLap / timeline.end.at_ms };
+		}
+		return {
+			text: timeline.end ? `${clock(position)} / ${clock(timeline.end.at_ms)}` : clock(position),
+			progress: timeline.end ? Math.min(1, position / timeline.end.at_ms) : null
+		};
+	}
+</script>
+
+{#if narrow}
+	<div class="narrow">
+		<select class="select" value={open?.id ?? ''} onchange={(e) => openTimelineId.set(e.currentTarget.value)} aria-label="Timeline">
+			{#each $timelines as t (t.id)}
+				<option value={t.id}>{t.running ? '▶ ' : ''}{t.name}</option>
+			{/each}
+		</select>
+	</div>
+{:else}
+	<div class="list">
+		<div class="head">
+			<span class="title">Timelines</span>
+			{#if $canEdit}
+				<button class="btn btn-icon" title="New timeline" aria-label="New timeline" onclick={() => (creating = !creating)}><Plus size={14} /></button>
+			{/if}
+		</div>
+		{#if creating}
+			<form onsubmit={(e) => { e.preventDefault(); void create(); }}>
+				<!-- svelte-ignore a11y_autofocus -->
+				<input class="input" placeholder="What is it for?" bind:value={name} autofocus onkeydown={(e) => e.key === 'Escape' && (creating = false)} />
+			</form>
+		{/if}
+		{#each $timelines as t (t.id)}
+			{@const s = stateOf(t, $now)}
+			<Card
+				ref={{ kind: 'timeline', id: t.id }}
+				name={t.name}
+				state={s.text}
+				progress={s.progress}
+				on={t.id === open?.id}
+				onact={() => toggle(t)}
+			/>
+		{:else}
+			<p class="note">
+				No timelines. One is a position and what is written against it — a scare, a song, an
+				ambient bed, anything that has to happen at a time rather than on a button.
+			</p>
+		{/each}
+	</div>
+{/if}
+
+<style>
+	.list {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+	}
+	.head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		min-height: 30px;
+	}
+	.title {
+		font-size: var(--font-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-dim);
+		font-weight: 600;
+	}
+	.head .btn {
+		min-height: 28px;
+	}
+	.narrow .select {
+		width: 100%;
+	}
+	form .input {
+		width: 100%;
+	}
+</style>

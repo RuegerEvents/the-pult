@@ -343,6 +343,72 @@ pub fn sample(points: &[TrackPoint], position_ms: u64) -> Option<&ParameterValue
         .map(|point| &point.value)
 }
 
+/// One key of a recording at a glance: where it starts and stops, how many change
+/// points it holds, and its level along the way, thinned to a budget.
+///
+/// For drawing a take on a timeline lane, which wants the shape of a jaw's movement
+/// and not every one of its sixty points a second. A read over [`Track`], so a page
+/// draws what the station plays from the same parse of the same bytes.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct KeyOutline {
+    pub fixture_id: Uuid,
+    pub key: String,
+    pub from_ms: u32,
+    pub to_ms: u32,
+    pub points: u32,
+    /// `(ms, level)`, ascending. The level is the value as a number: a float or an
+    /// integer as itself, a switch as 0 or 1, a color as its brightest primary, and a
+    /// text as 1, since all a lane can say about a word is that it changed there.
+    pub levels: Vec<(u32, f32)>,
+}
+
+/// Every key of `track`, outlined, each with at most `budget` levels (and never fewer
+/// than its first and last point, so a lane always shows where a key begins and ends).
+pub fn outline(track: &Track, budget: usize) -> Vec<KeyOutline> {
+    track
+        .keys
+        .iter()
+        .filter(|key| !key.points.is_empty())
+        .map(|key| {
+            let n = key.points.len();
+            let keep = budget.max(2).min(n);
+            let levels = (0..keep)
+                .map(|i| {
+                    // Evenly by index, which keeps where somebody moved a lot dense
+                    // and where nothing happened sparse — the shape a lane wants.
+                    let at = if keep == 1 { 0 } else { i * (n - 1) / (keep - 1) };
+                    let point = &key.points[at];
+                    (point.ms, level(&point.value))
+                })
+                .collect();
+            KeyOutline {
+                fixture_id: key.fixture_id,
+                key: key.key.clone(),
+                from_ms: key.points[0].ms,
+                to_ms: key.points[n - 1].ms,
+                points: n as u32,
+                levels,
+            }
+        })
+        .collect()
+}
+
+fn level(value: &ParameterValue) -> f32 {
+    match value {
+        ParameterValue::Float(v) => *v,
+        ParameterValue::Int(v) => *v as f32,
+        ParameterValue::Color { r, g, b, .. } => r.max(*g).max(*b),
+        ParameterValue::Bool(on) => {
+            if *on {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        ParameterValue::Text(_) => 1.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +505,34 @@ mod tests {
 
         let stopped = Transport { rate: 0.0, ..transport };
         assert_eq!(stopped.position_at(9_000), 500);
+    }
+
+    #[test]
+    fn an_outline_keeps_both_ends_and_thins_the_middle() {
+        let track = Track {
+            keys: vec![
+                TrackKey {
+                    fixture_id: Uuid::nil(),
+                    key: "Intensity".into(),
+                    points: (0..100).map(|i| TrackPoint { ms: i * 10, value: ParameterValue::Float(i as f32 / 100.0) }).collect(),
+                },
+                TrackKey { fixture_id: Uuid::nil(), key: "Silent".into(), points: vec![] },
+                TrackKey {
+                    fixture_id: Uuid::nil(),
+                    key: "Relay".into(),
+                    points: vec![TrackPoint { ms: 40, value: ParameterValue::Bool(true) }],
+                },
+            ],
+        };
+        let outlined = outline(&track, 5);
+        assert_eq!(outlined.len(), 2, "a key with nothing in it has no outline");
+        let jaw = &outlined[0];
+        assert_eq!((jaw.from_ms, jaw.to_ms, jaw.points), (0, 990, 100));
+        assert_eq!(jaw.levels.len(), 5);
+        assert_eq!(jaw.levels.first(), Some(&(0, 0.0)));
+        assert_eq!(jaw.levels.last(), Some(&(990, 0.99)));
+        let relay = &outlined[1];
+        assert_eq!((relay.from_ms, relay.to_ms), (40, 40));
+        assert_eq!(relay.levels, vec![(40, 1.0)], "one point is one level, however big the budget");
     }
 }

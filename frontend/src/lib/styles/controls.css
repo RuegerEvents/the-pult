@@ -127,3 +127,89 @@
 .row-touch + .row-touch {
 	border-top: 1px solid var(--line);
 }
+
+/*
+ * A form in the Inspector: a label on the left, what it sets on the right, one fact a
+ * row. Shared because every kind's inspector is one of these, and five slightly
+ * different grids side by side is exactly what the Inspector exists to stop.
+ */
+.fields {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 8px 12px;
+	align-items: center;
+	font-size: var(--font-sm);
+}
+
+.fields > .label {
+	color: var(--text-dim);
+	font-size: var(--font-xs);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+
+.fields .select,
+.fields .input:not(.narrow) {
+	min-width: 0;
+	max-width: 100%;
+}
+
+.fields > .wide {
+	grid-column: 1 / -1;
+}
+
+.inline {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+
+.note {
+	color: var(--text-faint);
+	font-size: var(--font-xs);
+	line-height: 1.45;
+}
+
+.says-good {
+	color: var(--good);
+	font-size: var(--font-sm);
+}
+
+.says-bad {
+	color: var(--bad);
+	font-size: var(--font-sm);
+}
+
+.segmented {
+	display: inline-flex;
+}
+
+.segmented > button {
+	min-height: 30px;
+	padding: 0 10px;
+	border: 1px solid var(--line-strong);
+	background: var(--bg-sunken);
+	color: var(--text-dim);
+	font: inherit;
+	font-size: var(--font-xs);
+	cursor: pointer;
+}
+
+.segmented > button + button {
+	border-left: none;
+}
+
+.segmented > button:first-child {
+	border-radius: var(--radius) 0 0 var(--radius);
+}
+
+.segmented > button:last-child {
+	border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.segmented > button.on {
+	background: var(--accent-solid);
+	border-color: var(--accent-solid);
+	color: var(--text-bright);
+}

@@ -475,6 +475,73 @@ async fn a_dragged_sheet_block_is_one_row() {
     );
 }
 
+/// Dragging a clip and the event above it together on a timeline's lanes rewrites two
+/// columns per animation frame, `clips` and `events`, because each is one column of the
+/// timeline row. The oplog folds the sixty writes of each column into one row and keeps
+/// the two columns apart, so the gate is the one `a_store_and_an_update_are_each_one_undo`
+/// uses: one row per column, both carrying the gesture, and **one undo puts both back** —
+/// a group drag that undid half of itself would leave the Go off its sound.
+#[tokio::test]
+async fn dragging_a_clip_and_an_event_together_is_one_row() {
+    let station = a_station().await;
+    let who = Uuid::new_v4();
+    let gesture = Uuid::new_v4();
+    let timeline = Uuid::new_v4();
+    let clip = Uuid::new_v4();
+    let event = Uuid::new_v4();
+    let sequence = Uuid::new_v4();
+
+    station
+        .engine
+        .set(
+            vec![PathSegment::Key("timelines".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Persisted,
+            serde_json::json!({
+                "id": timeline, "name": "Area 2 scare", "clips": [], "detected": null,
+                "source": "Internal", "grid": [], "markers": [], "events": [], "tracks": [],
+                "speed_master": null, "node_id": null, "end": null, "running": false,
+                "anchor_ms": 0, "position_at_anchor_ms": 0, "rate": 1.0, "recording": null
+            }),
+        )
+        .await
+        .expect("the timeline is made");
+
+    let column = |field: &str| {
+        vec![PathSegment::Key("timelines".into()), PathSegment::Id(timeline), PathSegment::Key(field.into())]
+    };
+    for step in 0..60u64 {
+        let clips = serde_json::json!([{
+            "id": clip, "name": "Skeleton laugh", "asset": "00", "peaks": null,
+            "start_ms": 300 + step * 10, "offset_ms": 0, "length_ms": null, "gain_db": 0.0,
+            "fade_in_ms": 0, "fade_out_ms": 0, "looped": false,
+            "destination": { "Station": { "channels": [4] } }
+        }]);
+        let events = serde_json::json!([{
+            "id": event, "at_ms": step * 10, "action": { "GoNext": { "sequence_id": sequence } }
+        }]);
+        station.engine.set_as(who, Some(gesture), column("clips"), Lifecycle::Persisted, clips).await.expect("the clip moves");
+        station.engine.set_as(who, Some(gesture), column("events"), Lifecycle::Persisted, events).await.expect("the event moves");
+    }
+
+    let history = station.engine.history(200).await;
+    let mine = history.iter().filter(|entry| entry.gesture == Some(gesture)).count();
+    assert_eq!(
+        mine, 2,
+        "sixty frames of two columns became {mine} rows; the oplog should fold each column's \
+         repeats into one"
+    );
+
+    station.engine.undo(who, false).await;
+    for (field, empty) in [("clips", "the clip"), ("events", "the event")] {
+        let now = station.engine.get(column(field)).await.expect("the timeline is readable");
+        assert_eq!(
+            now.as_array().map(Vec::len),
+            Some(0),
+            "one undo left {empty} where the drag put it: a group drag is one Ctrl-Z"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_settled_rig_changes_no_universes() {
     let station = a_station().await;

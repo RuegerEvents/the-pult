@@ -188,7 +188,7 @@ export const PANELS = {
 	outputs: { title: 'I/O', component: OutputsPanel, fills: false, category: 'setup', icon: PlugZap, home: 'both' },
 	// A position, and what is written against it: events that Go cues, markers, and
 	// the takes recorded off an input.
-	timeline: { title: 'Timeline', component: TimelinePanel, fills: false, category: 'playback', icon: AudioWaveform },
+	timeline: { title: 'Timeline', component: TimelinePanel, fills: true, category: 'playback', icon: AudioWaveform },
 	// Where an output is configured is the panel above; this is what it is actually
 	// putting on the wire. Asked for while somebody is looking rather than published,
 	// so a console with it shut costs the station nothing.

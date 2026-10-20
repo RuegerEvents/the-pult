@@ -53,6 +53,18 @@ type Wasm = {
 	Evaluator: new () => Instance;
 	effect_values(effects: unknown, nowMs: number): Float32Array;
 	shape_level(shape: unknown, width: number, traveled: number, salt: number): number;
+	track_outline(bytes: Uint8Array, budget: number): KeyOutline[];
+};
+
+/** One key of a recording at a glance — `pult_render::KeyOutline`. */
+export type KeyOutline = {
+	fixture_id: string;
+	key: string;
+	from_ms: number;
+	to_ms: number;
+	points: number;
+	/** `[ms, level]`, ascending, thinned to the budget asked for. */
+	levels: [number, number][];
 };
 
 let instance: Instance | null = null;
@@ -110,6 +122,22 @@ export function effectValues(effects: RunningEffect[], nowMs: number): Float32Ar
 export function shapeLevel(shape: Shape, width: number, traveled: number, salt = 0): number | null {
 	if (!module) return null;
 	return module.shape_level(shape, width, traveled, salt >>> 0);
+}
+
+/**
+ * A recording outlined for a timeline lane: per key, where it starts and stops and its
+ * level along the way. The same parse of the same bytes the station plays from, so a
+ * lane cannot draw a take the lamps would not do. `null` while the evaluator is not
+ * loaded or the bytes are not a recording.
+ */
+export function trackOutline(bytes: Uint8Array, budget = 400): KeyOutline[] | null {
+	if (!module) return null;
+	try {
+		return module.track_outline(bytes, budget);
+	} catch (e) {
+		console.warn('[pult] a recording could not be outlined', e);
+		return null;
+	}
 }
 
 /** Hand over everything driving the rig. Called when the show changes, not per frame. */
