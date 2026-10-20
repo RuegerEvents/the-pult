@@ -4867,3 +4867,50 @@ mod pushing_the_rig {
         })
     }
 }
+
+// ── Timelines ─────────────────────────────────────────────────────────────────
+
+/// A looping timeline goes round for ever with nothing else happening on the station.
+///
+/// The defect this pins: the pass that acted on an end worked the next deadline out
+/// from the timelines it had read *before* the loop's own Play, where the playhead sat
+/// past the end — so it scheduled no wake at all, and the second lap ran on until
+/// something unrelated woke the engine. A rig view or a fader moving usually did, which
+/// is why it only showed on an idle station.
+#[tokio::test]
+async fn a_loop_goes_round_on_an_idle_station() {
+    use pult_schema::types::timeline::{AtEnd, Timeline, TimelineEnd, TimelineSource};
+    let h = harness().await;
+    let ambience = Timeline {
+        id: Uuid::new_v4(),
+        name: "Ambience".into(),
+        clips: Vec::new(),
+        detected: None,
+        source: TimelineSource::Internal,
+        grid: Vec::new(),
+        markers: Vec::new(),
+        events: Vec::new(),
+        tracks: Vec::new(),
+        speed_master: None,
+        node_id: None,
+        end: Some(TimelineEnd { at_ms: 200, then: AtEnd::Loop }),
+        running: false,
+        anchor_ms: 0,
+        position_at_anchor_ms: 0,
+        rate: 1.0,
+        recording: None,
+    };
+    h.engine.set(create_path("timelines"), Lifecycle::Persisted, json(&ambience)).await.unwrap();
+    h.engine
+        .set(field_path("timelines", ambience.id, "play"), Lifecycle::Synced, serde_json::json!({ "fromMs": 0 }))
+        .await
+        .unwrap();
+
+    // Five laps' worth, with nothing at all writing to the station meanwhile.
+    tokio::time::sleep(std::time::Duration::from_millis(1_050)).await;
+    let got: Timeline =
+        serde_json::from_value(h.engine.get(entity_path("timelines", ambience.id)).await.unwrap()).unwrap();
+    let position = got.position_at(pult_schema::types::sequence::now_ms());
+    assert!(got.running);
+    assert!(position < 200 + 50, "still going round rather than running on: at {position} ms");
+}

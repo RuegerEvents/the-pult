@@ -1463,6 +1463,7 @@ impl ShowEngine {
         }
 
         let pass = self.timelines.pass(wall_ms, &timelines);
+        let acted = !self.state.is_follower() && !pass.ended.is_empty();
         if !self.state.is_follower() {
             for fire in pass.fire {
                 let path = entity_field_path("sequences", fire.sequence_id, fire.command);
@@ -1498,6 +1499,13 @@ impl ShowEngine {
         for stopped in pass.stopped {
             self.let_go_of(stopped).await;
         }
+        // From the timelines as they are *now*, not as they were read above. A loop's
+        // own Play has just rewritten the transport, and the snapshot still has the
+        // playhead past the end — which schedules no wake at all, so the second lap ran
+        // on until something unrelated woke the engine. The writes above also leave the
+        // output version equal to what is pushed next, so nothing else wakes it either.
+        let timelines: Vec<pult_schema::types::timeline::Timeline> =
+            if acted { self.read_collection("timelines") } else { timelines };
         self.timelines_deadline = self.timelines.next_deadline(wall_ms, &timelines);
     }
 
