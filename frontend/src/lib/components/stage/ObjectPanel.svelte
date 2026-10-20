@@ -3,7 +3,7 @@
 	 * What one piece of the drawing is, in numbers.
 	 *
 	 * The gizmo is for the ninety percent of moves that are "about there"; this is for
-	 * the other ten, which are "exactly six metres". Both write the same field, and
+	 * the other ten, which are "exactly six meters". Both write the same field, and
 	 * neither is the primary one.
 	 *
 	 * A panel rather than a sheet on the rig's toolbar: it appeared and disappeared with
@@ -12,10 +12,10 @@
 	 * selection up itself, so it works with no rig tile open at all — which is what an
 	 * operator typing coordinates off a plan actually wants.
 	 *
-	 * The piece's own **properties** are rendered from what the catalogue declares
+	 * The piece's own **properties** are rendered from what the catalog declares
 	 * rather than from a list here — a deck says it has legs and what they may be, and
 	 * this offers exactly that. Which is what makes adding a property to a piece a
-	 * change in one Rust file: `catalogue.rs` declares it, `stock/shapes.rs` reads it,
+	 * change in one Rust file: `catalog.rs` declares it, `stock/shapes.rs` reads it,
 	 * and the control turns up here.
 	 */
 	import type { PropertyKind, SceneObject } from '$lib/generated/index.js';
@@ -32,7 +32,7 @@
 	const object = $derived(held[0]);
 
 	const data = getDataContext();
-	const entry = $derived(piece(object?.catalogue));
+	const entry = $derived(piece(object?.catalog));
 	/** Locked by its own flag, or by the layer it is on. Either way, read-only here. */
 	const locked = $derived(isLocked(object, $layers));
 	const properties = $derived(canonicalProperties(entry, object?.properties));

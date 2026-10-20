@@ -6,14 +6,14 @@ import {
 	isSurfacePath,
 	moveTile,
 	newTile,
-	OFF_COLOUR,
+	OFF_COLOR,
 	opWords,
 	parameterReading,
 	phoneHosts,
 	phoneLocation,
 	patchTile,
 	removeTile,
-	stopColour,
+	stopColor,
 	surfaceIdOf,
 	surfaceUrl,
 	tileLabel,
@@ -79,41 +79,41 @@ const empty: SurfaceShow = {
 const tile = (over: Partial<SurfaceTile>): SurfaceTile => ({
 	id: 't',
 	label: '',
-	colour: null,
+	color: null,
 	size: 'Half',
 	target: { kind: 'Heading' },
 	...over
 });
 
-describe('a readout colour', () => {
+describe('a readout color', () => {
 	const occupied = [
-		{ at: 0, colour: '#22c55e' },
-		{ at: 1, colour: '#ef4444' }
+		{ at: 0, color: '#22c55e' },
+		{ at: 1, color: '#ef4444' }
 	];
 
 	it('takes the highest stop at or below the value', () => {
-		expect(stopColour(occupied, 0)).toBe('#22c55e');
-		expect(stopColour(occupied, 1)).toBe('#ef4444');
-		expect(stopColour(occupied, 3)).toBe('#ef4444');
+		expect(stopColor(occupied, 0)).toBe('#22c55e');
+		expect(stopColor(occupied, 1)).toBe('#ef4444');
+		expect(stopColor(occupied, 3)).toBe('#ef4444');
 	});
 
 	it('does not care what order the stops were written in', () => {
-		expect(stopColour([...occupied].reverse(), 2)).toBe('#ef4444');
+		expect(stopColor([...occupied].reverse(), 2)).toBe('#ef4444');
 	});
 
 	it('reads below every stop as the lowest one, not as nothing', () => {
-		expect(stopColour(occupied, -1)).toBe('#22c55e');
+		expect(stopColor(occupied, -1)).toBe('#22c55e');
 	});
 
 	it('is on or off when nobody gave it stops', () => {
-		expect(stopColour([], 1, '#123456')).toBe('#123456');
-		expect(stopColour([], 0, '#123456')).toBe(OFF_COLOUR);
+		expect(stopColor([], 1, '#123456')).toBe('#123456');
+		expect(stopColor([], 0, '#123456')).toBe(OFF_COLOR);
 	});
 
 	it('picks ink that reads on it', () => {
 		expect(inkOn('#ffffff')).toBe('#111');
 		expect(inkOn('#000000')).toBe('#fff');
-		expect(inkOn('not a colour')).toBe('#fff');
+		expect(inkOn('not a color')).toBe('#fff');
 	});
 });
 
@@ -152,18 +152,18 @@ describe('what a tile says', () => {
 		expect(opWords({ Add: -1 })).toBe('−1');
 	});
 
-	it('reads a variable with its colour', () => {
+	it('reads a variable with its color', () => {
 		const target = {
 			kind: 'VariableReadout' as const,
 			variable_id: 'area2',
 			stops: [
-				{ at: 0, colour: '#0f0' },
-				{ at: 1, colour: '#f00' }
+				{ at: 0, color: '#0f0' },
+				{ at: 1, color: '#f00' }
 			]
 		};
 		expect(variableReading(target, { variables: [variable({ value: 2 })] }, null)).toEqual({
 			text: '2',
-			colour: '#f00'
+			color: '#f00'
 		});
 		// No value yet is the initial value, not nothing.
 		expect(variableReading(target, { variables: [variable()] }, null)?.text).toBe('0');
@@ -188,7 +188,7 @@ describe('a parameter readout', () => {
 			show,
 			() => red
 		);
-		expect(reading?.colour).toBe('#ff0000');
+		expect(reading?.color).toBe('#ff0000');
 	});
 
 	it('reads an input from what the device reported, which nothing evaluates', () => {
@@ -202,16 +202,16 @@ describe('a parameter readout', () => {
 			() => null
 		);
 		expect(reading?.text).toBe('on');
-		expect(reading?.colour).toBe('#22c55e');
+		expect(reading?.color).toBe('#22c55e');
 	});
 
-	it('draws a relay that is on in the tile’s own colour, so the red lamp reads red', () => {
+	it('draws a relay that is on in the tile’s own color, so the red lamp reads red', () => {
 		const show = {
 			fixtures: [aFixture({ sensed_values: { 'Contact:0': { type: 'Bool', value: true } } })],
 			types
 		};
 		const target = { kind: 'Parameter' as const, fixture_id: 'fixture', parameter: { Contact: 0 } };
-		expect(parameterReading(target, show, () => null, '#dc2626')?.colour).toBe('#dc2626');
+		expect(parameterReading(target, show, () => null, '#dc2626')?.color).toBe('#dc2626');
 	});
 
 	it('shows a gap before the page knows the clock', () => {
@@ -221,7 +221,7 @@ describe('a parameter readout', () => {
 			show,
 			() => null
 		);
-		expect(reading).toEqual({ text: '–', colour: null });
+		expect(reading).toEqual({ text: '–', color: null });
 	});
 });
 
@@ -267,7 +267,7 @@ describe('editing the list', () => {
 		expect(newTile('Heading', empty, 'h')).toEqual({
 			id: 'h',
 			label: 'Heading',
-			colour: null,
+			color: null,
 			size: 'Full',
 			target: { kind: 'Heading' }
 		});

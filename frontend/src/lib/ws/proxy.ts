@@ -165,7 +165,7 @@ type Entity = { id?: string } & Record<string, unknown>;
  * per moving fixture per tick, so re-reading would be dozens of round trips a
  * second for data the message already carried.
  *
- * Anything not recognised falls back to a re-read, so an unusual path is slow
+ * Anything not recognized falls back to a re-read, so an unusual path is slow
  * rather than wrong.
  */
 function subscribeDeep(

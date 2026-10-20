@@ -13,7 +13,7 @@
                 <FeatureGroup Name="Position" Pretty="Position">
                     <Feature Name="PanTilt"/>
                 </FeatureGroup>
-                <FeatureGroup Name="Color" Pretty="Colour">
+                <FeatureGroup Name="Color" Pretty="Color">
                     <Feature Name="RGB"/>
                 </FeatureGroup>
                 <FeatureGroup Name="Beam" Pretty="Beam">
@@ -135,7 +135,7 @@
                     </DMXChannel>
                 </DMXChannels>
             </DMXMode>
-            <DMXMode Name="Basic" Description="Dimmer and colour only, one break." Geometry="Base">
+            <DMXMode Name="Basic" Description="Dimmer and color only, one break." Geometry="Base">
                 <DMXChannels>
                     <DMXChannel DMXBreak="1" Offset="1" Geometry="Base">
                         <LogicalChannel Attribute="Dimmer">

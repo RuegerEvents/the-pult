@@ -68,7 +68,7 @@ pub struct DiscoveredDevice {
     /// on a node without a loudspeaker, and on firmware older than audio.
     ///
     /// Beside `description` rather than in it, for the reason `effects` is: the fixture
-    /// type's id hashes the description, and a node that learnt to make sound must not
+    /// type's id hashes the description, and a node that learned to make sound must not
     /// orphan every parameter patched against the type it had before.
     #[serde(default)]
     pub audio: Option<NodeAudio>,

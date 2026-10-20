@@ -119,7 +119,7 @@ export function reorderCueIds(ids: string[], from: number, to: number): string[]
  *
  * The browser's copy of `pult_schema::types::cue::tracked_through`, and it is here
  * for the reason `selection.ts` and `scene.ts` are: a cue clicked in a list has to
- * colour a sheet in the same frame, and a round trip inside that is a sheet that
+ * color a sheet in the same frame, and a round trip inside that is a sheet that
  * flickers. The two are held together by `testdata/tracking.json`, which this file's
  * test and `crates/pult-schema/tests/tracking_corpus.rs` both read.
  *

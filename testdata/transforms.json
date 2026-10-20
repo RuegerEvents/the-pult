@@ -7,7 +7,7 @@
     "rather than a promise. It lives outside both because neither owns it.",
     "",
     "`matrices` starts from a matrix as an MVR file writes one: four brace-wrapped",
-    "rows of three, millimetres, X right, Y upstage, Z up. That is pult-mvr's half,",
+    "rows of three, millimeters, X right, Y upstage, Z up. That is pult-mvr's half,",
     "and it is here so that the space conversion and the decomposition agree with",
     "what the console then does with the result.",
     "",
@@ -33,7 +33,7 @@
       }
     },
     {
-      "name": "millimetres Z-up become metres Y-up, and upstage becomes negative Z",
+      "name": "millimeters Z-up become meters Y-up, and upstage becomes negative Z",
       "matrix": "{1,0,0}{0,1,0}{0,0,1}{-3600,13900,4000}",
       "transform": {
         "position": {"x": -3.6, "y": 4.0, "z": -13.9},

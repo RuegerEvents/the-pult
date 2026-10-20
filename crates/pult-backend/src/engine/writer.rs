@@ -16,7 +16,7 @@
 //! no new durability guarantee, and none taken away either.
 //!
 //! Which is why this batches rather than merely moving the await. A queue where each
-//! reply waits for its own fsync serialises operators just as thoroughly as the actor
+//! reply waits for its own fsync serializes operators just as thoroughly as the actor
 //! did; the queue would be shorter and the wait would be the same. So the writer
 //! commits a *group*.
 //!
@@ -106,7 +106,7 @@ const QUEUE_DEPTH: usize = 1024;
 impl WriteHandle {
     /// Put a batch on the queue and wait for it to be durable.
     ///
-    /// The await is what keeps the acknowledgement honest. What has moved is *whose*
+    /// The await is what keeps the acknowledgment honest. What has moved is *whose*
     /// fsync a caller waits behind: its own group's, rather than every write that
     /// happened to be ahead of it in an actor.
     pub async fn write(&self, jobs: Vec<WriteJob>) -> Result<(), String> {
@@ -196,7 +196,7 @@ async fn commit(pool: &SqlitePool, batch: &[Submission]) -> Result<(), String> {
     // 5000 fixtures meant about 12.5 million inserts, and seeding one took over two
     // minutes where seeding 2000 took twenty seconds. Within a commit only the last
     // order for a table can win, since each is the whole list as it stood, so keeping
-    // only that one is not an optimisation that changes anything — it is dropping
+    // only that one is not an optimization that changes anything — it is dropping
     // writes that were already dead.
     let mut orders: Vec<(&str, &[Uuid])> = Vec::new();
 

@@ -9,7 +9,7 @@
  *
  * # Along the bar, not across the page
  *
- * The measurement is in the *parent's* own frame and in metres, taken from the fixture's
+ * The measurement is in the *parent's* own frame and in meters, taken from the fixture's
  * local position along the piece's long axis. A truss run at forty degrees to the stage
  * is still measured along itself, which is how a tape works; measuring the projected
  * distance on the page would give a number that shrinks as the truss turns and is right
@@ -25,7 +25,7 @@ import type { Metrics } from './font.js';
 import { toPage, type Camera } from './project.js';
 
 /** Which end a crew measures from. Mirrors the schema's `Datum`. */
-export type Datum = 'Left' | 'Right' | 'Centre';
+export type Datum = 'Left' | 'Right' | 'Center';
 
 export interface DimensionOptions {
 	datum: Datum;
@@ -38,7 +38,7 @@ export interface DimensionOptions {
 /** One head on one bar, with how far along it sits. */
 interface Along {
 	fixture: Fixture;
-	/** Metres along the parent's own long axis, from its centre. */
+	/** Meters along the parent's own long axis, from its center. */
 	at: number;
 	/** Where it lands on the page. */
 	page: Pt;
@@ -48,7 +48,7 @@ interface Along {
  * How far along its parent a fixture sits, and how long the parent is.
  *
  * The long axis is X in a piece's own frame — a truss's length, a bar's run — which is
- * the convention the whole catalogue is built on: `StockPiece::size` is "along X, up Y,
+ * the convention the whole catalog is built on: `StockPiece::size` is "along X, up Y,
  * along Z", and a 3 m truss is 3 m of X.
  */
 function alongOf(fixture: Fixture): number | null {
@@ -59,14 +59,14 @@ function alongOf(fixture: Fixture): number | null {
 	return local ? local.x : null;
 }
 
-/** Metres of bar, from its own size. */
+/** Meters of bar, from its own size. */
 export function barLength(size: Vec3 | undefined): number {
 	return size ? Math.max(size.x, 0.001) : 0;
 }
 
 /** Where the tape's zero is, in the parent's own frame. */
 export function zeroOf(datum: Datum, length: number): number {
-	if (datum === 'Centre') return 0;
+	if (datum === 'Center') return 0;
 	return datum === 'Left' ? -length / 2 : length / 2;
 }
 
@@ -79,8 +79,8 @@ export function zeroOf(datum: Datum, length: number): number {
  * exactly the kind of small ambiguity a drawing exists to remove. So the longest
  * distance in the chain decides, and everything on that bar is written the same way.
  *
- * Millimetres under ten metres, because that is what a tape reads and what somebody
- * repeats back; metres above it, because "12500" is a number people miscount.
+ * Millimeters under ten meters, because that is what a tape reads and what somebody
+ * repeats back; meters above it, because "12500" is a number people miscount.
  */
 export function unitFor(longest: number): (value: number) => string {
 	if (Math.abs(longest) < 10) return (value) => `${Math.round(Math.abs(value) * 1000)}`;

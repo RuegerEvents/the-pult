@@ -23,7 +23,7 @@
 //! This is the rule the whole module is arranged around, and it is not tidiness. A
 //! per-truss loading is a figure somebody hangs a truss on. So [`Totals`] carries what
 //! it could not account for as well as what it summed — how many items had no weight,
-//! and whether any figure in it came from the catalogue's nominal data rather than
+//! and whether any figure in it came from the catalog's nominal data rather than
 //! from something a person entered — and [`Totals::weight_label`] is the one place
 //! that becomes text, so the PDF, the CSV and a plugin's answer cannot disagree about
 //! whether a number is complete.
@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::catalogue;
+use super::catalog;
 use super::fixture::{Fixture, FixtureAddress, FixtureType};
 use super::group::{self, SelectionQuery};
 use super::scene::{Layer, SceneClass, SceneObject, SceneObjectKind};
@@ -58,7 +58,7 @@ pub enum Paper {
 }
 
 impl Paper {
-    /// Width and height in millimetres, portrait.
+    /// Width and height in millimeters, portrait.
     pub fn size_mm(self) -> (f32, f32) {
         match self {
             Paper::A4 => (210.0, 297.0),
@@ -68,7 +68,7 @@ impl Paper {
         }
     }
 
-    /// Width and height in millimetres, the way round the sheet is.
+    /// Width and height in millimeters, the way round the sheet is.
     pub fn oriented_mm(self, landscape: bool) -> (f32, f32) {
         let (w, h) = self.size_mm();
         if landscape {
@@ -79,9 +79,9 @@ impl Paper {
     }
 }
 
-/// A rectangle on the sheet, in millimetres from its top-left corner.
+/// A rectangle on the sheet, in millimeters from its top-left corner.
 ///
-/// Millimetres rather than fractions of the page, because a viewport at 1:50 is a
+/// Millimeters rather than fractions of the page, because a viewport at 1:50 is a
 /// window of a known size onto the rig and a fraction would change what it framed when
 /// somebody moved the sheet from A3 to A2.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, TS)]
@@ -196,11 +196,11 @@ pub enum LineMode {
     Wireframe,
 }
 
-/// What colours a drafting viewport.
+/// What colors a drafting viewport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum Ink {
-    /// Black on white, with line weight carrying what colour would have.
+    /// Black on white, with line weight carrying what color would have.
     #[default]
     Mono,
     ByLayer,
@@ -261,7 +261,7 @@ pub enum ViewStyle {
         /// drawing — that would be a document changing the show it documents, and on a
         /// console with the lamps on it would be visible in the room.
         ///
-        /// Several, because a look is usually more than one sequence: a colour state
+        /// Several, because a look is usually more than one sequence: a color state
         /// and a movement running over it. They are applied in order, so a later one
         /// wins where two capture the same parameter.
         #[serde(default)]
@@ -343,7 +343,7 @@ pub enum LabelField {
 /// Which end of a bar a rigger measures from.
 ///
 /// Every crew has a convention and none of them is the right one: some hang from stage
-/// left because that is where the truss numbering starts, some from the centre line
+/// left because that is where the truss numbering starts, some from the center line
 /// because that is what the drawing is symmetrical about, and some from whichever end
 /// the tape happens to be tied to. A drawing that dimensioned from the wrong end is a
 /// drawing somebody measures wrong from, so this is asked rather than assumed.
@@ -354,8 +354,8 @@ pub enum Datum {
     #[default]
     Left,
     Right,
-    /// The middle of the bar, which on a symmetrical rig is the centre line.
-    Centre,
+    /// The middle of the bar, which on a symmetrical rig is the center line.
+    Center,
 }
 
 /// Dimensions along the bars, for the crew hanging the rig.
@@ -418,7 +418,7 @@ pub struct ViewportBlock {
     /// every time.
     #[serde(default)]
     pub layers: Option<Vec<Uuid>>,
-    /// The lines of a head's label, in order. Empty for an unlabelled drawing.
+    /// The lines of a head's label, in order. Empty for an unlabeled drawing.
     #[serde(default)]
     pub labels: Vec<LabelField>,
     #[serde(default)]
@@ -449,7 +449,7 @@ pub enum TableKind {
     Counts,
 }
 
-/// What a table's rows are grouped and subtotalled by.
+/// What a table's rows are grouped and subtotaled by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum Grouping {
@@ -493,7 +493,7 @@ pub struct TableBlock {
 pub struct TextBlock {
     pub rect: Rect,
     pub text: String,
-    /// Cap height in millimetres. 2.5 mm is a drawing's small text, 5 mm a heading.
+    /// Cap height in millimeters. 2.5 mm is a drawing's small text, 5 mm a heading.
     #[serde(default = "default_text_mm")]
     pub size_mm: f32,
     #[serde(default)]
@@ -586,7 +586,7 @@ pub struct Totals {
     /// And how many had none. `weight_kg` is a floor whenever this is not zero.
     pub weight_unknown: usize,
     /// Whether any figure in `weight_kg` came from
-    /// [`catalogue::StockPiece::weight_kg`] rather than from something a person
+    /// [`catalog::StockPiece::weight_kg`] rather than from something a person
     /// entered. A nominal total is a different claim and says so.
     pub weight_nominal: bool,
     pub power_w: f32,
@@ -633,7 +633,7 @@ impl Totals {
     /// One implementation, because the PDF, the CSV and a plugin's answer disagreeing
     /// about whether a figure is complete is exactly the defect the `≥` exists to
     /// prevent. `"412 kg"` is a claim that everything was counted; `"≥ 412 kg"` is not;
-    /// `"≥ 412 kg nominal"` is not, and adds that some of it came off the catalogue.
+    /// `"≥ 412 kg nominal"` is not, and adds that some of it came off the catalog.
     pub fn weight_label(&self) -> String {
         if self.weight_known == 0 {
             return "—".into();
@@ -724,7 +724,7 @@ impl Column {
     }
 }
 
-/// A subtotalled section of a table.
+/// A subtotaled section of a table.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TableGroup {
@@ -1064,7 +1064,7 @@ fn loading_table(
             rows.push(vec![
                 Cell::Text(object.name.clone()),
                 Cell::Text(
-                    object.catalogue.clone().unwrap_or_else(|| format!("{:?}", object.kind)),
+                    object.catalog.clone().unwrap_or_else(|| format!("{:?}", object.kind)),
                 ),
                 Cell::Text(if nominal { "Structure (nominal)".into() } else { "Structure".into() }),
                 cell_kg(kg),
@@ -1084,7 +1084,7 @@ fn loading_table(
     notes.extend(unknown_note(if power_only { "power figure" } else { "weight" }, &unknown));
     if totals.weight_nominal && !power_only {
         notes.push(
-            "Weights marked nominal are the console's catalogue figures for the class of \
+            "Weights marked nominal are the console's catalog figures for the class of \
              part, not a manufacturer's data. Enter the real weight on the object to \
              replace one."
                 .into(),
@@ -1194,9 +1194,9 @@ fn object_weight(object: &SceneObject) -> (Option<f32>, bool) {
         return (Some(kg), false);
     }
     let nominal = object
-        .catalogue
+        .catalog
         .as_deref()
-        .and_then(catalogue::piece)
+        .and_then(catalog::piece)
         .and_then(|piece| piece.weight_kg);
     (nominal, nominal.is_some())
 }
@@ -1319,7 +1319,7 @@ fn picture(mode: PictureMode) -> ViewStyle {
 /// alone goes on the general arrangement drawings — it is the smallest thing that lets
 /// somebody standing under a bar say which light they are looking at — and the full set
 /// goes on the sheet whose whole purpose is to say what each fixture is.
-fn labelled(
+fn labeled(
     rect: Rect,
     title: &str,
     view: ViewPreset,
@@ -1374,7 +1374,7 @@ fn sheet(sort_order: i32, name: &str, blocks: Vec<SheetBlock>) -> Sheet {
 ///
 /// They are what "a default export creates nice paperwork" means, and they mirror the
 /// Vectorworks set this feature was designed against — an overview, the rig, sections,
-/// a labelled fixtures plan — with the tables that drawing set did not carry.
+/// a labeled fixtures plan — with the tables that drawing set did not carry.
 ///
 /// **Rows in the show rather than built-in presets.** A [`super::layout::Layout`] does
 /// it the other way, and the consequence of doing it this way is worth knowing: a show
@@ -1394,7 +1394,7 @@ pub fn default_sheets() -> Vec<Sheet> {
             0,
             "Overview",
             vec![
-                labelled(
+                labeled(
                     left,
                     "Plan",
                     ViewPreset::Plan,
@@ -1406,7 +1406,7 @@ pub fn default_sheets() -> Vec<Sheet> {
                 // production office puts in front of a client.
                 //
                 // `Cones` rather than `Real`, and the reason is the paper: a captured
-                // line mode clears to **white**, so this draws as grey solids with the
+                // line mode clears to **white**, so this draws as gray solids with the
                 // beams' coverage over them, which is what the drawing set this was
                 // designed against has on its own third sheet. `Real` and `Photoreal`
                 // keep their dark ground — they are pictures of light and there is no
@@ -1431,7 +1431,7 @@ pub fn default_sheets() -> Vec<Sheet> {
             1,
             "Rig",
             vec![
-                labelled(
+                labeled(
                     Rect::new(MARGIN, MARGIN, CONTENT_RIGHT - MARGIN, 130.0),
                     "Plan",
                     ViewPreset::Plan,
@@ -1444,7 +1444,7 @@ pub fn default_sheets() -> Vec<Sheet> {
                 // The elevation carries the number alone: a head on an elevation is
                 // already identified by the bar it is on, and the address is on the
                 // plan a hand's width above it.
-                labelled(
+                labeled(
                     Rect::new(MARGIN, 152.0, 230.0, 86.0),
                     "Front elevation",
                     ViewPreset::Front,
@@ -1457,14 +1457,14 @@ pub fn default_sheets() -> Vec<Sheet> {
             2,
             "Sections",
             vec![
-                labelled(
+                labeled(
                     Rect::new(MARGIN, MARGIN, CONTENT_RIGHT - MARGIN, 105.0),
                     "Section, looking from stage left",
                     ViewPreset::Section,
                     drafting(LineMode::Hidden),
                     vec![LabelField::Number],
                 ),
-                labelled(
+                labeled(
                     Rect::new(MARGIN, 130.0, 230.0, 108.0),
                     "Front elevation",
                     ViewPreset::Front,
@@ -1542,7 +1542,7 @@ pub fn default_sheets() -> Vec<Sheet> {
                 SheetBlock::Text(TextBlock {
                     rect: Rect::new(MARGIN, 231.0, 384.0, 12.0),
                     text: "Rendered from the rig as drawn. Beam angles and positions are \
-                           the fixtures' own; colour and intensity are the cues named on \
+                           the fixtures' own; color and intensity are the cues named on \
                            each view."
                         .into(),
                     size_mm: 2.4,

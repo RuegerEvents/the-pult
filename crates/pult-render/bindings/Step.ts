@@ -6,7 +6,7 @@ import type { ParameterValue } from "./ParameterValue";
  * One keyframe of a step list.
  *
  * The value is a real [`ParameterValue`] rather than a level, so a chase can be red,
- * green, blue rather than three brightnesses of one colour. `easing` describes the
+ * green, blue rather than three brightnesses of one color. `easing` describes the
  * transition into the *next* step, which is why a hard chase is a list of steps that
  * all say [`Easing::Step`].
  */

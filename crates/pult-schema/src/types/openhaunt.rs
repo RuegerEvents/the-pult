@@ -80,7 +80,7 @@ pub struct PortDescription {
     #[serde(default)]
     pub default: Option<f64>,
     /// A hint at what the port means, from a small vocabulary the console
-    /// recognises. Absent, or a word this console does not know, is not an error:
+    /// recognizes. Absent, or a word this console does not know, is not an error:
     /// the port becomes a named parameter instead.
     #[serde(default)]
     pub class: Option<String>,
@@ -233,7 +233,7 @@ impl EffectCapability {
 /// Read the per-port `effects` blocks out of a raw `/info` body.
 ///
 /// Deliberately not a field on [`PortDescription`]. [`fixture_type_id`] hashes the
-/// serialised [`NodeDescription`], so a field there would give every adopted node a
+/// serialized [`NodeDescription`], so a field there would give every adopted node a
 /// new fixture type the moment firmware started advertising effects, orphaning every
 /// parameter already patched against the old id. Serde ignores the unknown key, the
 /// hash stays put, and the capability is read from the raw JSON alongside — the same
@@ -282,7 +282,7 @@ pub fn fixture_type_id(module_type: u16, description: &NodeDescription) -> Uuid 
 /// head written only where there is one, so a node that predates heads hashes exactly as
 /// it always did.
 ///
-/// A mirror rather than the type itself, because the schema's own serialisation writes
+/// A mirror rather than the type itself, because the schema's own serialization writes
 /// every absent head as `null` (which the browser wants), and a `Value` would sort the
 /// keys and change every byte.
 fn hashed(description: &NodeDescription) -> Vec<u8> {
@@ -362,7 +362,7 @@ pub fn head_fixture_id(serial: &str, head: u8) -> Uuid {
 /// The fixture type for one head of a node.
 ///
 /// Built from that head's ports alone, which is what stops two strips colliding on one
-/// colour. `effects` is the node's `pixels.effects`, the vocabulary of a
+/// color. `effects` is the node's `pixels.effects`, the vocabulary of a
 /// `pixel-effect` port, kept as that parameter's slots.
 pub fn head_type_from(
     module_type: u16,
@@ -496,7 +496,7 @@ fn default_value(port: &PortDescription) -> ParameterValue {
         PortDataType::Boolean => ParameterValue::Bool(port.default.unwrap_or(0.0) != 0.0),
         PortDataType::Number => match physical_range(port) {
             // Kept in the console's 0..1, so a range of 1–16 rests at 1 and not at 100%.
-            Some(range) => ParameterValue::Float(range.to_normalised(
+            Some(range) => ParameterValue::Float(range.to_normalized(
                 port.default.unwrap_or(range.from as f64) as f32,
             )),
             None => ParameterValue::Float(port.default.unwrap_or(0.0) as f32),
@@ -510,7 +510,7 @@ fn default_value(port: &PortDescription) -> ParameterValue {
 mod tests {
     use super::*;
 
-    /// The descriptions the catalogue modules serve, as `OpenHaunt/node`'s docs
+    /// The descriptions the catalog modules serve, as `OpenHaunt/node`'s docs
     /// write them. Here as a *device's* words, to have something to parse — the
     /// console has no such table and adoption never consults one.
     fn described(module_type: u16) -> NodeDescription {
@@ -532,7 +532,7 @@ mod tests {
             }),
             // 0x0003 WS2812 strip.
             0x0003 => serde_json::json!({ "ports": [
-                { "port": 0, "name": "Strip colour", "access": "readwrite",
+                { "port": 0, "name": "Strip color", "access": "readwrite",
                   "dataType": "color", "class": "color" },
                 { "port": 1, "name": "Brightness", "access": "readwrite",
                   "dataType": "number", "unit": "percent",
@@ -568,13 +568,13 @@ mod tests {
                   "dataType": "number", "unit": "parts-per-million",
                   "minimum": 0, "maximum": 5000, "class": "air-quality" },
             ]}),
-            other => panic!("no catalogue description for {other:#06x}"),
+            other => panic!("no catalog description for {other:#06x}"),
         };
         serde_json::from_value(json).expect("a description the docs write parses")
     }
 
     #[test]
-    fn every_catalogue_module_describes_itself_into_a_fixture_type() {
+    fn every_catalog_module_describes_itself_into_a_fixture_type() {
         for module_type in [0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007] {
             let description = described(module_type);
             let ft = fixture_type_from(module_type, "Module", &description);
@@ -718,13 +718,13 @@ mod tests {
     }
 
     #[test]
-    fn two_strips_on_one_node_are_two_fixtures_each_with_its_own_colour() {
+    fn two_strips_on_one_node_are_two_fixtures_each_with_its_own_color() {
         let info = serde_json::json!({
             "ports": [
                 { "port": 0, "name": "Relay 1", "access": "readwrite", "dataType": "boolean", "class": "switch" },
-                { "port": 6, "name": "Colour", "access": "readwrite", "dataType": "color", "class": "color", "head": 1 },
+                { "port": 6, "name": "Color", "access": "readwrite", "dataType": "color", "class": "color", "head": 1 },
                 { "port": 9, "name": "Effect", "access": "readwrite", "dataType": "string", "class": "pixel-effect", "head": 1 },
-                { "port": 15, "name": "Colour", "access": "readwrite", "dataType": "color", "class": "color", "head": 2 },
+                { "port": 15, "name": "Color", "access": "readwrite", "dataType": "color", "class": "color", "head": 2 },
             ],
             "heads": [
                 { "head": 1, "name": "Strip 1", "kind": "pixel-strip" },
@@ -806,7 +806,7 @@ mod tests {
     fn a_port_that_advertises_effects_is_read_out_of_the_raw_info() {
         let info = serde_json::json!({
             "ports": [
-                { "port": 0, "name": "Strip colour", "access": "readwrite", "dataType": "color",
+                { "port": 0, "name": "Strip color", "access": "readwrite", "dataType": "color",
                   "effects": { "shapes": ["sine", "steps-are-not-a-shape"], "steps": true } },
                 { "port": 1, "name": "Brightness", "access": "readwrite", "dataType": "number",
                   "effects": { "shapes": ["sine", "square"], "steps": false, "transitions": true } },
@@ -817,10 +817,10 @@ mod tests {
         let caps = effect_capability_from(&info).expect("two ports advertise");
         assert_eq!(caps.ports.len(), 2, "the silent port contributes nothing");
 
-        let colour = caps.port(0).unwrap();
-        assert!(colour.has_shape("sine"));
-        assert!(colour.steps);
-        assert!(!colour.transitions, "absent means no");
+        let color = caps.port(0).unwrap();
+        assert!(color.has_shape("sine"));
+        assert!(color.steps);
+        assert!(!color.transitions, "absent means no");
 
         let brightness = caps.port(1).unwrap();
         assert!(brightness.has_shape("square"));
@@ -832,7 +832,7 @@ mod tests {
 
     /// The trap this whole arrangement exists to avoid.
     ///
-    /// `fixture_type_id` hashes the serialised description, so if `effects` were a
+    /// `fixture_type_id` hashes the serialized description, so if `effects` were a
     /// field on `PortDescription` then firmware that started advertising it would give
     /// every adopted node a new fixture type and orphan every patched parameter.
     /// Reading it from the raw JSON instead keeps the id where it was.

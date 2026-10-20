@@ -5,7 +5,7 @@
 //! by where they point rather than by what they are, a stack of cues that mostly
 //! changes a few of them at a time, and **split fade times** — the front coming up
 //! over five seconds while the previous state goes out over two is the ordinary
-//! shape of a theatre cue and is invisible in a show that never sets one.
+//! shape of a theater cue and is invisible in a show that never sets one.
 //!
 //! Two universes, because forty lanterns is more than one holds once the cyc is in —
 //! which is also what makes the Patch panel's universe view worth looking at.
@@ -24,7 +24,7 @@ use super::{
     id,
     kit::{
         a_clamped_fixture, a_cue, a_piece, a_preset, a_preset_value, a_stack, a_type, boom,
-        capture, colour, facing, from_preset,
+        capture, color, facing, from_preset,
         intensity, level, on, posed, production, sky, truss_run, under, weighing,
         Addresses,
     },
@@ -52,18 +52,18 @@ struct System {
 }
 
 pub async fn seed(into: &Seeder) -> Result<()> {
-    into.name_the_show("Theatre").await?;
+    into.name_the_show("Theater").await?;
 
     // Three conventionals: a profile to shape, a fresnel to wash, and an LED batten
-    // for the cloth. Only the batten mixes, which is why it is the one with a colour
+    // for the cloth. Only the batten mixes, which is why it is the one with a color
     // parameter — everything else is a lantern with gel in it, and a console that
-    // offered a colour picker for one would be lying.
+    // offered a color picker for one would be lying.
     let profile =
         weighing(a_type("Profile 26°", vec![intensity()]), 8.2, 750.0, (0.30, 0.35, 0.60));
     let fresnel =
         weighing(a_type("Fresnel 1kW", vec![intensity()]), 6.5, 1000.0, (0.28, 0.38, 0.32));
     let cyc = weighing(
-        a_type("LED Cyc Batten", vec![intensity(), colour()]),
+        a_type("LED Cyc Batten", vec![intensity(), color()]),
         9.0,
         200.0,
         (1.00, 0.25, 0.20),
@@ -73,13 +73,13 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         into.create("fixture_types", *kind).await?;
     }
 
-    // The room. A twelve-metre opening, three bars over it, a batten for the cloth,
-    // and a boom each side — three metres of truss stood on its end with its foot on
+    // The room. A twelve-meter opening, three bars over it, a batten for the cloth,
+    // and a boom each side — three meters of truss stood on its end with its foot on
     // the deck, which is what a boom is and what the first version of this demo drew
     // as a fourth and fifth horizontal bar.
     // Each bar with its length beside it, because a system is spread along the bar
     // it hangs on and not along some other one: the first version spread the cyc
-    // batten's eight cells over ten metres of a nine-metre bar, and the outer ones
+    // batten's eight cells over ten meters of a nine-meter bar, and the outer ones
     // hung in the air past its ends.
     let bars = [
         (truss_run(into, "FOH bar", None, Vec3 { x: 0.0, y: 6.0, z: 5.0 }, 12.0).await?, 12.0),
@@ -92,7 +92,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         boom(into, "Boom SR", None, Vec3 { x: 7.0, y: 1.5, z: 0.0 }, 3.0).await?,
     ];
 
-    // And something for the light to land on: a low rostrum upstage centre, and a
+    // And something for the light to land on: a low rostrum upstage center, and a
     // cloth to wash — three flats standing side by side across the back.
     a_piece(into, "Rostrum", "deck-2x1", super::kit::at(0.0, 0.4, -3.0), None).await?;
     for (n, x) in [-3.0f32, 0.0, 3.0].into_iter().enumerate() {
@@ -102,7 +102,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             "wall-2x1",
             Transform {
                 position: Vec3 { x, y: 0.0, z: -7.0 },
-                // Three metres of cloth out of a two-metre panel, and three high.
+                // Three meters of cloth out of a two-meter panel, and three high.
                 scale: Vec3 { x: 1.5, y: 3.0, z: 1.0 },
                 ..Transform::default()
             },
@@ -133,24 +133,24 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                 }
             };
             let (parent, mount, position) = match system.hang {
-                // Under the bar, on a clamp, spread over all but the last half metre
+                // Under the bar, on a clamp, spread over all but the last half meter
                 // at each end of it.
                 Hang::Bar(bar) => {
-                    let (id, metres) = bars[bar];
-                    let mount = Mount::along(spread(metres - 1.0));
+                    let (id, meters) = bars[bar];
+                    let mount = Mount::along(spread(meters - 1.0));
                     (id, mount, under(mount, system.aim))
                 }
-                // Up the boom, clamped to the chord that faces centre stage rather
+                // Up the boom, clamped to the chord that faces center stage rather
                 // than drawn inside it. A boom is a run stood on its end, so `along`
                 // is the height up it; the aim is a world term and `on` puts that in
                 // the boom's own turned frame.
                 Hang::Boom(index) => {
                     let (id, handle) = &booms[index];
                     // A boom is a run turned a quarter about Z, so its local −Y is
-                    // the world's +X. The clamp goes on the chord facing centre
+                    // the world's +X. The clamp goes on the chord facing center
                     // stage and the roll pushes the body out along it — which is
                     // what keeps the lantern on the face of the boom instead of
-                    // inside it, the thing the first Theatre demo got wrong twice.
+                    // inside it, the thing the first Theater demo got wrong twice.
                     let (chord, roll) = if handle.position.x < 0.0 { (0, 0.0) } else { (2, 180.0) };
                     let mount = Mount { chord, along: spread(2.2), roll };
                     (*id, mount, on(handle, mount, system.aim))
@@ -199,7 +199,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     // recompute every fixture on every Go.
     //
     // The split times are the point: a state that comes up over five seconds while
-    // the last one goes out over two is the ordinary shape of a theatre cue.
+    // the last one goes out over two is the ordinary shape of a theater cue.
     type State = (&'static str, &'static [(&'static str, f32)], u32, u32);
     let states: [State; 20] = [
         ("Preset", &[("Cyc", 0.30)], 3_000, 3_000),
@@ -227,23 +227,23 @@ pub async fn seed(into: &Seeder) -> Result<()> {
 
     // Five presets, and a cue that references three of them.
     //
-    // Three colours on the cyc and two states of the front wash, which is what this
-    // rig can actually hold: a theatre of profiles, fresnels and a cyc batten has no
+    // Three colors on the cyc and two states of the front wash, which is what this
+    // rig can actually hold: a theater of profiles, fresnels and a cyc batten has no
     // pan or tilt in it, so there is no position to make a palette of. A preset is
     // *any mix* — see `types/preset.rs` — so an intensity look is as much a preset as
-    // a colour, and that is what the two front ones are.
+    // a color, and that is what the two front ones are.
     let cyc = system_of("Cyc");
     let front = system_of("Front");
-    let colour_preset = |name: &str, step: usize| {
+    let color_preset = |name: &str, step: usize| {
         let values = cyc
             .iter()
             .map(|f| a_preset_value(f.id, ParameterKind::ColorRgb, sky(step)))
             .collect::<Vec<_>>();
         (name.to_string(), values)
     };
-    let dawn_sky = a_preset(into, "Dawn sky", colour_preset("Dawn sky", 8).1).await?;
-    a_preset(into, "Storm sky", colour_preset("Storm sky", 5).1).await?;
-    a_preset(into, "Night sky", colour_preset("Night sky", 0).1).await?;
+    let dawn_sky = a_preset(into, "Dawn sky", color_preset("Dawn sky", 8).1).await?;
+    a_preset(into, "Storm sky", color_preset("Storm sky", 5).1).await?;
+    a_preset(into, "Night sky", color_preset("Night sky", 0).1).await?;
     let front_full = a_preset(
         into,
         "Front full",
@@ -281,10 +281,10 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                 } else {
                     captures.push(level(fixture.id, *at));
                 }
-                // The cyc mixes, so its colour is part of the state rather than
+                // The cyc mixes, so its color is part of the state rather than
                 // something somebody gelled in the morning.
                 if *system == "Cyc" {
-                    let colour = sky(index);
+                    let color = sky(index);
                     if *name == "Dawn" {
                         captures.push(from_preset(
                             fixture.id,
@@ -293,7 +293,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                             dawn_sky,
                         ));
                     } else {
-                        captures.push(capture(fixture.id, ParameterKind::ColorRgb, colour));
+                        captures.push(capture(fixture.id, ParameterKind::ColorRgb, color));
                     }
                 }
             }
@@ -310,7 +310,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     }
 
     // "Dawn": front, back and the cyc at full, which is the one state in this stack
-    // where every system in the rig is doing something and the cyc has a colour in it.
+    // where every system in the rig is doing something and the cyc has a color in it.
     // Its fade is eight seconds, so the shot is taken at ten — five would have caught
     // it most of the way up and drawn a rig that looks underlit rather than one that
     // looks like dawn.

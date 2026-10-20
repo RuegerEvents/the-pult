@@ -88,7 +88,7 @@ const dot = (a: Vec3, b: Vec3): number => a.x * b.x + a.y * b.y + a.z * b.z;
 const length = (v: Vec3): number => Math.sqrt(dot(v, v));
 
 /** A unit vector, or null for one with no direction to speak of. */
-export function normalise(v: Vec3): Vec3 | null {
+export function normalize(v: Vec3): Vec3 | null {
 	const l = length(v);
 	return l > 1e-9 ? { x: v.x / l, y: v.y / l, z: v.z / l } : null;
 }
@@ -109,7 +109,7 @@ export function inCone(
 	angleDeg: number,
 	reach: number
 ): boolean {
-	const axis = normalise(direction);
+	const axis = normalize(direction);
 	if (!axis) return false;
 	const offset = sub(point, from);
 	const along = length(offset);
@@ -169,7 +169,7 @@ function matches(term: Term, fixture: Fixture, objects: Map<string, SceneObject>
 
 	switch (term.kind) {
 		case 'Sphere':
-			return distance(point, term.centre) <= term.radius;
+			return distance(point, term.center) <= term.radius;
 		case 'Box':
 			return inBox(point, term.from, term.to);
 		case 'Cone':

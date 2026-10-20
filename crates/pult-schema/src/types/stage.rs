@@ -1,8 +1,8 @@
-//! The stage: where the rig is, drawn on something you can recognise.
+//! The stage: where the rig is, drawn on something you can recognize.
 //!
 //! A show starts from a drawing somebody was handed — a ground plan, a section, a
 //! sketch. [`StagePlan`] is that drawing plus the two numbers that turn it into a
-//! map: where its top-left corner sits in the world, and how many metres one of its
+//! map: where its top-left corner sits in the world, and how many meters one of its
 //! pixels covers. Everything after that is `Fixture::position`, which has existed
 //! since the patch went in and until now could only be set to the origin.
 //!
@@ -45,13 +45,13 @@ pub struct StagePlan {
     pub width_px: u32,
     #[pult(lifecycle = PERSISTED)]
     pub height_px: u32,
-    /// The world point, in metres, that the image's top-left corner sits on.
+    /// The world point, in meters, that the image's top-left corner sits on.
     #[pult(lifecycle = PERSISTED)]
     pub origin: Vec3,
     /// How much of the room one image pixel covers. Set by measuring something on
     /// the plan whose real length is known.
     #[pult(lifecycle = PERSISTED)]
-    pub metres_per_pixel: f32,
+    pub meters_per_pixel: f32,
     #[pult(lifecycle = PERSISTED)]
     pub rotation_deg: f32,
     #[pult(lifecycle = PERSISTED)]
@@ -61,11 +61,11 @@ pub struct StagePlan {
 }
 
 impl StagePlan {
-    /// How wide and deep the plan is on the floor, in metres.
+    /// How wide and deep the plan is on the floor, in meters.
     pub fn extent_m(&self) -> (f32, f32) {
         (
-            self.width_px as f32 * self.metres_per_pixel,
-            self.height_px as f32 * self.metres_per_pixel,
+            self.width_px as f32 * self.meters_per_pixel,
+            self.height_px as f32 * self.meters_per_pixel,
         )
     }
 }
@@ -84,7 +84,7 @@ mod tests {
             height_px: 1000,
             origin: Vec3 { x: -10.0, y: 0.0, z: -5.0 },
             // A 20 m wide stage drawn 2000 px across.
-            metres_per_pixel: 0.01,
+            meters_per_pixel: 0.01,
             rotation_deg: 0.0,
             opacity: 0.6,
             visible: true,

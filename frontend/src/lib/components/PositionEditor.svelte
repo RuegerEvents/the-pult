@@ -4,7 +4,7 @@
 	 *
 	 * Positions are set by dragging in the plan and the rig, which is right for a
 	 * whole rig at once and useless for the one light that needs to be at exactly
-	 * 4.2 metres because that is what the drawing says. This is the other way in.
+	 * 4.2 meters because that is what the drawing says. This is the other way in.
 	 *
 	 * Y is called "trim" here rather than "height" because that is the word on the
 	 * drawing and in the room: trim height is how high a bar is flown, and an

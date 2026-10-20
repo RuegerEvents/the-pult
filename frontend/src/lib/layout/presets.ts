@@ -56,7 +56,7 @@ export const PRESETS: Preset[] = [
 		key: 'scene',
 		name: 'Scene',
 		// Building a rig by hand, which is what everything in this column is for: the
-		// catalogue to drag from and the verbs to act with on the left, the drawing in
+		// catalog to drag from and the verbs to act with on the left, the drawing in
 		// the middle, and what is in it — as a list, and as the numbers for the one
 		// thing picked — on the right. The rig gets the width because it is the thing
 		// being aimed at.

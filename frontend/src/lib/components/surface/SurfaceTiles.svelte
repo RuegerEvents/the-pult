@@ -131,13 +131,13 @@
 	}
 
 	/** What a tile shows as its state, beside its label. */
-	function stateOf(tile: SurfaceTile): { text: string; colour: string | null } | null {
+	function stateOf(tile: SurfaceTile): { text: string; color: string | null } | null {
 		const target = tile.target;
 		switch (target.kind) {
 			case 'VariableReadout':
-				return variableReading(target, show, tile.colour);
+				return variableReading(target, show, tile.color);
 			case 'Parameter':
-				return parameterReading(target, show, (f, k) => $output.value(f, k), tile.colour);
+				return parameterReading(target, show, (f, k) => $output.value(f, k), tile.color);
 			case 'Timeline': {
 				const timeline = show.timelines.find((t) => t.id === target.timeline_id);
 				if (!timeline) return null;
@@ -145,7 +145,7 @@
 				const where = position === null ? '' : ` · ${clock(position).slice(0, -3)}`;
 				return {
 					text: (timeline.running ? 'Playing' : 'Stopped') + where,
-					colour: timeline.running ? '#22c55e' : null
+					color: timeline.running ? '#22c55e' : null
 				};
 			}
 			default:
@@ -169,7 +169,7 @@
 			<h3 class="heading">{tile.label}</h3>
 		{:else}
 			{@const state = exists ? stateOf(tile) : null}
-			{@const fill = target.kind === 'VariableReadout' || target.kind === 'Parameter' ? (state?.colour ?? null) : tile.colour}
+			{@const fill = target.kind === 'VariableReadout' || target.kind === 'Parameter' ? (state?.color ?? null) : tile.color}
 			{@const ink = fill ? inkOn(fill) : null}
 			{#if isAction(target)}
 				<button
@@ -186,7 +186,7 @@
 					{#if verbOf(tile)}<span class="verb">{verbOf(tile)}</span>{/if}
 					{#if state}
 						<span class="state">
-							{#if state.colour}<span class="dot" style:background={state.colour}></span>{/if}
+							{#if state.color}<span class="dot" style:background={state.color}></span>{/if}
 							{state.text}
 						</span>
 					{/if}

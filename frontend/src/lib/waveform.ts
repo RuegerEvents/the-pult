@@ -104,7 +104,7 @@ export function msOf(x: number, view: View, width: number): number {
  *
  * The millisecond under the pointer stays under the pointer, which is what makes a
  * wheel over a waveform feel like a map rather than like a slider. Anchoring to the
- * centre instead is the version everybody writes first and it walks the thing you were
+ * center instead is the version everybody writes first and it walks the thing you were
  * looking at off the screen.
  */
 export function zoomAt(view: View, durationMs: number, at: number, factor: number): View {

@@ -591,7 +591,7 @@ fn is_loopback(name: &str) -> bool {
 ///
 /// Only the leader prunes, for the same reason only the leader publishes membership:
 /// two nodes deleting each other's rows on different schedules is a fight, not a
-/// cleanup. Kept generous — a station that is merely slow should go grey in the UI
+/// cleanup. Kept generous — a station that is merely slow should go gray in the UI
 /// long before anything removes it.
 pub async fn prune_stale(engine: &EngineHandle, keep_for: chrono::Duration) {
     let Ok(value) = engine.get(vec![PathSegment::Key("stations".into())]).await else { return };

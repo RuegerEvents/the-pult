@@ -34,12 +34,12 @@ pub struct User {
     pub id: Uuid,
     #[pult(lifecycle = PERSISTED)]
     pub name: String,
-    /// How this user's changes are marked in the history, as a CSS colour.
+    /// How this user's changes are marked in the history, as a CSS color.
     ///
     /// Persisted rather than derived from the id, so somebody who dislikes the one
     /// they were given can change it and it stays changed.
     #[pult(lifecycle = PERSISTED)]
-    pub colour: String,
+    pub color: String,
 }
 
 impl User {
@@ -53,7 +53,7 @@ impl User {
     /// can never be taken back, not even once the operator says who they are. That
     /// window is the whole bug this exists to close, so the id is a constant the
     /// frontend can hold. `frontend/src/lib/users.ts` holds the same one, the way it
-    /// already holds [`USER_COLOURS`].
+    /// already holds [`USER_COLORS`].
     ///
     /// *The same in every show*, because the alternative — a v5 over the show's id, as
     /// a `PluginDatum` derives its own — needs the `Show` row to exist at the moment of
@@ -77,22 +77,22 @@ impl User {
         Self {
             id: Self::DEFAULT_ID,
             name: Self::DEFAULT_NAME.to_owned(),
-            colour: colour_for(0).to_owned(),
+            color: color_for(0).to_owned(),
         }
     }
 }
 
-/// Colours to hand out, in order, so two users are visibly different by default.
+/// Colors to hand out, in order, so two users are visibly different by default.
 ///
 /// Chosen to survive the console's dark ground and to stay apart for the common
-/// kinds of colour blindness — a history panel that codes by colour alone would be
+/// kinds of color blindness — a history panel that codes by color alone would be
 /// unreadable otherwise, which is why it also always shows the name.
-pub const USER_COLOURS: &[&str] =
+pub const USER_COLORS: &[&str] =
     &["#4a9eff", "#f59e0b", "#22c55e", "#e879f9", "#f87171", "#2dd4bf"];
 
-/// The colour for the nth user, wrapping once they run out.
-pub fn colour_for(index: usize) -> &'static str {
-    USER_COLOURS[index % USER_COLOURS.len()]
+/// The color for the nth user, wrapping once they run out.
+pub fn color_for(index: usize) -> &'static str {
+    USER_COLORS[index % USER_COLORS.len()]
 }
 
 #[cfg(test)]
@@ -102,10 +102,10 @@ mod tests {
     #[test]
     fn a_user_round_trips() {
         let user =
-            User { id: Uuid::nil(), name: "Sam".into(), colour: "#4a9eff".into() };
+            User { id: Uuid::nil(), name: "Sam".into(), color: "#4a9eff".into() };
         let back: User = serde_json::from_value(serde_json::to_value(&user).unwrap()).unwrap();
         assert_eq!(back.name, "Sam");
-        assert_eq!(back.colour, "#4a9eff");
+        assert_eq!(back.color, "#4a9eff");
     }
 
     #[test]
@@ -113,7 +113,7 @@ mod tests {
         let user = User::default_user();
         assert_eq!(user.id, User::DEFAULT_ID);
         assert_eq!(user.name, "Operator");
-        assert_eq!(user.colour, USER_COLOURS[0]);
+        assert_eq!(user.color, USER_COLORS[0]);
         // It round-trips like any other, because it is any other.
         let back: User = serde_json::from_value(serde_json::to_value(&user).unwrap()).unwrap();
         assert_eq!(back.id, User::DEFAULT_ID);
@@ -146,9 +146,9 @@ mod tests {
     }
 
     #[test]
-    fn colours_are_handed_out_in_order_and_wrap() {
-        assert_eq!(colour_for(0), USER_COLOURS[0]);
-        assert_eq!(colour_for(1), USER_COLOURS[1]);
-        assert_eq!(colour_for(USER_COLOURS.len()), USER_COLOURS[0]);
+    fn colors_are_handed_out_in_order_and_wrap() {
+        assert_eq!(color_for(0), USER_COLORS[0]);
+        assert_eq!(color_for(1), USER_COLORS[1]);
+        assert_eq!(color_for(USER_COLORS.len()), USER_COLORS[0]);
     }
 }

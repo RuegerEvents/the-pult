@@ -451,7 +451,7 @@ impl MessageRing {
 
 /// What a port expects, per data type rather than per module.
 ///
-/// The node described each port as a boolean, a number, a string or a colour, and
+/// The node described each port as a boolean, a number, a string or a color, and
 /// the shape follows from that alone — which is why there is nothing here that has
 /// to know a relay from a strip.
 /// A number goes out in the port's own range where it declared one: the console's 0..1

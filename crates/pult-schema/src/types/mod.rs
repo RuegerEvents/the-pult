@@ -20,7 +20,7 @@ pub mod speedmaster;
 pub mod user;
 pub mod layout;
 pub mod plugin;
-pub mod catalogue;
+pub mod catalog;
 pub mod mount;
 pub mod network;
 pub mod group;
@@ -41,9 +41,9 @@ pub use effect::{
     Spread, Step,
 };
 pub use variable::{Variable, VariableCreate, VariableKind, VariableOp, VariablePatch};
-pub use surface::{ColourStop, Surface, SurfaceCreate, SurfacePatch, SurfaceTile, TileSize, TileTarget};
+pub use surface::{ColorStop, Surface, SurfaceCreate, SurfacePatch, SurfaceTile, TileSize, TileTarget};
 pub use speedmaster::{SpeedMaster, SpeedMasterCreate, SpeedMasterPatch};
-pub use user::{colour_for, User, UserCreate, UserPatch, USER_COLOURS};
+pub use user::{color_for, User, UserCreate, UserPatch, USER_COLORS};
 pub use show::{Show, ShowCreate, ShowPatch};
 pub use version::{Version, VersionCreate, VersionPatch};
 pub use paperwork::{
@@ -52,7 +52,7 @@ pub use paperwork::{
     TableGroup, TableKind, TableRequest, TextBlock, Totals, ViewPreset, ViewScale, ViewStyle,
     ViewportBlock,
 };
-pub use catalogue::{piece, Connector, ConnectorKind, Property, PropertyKind, StockPiece, StockShape, CATALOGUE};
+pub use catalog::{piece, Connector, ConnectorKind, Property, PropertyKind, StockPiece, StockShape, CATALOG};
 pub use mount::{Chord, Mount};
 pub use session::{DiscoveredSession, SessionState};
 pub use xchange::{

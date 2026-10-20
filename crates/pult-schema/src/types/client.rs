@@ -22,7 +22,7 @@
 //! out of the list on every sweep.
 //!
 //! **It stays LOCAL, and the exception crosses as a line.** Task 48 answered the
-//! neighbouring question for a log line with "yes, at a quieter threshold" — a
+//! neighboring question for a log line with "yes, at a quieter threshold" — a
 //! browser's fault reaches its station over `log.report` and goes to peers like any
 //! other line. A fault is occasional and a frame rate is every second, and that is
 //! the whole difference: a row per browser per report crossing the sync link for
@@ -40,7 +40,7 @@ use ts_rs::TS;
 pub struct ClientStats {
     /// The short form of the WebSocket session id — as much identity as a page has,
     /// and the same eight characters `LogSource::Browser` carries, so a line in the
-    /// log and a row in the panel can be recognised as the same tab.
+    /// log and a row in the panel can be recognized as the same tab.
     pub session: String,
     /// What the browser is, in as many words as it was willing to say.
     pub label: String,
@@ -69,7 +69,7 @@ pub struct ClientStats {
     /// here — a second estimate of the same quantity is a second answer to it.
     pub clock_offset_ms: Option<f32>,
     pub clock_rtt_ms: Option<f32>,
-    /// When the station heard this, by the station's clock, so the panel can grey a
+    /// When the station heard this, by the station's clock, so the panel can gray a
     /// browser that has gone quiet without trusting the browser's own clock to say.
     pub at_ms: i64,
     /// What the station sent down this socket since the page's previous report, and
@@ -86,7 +86,7 @@ pub struct ClientStats {
     /// thousand fixtures is one push and nothing in between, and this is where that
     /// promise is visible or is not.
     ///
-    /// Defaulted, so a report from an older page still deserialises.
+    /// Defaulted, so a report from an older page still deserializes.
     #[serde(default)]
     pub sent_bytes: u64,
     #[serde(default)]

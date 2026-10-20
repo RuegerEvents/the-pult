@@ -150,7 +150,7 @@ fn thumbnail(file: &GdtfFile) -> Option<(String, Vec<u8>)> {
 ///
 /// Across *every* mode on purpose: the parameter list is what the light can do, and a
 /// head that has a zoom in one mode still has a zoom. Which of them a given unit can
-/// reach is its mode's business, and the programmer greys out the rest.
+/// reach is its mode's business, and the programmer grays out the rest.
 fn derive_parameters(
     gdtf: &GdtfType,
     warnings: &mut Vec<Warning>,
@@ -188,7 +188,7 @@ fn derive_parameters(
             let key = parameter_key(&kind);
 
             if let Some(color) = attributes::color_channel(attribute) {
-                // The colour's emitters, gathered in the order the file's channels
+                // The color's emitters, gathered in the order the file's channels
                 // reach them, which is the order the mixer answers in.
                 if !emitters.iter().any(|e| e.name == color.emitter) {
                     emitters.push(Emitter {
@@ -223,10 +223,10 @@ fn derive_parameters(
         }
     }
 
-    // Every colour channel is the one colour parameter, so the emitter list belongs
+    // Every color channel is the one color parameter, so the emitter list belongs
     // to it and to nothing else.
-    if let Some(colour) = parameters.iter_mut().find(|p| p.kind == ParameterKind::ColorRgb) {
-        colour.emitters = emitters.clone();
+    if let Some(color) = parameters.iter_mut().find(|p| p.kind == ParameterKind::ColorRgb) {
+        color.emitters = emitters.clone();
     }
 
     (parameters, emitters)
@@ -298,12 +298,12 @@ fn slots_of(gdtf: &GdtfType, channel: &resolve::ResolvedChannel<'_>) -> Vec<Slot
         .collect()
 }
 
-/// An emitter's colour, from the file's measured `<Emitter>` where it has one.
+/// An emitter's color, from the file's measured `<Emitter>` where it has one.
 fn emitter_rgb(gdtf: &GdtfType, emitter: &str, attribute: &str) -> Option<Vec3> {
     let physical = gdtf.physical_descriptions.as_ref()?;
-    // By the attribute's own colour first, which is what the file says this channel
+    // By the attribute's own color first, which is what the file says this channel
     // *is*; by a same-named emitter second.
-    let attribute_colour = gdtf
+    let attribute_color = gdtf
         .attribute_definitions
         .attributes
         .items
@@ -326,7 +326,7 @@ fn emitter_rgb(gdtf: &GdtfType, emitter: &str, attribute: &str) -> Option<Vec3> 
                     .and_then(|each| each.color)
             })
         });
-    let cie = measured.or(attribute_colour)?;
+    let cie = measured.or(attribute_color)?;
     let [r, g, b] = cie.to_linear_rgb();
     Some(Vec3 { x: r, y: g, z: b })
 }
@@ -361,10 +361,10 @@ fn layout_of(
         return None;
     }
 
-    let emitter = attributes::color_channel(&attribute).and_then(|colour| {
+    let emitter = attributes::color_channel(&attribute).and_then(|color| {
         emitters
             .iter()
-            .find(|each| each.name == colour.emitter)
+            .find(|each| each.name == color.emitter)
             .map(|each| each.name.clone())
     });
 
@@ -435,10 +435,10 @@ fn derive_physical(gdtf: &GdtfType, geometry: &[FixtureGeometry]) -> FixturePhys
 ///
 /// The outermost geometry's own model is *not* the answer, which is the mistake this
 /// replaced: on a real moving head that model is the base plate, and reading it gave a
-/// MegaPointe a height of nine and a half centimetres. What a rider wants is the
+/// MegaPointe a height of nine and a half centimeters. What a rider wants is the
 /// envelope — every part's box, at the place its own geometry puts it, unioned.
 ///
-/// Each box is taken as centred on its node, which is what a `Model`'s dimensions mean
+/// Each box is taken as centered on its node, which is what a `Model`'s dimensions mean
 /// without a mesh to say otherwise. `None` where no part declared a size at all, which
 /// is honest: a file that never said how big it is has not said.
 fn envelope(geometry: &[FixtureGeometry]) -> Option<Vec3> {
@@ -464,11 +464,11 @@ fn envelope(geometry: &[FixtureGeometry]) -> Option<Vec3> {
 
         let Some(size) = node.size else { continue };
         any = true;
-        for (axis, (centre, extent)) in
+        for (axis, (center, extent)) in
             [(here.x, size.x), (here.y, size.y), (here.z, size.z)].into_iter().enumerate()
         {
-            low[axis] = low[axis].min(centre - extent / 2.0);
-            high[axis] = high[axis].max(centre + extent / 2.0);
+            low[axis] = low[axis].min(center - extent / 2.0);
+            high[axis] = high[axis].max(center + extent / 2.0);
         }
     }
 
@@ -510,7 +510,7 @@ pub fn plan_import(
     plan.write(
         "fixture_types",
         replaces,
-        serde_json::to_value(&fixture_type).expect("a fixture type serialises"),
+        serde_json::to_value(&fixture_type).expect("a fixture type serializes"),
     );
     Ok((plan, id))
 }
@@ -539,7 +539,7 @@ pub fn generate_gdtf(fixture_type: &FixtureType) -> GdtfFile {
             continue;
         }
         let Some(parameter) = by_key.get(&layout.parameter_key) else { continue };
-        // A colour is one parameter and several channels, and each channel is the
+        // A color is one parameter and several channels, and each channel is the
         // attribute of the die it drives — `ColorAdd_W` and not `ColorAdd_R` again.
         let attribute = match (&parameter.kind, layout.emitter.as_deref()) {
             (ParameterKind::ColorRgb, Some(emitter)) => attributes::color_attribute_for(emitter),
@@ -582,8 +582,8 @@ pub async fn export(
 ) -> anyhow::Result<(Vec<u8>, String)> {
     let name = format!(
         "{}@{}.gdtf",
-        sanitise(&fixture_type.manufacturer),
-        sanitise(&fixture_type.name)
+        sanitize(&fixture_type.manufacturer),
+        sanitize(&fixture_type.name)
     );
 
     if let FixtureTypeSource::Gdtf { asset, .. } = &fixture_type.source {
@@ -603,7 +603,7 @@ pub async fn export(
 }
 
 /// A filename somebody can save without an operating system objecting.
-fn sanitise(text: &str) -> String {
+fn sanitize(text: &str) -> String {
     let cleaned: String = text
         .chars()
         .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
@@ -646,7 +646,7 @@ fn gdtf_unit(unit: PhysicalUnit) -> GdtfUnit {
         PhysicalUnit::Seconds => GdtfUnit::Time,
         PhysicalUnit::Hertz => GdtfUnit::Frequency,
         PhysicalUnit::Kelvin => GdtfUnit::Temperature,
-        PhysicalUnit::Metres => GdtfUnit::Length,
+        PhysicalUnit::Meters => GdtfUnit::Length,
         PhysicalUnit::Watts => GdtfUnit::Power,
         PhysicalUnit::None => GdtfUnit::None,
     }
@@ -654,7 +654,7 @@ fn gdtf_unit(unit: PhysicalUnit) -> GdtfUnit {
 
 // ── Geometry ─────────────────────────────────────────────────────────
 
-/// The fixture's parts, flattened, in console axes and metres.
+/// The fixture's parts, flattened, in console axes and meters.
 ///
 /// What makes a 3D body articulate. Only the tree of the *first* mode's geometry is
 /// walked: a mode is a way of addressing a fixture, not a different fixture.
@@ -694,8 +694,8 @@ fn walk_geometry(
             },
             offset: Vec3 { x, y, z },
             size: model.and_then(|model| {
-                // GDTF `Model` dimensions are metres while geometry translations are
-                // millimetres. That inconsistency is the spec's; it is written down
+                // GDTF `Model` dimensions are meters while geometry translations are
+                // millimeters. That inconsistency is the spec's; it is written down
                 // here because it is exactly what gets silently unified.
                 Some(Vec3 { x: model.length?, y: model.height?, z: model.width? })
             }),

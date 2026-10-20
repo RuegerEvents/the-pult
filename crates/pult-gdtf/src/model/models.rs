@@ -2,8 +2,8 @@
 //!
 //! A `Model` names a file without an extension — the same name may exist as
 //! `models/gltf/head.glb` and `models/3ds/head.3ds`, and picking between them is
-//! [`crate::resolve`]'s job. Its `Length`/`Width`/`Height` are **metres**, unlike
-//! geometry translations, which are millimetres. That inconsistency is the spec's,
+//! [`crate::resolve`]'s job. Its `Length`/`Width`/`Height` are **meters**, unlike
+//! geometry translations, which are millimeters. That inconsistency is the spec's,
 //! not ours, and it is written down here because it is the sort of thing that gets
 //! silently unified by whoever touches this next.
 
@@ -21,7 +21,7 @@ pub struct Models {
 pub struct Model {
     #[serde(rename = "@Name", default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// Metres.
+    /// Meters.
     #[serde(rename = "@Length", default, skip_serializing_if = "Option::is_none", deserialize_with = "de_number_opt")]
     pub length: Option<f32>,
     #[serde(rename = "@Width", default, skip_serializing_if = "Option::is_none", deserialize_with = "de_number_opt")]

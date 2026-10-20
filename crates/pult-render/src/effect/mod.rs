@@ -88,7 +88,7 @@ pub enum Easing {
 /// One keyframe of a step list.
 ///
 /// The value is a real [`ParameterValue`] rather than a level, so a chase can be red,
-/// green, blue rather than three brightnesses of one colour. `easing` describes the
+/// green, blue rather than three brightnesses of one color. `easing` describes the
 /// transition into the *next* step, which is why a hard chase is a list of steps that
 /// all say [`Easing::Step`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,14 +181,14 @@ pub fn cycle_position(
     // `rem_euclid` rather than `%`: a cue rendered before its own anchor, which clock
     // skew between stations makes ordinary, must wrap to the top of the cycle rather
     // than to a negative position.
-    travelled(rate_hz, direction, phase, t0, now_ms).rem_euclid(1.0) as f32
+    traveled(rate_hz, direction, phase, t0, now_ms).rem_euclid(1.0) as f32
 }
 
-/// How many cycles an effect has travelled by `now_ms`, phase included, unwrapped.
+/// How many cycles an effect has traveled by `now_ms`, phase included, unwrapped.
 ///
 /// [`cycle_position`] is this wrapped into one cycle. The two shapes that never repeat
 /// need the whole number as well, to know *which* cycle they are in.
-pub fn travelled(rate_hz: f32, direction: Direction, phase: f32, t0: u64, now_ms: u64) -> f64 {
+pub fn traveled(rate_hz: f32, direction: Direction, phase: f32, t0: u64, now_ms: u64) -> f64 {
     let elapsed_ms = now_ms as i64 - t0 as i64;
     let cycles = elapsed_ms as f64 / 1000.0 * rate_hz as f64;
     let along = match direction {
@@ -225,14 +225,14 @@ pub fn curve_level(shape: Shape, width: f32, x: f32) -> f32 {
     }
 }
 
-/// A shape's level after `travelled` cycles, 0..1, for any shape.
+/// A shape's level after `traveled` cycles, 0..1, for any shape.
 ///
 /// The periodic five only look at where in the cycle that is. Flicker and lightning
 /// also look at which cycle it is, and `salt` keeps two fixtures apart.
-pub fn shape_level(shape: Shape, width: f32, travelled: f64, salt: u32) -> f32 {
+pub fn shape_level(shape: Shape, width: f32, traveled: f64, salt: u32) -> f32 {
     match shape {
         Shape::Flicker => {
-            let along = travelled * FLICKER_KNOTS;
+            let along = traveled * FLICKER_KNOTS;
             let knot = along.floor();
             let t = (along - knot) as f32;
             let knot = knot as i64;
@@ -243,8 +243,8 @@ pub fn shape_level(shape: Shape, width: f32, travelled: f64, salt: u32) -> f32 {
             a + (b - a) * (t * t * (3.0 - 2.0 * t))
         }
         Shape::Lightning => {
-            let cycle = travelled.floor();
-            let x = (travelled - cycle) as f32;
+            let cycle = traveled.floor();
+            let x = (traveled - cycle) as f32;
             let cycle = cycle as i64;
             if lattice(cycle, salt ^ 0x5157) >= LIGHTNING_STRIKES {
                 return 0.0;
@@ -261,11 +261,11 @@ pub fn shape_level(shape: Shape, width: f32, travelled: f64, salt: u32) -> f32 {
             let peak = 0.45 + 0.55 * lattice(cycle * 4 + j, salt ^ 0x9EAC);
             peak * (1.0 - t) * (1.0 - t)
         }
-        periodic => curve_level(periodic, width, travelled.rem_euclid(1.0) as f32),
+        periodic => curve_level(periodic, width, traveled.rem_euclid(1.0) as f32),
     }
 }
 
-/// A lattice point hashed to 0..1: SplitMix64's finaliser over the index and a salt.
+/// A lattice point hashed to 0..1: SplitMix64's finalizer over the index and a salt.
 ///
 /// Integer arithmetic only, so a page and a station agree to the bit. 24 bits of the
 /// result are kept, which is every bit an `f32` mantissa can hold exactly.
@@ -304,7 +304,7 @@ pub fn ease(easing: Easing, t: f32) -> f32 {
 
 /// Blend `low` towards `high` by `level`.
 ///
-/// Numbers and colours interpolate through [`interpolate`], the same arithmetic a
+/// Numbers and colors interpolate through [`interpolate`], the same arithmetic a
 /// fade uses. The two that cannot be blended are decided at the halfway mark rather
 /// than at the end: a boolean under a square wave should spend half its cycle on, and
 /// [`interpolate`]'s rule for a fade — switch immediately, so a cue does not look
@@ -353,17 +353,17 @@ pub fn step_value(steps: &[Step], x: f32) -> Option<ParameterValue> {
     if span <= 0.0 {
         span += 1.0;
     }
-    let mut travelled = x - step.at;
-    if travelled < 0.0 {
-        travelled += 1.0;
+    let mut traveled = x - step.at;
+    if traveled < 0.0 {
+        traveled += 1.0;
     }
-    let t = ease(step.easing, (travelled / span).clamp(0.0, 1.0));
+    let t = ease(step.easing, (traveled / span).clamp(0.0, 1.0));
     Some(blend(&step.value, &next.value, t))
 }
 
 /// What one running effect is asserting at `now_ms`.
 pub fn effect_value_at(effect: &RunningEffect, now_ms: u64) -> ParameterValue {
-    let along = travelled(effect.rate_hz, effect.direction, effect.phase, effect.t0, now_ms);
+    let along = traveled(effect.rate_hz, effect.direction, effect.phase, effect.t0, now_ms);
     let x = along.rem_euclid(1.0) as f32;
     match &effect.curve {
         Curve::Shape(shape) => blend(

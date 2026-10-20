@@ -2,7 +2,7 @@
 	/**
 	 * One show, as something to press.
 	 *
-	 * A show that is not where it was is still a card — greyed, and saying so. It is
+	 * A show that is not where it was is still a card — grayed, and saying so. It is
 	 * exactly the row somebody is looking for when the stick is in the other bag, and
 	 * a list that hid it would be one nobody could rely on.
 	 */

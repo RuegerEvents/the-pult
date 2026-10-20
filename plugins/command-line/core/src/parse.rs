@@ -74,7 +74,7 @@ impl<'a> Parser<'a> {
             "out" => Ok(Command::Intensity { level: Level::To(0.0) }),
             // Beside `full` and `out` because it is the same shape of word — one
             // that says where the selection should be without taking a number. It is
-            // not `out`: a house light rests on, and a mover rests centred.
+            // not `out`: a house light rests on, and a mover rests centered.
             "home" => Ok(Command::Home),
             "create" => {
                 let table = self.table(first.span)?;
@@ -108,7 +108,7 @@ impl<'a> Parser<'a> {
                 Ok(Command::SetField { table, target, field, value })
             }
             "update" => Ok(Command::Update),
-            // Before the catalogue fall-through, the way `group` is: what an operator
+            // Before the catalog fall-through, the way `group` is: what an operator
             // means by "preset 3" is the look it stands for, not the row.
             "preset" => Ok(Command::Preset(self.target()?)),
             "store" if self.peek().is_some_and(|t| t.text.eq_ignore_ascii_case("preset")) => {
@@ -538,7 +538,7 @@ impl<'a> Parser<'a> {
 /// Words that end a selection and begin what to do with it.
 ///
 /// `preset` is one of them, and it has to be checked here rather than fall through to
-/// the catalogue: `presets` is a collection like any other, so without this
+/// the catalog: `presets` is a collection like any other, so without this
 /// `fixture 1 thru 5 preset 3` would read the word as "now select presets".
 fn is_level_word(word: &str) -> bool {
     word.eq_ignore_ascii_case("at")
@@ -760,7 +760,7 @@ mod tests {
             }
         );
         // Taking a sequence off needed no grammar: it is a command on the entity, and
-        // the catalogue is where commands come from.
+        // the catalog is where commands come from.
         assert_eq!(
             parse_ok("sequence 1 off"),
             Command::EntityCommand {

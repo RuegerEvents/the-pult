@@ -1,7 +1,7 @@
-//! The catalogue's pieces, as bytes somebody else can open.
+//! The catalog's pieces, as bytes somebody else can open.
 //!
 //! Until now a stock piece was a shape the *browser* drew: `stock.ts` built cylinders
-//! from the dimensions in [`crate::types::catalogue`], and that was the whole of what
+//! from the dimensions in [`crate::types::catalog`], and that was the whole of what
 //! an `f34-2m` looked like. Which meant an exported MVR carried an empty group where
 //! the truss was — MVR has no primitive, its `GeometryNode` is a file or a symbol
 //! instance — so a rig built here and opened in Vectorworks was a room full of
@@ -36,11 +36,11 @@ mod shapes;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::types::catalogue::{canonical_properties, piece};
+use crate::types::catalog::{canonical_properties, piece};
 
 pub use glb::{Mesh, GLB_MIME};
 
-/// The bytes of one catalogue piece as a binary glTF, or `None` for an id this build
+/// The bytes of one catalog piece as a binary glTF, or `None` for an id this build
 /// has never heard of.
 ///
 /// `properties` is brought to its canonical form here, so a caller that has not done
@@ -57,7 +57,7 @@ pub fn stock_glb(id: &str, properties: &Value) -> Option<Vec<u8>> {
 ///
 /// Carries the piece id and the canonical properties, so two decks at two leg heights
 /// are two symbols and two decks at one height are one. It is read back on import by
-/// [`parse_stock_symdef`], which is what makes a round trip give back a catalogue
+/// [`parse_stock_symdef`], which is what makes a round trip give back a catalog
 /// piece rather than a mesh.
 pub fn stock_symdef_name(id: &str, properties: &Value) -> String {
     let canonical = match piece(id) {
@@ -83,7 +83,7 @@ pub fn stock_symdef_uuid(name: &str) -> Uuid {
 /// **The uuid is checked against the name**, and that is the point of the pair rather
 /// than tidiness: anybody may write a symdef called anything, and a drawing that
 /// happened to name one `pult-stock:f34-2m:{}` would otherwise have its mesh thrown
-/// away and replaced by this console's own idea of a two-metre truss. A file that
+/// away and replaced by this console's own idea of a two-meter truss. A file that
 /// went through this console carries both halves and matches; anything else is an
 /// ordinary symbol with an ordinary mesh, which is what it is.
 pub fn parse_stock_symdef(name: &str, uuid: Uuid) -> Option<(String, Value)> {
@@ -116,12 +116,12 @@ pub fn stock_file_name(id: &str, properties: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::catalogue::CATALOGUE;
+    use crate::types::catalog::CATALOG;
 
     /// The gate the ETag, the archive entry name and the symdef uuid all rest on.
     #[test]
     fn every_piece_generates_the_same_bytes_twice() {
-        for piece in CATALOGUE {
+        for piece in CATALOG {
             let once = stock_glb(piece.id, &Value::Null).expect("a listed piece draws");
             let again = stock_glb(piece.id, &Value::Null).expect("a listed piece draws");
             assert_eq!(once, again, "{} drew differently the second time", piece.id);

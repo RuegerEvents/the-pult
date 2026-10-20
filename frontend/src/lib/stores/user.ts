@@ -22,7 +22,7 @@
 import { derived, get, writable, type Readable } from 'svelte/store';
 
 import type { User } from '$lib/generated/index.js';
-import { colourFor, DEFAULT_USER_ID } from '$lib/users.js';
+import { colorFor, DEFAULT_USER_ID } from '$lib/users.js';
 import { collection, showClient, showData } from './show.js';
 
 const STORAGE_KEY = 'pult.user';
@@ -110,7 +110,7 @@ export async function addUser(name: string): Promise<void> {
 	await showData().users.create({
 		id,
 		name: trimmed,
-		colour: colourFor(get(users).length)
+		color: colorFor(get(users).length)
 	});
 	beUser(id);
 }

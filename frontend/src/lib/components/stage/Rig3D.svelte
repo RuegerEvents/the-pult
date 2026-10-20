@@ -98,7 +98,7 @@
 		visibleObjects
 	} from '$lib/stores/scene.js';
 	import { instance, load, meshSizes } from '$lib/geometry.js';
-	import { CATALOGUE, piece, stockMesh } from '$lib/stock.js';
+	import { CATALOG, piece, stockMesh } from '$lib/stock.js';
 	import { IDENTITY, localOf, parentWorld, worldTransform } from '$lib/scene.js';
 	import { chordsFor, mountPoint, nearestMount, type Chord } from '$lib/mount.js';
 	import {
@@ -180,7 +180,7 @@
 		 * Keep the drawing buffer after a frame, so it can be read back.
 		 *
 		 * Off everywhere but the paperwork export, and off there for a reason worth
-		 * knowing: `preserveDrawingBuffer` stops the browser discarding the colour
+		 * knowing: `preserveDrawingBuffer` stops the browser discarding the color
 		 * buffer at the end of a frame, which costs a copy per frame on some drivers.
 		 * A rig panel redrawing sixty times a second must not pay that to enable a
 		 * screenshot nobody is taking. An export renders a handful of frames and then
@@ -244,7 +244,7 @@
 
 	/**
 	 * At most this often. A ProMotion display offers a hundred and twenty frames a
-	 * second and a lighting visualiser drawn at that rate is a GPU pinned for a
+	 * second and a lighting visualizer drawn at that rate is a GPU pinned for a
 	 * smoothness nobody can see in a two-second fade. Fifteen rather than sixteen
 	 * and two thirds so a sixty-hertz display, whose frames arrive a hair early or
 	 * late, never skips one.
@@ -421,7 +421,7 @@
 		// ── The grid ────────────────────────────────────────────────────────────
 		//
 		// An infinite grid in a shader rather than a `GridHelper`. The helper is a
-		// fixed extent of line segments: it aliases badly past about forty metres and
+		// fixed extent of line segments: it aliases badly past about forty meters and
 		// simply stops at its own edge, so a rig larger than the plan stands on
 		// nothing. This one is a single ground-plane quad, antialiased per pixel with
 		// `fwidth`, at two scales with a distance fade.
@@ -432,7 +432,7 @@
 				depthWrite: false,
 				side: THREE.DoubleSide,
 				// `uLinear` is one on the photoreal path, where the frame is linear light
-				// and the output pass encodes it: a grey written as a screen value there
+				// and the output pass encodes it: a gray written as a screen value there
 				// comes out lighter than it was drawn.
 				uniforms: { uNear: { value: 0 }, uFar: { value: 160 }, uLinear: { value: 0 } },
 				vertexShader: /* glsl */ `
@@ -450,7 +450,7 @@
 					varying vec3 vWorld;
 
 					// How close this pixel is to a line of the given spacing, measured
-					// in pixels rather than metres — which is what keeps the line one
+					// in pixels rather than meters — which is what keeps the line one
 					// pixel wide however far away it is.
 					float line(vec2 p, float spacing) {
 						vec2 grid = abs(fract(p / spacing - 0.5) - 0.5) / fwidth(p / spacing);
@@ -459,15 +459,15 @@
 
 					void main() {
 						vec2 p = vWorld.xz;
-						float metre = line(p, 1.0) * 0.28;
+						float meter = line(p, 1.0) * 0.28;
 						float tenth = line(p, 10.0) * 0.5;
-						float strength = max(metre, tenth);
+						float strength = max(meter, tenth);
 						// Fade with distance so the horizon does not turn into moiré.
 						float fade = 1.0 - smoothstep(uFar * 0.35, uFar, length(p));
 						strength *= fade;
 						if (strength <= 0.002) discard;
-						float grey = mix(0.42, pow(0.42, 2.2), uLinear);
-						gl_FragColor = vec4(vec3(grey), strength);
+						float gray = mix(0.42, pow(0.42, 2.2), uLinear);
+						gl_FragColor = vec4(vec3(gray), strength);
 					}
 				`
 			})
@@ -491,7 +491,7 @@
 		// ── The aim lines, for the wireframe mode ────────────────────────────────
 		//
 		// One segment per fixture from the lens to where the beam lands, in the
-		// fixture's colour and dimmed by its level — never to nothing, so an unlit
+		// fixture's color and dimmed by its level — never to nothing, so an unlit
 		// head still says where it points. One geometry, grown with the rig.
 		const lines = new THREE.LineSegments(
 			new THREE.BufferGeometry(),
@@ -507,7 +507,7 @@
 		const wire = new THREE.MeshBasicMaterial({ color: 0x7a8290, wireframe: true });
 		// What a model wears on paper. Flat rather than lit, because a shaded axonometric
 		// on a drawing is read for its *shape* and a lighting rig's own lamps are not
-		// the light it should be read by; and light grey rather than white so its edges
+		// the light it should be read by; and light gray rather than white so its edges
 		// have something to stand against. Its companion is the black outline the depth
 		// buffer already gives between overlapping pieces.
 		const paper = new THREE.MeshBasicMaterial({ color: 0xb8bec6 });
@@ -642,12 +642,12 @@
 		let seconds = 0;
 
 		// Drawn only when there is something new to see. Three things count: the
-		// camera moved, the rig changed (a level, a colour, a direction — worked out
+		// camera moved, the rig changed (a level, a color, a direction — worked out
 		// by comparing against the last frame's attributes rather than trusting the
 		// stores, which tick every frame whether or not anything moved), or the
 		// picture animates on its own clock — a lit beam with haze in it, a strobe.
 		// A settled rig with nothing lit costs nothing at all, which is the answer to
-		// a theatre with no cue up holding a GPU at forty percent.
+		// a theater with no cue up holding a GPU at forty percent.
 		const tick = () => {
 			if (!running) return;
 			requestAnimationFrame(tick);
@@ -715,7 +715,7 @@
 	const scratchMatrix = new THREE.Matrix4();
 	const scratchScale = new THREE.Vector3(1, 1, 1);
 	const scratchDirection = new THREE.Vector3();
-	const scratchColour = new THREE.Color();
+	const scratchColor = new THREE.Color();
 	const scratchDimmed = new THREE.Color();
 	const scratchPosition = new THREE.Vector3();
 	const DOWN = new THREE.Vector3(0, -1, 0);
@@ -723,8 +723,8 @@
 	const BODY_GEOMETRY = new THREE.CylinderGeometry(0.14, 0.11, 0.34, 16);
 	/**
 	 * A pixel on a strip: a point of light with no beam, drawn as a dot in its own
-	 * colour. A little larger than an LED, so a strip still reads from across a rig;
-	 * at 60 to the metre neighbours touch, which is what a lit strip looks like.
+	 * color. A little larger than an LED, so a strip still reads from across a rig;
+	 * at 60 to the meter neighbors touch, which is what a lit strip looks like.
 	 */
 	const PIXEL_GEOMETRY = new THREE.SphereGeometry(0.01, 8, 6);
 
@@ -784,7 +784,7 @@
 
 		// ── Beams ───────────────────────────────────────────────────────────────
 		grow(built, list.length);
-		const colours = built.beamMesh.geometry.getAttribute('beamColor') as THREE.InstancedBufferAttribute;
+		const colors = built.beamMesh.geometry.getAttribute('beamColor') as THREE.InstancedBufferAttribute;
 		const levels = built.beamMesh.geometry.getAttribute('beamLevel') as THREE.InstancedBufferAttribute;
 		const lengths = built.beamMesh.geometry.getAttribute('beamLength') as THREE.InstancedBufferAttribute;
 		const spreads = built.beamMesh.geometry.getAttribute('beamSpread') as THREE.InstancedBufferAttribute;
@@ -800,8 +800,8 @@
 		let brightest = -1;
 		let brightestLevel = 0;
 		// Only lit beams get an instance, packed from the front. An unlit beam used
-		// to be an instance whose fragments all discarded — which still rasterises
-		// the whole cone — and on a theatre rig with no cue up that was every beam.
+		// to be an instance whose fragments all discarded — which still rasterizes
+		// the whole cone — and on a theater rig with no cue up that was every beam.
 		let lit = 0;
 
 		for (let i = 0; i < list.length; i++) {
@@ -816,7 +816,7 @@
 
 			scratchDirection.set(beam.direction.x, beam.direction.y, beam.direction.z).normalize();
 			scratchPosition.set(beam.at.x, beam.at.y, beam.at.z);
-			scratchColour.setRGB(beam.output.r, beam.output.g, beam.output.b);
+			scratchColor.setRGB(beam.output.r, beam.output.g, beam.output.b);
 			const length = drawnLength(beam.length, beam.direction, beam.spread, LENS_RADIUS);
 
 			// Against last frame. Ten numbers say everything below draws from.
@@ -824,7 +824,7 @@
 			const now = [
 				scratchPosition.x, scratchPosition.y, scratchPosition.z,
 				scratchDirection.x, scratchDirection.y, scratchDirection.z,
-				level, scratchColour.r, scratchColour.g, scratchColour.b
+				level, scratchColor.r, scratchColor.g, scratchColor.b
 			];
 			for (let n = 0; n < PER_FIXTURE; n++) {
 				// Through `fround`, because the record is single precision and the
@@ -844,7 +844,7 @@
 				scratchQuat.setFromUnitVectors(DOWN, scratchDirection);
 				scratchMatrix.compose(scratchPosition, scratchQuat, scratchScale);
 				built.beamMesh.setMatrixAt(lit, scratchMatrix);
-				colours.setXYZ(lit, scratchColour.r, scratchColour.g, scratchColour.b);
+				colors.setXYZ(lit, scratchColor.r, scratchColor.g, scratchColor.b);
 				levels.setX(lit, level);
 				// Run on past the axis's floor hit, so the floor cuts the beam rather
 				// than the cone's own square end standing half in the air on a slanted
@@ -885,7 +885,7 @@
 			// Tinted by its own output, so the render says what is hanging up there.
 			// The prior art this drawing came from paints its bodies pure black, and
 			// then the picture cannot tell you which lamp is on.
-			dimKeepingHue(scratchColour, level * 0.9, scratchDimmed);
+			dimKeepingHue(scratchColor, level * 0.9, scratchDimmed);
 			material.emissive.copy(scratchDimmed);
 			// A pixel *is* its light, so it glows at full rather than tinting a body.
 			material.emissiveIntensity = pixel ? 2.5 : 1;
@@ -900,7 +900,7 @@
 		built.beamMesh.count = lit;
 		if (changed) {
 			built.beamMesh.instanceMatrix.needsUpdate = true;
-			colours.needsUpdate = true;
+			colors.needsUpdate = true;
 			levels.needsUpdate = true;
 			lengths.needsUpdate = true;
 			spreads.needsUpdate = true;
@@ -983,7 +983,7 @@
 		// What a captured line frame draws its solids in. The dark studio materials read
 		// as a black silhouette on the white ground a sheet clears to — which is what
 		// the first exported axonometric was — so on paper they are swapped for a flat
-		// grey. Set here rather than below because the swap loop is here.
+		// gray. Set here rather than below because the swap loop is here.
 		const onPaper = forCapture && (mode === 'wireframe' || mode === 'cones');
 		for (const group of built.objects.values()) {
 			group.traverse((node) => {
@@ -1003,7 +1003,7 @@
 		// oversight: the per-frame update writes `color` and `emissive` on it to say
 		// which lamp is on, and a `MeshBasicMaterial` has no `emissive` — swapping them
 		// threw "Cannot read properties of undefined" once per frame. They are already
-		// a dark grey, which is what a lantern should be on a white sheet anyway.
+		// a dark gray, which is what a lantern should be on a white sheet anyway.
 		// The deck is the room's own floor and is drawn dark for a studio. On white it
 		// is the black quadrilateral the first export put in the middle of the sheet.
 		built.deck.visible = built.deck.visible && !onPaper;
@@ -1014,14 +1014,14 @@
 		built.renderer.toneMapping = photoreal ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
 		built.renderer.toneMappingExposure = 1;
 		// The photoreal frame is linear light. Three things written as screen values
-		// on the plain path are said in linear terms here: the clear colour, the grid's
-		// grey, and the beams, which are too hot as light at a value that was right
+		// on the plain path are said in linear terms here: the clear color, the grid's
+		// gray, and the beams, which are too hot as light at a value that was right
 		// for the screen.
 		// **On paper, a line drawing goes on white.** A rig view is a dark studio with
 		// light in it, which is right on a screen and wrong on A3: a shaded axonometric
 		// on a sheet came out as a near-black rectangle, which is both unreadable and a
 		// cartridge of toner. So a *captured* wireframe or cones frame clears to white
-		// and the models read as grey solids on it. Real and photoreal keep the dark
+		// and the models read as gray solids on it. Real and photoreal keep the dark
 		// ground, and that is not an inconsistency: a beam is additive light, and a
 		// picture of one on white is a picture of nothing.
 		const clear = onPaper ? 0xffffff : 0x101010;
@@ -1042,10 +1042,10 @@
 	 *
 	 * This is the post-processing chain task 51 stayed away from, and it is here for
 	 * the one thing it alone can do. Beams add, and added into an 8-bit frame that
-	 * clips at one per channel, two saturated colours are white the moment they
+	 * clips at one per channel, two saturated colors are white the moment they
 	 * cross. In a floating-point target the sum is kept, and ACES rolls it off
 	 * towards white the way a sensor does, so a blue and an amber crossing stay a
-	 * colour. The bloom's threshold is one: only what is *above* white glows, which
+	 * color. The bloom's threshold is one: only what is *above* white glows, which
 	 * is the halo a lens gives a lamp it is looking into. Four samples of
 	 * multisampling on the target, since the plain path had them on the canvas.
 	 */
@@ -1064,7 +1064,7 @@
 		composer.addPass(render);
 		// Tight and above white only. The first setting tried — 0.45 strength at a
 		// radius of 0.3 — spread the stage's light across the whole frame at its
-		// widest mip and lifted the sky to grey, which is fog on the lens and not a
+		// widest mip and lifted the sky to gray, which is fog on the lens and not a
 		// halo round a lamp.
 		const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.22, 0.1, 1.3);
 		composer.addPass(bloom);
@@ -1231,8 +1231,8 @@
 			// whole of what makes an exported MVR carry a truss: `/stock/{id}.glb` is
 			// generated from the same table by the station, so the bytes drawn are the
 			// bytes exported. Cached per URL, so a hundred sections cost one request.
-			if (references.length === 0 && object.catalogue) {
-				void stockMesh(object.catalogue, object.properties).then((stock) => {
+			if (references.length === 0 && object.catalog) {
+				void stockMesh(object.catalog, object.properties).then((stock) => {
 					// Against the *group*, not against a per-run flag. This effect
 					// re-runs whenever the drawing changes, and a flag cleared by the
 					// teardown would throw away a mesh that had not arrived yet — after
@@ -1291,14 +1291,14 @@
 	 * **A truss is mostly holes.** Four chords and a zig-zag of bracing, and a click on
 	 * the middle of one in plan goes straight between the chords and hits nothing — so
 	 * an operator aiming at a bar has to hit a tube, which at 50 mm across on a
-	 * twelve-metre frame is a few pixels. The same is true of an imported mesh, and
+	 * twelve-meter frame is a few pixels. The same is true of an imported mesh, and
 	 * more so of a ladder.
 	 *
 	 * So the raycast is given something solid to find. It is `visible = false`, which
 	 * costs nothing to draw and is not skipped by the raycast — three's `Raycaster`
 	 * tests an object's *layers* and never its visibility, which is the one fact this
 	 * rests on. Its size comes off what was actually drawn rather than from the
-	 * catalogue, so the deck's origin-at-the-top and the panel's origin-at-the-bottom
+	 * catalog, so the deck's origin-at-the-top and the panel's origin-at-the-bottom
 	 * need no second telling.
 	 *
 	 * Measured **before** the drawn mesh is put in the group, and that ordering is the
@@ -1311,13 +1311,13 @@
 		const bounds = new THREE.Box3().setFromObject(drawn);
 		if (bounds.isEmpty()) return;
 		const size = bounds.getSize(new THREE.Vector3());
-		const centre = bounds.getCenter(new THREE.Vector3());
+		const center = bounds.getCenter(new THREE.Vector3());
 		if (!Number.isFinite(size.x) || !Number.isFinite(size.y) || !Number.isFinite(size.z)) return;
 		const box = new THREE.Mesh(
 			new THREE.BoxGeometry(Math.max(size.x, 0.02), Math.max(size.y, 0.02), Math.max(size.z, 0.02)),
 			PICKABLE
 		);
-		box.position.copy(centre);
+		box.position.copy(center);
 		box.visible = false;
 		box.userData.objectId = id;
 		group.add(box);
@@ -1491,7 +1491,7 @@
 			}
 			const expects =
 				object.geometry.length > 0 ||
-				Boolean(object.catalogue) ||
+				Boolean(object.catalog) ||
 				Boolean(object.symbol);
 			// An empty group is one whose mesh has not arrived. The pick box is added
 			// *from* the drawn mesh, so any child at all means something landed.
@@ -1652,7 +1652,7 @@
 
 	// Where the gizmo sits, and whether it is offered at all. Not while a drag is in
 	// flight: the objects are moving under it, and repositioning the pivot from their
-	// new centre mid-drag would have the handle running away from the pointer.
+	// new center mid-drag would have the handle running away from the pointer.
 	$effect(() => {
 		const built = scene;
 		const at = pivotAt;
@@ -1739,7 +1739,7 @@
 		pendingMove = 0;
 		endGesture();
 		// The pivot stays where the operator left it rather than snapping back to the
-		// selection's new centre: they put it there, and a turn is very often two turns.
+		// selection's new center: they put it there, and a turn is very often two turns.
 		const at = scene?.pivotNode.position;
 		if (at && gizmoMode === 'rotate') pivot.set({ x: at.x, y: at.y, z: at.z });
 	}
@@ -1784,7 +1784,7 @@
 	const ROLL_GEOMETRY = new THREE.TorusGeometry(0.24, 0.025, 8, 28);
 	/** And the `+` on a free joint. A ball, so it reads from any angle. */
 	const JOINT_GEOMETRY = new THREE.SphereGeometry(0.075, 12, 8);
-	/** How far past the joint it sits, in metres. */
+	/** How far past the joint it sits, in meters. */
 	const JOINT_STANDOFF = 0.18;
 
 	// ── What a light is clamped to ──────────────────────────────────────────────
@@ -1792,7 +1792,7 @@
 	/**
 	 * The piece a fixture hangs off, and where its chords are.
 	 *
-	 * A catalogue piece declares them. Anything else — a truss out of somebody's
+	 * A catalog piece declares them. Anything else — a truss out of somebody's
 	 * drawing — gets **one**, off the mesh's bounds, and that is the smallest guess
 	 * available on purpose: the console does not know whether that mesh is a box truss
 	 * or a ladder, and four invented chords would put lights on corners that are not
@@ -1803,7 +1803,7 @@
 		if (!id) return null;
 		const object = $objectsById.get(id);
 		if (!object) return null;
-		const entry = piece(object.catalogue);
+		const entry = piece(object.catalog);
 		const measured = object.geometry[0] ? $meshSizes.get(object.geometry[0].asset) : undefined;
 		const chords = chordsFor(
 			entry,
@@ -1869,11 +1869,11 @@
 		built.gizmoGroup.clear();
 		built.gizmos.clear();
 		for (const beam of chosen) {
-			const add = (kind: Handle['kind'], geometry: THREE.BufferGeometry, colour: number) => {
+			const add = (kind: Handle['kind'], geometry: THREE.BufferGeometry, color: number) => {
 				const mesh = new THREE.Mesh(
 					geometry,
 					new THREE.MeshBasicMaterial({
-						color: live(kind, beam.fixture.id) ? 0xf59e0b : colour,
+						color: live(kind, beam.fixture.id) ? 0xf59e0b : color,
 						depthTest: false,
 						transparent: kind === 'spot',
 						opacity: kind === 'spot' ? 0.85 : 1,
@@ -2206,14 +2206,14 @@
 	/** Whatever the joint's own piece is — the menu's first answer. */
 	function sameKindAs(joint: PlacedConnector): string {
 		const object = $objectsById.get(joint.object);
-		return object?.catalogue ?? 'f34-2m';
+		return object?.catalog ?? 'f34-2m';
 	}
 
 	/**
-	 * What the menu offers: every catalogue piece with a joint of this kind, the one
+	 * What the menu offers: every catalog piece with a joint of this kind, the one
 	 * that is already there first.
 	 *
-	 * Same-kind is the catalogue's own rule and it is what keeps the list short and
+	 * Same-kind is the catalog's own rule and it is what keeps the list short and
 	 * true — a truss end takes a truss, a corner or a plate, and a pipe end takes a
 	 * pipe. Putting the piece that is already there at the top is what makes laying a
 	 * run one press and a row of Enters, and it is also the answer that is right nine
@@ -2221,7 +2221,7 @@
 	 */
 	function piecesFor(joint: PlacedConnector) {
 		const same = sameKindAs(joint);
-		const all = CATALOGUE.filter((entry) =>
+		const all = CATALOG.filter((entry) =>
 			entry.connectors.some((connector) => connector.kind === joint.kind)
 		);
 		return [
@@ -2257,16 +2257,16 @@
 	 */
 	const MENU_SIZE = { width: 170, height: 200 };
 
-	async function addOnJoint(joint: PlacedConnector, catalogueId: string) {
+	async function addOnJoint(joint: PlacedConnector, catalogId: string) {
 		jointMenu = null;
-		const world = placedOnConnector(catalogueId, joint);
+		const world = placedOnConnector(catalogId, joint);
 		if (!world) return;
 		const onto = $objectsById.get(joint.object);
 		// Parented to whatever the piece it bolts to hangs off, so a run built one
 		// section at a time stays one run: dragging the group moves the whole thing.
 		const parent = onto?.parent ?? null;
 		const local = localOf(world, parentWorld(parent, $objectsById));
-		const id = await placePiece(catalogueId, local, { parent });
+		const id = await placePiece(catalogId, local, { parent });
 		if (id) selectObject(id);
 	}
 
@@ -2292,7 +2292,7 @@
 			start.from = beam.fixture.mount?.roll ?? 0;
 		} else if (kind === 'spot') {
 			// Keep the beam where it is relative to the pointer, so grabbing the disc
-			// off-centre does not tug the light sideways before the drag has begun.
+			// off-center does not tug the light sideways before the drag has begun.
 			const point = rayOnPlane(ray, { x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 });
 			if (!point) return;
 			start.offset = { x: beam.end[0] - point.x, z: beam.end[2] - point.z };
@@ -2494,16 +2494,16 @@
 	 * A piece dropped on the canvas.
 	 *
 	 * Grid first, then the connectors: a section dropped near the end of a run bolts to
-	 * it, and one dropped in the middle of the room lands on the half-metre. Holding
+	 * it, and one dropped in the middle of the room lands on the half-meter. Holding
 	 * Alt turns the grid off for the one time in twenty when somebody means 1.37 m.
 	 */
-	async function dropPiece(built: Scene, catalogueId: string, event: DragEvent) {
+	async function dropPiece(built: Scene, catalogId: string, event: DragEvent) {
 		const landed = event.altKey
 			? rawWorkPlane(built, event)
 			: onWorkPlane(built, event);
 		if (!landed) return;
 		let world: Transform = { ...IDENTITY, position: landed };
-		const entry = piece(catalogueId);
+		const entry = piece(catalogId);
 		if (entry) {
 			const mine = entry.connectors.map((connector, index) => ({
 				object: '',
@@ -2523,7 +2523,7 @@
 			);
 			world = snapConnectors(world, mine, theirs)?.transform ?? world;
 		}
-		const id = await placePiece(catalogueId, world);
+		const id = await placePiece(catalogId, world);
 		if (id) selectObject(id);
 	}
 
@@ -2575,7 +2575,7 @@
 </script>
 
 <!-- The canvas is also where a piece from the Pieces sheet lands. `dragover` has to
-     be cancelled or the browser refuses the drop, and the piece's id travels as plain
+     be canceled or the browser refuses the drop, and the piece's id travels as plain
      text because that is what a native drag carries. -->
 <div
 	class="viewport"
@@ -2598,7 +2598,7 @@
 ></div>
 
 {#if jointMenu}
-	<!-- What goes on this joint. Same-kind only, which is the catalogue's own rule: a
+	<!-- What goes on this joint. Same-kind only, which is the catalog's own rule: a
 	     truss end takes a truss, a corner or a plate, and a pipe end takes a pipe. The
 	     piece already there is first and holds the focus, so laying a run is one press
 	     and a row of Enters; Escape and the pointer leaving both put it away. -->
@@ -2700,7 +2700,7 @@
 
 	.beside {
 		position: absolute;
-		/* Beside and vertically centred on the fixture, which is what the transform
+		/* Beside and vertically centered on the fixture, which is what the transform
 		   did when this was an `HTML` overlay. */
 		transform: translate(28px, -50%);
 		pointer-events: auto;

@@ -51,7 +51,7 @@ pub struct EntityMeta {
     pub load_all: Option<LoadAllFn>,
     /// The primary key field name, if the entity has one.
     pub primary_key: Option<&'static str>,
-    /// Validate and normalise one entity value against its Rust type.
+    /// Validate and normalize one entity value against its Rust type.
     pub validate: ValidateFn,
     /// Write one entity to SQLite. None for entities without a table.
     pub upsert_one: Option<UpsertOneFn>,

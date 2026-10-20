@@ -332,7 +332,7 @@ mod hex_u16 {
 
 // ── Presets ───────────────────────────────────────────────────────────────────
 //
-// The seven modules in `OpenHaunt/node`'s catalogue, as somewhere to start from.
+// The seven modules in `OpenHaunt/node`'s catalog, as somewhere to start from.
 // They are a convenience of this simulator and nothing more: the node runs on a
 // [`NodeConfig`], and a preset is only one way of arriving at one. Nothing in the
 // running node asks which module kind it came from.
@@ -442,7 +442,7 @@ impl ModuleKind {
             // The strip is the module that can do all of it: both ports take a
             // shape, a step list and a timed move.
             ModuleKind::Ws2812 => vec![
-                P::new(0, "Strip colour", "readwrite", "color")
+                P::new(0, "Strip color", "readwrite", "color")
                     .class("color")
                     .effects(motion::PortEffects::all()),
                 P::new(1, "Brightness", "readwrite", "number")
@@ -573,7 +573,7 @@ pub struct SimConfig {
 }
 
 impl SimConfig {
-    /// A node from one of the catalogue presets, quiet and on an ephemeral port —
+    /// A node from one of the catalog presets, quiet and on an ephemeral port —
     /// which is what a test wants, and what everything else overrides.
     pub fn new(module: ModuleKind, serial: impl Into<String>) -> Self {
         SimConfig { node: module.config(serial), sacn_port: 0 }
@@ -984,7 +984,7 @@ async fn info(State(node): State<Node>) -> Json<Value> {
             "caps": module.caps,
         },
         // Only the device knows what it is. A controller reads this and builds its
-        // fixture type from it; it carries no catalogue of module types.
+        // fixture type from it; it carries no catalog of module types.
         "ports": node.config.ports.iter().cloned().chain(node.pixels.ports()).collect::<Vec<_>>(),
     });
     if !node.pixels.is_empty() {

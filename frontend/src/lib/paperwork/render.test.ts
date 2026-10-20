@@ -3,7 +3,7 @@
  *
  * The claim this feature rests on is that the SVG somebody approves and the PDF they
  * send are the same drawing. That is structurally true for geometry — both take the
- * model's own millimetres, and the PDF's single flip is one line — and it is *made*
+ * model's own millimeters, and the PDF's single flip is one line — and it is *made*
  * true for text by `textOrigin`, which both call. These tests are what keeps it true:
  * they measure against the real shipped faces, so a figure in here is a figure about
  * the type the console actually draws with.
@@ -90,7 +90,7 @@ describe('both renderings of one page', () => {
 		expect(svg).toContain('text-anchor="start"');
 	});
 
-	it('writes an SVG whose page is stated in millimetres', async () => {
+	it('writes an SVG whose page is stated in millimeters', async () => {
 		const m = await realMetrics();
 		const svg = toSvg(aPage(), m);
 		expect(svg).toContain('width="420mm"');

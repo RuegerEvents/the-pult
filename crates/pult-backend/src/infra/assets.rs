@@ -104,7 +104,7 @@ pub fn mime_for_name(name: &str) -> Option<&'static str> {
 ///
 /// No SVG: it is a document with scripts in it, and serving one from the console's
 /// own origin would let an uploaded file run as the console. A PDF never reaches
-/// here either — the frontend rasterises page one and uploads that, so the backend
+/// here either — the frontend rasterizes page one and uploads that, so the backend
 /// and both stage views only ever handle an image.
 ///
 /// A zip does not execute in a browser, so serving one is inert — but it is served

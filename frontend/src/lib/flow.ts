@@ -161,7 +161,7 @@ export function variableOpParts(op: VariableOp): { tag: string; amount: number }
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
-/** Which family a node belongs to, for colouring it. */
+/** Which family a node belongs to, for coloring it. */
 export function nodeCategory(kind: FlowNodeKind): 'source' | 'logic' | 'timing' | 'action' {
 	switch (nodeTag(kind)) {
 		case 'Source':

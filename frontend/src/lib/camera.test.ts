@@ -11,7 +11,7 @@ const fixture = (x: number, y: number, z: number): Fixture =>
 		parent: null
 	}) as unknown as Fixture;
 
-/** A rig eight metres wide, hung at four, three metres deep. */
+/** A rig eight meters wide, hung at four, three meters deep. */
 const rig = [fixture(-4, 4, -1), fixture(4, 4, 2)];
 const nothing = new Map<string, SceneObject>();
 
@@ -24,14 +24,14 @@ describe('the box a view has to frame', () => {
 	});
 
 	it('reaches the floor under a rig that is all in the air', () => {
-		// Otherwise a front view of a rig hung at four metres is a picture of a bar,
+		// Otherwise a front view of a rig hung at four meters is a picture of a bar,
 		// with the deck it is lighting outside the frame entirely.
 		expect(rigBounds(rig, nothing).min.y).toBeLessThanOrEqual(0);
 	});
 
 	it('leaves the floor out when it is framing a selection', () => {
-		// An operator who picked one head at four metres wants that head, not four
-		// metres of air under it.
+		// An operator who picked one head at four meters wants that head, not four
+		// meters of air under it.
 		const one = rigBounds([fixture(3, 4, 0)], nothing, { margin: 0.6, toFloor: false });
 		expect(one.min.y).toBeCloseTo(3.4, 6);
 	});
@@ -129,16 +129,16 @@ describe('focusing on what is selected', () => {
 	});
 });
 
-describe('a catalogue piece in the frame', () => {
-	// Once a person can build a rig out of nothing but catalogue pieces, an origin is
-	// not enough: a three-metre bar counted as a point is a bar with a metre and a half
+describe('a catalog piece in the frame', () => {
+	// Once a person can build a rig out of nothing but catalog pieces, an origin is
+	// not enough: a three-meter bar counted as a point is a bar with a meter and a half
 	// of itself outside the frame.
-	const truss = (x: number, catalogue: string | null): SceneObject =>
+	const truss = (x: number, catalog: string | null): SceneObject =>
 		({
 			id: `t${x}`,
 			transform: at({ x, y: 6, z: 0 }),
 			parent: null,
-			catalogue,
+			catalog,
 			properties: null
 		}) as unknown as SceneObject;
 

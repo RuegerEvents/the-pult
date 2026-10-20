@@ -25,7 +25,7 @@
 
 import type { Mm, RectMm } from './drawing.js';
 
-/** Millimetres to inches. */
+/** Millimeters to inches. */
 const PER_INCH = 25.4;
 
 /** The largest texture this machine will give, or a safe guess if it will not say. */
@@ -77,7 +77,7 @@ export interface Raster {
 /**
  * A canvas as PNG bytes.
  *
- * PNG rather than JPEG because a drawing is line art over flat colour, which is exactly
+ * PNG rather than JPEG because a drawing is line art over flat color, which is exactly
  * what JPEG is worst at — and a shaded truss with ringing round every edge looks like a
  * bad scan of a good drawing.
  */
@@ -95,7 +95,7 @@ export function cssSize(rect: RectMm, pixels: { width: number; height: number })
 	return { width: pixels.width, height: pixels.height };
 }
 
-/** A millimetre length as inches, for anything printing a dpi. */
+/** A millimeter length as inches, for anything printing a dpi. */
 export function inches(mm: Mm): number {
 	return mm / PER_INCH;
 }

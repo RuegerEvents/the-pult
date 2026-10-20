@@ -7,7 +7,7 @@
 //! `sacn` mode the console draws every pixel and the node reads universes.
 //!
 //! **In `sacn` mode a pixel is a fixture.** A cell is an ordinary DMX-addressed fixture
-//! with a colour, hung off one scene object that is the strip, so everything the console
+//! with a color, hung off one scene object that is the strip, so everything the console
 //! already does to a selection of fixtures — spread, phase, width, a chase in the order
 //! somebody picked — it does to a strip's cells, and the DMX family renders them with
 //! nothing taught. The alternative, one fixture with a cell count, would have needed
@@ -118,7 +118,7 @@ pub struct PixelStrip {
     pub output: u8,
     pub mode: StripMode,
     pub count: u16,
-    /// The colour order on the strip's own wire. The universes always carry R, G, B
+    /// The color order on the strip's own wire. The universes always carry R, G, B
     /// (and W), so this matters to the node and to nothing here but the channel count.
     pub order: String,
     /// Where pixel 0's first channel is, in `sacn` mode. Kept in `effect` mode too, so
@@ -128,7 +128,7 @@ pub struct PixelStrip {
     /// How long the node holds its last frame when every source has gone.
     #[serde(default = "default_hold")]
     pub hold_ms: u32,
-    /// Distance from one pixel to the next, in metres: 60 to the metre unless said.
+    /// Distance from one pixel to the next, in meters: 60 to the meter unless said.
     #[serde(default = "default_pitch")]
     pub pitch_m: f32,
 }
@@ -355,7 +355,7 @@ pub fn plan(head: &Fixture, strip: PixelStrip, cells: &[Fixture]) -> StripPlan {
         class: None,
         geometry: Vec::new(),
         symbol: None,
-        catalogue: None,
+        catalog: None,
         properties: serde_json::Value::Null,
         locked: false,
         weight_kg: None,

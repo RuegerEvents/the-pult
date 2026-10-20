@@ -137,7 +137,7 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 /// 3. A show became a folder, and the assets moved out of the file into `assets/`
 ///    beside it. The `bytes` column is gone, so a generation 2 file's rows claim
 ///    assets whose bytes nothing can find.
-/// 4. A rig became something you could build: a `SceneObject` gained its catalogue
+/// 4. A rig became something you could build: a `SceneObject` gained its catalog
 ///    piece and a `Fixture` gained a `Mount`, so a placement written before it means
 ///    something else.
 /// 5. `FollowMode::Timecode` is gone, replaced by the `timelines` collection. A cue
@@ -146,7 +146,10 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 ///    to catch.
 /// 6. A timeline's one `audio` file became `clips`, each with its own place, trim and
 ///    destination. A generation-5 timeline's file would be dropped without a word.
-pub(super) const SCHEMA_GENERATION: i64 = 6;
+/// 7. American spelling, everywhere: `colour` became `color`, `centre` `center` and
+///    `catalogue` `catalog`, in column names and in serialized enum values alike. A
+///    generation-6 `SceneObject::catalogue` would read as a piece with no catalog entry.
+pub(super) const SCHEMA_GENERATION: i64 = 7;
 
 /// Say plainly that a showfile is from another build, instead of panicking somewhere
 /// deep in a generated `from_columns`.

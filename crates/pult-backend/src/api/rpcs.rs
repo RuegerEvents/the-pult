@@ -101,7 +101,7 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     LocalRpcMeta {
         method: "paperwork.tables",
         args_schema: r#"[{"name":"kind","type":"string","optional":false},{"name":"grouping","type":"string","optional":true},{"name":"rows","type":"object","optional":true},{"name":"layers","type":"array","optional":true}]"#,
-        doc: "A paperwork table over the rig: Patch, Loading, Power or Counts, grouped and subtotalled.",
+        doc: "A paperwork table over the rig: Patch, Loading, Power or Counts, grouped and subtotaled.",
     },
     // What a rig would look like in a given state, for a rendered viewport on a sheet.
     // A read like the one above, and it must stay one: rendering a beauty shot must not

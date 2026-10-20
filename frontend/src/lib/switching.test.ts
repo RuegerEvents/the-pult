@@ -31,7 +31,7 @@ describe('what a close frame means', () => {
 });
 
 describe('what the screen says', () => {
-	it('capitalises the phrase and trails off', () => {
+	it('capitalizes the phrase and trails off', () => {
 		expect(switchTitle('opening Festival.pult')).toBe('Opening Festival.pult…');
 		expect(switchTitle('')).toBe('Changing shows…');
 	});

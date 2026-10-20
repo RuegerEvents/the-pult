@@ -89,13 +89,13 @@ export function layerSpecs(
 /**
  * A whole template over a selection: a layer per parameter, each reaching the
  * fixtures that have it. A layer nothing selected can take is left out rather than
- * refused, so "fire" on a row of single-colour pars is still the flicker.
+ * refused, so "fire" on a row of single-color pars is still the flicker.
  *
- * **A pixel has no dimmer**, only a colour, and nearly every look in the pool is an
- * intensity. So an intensity layer reaches a fixture that has a colour and no
- * intensity *as* that colour: white scaled by the level, so a chase is white light
- * running along the strip. Only where the template does not say what colour that
- * fixture is: fire on a strip is its colour layer, which already flickers.
+ * **A pixel has no dimmer**, only a color, and nearly every look in the pool is an
+ * intensity. So an intensity layer reaches a fixture that has a color and no
+ * intensity *as* that color: white scaled by the level, so a chase is white light
+ * running along the strip. Only where the template does not say what color that
+ * fixture is: fire on a strip is its color layer, which already flickers.
  */
 export function templateApply(
 	template: Pick<EffectTemplate, 'id' | 'layers'>,
@@ -104,44 +104,44 @@ export function templateApply(
 	types: Map<string, FixtureType>
 ): LayerApply[] {
 	const out: LayerApply[] = [];
-	const coloured = new Set(
+	const colored = new Set(
 		template.layers
 			.filter((l) => l.kind === 'ColorRgb')
 			.flatMap((l) => havingKind(l.kind, selection, fixtures, types))
 	);
 	const dimmable = new Set(havingKind('Intensity', selection, fixtures, types));
-	const colourOnly = havingKind('ColorRgb', selection, fixtures, types).filter(
-		(id) => !dimmable.has(id) && !coloured.has(id)
+	const colorOnly = havingKind('ColorRgb', selection, fixtures, types).filter(
+		(id) => !dimmable.has(id) && !colored.has(id)
 	);
 	template.layers.forEach((layer, index) => {
 		const order = havingKind(layer.kind, selection, fixtures, types);
 		if (order.length > 0) {
 			out.push({ layer: index, kind: layer.kind, order, specs: layerSpecs(layer, order, template.id || null) });
 		}
-		if (layer.kind === 'Intensity' && colourOnly.length > 0) {
-			const asColour = intensityAsColour(layer);
+		if (layer.kind === 'Intensity' && colorOnly.length > 0) {
+			const asColor = intensityAsColor(layer);
 			out.push({
 				layer: index,
 				kind: 'ColorRgb',
-				order: colourOnly,
-				specs: layerSpecs(asColour, colourOnly, template.id || null)
+				order: colorOnly,
+				specs: layerSpecs(asColor, colorOnly, template.id || null)
 			});
 		}
 	});
 	return out;
 }
 
-/** An intensity layer said as a colour: every level a grey of that brightness. */
-export function intensityAsColour(layer: EffectLayer): EffectLayer {
-	const grey = (v: EffectLayer['low']): EffectLayer['low'] => {
+/** An intensity layer said as a color: every level a gray of that brightness. */
+export function intensityAsColor(layer: EffectLayer): EffectLayer {
+	const gray = (v: EffectLayer['low']): EffectLayer['low'] => {
 		const level = v.type === 'Float' || v.type === 'Int' ? Math.min(1, Math.max(0, v.value)) : 1;
 		return { type: 'Color', value: { r: level, g: level, b: level, overrides: {} } };
 	};
 	const curve: EffectLayer['curve'] =
 		'Steps' in layer.curve
-			? { Steps: layer.curve.Steps.map((s) => ({ ...s, value: grey(s.value) })) }
+			? { Steps: layer.curve.Steps.map((s) => ({ ...s, value: gray(s.value) })) }
 			: layer.curve;
-	return { ...layer, kind: 'ColorRgb', curve, low: grey(layer.low), high: grey(layer.high) };
+	return { ...layer, kind: 'ColorRgb', curve, low: gray(layer.low), high: gray(layer.high) };
 }
 
 /** What a spread toggle means, for the strip's controls. */
@@ -154,17 +154,17 @@ export type PixelSpread = {
 
 /** A strip's direction and mirror, as the spread the effect engine already has. */
 export function pixelSpread({ reverse, mirror }: PixelSpread): Spread {
-	if (mirror) return 'Centre';
+	if (mirror) return 'Center';
 	return reverse ? 'Reversed' : 'Linear';
 }
 
 /** And back, for showing the toggles a layer's spread amounts to. */
 export function readPixelSpread(spread: Spread): PixelSpread {
-	return { reverse: spread === 'Reversed', mirror: spread === 'Centre' };
+	return { reverse: spread === 'Reversed', mirror: spread === 'Center' };
 }
 
 /**
- * A colour gradient along a strip: the stops as an eased step list, run across the
+ * A color gradient along a strip: the stops as an eased step list, run across the
  * cells by a linear spread. At rate zero it stands still; any rate scrolls it.
  */
 export function gradientCurve(stops: { r: number; g: number; b: number }[]): EffectLayer['curve'] {

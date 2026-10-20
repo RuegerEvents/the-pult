@@ -1,12 +1,12 @@
-//! What each catalogue shape is made of.
+//! What each catalog shape is made of.
 //!
 //! The arithmetic that used to be in `frontend/src/lib/stock.ts`, moved here so that
 //! there is one of it: the bytes an operator opens in Vectorworks are the bytes the
-//! rig view drew. Turning "two metres of F34" into chords and bracing is still a fact
+//! rig view drew. Turning "two meters of F34" into chords and bracing is still a fact
 //! about drawing rather than about the show — it is just that the drawing now has to
 //! be the same on both sides of the wire.
 //!
-//! Every piece is centred on its own origin along X, because a fixture hangs at an
+//! Every piece is centered on its own origin along X, because a fixture hangs at an
 //! offset from the middle of the bar it is on and a piece whose origin was at one end
 //! would make every one of those offsets depend on how long the section happened to
 //! be. The exceptions are the two that stand on something: a deck's origin is its
@@ -16,7 +16,7 @@
 use serde_json::Value;
 
 use super::glb::{Material, Mesh};
-use crate::types::catalogue::{number, StockPiece, StockShape, F34, PIPE_DIAMETER, PLATE_STEEL};
+use crate::types::catalog::{number, StockPiece, StockShape, F34, PIPE_DIAMETER, PLATE_STEEL};
 
 /// A chord tube: 50 mm on F34, which is what the ladder is welded out of.
 const CHORD: f32 = 0.05;
@@ -31,11 +31,11 @@ const BRACE: f32 = 0.02;
 const CHORD_SEGMENTS: usize = 8;
 const BRACE_SEGMENTS: usize = 4;
 
-/// Aluminium, and not shiny: a truss under stage light is a matte grey thing, and a
+/// Aluminum, and not shiny: a truss under stage light is a matte gray thing, and a
 /// mirror-finish one reads as a prop.
-const ALUMINIUM: Material = Material { colour: [0.6, 0.63, 0.65], roughness: 0.65, metalness: 0.85 };
-/// Decks and walls are painted, not extruded aluminium.
-const PAINTED: Material = Material { colour: [0.18, 0.19, 0.21], roughness: 0.9, metalness: 0.05 };
+const ALUMINUM: Material = Material { color: [0.6, 0.63, 0.65], roughness: 0.65, metalness: 0.85 };
+/// Decks and walls are painted, not extruded aluminum.
+const PAINTED: Material = Material { color: [0.18, 0.19, 0.21], roughness: 0.9, metalness: 0.05 };
 
 /// One piece, as triangles.
 ///
@@ -45,7 +45,7 @@ pub fn build(piece: &StockPiece, properties: &Value) -> Mesh {
     let mut mesh = Mesh {
         material: match piece.shape {
             StockShape::Deck | StockShape::Panel => PAINTED,
-            _ => ALUMINIUM,
+            _ => ALUMINUM,
         },
         ..Mesh::default()
     };
@@ -78,7 +78,7 @@ pub fn build(piece: &StockPiece, properties: &Value) -> Mesh {
     mesh
 }
 
-/// A straight length of box truss, centred on its own origin and running along X.
+/// A straight length of box truss, centered on its own origin and running along X.
 fn box_truss(mesh: &mut Mesh, length: f32, square: f32) {
     let half = square / 2.0 - CHORD / 2.0;
 
@@ -96,11 +96,11 @@ fn box_truss(mesh: &mut Mesh, length: f32, square: f32) {
 
     // Bracing, as a zig-zag down each of the four faces. One bay every ~250 mm, which
     // is close enough to the real spacing to read correctly and coarse enough that a
-    // three-metre section is a few dozen tubes rather than a few hundred.
+    // three-meter section is a few dozen tubes rather than a few hundred.
     //
     // Held back half a brace from each end, because a brace runs at an angle and its
     // end cap is square to *its own* axis: a zig-zag starting exactly at the end of
-    // the truss puts 7 mm of tube past it, and then a "one metre" section measures
+    // the truss puts 7 mm of tube past it, and then a "one meter" section measures
     // 1.014 m. Which is not cosmetic — the length is what a rig is set out from.
     let inset = BRACE / 2.0;
     let braced = length - BRACE;

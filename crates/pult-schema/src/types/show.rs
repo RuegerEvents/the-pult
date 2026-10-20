@@ -213,8 +213,8 @@ impl Default for FadeCurves {
     /// Which is the whole point of the field: a show that never opens this panel
     /// gets dimmers that behave exactly as they always have, and heads that ease
     /// into their marks. Every other group is left linear because none of them has
-    /// a shape an operator would recognise as wrong — a colour crossfading linearly
-    /// is what a colour crossfade looks like.
+    /// a shape an operator would recognize as wrong — a color crossfading linearly
+    /// is what a color crossfade looks like.
     fn default() -> Self {
         Self {
             intensity: Easing::Linear,
@@ -291,7 +291,7 @@ pub fn clamp_home_fade_ms(ms: u32) -> u32 {
     ms.min(HOME_FADE_MS_MAX)
 }
 
-/// A full house of haze, which is what a visualiser is for: at 1 every beam shows,
+/// A full house of haze, which is what a visualizer is for: at 1 every beam shows,
 /// at 0 the air is clear and a light lands on the floor without a ray to be seen on
 /// the way, and the numbers between are that much haze. A new show starts with the
 /// lot because a rig view that draws no beams is the more misleading picture of the

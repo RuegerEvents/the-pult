@@ -8,7 +8,7 @@
 //
 // This is the *instrument*, and it goes over the public API on purpose: what it
 // measures is then what an operator would feel. The shows meant to be looked at are
-// the console's own — `--demo haunt|theatre|club|festival`, seeded in Rust at open
+// the console's own — `--demo haunt|theater|club|festival`, seeded in Rust at open
 // time, which is what a card on the welcome screen presses. `small` used to be here
 // and is `--demo haunt` now.
 //
@@ -186,7 +186,7 @@ const crc32 = (buf) => {
 	return (c ^ 0xffffffff) >>> 0;
 };
 
-/** A real PNG of one flat colour — enough for a plan to have an image. */
+/** A real PNG of one flat color — enough for a plan to have an image. */
 function png(width, height, [r, g, b]) {
 	const chunk = (type, data) => {
 		const head = Buffer.alloc(8);
@@ -201,7 +201,7 @@ function png(width, height, [r, g, b]) {
 	ihdr.writeUInt32BE(width, 0);
 	ihdr.writeUInt32BE(height, 4);
 	ihdr[8] = 8; // bit depth
-	ihdr[9] = 2; // truecolour
+	ihdr[9] = 2; // truecolor
 	// Rows are filter byte 0 followed by RGB triples.
 	const raw = Buffer.concat(
 		Array.from({ length: height }, () =>
@@ -249,7 +249,7 @@ async function seedPlans(count, extentM) {
 			width_px: width,
 			height_px: height,
 			origin: { x: -extentM / 2, y: 0, z: -extentM / 2 },
-			metres_per_pixel: extentM / width,
+			meters_per_pixel: extentM / width,
 			rotation_deg: 0,
 			opacity: 0.8,
 			visible: n === 0
@@ -290,7 +290,7 @@ try {
 	// A moving head, so there is something to puppeteer. Nothing binds a channel:
 	// where a parameter sits belongs to a mode, and a type that names none has the
 	// implicit one — a byte per parameter in the order they are listed, three for a
-	// colour. So this is intensity at 1, the colour across 2 to 4, pan at 5, tilt at 6.
+	// color. So this is intensity at 1, the color across 2 to 4, pan at 5, tilt at 6.
 	const spot = {
 		id: id(),
 		name: 'Spot',
@@ -353,7 +353,7 @@ try {
 	const chaseId = id();
 
 	/**
-	 * A colour sine on one head, at the phase given.
+	 * A color sine on one head, at the phase given.
 	 *
 	 * Stored with `t0: null`: a capture's anchor is the cue's `went_at`, decided
 	 * afresh on every Go, so two consoles replaying this cue start the same cycle
@@ -446,7 +446,7 @@ try {
 	 *
 	 * Each cue takes a slice rather than the whole rig — a stride through the list
 	 * so consecutive cues light different fixtures — and one cue in every eight
-	 * carries the colour effect, so the show has something moving in it wherever
+	 * carries the color effect, so the show has something moving in it wherever
 	 * the operator happens to be in the stack.
 	 */
 	const sliceSize = Math.max(1, Math.round(generated.length * preset.sliceShare));

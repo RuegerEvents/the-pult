@@ -28,7 +28,7 @@
 //! against what the device says it is called, and falling back to the platform's own
 //! device id where somebody has pasted one of those in. Both, for the reason
 //! `types::network::resolve` takes an interface name *or* an address: a name is what an
-//! operator recognises and survives being plugged into a different port, and an id is
+//! operator recognizes and survives being plugged into a different port, and an id is
 //! what survives somebody renaming the interface. Named nothing at all is the system
 //! default, which is what a console whose operator has never opened the Settings panel
 //! gets.
@@ -169,7 +169,7 @@ enum Command {
 #[derive(Debug, Default)]
 struct Slot {
     /// In timeline milliseconds ×1000. Fixed point rather than a float because there is
-    /// no atomic f64, and rounding to the millisecond in the callback would quantise the
+    /// no atomic f64, and rounding to the millisecond in the callback would quantize the
     /// drift figure to the thing it is trying to measure.
     position_micros: AtomicU64,
     sounding: AtomicBool,

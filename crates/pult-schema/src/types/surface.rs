@@ -6,7 +6,7 @@
 //! is that page, made out of show data: an ordered list of tiles, each pointing at
 //! something the show already has (a flow's button, a variable, a timeline, a
 //! sequence, one parameter of one fixture). Nothing about a maze is written here;
-//! a surface for a theatre's stage manager is the same list with other targets.
+//! a surface for a theater's stage manager is the same list with other targets.
 //!
 //! The tiles are one JSON column, the way `Layout::tree` is: a surface is edited
 //! as a whole by one person between shows, and reordering a list is rewriting it.
@@ -35,9 +35,9 @@ pub enum TileTarget {
     /// What a variable holds: a flag as a light, a number as a figure.
     VariableReadout {
         variable_id: Uuid,
-        /// The colour for each value, the highest stop not above it winning. Empty
-        /// means the tile's own colour when the value is on and grey when off.
-        stops: Vec<ColourStop>,
+        /// The color for each value, the highest stop not above it winning. Empty
+        /// means the tile's own color when the value is on and gray when off.
+        stops: Vec<ColorStop>,
     },
     /// Change a variable. Unattributed, through the `variable.*` RPCs, so a phone
     /// resetting an area writes no row in the History panel.
@@ -54,17 +54,17 @@ pub enum TileTarget {
     /// Take a sequence off.
     SequenceOff { sequence_id: Uuid },
     /// What one parameter of one fixture is putting out now — a traffic light's
-    /// colour, a relay — evaluated in the page the way the sheet does it.
+    /// color, a relay — evaluated in the page the way the sheet does it.
     Parameter { fixture_id: Uuid, parameter: ParameterKind },
 }
 
-/// One colour of a readout, from `at` upwards.
+/// One color of a readout, from `at` upwards.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct ColourStop {
+pub struct ColorStop {
     pub at: f64,
-    /// A CSS colour, `#rrggbb`.
-    pub colour: String,
+    /// A CSS color, `#rrggbb`.
+    pub color: String,
 }
 
 /// How much of a row a tile takes.
@@ -84,8 +84,8 @@ pub struct SurfaceTile {
     pub id: Uuid,
     /// What the tile says. Empty means the name of what it points at.
     pub label: String,
-    /// A CSS colour for the tile itself, `#rrggbb`.
-    pub colour: Option<String>,
+    /// A CSS color for the tile itself, `#rrggbb`.
+    pub color: Option<String>,
     pub size: TileSize,
     pub target: TileTarget,
 }
@@ -113,13 +113,13 @@ mod tests {
         let tile = SurfaceTile {
             id: Uuid::nil(),
             label: "Area 2".into(),
-            colour: None,
+            color: None,
             size: TileSize::Half,
             target: TileTarget::VariableReadout {
                 variable_id: Uuid::nil(),
                 stops: vec![
-                    ColourStop { at: 0.0, colour: "#22c55e".into() },
-                    ColourStop { at: 1.0, colour: "#ef4444".into() },
+                    ColorStop { at: 0.0, color: "#22c55e".into() },
+                    ColorStop { at: 1.0, color: "#ef4444".into() },
                 ],
             },
         };

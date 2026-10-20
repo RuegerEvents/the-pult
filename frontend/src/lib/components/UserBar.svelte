@@ -53,7 +53,7 @@
 		onclick={() => (open = !open)}
 	>
 		{#if $currentUser}
-			<span class="dot" style:background={$currentUser.colour}></span>
+			<span class="dot" style:background={$currentUser.color}></span>
 			{$currentUser.name}
 			{#if !$hasChosen}<span class="ask">— who are you?</span>{/if}
 		{:else}
@@ -66,7 +66,7 @@
 		<div class="menu" onpointerleave={() => { if (!adding) open = false; }}>
 			{#each $users as user (user.id)}
 				<button class:on={user.id === $userId} onclick={() => { beUser(user.id); open = false; }}>
-					<span class="dot" style:background={user.colour}></span>
+					<span class="dot" style:background={user.color}></span>
 					{user.name}
 				</button>
 			{/each}

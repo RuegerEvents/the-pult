@@ -6,7 +6,7 @@
 //! Then type at it: `in 3 1` closes contact 3, `in 3 0` opens it, `read 0 21.5`
 //! reports a sensor value.
 //!
-//! `--module` picks one of the catalogue presets; `--config` runs whatever a file
+//! `--module` picks one of the catalog presets; `--config` runs whatever a file
 //! says, which is how a node this crate has never heard of gets simulated. The
 //! other flags override either.
 

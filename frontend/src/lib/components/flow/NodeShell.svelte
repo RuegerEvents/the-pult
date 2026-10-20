@@ -64,7 +64,7 @@
 		color: #e0e0e0;
 		font-size: 12px;
 	}
-	/* One colour per family, so the shape of a graph reads before the words do. */
+	/* One color per family, so the shape of a graph reads before the words do. */
 	.node.source { border-left-color: #4a9eff; }
 	.node.logic { border-left-color: #a78bfa; }
 	.node.timing { border-left-color: #fbbf24; }

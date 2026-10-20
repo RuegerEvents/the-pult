@@ -17,8 +17,8 @@
 //! Each one exists to show something the others cannot.
 //!
 //! - **Haunt** is the hand-made small demo, small enough to read: five fixtures, a
-//!   speed master, three cues with a colour effect on the last, and two flows.
-//! - **Theatre** is conventionals and a cue stack — no movers, split fade times,
+//!   speed master, three cues with a color effect on the last, and two flows.
+//! - **Theater** is conventionals and a cue stack — no movers, split fade times,
 //!   groups by system. What most of the world actually runs.
 //! - **Club** is movers, washes and strobes with effects left running, so the rig
 //!   view has something moving in it and the speed masters do something.
@@ -49,7 +49,7 @@ mod festival;
 mod garden;
 mod haunt;
 mod kit;
-mod theatre;
+mod theater;
 
 /// Which demo. The names are what `--demo` takes and what the welcome screen's cards
 /// carry, so the two cannot drift.
@@ -57,7 +57,7 @@ mod theatre;
 #[serde(rename_all = "kebab-case")]
 pub enum Demo {
     Haunt,
-    Theatre,
+    Theater,
     Club,
     Festival,
     Garden,
@@ -65,14 +65,14 @@ pub enum Demo {
 
 /// Every demo, in the order the welcome screen offers them: smallest first, because
 /// the first one somebody opens should be the one they can read.
-pub const ALL: &[Demo] = &[Demo::Haunt, Demo::Theatre, Demo::Club, Demo::Festival, Demo::Garden];
+pub const ALL: &[Demo] = &[Demo::Haunt, Demo::Theater, Demo::Club, Demo::Festival, Demo::Garden];
 
 impl Demo {
     /// The id `--demo` takes and `show.new` carries.
     pub fn id(self) -> &'static str {
         match self {
             Demo::Haunt => "haunt",
-            Demo::Theatre => "theatre",
+            Demo::Theater => "theater",
             Demo::Club => "club",
             Demo::Festival => "festival",
             Demo::Garden => "garden",
@@ -86,7 +86,7 @@ impl Demo {
     pub fn title(self) -> &'static str {
         match self {
             Demo::Haunt => "Haunt",
-            Demo::Theatre => "Theatre",
+            Demo::Theater => "Theater",
             Demo::Club => "Club",
             Demo::Festival => "Festival",
             Demo::Garden => "Heinz Horror Garten",
@@ -99,7 +99,7 @@ impl Demo {
                 "Five lights, three cues and two flows. Small enough to read the \
                  whole of, and the one to open first."
             }
-            Demo::Theatre => {
+            Demo::Theater => {
                 "Forty conventionals in front, back, side and cyc systems, with a \
                  twenty-cue stack and split fade times."
             }
@@ -157,7 +157,7 @@ pub async fn seed_with(
     info!("[demo] seeding {}", demo.id());
     match demo {
         Demo::Haunt => haunt::seed(&seeder).await?,
-        Demo::Theatre => theatre::seed(&seeder).await?,
+        Demo::Theater => theater::seed(&seeder).await?,
         Demo::Club => club::seed(&seeder).await?,
         Demo::Festival => festival::seed(&seeder).await?,
         Demo::Garden => garden::seed(&seeder).await?,

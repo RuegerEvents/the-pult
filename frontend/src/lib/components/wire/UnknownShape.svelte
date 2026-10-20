@@ -4,7 +4,7 @@
 	 * station, or a connector that arrived with a plugin.
 	 *
 	 * Drawn as itself rather than left out. A panel that quietly omitted the one
-	 * section it did not recognise would be describing the wire wrongly with no sign
+	 * section it did not recognize would be describing the wire wrongly with no sign
 	 * that it was doing so, which is worse than a block of JSON.
 	 */
 

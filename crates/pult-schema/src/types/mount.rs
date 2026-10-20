@@ -25,10 +25,10 @@ use ts_rs::TS;
 use super::fixture::Vec3;
 use super::scene::Transform;
 
-/// How far below the chord a clamped fixture's body sits, in metres.
+/// How far below the chord a clamped fixture's body sits, in meters.
 ///
 /// A hook clamp plus the top of a body: 205 mm. On an F34, whose chords are 145 mm
-/// either side of the centre line, that puts a hung lantern 350 mm below the bar —
+/// either side of the center line, that puts a hung lantern 350 mm below the bar —
 /// which is the figure every demo used before there were chords to hang off, and the
 /// reason it is this number and not a round one.
 ///
@@ -38,7 +38,7 @@ pub const HUNG_BELOW: f32 = 0.205;
 
 /// A line a clamp can go round, in the piece's own frame.
 ///
-/// Always along **+X**, which is the axis every straight piece in the catalogue runs
+/// Always along **+X**, which is the axis every straight piece in the catalog runs
 /// along; `at` is where the line crosses `x = 0`. A box truss has four of them, a pipe
 /// has one, and an imported mesh nobody declared chords for gets one worked out from
 /// its bounds by the browser.
@@ -56,7 +56,7 @@ impl Chord {
 
 /// Where a fixture is clamped on the piece it hangs off.
 ///
-/// `along` is metres from the piece's own origin, which for every catalogue piece is
+/// `along` is meters from the piece's own origin, which for every catalog piece is
 /// its middle — so a light in the middle of a bar reads as zero whatever length of
 /// bar it turns out to be. `roll` is degrees about the chord, and it snaps to the
 /// quarter turns because that is what a hook clamp does: 0 hangs, 180 stands the
@@ -68,7 +68,7 @@ pub struct Mount {
     /// refuses: a piece that lost a chord between two versions of this console should
     /// leave the light on the truss.
     pub chord: u8,
-    /// Metres along the chord from the piece's origin.
+    /// Meters along the chord from the piece's origin.
     pub along: f32,
     /// Degrees about the chord. Zero hangs.
     pub roll: f32,
@@ -76,8 +76,8 @@ pub struct Mount {
 
 impl Mount {
     /// A light hung under the first chord, this far along it.
-    pub fn along(metres: f32) -> Self {
-        Mount { chord: 0, along: metres, roll: 0.0 }
+    pub fn along(meters: f32) -> Self {
+        Mount { chord: 0, along: meters, roll: 0.0 }
     }
 
     /// Where a fixture clamped here sits, in the parent piece's own frame.
@@ -173,7 +173,7 @@ mod tests {
     }
 
     /// The figure every demo rested on before there were chords: a lantern hung under
-    /// an F34 sits 350 mm below its centre line.
+    /// an F34 sits 350 mm below its center line.
     #[test]
     fn a_lantern_under_an_f34_hangs_where_it_always_did() {
         let at = Mount::along(1.5).point(F34_CHORDS);
@@ -192,9 +192,9 @@ mod tests {
     }
 
     /// A pipe has one chord through its own middle, so a mount on one is the simple
-    /// case: straight down from the centre line.
+    /// case: straight down from the center line.
     #[test]
-    fn a_pipe_hangs_from_its_own_centre() {
+    fn a_pipe_hangs_from_its_own_center() {
         let pipe = [Chord::at(0.0, 0.0)];
         let at = Mount::along(-0.75).point(&pipe);
         assert!(near(at.x, -0.75) && near(at.y, -HUNG_BELOW) && near(at.z, 0.0), "{at:?}");
@@ -221,6 +221,6 @@ mod tests {
     #[test]
     fn something_far_away_says_how_far() {
         let (_, distance) = Mount::nearest(Vec3 { x: 0.0, y: -4.0, z: 0.0 }, F34_CHORDS);
-        assert!(distance > 3.0, "a light four metres under the bar is not clamped to it");
+        assert!(distance > 3.0, "a light four meters under the bar is not clamped to it");
     }
 }

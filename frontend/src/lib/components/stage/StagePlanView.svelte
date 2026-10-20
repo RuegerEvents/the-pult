@@ -53,7 +53,7 @@
 
 	let svg = $state<SVGSVGElement | null>(null);
 
-	// The viewport, in metres. Panning and zooming move this rather than a transform,
+	// The viewport, in meters. Panning and zooming move this rather than a transform,
 	// so a fixture's coordinates are always the room's and never the screen's.
 	let view = $state({ x: -12, z: -8, width: 24 });
 	let box = $state({ w: 1, h: 1 });
@@ -138,10 +138,10 @@
 	/// A beam being dragged by where it lands, and a level being dragged by its ring.
 	///
 	/// `offset` is how far the handle sat from the pointer when it was taken hold of,
-	/// kept for the length of the drag: grabbing the disc slightly off-centre should
+	/// kept for the length of the drag: grabbing the disc slightly off-center should
 	/// not tug the light sideways before the drag has begun.
 	let aiming = $state<{ id: string; offset: { x: number; z: number } } | null>(null);
-	let levelling = $state<{ id: string; clientY: number; from: number } | null>(null);
+	let leveling = $state<{ id: string; clientY: number; from: number } | null>(null);
 	let sheetFor = $state<string | null>(null);
 
 	const sheetFixture = $derived(fixtures.find((f) => f.id === sheetFor) ?? null);
@@ -156,7 +156,7 @@
 		};
 	});
 
-	/// Where a pointer is, in metres. `getScreenCTM` already knows about the viewBox,
+	/// Where a pointer is, in meters. `getScreenCTM` already knows about the viewBox,
 	/// the element's size and any page zoom, so nothing here has to.
 	function atPointer(event: PointerEvent | MouseEvent): { x: number; z: number } | null {
 		if (!svg) return null;
@@ -204,11 +204,11 @@
 			if (at) aim(aiming.id, { x: at.x + aiming.offset.x, z: at.z + aiming.offset.z });
 			return;
 		}
-		if (levelling) {
+		if (leveling) {
 			// Up is brighter, and 150 pixels is the whole travel: far enough to be
 			// controllable, close enough that a full fade is one gesture.
-			const next = levelling.from + (levelling.clientY - event.clientY) / 150;
-			setValue([levelling.id], 'Intensity', {
+			const next = leveling.from + (leveling.clientY - event.clientY) / 150;
+			setValue([leveling.id], 'Intensity', {
 				type: 'Float',
 				value: Math.min(1, Math.max(0, next))
 			});
@@ -256,7 +256,7 @@
 		dragging = null;
 		panning = null;
 		aiming = null;
-		levelling = null;
+		leveling = null;
 		svg?.releasePointerCapture?.(event.pointerId);
 	}
 
@@ -343,9 +343,9 @@
 	});
 
 	const planCorners = $derived(plan ? planExtent(plan) : null);
-	/// One grid line a metre, thinning out as the view widens so it never turns solid.
+	/// One grid line a meter, thinning out as the view widens so it never turns solid.
 	const gridStep = $derived(view.width > 60 ? 10 : view.width > 20 ? 5 : 1);
-	/// Handles are drawn in metres, so they have to be sized from the view or they
+	/// Handles are drawn in meters, so they have to be sized from the view or they
 	/// vanish when it is zoomed out and swamp the rig when it is zoomed in.
 	const handle = $derived(view.width / 90);
 
@@ -503,7 +503,7 @@
 						aria-valuenow={levelOf(id, symbol.level)}
 						onpointerdown={(e) => {
 							e.stopPropagation();
-							levelling = { id, clientY: e.clientY, from: levelOf(id, symbol.level) };
+							leveling = { id, clientY: e.clientY, from: levelOf(id, symbol.level) };
 							svg?.setPointerCapture(e.pointerId);
 						}}
 					/>
@@ -518,7 +518,7 @@
 						role="presentation"
 						onpointerdown={(e) => {
 							e.stopPropagation();
-							levelling = { id, clientY: e.clientY, from: levelOf(id, symbol.level) };
+							leveling = { id, clientY: e.clientY, from: levelOf(id, symbol.level) };
 							svg?.setPointerCapture(e.pointerId);
 						}}
 					/>
@@ -549,7 +549,7 @@
 						/>
 					{/if}
 
-					<!-- The colour, and the way into everything else this fixture has. -->
+					<!-- The color, and the way into everything else this fixture has. -->
 					<rect
 						class="swatch"
 						x={symbol.at.x + handle * 1.1}
@@ -606,7 +606,7 @@
 	/* An object of the drawing: an outline, not a fill. What matters is where the
 	   truss is and how long it is, and a solid block would hide the lights on it. */
 	.object {
-		/* An outline and nothing else. A hundred trusses at 8% fill is a grey wash
+		/* An outline and nothing else. A hundred trusses at 8% fill is a gray wash
 		   with the rig somewhere underneath it, which is what the first version of
 		   this was. */
 		fill: none;
@@ -629,7 +629,7 @@
 	svg.measuring { cursor: crosshair; }
 
 	/*
-	 * Every stroke in this view is measured in screen pixels, not in metres, so a
+	 * Every stroke in this view is measured in screen pixels, not in meters, so a
 	 * hairline stays a hairline however far the plan is zoomed. The alternative is
 	 * what was here before: a dozen widths each worked out as some fraction of the
 	 * view, all of them saying "about a pixel" the long way round.
@@ -640,8 +640,8 @@
 	 * And no focus ring drawn by the browser.
 	 *
 	 * A fixture is a focusable group, and Chrome rings a focused SVG element in the
-	 * element's own coordinates — which here are metres. A clicked fixture wore a
-	 * white-and-blue band several metres thick, shaped like the bounding box of its
+	 * element's own coordinates — which here are meters. A clicked fixture wore a
+	 * white-and-blue band several meters thick, shaped like the bounding box of its
 	 * beam, over most of the room. Keyboard focus is shown by the ring the symbol
 	 * already has, in units the view can make sense of.
 	 */

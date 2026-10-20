@@ -5,7 +5,7 @@
 	 *
 	 * It is an **editor**, and the thing being edited is on the same screen as the
 	 * result — a block is dragged and resized on the preview itself, because a sheet is
-	 * a layout and laying one out by typing millimetres into a form is not laying it
+	 * a layout and laying one out by typing millimeters into a form is not laying it
 	 * out. The numbers on the right are the readout you correct rather than the way you
 	 * place anything.
 	 *
@@ -134,7 +134,7 @@
 	});
 
 	/**
-	 * CSS pixels per millimetre of paper.
+	 * CSS pixels per millimeter of paper.
 	 *
 	 * 96 dpi is what a browser calls an inch, so this is the number that turns the
 	 * drawing's own units into where the overlay's handles go. The preview is scaled by
@@ -143,7 +143,7 @@
 	 */
 	const pxPerMm = $derived((96 / 25.4) * $previewZoom);
 
-	/** How big the selected sheet is, in millimetres, the way round it is. */
+	/** How big the selected sheet is, in millimeters, the way round it is. */
 	const paperMm = $derived.by(() => {
 		const portrait: Record<string, [number, number]> = {
 			A4: [210, 297],
@@ -182,14 +182,14 @@
 	});
 
 	/**
-	 * How big each object is, as a box: the catalogue's own dimensions for a stock
+	 * How big each object is, as a box: the catalog's own dimensions for a stock
 	 * piece, the measured bounds for a mesh. See `SheetContext.sizes` for why a box.
 	 */
 	const sizes = $derived.by(() => {
 		const out = new Map<string, Vec3>();
 		for (const object of $sceneObjects) {
-			if (object.catalogue) {
-				const entry = piece(object.catalogue);
+			if (object.catalog) {
+				const entry = piece(object.catalog);
 				if (entry) {
 					out.set(object.id, stockSize(entry, object.properties));
 					continue;

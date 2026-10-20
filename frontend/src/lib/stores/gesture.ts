@@ -74,7 +74,7 @@ export function nudging(): void {
  *
  * On the element that captures the pointer, so the gesture lasts exactly as long as
  * the drag does — including when the pointer leaves the element, which is most
- * drags, and when it is cancelled by a phone call arriving, which is the one people
+ * drags, and when it is canceled by a phone call arriving, which is the one people
  * forget.
  */
 export function asOneGesture(node: Element) {

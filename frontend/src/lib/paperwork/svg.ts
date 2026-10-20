@@ -1,7 +1,7 @@
 /**
  * A {@link Drawing}, as SVG: the preview half of "rendered twice".
  *
- * SVG shares the drawing model's convention — millimetres, y downwards, origin
+ * SVG shares the drawing model's convention — millimeters, y downwards, origin
  * top-left — so this renderer converts nothing at all. That is on purpose and it is
  * why the model is in those units: the renderer with the arithmetic in it is the one
  * that can be wrong, and here there is none.
@@ -15,7 +15,7 @@
 import { FONT_FAMILY, fontFaceCss, textOrigin, type Metrics } from './font.js';
 import type { DrawItem, Drawing, Mm, Pt } from './drawing.js';
 
-/** Four decimal places of a millimetre is a tenth of a micrometre. */
+/** Four decimal places of a millimeter is a tenth of a micrometer. */
 function n(value: number): string {
 	return Number.isFinite(value) ? String(Math.round(value * 1e4) / 1e4) : '0';
 }
@@ -81,7 +81,7 @@ function item(it: DrawItem, metrics: Metrics): string {
 /**
  * The whole page, as one SVG string.
  *
- * `width` and `height` are stated in millimetres and the viewBox is the same numbers,
+ * `width` and `height` are stated in millimeters and the viewBox is the same numbers,
  * so a browser printing this at 100% puts it on the paper at its real size — which is
  * what makes the preview a preview rather than a picture of one.
  */

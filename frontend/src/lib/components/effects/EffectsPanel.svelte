@@ -13,7 +13,7 @@
 	 * still there, folded away, for when a value has to be exact.
 	 *
 	 * What is being built is a *template*, one layer per parameter, so fire is
-	 * intensity and colour together and Apply is one act over both.
+	 * intensity and color together and Apply is one act over both.
 	 */
 
 	import type {
@@ -151,7 +151,7 @@
 	const valueType = $derived(layer?.low.type ?? 'Float');
 	const shapes = $derived(layer ? shapesFor(layer.low) : []);
 	const floatSteps = $derived(layer ? gridLevels(layer.curve) : null);
-	const colourSteps = $derived(
+	const colorSteps = $derived(
 		layer && 'Steps' in layer.curve && layer.curve.Steps.every((s) => s.value.type === 'Color')
 			? layer.curve.Steps.map((s) => (s.value.type === 'Color' ? s.value.value : null)!)
 			: null
@@ -199,7 +199,7 @@
 
 	function load(template: EffectTemplate) {
 		layers = template.layers.map((l) => ({ ...l }));
-		// Open on a layer this selection can take: fire on a strip of pixels is its colour.
+		// Open on a layer this selection can take: fire on a strip of pixels is its color.
 		const reached = templateApply(template, order, fixtureById, typeById);
 		active = Math.max(0, reached.length ? reached[0].layer : 0);
 		from = template;
@@ -207,7 +207,7 @@
 	}
 
 	const applies = $derived(templateApply({ id: from?.id ?? '', layers }, order, fixtureById, typeById));
-	/** The fixtures the layer being edited reaches, as itself or as a pixel's colour. */
+	/** The fixtures the layer being edited reaches, as itself or as a pixel's color. */
 	const reaching = $derived(
 		applies.filter((a) => layers[a.layer] === layer).flatMap((a) => a.order)
 	);
@@ -274,10 +274,10 @@
 	]);
 
 	function useGradient() {
-		const colour = shared.find((p) => p.kind === 'ColorRgb');
-		if (!colour) return;
+		const color = shared.find((p) => p.kind === 'ColorRgb');
+		if (!color) return;
 		const gradient: EffectLayer = {
-			...fresh(colour.kind),
+			...fresh(color.kind),
 			curve: gradientCurve(stops),
 			rate: { Hz: 0.1 },
 			spread: pixelSpread(strip),
@@ -476,7 +476,7 @@
 					>{shape === 'SawUp' ? 'Saw ↑' : shape === 'SawDown' ? 'Saw ↓' : shape}</button>
 				{/each}
 				<button class="btn" class:on={'Steps' in layer.curve} onclick={useSteps}>
-					{valueType === 'Color' ? 'Colours' : 'Steps'}
+					{valueType === 'Color' ? 'Colors' : 'Steps'}
 				</button>
 			</div>
 
@@ -497,24 +497,24 @@
 			>{layer.direction === 'Forward' ? '→ Forward' : '← Backward'}</button>
 		</div>
 
-		{#if colourSteps}
-			<div class="stops" aria-label="Colours">
-				{#each colourSteps as stop, i (i)}
+		{#if colorSteps}
+			<div class="stops" aria-label="Colors">
+				{#each colorSteps as stop, i (i)}
 					<input
 						class="swatch"
 						type="color"
-						aria-label="Colour {i + 1}"
+						aria-label="Color {i + 1}"
 						value={rgbToHex(stop)}
 						oninput={(e) => {
 							const rgb = hexToRgb(e.currentTarget.value);
 							if (!rgb) return;
-							edit({ curve: gradientCurve(colourSteps.map((s, j) => (j === i ? rgb : s))) });
+							edit({ curve: gradientCurve(colorSteps.map((s, j) => (j === i ? rgb : s))) });
 						}}
 					/>
 				{/each}
-				<button class="btn btn-ghost" onclick={() => edit({ curve: gradientCurve([...colourSteps, colourSteps[colourSteps.length - 1]]) })}>+ colour</button>
-				{#if colourSteps.length > 2}
-					<button class="btn btn-ghost" onclick={() => edit({ curve: gradientCurve(colourSteps.slice(0, -1)) })}>− colour</button>
+				<button class="btn btn-ghost" onclick={() => edit({ curve: gradientCurve([...colorSteps, colorSteps[colorSteps.length - 1]]) })}>+ color</button>
+				{#if colorSteps.length > 2}
+					<button class="btn btn-ghost" onclick={() => edit({ curve: gradientCurve(colorSteps.slice(0, -1)) })}>− color</button>
 				{/if}
 			</div>
 		{/if}
@@ -557,7 +557,7 @@
 							<input
 								class="swatch"
 								type="color"
-								aria-label="Gradient colour {i + 1}"
+								aria-label="Gradient color {i + 1}"
 								value={rgbToHex(stop)}
 								oninput={(e) => {
 									const rgb = hexToRgb(e.currentTarget.value);

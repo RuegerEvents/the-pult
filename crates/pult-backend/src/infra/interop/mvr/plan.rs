@@ -35,7 +35,7 @@ use pult_gdtf::GdtfFile;
 use pult_schema::stock::parse_stock_symdef;
 use pult_mvr::model::{AuxItem, ChildList, ChildNode, GeometryNode, Object};
 use pult_mvr::{MvrFile, SpecMatch};
-use pult_schema::types::catalogue;
+use pult_schema::types::catalog;
 use pult_schema::types::dmx_mode::DmxBreak;
 use pult_schema::types::mount::Mount;
 use pult_schema::types::fixture::{Fixture, FixtureAddress, FixtureType};
@@ -69,7 +69,7 @@ pub fn plan_import(bytes: &[u8], existing: &Existing) -> Result<ImportPlan, pult
     planner.warn_all(file.warnings.iter().map(ToString::to_string));
 
     // The aux data first, and that ordering is load-bearing: a symdef this console
-    // wrote for one of its own catalogue pieces carries a mesh nobody should store,
+    // wrote for one of its own catalog pieces carries a mesh nobody should store,
     // and `take_assets` has to be told which files those are before it walks them.
     planner.take_aux_data();
     planner.take_assets();
@@ -93,10 +93,10 @@ struct Planner<'a> {
     seen: BTreeSet<Uuid>,
     /// The layers this file has, which is what scopes `missing`.
     layers_seen: BTreeSet<Uuid>,
-    /// Symdefs this console wrote for its own catalogue: the piece and what it was
+    /// Symdefs this console wrote for its own catalog: the piece and what it was
     /// asked for, keyed by the symdef's uuid.
     ///
-    /// An object instancing one of these comes back as a `catalogue` piece rather
+    /// An object instancing one of these comes back as a `catalog` piece rather
     /// than as a symbol with a mesh, which is what makes a rig built here survive a
     /// round trip as the thing it was. A symdef *anybody else* wrote is an ordinary
     /// symbol: its mesh is the truth about it.
@@ -105,14 +105,14 @@ struct Planner<'a> {
     /// that mesh from the table whenever it needs one, so keeping the copy would be
     /// an asset that goes stale the next time the geometry is improved.
     stock_files: BTreeSet<String>,
-    /// Which catalogue piece each object written so far turned out to be.
+    /// Which catalog piece each object written so far turned out to be.
     ///
     /// Read by [`Planner::mount_of`]: MVR has nowhere to say that a light is *clamped*
     /// to a bar, only where it is, so a re-import would otherwise turn every clamp in
     /// the rig into a free placement. Where the parent is a piece the console knows
     /// the shape of, the clamp can be read back off the geometry — and only then, and
     /// only when it lands on it exactly.
-    catalogue_of: HashMap<Uuid, String>,
+    catalog_of: HashMap<Uuid, String>,
 }
 
 impl<'a> Planner<'a> {
@@ -127,7 +127,7 @@ impl<'a> Planner<'a> {
             layers_seen: BTreeSet::new(),
             stock: HashMap::new(),
             stock_files: BTreeSet::new(),
-            catalogue_of: HashMap::new(),
+            catalog_of: HashMap::new(),
         }
     }
 
@@ -315,7 +315,7 @@ impl<'a> Planner<'a> {
                 }
                 AuxItem::Symdef(symdef) => {
                     let Some(id) = self.uuid(&symdef.uuid, &symdef.name) else { continue };
-                    // One this console wrote for a catalogue piece. The name says
+                    // One this console wrote for a catalog piece. The name says
                     // which piece and the uuid is a v5 of the name, so a drawing that
                     // merely *called* a symbol this cannot take its mesh away.
                     if let Some((piece, properties)) = parse_stock_symdef(&symdef.name, id) {
@@ -443,18 +443,18 @@ impl<'a> Planner<'a> {
             class: object.classing.as_deref().and_then(|c| Uuid::parse_str(c.trim()).ok()),
             geometry,
             symbol,
-            catalogue: stock.as_ref().map(|(piece, _)| piece.clone()),
+            catalog: stock.as_ref().map(|(piece, _)| piece.clone()),
             properties: stock
                 .map(|(_, properties)| properties)
                 .unwrap_or(serde_json::Value::Null),
             // A drawing has nothing to say about either of these. MVR has nowhere to
             // put a weight, so a loading table over an imported rig rests on the
-            // catalogue where a piece was recognised and says so.
+            // catalog where a piece was recognized and says so.
             locked: false,
             weight_kg: None,
         };
-        if let Some(piece) = &row.catalogue {
-            self.catalogue_of.insert(id, piece.clone());
+        if let Some(piece) = &row.catalog {
+            self.catalog_of.insert(id, piece.clone());
         }
         let replaces = self.existing.scene_objects.iter().find(|each| each.id == id).map(|e| e.id);
         self.seen.insert(id);
@@ -464,16 +464,16 @@ impl<'a> Planner<'a> {
     /// The clamp a light's placement says it is on, where anything says so.
     ///
     /// A file has nowhere to write a mount — it says where a fixture is, and that is
-    /// all — so this reads one back off the geometry: if the parent is a catalogue
+    /// all — so this reads one back off the geometry: if the parent is a catalog
     /// piece and the light is sitting *exactly* where one of that piece's clamps would
-    /// put it, then that is what it is on. A millimetre, because the number came out
+    /// put it, then that is what it is on. A millimeter, because the number came out
     /// of this console's own arithmetic on the way out and anything looser would be
     /// inventing a clamp for a light somebody placed by hand.
     ///
     /// A truss out of a drawing gets none. Its chords come off its mesh's bounds and
     /// only the browser measures a mesh; a station guessing here would be guessing.
     fn mount_of(&self, parent: Option<Uuid>, position: &Transform) -> Option<Mount> {
-        let piece = catalogue::piece(self.catalogue_of.get(&parent?)?)?;
+        let piece = catalog::piece(self.catalog_of.get(&parent?)?)?;
         let (mount, distance) = Mount::nearest(position.position, piece.chords);
         (distance < 0.001).then_some(mount)
     }
@@ -653,5 +653,5 @@ fn collect_specs(list: Option<&ChildList>, out: &mut Vec<String>) {
 }
 
 fn json<T: serde::Serialize>(value: &T) -> serde_json::Value {
-    serde_json::to_value(value).expect("a schema type serialises")
+    serde_json::to_value(value).expect("a schema type serializes")
 }

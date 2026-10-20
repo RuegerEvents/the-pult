@@ -191,7 +191,7 @@ impl Drop for FrontDoor {
 fn config(listen: SocketAddr) -> rumqttd::Config {
     let connections = ConnectionSettings {
         connection_timeout_ms: 10_000,
-        // A whole-strip colour payload is a few dozen bytes; nothing here is large.
+        // A whole-strip color payload is a few dozen bytes; nothing here is large.
         max_payload_size: 16 * 1024,
         max_inflight_count: 100,
         auth: None,

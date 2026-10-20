@@ -22,7 +22,7 @@
 #                                any count, since the shape of the curve is the
 #                                answer and not one point on it
 #   scripts/demo.sh --demo <id>  one of the console's own shows instead of the
-#                                hand-made one: haunt, theatre, club, festival,
+#                                hand-made one: haunt, theater, club, festival,
 #                                garden. The same five the welcome screen offers.
 #                                garden starts the maze's five OpenHaunt V0 nodes
 #                                as simulators instead of the usual three
@@ -99,7 +99,7 @@ while [ $# -gt 0 ]; do
     --two) TWO=1 ;;
     --plugins) PLUGINS=1 ;;
     --size) shift; SIZE=${1:-}; [ -n "$SIZE" ] || { echo "--size needs small, big, huge or a count" >&2; exit 2; } ;;
-    --demo) shift; DEMO=${1:-}; [ -n "$DEMO" ] || { echo "--demo needs haunt, theatre, club, festival or garden" >&2; exit 2; } ;;
+    --demo) shift; DEMO=${1:-}; [ -n "$DEMO" ] || { echo "--demo needs haunt, theater, club, festival or garden" >&2; exit 2; } ;;
     --sim-windows) SIM_WINDOWS=1 ;;
     --cues) shift; CUES=${1:-}; [ -n "$CUES" ] || { echo "--cues needs a count" >&2; exit 2; } ;;
     --slice) shift; SLICE=${1:-}; [ -n "$SLICE" ] || { echo "--slice needs a fraction" >&2; exit 2; } ;;
@@ -338,7 +338,7 @@ elif [ "$SIMS" = 1 ]; then
   "$ROOT/target/$PROFILE/openhaunt-node-sim" --module relay --serial 4d5e6f --port 8802 \
     > "$DEMO_DIR/sim-relay.log" 2>&1 &
   PIDS+=($!)
-  # A module the catalogue has never heard of, whose fog output advertises every
+  # A module the catalog has never heard of, whose fog output advertises every
   # shape: this is the node that shows an effect leaving the console as one
   # message instead of forty a second.
   "$ROOT/target/$PROFILE/openhaunt-node-sim" \

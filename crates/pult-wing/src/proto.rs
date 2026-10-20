@@ -1,4 +1,4 @@
-//! What the tags mean, and a frame with its container recognised.
+//! What the tags mean, and a frame with its container recognized.
 //!
 //! Every frame has exactly two children: the sender's address, and one container that
 //! says what kind of frame it is. [`Message`] is that second thing named.
@@ -15,7 +15,7 @@ pub mod tag {
     pub const CAPABILITIES: u16 = 0x0026;
     pub const IO: u16 = 0x0027;
     pub const SOFTWARE: u16 = 0x0028;
-    /// The onPC licence dongle. Recognised so that it can be named in a log and
+    /// The onPC license dongle. Recognized so that it can be named in a log and
     /// skipped; deliberately not implemented.
     pub const CERTIFICATE: u16 = 0x0029;
     /// Empty, sent once by the wing at the end of the boot.
@@ -116,7 +116,7 @@ pub struct Capabilities {
     pub extra: Vec<(u16, u32)>,
 }
 
-/// A frame, with its payload container recognised.
+/// A frame, with its payload container recognized.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
     Heartbeat(DeviceState),
@@ -140,12 +140,12 @@ pub enum Message {
     /// grandMA3 sets to 1 exactly once, on the packet that finishes the image. Without
     /// it the wing is never told the download ended.
     SoftwarePacket { offset: u32, last: bool, data: Vec<u8> },
-    /// The wing's acknowledgement of a packet.
+    /// The wing's acknowledgment of a packet.
     SoftwareProgress(Vec<u8>),
     /// A line of text from the wing, e.g. `@No update needed`.
     Text(String),
     Ready,
-    /// The licence exchange, named and not implemented.
+    /// The license exchange, named and not implemented.
     Certificate,
     /// A container this build has never heard of, kept whole rather than dropped —
     /// the rule the layout tree already follows for a panel id it does not know.
@@ -377,7 +377,7 @@ impl Boot {
                     DeviceState::Running => Step::Running,
                     // **The host is what starts it.** After the restart the wing holds
                     // at `Loading` indefinitely — grandMA3's capture shows it sitting
-                    // there for two seconds while the licence exchange runs — and what
+                    // there for two seconds while the license exchange runs — and what
                     // actually moves it on is the host sending a heartbeat that says
                     // `Running`. The wing then echoes state 4 and input begins.
                     DeviceState::Loading if self.restarted && !self.declared_running => {

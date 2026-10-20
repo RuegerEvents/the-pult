@@ -395,7 +395,7 @@ impl Playback {
         // collapses a whole system into whichever lamp came last — and then every fade
         // in that system is compared against a value that is not its own and restarted
         // to it. Which is a cue edit moving twenty lights nobody touched, and is what
-        // `demo.sh --demo theatre` found.
+        // `demo.sh --demo theater` found.
         type ByFixture<'c> =
             HashMap<Uuid, HashMap<String, &'c pult_schema::types::cue::ParameterCapture>>;
         let mut wanted: HashMap<Uuid, ByFixture<'_>> = HashMap::new();
@@ -613,7 +613,7 @@ impl Playback {
     /// left it. Jumping forward, the cues in between are applied on the way. And
     /// jumping *back* is the case that used to be wrong: a parameter that a later cue
     /// brought in was left where that cue put it, so going back from cue 5 to cue 1
-    /// in the Theatre demo left the side booms on, because nothing before cue 4
+    /// in the Theater demo left the side booms on, because nothing before cue 4
     /// mentions them. Now it goes home, since no cue at or before cue 1 has it.
     ///
     /// Three kinds of key, worked out from the stack rather than remembered:
@@ -1019,7 +1019,7 @@ impl Playback {
 /// Is this capture asking the parameter to come down rather than to go up?
 ///
 /// Which decides whether it takes the out time or the in time. Only values with an
-/// order to be on can answer: a colour has three of them and no agreed way to rank
+/// order to be on can answer: a color has three of them and no agreed way to rank
 /// them, a relay has none at all, and a fixture whose parameter changes kind
 /// mid-show is a mistake rather than a direction. All of those take the in time,
 /// which is the one time they have always taken — so a show that never sets an out

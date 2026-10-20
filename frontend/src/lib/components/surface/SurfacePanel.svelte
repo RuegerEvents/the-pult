@@ -327,23 +327,23 @@
 											<option value="Half">half width</option>
 											<option value="Full">full width</option>
 										</select>
-										<label class="check" title="The tile's own colour">
-											colour
+										<label class="check" title="The tile's own color">
+											color
 											<input
 												type="color"
-												value={tile.colour ?? '#2d3a4f'}
-												onchange={(e) => patch(tile, { colour: e.currentTarget.value })}
+												value={tile.color ?? '#2d3a4f'}
+												onchange={(e) => patch(tile, { color: e.currentTarget.value })}
 											/>
 										</label>
-										{#if tile.colour}
-											<button class="btn btn-ghost" onclick={() => patch(tile, { colour: null })}>no colour</button>
+										{#if tile.color}
+											<button class="btn btn-ghost" onclick={() => patch(tile, { color: null })}>no color</button>
 										{/if}
 									{/if}
 								</div>
 
 								{#if target.kind === 'VariableReadout'}
 									<div class="line stops">
-										<span class="hint">Colour from a value up:</span>
+										<span class="hint">Color from a value up:</span>
 										{#each target.stops as stop, s (s)}
 											<span class="stop">
 												≥
@@ -360,16 +360,16 @@
 												/>
 												<input
 													type="color"
-													value={stop.colour}
+													value={stop.color}
 													onchange={(e) =>
 														retarget(tile, {
 															...target,
-															stops: target.stops.map((x, i) => (i === s ? { ...x, colour: e.currentTarget.value } : x))
+															stops: target.stops.map((x, i) => (i === s ? { ...x, color: e.currentTarget.value } : x))
 														})}
 												/>
 												<button
 													class="btn btn-icon"
-													title="Remove this colour"
+													title="Remove this color"
 													onclick={() => retarget(tile, { ...target, stops: target.stops.filter((_, i) => i !== s) })}
 												>×</button>
 											</span>
@@ -382,11 +382,11 @@
 													stops: [
 														...target.stops,
 														target.stops.length === 0
-															? { at: 0, colour: '#22c55e' }
-															: { at: Math.max(...target.stops.map((x) => x.at)) + 1, colour: '#ef4444' }
+															? { at: 0, color: '#22c55e' }
+															: { at: Math.max(...target.stops.map((x) => x.at)) + 1, color: '#ef4444' }
 													]
 												})}
-										>+ colour</button>
+										>+ color</button>
 									</div>
 								{/if}
 							</li>

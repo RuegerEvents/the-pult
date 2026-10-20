@@ -328,7 +328,7 @@ export function presetValues(entries: ProgrammerValue[], include: Set<string>): 
  * A preset's values with more merged into it, keyed the way everything else is.
  *
  * *Update from programmer* is a merge rather than a replace: a preset that also holds
- * a position should not lose it because somebody re-grabbed the colour.
+ * a position should not lose it because somebody re-grabbed the color.
  */
 export function mergePresetValues(existing: PresetValue[], incoming: PresetValue[]): PresetValue[] {
 	const key = (v: PresetValue) => `${v.fixture_id}/${parameterKey(v.parameter_kind)}`;
@@ -339,7 +339,7 @@ export function mergePresetValues(existing: PresetValue[], incoming: PresetValue
 /**
  * Which fade groups a preset touches, derived from its keys and never stored.
  *
- * A preset that grows a colour is a colour preset from that moment, and nobody has to
+ * A preset that grows a color is a color preset from that moment, and nobody has to
  * reclassify anything — which is the whole reason the pool is flat and the tags are
  * computed. See `crates/pult-schema/src/types/preset.rs`.
  */
@@ -387,7 +387,7 @@ export function withFloat(like: ParameterValue, n: number): ParameterValue {
 export const rgbToHex = (rgb: { r: number; g: number; b: number }): string =>
 	`#${byte(rgb.r)}${byte(rgb.g)}${byte(rgb.b)}`;
 
-/** A `#rrggbb` or `#rgb` colour as 0–1 channels, or null if it is neither. */
+/** A `#rrggbb` or `#rgb` color as 0–1 channels, or null if it is neither. */
 export function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
 	const text = hex.trim().replace(/^#/, '');
 	const full =

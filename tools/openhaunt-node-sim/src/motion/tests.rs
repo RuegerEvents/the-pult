@@ -173,7 +173,7 @@ fn a_relay_under_a_square_wave_spends_half_the_cycle_on() {
 }
 
 #[test]
-fn a_colour_blends_channel_by_channel() {
+fn a_color_blends_channel_by_channel() {
     let effect = Effect {
         low: json!({ "r": 0, "g": 0, "b": 0 }),
         high: json!({ "r": 255, "g": 100, "b": 0 }),

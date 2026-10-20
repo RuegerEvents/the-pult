@@ -109,7 +109,7 @@ impl WasiHttpView for PluginCtx {
 
 // ── Outbound HTTP, gated ──────────────────────────────────────────────────────
 
-/// Hooks whose defaults are the crate's own behaviour.
+/// Hooks whose defaults are the crate's own behavior.
 struct DefaultHooks;
 impl WasiHttpHooks for DefaultHooks {}
 
@@ -424,7 +424,7 @@ impl PluginCtx {
     /// Write one key of a show-scoped store, through the engine's ordinary
     /// write path so replication, persistence and catch-up all follow.
     ///
-    /// **Whether the write is attributed is the whole of the undo behaviour.**
+    /// **Whether the write is attributed is the whole of the undo behavior.**
     /// `Operation::is_undoable` already requires a user, and the History panel
     /// reads `WHERE user_id IS NOT NULL`, so an unattributed write is
     /// non-undoable and invisible to the history with nothing taught about

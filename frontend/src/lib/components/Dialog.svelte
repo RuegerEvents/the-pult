@@ -5,7 +5,7 @@
 	 * There were three hand-rolled copies of this — the delete prompt, the store menu
 	 * and the restore confirmation — and they had already begun to disagree: one
 	 * answered Escape and two did not, one closed on a backdrop click and two did,
-	 * and each had its own scrim colour. What a dialog *is* is not a thing three
+	 * and each had its own scrim color. What a dialog *is* is not a thing three
 	 * components should each have an opinion about.
 	 *
 	 * `fixed` rather than `absolute`, because a modal belongs to the window and not to

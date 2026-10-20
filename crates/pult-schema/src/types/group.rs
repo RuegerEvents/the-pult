@@ -60,8 +60,8 @@ pub enum SelectionTerm {
     OfType { type_id: Uuid },
     /// Case-insensitive substring of the fixture's name.
     Named { text: String },
-    /// Within `radius` metres of a point.
-    Sphere { centre: Vec3, radius: f32 },
+    /// Within `radius` meters of a point.
+    Sphere { center: Vec3, radius: f32 },
     /// Inside an axis-aligned region. The two corners may be given either way round.
     Box { from: Vec3, to: Vec3 },
     /// The spec's radial selection: a cone from a point, opening along a direction.
@@ -134,7 +134,7 @@ pub enum SelectionOrder {
         #[ts(optional = nullable)]
         descending: Option<bool>,
     },
-    /// Outwards from a point, which is what makes a centre-out chase possible.
+    /// Outwards from a point, which is what makes a center-out chase possible.
     ByDistance { from: Vec3 },
 }
 
@@ -188,7 +188,7 @@ fn length(v: Vec3) -> f32 {
 }
 
 /// A unit vector, or `None` for one with no direction to speak of.
-pub fn normalise(v: Vec3) -> Option<Vec3> {
+pub fn normalize(v: Vec3) -> Option<Vec3> {
     let l = length(v);
     (l > 1e-9).then(|| Vec3 { x: v.x / l, y: v.y / l, z: v.z / l })
 }
@@ -203,7 +203,7 @@ pub fn distance(a: Vec3, b: Vec3) -> f32 {
 /// exactly at the apex is inside: a cone drawn from a fixture should include that
 /// fixture rather than excluding it on a technicality.
 pub fn in_cone(point: Vec3, from: Vec3, direction: Vec3, angle_deg: f32, reach: f32) -> bool {
-    let Some(axis) = normalise(direction) else { return false };
+    let Some(axis) = normalize(direction) else { return false };
     let offset = sub(point, from);
     let along = length(offset);
     if along > reach {
@@ -280,7 +280,7 @@ fn matches(
     let Some(point) = world_position(fixture, objects) else { return false };
 
     match term {
-        SelectionTerm::Sphere { centre, radius } => distance(point, *centre) <= *radius,
+        SelectionTerm::Sphere { center, radius } => distance(point, *center) <= *radius,
         SelectionTerm::Box { from, to } => in_box(point, *from, *to),
         SelectionTerm::Cone { from, direction, angle_deg, reach } => {
             in_cone(point, *from, *direction, *angle_deg, *reach)
@@ -418,7 +418,7 @@ mod tests {
             SelectionTerm::Ids { ids: vec![Uuid::nil()] },
             SelectionTerm::OfType { type_id: Uuid::nil() },
             SelectionTerm::Named { text: "x".into() },
-            SelectionTerm::Sphere { centre: v, radius: 2.0 },
+            SelectionTerm::Sphere { center: v, radius: 2.0 },
             SelectionTerm::Box { from: v, to: v },
             SelectionTerm::Cone { from: v, direction: v, angle_deg: 15.0, reach: 10.0 },
         ];

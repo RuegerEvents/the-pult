@@ -15,7 +15,7 @@
 		beginTabDrag,
 		closePanel,
 		dragging,
-		maximised,
+		maximized,
 		openPanel,
 		tree
 	} from '$lib/stores/layout.js';
@@ -29,7 +29,7 @@
 
 	const shown = $derived(node.panels[Math.min(node.active, node.panels.length - 1)] ?? null);
 	// The merged registry: built-ins plus whatever the station's plugins offer
-	// right now. A panel id nobody recognises falls through to the message below.
+	// right now. A panel id nobody recognizes falls through to the message below.
 	const meta: PanelMeta | null = $derived(shown ? ($allPanels[shown] ?? null) : null);
 	const spare = $derived(
 		Object.keys($allPanels).filter(
@@ -95,8 +95,8 @@
 			{/if}
 		</div>
 
-		<!-- Before the maximise chip, so the toggle sits in the same place whether or
-		     not a tile can be maximised, and never moves under a thumb. -->
+		<!-- Before the maximize chip, so the toggle sits in the same place whether or
+		     not a tile can be maximized, and never moves under a thumb. -->
 		{#if shown && meta?.editable}
 			<EditToggle panel={shown} />
 		{/if}
@@ -104,10 +104,10 @@
 		{#if shown}
 			<button
 				class="chip"
-				title={$maximised === shown ? 'Back to the workspace' : 'Fill the workspace'}
-				aria-label="Maximise"
-				onclick={() => maximised.set($maximised === shown ? null : shown)}
-			>{$maximised === shown ? '⤡' : '⤢'}</button>
+				title={$maximized === shown ? 'Back to the workspace' : 'Fill the workspace'}
+				aria-label="Maximize"
+				onclick={() => maximized.set($maximized === shown ? null : shown)}
+			>{$maximized === shown ? '⤡' : '⤢'}</button>
 		{/if}
 	</div>
 

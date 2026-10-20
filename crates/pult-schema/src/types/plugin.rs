@@ -159,7 +159,7 @@ pub enum PluginStatus {
 }
 
 /// A built-in frontend surface a plugin drives: the frontend supplies the
-/// component, the plugin supplies the behaviour over `plugin.<id>.surface.*`.
+/// component, the plugin supplies the behavior over `plugin.<id>.surface.*`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SurfaceInfo {

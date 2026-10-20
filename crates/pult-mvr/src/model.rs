@@ -192,7 +192,7 @@ impl ChildNode {
 ///
 /// The fixture-only half is `Option`, so a truss simply has none of it and writes
 /// none of it back. Field order is the order a file writes them, because quick-xml
-/// serialises in declaration order and a diff against the original should be about
+/// serializes in declaration order and a diff against the original should be about
 /// values rather than about ordering.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Object {
@@ -201,7 +201,7 @@ pub struct Object {
     #[serde(rename = "@name", default)]
     pub name: String,
 
-    /// Where it is, **relative to its parent**, in millimetres with Z up.
+    /// Where it is, **relative to its parent**, in millimeters with Z up.
     #[serde(rename = "Matrix", default, skip_serializing_if = "Option::is_none")]
     pub matrix: Option<MvrMatrix>,
     #[serde(rename = "Geometries", default, skip_serializing_if = "Option::is_none")]
@@ -247,7 +247,7 @@ pub struct Object {
         deserialize_with = "de_number_opt"
     )]
     pub custom_id: Option<u32>,
-    /// The colour the plot draws it in — CIE xyY, not what it is outputting.
+    /// The color the plot draws it in — CIE xyY, not what it is outputting.
     #[serde(rename = "Color", default, skip_serializing_if = "Option::is_none")]
     pub color: Option<ColorCie>,
     #[serde(rename = "CastShadow", default, skip_serializing_if = "Option::is_none")]

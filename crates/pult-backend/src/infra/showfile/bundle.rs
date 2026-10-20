@@ -24,7 +24,7 @@
 //! tie-break. A folder is far easier to copy than a file was, so the identity moved
 //! to the machine: see [`crate::infra::identity`].
 //!
-//! The travelling form is a `.pultz`, which is this folder zipped. See
+//! The traveling form is a `.pultz`, which is this folder zipped. See
 //! [`super::travel`].
 
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ use tracing::{info, warn};
 /// thing and this console can tell a show from any other folder it is pointed at.
 pub const EXTENSION: &str = "pult";
 
-/// The travelling form: the same folder, zipped.
+/// The traveling form: the same folder, zipped.
 pub const TRAVEL_EXTENSION: &str = "pultz";
 
 /// The manifest at the root of a bundle. Tiny on purpose: everything a show knows
@@ -549,7 +549,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_show_that_was_never_opened_still_summarises() {
+    async fn a_show_that_was_never_opened_still_summarizes() {
         let dir = Dir::new();
         let bundle = Bundle::create(dir.path().join("Fresh.pult"), "Fresh").unwrap();
 

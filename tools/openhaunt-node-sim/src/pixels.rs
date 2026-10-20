@@ -116,13 +116,13 @@ impl StripConfig {
         let head = Some(self.head);
         let port = |offset: u8, p: P| P { head, ..p.with_port(base + offset) };
         vec![
-            port(0, P::new(0, "Colour", "readwrite", "color").class("color")),
+            port(0, P::new(0, "Color", "readwrite", "color").class("color")),
             port(1, P::new(0, "Brightness", "readwrite", "number")
                 .unit("percent")
                 .range(0.0, 1.0)
                 .default_at(0.0)
                 .class("intensity")),
-            port(2, P::new(0, "Colour 2", "readwrite", "color")),
+            port(2, P::new(0, "Color 2", "readwrite", "color")),
             port(3, P::new(0, "Effect", "readwrite", "string").class("pixel-effect")),
             port(4, P::new(0, "Speed", "readwrite", "number").unit("hertz").range(0.0, 10.0).default_at(1.0).class("speed")),
             port(5, P::new(0, "Size", "readwrite", "number").unit("percent").range(0.0, 1.0).default_at(0.25).class("size")),

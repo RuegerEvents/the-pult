@@ -443,7 +443,7 @@ export async function storePreset(name: string, include?: Set<string>): Promise<
  * Fold what the programmer is holding into a preset that already exists.
  *
  * A merge rather than a replace, for the reason a store into a cue is: a preset that
- * also holds a position should not lose it because somebody re-grabbed the colour.
+ * also holds a position should not lose it because somebody re-grabbed the color.
  * The right-click verb on a pool button, and the one that makes a palette live —
  * every standing cue that references it moves as soon as this lands.
  */

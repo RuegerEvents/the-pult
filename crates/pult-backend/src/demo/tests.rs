@@ -94,17 +94,17 @@ async fn seeds_a_rig_that_hangs_together(demo: Demo) {
     assert!(!objects.is_empty(), "{} hangs its rig off nothing", demo.id());
     let drawable = objects
         .iter()
-        .filter(|object| object.catalogue.is_some())
+        .filter(|object| object.catalog.is_some())
         .count();
     assert!(drawable > 0, "{}: nothing in the room can be drawn", demo.id());
     for object in &objects {
         if let Some(parent) = object.parent {
             assert!(places.contains(&parent), "{}: {} hangs off nothing", demo.id(), object.name);
         }
-        if let Some(id) = &object.catalogue {
+        if let Some(id) = &object.catalog {
             assert!(
                 pult_schema::types::piece(id).is_some(),
-                "{}: {} names {id}, which is not in the catalogue",
+                "{}: {} names {id}, which is not in the catalog",
                 demo.id(),
                 object.name,
             );
@@ -144,11 +144,11 @@ async fn seeds_a_rig_that_hangs_together(demo: Demo) {
         if let Some(parent) = fixture.parent.filter(|_| fixture.mount.is_some()) {
             let bar = by_id[&parent];
             // A run of truss lies along its own X whichever way it was turned, so
-            // the distance from its centre line is the other two.
+            // the distance from its center line is the other two.
             let off_the_bar = position.position.y.hypot(position.position.z);
             assert!(
                 off_the_bar >= 0.3,
-                "{}: {} is {off_the_bar:.2} m from the centre of {}, which is inside it",
+                "{}: {} is {off_the_bar:.2} m from the center of {}, which is inside it",
                 demo.id(),
                 fixture.name,
                 bar.name,
@@ -229,7 +229,7 @@ async fn every_preset_names_only_fixtures_that_exist() {
 #[tokio::test]
 async fn editing_a_demo_preset_moves_the_cue_that_is_standing() {
     let engine = a_station().await;
-    seed(&engine, Demo::Theatre).await.expect("it seeds");
+    seed(&engine, Demo::Theater).await.expect("it seeds");
 
     let cues: Vec<Cue> = read(&engine, "cues").await;
     let sequences: Vec<Sequence> = read(&engine, "sequences").await;
@@ -258,7 +258,7 @@ async fn editing_a_demo_preset_moves_the_cue_that_is_standing() {
         .find(|f| f.name.starts_with("Cyc"))
         .expect("a cyc batten");
     let to_of = |f: &Fixture| f.live_fades.get("ColorRgb").map(|fade| fade.to.clone());
-    let before = to_of(&cyc).expect("the cue is driving its colour");
+    let before = to_of(&cyc).expect("the cue is driving its color");
 
     // Somebody edits the palette. Nothing else about the show changes.
     let mut values = sky.values.clone();
@@ -295,8 +295,8 @@ async fn haunt_seeds_a_rig_that_hangs_together() {
 }
 
 #[tokio::test]
-async fn theatre_seeds_a_rig_that_hangs_together() {
-    seeds_a_rig_that_hangs_together(Demo::Theatre).await;
+async fn theater_seeds_a_rig_that_hangs_together() {
+    seeds_a_rig_that_hangs_together(Demo::Theater).await;
 }
 
 #[tokio::test]

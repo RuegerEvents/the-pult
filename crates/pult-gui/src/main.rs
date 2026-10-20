@@ -34,7 +34,7 @@ struct Args {
     /// meaningful working directory to find a show in.
     #[arg(long, value_name = "BUNDLE")]
     show: Option<std::path::PathBuf>,
-    /// Put one of the demo shows in, if the show has no rig yet: haunt, theatre,
+    /// Put one of the demo shows in, if the show has no rig yet: haunt, theater,
     /// club or festival.
     #[arg(long, value_name = "ID")]
     demo: Option<pult_backend::demo::Demo>,

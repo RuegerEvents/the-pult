@@ -95,7 +95,7 @@ fn a_parameter_with_no_live_value_falls_back_to_its_default() {
 }
 
 #[test]
-fn colour_takes_three_consecutive_channels() {
+fn color_takes_three_consecutive_channels() {
     let ft = a_type(vec![ParameterDefinition::new(
         ParameterKind::ColorRgb,
         ParameterValue::rgb(0.0, 0.0, 0.0))],
@@ -326,7 +326,7 @@ fn a_modal_fixture(
 fn a_sixteen_bit_channel_puts_the_coarse_byte_first_and_the_fine_one_where_the_mode_says() {
     // Offsets 1 and 9: a real head commonly writes every coarse byte, then every fine
     // one. A writer that took the first offset and put the rest after it would land
-    // the fine byte on somebody else's colour.
+    // the fine byte on somebody else's color.
     let ft = a_modal_type(
         vec![ParameterDefinition::new(ParameterKind::Pan, ParameterValue::Float(0.5))],
         vec![DmxMode {
@@ -536,7 +536,7 @@ fn a_mode_the_type_does_not_have_falls_back_to_the_first_one() {
 }
 
 #[test]
-fn an_rgbw_head_lights_its_white_die_on_a_colour_from_a_cue_that_knows_nothing_about_it() {
+fn an_rgbw_head_lights_its_white_die_on_a_color_from_a_cue_that_knows_nothing_about_it() {
     let emitters = {
         let mut list = rgb_emitters();
         list.push(Emitter {
@@ -546,12 +546,12 @@ fn an_rgbw_head_lights_its_white_die_on_a_colour_from_a_cue_that_knows_nothing_a
         });
         list
     };
-    let colour = ParameterDefinition {
+    let color = ParameterDefinition {
         emitters: emitters.clone(),
         ..ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
     };
     let ft = a_modal_type(
-        vec![colour],
+        vec![color],
         vec![DmxMode {
             name: "RGBW".into(),
             breaks: vec![4],
@@ -572,7 +572,7 @@ fn an_rgbw_head_lights_its_white_die_on_a_colour_from_a_cue_that_knows_nothing_a
     let universes = render(&patch(vec![fixture.clone()], vec![ft.clone()]), 0);
     assert_eq!(&universes[0].channels[..4], &[255, 0, 0, 0], "red is not white");
 
-    // And white: the neutral part of the colour is what the white die is for.
+    // And white: the neutral part of the color is what the white die is for.
     holding(&mut fixture, "ColorRgb", ParameterValue::rgb(1.0, 1.0, 1.0));
     let universes = render(&patch(vec![fixture.clone()], vec![ft.clone()]), 0);
     assert_eq!(&universes[0].channels[..4], &[255, 255, 255, 255]);
@@ -787,16 +787,16 @@ fn an_emitter(name: &str, rgb: [f32; 3]) -> Emitter {
     }
 }
 
-/// A colour fixture whose emitters occupy one byte each from the start address.
-fn a_colour_head(emitters: Vec<Emitter>) -> FixtureType {
-    let colour = ParameterDefinition {
+/// A color fixture whose emitters occupy one byte each from the start address.
+fn a_color_head(emitters: Vec<Emitter>) -> FixtureType {
+    let color = ParameterDefinition {
         emitters: emitters.clone(),
         ..ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
     };
     a_modal_type(
-        vec![colour],
+        vec![color],
         vec![DmxMode {
-            name: "Colour".into(),
+            name: "Color".into(),
             breaks: vec![emitters.len() as u16],
             channels: emitters
                 .iter()
@@ -812,23 +812,23 @@ fn a_colour_head(emitters: Vec<Emitter>) -> FixtureType {
 
 #[test]
 fn a_plain_rgb_head_reads_back_as_the_bytes_it_went_out_as() {
-    let ft = a_colour_head(rgb_emitters());
-    let mut fixture = a_modal_fixture(&ft, "Colour", vec![(1, 1)]);
+    let ft = a_color_head(rgb_emitters());
+    let mut fixture = a_modal_fixture(&ft, "Color", vec![(1, 1)]);
     holding(&mut fixture, "ColorRgb", ParameterValue::rgb(1.0, 0.4, 0.0));
     survives_a_round_trip("rgb", vec![fixture], vec![ft]);
 }
 
 /// The case `unmix` exists for: a white die at something the mix would never derive.
-/// Without the overrides this comes back as a colour whose white is `min(r,g,b)` and
+/// Without the overrides this comes back as a color whose white is `min(r,g,b)` and
 /// the byte changes, which is a guest console's rig quietly repatched on the way
 /// through this one.
 #[test]
 fn an_rgbw_head_keeps_a_white_the_mix_would_not_have_derived() {
     let mut emitters = rgb_emitters();
     emitters.push(an_emitter("White", [1.0, 1.0, 1.0]));
-    let ft = a_colour_head(emitters);
+    let ft = a_color_head(emitters);
 
-    let mut fixture = a_modal_fixture(&ft, "Colour", vec![(1, 1)]);
+    let mut fixture = a_modal_fixture(&ft, "Color", vec![(1, 1)]);
     let mut overrides = std::collections::BTreeMap::new();
     overrides.insert("White".to_string(), 1.0);
     holding(
@@ -903,8 +903,8 @@ fn a_universe_of_several_fixtures_comes_back_as_all_of_them() {
     let mut two = a_fixture(&dim, 1, 2);
     holding(&mut two, "Intensity", ParameterValue::Float(0.2));
 
-    let rgb = a_colour_head(rgb_emitters());
-    let mut head = a_modal_fixture(&rgb, "Colour", vec![(1, 10)]);
+    let rgb = a_color_head(rgb_emitters());
+    let mut head = a_modal_fixture(&rgb, "Color", vec![(1, 10)]);
     holding(&mut head, "ColorRgb", ParameterValue::rgb(0.0, 1.0, 0.5));
 
     survives_a_round_trip("a rig", vec![one, two, head], vec![dim, rgb]);

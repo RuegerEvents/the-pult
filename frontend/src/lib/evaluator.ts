@@ -52,7 +52,7 @@ type Wasm = {
 	default: () => Promise<unknown>;
 	Evaluator: new () => Instance;
 	effect_values(effects: unknown, nowMs: number): Float32Array;
-	shape_level(shape: unknown, width: number, travelled: number, salt: number): number;
+	shape_level(shape: unknown, width: number, traveled: number, salt: number): number;
 };
 
 let instance: Instance | null = null;
@@ -104,12 +104,12 @@ export function effectValues(effects: RunningEffect[], nowMs: number): Float32Ar
 }
 
 /**
- * A shape's level after `travelled` cycles, for drawing its waveform, including the
+ * A shape's level after `traveled` cycles, for drawing its waveform, including the
  * two shapes that never repeat. `null` while the evaluator is not loaded.
  */
-export function shapeLevel(shape: Shape, width: number, travelled: number, salt = 0): number | null {
+export function shapeLevel(shape: Shape, width: number, traveled: number, salt = 0): number | null {
 	if (!module) return null;
-	return module.shape_level(shape, width, travelled, salt >>> 0);
+	return module.shape_level(shape, width, traveled, salt >>> 0);
 }
 
 /** Hand over everything driving the rig. Called when the show changes, not per frame. */

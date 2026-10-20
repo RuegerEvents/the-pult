@@ -19,7 +19,7 @@ use pult_schema::types::{
 use super::{
     id,
     kit::{
-        a_clamped_fixture, a_cue, a_stack, a_type, capture, colour, draw, facing, intensity, level,
+        a_clamped_fixture, a_cue, a_stack, a_type, capture, color, draw, facing, intensity, level,
         pan, posed, production, tilt, truss_run, under, weighing, Addresses,
     },
     now_ms, Seeder,
@@ -36,10 +36,10 @@ pub async fn seed(into: &Seeder) -> Result<()> {
 
     // And a moving head, so there is something to puppeteer. Nothing binds a
     // channel: where a parameter sits belongs to a mode, and a type that names none
-    // has the implicit one — intensity at 1, the colour across 2 to 4, pan at 5,
+    // has the implicit one — intensity at 1, the color across 2 to 4, pan at 5,
     // tilt at 6.
     let spot = weighing(
-        a_type("Spot", vec![intensity(), colour(), pan(), tilt()]),
+        a_type("Spot", vec![intensity(), color(), pan(), tilt()]),
         16.0,
         350.0,
         (0.30, 0.45, 0.25),
@@ -47,7 +47,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     into.create("fixture_types", &spot).await?;
 
     // Two bars to hang it all off, so the rig view has structure in it rather than
-    // five lights floating in the dark. Metres: X to the right as seen from front of
+    // five lights floating in the dark. Meters: X to the right as seen from front of
     // house, Y up, Z downstage towards the audience.
     let front = truss_run(into, "FOH bar", None, Vec3 { x: 0.0, y: 4.5, z: 2.0 }, 9.0).await?;
     let back = truss_run(into, "Back bar", None, Vec3 { x: 0.0, y: 5.0, z: -2.0 }, 9.0).await?;
@@ -154,7 +154,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     scare.fade_out_ms = 1_500;
     cues.push(scare);
 
-    // Everything up, and the two heads cycling through colour against each other on
+    // Everything up, and the two heads cycling through color against each other on
     // the speed master.
     let mut possession = a_cue("Possession", 4.0, everything(0.8));
     possession.fade_in_ms = 1_000;
@@ -197,11 +197,11 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     cues.push(out);
 
     let scare_id = cues[2].id;
-    // "Possession": everything up with the two heads cycling colour against each other,
+    // "Possession": everything up with the two heads cycling color against each other,
     // which is the one state in this stack with movement in it. Eight seconds in rather
     // than the default five, so the two heads are visibly *apart* in their cycle —
     // photographing them at the same phase would make the effect look like a static
-    // colour wash, which is the opposite of what it is there to show.
+    // color wash, which is the opposite of what it is there to show.
     let beauty = vec![CueShot::at(cues[3].id, 8_000)];
     let sequence = a_stack(into, "Haunt", cues, false).await?;
 

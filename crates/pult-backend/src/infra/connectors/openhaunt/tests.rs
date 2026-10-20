@@ -39,7 +39,7 @@ fn a_module(module_type: u16) -> FixtureType {
         WS2812 => (
             "LED Strip",
             serde_json::json!({ "ports": [
-                { "port": 0, "name": "Strip colour", "access": "readwrite",
+                { "port": 0, "name": "Strip color", "access": "readwrite",
                   "dataType": "color", "class": "color" },
                 { "port": 1, "name": "Brightness", "access": "readwrite", "dataType": "number",
                   "unit": "percent", "minimum": 0, "maximum": 1, "default": 0,
@@ -210,7 +210,7 @@ async fn a_relay_is_commanded_when_it_changes_and_not_before() {
 }
 
 #[tokio::test]
-async fn a_strip_sends_its_colour_as_bytes_and_its_brightness_as_a_number() {
+async fn a_strip_sends_its_color_as_bytes_and_its_brightness_as_a_number() {
     let (devices, mut received) = a_recording_device_handle();
     let mut output = OpenHauntOutput::new(
         directory(vec![("led1", an_entry("127.0.0.1", WS2812, None, true))]),
@@ -588,7 +588,7 @@ async fn a_capable_port_is_handed_the_shape_once_and_then_left_alone() {
 }
 
 /// A port that never said it could trace a sine is not sent one. Nothing is
-/// negotiated: silence in `/info` means the old behaviour, exactly as before.
+/// negotiated: silence in `/info` means the old behavior, exactly as before.
 #[tokio::test]
 async fn a_port_that_says_nothing_gets_values_as_it_always_did() {
     let (devices, mut received) = a_recording_device_handle();
@@ -942,7 +942,7 @@ async fn a_chase_across_a_strip_arrives_at_the_node_as_its_universes() {
     let plan = pixels::plan(&head, strip, &[]);
     let cell_type = plan.cell_type.clone().unwrap();
 
-    // A block of red one pixel in eight wide, travelling along the strip once a second:
+    // A block of red one pixel in eight wide, traveling along the strip once a second:
     // each cell a phase further on, in the strip's own order.
     let n = plan.create.len();
     let cells: Vec<Fixture> = plan

@@ -8,29 +8,29 @@
 	 */
 
 	import { type PanelMeta } from '$lib/layout/panels.js';
-	import { dragging, maximised, tree } from '$lib/stores/layout.js';
+	import { dragging, maximized, tree } from '$lib/stores/layout.js';
 	import { allPanels } from '$lib/stores/plugins.js';
 	import EditToggle from './EditToggle.svelte';
 	import Tile from './Tile.svelte';
 
-	const big: PanelMeta | null = $derived($maximised ? ($allPanels[$maximised] ?? null) : null);
+	const big: PanelMeta | null = $derived($maximized ? ($allPanels[$maximized] ?? null) : null);
 </script>
 
 <div class="workspace" class:dragging={$dragging}>
-	{#if big && $maximised}
+	{#if big && $maximized}
 		{@const Panel = big.component}
 		<div class="full">
 			<div class="bar">
 				<span class="title">{big.title}</span>
 				<span class="spacer"></span>
-				<!-- The maximised view draws its own chrome, and left this out. Filling
+				<!-- The maximized view draws its own chrome, and left this out. Filling
 				     the screen with a panel is exactly when there is room to edit it,
-				     so leaving the toggle behind in the tile made maximising the one
+				     so leaving the toggle behind in the tile made maximizing the one
 				     place the lock could not be undone. -->
 				{#if big.editable}
-					<EditToggle panel={$maximised} />
+					<EditToggle panel={$maximized} />
 				{/if}
-				<button class="chip" onclick={() => maximised.set(null)}>⤡ Back to the workspace</button>
+				<button class="chip" onclick={() => maximized.set(null)}>⤡ Back to the workspace</button>
 			</div>
 			<div class="body" class:fills={big.fills}><Panel {...(big.props ?? {})} /></div>
 		</div>

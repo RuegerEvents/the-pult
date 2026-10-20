@@ -1,6 +1,6 @@
 //! OpenHaunt I/O nodes: finding them, adopting them, and keeping track of them.
 //!
-//! Modelled on [`crate::infra::session::SessionManager`] — an actor owning a piece
+//! Modeled on [`crate::infra::session::SessionManager`] — an actor owning a piece
 //! of LOCAL state, pushing it to the engine whenever it changes. The difference is
 //! that discovery arrives as [`DeviceEvent`] rather than being read from mDNS
 //! inside the loop, so a test can drive the whole thing without multicast.
@@ -722,7 +722,7 @@ impl DeviceManager {
     ///
     /// Effect capability is read from the raw body rather than out of the parsed
     /// description, and that is not an accident: `fixture_type_id` hashes the
-    /// serialised `NodeDescription`, so a port that started advertising `effects`
+    /// serialized `NodeDescription`, so a port that started advertising `effects`
     /// through that struct would give every node of its kind a fresh fixture type
     /// and orphan every parameter already patched against the old one. Serde drops
     /// the unknown key, the id stays put, and the capability is picked up alongside.
@@ -757,7 +757,7 @@ impl DeviceManager {
     ///
     /// The fixture is the only persisted thing an adopted device has, so it is the
     /// answer in both directions: a fixture the operator deleted un-adopts its
-    /// device, and a console restarted mid-show recognises every device it had
+    /// device, and a console restarted mid-show recognizes every device it had
     /// adopted before, which is what tells it to configure them again.
     async fn reconcile_adoptions(&mut self) {
         let fixtures = self.fixtures().await;
@@ -859,7 +859,7 @@ impl DeviceManager {
 
         // One fixture per head: the node's own ports on head 0, and each strip (or
         // whatever else the node calls a head) a fixture of its own, so two strips do
-        // not collide on one colour.
+        // not collide on one color.
         let effects = device.pixels.as_ref().map(|p| p.effects.clone()).unwrap_or_default();
         // A node carries a universe exactly when it says it forwards one.
         let universe = match description.dmx {

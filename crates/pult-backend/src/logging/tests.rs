@@ -140,7 +140,7 @@ fn a_raise_never_makes_a_station_quieter_than_it_promised() {
 }
 
 #[test]
-fn a_raise_within_the_capture_level_is_honoured_exactly() {
+fn a_raise_within_the_capture_level_is_honored_exactly() {
     let handle = LogHandle::for_test();
     handle.set_capture_level(LogLevel::Trace);
     handle.set_publish_level(LogLevel::Warn);

@@ -5,7 +5,7 @@
 	 * Shared on purpose. Undo is per person — you can only take back your own work —
 	 * but *seeing* is not: on a two-operator tech the useful question is usually
 	 * "what just happened", and the answer is often somebody else. So the list shows
-	 * everyone, colour-coded and named, and marks the entries that are yours to take
+	 * everyone, color-coded and named, and marks the entries that are yours to take
 	 * back.
 	 *
 	 * Read rather than subscribed. The oplog is infrastructure, not a replicated
@@ -14,7 +14,7 @@
 	 */
 
 	import type { HistoryEntry } from '$lib/generated/index.js';
-	import { ago, colourOf, describeChange, pluginDatumName } from '$lib/users.js';
+	import { ago, colorOf, describeChange, pluginDatumName } from '$lib/users.js';
 	import { historyVersion, readHistory, undo } from '$lib/stores/undo.js';
 	import { collection, show } from '$lib/stores/show.js';
 	import { users, userId } from '$lib/stores/user.js';
@@ -99,7 +99,7 @@
 			{#each entries as entry (entry.id)}
 				{@const mine = !!entry.user_id && entry.user_id === $userId}
 				<li class:mine class:reversal={!!entry.undoes}>
-					<span class="who" style:background={colourOf($users, entry.user_id)}></span>
+					<span class="who" style:background={colorOf($users, entry.user_id)}></span>
 					<span class="what">
 						{#if entry.undoes}
 							<!-- An undo is a change like any other and shows as itself, which

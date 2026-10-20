@@ -34,20 +34,20 @@ pub fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
 
     let mut out = Vec::with_capacity(out_len);
     for i in 0..out_len {
-        let centre = i as f64 / ratio;
-        let base = centre.floor() as isize;
+        let center = i as f64 / ratio;
+        let base = center.floor() as isize;
         let mut sum = 0.0f64;
         let mut weight = 0.0f64;
         for tap in (base - half)..=(base + half) {
             if tap < 0 || tap as usize >= samples.len() {
                 continue;
             }
-            let x = (tap as f64 - centre) * cutoff;
-            let w = sinc(x) * blackman((tap as f64 - centre) / half as f64);
+            let x = (tap as f64 - center) * cutoff;
+            let w = sinc(x) * blackman((tap as f64 - center) / half as f64);
             sum += samples[tap as usize] as f64 * w;
             weight += w;
         }
-        // Normalised by the weights actually used, so the first and last few samples —
+        // Normalized by the weights actually used, so the first and last few samples —
         // where half the window is off the end of the buffer — do not fade in and out.
         out.push(if weight.abs() > 1e-12 { (sum / weight) as f32 } else { 0.0 });
     }
@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fractional_read_is_between_its_neighbours() {
+    fn a_fractional_read_is_between_its_neighbors() {
         let samples = [0.0f32, 1.0, 0.0];
         assert_eq!(sample_at(&samples, 0.0), 0.0);
         assert_eq!(sample_at(&samples, 0.5), 0.5);

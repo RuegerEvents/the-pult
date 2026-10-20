@@ -5,7 +5,7 @@
 	 * One cell per fixture in selection order, evaluated by the wasm evaluator — the
 	 * arithmetic the lamps take — so the row shows what the rig *will* do rather than
 	 * what this file thinks a flicker looks like. Every layer is drawn together, the
-	 * colour a fixture would take scaled by the intensity it would take, because fire
+	 * color a fixture would take scaled by the intensity it would take, because fire
 	 * is the two of them at once. A strip's cells sit edge to edge, as a line of light,
 	 * and a row of heads gets gaps between them.
 	 *
@@ -106,7 +106,7 @@
 		ctx.clearRect(0, 0, width, height);
 		const n = count;
 		if (n === 0) return;
-		// Per fixture: a colour, white unless a layer says otherwise, and a level.
+		// Per fixture: a color, white unless a layer says otherwise, and a level.
 		const r = new Float32Array(n).fill(1);
 		const g = new Float32Array(n).fill(1);
 		const b = new Float32Array(n).fill(1);

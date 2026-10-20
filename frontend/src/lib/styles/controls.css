@@ -1,7 +1,7 @@
 /*
  * The controls a converted panel is built from.
  *
- * `tokens.css` says what the console's colours are; this says what its buttons,
+ * `tokens.css` says what the console's colors are; this says what its buttons,
  * inputs and rows look like. Same policy: panels written before it keep their own
  * styles rather than being churned, so a diff about the patch is about the patch.
  *

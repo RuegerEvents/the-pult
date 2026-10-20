@@ -25,7 +25,7 @@ ends as the next numbered task.
 - **`crates/pult-gdtf`** — GDTF, read and written. A pure format library: `quick-xml`, `serde`, `zip`, `uuid`, `thiserror`, and *no pult crate* — which is what lets it be tested against other people's files with no station near it. Writing is why it exists rather than a crate off crates.io. The translation into the schema is `crates/pult-backend/src/infra/interop/gdtf/`.
 - **`crates/pult-mvr`** — MVR, read and written. The other half of the interop pair and
   a pure format library like `pult-gdtf`, depending on it for the fixture definitions
-  inside an archive and for the millimetre Z-up to metre Y-up conversion they share.
+  inside an archive and for the millimeter Z-up to meter Y-up conversion they share.
   `transform.rs` is where a matrix becomes a position, a rotation and a **signed**
   scale — signed because a fifth of the trusses in a real Vectorworks file are
   mirrored, and no rotation is a reflection.
@@ -37,7 +37,7 @@ ends as the next numbered task.
 - **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, `Name.pult` showfile bundles, peer sync (mDNS + TCP), the WASM plugin runtime (`infra/plugins/`), fixture connectors. `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.
-- **`tools/openhaunt-node-sim`** — The node side of the OpenHaunt protocol, in software. A node *is* a `NodeConfig` — identity, module descriptor, and the ports it describes — so a JSON config file is the whole of what makes one node different from another. `configs/` holds worked examples of modules that are not in the catalogue at all.
+- **`tools/openhaunt-node-sim`** — The node side of the OpenHaunt protocol, in software. A node *is* a `NodeConfig` — identity, module descriptor, and the ports it describes — so a JSON config file is the whole of what makes one node different from another. `configs/` holds worked examples of modules that are not in the catalog at all.
 - **`tools/openhaunt-node-sim-gui`** — A Tauri window onto a simulated node: buttons for its inputs, and an editor for its config. Talks to the sim over Tauri IPC, so nothing about the OpenHaunt protocol changes to accommodate a debug UI. Applying a config stops the node and starts a new one in its place, without the window closing.
 - **`plugins/`** — WASM plugins: its own cargo workspace (own lockfile; guests build to `wasm32-wasip2`, which does not belong in the console's dependency graph). `sdk/` is what plugins are written against; `command-line` and `natural-language-control` are the reference plugins and the worked examples for `docs/PLUGINS.md`.
 - **`frontend/`** — SvelteKit static-adapter frontend. Built into the binaries that serve it.
@@ -146,7 +146,7 @@ same universe.
 **A type with no modes still has one.** Everything the console made for itself — a type
 derived from an OpenHaunt node, the demo seed, the hand editor — names no mode at all,
 and `FixtureType::mode()` computes an implicit `"Default"`: one byte per output
-parameter in the order the type lists them, three for a colour, and nothing at all for
+parameter in the order the type lists them, three for a color, and nothing at all for
 a parameter on a module port. Computed rather than stored, so there is one layout
 rather than a written one drifting from the parameters it was written from. The browser
 does not work that out for itself with one exception, `patch.ts`'s `implicitChannels`,
@@ -166,11 +166,11 @@ adding a field is free; what it cannot do is fill one in, so a check beside the 
 names the first required column nothing filled and refuses that too. Bump
 `SCHEMA_GENERATION` when a stored *shape* changes; adding a field is not that.
 
-**A colour is one parameter and several channels.** Every `ColorAdd_*` and `ColorSub_*`
-attribute is the fixture's colour; a reader that made three parameters would give an
+**A color is one parameter and several channels.** Every `ColorAdd_*` and `ColorSub_*`
+attribute is the fixture's color; a reader that made three parameters would give an
 operator three faders where every other console gives a picker. So the type carries an
 emitter list, each channel of a mode names the one it drives, and `pult_render::color`
-gets from a colour to a level per emitter — compiled twice like the rest of the
+gets from a color to a level per emitter — compiled twice like the rest of the
 evaluator and held together by `testdata/color-mix.json`.
 
 **A node is a fixture per head, and a strip in `sacn` mode is a fixture per pixel.**
@@ -203,7 +203,7 @@ about that server are load-bearing and written down in `infra/interop/share.rs`:
 login answers **200 with an HTML page** when the credentials are wrong, so success is
 decided by the body; its list is **tens of megabytes and unfiltered**, so it is fetched
 once, cached, and searched locally; and its session **goes idle after about two hours**,
-so an unauthorised answer logs in again and retries exactly once.
+so an unauthorized answer logs in again and retries exactly once.
 
 Both import paths go through `infra/interop/apply.rs`, which is where the rules about
 writing live: a plan is built by a pure function before anything is stored, so a
@@ -364,7 +364,7 @@ supply it — no second crate, since it was already here.
 
 **A process CPU percentage is of one core; the machine's is of all of them.** So the
 panel labels both ("15.2% of a core" against "6.4% of 18 cores") and states the
-comparison outright. The pair only earns its place if it can be compared, and unlabelled
+comparison outright. The pair only earns its place if it can be compared, and unlabeled
 it reads backwards.
 
 One trap, and it is not a corner case: **a relative showfile path matches no mount
@@ -420,7 +420,7 @@ single operator the batch degenerates to one write per commit.
 
 A command still replies only when its write is **durable** — the actor hands its
 receipts to a task that answers the caller when they land, rather than sitting on the
-fsync itself. Nothing about what an acknowledgement means has changed; what changed is
+fsync itself. Nothing about what an acknowledgment means has changed; what changed is
 that the *next* command is no longer behind this one's disk, which is the only way the
 writer can ever hold a group to commit.
 
@@ -558,7 +558,7 @@ Autosave is the leader's, on `autosave_minutes`, only when the oplog has moved, 
 its own window to `autosave_keep`. `backup_dir` mirrors each snapshot and the assets it
 points at somewhere else, and failing to is a warning rather than a failed Save.
 
-**Five demo shows, in Rust.** Haunt, Theatre, Club, Festival and Garden, seeded through
+**Five demo shows, in Rust.** Haunt, Theater, Club, Festival and Garden, seeded through
 `EngineHandle` like anything else — so validation, the oplog and the seeded operator are
 what they are for a person; what they skip is the network, not the model. `--demo <id>`
 on both binaries and a card on the welcome screen. They are seeded **on a task**, not
@@ -588,9 +588,9 @@ direction.
 boom's frame.** A fixture's position is relative to what it hangs off, rotation
 included, so `kit::boom` turns the run's handle a quarter about Z and `kit::on(parent,
 world_offset, world_direction)` puts a world-terms offset and aim into that turned
-frame — once, so no show file hand-inverts a rotation. The first Theatre drew its
+frame — once, so no show file hand-inverts a rotation. The first Theater drew its
 booms as two more horizontal bars. And everything hangs `HUNG_BELOW` (350 mm) under
-its bar's centre line: the chord square plus a clamp, and the one figure every demo
+its bar's center line: the chord square plus a clamp, and the one figure every demo
 uses, because the first Club hung its washes 600 mm *beside* the truss and what that
 drew was lights floating next to it. The demo tests check both, composed through
 `world_transform`, which is the only direction that says where a light on a boom
@@ -598,7 +598,7 @@ looks.
 
 **And the console can draw a room it was never given a mesh for.** A `SceneObject` with
 no geometry is an empty group, so a truss a console made for itself was invisible.
-`pult_schema::types::catalogue` names the pieces — F34 in three lengths and a corner,
+`pult_schema::types::catalog` names the pieces — F34 in three lengths and a corner,
 decks, wall panels, flats — with their dimensions; `pult-codegen` emits the table to
 TypeScript so there is one of it; `frontend/src/lib/stock.ts` draws them procedurally,
 one merged geometry per id however many are in the rig. An imported mesh always wins,
@@ -606,12 +606,12 @@ and the MVR importer never guesses one: a drawing says what it is with its mesh,
 picking an `f34-2m` because the name said "truss" would put a measurement into
 somebody's rig that nobody measured.
 
-**A showfile is still not a migration target.** `SCHEMA_GENERATION` is 3 and refuses a
+**A showfile is still not a migration target.** `SCHEMA_GENERATION` is 7 and refuses a
 file from another generation by name. Opening also vacuums when more than a quarter of
 the file is free, which is the one moment nothing else is using it.
 
 ```
-cargo test -p pult-backend --test shows    # opening, saving, restoring, travelling
+cargo test -p pult-backend --test shows    # opening, saving, restoring, traveling
 cargo test -p pult-backend --lib demo      # every demo hangs together, and points down
 cargo run -p pult-backend                  # → the welcome screen
 cargo run -p pult-backend -- --show Rig.pult --demo festival
@@ -818,7 +818,7 @@ npm --prefix tools/openhaunt-node-sim-gui/ui run build
 cargo run -p openhaunt-node-sim-gui -- --module relay --serial 4d5e6f
 ```
 
-A node the catalogue has never heard of is a config file rather than a code
+A node the catalog has never heard of is a config file rather than a code
 change — the console builds its fixture type from what the node says, so there is
 nothing to teach it:
 
@@ -844,7 +844,7 @@ itself. See task 72.
 
 The **`sheet` panel** is the rig as a table and the **`cues` panel** the editor of one
 sequence; **`pools`** is the direct selects — saved groups and presets, not sequences.
-See *The loop, and a colour that says where a value came from*.
+See *The loop, and a color that says where a value came from*.
 
 The frontend opens onto a **tiled workspace** rather than a sidebar and tabs. Panels
 live in a tree of splits and tab groups: drag a tab to a tile's edge to divide it or
@@ -867,7 +867,7 @@ modals that had each grown their own opinion about Escape and the backdrop are o
 **Setup carries the Edit toggle**, because Setup is chrome. `EditToggle` belongs to the
 tile and not to the panel — it is the same control with the same meaning everywhere, and
 a panel's own buttons are what it must not be mistaken for — so every chrome that renders
-an `editable` panel has to carry one. The maximised view does; the Setup dialog did not,
+an `editable` panel has to carry one. The maximized view does; the Setup dialog did not,
 which left Plugins and Settings read-only with nothing anywhere to unlock them.
 
 The **`values` panel** is the programmer: it sets fixture parameters into a shared
@@ -931,7 +931,7 @@ still has to zero everything by name.
 `fade_out_ms` what it takes coming down, on the cue and per capture, the capture
 winning. Zero out means "this cue does not split its fade" rather than "snap", so a
 show that never sets one runs exactly as it did. Only values with an order to be on
-can be going down — a colour has three and a relay none, and those take the in time
+can be going down — a color has three and a relay none, and those take the in time
 rather than have the console guess a ranking.
 
 **And it fades in a shape, asked for in the same three steps.** The capture's `easing`,
@@ -940,7 +940,7 @@ one implementation, because playback and the cue editor deciding it separately w
 disagree only on the cues nobody tested. Both are `Option<Easing>` so that "said
 nothing" is a different value from "said linear": `Easing::default()` is `Linear`, and
 without the option a default above could never reach a capture. A show's own answer is
-per **group** — `FadeGroup` is intensity, position, colour, beam and everything else,
+per **group** — `FadeGroup` is intensity, position, color, beam and everything else,
 keyed off the parameter *key* so that a release, which holds only a key, asks the same
 question a capture does. Position rests at ease-in-out and the rest at linear, which is
 the whole point: a dimmer has run linear since dimmers had handles, and a head that
@@ -970,26 +970,26 @@ selection that is gone by the time anybody edits the template. Phases are worked
 `Shape::Lightning` read the absolute cycle count and hash it, salted by phase, so they
 never repeat and are still the same number on every runtime. The Effects panel's
 preview asks `effect_values` in the wasm, so it shows what the lamps will do.
-An intensity layer reaches a colour-only pixel as a grey of that level. See task 75.
+An intensity layer reaches a color-only pixel as a gray of that level. See task 75.
 
-## The loop, and a colour that says where a value came from
+## The loop, and a color that says where a value came from
 
 Select, set, store, play, update — the loop every other desk has. Four panels and three
 verbs, and the interesting part is how little of it is stored.
 
 **Three labels for a parameter, and they are not interchangeable.** `kindLabel` is the
 one the fixture type editor's selector round-trips through, `parameterKey` is what opens
-`live_fades`, and `displayLabel` is what an operator reads — *Colour*, not `ColorRgb`;
-*Gobo 2*, not `Gobo:2`. The schema spells colour the way GDTF does and that stays; the
+`live_fades`, and `displayLabel` is what an operator reads — *Color*, not `ColorRgb`;
+*Gobo 2*, not `Gobo:2`. The schema spells color the way GDTF does and that stays; the
 label is the console's own English. A column headed with the map key is the map showing
 through.
 
-**The `sheet` panel colours every cell by which layer is driving it**, and this console
+**The `sheet` panel colors every cell by which layer is driving it**, and this console
 does not have to keep a flag to do that. The model already keeps *what is driving* each
 parameter, so `frontend/src/lib/sheet.ts`'s `source(drivenBy, track, shownCue)` reads
 the answer off `driving.ts`'s four layers and the panel *calls* that rule rather than
 restating it — the discipline `stats.ts`'s `struggling()` already follows. Programmer
-amber, recording green, effect magenta, this cue white, tracked cyan, home grey;
+amber, recording green, effect magenta, this cue white, tracked cyan, home gray;
 MA-near deliberately, because an operator who has stood behind a grandMA reads amber as
 the programmer without being told. The one layer a page cannot read off a fixture row
 is the recording — a take is bytes that never leave the wasm — so `Evaluator::recording`
@@ -1000,7 +1000,7 @@ only while a timeline is running.
 sheet draws the stack *up to* that cue, hard against tracked, reaching no output at all;
 a double-click or the Go column takes. Which means "a cue is the stack up to it" is now
 evaluated twice: `trackedThrough` in `cues.ts` mirrors `cue::tracked_through`, because a
-cue clicked in a list has to colour the sheet in the same frame, and `testdata/tracking.json`
+cue clicked in a list has to color the sheet in the same frame, and `testdata/tracking.json`
 holds the two together the way `selection-queries.json` holds `evaluate`.
 
 **Update needs no target**, and *which* cue is `drivingCues` — **not** `live_fades`.
@@ -1034,8 +1034,8 @@ picking one is a look on stage nobody asked for.
 
 `presets` is a PERSISTED collection of `Preset { id, name, values }`, one flat pool
 whose values may be **any mix** — a preset *is* a look, and a look is usually a position
-and a colour together. The I/P/C/B/O tags an operator filters by are **derived from the
-keys and never stored**, so a preset that grows a colour is a colour preset from that
+and a color together. The I/P/C/B/O tags an operator filters by are **derived from the
+keys and never stored**, so a preset that grows a color is a color preset from that
 moment and nobody has to reclassify it.
 
 **Reference first, literal beside it.** `ParameterCapture.preset` and
@@ -1067,7 +1067,7 @@ the stated exception — because a fourth hand-written spelling would be a plugi
 a key nothing writes.
 
 ```
-cd frontend && npm test                              # the sheet's colours, tracking, cue only, presets
+cd frontend && npm test                              # the sheet's colors, tracking, cue only, presets
 cargo test -p pult-schema --test tracking_corpus     # the other half of that corpus
 cargo test -p pult-backend --lib playback::tests::presets   # a standing cue follows a palette
 cargo test -p pult-backend --test counts             # a store across three cues is one undo
@@ -1076,7 +1076,7 @@ cargo test -p pult-backend --test counts             # a store across three cues
 ## A piece says where it connects, and a light says what it is clamped to
 
 Until a person could put a truss in a room, a stock piece was a shape the *browser*
-drew: `stock.ts` built cylinders from `catalogue.rs`'s dimensions, and that was the
+drew: `stock.ts` built cylinders from `catalog.rs`'s dimensions, and that was the
 whole of what an `f34-2m` looked like. Which meant an exported MVR carried an **empty
 group** where the truss was — MVR has no primitive, its `GeometryNode` is a file or a
 symbol instance — so a rig built here and opened in Vectorworks was a room full of
@@ -1092,13 +1092,13 @@ outlived the code that made it would be a stale asset nobody could explain, and 
 nothing here a peer holds that this station cannot make in a hundred microseconds.
 Determinism is a gate rather than a nicety — the ETag, the archive entry's name and the
 symdef's uuid all rest on it — so no map is iterated, every position is rounded to a
-micrometre, and the tests generate every piece twice.
+micrometer, and the tests generate every piece twice.
 
 **A `.glb` goes out as a symdef, and comes back as the piece.** `stock_symdef_name` carries
 the piece id and its canonical properties, and `stock_symdef_uuid` is a v5 of that name;
 `parse_stock_symdef` checks the uuid against the name **before trusting it**, which is
 what stops a drawing that happens to name a symbol `pult-stock:f34-2m:{}` from having its
-own mesh thrown away. This console restores `catalogue` and stores no mesh; anybody else
+own mesh thrown away. This console restores `catalog` and stores no mesh; anybody else
 opens an ordinary symbol with a truss in it.
 
 **A connector is a point, an outward facing and a kind, and mating is the whole snapping
@@ -1122,16 +1122,16 @@ the light off the truss.
 a mount on a truss that came out of a drawing means knowing where its chords are, and
 those come off the mesh's own bounds — which only `geometry.ts` ever measures, because
 the station never loads a mesh. So the browser is the writer for *every* parent,
-catalogue piece or drawing alike, and `testdata/mounts.json` is what keeps its arithmetic
+catalog piece or drawing alike, and `testdata/mounts.json` is what keeps its arithmetic
 equal to `Mount::transform`'s. `HUNG_BELOW` is 205 mm measured from the **chord**, which
-on an F34 is the same 350 mm below the bar's centre line every demo used before there
-were chords to hang off. A catalogue piece declares its four; anything else gets **one**,
+on an F34 is the same 350 mm below the bar's center line every demo used before there
+were chords to hang off. A catalog piece declares its four; anything else gets **one**,
 along the bottom of its bounds, which is the smallest guess available on purpose.
 
 **A re-import reads the clamp back off the geometry.** MVR has nowhere to say a light is
-clamped, only where it is — so where the parent is a catalogue piece and the light is
-sitting within a millimetre of where one of that piece's clamps would put it, that is
-what it is on. A millimetre because the number came out of this console's own arithmetic
+clamped, only where it is — so where the parent is a catalog piece and the light is
+sitting within a millimeter of where one of that piece's clamps would put it, that is
+what it is on. A millimeter because the number came out of this console's own arithmetic
 on the way out; anything looser would be inventing a clamp for a light somebody placed by
 hand.
 
@@ -1149,7 +1149,7 @@ each is one Ctrl-Z. Two selections, deliberately separate: a `SelectionQuery` is
 question about the *rig* and `at 50` means the fixtures it answers, so `selectedObjects`
 is its own store and a truss is never in that scope.
 
-`SCHEMA_GENERATION` is 6.
+`SCHEMA_GENERATION` is 7.
 
 ```
 cargo test -p pult-schema                          # the corpora, the glb, the joints
@@ -1160,7 +1160,7 @@ curl -o truss.glb 'http://localhost:7700/stock/f34-3m.glb'
 
 ## The rig is a drawing, and a place is a transform
 
-`Fixture::position` is an `Option<Transform>` — a position in metres, a rotation as
+`Fixture::position` is an `Option<Transform>` — a position in meters, a rotation as
 XYZ Euler degrees, and a **signed** scale — and it is *relative to whatever the
 fixture hangs off*. Alongside it are `scene_objects` (trusses, rostra, screens, focus
 points, and `Group` for the handle that moves a truss and its lights together),
@@ -1200,13 +1200,13 @@ goes to nothing, and the power on that term falls with how end-on the beam is se
 looking down the barrel lights the whole disc — the flare — with no second term. The
 normal is worked out in the vertex shader for the cone it just made and interpolated,
 never from screen-space derivatives, which are flat per triangle and draw the strips.
-Attenuation is along the throw in metres and steeper for a wider beam. The fragment's
-alpha is **one**: additive blending scales the colour by it, and writing the strength
+Attenuation is along the throw in meters and steeper for a wider beam. The fragment's
+alpha is **one**: additive blending scales the color by it, and writing the strength
 there as well squares every beam into a ghost. The first version of this shader got
 every one of those wrong at once — a silhouette term taken from the beam's *axis*,
 which is the same for every pixel across the beam — and drew flat, hard-edged,
-faceted cones. Colour dims in **HSV, value only** — a scaled RGB drags a saturated
-colour towards grey on the way down, which no dimmer does. Haze is turbulence (the
+faceted cones. Color dims in **HSV, value only** — a scaled RGB drags a saturated
+color towards gray on the way down, which no dimmer does. Haze is turbulence (the
 absolute value of signed noise, four octaves) in world space with **time as the third
 axis**, floored at the beam's own intensity so it adds folds rather than taking light
 away; its two knobs are `Show::haze_density` and `haze_turbulence`: show data, because
@@ -1233,7 +1233,7 @@ The camera moved, the rig changed — worked out by comparing this frame's attri
 against the last frame's, through `Math.fround`, because the output store ticks every
 frame whether or not a value moved — or the picture animates on its own clock: a lit
 beam with haze in it, a strobe. Only lit beams get an instance, packed from the front,
-since an unlit cone whose fragments all discard is still a cone that is rasterised. A
+since an unlit cone whose fragments all discard is still a cone that is rasterized. A
 settled dark rig costs nothing and the panel prints *idle*; beside the page's own work
 per drawn frame it prints what the GPU took, read through
 `EXT_disjoint_timer_query_webgl2`, which is the figure a laggy view is felt by — a rAF
@@ -1246,16 +1246,16 @@ light is not. The four modes are four questions: *Wireframe* (where is everythin
 wire materials and an aim line per fixture), *Cones* (where is it pointing: the same
 cone under a flat alpha-blended shader, never white), *Real* (the beam shader) and
 *Photoreal* (the scene into a half-float target, bloom above white, ACES over the
-sum — the only thing that keeps crossing beams a colour). `dress` in `Rig3D.svelte`
+sum — the only thing that keeps crossing beams a color). `dress` in `Rig3D.svelte`
 switches by swapping materials and visibility on what the scene already has; nothing
 is rebuilt. Two traps there: the scene object is `$state.raw`, because a deep proxy
 keeps a plain field written through it and the render loop holds the object itself;
-and the photoreal frame is linear light, so the clear colour, the grid's grey and the
+and the photoreal frame is linear light, so the clear color, the grid's gray and the
 beams' gain are said in linear terms on that path only. Measure any of this in a
 *headed* browser only: a hidden tab has no animation frames.
 
 **And the rig view is an editor, but the editing is in panels beside it.** **Pieces** is
-the catalogue to drag from and the work plane a drop lands on; **Rig tools** is import
+the catalog to drag from and the work plane a drop lands on; **Rig tools** is import
 and export, the gizmo's three modes, duplicate, delete and line-up; **Objects** is the
 drawing as a tree by parent — the only way to reach a `Group`, which has no geometry and
 so cannot be clicked; **Object** is what one piece is, in numbers. The *Scene* layout
@@ -1290,12 +1290,12 @@ demo and a festival, on a tablet and on a monitor. Three decisions live there: p
 stands a couple of degrees off vertical, because a camera looking straight down has
 nothing to resolve its own roll; section looks from stage left, so the stage is on the
 left of the frame the way a section is drawn; and the box reaches the deck for the rig
-and **not** for a selection, since one head at six metres framed with the floor in shot
-is six metres of air. Focus changes only the distance, never the angle. The front
+and **not** for a selection, since one head at six meters framed with the floor in shot
+is six meters of air. Focus changes only the distance, never the angle. The front
 preset *is* where the view opens, so those are one place rather than two.
 
-**And a piece with no mesh is drawn from the catalogue.** `frontend/src/lib/stock.ts`
-turns `SceneObject::catalogue` into geometry — see *A show is a folder* — which is what
+**And a piece with no mesh is drawn from the catalog.** `frontend/src/lib/stock.ts`
+turns `SceneObject::catalog` into geometry — see *A show is a folder* — which is what
 lets a console that has never imported an MVR hang a rig on something.
 
 **The browser draws the drawing.** `frontend/src/lib/geometry.ts` loads a mesh once
@@ -1644,15 +1644,15 @@ highest of each slot; a source silent for 2.5 s is gone. That last rule is what 
 console being *unplugged* different from a console *sending zeros*: the first drops out
 and lets whatever else is there through, and the second wins on HTP against nothing.
 
-**A colour decodes exactly on any fixture, and that is `unmix`.** `r`, `g` and `b` come
+**A color decodes exactly on any fixture, and that is `unmix`.** `r`, `g` and `b` come
 from the emitters that are primaries by `primary_channel`'s own rule — the same rule the
 mix passes them through going out — and then every emitter whose received level differs
-from what that colour would derive becomes an **override**. A CMY head has no primaries
+from what that color would derive becomes an **override**. A CMY head has no primaries
 and comes back as three overrides over black; an RGBW head whose white is somewhere the
 mix would never put it comes back with the white pinned; a plain RGB par comes back with
-nothing pinned, which is a colour an operator can then edit. Half a byte of tolerance,
+nothing pinned, which is a color an operator can then edit. Half a byte of tolerance,
 because the levels came off a wire as bytes: tighter and every emitter of every fixture
-would be pinned, and the next colour command would do nothing.
+would be pinned, and the next color command would do nothing.
 
 **`pult_render::track` is the codec, and there is one of it.** Hand-written
 little-endian — magic `PLTK`, a `u16` version, per `(fixture, key)` a list of change
@@ -1733,7 +1733,7 @@ else on the machine is listening to the same show LAN, so `SO_REUSEADDR` (and
 multicast group is joined *on* an interface as a separate act, and binding a receiver to
 a unicast address is what stops broadcast Art-Net arriving at all.
 
-`SCHEMA_GENERATION` is 6. `FollowMode::Timecode` is gone — a position written on a cue
+`SCHEMA_GENERATION` is 7. `FollowMode::Timecode` is gone — a position written on a cue
 is a clock the cue cannot see, and the same fact as a `timelines` event is a list an
 operator can read and drag.
 
@@ -1863,7 +1863,7 @@ cd frontend && npx vitest run src/lib/waveform.test.ts
 ## Paperwork is a drawing, and it is drawn twice
 
 The rig has to leave the console as paper: A3 sheets with a title block, viewports at a
-stated scale, labelled plan heads, and tables of weight, power and counts. The roadmap
+stated scale, labeled plan heads, and tables of weight, power and counts. The roadmap
 called this "a read-only plugin over introspection" and that was half right, which is
 the interesting half.
 
@@ -1876,7 +1876,7 @@ and a plugin, the command line and curl can all ask what a truss weighs. Written
 browser beside the renderer, that number would have been reachable by nothing.
 
 **One drawing model, rendered twice.** `frontend/src/lib/paperwork/drawing.ts` is lines,
-polylines, text and images in **paper millimetres from the top left**; `svg.ts` renders
+polylines, text and images in **paper millimeters from the top left**; `svg.ts` renders
 it for the preview and `pdf.ts` for the file. There is no SVG-to-PDF converter anywhere,
 deliberately — a converter is a third implementation of the page with its own opinions
 about dashes, joins and text placement, and it is what would make the file differ from
@@ -1916,7 +1916,7 @@ worked out. It printed `1:0` before that was written down.
 
 **Nothing prints a bare total, anywhere.** `Totals` carries what it could *not* account
 for beside what it summed — how many items had no figure, and whether any of it came
-from the catalogue's nominal weights — and `Totals::weight_label` is the one place that
+from the catalog's nominal weights — and `Totals::weight_label` is the one place that
 becomes text, so the PDF, the CSV and a plugin's answer cannot disagree about whether a
 number is complete. `≥ 412 kg nominal` is a different claim from `412 kg`, and `—` is
 what a total with nothing in it says, because zero reads as a rig that weighs nothing.
@@ -1924,9 +1924,9 @@ A filtered table captions what it left out; a plan that could not place twelve f
 says so in its margin. **A loading table is a number somebody hangs a truss on**, and
 this is the whole reason the module is shaped the way it is.
 
-**Catalogue weights are nominal and say so.** `StockPiece::weight_kg` is a round figure
+**Catalog weights are nominal and say so.** `StockPiece::weight_kg` is a round figure
 for the *class* of part — 290 mm four-chord box truss, 48.3 × 4 mm tube, an
-aluminium-and-ply deck — taken at the heavy end, because the direction to be wrong about
+aluminum-and-ply deck — taken at the heavy end, because the direction to be wrong about
 a load is upwards. `SceneObject::weight_kg` overrides one, and a total resting on
 entered weights is printed differently from one resting on these.
 
@@ -1938,7 +1938,7 @@ than printing what it has. The first exported PDF had no trusses on it at all an
 nothing, because two animation frames is not a download.
 
 Three smaller rules with reasons. **A captured line mode clears to white** and dresses
-its models in flat grey — a rig view is a dark studio, and a shaded axonometric on A3
+its models in flat gray — a rig view is a dark studio, and a shaded axonometric on A3
 came out as a near-black rectangle. *Real* and *photoreal* keep the dark ground, which
 is not an inconsistency: a beam is additive light and there is no version of one on
 white. **Fixture bodies keep their own material** even on paper, because the per-frame
@@ -1976,7 +1976,7 @@ animation frames at all** and an export that stalled on one would report a failu
 seconds later that had not happened.
 
 **A 2D viewport can dimension each bar**, which is the only question anybody up a ladder
-is asking. `Dimensions` carries the datum — left, right or centre, because every crew has
+is asking. `Dimensions` carries the datum — left, right or center, because every crew has
 a convention and none of them is right — and draws a gap chain plus a running chain, in
 one unit per bar decided by its longest figure. Three things there were wrong first and
 are worth keeping: the chain is measured **along the bar in its own frame**, not across
@@ -2073,7 +2073,7 @@ every entry in it is real.
 Three traps, each of which was a defect first.
 
 **A TCP station's address comes from mDNS and from nowhere else.** A message arriving
-over TCP comes from the *ephemeral* port the sender dialled out of, and every interaction
+over TCP comes from the *ephemeral* port the sender dialed out of, and every interaction
 in that mode is a short connection — so remembering a station from an inbound message
 overwrote its discovered listening address with one that was dead on close, and commits
 were announced to a closed port. `Known::dialable` is what says which addresses can be

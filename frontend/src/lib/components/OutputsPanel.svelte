@@ -55,7 +55,7 @@
 	}
 
 	/// "sending · 40/s" or the reason it is not.
-	function summarise(output: OutputConfig): string {
+	function summarize(output: OutputConfig): string {
 		if (!output.enabled) return 'off';
 		const status = statusOf(output);
 		if (!status) {
@@ -98,7 +98,7 @@
 		return out;
 	}
 
-	function summariseInput(input: InputConfig): string {
+	function summarizeInput(input: InputConfig): string {
 		if (!input.enabled) return 'off';
 		if (!input.node_id) return 'nobody is listening';
 		if (input.node_id !== thisStation) return 'another station';
@@ -311,7 +311,7 @@
 							</td>
 							<td class="status">
 								<span class="dot" class:on={healthy(output)} class:bad={!!status?.last_error}></span>
-								<span class="summary" title={status?.last_error ?? ''}>{summarise(output)}</span>
+								<span class="summary" title={status?.last_error ?? ''}>{summarize(output)}</span>
 							</td>
 							<td>
 								<button
@@ -438,7 +438,7 @@
 									class:on={inputHealthy(input)}
 									class:bad={!!status?.last_error}
 								></span>
-								<span class="summary" title={status?.last_error ?? ''}>{summariseInput(input)}</span>
+								<span class="summary" title={status?.last_error ?? ''}>{summarizeInput(input)}</span>
 							</td>
 							<td>
 								<button

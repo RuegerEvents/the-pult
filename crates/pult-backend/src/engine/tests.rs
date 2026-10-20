@@ -1,6 +1,6 @@
 //! Engine tests.
 //!
-//! These pin down the behaviour of `ShowEngine::apply_set` and its path dispatch
+//! These pin down the behavior of `ShowEngine::apply_set` and its path dispatch
 //! before that code is rewritten to be registry-driven. Each test drives a real
 //! engine task through `EngineHandle` against an in-memory showfile.
 
@@ -756,7 +756,7 @@ async fn writing_a_field_the_schema_does_not_have_is_rejected() {
 
     let err = h
         .engine
-        .set(field_path("sequences", seq.id, "colour"), Lifecycle::Persisted, json(&"red"))
+        .set(field_path("sequences", seq.id, "color"), Lifecycle::Persisted, json(&"red"))
         .await
         .unwrap_err();
     assert!(matches!(err, BackendError::PathNotFound(_)));
@@ -2784,7 +2784,7 @@ async fn an_empty_showfile_gains_an_operator() {
 }
 
 /// `create_entity` does not check whether the id is already there, so this is the
-/// guard rather than an optimisation: without it every load would rewrite the row,
+/// guard rather than an optimization: without it every load would rewrite the row,
 /// and on a second station replicate "Operator" over a name somebody chose.
 #[tokio::test]
 async fn loading_a_show_that_has_one_writes_nothing() {
@@ -3395,7 +3395,7 @@ mod groups {
         assert_eq!(
             serde_json::from_value::<Vec<Uuid>>(mine).unwrap(),
             vec![rig[1].id, rig[0].id],
-            "and in the order somebody dragged, which travelled inside the query"
+            "and in the order somebody dragged, which traveled inside the query"
         );
     }
 
@@ -3842,7 +3842,7 @@ mod relative {
     }
 
     /// Two stations, one of them showing something else entirely. The one that made
-    /// the nudge decided the number; the other takes it. If the delta travelled, they
+    /// the nudge decided the number; the other takes it. If the delta traveled, they
     /// would part company on the first press.
     #[tokio::test]
     async fn a_peer_showing_something_else_still_lands_on_the_same_number() {

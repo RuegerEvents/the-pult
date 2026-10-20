@@ -2,14 +2,14 @@
  * Surfaces: a page of tiles for running a show from a phone.
  *
  * The schema says what a tile points at (`types::surface`); this is everything the
- * page works out from that — what a tile is called when nobody named it, what colour
+ * page works out from that — what a tile is called when nobody named it, what color
  * a readout is at a value, where a timeline is, and the edits the editor makes to a
  * tile list. Pure, so the editor and the phone view agree by calling one function,
  * and so it can be tested without a station.
  */
 
 import type {
-	ColourStop,
+	ColorStop,
 	Fixture,
 	FixtureType,
 	Flow,
@@ -133,43 +133,43 @@ export function tileLabel(tile: SurfaceTile, show: SurfaceShow): string {
 export const targetExists = (target: TileTarget, show: SurfaceShow): boolean =>
 	targetName(target, show) !== null;
 
-// ── Colours ───────────────────────────────────────────────────────────────────
+// ── Colors ───────────────────────────────────────────────────────────────────
 
-/** What a readout shows when nothing says otherwise: the tile's colour for on, grey for off. */
-export const OFF_COLOUR = '#3a3a3a';
-export const ON_COLOUR = '#22c55e';
+/** What a readout shows when nothing says otherwise: the tile's color for on, gray for off. */
+export const OFF_COLOR = '#3a3a3a';
+export const ON_COLOR = '#22c55e';
 
 /**
- * The colour a readout is at a value: the highest stop at or below it.
+ * The color a readout is at a value: the highest stop at or below it.
  *
- * Below every stop is the lowest stop's colour rather than nothing — a count that
- * someone set to −1 by mistake should still read as the colour of "empty", not as a
+ * Below every stop is the lowest stop's color rather than nothing — a count that
+ * someone set to −1 by mistake should still read as the color of "empty", not as a
  * tile with no state.
  */
-export function stopColour(
-	stops: ColourStop[],
+export function stopColor(
+	stops: ColorStop[],
 	value: number,
-	on: string = ON_COLOUR,
-	off: string = OFF_COLOUR
+	on: string = ON_COLOR,
+	off: string = OFF_COLOR
 ): string {
 	if (stops.length === 0) return value !== 0 ? on : off;
 	const sorted = [...stops].sort((a, b) => a.at - b.at);
 	let chosen = sorted[0];
 	for (const stop of sorted) if (value >= stop.at) chosen = stop;
-	return chosen.colour;
+	return chosen.color;
 }
 
-/** What a variable readout shows: its value in words and its colour. */
+/** What a variable readout shows: its value in words and its color. */
 export function variableReading(
 	target: Extract<TileTarget, { kind: 'VariableReadout' }>,
 	show: Pick<SurfaceShow, 'variables'>,
-	tileColour: string | null
-): { text: string; colour: string } | null {
+	tileColor: string | null
+): { text: string; color: string } | null {
 	const variable = show.variables.find((v) => v.id === target.variable_id);
 	if (!variable) return null;
 	return {
 		text: variableLabel(variable),
-		colour: stopColour(target.stops, currentValue(variable), tileColour ?? ON_COLOUR)
+		color: stopColor(target.stops, currentValue(variable), tileColor ?? ON_COLOR)
 	};
 }
 
@@ -182,8 +182,8 @@ export function parameterReading(
 	target: Extract<TileTarget, { kind: 'Parameter' }>,
 	show: Pick<SurfaceShow, 'fixtures' | 'types'>,
 	evaluated: (fixtureId: string, key: string) => ParameterValue | null,
-	tileColour: string | null = null
-): { text: string; colour: string | null } | null {
+	tileColor: string | null = null
+): { text: string; color: string | null } | null {
 	const fixture = show.fixtures.find((f) => f.id === target.fixture_id);
 	if (!fixture) return null;
 	const key = parameterKey(target.parameter);
@@ -192,20 +192,20 @@ export function parameterReading(
 		definition?.direction === 'Input'
 			? (fixture.sensed_values[key] ?? null)
 			: evaluated(fixture.id, key);
-	if (!value) return { text: '–', colour: null };
-	return { text: formatValue(value), colour: valueColour(value, tileColour) };
+	if (!value) return { text: '–', color: null };
+	return { text: formatValue(value), color: valueColor(value, tileColor) };
 }
 
 /**
- * A value's own colour where it has one: a colour is itself, a level is a grey, and a
- * flag on is the tile's colour — a relay driving the red lamp reads red when it is on.
+ * A value's own color where it has one: a color is itself, a level is a gray, and a
+ * flag on is the tile's color — a relay driving the red lamp reads red when it is on.
  */
-export function valueColour(value: ParameterValue, on: string | null = null): string | null {
+export function valueColor(value: ParameterValue, on: string | null = null): string | null {
 	switch (value.type) {
 		case 'Color':
 			return rgbToHex(value.value);
 		case 'Bool':
-			return value.value ? (on ?? ON_COLOUR) : OFF_COLOUR;
+			return value.value ? (on ?? ON_COLOR) : OFF_COLOR;
 		case 'Float': {
 			const level = Math.round(Math.min(1, Math.max(0, value.value)) * 255);
 			const hex = level.toString(16).padStart(2, '0');
@@ -250,7 +250,7 @@ export function newTile(kind: TileKind, show: SurfaceShow, id: string = crypto.r
 	return {
 		id,
 		label: kind === 'Heading' ? 'Heading' : '',
-		colour: null,
+		color: null,
 		size: kind === 'Heading' || kind === 'Timeline' ? 'Full' : 'Half',
 		target
 	};

@@ -223,7 +223,7 @@ fn paint(
     }
 }
 
-/// Hue to RGB, in integers. Good enough for a light; nothing here is colour science.
+/// Hue to RGB, in integers. Good enough for a light; nothing here is color science.
 fn wheel(h: u8) -> (u8, u8, u8) {
     match h {
         0..=84 => (255 - h * 3, h * 3, 0),

@@ -67,7 +67,7 @@ pub struct Version {
     /// Nothing reads it yet. It is here because a version is the only record of a
     /// past state that survives the oplog's retention, and a diff between two of
     /// them has to be able to say which came first on which station — which a
-    /// timestamp across machines with unsynchronised clocks cannot.
+    /// timestamp across machines with unsynchronized clocks cannot.
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub clock: VectorClock,

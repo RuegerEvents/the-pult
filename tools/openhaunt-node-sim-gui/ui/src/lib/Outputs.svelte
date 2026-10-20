@@ -28,7 +28,7 @@
 	}
 
 	/** Anything the console sent to a port this node never described. */
-	const unrecognised = $derived(
+	const unrecognized = $derived(
 		Object.entries(node.outputs).filter(
 			([port]) => !ports.some((p) => String(p.port) === port)
 		)
@@ -52,9 +52,9 @@
 				<span class="state">{on ? 'closed' : 'open'}</span>
 			</div>
 		{:else if port.dataType === 'color'}
-			{@const colour = readColor(node.outputs[String(port.port)])}
-			<div class="strip" style:background={colour ?? '#000'}>
-				<span class="mono">{colour ?? 'unlit'}</span>
+			{@const color = readColor(node.outputs[String(port.port)])}
+			<div class="strip" style:background={color ?? '#000'}>
+				<span class="mono">{color ?? 'unlit'}</span>
 				{#if tracing(port.port)}<span class="tracing mono">{tracing(port.port)}</span>{/if}
 			</div>
 		{:else if port.dataType === 'number'}
@@ -78,8 +78,8 @@
 		</p>
 	{/if}
 
-	{#if unrecognised.length > 0}
-		<pre class="mono raw">{JSON.stringify(Object.fromEntries(unrecognised), null, 2)}</pre>
+	{#if unrecognized.length > 0}
+		<pre class="mono raw">{JSON.stringify(Object.fromEntries(unrecognized), null, 2)}</pre>
 	{:else if ports.length === 0 && !node.config.dmx}
 		<p class="note">This module drives nothing.</p>
 	{/if}

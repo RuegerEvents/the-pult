@@ -4,7 +4,7 @@
 //! the snapshots can share, and an operator can drag the whole of it onto a stick.
 //! It is the wrong shape for everything else. A folder does not go in an email, does
 //! not survive most upload forms, and on some platforms is not one thing at all. So
-//! the travelling form is a single file, and it is a zip of exactly the folder.
+//! the traveling form is a single file, and it is a zip of exactly the folder.
 //!
 //! Two decisions worth stating.
 //!

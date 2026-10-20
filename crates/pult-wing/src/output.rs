@@ -74,10 +74,10 @@ impl OutputState {
     }
 
     /// Set an RGB LED from its three channel offsets.
-    pub fn set_rgb(&mut self, r: usize, g: usize, b: usize, colour: [u8; 3]) {
-        self.set_led(r, colour[0]);
-        self.set_led(g, colour[1]);
-        self.set_led(b, colour[2]);
+    pub fn set_rgb(&mut self, r: usize, g: usize, b: usize, color: [u8; 3]) {
+        self.set_led(r, color[0]);
+        self.set_led(g, color[1]);
+        self.set_led(b, color[2]);
     }
 
     pub fn all_leds(&mut self, level: u8) {

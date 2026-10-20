@@ -12,7 +12,7 @@ use super::mount::Mount;
 use super::scene::Transform;
 use crate::PultSchema;
 
-/// A point in the rig, in metres, from whatever origin the show uses.
+/// A point in the rig, in meters, from whatever origin the show uses.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Vec3 {
@@ -173,8 +173,8 @@ pub enum ParameterKind {
     ColorWheel(u8),
     Prism(u8),
     Frost(u8),
-    /// Correlated colour temperature in kelvin, for a variable-white fixture. Not a
-    /// colour: a tunable-white bar has this and no RGB at all.
+    /// Correlated color temperature in kelvin, for a variable-white fixture. Not a
+    /// color: a tunable-white bar has this and no RGB at all.
     ColorTemperature,
     Raw(u8),
     /// A switched output: a relay, a dry contact the console closes.
@@ -243,7 +243,7 @@ pub enum PhysicalUnit {
     Seconds,
     Hertz,
     Kelvin,
-    Metres,
+    Meters,
     Watts,
 }
 
@@ -261,13 +261,13 @@ pub struct PhysicalRange {
 }
 
 impl PhysicalRange {
-    /// A normalised value as a physical one.
-    pub fn to_physical(&self, normalised: f32) -> f32 {
-        self.from + (self.to - self.from) * normalised
+    /// A normalized value as a physical one.
+    pub fn to_physical(&self, normalized: f32) -> f32 {
+        self.from + (self.to - self.from) * normalized
     }
 
     /// And back. A zero-width range answers zero rather than dividing by nothing.
-    pub fn to_normalised(&self, physical: f32) -> f32 {
+    pub fn to_normalized(&self, physical: f32) -> f32 {
         if (self.to - self.from).abs() < f32::EPSILON {
             return 0.0;
         }
@@ -275,14 +275,14 @@ impl PhysicalRange {
     }
 }
 
-/// One named position on a wheel: a gobo, a colour, a prism facet.
+/// One named position on a wheel: a gobo, a color, a prism facet.
 ///
 /// What turns "Gobo 1 at 37%" into "Gobo 1: Breakup".
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Slot {
     pub name: String,
-    /// The colour of this slot, where it has one, as linear RGB. A colour wheel's
+    /// The color of this slot, where it has one, as linear RGB. A color wheel's
     /// slots do; a gobo wheel's do not.
     #[serde(default)]
     pub color: Option<Vec3>,
@@ -293,21 +293,21 @@ pub struct Slot {
 
 /// One light source in the fixture.
 ///
-/// The list that makes a colour mixable. Given a colour and these, the console works
+/// The list that makes a color mixable. Given a color and these, the console works
 /// out a level per emitter; without them an RGBW head's fourth channel is a number
 /// with no meaning and stays dark.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Emitter {
     /// The GDTF emitter name — `Red`, `White`, `Lime` — which is also how a
-    /// per-emitter override in a colour value names it.
+    /// per-emitter override in a color value names it.
     pub name: String,
-    /// Where this emitter sits in linear RGB, from its CIE colour. `None` for one the
+    /// Where this emitter sits in linear RGB, from its CIE color. `None` for one the
     /// file did not measure, which then mixes by its name and nothing else.
     #[serde(default)]
     pub rgb: Option<Vec3>,
     /// A subtractive element — a CMY flag — rather than a source. Full means *less*
-    /// light, so it is the complement of the colour it is named for.
+    /// light, so it is the complement of the color it is named for.
     #[serde(default)]
     pub subtractive: bool,
 }
@@ -324,7 +324,7 @@ pub struct FixturePhysical {
     pub weight_kg: Option<f32>,
     #[serde(default)]
     pub power_w: Option<f32>,
-    /// Length, width, height in metres.
+    /// Length, width, height in meters.
     #[serde(default)]
     pub dimensions_m: Option<Vec3>,
     #[serde(default)]
@@ -340,7 +340,7 @@ pub struct FixturePhysical {
     #[serde(default)]
     pub beam_angle_deg: Option<f32>,
     /// A point of light with no beam: one pixel of a strip. The rig view draws a dot in
-    /// its colour where it would otherwise draw a lantern and a cone.
+    /// its color where it would otherwise draw a lantern and a cone.
     #[serde(default)]
     pub pixel: bool,
 }
@@ -414,9 +414,9 @@ pub struct FixtureGeometry {
     #[serde(default)]
     pub parent: Option<String>,
     pub kind: GeometryKind,
-    /// Where this part sits relative to its parent, in metres, in console axes.
+    /// Where this part sits relative to its parent, in meters, in console axes.
     pub offset: Vec3,
-    /// Length, width, height in metres, for the box to draw when there is no mesh.
+    /// Length, width, height in meters, for the box to draw when there is no mesh.
     #[serde(default)]
     pub size: Option<Vec3>,
     /// The mesh in the asset store, where one was extracted.
@@ -461,7 +461,7 @@ pub struct ParameterDefinition {
     /// Which encoder page this belongs on: `Dimmer`, `Position`, `Color`, `Beam`.
     #[serde(default)]
     pub feature_group: Option<String>,
-    /// The light sources a colour parameter mixes across. Empty on everything else.
+    /// The light sources a color parameter mixes across. Empty on everything else.
     #[serde(default)]
     pub emitters: Vec<Emitter>,
 }
@@ -647,7 +647,7 @@ impl FixtureType {
 
     /// The one mode a type without modes has.
     ///
-    /// One byte per parameter in the order the type lists them, three for a colour,
+    /// One byte per parameter in the order the type lists them, three for a color,
     /// which is what the connector did before layouts existed and what a type derived
     /// from an OpenHaunt node's ports still means.
     fn implicit_mode(&self) -> DmxMode {
@@ -655,8 +655,8 @@ impl FixtureType {
         let mut next = 1u16;
         for parameter in output_parameters(self) {
             let key = parameter_key(&parameter.kind);
-            let is_colour = matches!(parameter.default_value, ParameterValue::Color { .. });
-            let width = if is_colour { 3 } else { 1 };
+            let is_color = matches!(parameter.default_value, ParameterValue::Color { .. });
+            let width = if is_color { 3 } else { 1 };
 
             // A parameter on a *port* has no DMX channel at all, whatever the fixture
             // is addressed to. Giving it a slot in the sequential fallback would put a
@@ -669,10 +669,10 @@ impl FixtureType {
                 start
             };
 
-            if is_colour {
+            if is_color {
                 // Three channels rather than one three-byte channel: an emitter per
                 // byte is how every other mode says which die a byte drives, and one
-                // shape for both keeps the connector from having a colour special case.
+                // shape for both keeps the connector from having a color special case.
                 for (index, emitter) in rgb_emitters().into_iter().enumerate() {
                     channels.push(DmxChannelLayout {
                         parameter_key: key.clone(),
@@ -706,10 +706,10 @@ impl FixtureType {
     }
 }
 
-/// The three emitters a colour parameter has when the fixture never named any.
+/// The three emitters a color parameter has when the fixture never named any.
 ///
-/// Every colour the console could send before GDTF existed was three consecutive
-/// bytes in this order, and a type derived from an OpenHaunt node's colour port still
+/// Every color the console could send before GDTF existed was three consecutive
+/// bytes in this order, and a type derived from an OpenHaunt node's color port still
 /// is. Naming them makes that the same shape as an RGBW head's four, so the mixer and
 /// the connector have one path rather than a legacy one beside a real one.
 pub fn rgb_emitters() -> Vec<Emitter> {
@@ -720,10 +720,10 @@ pub fn rgb_emitters() -> Vec<Emitter> {
     ]
 }
 
-/// The emitters a parameter mixes across, filled in for a colour that named none.
+/// The emitters a parameter mixes across, filled in for a color that named none.
 ///
-/// One place rather than at each caller, because a colour with no emitters is not a
-/// colour with nothing to drive — it is one whose fixture predates the question.
+/// One place rather than at each caller, because a color with no emitters is not a
+/// color with nothing to drive — it is one whose fixture predates the question.
 pub fn emitters_of(parameter: &ParameterDefinition) -> Vec<Emitter> {
     if !parameter.emitters.is_empty() {
         return parameter.emitters.clone();
@@ -769,7 +769,7 @@ pub struct Fixture {
     /// resolved against the parent piece's chords, and for an imported truss those
     /// come off the mesh's own bounds — which the station never loads, because only
     /// `frontend/src/lib/geometry.ts` measures a mesh. So the *browser* is the writer
-    /// for every parent, whether the piece came out of the catalogue or out of a
+    /// for every parent, whether the piece came out of the catalog or out of a
     /// drawing, and what keeps its arithmetic equal to
     /// [`crate::types::mount::Mount::transform`]'s is `testdata/mounts.json`.
     ///
@@ -936,7 +936,7 @@ pub fn home_value_by_key(
 /// The same answer, borrowed rather than cloned.
 ///
 /// What [`driving`] needs: a parameter's home value is looked up once per parameter
-/// per output frame, and cloning a colour at that rate to hand it straight to an
+/// per output frame, and cloning a color at that rate to hand it straight to an
 /// evaluator that only reads it is the sort of cost that becomes the whole frame on a
 /// rig of thousands.
 pub fn home_value_ref_by_key<'a>(
@@ -1180,7 +1180,7 @@ mod tests {
         let ParameterValue::Color { r, g, b, .. } =
             ParameterValue::rgb(0.9, 0.1, 0.5).nudged(-0.3).unwrap()
         else {
-            panic!("a nudged colour is a colour")
+            panic!("a nudged color is a color")
         };
         assert!((r - 0.6).abs() < 1e-5, "{r}");
         assert_eq!(g, 0.0, "the channel that would have gone under stops at the bottom");

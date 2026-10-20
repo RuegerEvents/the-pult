@@ -72,7 +72,7 @@ pub const SLEW_RATE: f64 = 0.05;
 /// consequence to know is that pausing tokio's clock does not fast-forward the show.
 ///
 /// The base is taken lazily on first use rather than at startup, so nothing has to
-/// remember to initialise it, and a restart re-reads the wall clock as it always did.
+/// remember to initialize it, and a restart re-reads the wall clock as it always did.
 ///
 /// This is what an offset is measured *against*, and it is the reason the arithmetic
 /// does not feed back on itself: a sample compares the reference's corrected clock

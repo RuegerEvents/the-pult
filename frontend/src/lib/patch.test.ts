@@ -138,7 +138,7 @@ describe('picking a kind', () => {
 });
 
 describe('defaults for a kind', () => {
-	it('gives colour a colour and intensity a number', () => {
+	it('gives color a color and intensity a number', () => {
 		expect(defaultValueFor('ColorRgb')).toEqual({ type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } });
 		expect(defaultValueFor('Intensity')).toEqual({ type: 'Float', value: 0 });
 		expect(defaultValueFor('GoboIndex')).toEqual({ type: 'Int', value: 0 });
@@ -158,11 +158,11 @@ describe('formatting a live value', () => {
 		expect(formatValue({ type: 'Float', value: 0 })).toBe('0%');
 	});
 
-	it('shows a colour as hex', () => {
+	it('shows a color as hex', () => {
 		expect(formatValue({ type: 'Color', value: { r: 1, g: 0.5, b: 0, overrides: {} } })).toBe('#ff8000');
 	});
 
-	it('clamps a colour rather than producing nonsense hex', () => {
+	it('clamps a color rather than producing nonsense hex', () => {
 		expect(formatValue({ type: 'Color', value: { r: 4, g: -1, b: 0, overrides: {} } })).toBe('#ff0000');
 	});
 
@@ -286,7 +286,7 @@ describe('address clashes', () => {
 	});
 
 	it('flags every fixture in a long chain of overlaps', () => {
-		// Each overlaps only its neighbours, so nothing is caught by a single
+		// Each overlaps only its neighbors, so nothing is caught by a single
 		// far-reaching fixture — the sweep has to carry the right one forward.
 		const fixtures = Array.from({ length: 20 }, (_, i) => atDmx(1, 1 + i * 2));
 		expect(clashingFixtures(fixtures, () => 3).size).toBe(20);
@@ -442,10 +442,10 @@ describe('what an operator calls a parameter', () => {
 	 * the type editor's selector and `parameterKindLabel` is the `live_fades` key.
 	 * Neither is a name to put in front of somebody.
 	 */
-	it('says colour rather than the map key', () => {
-		expect(displayLabel('ColorRgb')).toBe('Colour');
-		expect(displayLabel('ColorTemperature')).toBe('Colour temp.');
-		expect(displayLabel({ ColorWheel: 1 })).toBe('Colour wheel 1');
+	it('says color rather than the map key', () => {
+		expect(displayLabel('ColorRgb')).toBe('Color');
+		expect(displayLabel('ColorTemperature')).toBe('Color temp.');
+		expect(displayLabel({ ColorWheel: 1 })).toBe('Color wheel 1');
 	});
 
 	/** A number an operator counts from, not a tagged variant. */

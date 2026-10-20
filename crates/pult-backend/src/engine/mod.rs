@@ -38,7 +38,7 @@ use crate::{
 /// How often a collection may be broadcast whole while a burst of writes is arriving.
 ///
 /// A create has to send the collection, and the collection is the whole rig. At five
-/// thousand fixtures that is an expensive thing to serialise, and doing it per created
+/// thousand fixtures that is an expensive thing to serialize, and doing it per created
 /// row is what made patching a rig cost 89 seconds against 3 for everything else on the
 /// path. Fifty milliseconds is twenty a second: faster than anybody reads a list filling
 /// up, and 1/64th of what an import used to pay.
@@ -1128,7 +1128,7 @@ impl ShowEngine {
                     }
                     // The caller waits for the disk; the actor does not. Everything
                     // this command enqueued is handed to a task that answers when it
-                    // is durable, so the acknowledgement means exactly what it always
+                    // is durable, so the acknowledgment means exactly what it always
                     // meant while the next command is already being read. That is what
                     // gives the writer a group to commit: before this, the actor sat
                     // on each fsync and the writer never held more than one.
@@ -1645,7 +1645,7 @@ impl ShowEngine {
     /// Edge detection is the one thing that cannot be done from a function. A *Watch*
     /// node asks "when this parameter crosses a threshold", and answering that means
     /// having looked at it twice — so where everything else in the console stopped
-    /// materialising values, this keeps a sample, and only of what is actually
+    /// materializing values, this keeps a sample, and only of what is actually
     /// watched.
     ///
     /// Which is the whole difference from what it replaces. This used to be handed the
@@ -2705,7 +2705,7 @@ impl ShowEngine {
 
     /// Route a write to the right entity, generically.
     ///
-    /// Recognised shapes, for any registered table:
+    /// Recognized shapes, for any registered table:
     ///   `[table]`                      replace a singleton
     ///   `[table, field]`               patch a singleton field
     ///   `[table, "__create"]`          add to a collection
@@ -3291,7 +3291,7 @@ impl ShowEngine {
     /// **Only when absent.** `create_entity` does not check whether the id is already
     /// there, so an unconditional create at every load would rewrite the row on every
     /// start — and on a second station, replicate "Operator" over a name somebody
-    /// chose. The check is the guard, not an optimisation.
+    /// chose. The check is the guard, not an optimization.
     ///
     /// Unattributed, like the engine's other writes: nobody asked for it. An operator
     /// pressing Ctrl-Z on a fresh show should reach their own first change, not the

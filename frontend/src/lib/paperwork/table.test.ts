@@ -36,7 +36,7 @@ describe('a weight total', () => {
 		).toBe('≥ 50.0 kg');
 	});
 
-	it('says so when it rests on the catalogue', () => {
+	it('says so when it rests on the catalog', () => {
 		expect(
 			weightLabel({ ...NOTHING, items: 2, weight_kg: 53, weight_known: 2, weight_nominal: true })
 		).toBe('53.0 kg nominal');

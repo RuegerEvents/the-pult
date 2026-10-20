@@ -33,8 +33,8 @@ the tool therefore requires a licensed grandMA3 of your own.
 installation by `tools/wing-explorer/extract-wing-map.py`, and the generated
 `wing-map.json` is gitignored rather than committed.
 
-**The certificate exchange.** Container `0x0029` is the onPC licence dongle. It is named
-in the documentation so that it can be recognised and skipped, and it is not implemented
+**The certificate exchange.** Container `0x0029` is the onPC license dongle. It is named
+in the documentation so that it can be recognized and skipped, and it is not implemented
 — nothing here helps anybody run MA software they have not licensed. It also turned out
 not to be a precondition for the wing to work, so there was never a reason to go near
 it.

@@ -184,7 +184,7 @@
         "clauses": [
           {
             "combine": "Add",
-            "term": {"kind": "Sphere", "centre": {"x": 0.0, "y": 5.0, "z": 2.0}, "radius": 2.0}
+            "term": {"kind": "Sphere", "center": {"x": 0.0, "y": 5.0, "z": 2.0}, "radius": 2.0}
           }
         ],
         "order": {"kind": "Manual", "order": []}

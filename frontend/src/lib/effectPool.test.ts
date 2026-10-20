@@ -29,7 +29,7 @@ const chase: EffectLayer = {
 	spread_cycles: 1
 };
 
-const colour: EffectLayer = {
+const color: EffectLayer = {
 	...chase,
 	kind: 'ColorRgb',
 	low: { type: 'Color', value: { r: 1, g: 0, b: 0, overrides: {} } },
@@ -67,7 +67,7 @@ describe('applying a template', () => {
 
 	it('gives each layer to the fixtures that have its parameter', () => {
 		const { fixtures, types } = rig();
-		const applies = templateApply({ id: 't', layers: [chase, colour] }, ['a', 'b', 'c'], fixtures, types);
+		const applies = templateApply({ id: 't', layers: [chase, color] }, ['a', 'b', 'c'], fixtures, types);
 		expect(applies.map((a) => a.order)).toEqual([
 			['a', 'b', 'c'],
 			['a', 'c']
@@ -80,14 +80,14 @@ describe('applying a template', () => {
 
 	it('leaves out a layer nothing selected can take', () => {
 		const { fixtures, types } = rig();
-		const applies = templateApply({ id: 't', layers: [chase, colour] }, ['b'], fixtures, types);
+		const applies = templateApply({ id: 't', layers: [chase, color] }, ['b'], fixtures, types);
 		expect(applies).toHaveLength(1);
 		expect(havingKind('ColorRgb', ['b'], fixtures, types)).toEqual([]);
 	});
 });
 
 describe('a pixel has no dimmer', () => {
-	it('takes an intensity layer as a grey of that level', () => {
+	it('takes an intensity layer as a gray of that level', () => {
 		const { fixtures, types } = rig();
 		const [only] = templateApply({ id: 't', layers: [chase] }, ['p1', 'p2'], fixtures, types);
 		expect(only.kind).toBe('ColorRgb');
@@ -95,10 +95,10 @@ describe('a pixel has no dimmer', () => {
 		expect(only.specs.p2.high).toEqual({ type: 'Color', value: { r: 1, g: 1, b: 1, overrides: {} } });
 		expect(only.specs.p2.phase).toBeCloseTo(0.5);
 	});
-	it('but not where the template says what colour it is', () => {
+	it('but not where the template says what color it is', () => {
 		const { fixtures, types } = rig();
-		const applies = templateApply({ id: 't', layers: [chase, colour] }, ['p1', 'a'], fixtures, types);
-		// The intensity reaches the par; the colour reaches both; nothing greys the pixel.
+		const applies = templateApply({ id: 't', layers: [chase, color] }, ['p1', 'a'], fixtures, types);
+		// The intensity reaches the par; the color reaches both; nothing grays the pixel.
 		expect(applies.map((a) => [a.layer, a.kind, a.order])).toEqual([
 			[0, 'Intensity', ['a']],
 			[1, 'ColorRgb', ['p1', 'a']]
@@ -120,10 +120,10 @@ describe('a strip’s toggles', () => {
 	it('are the spreads the engine already has', () => {
 		expect(pixelSpread({ reverse: false, mirror: false })).toBe('Linear');
 		expect(pixelSpread({ reverse: true, mirror: false })).toBe('Reversed');
-		expect(pixelSpread({ reverse: true, mirror: true })).toBe('Centre');
-		expect(readPixelSpread('Centre')).toEqual({ reverse: false, mirror: true });
+		expect(pixelSpread({ reverse: true, mirror: true })).toBe('Center');
+		expect(readPixelSpread('Center')).toEqual({ reverse: false, mirror: true });
 	});
-	it('a gradient is evenly spaced crossfading colours', () => {
+	it('a gradient is evenly spaced crossfading colors', () => {
 		const curve = gradientCurve([
 			{ r: 1, g: 0, b: 0 },
 			{ r: 0, g: 0, b: 1 }
@@ -142,7 +142,7 @@ describe('the step grid', () => {
 		expect('Steps' in curve && curve.Steps[2].at).toBe(0.5);
 		expect('Steps' in curve && curve.Steps.every((s) => s.easing === 'Step')).toBe(true);
 	});
-	it('a colour step list is not a grid', () => {
+	it('a color step list is not a grid', () => {
 		expect(gridLevels(gradientCurve([{ r: 1, g: 0, b: 0 }]))).toBeNull();
 		expect(gridLevels({ Shape: 'Sine' })).toBeNull();
 	});

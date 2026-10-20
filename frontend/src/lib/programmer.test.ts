@@ -142,7 +142,7 @@ describe('reading a selection back', () => {
 		expect(commonValue(two, 'Intensity', showing)).toEqual({ value: level(0.5), mixed: false });
 	});
 
-	it('compares colours channel by channel', () => {
+	it('compares colors channel by channel', () => {
 		const red: ParameterValue = { type: 'Color', value: { r: 1, g: 0, b: 0, overrides: {} } };
 		const green: ParameterValue = { type: 'Color', value: { r: 0, g: 1, b: 0, overrides: {} } };
 		expect(
@@ -300,13 +300,13 @@ describe('values', () => {
 		expect(withFloat({ type: 'Float', value: 0 }, -1)).toEqual({ type: 'Float', value: 0 });
 	});
 
-	it('round-trips a colour through hex', () => {
+	it('round-trips a color through hex', () => {
 		expect(rgbToHex({ r: 1, g: 0, b: 0 })).toBe('#ff0000');
 		expect(hexToRgb('#ff0000')).toEqual({ r: 1, g: 0, b: 0 });
 		expect(hexToRgb('f00')).toEqual({ r: 1, g: 0, b: 0 });
 	});
 
-	it('refuses something that is not a colour', () => {
+	it('refuses something that is not a color', () => {
 		expect(hexToRgb('nonsense')).toBeNull();
 		expect(hexToRgb('#12345')).toBeNull();
 	});
@@ -470,7 +470,7 @@ describe('presets', () => {
 	});
 
 	/** A preset that also holds a position should not lose it because somebody
-	 *  re-grabbed the colour. */
+	 *  re-grabbed the color. */
 	it('merges rather than replacing when it is updated', () => {
 		const merged = mergePresetValues(preset.values, [
 			{ fixture_id: 'f1', parameter_kind: 'Intensity', value: value(0.2) }

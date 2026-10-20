@@ -37,7 +37,7 @@ Selecting fixtures
   at +10  /  at -10       ten percent brighter or darker than it is now
   full  /  out            the selection to 100% / 0%
   home                    every parameter back to where it rests — which for a
-                          house light is on, and for a mover is centred
+                          house light is on, and for a mover is centered
   clear                   empty the programmer (locked values stay)
   clear clear             also drop the selection
 

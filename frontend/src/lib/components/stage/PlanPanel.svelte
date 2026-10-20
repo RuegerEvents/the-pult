@@ -32,7 +32,7 @@
 
 	let mode = $state<'move' | 'program' | 'scale' | 'origin'>('program');
 	let uploading = $state(false);
-	/// Held between the two clicks of a measurement, then asked about in metres.
+	/// Held between the two clicks of a measurement, then asked about in meters.
 	let measured = $state<{ pixels: number } | null>(null);
 	let realLength = $state('');
 	let view = $state<StagePlanView | null>(null);
@@ -73,14 +73,14 @@
 					asset: uploaded.sha256,
 					width_px: uploaded.width_px,
 					height_px: uploaded.height_px,
-					// Centred on the origin, so the plan arrives around the show rather
+					// Centered on the origin, so the plan arrives around the show rather
 					// than off in a corner of it.
 					origin: {
 						x: (-uploaded.width_px * guessScale(uploaded.width_px)) / 2,
 						y: 0,
 						z: (-uploaded.height_px * guessScale(uploaded.width_px)) / 2
 					},
-					metres_per_pixel: guessScale(uploaded.width_px),
+					meters_per_pixel: guessScale(uploaded.width_px),
 					rotation_deg: 0,
 					opacity: 0.55,
 					visible: true
@@ -108,7 +108,7 @@
 			addToast('Two points that far apart cannot be that distance.', 'warning');
 			return;
 		}
-		await data.stage_plans.byId(plan.id).metres_per_pixel.set(scale);
+		await data.stage_plans.byId(plan.id).meters_per_pixel.set(scale);
 		measured = null;
 		mode = 'move';
 		view?.fit();
@@ -246,11 +246,11 @@
 					class="text-input narrow"
 					type="number"
 					step="0.1"
-					placeholder="metres"
+					placeholder="meters"
 					bind:value={realLength}
 					onkeydown={(e) => e.key === 'Enter' && applyScale()}
 				/>
-				metres apart.
+				meters apart.
 				<button class="primary" onclick={applyScale}>Set</button>
 				<button class="ghost" onclick={() => (measured = null)}>Start again</button>
 			{:else}

@@ -13,11 +13,11 @@
 //! 16-bit intensity divides by 65535 rather than by 255 and comes back as the same
 //! 0..1 it went out as.
 //!
-//! **A colour is assembled per parameter, not per channel.** Every emitter channel of
-//! one colour is read, turned into a level, and handed to
+//! **A color is assembled per parameter, not per channel.** Every emitter channel of
+//! one color is read, turned into a level, and handed to
 //! [`pult_render::color::unmix`] together — which is the only way the round trip can
 //! be exact on a fixture whose emitters the mix cannot derive. An RGBW head comes back
-//! as a colour with its white pinned where the mix would not have put it; a CMY head
+//! as a color with its white pinned where the mix would not have put it; a CMY head
 //! comes back as three overrides. Re-encoding either gives the bytes that arrived,
 //! and the corpus asserts exactly that.
 
@@ -55,7 +55,7 @@ pub fn read_bytes(channels: &[u8; UNIVERSE_SIZE], address: u16, offsets: &[u16])
 /// a number and nothing else, so the only thing that can say whether 128 is a half, a
 /// gobo or a closed relay is the parameter it landed on.
 ///
-/// `None` for the two that have no byte to read: a colour, which is assembled from
+/// `None` for the two that have no byte to read: a color, which is assembled from
 /// every emitter channel at once by [`crate::infra::connectors::dmx::Patch::decode`],
 /// and a line of text, which was never written to a slot in the first place.
 pub fn value_for(
@@ -100,7 +100,7 @@ pub fn level_of(channels: &[u8; UNIVERSE_SIZE], address: u16, layout: &DmxChanne
     read_bytes(channels, address, &layout.offsets) as f32 / max as f32
 }
 
-/// A colour from every emitter channel of one parameter that a universe was read for.
+/// A color from every emitter channel of one parameter that a universe was read for.
 ///
 /// `levels` is the type's own emitter order, which is the order [`pult_render::mix`]
 /// writes them in — so the primary each RGB component comes from is the same emitter

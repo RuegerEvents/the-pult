@@ -240,7 +240,7 @@
 					A beam is additive light, so this one keeps its dark ground — there is no
 					version of it on white.
 				{:else}
-					Drawn on white, with the models in flat grey.
+					Drawn on white, with the models in flat gray.
 				{/if}
 			</p>
 			<label class="row">
@@ -386,7 +386,7 @@
 					>
 						<option value="Left">The left end</option>
 						<option value="Right">The right end</option>
-						<option value="Centre">The centre line</option>
+						<option value="Center">The center line</option>
 					</select>
 				</label>
 				<label class="check indent">

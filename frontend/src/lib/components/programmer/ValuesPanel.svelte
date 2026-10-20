@@ -9,7 +9,7 @@
 	 * value can be parked and then reached again from a different selection.
 	 *
 	 * A row that the programmer holds is tinted amber, the same amber that marks a
-	 * live cue elsewhere. That is the whole of the priority rule, said in a colour:
+	 * live cue elsewhere. That is the whole of the priority rule, said in a color:
 	 * amber is what is reaching the rig.
 	 */
 
@@ -466,7 +466,7 @@
 		background: var(--bg-hover);
 	}
 	/* Amber, like everything else the programmer is holding over playback. */
-	/* A reference rather than a number. Cyan, the same colour the fixture sheet uses
+	/* A reference rather than a number. Cyan, the same color the fixture sheet uses
 	   for a value that came from somewhere other than here. */
 	.chip-preset {
 		font-size: 10px;

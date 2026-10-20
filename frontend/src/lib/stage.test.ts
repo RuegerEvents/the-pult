@@ -39,7 +39,7 @@ const plan = (over: Partial<StagePlan> = {}): StagePlan => ({
 	width_px: 2000,
 	height_px: 1000,
 	origin: { x: -10, y: 0, z: -5 },
-	metres_per_pixel: 0.01,
+	meters_per_pixel: 0.01,
 	rotation_deg: 0,
 	opacity: 0.6,
 	visible: true,
@@ -94,7 +94,7 @@ describe('a plan as a map', () => {
 		expect(pixelToPlan(plan(), 0, 0)).toEqual({ x: -10, z: -5 });
 	});
 
-	it('walks a pixel into metres', () => {
+	it('walks a pixel into meters', () => {
 		// 2000 px at 1 cm each is 20 m wide, so the far corner is 20 m across.
 		expect(pixelToPlan(plan(), 2000, 1000)).toEqual({ x: 10, z: 5 });
 	});
@@ -184,7 +184,7 @@ describe('what things are doing', () => {
 		expect(NOTHING_YET.at).toBeNull();
 	});
 
-	it('dims a colour by its own intensity', () => {
+	it('dims a color by its own intensity', () => {
 		const lit = showing({
 			Intensity: { type: 'Float', value: 0.5 },
 			ColorRgb: { type: 'Color', value: { r: 1, g: 0, b: 0, overrides: {} } }
@@ -192,7 +192,7 @@ describe('what things are doing', () => {
 		expect(fixtureTint(fixture(), lit)).toBe('rgb(128, 0, 0)');
 	});
 
-	it('takes a colour-only fixture at its word', () => {
+	it('takes a color-only fixture at its word', () => {
 		// No dimmer channel: reporting it dark because there is no Intensity would
 		// be a lie about a fixture that is plainly on.
 		const lit = showing({ ColorRgb: { type: 'Color', value: { r: 0, g: 1, b: 0, overrides: {} } } });
@@ -235,14 +235,14 @@ describe('pointing', () => {
 		expect(panAngle(fixture(), mover, showing({}))).toBeNull();
 	});
 
-	it('points a centred mover the way it hangs', () => {
+	it('points a centered mover the way it hangs', () => {
 		const facing = fixture({
 			position: facingTransform({ x: 0, y: 5, z: 0 }, { x: 0, y: -1, z: 1 })
 		});
 		expect(panAngle(facing, mover, panned(0.5))).toBeCloseTo(0, 6);
 	});
 
-	it('swings either side of centre', () => {
+	it('swings either side of center', () => {
 		expect(panAngle(fixture(), mover, panned(1))).toBeCloseTo(270, 6);
 		expect(panAngle(fixture(), mover, panned(0))).toBeCloseTo(-270, 6);
 	});
@@ -260,8 +260,8 @@ describe('pointing', () => {
 		fixture({
 			position: facingTransform({ x: 0, y: 6, z: 0 }, { x: 0, y: -1, z: 0 })
 		});
-	/** Where it is showing, pan and tilt centred unless said otherwise. */
-	const centred = (over: Record<string, ParameterValue> = {}) =>
+	/** Where it is showing, pan and tilt centered unless said otherwise. */
+	const centered = (over: Record<string, ParameterValue> = {}) =>
 		showing({
 			Pan: { type: 'Float', value: 0.5 },
 			Tilt: { type: 'Float', value: 0.5 },
@@ -269,18 +269,18 @@ describe('pointing', () => {
 		});
 
 	it('nods either side of the elevation it was hung at', () => {
-		expect(tiltAngle(hung(), head, centred())).toBeCloseTo(-90, 6);
+		expect(tiltAngle(hung(), head, centered())).toBeCloseTo(-90, 6);
 		expect(
-			tiltAngle(hung(), head, centred({ Tilt: { type: 'Float', value: 1 } }))
+			tiltAngle(hung(), head, centered({ Tilt: { type: 'Float', value: 1 } }))
 		).toBeCloseTo(45, 6);
 	});
 
 	it('has no tilt for a head that cannot nod', () => {
-		expect(tiltAngle(hung(), mover, centred())).toBeNull();
+		expect(tiltAngle(hung(), mover, centered())).toBeNull();
 	});
 
-	it('points a centred head the way it hangs', () => {
-		const beam = beamDirection(hung(), head, centred());
+	it('points a centered head the way it hangs', () => {
+		const beam = beamDirection(hung(), head, centered());
 		expect(beam.x).toBeCloseTo(0, 6);
 		expect(beam.y).toBeCloseTo(-1, 6);
 		expect(beam.z).toBeCloseTo(0, 6);
@@ -288,7 +288,7 @@ describe('pointing', () => {
 
 	it('tilts up through the horizontal', () => {
 		// Two thirds of the travel up from straight down is exactly level.
-		const level = centred({ Tilt: { type: 'Float', value: 0.5 + 90 / 270 } });
+		const level = centered({ Tilt: { type: 'Float', value: 0.5 + 90 / 270 } });
 		const beam = beamDirection(hung(), head, level);
 		expect(beam.y).toBeCloseTo(0, 6);
 		expect(beam.z).toBeCloseTo(1, 6);
@@ -296,7 +296,7 @@ describe('pointing', () => {
 
 	it('pans a tilted beam round the vertical', () => {
 		// Level, then a quarter turn: 90° of 540 is a sixth of the travel.
-		const swung = centred({
+		const swung = centered({
 			Pan: { type: 'Float', value: 0.5 + 90 / 540 },
 			Tilt: { type: 'Float', value: 0.5 + 90 / 270 }
 		});
@@ -306,7 +306,7 @@ describe('pointing', () => {
 	});
 
 	it('leaves a pan-only head where tilt would have put it', () => {
-		// The behaviour before tilt existed: swinging keeps the hung elevation.
+		// The behavior before tilt existed: swinging keeps the hung elevation.
 		const rigged = fixture({
 			position: facingTransform({ x: 0, y: 5, z: 0 }, { x: 0, y: -3, z: 4 })
 		});
@@ -331,7 +331,7 @@ describe('aiming a head', () => {
 		fixture({
 			position: facingTransform({ x: 0, y: 6, z: 0 }, { x: 0, y: -1, z: 0 })
 		});
-	const centred = (over: Record<string, ParameterValue> = {}) =>
+	const centered = (over: Record<string, ParameterValue> = {}) =>
 		showing({
 			Pan: { type: 'Float', value: 0.5 },
 			Tilt: { type: 'Float', value: 0.5 },
@@ -341,7 +341,7 @@ describe('aiming a head', () => {
 	it('lands the beam where it was asked to', () => {
 		const target = { x: 3, y: 0, z: 2 };
 		const { pan, tilt } = aimAt(hung(), head, target);
-		const aimed = centred({
+		const aimed = centered({
 			Pan: { type: 'Float', value: pan! },
 			Tilt: { type: 'Float', value: tilt! }
 		});
@@ -376,9 +376,9 @@ describe('aiming a head', () => {
 
 	it('keeps the beam spot within reach of the plan', () => {
 		// Tilted a long way past the horizontal, so the beam never meets the floor and
-		// the honest landing point is tens of metres away — off any plan anyone is
+		// the honest landing point is tens of meters away — off any plan anyone is
 		// looking at, and out from under the pointer trying to drag it.
-		const flat = centred({ Tilt: { type: 'Float', value: 1 } });
+		const flat = centered({ Tilt: { type: 'Float', value: 1 } });
 		const far = beamSpot(hung(), head, flat)!;
 		expect(Math.hypot(far.x, far.z)).toBeGreaterThan(6);
 
@@ -387,7 +387,7 @@ describe('aiming a head', () => {
 	});
 
 	it('leaves a beam that lands well inside the cap alone', () => {
-		const down = beamSpot(hung(), head, centred(), { maxThrow: 40 })!;
+		const down = beamSpot(hung(), head, centered(), { maxThrow: 40 })!;
 		expect(down.x).toBeCloseTo(0, 6);
 		expect(down.z).toBeCloseTo(0, 6);
 		expect(down.y).toBeCloseTo(0, 6);
@@ -395,7 +395,7 @@ describe('aiming a head', () => {
 
 	it('has nothing to aim for a fixture that has never been placed', () => {
 		expect(aimAt(fixture(), head, { x: 0, y: 0, z: 0 })).toEqual({ pan: null, tilt: null });
-		expect(beamSpot(fixture(), head, centred())).toBeNull();
+		expect(beamSpot(fixture(), head, centered())).toBeNull();
 	});
 });
 
@@ -461,8 +461,8 @@ describe('the rig in three dimensions', () => {
 			const drawn = drawnLength(throwToFloor, direction, spread, lens);
 			expect(drawn).toBeGreaterThan(throwToFloor);
 			const radius = lens + drawn * spread;
-			const centreY = height + drawn * direction.y;
-			const highest = centreY + radius * Math.sin(theta);
+			const centerY = height + drawn * direction.y;
+			const highest = centerY + radius * Math.sin(theta);
 			expect(highest).toBeLessThanOrEqual(1e-6);
 			// And only just: the beam is not run on further than that needs.
 			expect(highest).toBeGreaterThan(-1e-3);

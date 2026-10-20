@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS scene_objects (
     "class" TEXT,
     "geometry" TEXT NOT NULL,
     "symbol" TEXT,
-    "catalogue" TEXT,
+    "catalog" TEXT,
     "properties" TEXT NOT NULL,
     "locked" INTEGER NOT NULL,
     "weight_kg" TEXT
@@ -213,7 +213,7 @@ CREATE TABLE IF NOT EXISTS stage_plans (
     "width_px" INTEGER NOT NULL,
     "height_px" INTEGER NOT NULL,
     "origin" TEXT NOT NULL,
-    "metres_per_pixel" REAL NOT NULL,
+    "meters_per_pixel" REAL NOT NULL,
     "rotation_deg" REAL NOT NULL,
     "opacity" REAL NOT NULL,
     "visible" INTEGER NOT NULL
@@ -249,7 +249,7 @@ CREATE TABLE IF NOT EXISTS timelines (
 CREATE TABLE IF NOT EXISTS users (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
-    "colour" TEXT NOT NULL
+    "color" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS variables (

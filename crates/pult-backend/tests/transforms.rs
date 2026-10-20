@@ -1,6 +1,6 @@
 //! The other half of `testdata/transforms.json`: a matrix as a file writes one.
 //!
-//! `pult-mvr` converts between MVR's millimetre Z-up space and the console's, and
+//! `pult-mvr` converts between MVR's millimeter Z-up space and the console's, and
 //! `pult-schema` composes placements in the console's. Neither can depend on the
 //! other — one is a format library and the other is the data model — so the seam
 //! between them is a corpus, read here, where both already are.

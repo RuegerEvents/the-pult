@@ -13,7 +13,7 @@ import { unpack } from './evaluator.js';
  * in place of a TypeScript twin: there is only one implementation of the arithmetic,
  * so what has to be checked is not two implementations agreeing but two compilations
  * of one — and a wasm build that rounds a float differently, or a boundary that packs
- * a colour wrong, fails here rather than on stage.
+ * a color wrong, fails here rather than on stage.
  *
  * Skipped, loudly, when the artifact has not been built. `scripts/build-evaluator.sh`
  * writes it, CI runs that, and a run without it is a run that has not checked this —
@@ -243,7 +243,7 @@ describe('a recording, played in the page', () => {
 	});
 });
 
-describe('mixing a colour onto the dies that make it', () => {
+describe('mixing a color onto the dies that make it', () => {
 	it('agrees with the native build on every case in the corpus', () => {
 		if (!built) return;
 		expect(mixCorpus.cases.length).toBeGreaterThan(10);
@@ -271,7 +271,7 @@ describe('mixing a colour onto the dies that make it', () => {
 	});
 });
 
-describe("a colour's pinned emitters", () => {
+describe("a color's pinned emitters", () => {
 	it('come back from the evaluator, which the packed answer has no room for', () => {
 		if (!built) return;
 		const evaluator = new built.Evaluator();
@@ -283,7 +283,7 @@ describe("a colour's pinned emitters", () => {
 		expect(evaluator.color_overrides('spot/ColorRgb', 0)).toEqual({ White: 0.25 });
 	});
 
-	it('are an empty map on anything that is not a colour', () => {
+	it('are an empty map on anything that is not a color', () => {
 		if (!built) return;
 		const evaluator = new built.Evaluator();
 		evaluator.set_driving({ 'spot/Intensity': { home: { type: 'Float', value: 0.5 } } });

@@ -56,7 +56,7 @@
 	let reach = $state(30);
 
 	/**
-	 * The centre of a geometric term.
+	 * The center of a geometric term.
 	 *
 	 * Defaults to the middle of what is selected right now, which is almost always
 	 * what somebody means by "around here" — and saves typing three numbers to say
@@ -76,7 +76,7 @@
 	});
 
 	function addTerm() {
-		const centre = around;
+		const center = around;
 		const term: Term | null =
 			kind === 'Everything'
 				? { kind: 'Everything' }
@@ -85,19 +85,19 @@
 					: kind === 'Named' && text.trim()
 						? { kind: 'Named', text }
 						: kind === 'Sphere'
-							? { kind: 'Sphere', centre, radius }
+							? { kind: 'Sphere', center, radius }
 							: kind === 'Box'
 								? {
 										kind: 'Box',
-										from: { x: centre.x - radius, y: centre.y - radius, z: centre.z - radius },
-										to: { x: centre.x + radius, y: centre.y + radius, z: centre.z + radius }
+										from: { x: center.x - radius, y: center.y - radius, z: center.z - radius },
+										to: { x: center.x + radius, y: center.y + radius, z: center.z + radius }
 									}
 								: kind === 'Cone'
 									? {
 											// Down the room from front of house, which is the shot an
 											// operator means by "that lot over there".
 											kind: 'Cone',
-											from: { x: centre.x, y: centre.y, z: centre.z + reach },
+											from: { x: center.x, y: center.y, z: center.z + reach },
 											direction: { x: 0, y: 0, z: -1 },
 											angleDeg,
 											reach

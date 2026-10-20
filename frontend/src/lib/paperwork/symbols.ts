@@ -48,10 +48,10 @@ export function resolveSymbol(type: FixtureType | undefined, choice?: PlanSymbol
 	return 'generic';
 }
 
-/** The footprint a generic symbol is drawn at, in metres. */
+/** The footprint a generic symbol is drawn at, in meters. */
 function footprint(type: FixtureType | undefined): { w: number; d: number } {
 	const dimensions = type?.physical?.dimensions_m as Vec3 | null | undefined;
-	// A quarter of a metre square is a par can, which is the smallest thing anybody
+	// A quarter of a meter square is a par can, which is the smallest thing anybody
 	// hangs and the right guess for a type that says nothing about its own size.
 	return {
 		w: Math.max(dimensions?.x ?? 0.25, 0.05),
@@ -160,7 +160,7 @@ function geometryOutline(type: FixtureType, basis: Basis, scale: number): PathIt
 }
 
 /**
- * A head's symbol, in millimetres about its own centre, ready to be translated to
+ * A head's symbol, in millimeters about its own center, ready to be translated to
  * where the fixture is.
  *
  * The thumbnail source is not here: it is a raster placement rather than a path, so it
@@ -195,7 +195,7 @@ export function placeSymbol(paths: PathItem[], at: Pt, rotateDeg: number): PathI
 	}));
 }
 
-/** How big a thumbnail is drawn, in millimetres: the type's own footprint. */
+/** How big a thumbnail is drawn, in millimeters: the type's own footprint. */
 export function thumbnailSize(type: FixtureType | undefined, scale: number): { w: Mm; h: Mm } {
 	const { w, d } = footprint(type);
 	return { w: w * scale, h: d * scale };

@@ -227,7 +227,7 @@ export function freeze() {
  * question is "whatever is downstage".
  *
  * Out-of-range indices leave the selection alone rather than throwing — a drop that
- * lands outside the list is a cancelled drag, not an error.
+ * lands outside the list is a canceled drag, not an error.
  */
 export function reorder(from: number, to: number) {
 	const ids = get(selection);

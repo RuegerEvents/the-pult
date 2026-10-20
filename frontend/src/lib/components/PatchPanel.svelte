@@ -152,7 +152,7 @@
 	 * Change a fixture's mode, having said what it will cost.
 	 *
 	 * A basic mode has no zoom, and a cue that captured one goes on saying so while
-	 * nothing sends it. Finding that out on stage is the failure this dialogue exists
+	 * nothing sends it. Finding that out on stage is the failure this dialog exists
 	 * to prevent — so the parameters this show's cues capture and the new mode does
 	 * not place are named *before* the write, and the operator decides.
 	 */
@@ -376,7 +376,7 @@
 								{#if $unlocked}
 									<!-- Dragging in the plan is right for a whole rig at once and
 									     useless for the one light that has to be at exactly 4.2
-									     metres because the drawing says so. -->
+									     meters because the drawing says so. -->
 									<PositionEditor
 										position={fixture.position}
 										onchange={(next) => data.fixtures.byId(fixture.id).position.set(next)}

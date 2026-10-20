@@ -384,7 +384,7 @@ macro_rules! plugin_main {
             impl $crate::exports::pult::plugin::rpc::Guest for Component {
                 fn handle(method: String, args: String, ctx: String) -> Result<String, String> {
                     let mut guard = INSTANCE.lock().unwrap();
-                    let plugin = guard.as_mut().ok_or("plugin not initialised")?;
+                    let plugin = guard.as_mut().ok_or("plugin not initialized")?;
                     let result =
                         $crate::PultPlugin::handle(plugin, &method, parse(&args), parse(&ctx))?;
                     Ok(result.to_string())

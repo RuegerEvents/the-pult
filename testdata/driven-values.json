@@ -10,7 +10,7 @@
     "curves, step lists, spread, phase, direction, width, master rates, priority and",
     "home fallback, and two of it would drift — so what has to be guarded is not two",
     "implementations agreeing but two *compilations* of one agreeing. A wasm build",
-    "that optimises a float differently, or a boundary that packs a colour wrong, is",
+    "that optimizes a float differently, or a boundary that packs a color wrong, is",
     "exactly the failure this catches, and it shows up here rather than as a screen",
     "disagreeing with the lamps.",
     "",
@@ -422,7 +422,7 @@
       }
     },
     {
-      "name": "a colour fades channel by channel",
+      "name": "a color fades channel by channel",
       "driving": {
         "fade": {
           "from": {
@@ -1010,7 +1010,7 @@
       }
     },
     {
-      "name": "a colour effect blends between two colours",
+      "name": "a color effect blends between two colors",
       "driving": {
         "effect": {
           "effect_id": "00000000-0000-0000-0000-000000000000",
@@ -1567,7 +1567,7 @@
       }
     },
     {
-      "name": "a colour a cue pinned an emitter on rests there",
+      "name": "a color a cue pinned an emitter on rests there",
       "driving": {
         "home": {
           "type": "Color",
@@ -1595,7 +1595,7 @@
       }
     },
     {
-      "name": "a colour written before overrides existed reads as one with none",
+      "name": "a color written before overrides existed reads as one with none",
       "driving": {
         "home": {
           "type": "Color",
@@ -1618,7 +1618,7 @@
       }
     },
     {
-      "name": "a fade between two colours moves the pinned emitter with the rest",
+      "name": "a fade between two colors moves the pinned emitter with the rest",
       "driving": {
         "fade": {
           "from": {

@@ -19,17 +19,17 @@ import type { Mount, StockPiece, Transform, Vec3 } from './generated/index.js';
 import { IDENTITY } from './scene.js';
 
 /**
- * How far below the chord a clamped fixture's body sits, in metres.
+ * How far below the chord a clamped fixture's body sits, in meters.
  *
  * A hook clamp plus the top of a body: 205 mm. On an F34, whose chords are 145 mm
- * either side of the centre line, that puts a hung lantern 350 mm below the bar.
+ * either side of the center line, that puts a hung lantern 350 mm below the bar.
  */
 export const HUNG_BELOW = 0.205;
 
 /**
  * A line a clamp can go round, in the piece's own frame.
  *
- * Always along **+X**, which is the axis every straight piece in the catalogue runs
+ * Always along **+X**, which is the axis every straight piece in the catalog runs
  * along; `at` is where the line crosses `x = 0`, so `at.x` is always nought.
  */
 export type Chord = { at: Vec3 };
@@ -113,7 +113,7 @@ function quarterTurn(dy: number, dz: number): number {
 /**
  * The chords of whatever a light is being dragged onto.
  *
- * A catalogue piece declares its own. Anything else — a truss out of somebody's
+ * A catalog piece declares its own. Anything else — a truss out of somebody's
  * drawing — gets **one**, worked out from the mesh's bounds: a line along the long
  * axis at the bottom face. Which is a guess, and deliberately the smallest one
  * available: the console does not know whether that mesh is a box truss or a ladder,

@@ -618,7 +618,7 @@ async fn forget_the_row(bundle: &Path, id: uuid::Uuid) {
     pool.close().await;
 }
 
-// ── Travelling ────────────────────────────────────────────────────────────────
+// ── Traveling ────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_show_goes_out_as_one_file_and_comes_back_as_a_show() {

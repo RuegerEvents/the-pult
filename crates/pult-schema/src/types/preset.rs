@@ -7,11 +7,11 @@
 //!
 //! # Any mix, one pool
 //!
-//! Other desks separate intensity, position, colour and beam palettes. This one keeps
+//! Other desks separate intensity, position, color and beam palettes. This one keeps
 //! a single flat pool of presets whose values may be any mixture — a preset *is* a
-//! look, and a look is usually a position and a colour together. The group tags an
+//! look, and a look is usually a position and a color together. The group tags an
 //! operator filters by (I / P / C / B / O) are **derived from the keys** it holds and
-//! never stored, so a preset that grows a colour is a colour preset from that moment
+//! never stored, so a preset that grows a color is a color preset from that moment
 //! and nobody has to reclassify it.
 //!
 //! # Reference first, literal beside it

@@ -248,7 +248,7 @@ impl SessionManager {
                 let show_id = self.discovered_show_ids.get(&session_id).copied().unwrap_or_default();
                 let leader = self.discovered_leader_ids.get(&session_id).copied().unwrap_or(self.node_id);
 
-                // Every address it advertised that could be dialled from here, in the
+                // Every address it advertised that could be dialed from here, in the
                 // order they are worth trying. The sync side works down the list,
                 // because "the address it gave" is several addresses and which of them
                 // reaches this machine is not something either end can know on its own.
@@ -413,7 +413,7 @@ impl SessionManager {
                     let reachable =
                         reachable_at(info.get_addresses().iter().copied(), info.get_port());
                     let Some(sync_addr) = reachable.first().copied() else {
-                        // Nothing it advertised can be dialled from here. Not listed,
+                        // Nothing it advertised can be dialed from here. Not listed,
                         // because a session in the list is one an operator can press
                         // Join on — but said out loud, because a station that is
                         // plainly there and cannot be reached is worth a line in the
@@ -473,7 +473,7 @@ impl SessionManager {
 
 // ── Where a discovered station can actually be reached ────────────────────────
 
-/// The addresses a discovered station can be dialled at, best first.
+/// The addresses a discovered station can be dialed at, best first.
 ///
 /// mDNS hands over a `HashSet`, so "the first address" is not the first the other
 /// station advertised — it is whatever the hash order happens to give, and it can be a
@@ -491,7 +491,7 @@ impl SessionManager {
 /// stations agreeing about which path they are on.
 ///
 /// **An IPv6 link-local address is dropped rather than ranked last**, because it cannot
-/// be dialled at all: `fe80::/10` is only meaningful together with the interface it was
+/// be dialed at all: `fe80::/10` is only meaningful together with the interface it was
 /// learned on, and mDNS does not say which that was — so the `SocketAddr` built from it
 /// has no scope id and the connect fails with "No route to host". That is the bug this
 /// function exists for. Keeping it as a last resort would only spend a timeout before
@@ -500,13 +500,13 @@ fn reachable_at(addresses: impl IntoIterator<Item = IpAddr>, port: u16) -> Vec<S
     let mut ranked: Vec<(u8, IpAddr)> =
         addresses.into_iter().filter_map(|ip| reach(&ip).map(|rank| (rank, ip))).collect();
     // By address as well as by rank, so a station with two equally good addresses is
-    // dialled at the same one every time and the log is worth reading.
+    // dialed at the same one every time and the log is worth reading.
     ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     ranked.dedup();
     ranked.into_iter().map(|(_, ip)| SocketAddr::new(ip, port)).collect()
 }
 
-/// How far an address reaches, lower being further. `None` cannot be dialled at all.
+/// How far an address reaches, lower being further. `None` cannot be dialed at all.
 fn reach(ip: &IpAddr) -> Option<u8> {
     match ip {
         // Not destinations: nothing is listening at "any address", and a console does
@@ -549,7 +549,7 @@ mod tests {
     /// The bug, in one line. A station on macOS advertises an ordinary IPv4 address and
     /// a link-local IPv6 one; mDNS hands them over as a `HashSet`, so taking "the
     /// first" took whichever the hash order gave — and half the time that was the
-    /// `fe80::` one, which cannot be dialled without the interface it was learned on.
+    /// `fe80::` one, which cannot be dialed without the interface it was learned on.
     /// Two consoles found each other and never synced.
     #[test]
     fn a_link_local_ipv6_address_is_not_offered_at_all() {

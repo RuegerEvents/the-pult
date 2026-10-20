@@ -53,7 +53,7 @@ pub enum TimelineSource {
     ///
     /// `offset_frames` is signed and is subtracted from the decoded position, because
     /// a show that starts at `01:00:00:00` is the normal case rather than the odd one:
-    /// timecode from an hour is how a reel says "this is the programme and not the
+    /// timecode from an hour is how a reel says "this is the program and not the
     /// leader".
     Ltc { fps: LtcRate, offset_frames: i64 },
 }

@@ -321,8 +321,8 @@
 								<!-- Of *a core*, which is what a process CPU percentage means: a
 								     multi-threaded console can exceed 100%. The machine's figure
 								     below is of every core together, so the two are on different
-								     scales and both say which — an unlabelled 14.6% beside an
-								     unlabelled 5.9% reads as the console using more than the box. -->
+								     scales and both say which — an unlabeled 14.6% beside an
+								     unlabeled 5.9% reads as the console using more than the box. -->
 								<dt>CPU</dt>
 								<dd
 									class="num"

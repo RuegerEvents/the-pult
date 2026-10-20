@@ -9,7 +9,7 @@ evidence implies and nobody has confirmed yet.
 Reverse engineering for interoperability stands on EU Software Directive art. 5(3) and
 art. 6 — non-excludable under art. 8, which in German law is §69d(3), §69e and §69g(2)
 UrhG — and on 17 U.S.C. §1201(f) in the United States. One part of what crosses this bus
-is deliberately out of scope: the wing is also the onPC licence dongle, and
+is deliberately out of scope: the wing is also the onPC license dongle, and
 `CollectCertificates` / `SendCertificate` is that exchange. Nothing here reimplements
 it, and it turned out not to be a precondition for the wing to run, so nothing needs to.
 
@@ -112,7 +112,7 @@ chunk := u16 tag            little endian
 The whole frame is one chunk whose tag is `0x5342` — ASCII `BS`, which is why every
 frame begins `42 53`. A frame is therefore exactly `4 + len` bytes.
 
-The "24-byte header" of the first reading was an artefact: it is not a header at all,
+The "24-byte header" of the first reading was an artifact: it is not a header at all,
 but the root's four bytes, plus the `0x0024` sender-address chunk with its eight bytes
 of body, plus the next chunk's own four. The heartbeat in full:
 
@@ -140,7 +140,7 @@ zero bytes and never fills it in.
 | `0x0026` | wing → host | capabilities reply |
 | `0x0027` | both | real-time I/O — keys, faders, encoders, LEDs, DMX |
 | `0x0028` | both | the application download |
-| `0x0029` | both | the certificate exchange, i.e. the licence dongle. Out of scope |
+| `0x0029` | both | the certificate exchange, i.e. the license dongle. Out of scope |
 | `0x002a` | wing → host | empty; sent once, at the end of the boot |
 
 ### Inside `0x0027`, which is the one that matters
@@ -200,7 +200,7 @@ announces, not something the boot sequence walks into.
 MA's own naming for this layer is visible in its symbols: `Chunk::VerifyMain illegal MainTag`,
 `Chunk::Verify illegal subchunks`, `Chunk::VerifyMain wrong total size`, and
 `Manet::SecureProtocolRemoteIO`. It is the same chunked RemoteIO protocol the network
-wings speak, tunnelled over two bulk pipes — which is worth knowing, because it means an
+wings speak, tunneled over two bulk pipes — which is worth knowing, because it means an
 Ethernet wing and a USB wing carry the same payloads inside different framing.
 
 ## Four blocks come in, one goes out
@@ -287,7 +287,7 @@ the wing reports `Digital in capabilities: 7` over USB, so the two agree.
 ### LED-Data — 253 bytes, outbound
 
 One brightness byte per LED channel, sent about every 16 ms whether or not anything
-changed. An LED's byte offsets come from MA's table: single-colour LEDs carry `R` only,
+changed. An LED's byte offsets come from MA's table: single-color LEDs carry `R` only,
 31 of the 160 carry `R`, `G` and `B`. The highest offset in the table is **252** against
 a 253-byte frame, which is how we know the frame is exactly the LED array and carries no
 trailer.

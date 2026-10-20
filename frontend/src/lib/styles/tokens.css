@@ -2,7 +2,7 @@
  * The console's palette, in one place.
  *
  * Every panel written before this one hard-codes the same dozen hex values, and they
- * had already begun to drift — three greys for the same border, two blues for the
+ * had already begun to drift — three grays for the same border, two blues for the
  * same accent. New components use these; the older ones are left alone rather than
  * churned, so a diff that says "the store menu" is about the store menu.
  */
@@ -40,7 +40,7 @@
 	 * what anybody who has stood behind a desk already reads without being told, and
 	 * a private palette would cost exactly that recognition for nothing. The
 	 * programmer's is `--live`, which is already the console's "this is reaching the
-	 * rig", so it is one colour and not two that have to be kept equal.
+	 * rig", so it is one color and not two that have to be kept equal.
 	 */
 	--src-programmer: var(--live);
 	--src-cue: #fff;

@@ -141,7 +141,7 @@ impl InputHandle {
 /// CID that is stable for the life of a sender, and Art-Net carries nothing at all, so
 /// the datagram's source address is the only identity there is. Which means a guest
 /// console that changes its IP looks like a new Art-Net source and an old one that
-/// times out — the right behaviour, and one nothing here can improve on.
+/// times out — the right behavior, and one nothing here can improve on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SourceId {
     Cid([u8; 16]),

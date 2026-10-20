@@ -88,7 +88,7 @@ pub struct Station {
     /// that was told about a fade once are not two samples of one number.
     ///
     /// Defaulted, so a peer running a build that cannot say still sends a row that
-    /// deserialises.
+    /// deserializes.
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub frame_costs: Vec<FrameCost>,
@@ -101,7 +101,7 @@ pub struct Station {
     /// a station at 4% on a machine at 96% is not a comfortable station, it is a
     /// console about to be starved by something nobody is looking at.
     ///
-    /// All defaulted, so a peer on an older build still deserialises.
+    /// All defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub machine: MachineStats,
@@ -119,7 +119,7 @@ pub struct Station {
     /// sends to itself would otherwise arrive twice — sent and received — and swamp
     /// the figure it is there to give.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub net_received: u64,
@@ -152,7 +152,7 @@ pub struct Station {
     /// each one says what it took. `None` on a leader, which is at the top of the
     /// ladder rather than in a slot.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub sacn_slot: Option<u8>,
@@ -249,7 +249,7 @@ pub struct FrameCost {
     /// half of emitting to work on — assembly and the socket writes are both per
     /// universe, and they do not respond to the same fixes.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub assembling_mean_ms: f32,
     /// How many frames the window contained. Never zero: a connector that emitted
@@ -270,7 +270,7 @@ pub struct FrameCost {
     /// UDP, IP and Ethernet headers under it. A wire carries perhaps 5% more than
     /// this says.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub bytes: u64,
     #[serde(default)]

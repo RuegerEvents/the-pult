@@ -82,7 +82,7 @@ describe('dragging a cue somewhere else', () => {
 /**
  * `testdata/tracking.json` is read here and by
  * `crates/pult-schema/tests/tracking_corpus.rs`. "A cue is the stack up to it" is
- * evaluated twice — the station takes cues with it and the browser colours a sheet
+ * evaluated twice — the station takes cues with it and the browser colors a sheet
  * with it — and this file is what makes the two the same rule rather than two
  * readings of one sentence.
  */

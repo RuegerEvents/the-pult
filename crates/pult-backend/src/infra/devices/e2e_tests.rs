@@ -671,7 +671,7 @@ fn type_of<'a>(
 }
 
 #[tokio::test]
-async fn a_v0_node_is_a_fixture_per_head_and_each_strip_has_its_own_colour() {
+async fn a_v0_node_is_a_fixture_per_head_and_each_strip_has_its_own_color() {
     let h = harness().await;
     let _sim = a_simulated_node(&h, ModuleKind::NodeV0, "e2e-v0").await;
     let node = h.devices.adopt("e2e-v0".into()).await.unwrap();
@@ -733,7 +733,7 @@ async fn a_strip_patched_in_sacn_is_a_fixture_per_pixel_and_the_node_is_told() {
     // Its ports went away on the node, and so did its parameters here.
     let types = types(&h).await;
     let strip = fixtures.iter().find(|f| f.id == head).unwrap();
-    assert!(type_of(&types, strip).parameters.is_empty(), "the cells carry the colour now");
+    assert!(type_of(&types, strip).parameters.is_empty(), "the cells carry the color now");
 
     let groups: Vec<pult_schema::types::group::Group> = rows(&h, "groups").await;
     assert!(groups.iter().any(|g| g.id == pixels::strip_group_id("e2e-sacn", 2)));

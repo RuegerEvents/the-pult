@@ -5,8 +5,8 @@
 //! that has never imported an MVR has no meshes at all, so a truss it makes for
 //! itself is an empty group in the rig view and its lights hang in the air.
 //!
-//! So there is a small catalogue of standard pieces, named rather than modelled. A
-//! `SceneObject` carrying `catalogue = "f34-2m"` is a two-metre length of the box
+//! So there is a small catalog of standard pieces, named rather than modeled. A
+//! `SceneObject` carrying `catalog = "f34-2m"` is a two-meter length of the box
 //! truss most of Europe hangs its rigs on.
 //!
 //! # What is here
@@ -86,7 +86,7 @@ pub enum ConnectorKind {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, TS)]
 #[ts(export)]
 pub struct Connector {
-    /// The point the joint is at, in metres.
+    /// The point the joint is at, in meters.
     pub at: Vec3,
     /// Which way it faces — outwards, away from the piece. Two connectors mate when
     /// their points meet and their facings are opposite.
@@ -127,7 +127,7 @@ pub struct Property {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, TS)]
 #[ts(export)]
 pub struct StockPiece {
-    /// What a `SceneObject::catalogue` holds. Stable: it is written into showfiles.
+    /// What a `SceneObject::catalog` holds. Stable: it is written into showfiles.
     pub id: &'static str,
     /// What to call it in a list.
     pub title: &'static str,
@@ -135,10 +135,10 @@ pub struct StockPiece {
     /// What kind of scene object one of these is, so a console making one does not
     /// have to decide separately and get it wrong.
     pub kind: SceneObjectKind,
-    /// Its size in metres: along X, up Y, and along Z. A piece is drawn at this size
+    /// Its size in meters: along X, up Y, and along Z. A piece is drawn at this size
     /// and then scaled by the object's own transform like anything else.
     pub size: Vec3,
-    /// Where it bolts to its neighbours.
+    /// Where it bolts to its neighbors.
     pub connectors: &'static [Connector],
     /// The lines a clamp can go round. Empty for anything nothing hangs off.
     pub chords: &'static [Chord],
@@ -148,7 +148,7 @@ pub struct StockPiece {
     ///
     /// **Nominal, and a loading table says so.** These are round figures for the
     /// class of part — a 290 mm four-chord box truss of the F34 / FD34 / X30D
-    /// family, 48.3 × 4 mm steel tube, an aluminium-and-ply stage deck — taken at
+    /// family, 48.3 × 4 mm steel tube, an aluminum-and-ply stage deck — taken at
     /// the heavy end of the range, because the direction to be wrong in about a
     /// load is upwards. They are not any one manufacturer's data sheet and must not
     /// be read as one: a rig on somebody else's truss overrides the piece with
@@ -159,7 +159,7 @@ pub struct StockPiece {
     pub weight_kg: Option<f32>,
 }
 
-/// The width of an F34 chord square, in metres.
+/// The width of an F34 chord square, in meters.
 ///
 /// 290 mm, which is the figure the whole family is named for and the reason a light
 /// clamped to one sits where it does. Kept as a constant because three of the
@@ -169,7 +169,7 @@ pub const F34: f32 = 0.29;
 /// A scaff bar: 48.3 mm, the diameter every hook clamp is cut for.
 pub const PIPE_DIAMETER: f32 = 0.0483;
 
-/// How thick a base or top plate's steel is, in metres.
+/// How thick a base or top plate's steel is, in meters.
 pub const PLATE_STEEL: f32 = 0.03;
 
 /// And how tall the whole fitting is: the plate plus the stubs the truss bolts to.
@@ -178,7 +178,7 @@ pub const PLATE_STEEL: f32 = 0.03;
 /// plate whose size stopped at the steel would put a tower 60 mm into the floor.
 pub const PLATE_HEIGHT: f32 = PLATE_STEEL + 0.06;
 
-const fn metres(x: f32, y: f32, z: f32) -> Vec3 {
+const fn meters(x: f32, y: f32, z: f32) -> Vec3 {
     Vec3 { x, y, z }
 }
 
@@ -198,18 +198,18 @@ const BOX_CHORDS: &[Chord] = &[
 /// A pipe's one chord: the tube itself.
 const PIPE_CHORDS: &[Chord] = &[Chord::at(0.0, 0.0)];
 
-/// The two ends of a one-metre length of box truss, and so on for the others.
+/// The two ends of a one-meter length of box truss, and so on for the others.
 macro_rules! truss_ends {
     ($half:expr) => {
         &[
             Connector::new(
-                metres(-$half, 0.0, 0.0),
-                metres(-1.0, 0.0, 0.0),
+                meters(-$half, 0.0, 0.0),
+                meters(-1.0, 0.0, 0.0),
                 ConnectorKind::TrussEnd,
             ),
             Connector::new(
-                metres($half, 0.0, 0.0),
-                metres(1.0, 0.0, 0.0),
+                meters($half, 0.0, 0.0),
+                meters(1.0, 0.0, 0.0),
                 ConnectorKind::TrussEnd,
             ),
         ]
@@ -220,11 +220,11 @@ macro_rules! pipe_ends {
     ($half:expr) => {
         &[
             Connector::new(
-                metres(-$half, 0.0, 0.0),
-                metres(-1.0, 0.0, 0.0),
+                meters(-$half, 0.0, 0.0),
+                meters(-1.0, 0.0, 0.0),
                 ConnectorKind::PipeEnd,
             ),
-            Connector::new(metres($half, 0.0, 0.0), metres(1.0, 0.0, 0.0), ConnectorKind::PipeEnd),
+            Connector::new(meters($half, 0.0, 0.0), meters(1.0, 0.0, 0.0), ConnectorKind::PipeEnd),
         ]
     };
 }
@@ -237,12 +237,12 @@ macro_rules! pipe_ends {
 /// one. It also makes a spigot kind unnecessary — a base plate is one truss end
 /// pointing up, and a top plate is one pointing down.
 const CORNER_ENDS: &[Connector] = &[
-    Connector::new(metres(-HALF, 0.0, 0.0), metres(-1.0, 0.0, 0.0), ConnectorKind::TrussEnd),
-    Connector::new(metres(HALF, 0.0, 0.0), metres(1.0, 0.0, 0.0), ConnectorKind::TrussEnd),
-    Connector::new(metres(0.0, -HALF, 0.0), metres(0.0, -1.0, 0.0), ConnectorKind::TrussEnd),
-    Connector::new(metres(0.0, HALF, 0.0), metres(0.0, 1.0, 0.0), ConnectorKind::TrussEnd),
-    Connector::new(metres(0.0, 0.0, -HALF), metres(0.0, 0.0, -1.0), ConnectorKind::TrussEnd),
-    Connector::new(metres(0.0, 0.0, HALF), metres(0.0, 0.0, 1.0), ConnectorKind::TrussEnd),
+    Connector::new(meters(-HALF, 0.0, 0.0), meters(-1.0, 0.0, 0.0), ConnectorKind::TrussEnd),
+    Connector::new(meters(HALF, 0.0, 0.0), meters(1.0, 0.0, 0.0), ConnectorKind::TrussEnd),
+    Connector::new(meters(0.0, -HALF, 0.0), meters(0.0, -1.0, 0.0), ConnectorKind::TrussEnd),
+    Connector::new(meters(0.0, HALF, 0.0), meters(0.0, 1.0, 0.0), ConnectorKind::TrussEnd),
+    Connector::new(meters(0.0, 0.0, -HALF), meters(0.0, 0.0, -1.0), ConnectorKind::TrussEnd),
+    Connector::new(meters(0.0, 0.0, HALF), meters(0.0, 0.0, 1.0), ConnectorKind::TrussEnd),
 ];
 
 /// The four edges of a deck, which is what makes two of them a stage rather than two
@@ -250,15 +250,15 @@ const CORNER_ENDS: &[Connector] = &[
 macro_rules! deck_edges {
     ($x:expr, $z:expr) => {
         &[
-            Connector::new(metres(-$x, 0.0, 0.0), metres(-1.0, 0.0, 0.0), ConnectorKind::DeckEdge),
-            Connector::new(metres($x, 0.0, 0.0), metres(1.0, 0.0, 0.0), ConnectorKind::DeckEdge),
-            Connector::new(metres(0.0, 0.0, -$z), metres(0.0, 0.0, -1.0), ConnectorKind::DeckEdge),
-            Connector::new(metres(0.0, 0.0, $z), metres(0.0, 0.0, 1.0), ConnectorKind::DeckEdge),
+            Connector::new(meters(-$x, 0.0, 0.0), meters(-1.0, 0.0, 0.0), ConnectorKind::DeckEdge),
+            Connector::new(meters($x, 0.0, 0.0), meters(1.0, 0.0, 0.0), ConnectorKind::DeckEdge),
+            Connector::new(meters(0.0, 0.0, -$z), meters(0.0, 0.0, -1.0), ConnectorKind::DeckEdge),
+            Connector::new(meters(0.0, 0.0, $z), meters(0.0, 0.0, 1.0), ConnectorKind::DeckEdge),
         ]
     };
 }
 
-/// How long a deck's legs are. The one property anything in this catalogue has, and
+/// How long a deck's legs are. The one property anything in this catalog has, and
 /// it earns its place: a stage is decks at two heights, and a deck whose legs could
 /// not be said would be a stage that is all one level.
 const LEG_HEIGHT: &[Property] = &[Property {
@@ -277,13 +277,13 @@ const NO_CHORDS: &[Chord] = &[];
 /// Deliberately short. This is not a hire stock list — it is the handful of shapes
 /// that make a rig read as a rig, and anything more particular belongs in an MVR
 /// somebody drew.
-pub const CATALOGUE: &[StockPiece] = &[
+pub const CATALOG: &[StockPiece] = &[
     StockPiece {
         id: "f34-1m",
         title: "F34 truss 1 m",
         shape: StockShape::BoxTruss,
         kind: SceneObjectKind::Truss,
-        size: metres(1.0, F34, F34),
+        size: meters(1.0, F34, F34),
         connectors: truss_ends!(0.5),
         chords: BOX_CHORDS,
         properties: NOTHING,
@@ -294,7 +294,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "F34 truss 2 m",
         shape: StockShape::BoxTruss,
         kind: SceneObjectKind::Truss,
-        size: metres(2.0, F34, F34),
+        size: meters(2.0, F34, F34),
         connectors: truss_ends!(1.0),
         chords: BOX_CHORDS,
         properties: NOTHING,
@@ -305,7 +305,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "F34 truss 3 m",
         shape: StockShape::BoxTruss,
         kind: SceneObjectKind::Truss,
-        size: metres(3.0, F34, F34),
+        size: meters(3.0, F34, F34),
         connectors: truss_ends!(1.5),
         chords: BOX_CHORDS,
         properties: NOTHING,
@@ -316,7 +316,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "F34 corner",
         shape: StockShape::TrussCorner,
         kind: SceneObjectKind::Truss,
-        size: metres(F34, F34, F34),
+        size: meters(F34, F34, F34),
         connectors: CORNER_ENDS,
         // Nothing hangs off a corner: it is 290 mm of block, and a clamp on it would
         // be a light bolted to a joint.
@@ -329,10 +329,10 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "F34 base plate",
         shape: StockShape::BasePlate,
         kind: SceneObjectKind::Support,
-        size: metres(0.6, PLATE_HEIGHT, 0.6),
+        size: meters(0.6, PLATE_HEIGHT, 0.6),
         connectors: &[Connector::new(
-            metres(0.0, PLATE_HEIGHT, 0.0),
-            metres(0.0, 1.0, 0.0),
+            meters(0.0, PLATE_HEIGHT, 0.0),
+            meters(0.0, 1.0, 0.0),
             ConnectorKind::TrussEnd,
         )],
         chords: NO_CHORDS,
@@ -344,10 +344,10 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "F34 top plate",
         shape: StockShape::TopPlate,
         kind: SceneObjectKind::Support,
-        size: metres(0.6, PLATE_HEIGHT, 0.6),
+        size: meters(0.6, PLATE_HEIGHT, 0.6),
         connectors: &[Connector::new(
-            metres(0.0, -PLATE_HEIGHT, 0.0),
-            metres(0.0, -1.0, 0.0),
+            meters(0.0, -PLATE_HEIGHT, 0.0),
+            meters(0.0, -1.0, 0.0),
             ConnectorKind::TrussEnd,
         )],
         chords: NO_CHORDS,
@@ -359,7 +359,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "Pipe 1 m",
         shape: StockShape::Pipe,
         kind: SceneObjectKind::Truss,
-        size: metres(1.0, PIPE_DIAMETER, PIPE_DIAMETER),
+        size: meters(1.0, PIPE_DIAMETER, PIPE_DIAMETER),
         connectors: pipe_ends!(0.5),
         chords: PIPE_CHORDS,
         properties: NOTHING,
@@ -370,7 +370,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "Pipe 2 m",
         shape: StockShape::Pipe,
         kind: SceneObjectKind::Truss,
-        size: metres(2.0, PIPE_DIAMETER, PIPE_DIAMETER),
+        size: meters(2.0, PIPE_DIAMETER, PIPE_DIAMETER),
         connectors: pipe_ends!(1.0),
         chords: PIPE_CHORDS,
         properties: NOTHING,
@@ -381,7 +381,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "Pipe 3 m",
         shape: StockShape::Pipe,
         kind: SceneObjectKind::Truss,
-        size: metres(3.0, PIPE_DIAMETER, PIPE_DIAMETER),
+        size: meters(3.0, PIPE_DIAMETER, PIPE_DIAMETER),
         connectors: pipe_ends!(1.5),
         chords: PIPE_CHORDS,
         properties: NOTHING,
@@ -392,7 +392,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "Pipe 6 m",
         shape: StockShape::Pipe,
         kind: SceneObjectKind::Truss,
-        size: metres(6.0, PIPE_DIAMETER, PIPE_DIAMETER),
+        size: meters(6.0, PIPE_DIAMETER, PIPE_DIAMETER),
         connectors: pipe_ends!(3.0),
         chords: PIPE_CHORDS,
         properties: NOTHING,
@@ -405,7 +405,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         kind: SceneObjectKind::Object,
         // 200 mm, a deck's own thickness. How high it stands is its legs, which is
         // a property — a deck is not a taller deck for being on a riser.
-        size: metres(2.0, 0.2, 1.0),
+        size: meters(2.0, 0.2, 1.0),
         connectors: deck_edges!(1.0, 0.5),
         chords: NO_CHORDS,
         properties: LEG_HEIGHT,
@@ -416,7 +416,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "Stage deck 1 × 1 m",
         shape: StockShape::Deck,
         kind: SceneObjectKind::Object,
-        size: metres(1.0, 0.2, 1.0),
+        size: meters(1.0, 0.2, 1.0),
         connectors: deck_edges!(0.5, 0.5),
         chords: NO_CHORDS,
         properties: LEG_HEIGHT,
@@ -427,7 +427,7 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "Wall panel 2 × 1 m",
         shape: StockShape::Panel,
         kind: SceneObjectKind::Object,
-        size: metres(2.0, 1.0, 0.05),
+        size: meters(2.0, 1.0, 0.05),
         connectors: NO_CONNECTORS,
         chords: NO_CHORDS,
         properties: NOTHING,
@@ -438,8 +438,8 @@ pub const CATALOGUE: &[StockPiece] = &[
         title: "Flat 1 × 2.4 m",
         shape: StockShape::Panel,
         kind: SceneObjectKind::Object,
-        // The standard flat: a metre wide and eight foot tall in metres.
-        size: metres(1.0, 2.4, 0.05),
+        // The standard flat: a meter wide and eight foot tall in meters.
+        size: meters(1.0, 2.4, 0.05),
         connectors: NO_CONNECTORS,
         chords: NO_CHORDS,
         properties: NOTHING,
@@ -451,7 +451,7 @@ pub const CATALOGUE: &[StockPiece] = &[
 /// never heard of — which is drawn as nothing rather than refused, the rule a layout
 /// already follows for a panel id it does not know.
 pub fn piece(id: &str) -> Option<&'static StockPiece> {
-    CATALOGUE.iter().find(|piece| piece.id == id)
+    CATALOG.iter().find(|piece| piece.id == id)
 }
 
 /// One spelling of what a piece was asked for.
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn every_piece_can_be_found_by_the_id_a_showfile_would_carry() {
-        for piece in CATALOGUE {
+        for piece in CATALOG {
             assert_eq!(self::piece(piece.id).map(|found| found.id), Some(piece.id));
         }
         assert!(self::piece("nothing-like-it").is_none());
@@ -540,13 +540,13 @@ mod tests {
     fn the_ids_are_unique_and_the_sizes_are_real() {
         // The id goes into showfiles, so two entries sharing one would be two
         // different things drawn as whichever the search found first.
-        let mut seen: Vec<&str> = CATALOGUE.iter().map(|piece| piece.id).collect();
+        let mut seen: Vec<&str> = CATALOG.iter().map(|piece| piece.id).collect();
         seen.sort_unstable();
         let unique = seen.len();
         seen.dedup();
         assert_eq!(seen.len(), unique, "two pieces share an id");
 
-        for piece in CATALOGUE {
+        for piece in CATALOG {
             let size = piece.size;
             assert!(
                 size.x > 0.0 && size.y > 0.0 && size.z > 0.0,
@@ -572,7 +572,7 @@ mod tests {
     /// which the type can enforce.
     #[test]
     fn every_connector_points_out_of_its_own_piece() {
-        for piece in CATALOGUE {
+        for piece in CATALOG {
             for connector in piece.connectors {
                 let f = connector.facing;
                 let length = (f.x * f.x + f.y * f.y + f.z * f.z).sqrt();
@@ -596,7 +596,7 @@ mod tests {
     /// offset of its own would move every light on it.
     #[test]
     fn every_chord_is_a_line_through_x_nought() {
-        for piece in CATALOGUE {
+        for piece in CATALOG {
             for chord in piece.chords {
                 assert_eq!(chord.at.x, 0.0, "{}: a chord starts somewhere", piece.id);
             }
@@ -613,7 +613,7 @@ mod tests {
 
         let noisy = canonical_properties(
             deck,
-            &serde_json::json!({ "leg_height": 0.6, "colour": "blue", "extra": 1 }),
+            &serde_json::json!({ "leg_height": 0.6, "color": "blue", "extra": 1 }),
         );
         assert_eq!(noisy, serde_json::json!({ "leg_height": 0.6 }));
 

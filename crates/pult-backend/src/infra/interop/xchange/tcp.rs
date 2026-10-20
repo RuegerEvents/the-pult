@@ -108,7 +108,7 @@ pub async fn start(
     // The instance name is this console's station name. Two stations of one show never
     // both advertise — only the leader is on the wire — so there is nothing here to
     // collide with itself.
-    let instance = sanitise(station_name);
+    let instance = sanitize(station_name);
     let properties = [("StationName", station_name), ("StationUUID", &station_uuid.to_string())];
 
     let mut registered = Vec::new();
@@ -266,7 +266,7 @@ async fn write(stream: &mut TcpStream, reply: Reply) -> Result<(), String> {
 ///
 /// The reply may be a file, which is what makes this the fetch path as well as the
 /// announcement path: `MVR_REQUEST` answered with bytes is the same exchange as
-/// `MVR_COMMIT` answered with an acknowledgement.
+/// `MVR_COMMIT` answered with an acknowledgment.
 pub async fn send(
     addr: SocketAddr,
     message: &Message,
@@ -303,7 +303,7 @@ pub async fn send(
 ///
 /// A show called "Hamlet, Act 1. Revised" is an ordinary thing to call a show and not
 /// an ordinary thing to put in a DNS label.
-fn sanitise(name: &str) -> String {
+fn sanitize(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| if c == '.' || c.is_control() { '-' } else { c })
@@ -322,7 +322,7 @@ fn host_name() -> String {
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "pult".to_string());
     let base = raw.trim_end_matches(".local").trim_end_matches('.');
-    format!("{}.local.", sanitise(base))
+    format!("{}.local.", sanitize(base))
 }
 
 #[cfg(test)]
@@ -349,10 +349,10 @@ mod tests {
 
     #[test]
     fn a_show_name_with_a_dot_in_it_is_still_an_instance_name() {
-        assert_eq!(sanitise("Hamlet, Act 1. Revised"), "Hamlet, Act 1- Revised");
-        assert_eq!(sanitise(""), "pult");
-        assert_eq!(sanitise("   "), "pult");
-        assert_eq!(sanitise(&"x".repeat(200)).len(), 48);
+        assert_eq!(sanitize("Hamlet, Act 1. Revised"), "Hamlet, Act 1- Revised");
+        assert_eq!(sanitize(""), "pult");
+        assert_eq!(sanitize("   "), "pult");
+        assert_eq!(sanitize(&"x".repeat(200)).len(), 48);
     }
 
     #[tokio::test]

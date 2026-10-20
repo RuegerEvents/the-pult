@@ -4,7 +4,7 @@
  * The schema stores panel ids as plain strings and knows nothing about what they
  * draw, which is deliberate: which panels a console has is a frontend question, and
  * a layout saved by a newer build should open on an older one with the panel it does
- * not recognise simply missing rather than breaking the tree.
+ * not recognize simply missing rather than breaking the tree.
  *
  * This is the one place that turns a *built-in* id into a component. Adding a
  * panel is a line here and nothing anywhere else. Panels contributed by the

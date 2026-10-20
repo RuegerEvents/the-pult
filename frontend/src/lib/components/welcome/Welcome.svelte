@@ -10,7 +10,7 @@
 	 * commands — opening a show is nobody's to undo and must not be told to a peer.
 	 * Each of them answers and *then* the station stops, so this page's socket closes
 	 * and reconnects onto the new console, which `stores/station.ts` turns into a
-	 * reload. That is why nothing here waits for a result beyond the acknowledgement.
+	 * reload. That is why nothing here waits for a result beyond the acknowledgment.
 	 */
 
 	import { onMount } from 'svelte';

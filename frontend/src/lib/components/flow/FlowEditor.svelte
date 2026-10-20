@@ -327,7 +327,7 @@
 
 	<section class="canvas">
 		{#if !selected}
-			<p class="empty centred">Add a flow to start drawing one.</p>
+			<p class="empty centered">Add a flow to start drawing one.</p>
 		{:else}
 			<nav class="palette">
 				<span class="label">Add</span>
@@ -390,7 +390,7 @@
 	.board { flex: 1; min-height: 0; }
 
 	.empty { color: #777; font-size: 13px; padding: 8px 0; }
-	.centred { margin: auto; }
+	.centered { margin: auto; }
 	.note { color: #666; font-size: 11px; margin-top: auto; padding-top: 12px; font-style: italic; line-height: 1.4; }
 	.text-input { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 4px 6px; font: inherit; width: 100%; }
 	.ghost { background: none; border: 1px solid #3a3a3a; border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }

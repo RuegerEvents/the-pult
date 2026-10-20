@@ -8,7 +8,7 @@
 //!
 //! What *can* be a gate is a figure that does not flap. These three are counts —
 //! machine-independent, the same on a laptop and on a runner — and each one guards a
-//! property that used to be found in a theatre rather than in CI:
+//! property that used to be found in a theater rather than in CI:
 //!
 //! - **A running show pushes nothing at a browser.** Nothing stores what a parameter
 //!   is doing, so a fade in progress is not a change to the show. If this ever counts
@@ -360,7 +360,7 @@ async fn a_dragged_truss_is_one_row() {
                 "class": null,
                 "geometry": [],
                 "symbol": null,
-                "catalogue": "f34-3m",
+                "catalog": "f34-3m",
                 "properties": {},
                 "locked": false
             }),

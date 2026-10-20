@@ -1,7 +1,7 @@
 //! The Share client, against a stub of the three endpoints it uses.
 //!
-//! A stub rather than the real Share, because the behaviour worth testing is exactly
-//! the behaviour an account cannot demonstrate on demand: a login that answers 200
+//! A stub rather than the real Share, because the behavior worth testing is exactly
+//! the behavior an account cannot demonstrate on demand: a login that answers 200
 //! with a failure in the body, a session that has gone idle, a list that has not
 //! changed. All three are one line to write here and impossible to arrange there.
 
@@ -202,7 +202,7 @@ async fn a_search_finds_by_either_name_and_answers_best_rated_first() {
     );
 
     assert_eq!(share.search("", Some("Clay Paky"), 10).await.unwrap().len(), 1);
-    assert_eq!(share.search("", None, 2).await.unwrap().len(), 2, "the limit is honoured");
+    assert_eq!(share.search("", None, 2).await.unwrap().len(), 2, "the limit is honored");
 }
 
 /// What somebody types, against what an uploader typed.
@@ -233,7 +233,7 @@ async fn a_search_finds_a_fixture_however_the_words_were_spaced() {
 
     assert!(
         share.search("mega sharpy", None, 10).await.unwrap().is_empty(),
-        "every word has to be found, or a two-word query would match half the catalogue",
+        "every word has to be found, or a two-word query would match half the catalog",
     );
 }
 
@@ -257,7 +257,7 @@ async fn the_manufacturers_own_file_comes_first_even_when_a_copy_is_better_rated
     assert_eq!(hits[1].manufacturer, "Somebody Else");
 }
 
-/// The row that used to fail the whole catalogue.
+/// The row that used to fail the whole catalog.
 ///
 /// A file nobody has rated has `"rating":"N/A"` — a string where a number belongs —
 /// and a strict reader answered "the GDTF Share answered something this console could

@@ -24,7 +24,7 @@ function object(id: string, parent: string | null = null): SceneObject {
 		class: null,
 		geometry: [],
 		symbol: null,
-		catalogue: null,
+		catalog: null,
 		properties: null,
 		locked: false,
 		weight_kg: null

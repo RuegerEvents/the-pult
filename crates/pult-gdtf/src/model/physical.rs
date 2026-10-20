@@ -1,7 +1,7 @@
 //! `<PhysicalDescriptions>`: what the light actually is.
 //!
 //! Emitters and filters are how the console works out that an RGBW head's fourth
-//! channel is white rather than a fourth colour it should ignore; `Properties`
+//! channel is white rather than a fourth color it should ignore; `Properties`
 //! carries the weight and the power draw the paperwork wants.
 
 use serde::{Deserialize, Serialize};
@@ -90,7 +90,7 @@ pub struct Filters {
     pub items: Vec<Filter>,
 }
 
-/// A subtractive element: a CMY flag, a colour wheel's glass.
+/// A subtractive element: a CMY flag, a color wheel's glass.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Filter {
     #[serde(rename = "@Name", default, skip_serializing_if = "String::is_empty")]
@@ -374,7 +374,7 @@ pub struct PowerConsumption {
     pub frequency_high: Option<f32>,
 }
 
-/// Metres from the floor to the bottom of the fixture, for a floor-standing one.
+/// Meters from the floor to the bottom of the fixture, for a floor-standing one.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct LegHeight {
     #[serde(rename = "@Value", default, skip_serializing_if = "Option::is_none", deserialize_with = "de_number_opt")]

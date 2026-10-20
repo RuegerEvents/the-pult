@@ -256,7 +256,7 @@
 		}
 		// The grid over it: a bar line per downbeat, a tick per beat. Beats are dropped
 		// where there would be more of them than pixels, which is not a compromise —
-		// four hundred lines across eight hundred pixels is a grey rectangle.
+		// four hundred lines across eight hundred pixels is a gray rectangle.
 		const lines = gridLines(
 			timeline.grid as GridSegment[],
 			view.startMs,
@@ -274,7 +274,7 @@
 			context.stroke();
 		}
 
-		// The detector's proposal, in its own colour and above the grid, because the
+		// The detector's proposal, in its own color and above the grid, because the
 		// whole point of drawing it is to be compared with what is already there.
 		if (proposal) {
 			context.strokeStyle = 'rgba(74,222,128,0.75)';

@@ -44,7 +44,7 @@
 	let creating = $state(false);
 
 	const portBinding = (index: number): ParameterBinding => ({ Port: { index } });
-	const isColour = (kind: ParameterKind) => kind === 'ColorRgb';
+	const isColor = (kind: ParameterKind) => kind === 'ColorRgb';
 
 	/// A binding is a *port*, or nothing at all.
 	///
@@ -170,7 +170,7 @@
 		const channels = implicitChannels(parameters);
 		const highest = parameters.reduce((n, p, i) => {
 			const channel = channels[i];
-			return channel === null ? n : Math.max(n, channel + (isColour(p.kind) ? 2 : 0));
+			return channel === null ? n : Math.max(n, channel + (isColor(p.kind) ? 2 : 0));
 		}, 0);
 		if (highest !== type.channel_count) {
 			await data.fixture_types.byId(type.id).channel_count.set(highest);
@@ -494,12 +494,12 @@
 													setBinding(type, i, portBinding(Number(e.currentTarget.value)))}
 											/>
 											{/if}
-											{#if onDmx && isColour(param.kind)}<span class="hint">+2</span>{/if}
+											{#if onDmx && isColor(param.kind)}<span class="hint">+2</span>{/if}
 										</td>
 										<td class="default-cell">
 											<!-- Where this parameter sits before anything drives it. Read by
 											     the output plugins for a fixture that has never been touched,
-											     so a moving head can rest centred rather than hard left. -->
+											     so a moving head can rest centered rather than hard left. -->
 											{#if $unlocked}
 												<ValueControl
 													value={param.default_value}

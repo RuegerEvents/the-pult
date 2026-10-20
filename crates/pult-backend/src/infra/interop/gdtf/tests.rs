@@ -2,7 +2,7 @@
 //!
 //! The checked-in fixtures under `testdata/gdtf/` are the material, zipped in memory
 //! the way `pult-gdtf`'s own tests build them. What is asserted here is the
-//! *translation* — that a 16-bit pan comes through as two offsets, that four colour
+//! *translation* — that a 16-bit pan comes through as two offsets, that four color
 //! channels come through as one parameter with four emitters, that a mode's footprint
 //! is what the patch panel will show — because `pult-gdtf` has already proved it read
 //! the file correctly.
@@ -81,7 +81,7 @@ fn the_parameter_list_is_what_the_light_can_do_across_every_mode() {
         "the dimmer is on break 2 and is still a parameter",
     );
 
-    // Four colour channels, one colour parameter.
+    // Four color channels, one color parameter.
     assert_eq!(
         kinds.iter().filter(|k| **k == ParameterKind::ColorRgb).count(),
         1,
@@ -90,18 +90,18 @@ fn the_parameter_list_is_what_the_light_can_do_across_every_mode() {
 }
 
 #[test]
-fn the_colour_parameter_carries_the_dies_that_make_it() {
+fn the_color_parameter_carries_the_dies_that_make_it() {
     let (fixture_type, _) = derive("rgbw-two-mode");
-    let colour = fixture_type
+    let color = fixture_type
         .parameters
         .iter()
         .find(|p| p.kind == ParameterKind::ColorRgb)
-        .expect("a colour");
+        .expect("a color");
 
-    let names: Vec<&str> = colour.emitters.iter().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = color.emitters.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, vec!["Red", "Green", "Blue", "White"]);
-    assert!(colour.emitters.iter().all(|e| !e.subtractive), "an LED head adds light");
-    let red = &colour.emitters[0];
+    assert!(color.emitters.iter().all(|e| !e.subtractive), "an LED head adds light");
+    let red = &color.emitters[0];
     let rgb = red.rgb.expect("the file measured it");
     assert!(rgb.x > rgb.y && rgb.x > rgb.z, "red points at red: {rgb:?}");
 }
@@ -168,17 +168,17 @@ fn a_second_break_becomes_a_second_index_rather_than_a_second_universe() {
 }
 
 #[test]
-fn each_colour_channel_says_which_die_it_drives() {
+fn each_color_channel_says_which_die_it_drives() {
     let (fixture_type, _) = derive("rgbw-two-mode");
     let mode = fixture_type.mode("Standard");
-    let colour: Vec<(&str, Vec<u16>)> = mode
+    let color: Vec<(&str, Vec<u16>)> = mode
         .channels
         .iter()
         .filter(|channel| channel.parameter_key == parameter_key(&ParameterKind::ColorRgb))
         .map(|channel| (channel.emitter.as_deref().unwrap_or(""), channel.offsets.clone()))
         .collect();
     assert_eq!(
-        colour,
+        color,
         vec![
             ("Red", vec![3]),
             ("Green", vec![4]),
@@ -224,19 +224,19 @@ fn the_paperwork_comes_across() {
 ///
 /// The first version of this read the outermost geometry's own model, which on a real
 /// moving head is the base: importing a Robe MegaPointe gave it a height of nine and a
-/// half centimetres. The envelope is every part's box at the place its geometry puts
+/// half centimeters. The envelope is every part's box at the place its geometry puts
 /// it, which is what a rider wants and what a case needs to fit.
 #[test]
 fn the_dimensions_are_the_whole_fixtures_rather_than_its_first_parts() {
     let (fixture_type, _) = derive("rgbw-two-mode");
     let size = fixture_type.physical.dimensions_m.expect("the file said how big it is");
 
-    // Base 0.4 × 0.4 × 0.3 centred at the origin, so −0.15 to 0.15. Yoke 300 mm up and
+    // Base 0.4 × 0.4 × 0.3 centered at the origin, so −0.15 to 0.15. Yoke 300 mm up and
     // 0.4 tall, head 200 mm above that, beam 150 mm above that again — whose box tops
-    // out at 0.85. One metre, end to end, and taller than any one part.
+    // out at 0.85. One meter, end to end, and taller than any one part.
     assert!(
         size.y > 0.3,
-        "the base alone is 0.3 tall and the head is half a metre above it: {size:?}",
+        "the base alone is 0.3 tall and the head is half a meter above it: {size:?}",
     );
     assert!((size.y - 1.0).abs() < 0.01, "{size:?}");
     assert_eq!(size.x, 0.4, "and no wider than its widest part");
@@ -261,7 +261,7 @@ fn the_geometry_tree_comes_across_flat_in_the_consoles_own_axes() {
         "pan turns the outer axis and tilt the inner one",
     );
 
-    // The yoke sits 300 mm up the base. Millimetres Z-up become metres Y-up.
+    // The yoke sits 300 mm up the base. Millimeters Z-up become meters Y-up.
     let yoke = &fixture_type.geometry[1];
     assert_eq!(yoke.offset.y, 0.3);
     assert_eq!(yoke.offset.x, 0.0);

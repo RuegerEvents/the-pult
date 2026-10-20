@@ -6,7 +6,7 @@
 //! place of a TypeScript twin: there is only one implementation of the arithmetic, so
 //! what has to be checked is not two implementations agreeing but two compilations of
 //! one — and a wasm build that rounds a float differently, or a boundary that packs a
-//! colour wrong, fails here rather than on stage.
+//! color wrong, fails here rather than on stage.
 //!
 //! The file lives outside both, because neither owns it.
 
@@ -90,7 +90,7 @@ fn agree(a: &ParameterValue, b: &ParameterValue) -> bool {
                 && (g0 - g1).abs() < TOLERANCE
                 && (b0 - b1).abs() < TOLERANCE
                 // Compared rather than ignored: a pinned emitter is part of what the
-                // colour *is*, and a fade that dropped one would be invisible here.
+                // color *is*, and a fade that dropped one would be invisible here.
                 && o0.len() == o1.len()
                 && o0.iter().all(|(name, level)| {
                     o1.get(name).is_some_and(|other| (level - other).abs() < TOLERANCE)
@@ -140,7 +140,7 @@ fn every_case_in_the_corpus_evaluates_to_what_it_says() {
 /// `testdata/color-mix.json`, natively.
 ///
 /// The other half of the corpus, and here for the same reason: getting from one
-/// colour to a level per emitter is arithmetic the station runs for the lamps and the
+/// color to a level per emitter is arithmetic the station runs for the lamps and the
 /// browser runs for the swatch, out of one implementation compiled twice. A page
 /// showing a white die at half while the lamp is at full is what this catches.
 #[derive(Deserialize)]
@@ -157,7 +157,7 @@ struct MixCase {
 }
 
 #[test]
-fn every_colour_in_the_corpus_mixes_to_what_it_says() {
+fn every_color_in_the_corpus_mixes_to_what_it_says() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/color-mix.json");
     let text = std::fs::read_to_string(path).expect("the corpus is where it says it is");
     let corpus: MixCorpus = serde_json::from_str(&text).expect("the corpus parses");

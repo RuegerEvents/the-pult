@@ -136,7 +136,7 @@
 	 * Per-capture timing, held here until Store.
 	 *
 	 * Zero means "use the cue's", which is what `Playback::start_cue` already does
-	 * with `fade_in_ms`, so leaving every row alone gives exactly the behaviour the
+	 * with `fade_in_ms`, so leaving every row alone gives exactly the behavior the
 	 * console had before there was anywhere to type these.
 	 */
 	type Timing = { fade: number; delay: number; easing: Easing | null };

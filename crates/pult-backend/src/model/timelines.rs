@@ -284,7 +284,7 @@ fn wall_at(timeline: &Timeline, wall_ms: u64, behind: u64) -> u64 {
 ///
 /// `None` before the first segment, and for a timeline with no grid at all — which is
 /// most of them, and is why nothing here has to be told whether a song has been
-/// analysed.
+/// analyzed.
 fn segment_at(timeline: &Timeline, position_ms: u64) -> Option<usize> {
     timeline.grid.iter().rposition(|segment| segment.at_ms as u64 <= position_ms)
 }
@@ -581,7 +581,7 @@ mod tests {
 
     /// A timeline with a grid and no master, and one with a master and no grid, both
     /// write nothing — which is most timelines, and is why nothing here has to be told
-    /// whether a song has been analysed.
+    /// whether a song has been analyzed.
     #[test]
     fn a_timeline_with_nothing_to_drive_drives_nothing() {
         let mut timelines = Timelines::default();

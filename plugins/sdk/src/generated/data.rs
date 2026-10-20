@@ -559,7 +559,7 @@ impl FixtureEntity {
     /// resolved against the parent piece's chords, and for an imported truss those
     /// come off the mesh's own bounds — which the station never loads, because only
     /// `frontend/src/lib/geometry.ts` measures a mesh. So the *browser* is the writer
-    /// for every parent, whether the piece came out of the catalogue or out of a
+    /// for every parent, whether the piece came out of the catalog or out of a
     /// drawing, and what keeps its arithmetic equal to
     /// [`crate::types::mount::Mount::transform`]'s is `testdata/mounts.json`.
     ///
@@ -3169,27 +3169,27 @@ impl SceneObjectEntity {
         self.at.field("symbol")
     }
 
-    /// Or none of the above: a piece out of the console's own catalogue, named
-    /// rather than modelled — `"f34-2m"` is two metres of box truss and the browser
+    /// Or none of the above: a piece out of the console's own catalog, named
+    /// rather than modeled — `"f34-2m"` is two meters of box truss and the browser
     /// draws one.
     ///
     /// Last of the three, and a mesh that came with a drawing wins: it is the truth
     /// about that object. This is what a console draws for a rig it made itself,
     /// where until now there was nothing to draw and the lights hung in the air.
     ///
-    /// See [`crate::types::catalogue`].
+    /// See [`crate::types::catalog`].
     ///
     /// PERSISTED.
-    pub fn catalogue(&self) -> Field<Option<String>> {
-        self.at.field("catalogue")
+    pub fn catalog(&self) -> Field<Option<String>> {
+        self.at.field("catalog")
     }
 
-    /// What a piece out of the catalogue was asked for: a deck's leg height, a
-    /// panel's finish. Declared per piece in [`crate::types::catalogue`], so the
+    /// What a piece out of the catalog was asked for: a deck's leg height, a
+    /// panel's finish. Declared per piece in [`crate::types::catalog`], so the
     /// keys are the piece's and an object carrying a key the piece never declared
     /// is simply ignored rather than refused.
     ///
-    /// An object out of a drawing has an empty map: a mesh somebody modelled says
+    /// An object out of a drawing has an empty map: a mesh somebody modeled says
     /// what it is, and there is nothing here to ask it.
     ///
     /// A JSON column, the way `PluginPackage::config` is.
@@ -3203,7 +3203,7 @@ impl SceneObjectEntity {
     ///
     /// The show's rather than the browser's, unlike layer visibility: locking the
     /// house rig so nobody drags it is a decision about the rig, and a lock only
-    /// one screen honoured would be no lock at all. A locked object is still drawn,
+    /// one screen honored would be no lock at all. A locked object is still drawn,
     /// still pickable and still says what it is — what it has is no gizmo.
     ///
     /// PERSISTED.
@@ -3213,11 +3213,11 @@ impl SceneObjectEntity {
 
     /// What this one weighs, in kilograms, where somebody has said.
     ///
-    /// Overrides the nominal figure a catalogue piece carries, and is the only weight
+    /// Overrides the nominal figure a catalog piece carries, and is the only weight
     /// there is for an object out of a drawing — MVR says where a truss is and never
     /// what it weighs. A loading table distinguishes the two: a total resting on
     /// entered weights is a different claim from one resting on
-    /// [`crate::types::catalogue::StockPiece::weight_kg`], and printing them as the
+    /// [`crate::types::catalog::StockPiece::weight_kg`], and printing them as the
     /// same number is how a nominal figure becomes a rigging decision.
     ///
     /// PERSISTED.
@@ -4033,7 +4033,7 @@ impl StagePlanEntity {
         self.at.field("height_px")
     }
 
-    /// The world point, in metres, that the image's top-left corner sits on.
+    /// The world point, in meters, that the image's top-left corner sits on.
     ///
     /// PERSISTED.
     pub fn origin(&self) -> Field<Vec3> {
@@ -4044,8 +4044,8 @@ impl StagePlanEntity {
     /// the plan whose real length is known.
     ///
     /// PERSISTED.
-    pub fn metres_per_pixel(&self) -> Field<f32> {
-        self.at.field("metres_per_pixel")
+    pub fn meters_per_pixel(&self) -> Field<f32> {
+        self.at.field("meters_per_pixel")
     }
 
     /// PERSISTED.
@@ -4289,7 +4289,7 @@ impl StationEntity {
     /// that was told about a fade once are not two samples of one number.
     ///
     /// Defaulted, so a peer running a build that cannot say still sends a row that
-    /// deserialises.
+    /// deserializes.
     ///
     /// SYNCED.
     pub fn frame_costs(&self) -> Field<Vec<FrameCost>> {
@@ -4305,7 +4305,7 @@ impl StationEntity {
     /// a station at 4% on a machine at 96% is not a comfortable station, it is a
     /// console about to be starved by something nobody is looking at.
     ///
-    /// All defaulted, so a peer on an older build still deserialises.
+    /// All defaulted, so a peer on an older build still deserializes.
     ///
     /// SYNCED.
     pub fn machine(&self) -> Field<MachineStats> {
@@ -4326,7 +4326,7 @@ impl StationEntity {
     /// sends to itself would otherwise arrive twice — sent and received — and swamp
     /// the figure it is there to give.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     ///
     /// SYNCED.
     pub fn net_received(&self) -> Field<u64> {
@@ -4369,7 +4369,7 @@ impl StationEntity {
     /// each one says what it took. `None` on a leader, which is at the top of the
     /// ladder rather than in a slot.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     ///
     /// SYNCED.
     pub fn sacn_slot(&self) -> Field<Option<u8>> {
@@ -5216,14 +5216,14 @@ impl UserEntity {
         self.at.field("name")
     }
 
-    /// How this user's changes are marked in the history, as a CSS colour.
+    /// How this user's changes are marked in the history, as a CSS color.
     ///
     /// Persisted rather than derived from the id, so somebody who dislikes the one
     /// they were given can change it and it stays changed.
     ///
     /// PERSISTED.
-    pub fn colour(&self) -> Field<String> {
-        self.at.field("colour")
+    pub fn color(&self) -> Field<String> {
+        self.at.field("color")
     }
 }
 
@@ -5532,7 +5532,7 @@ impl VersionEntity {
     /// Nothing reads it yet. It is here because a version is the only record of a
     /// past state that survives the oplog's retention, and a diff between two of
     /// them has to be able to say which came first on which station — which a
-    /// timestamp across machines with unsynchronised clocks cannot.
+    /// timestamp across machines with unsynchronized clocks cannot.
     ///
     /// PERSISTED.
     pub fn clock(&self) -> Field<VectorClock> {

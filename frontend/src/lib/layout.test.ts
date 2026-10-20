@@ -5,7 +5,7 @@ import {
 	findPanel,
 	leafAt,
 	movePanel,
-	normalise,
+	normalize,
 	panelsIn,
 	removePanel,
 	resize,
@@ -137,7 +137,7 @@ describe('moving a panel', () => {
 		expect(movePanel(tree, { path: [0], panel: 'rig' }, [0], 'left')).toBe(tree);
 	});
 
-	it('sends a tab to the back of its own group when dropped on its centre', () => {
+	it('sends a tab to the back of its own group when dropped on its center', () => {
 		const tree = split('Row', [tabs(['a', 'b'], 0), tabs(['c'])]);
 		const next = movePanel(tree, { path: [0], panel: 'a' }, [0], 'center');
 		expect(leafAt(next, [0])).toEqual(tabs(['b', 'a'], 1));
@@ -196,8 +196,8 @@ describe('tidying', () => {
 		expect(clean.type === 'Split' && clean.children.length).toBe(2);
 	});
 
-	it('normalises shares that do not add up', () => {
-		expect(normalise([2, 2])).toEqual([0.5, 0.5]);
-		expect(normalise([0, 0])).toEqual([0.5, 0.5]);
+	it('normalizes shares that do not add up', () => {
+		expect(normalize([2, 2])).toEqual([0.5, 0.5]);
+		expect(normalize([0, 0])).toEqual([0.5, 0.5]);
 	});
 });

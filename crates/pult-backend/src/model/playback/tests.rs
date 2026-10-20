@@ -64,13 +64,13 @@ fn curves() -> FadeCurves {
 /// each of them carrying its own.
 const FIXTURE_TYPE: Uuid = Uuid::from_u128(0x5ea75ea7_0000_0000_0000_000000000001);
 
-/// A dimmer that can also colour, pan and tilt, resting dark and centred — which is
+/// A dimmer that can also color, pan and tilt, resting dark and centered — which is
 /// what an OpenHaunt node describes and what the console reads back.
 fn the_type() -> &'static [pult_schema::types::fixture::FixtureType] {
     use pult_schema::types::fixture::{FixtureType, ParameterDefinition};
     static TYPES: std::sync::OnceLock<Vec<FixtureType>> = std::sync::OnceLock::new();
     TYPES.get_or_init(|| {
-        // Intensity, then a colour across three, then pan and tilt: the implicit
+        // Intensity, then a color across three, then pan and tilt: the implicit
         // mode's own order, which is what these channels always were.
         let at = ParameterDefinition::new;
         vec![FixtureType {
@@ -339,7 +339,7 @@ fn a_cue_is_the_stack_up_to_it() {
     // A tracking stack: cue 2 brings a second light in and cue 3 says nothing about
     // it. Going back to cue 1 has to let it go — no cue at or before cue 1 has it —
     // and jumping from cue 1 to cue 3 has to bring it back, cue 2 being on the way.
-    // The Theatre demo is where this was found: back from cue 5 to cue 1 left the
+    // The Theater demo is where this was found: back from cue 5 to cue 1 left the
     // side booms on, because nothing before cue 4 mentions them.
     let a = a_fixture();
     let b = a_fixture();
@@ -658,8 +658,8 @@ fn a_captures_own_out_time_wins_over_the_cues() {
     );
 }
 
-/// A colour going to black *looks* like a fade out and is not treated as one. There
-/// is no agreed way to rank two colours, and a console that guessed at one would be
+/// A color going to black *looks* like a fade out and is not treated as one. There
+/// is no agreed way to rank two colors, and a console that guessed at one would be
 /// giving some cues a time nobody asked for.
 #[test]
 fn a_parameter_with_no_order_takes_the_in_time() {
@@ -692,14 +692,14 @@ fn a_parameter_with_no_order_takes_the_in_time() {
         Some(ParameterValue::Color { r, .. }) => {
             assert!((r - 0.5).abs() < 0.001, "half of one second, not of eight");
         }
-        other => panic!("expected a colour, got {other:?}"),
+        other => panic!("expected a color, got {other:?}"),
     }
 }
 
-// ── Colour and other parameter kinds ──────────────────────────────────────────
+// ── Color and other parameter kinds ──────────────────────────────────────────
 
 #[test]
-fn colour_fades_channel_by_channel() {
+fn color_fades_channel_by_channel() {
     let mut fixture = a_fixture();
     already_at(&mut fixture, "ColorRgb", ParameterValue::rgb(0.0, 0.0, 0.0));
     let capture = ParameterCapture {
@@ -729,7 +729,7 @@ fn colour_fades_channel_by_channel() {
             assert!((g - 0.25).abs() < 0.001);
             assert!(b.abs() < 0.001);
         }
-        other => panic!("expected a colour, got {other:?}"),
+        other => panic!("expected a color, got {other:?}"),
     }
 }
 
@@ -1031,7 +1031,7 @@ fn a_fixture_that_rests_on_releases_to_on() {
 }
 
 /// A fade on a parameter nothing has driven starts where that parameter rests, which
-/// is not necessarily where a dimmer rests. A mover's tilt sits centred, and a cue
+/// is not necessarily where a dimmer rests. A mover's tilt sits centered, and a cue
 /// tilting it should not swing it up from the floor first.
 #[test]
 fn a_first_fade_starts_from_where_the_parameter_rests() {
@@ -1060,7 +1060,7 @@ fn a_first_fade_starts_from_where_the_parameter_rests() {
     assert_eq!(
         as_float(live(&fixtures, fixture.id, "Tilt", 0)),
         0.5,
-        "centred, which is where the node said this port rests",
+        "centered, which is where the node said this port rests",
     );
 }
 
@@ -1198,7 +1198,7 @@ fn the_programmer_leaves_parameters_it_does_not_hold_alone() {
     assert_eq!(
         live(&fixtures, fixture.id, "ColorRgb", 0),
         Some(ParameterValue::rgb(1.0, 0.0, 0.0)),
-        "the colour was never in the programmer, so the cue still owns it",
+        "the color was never in the programmer, so the cue still owns it",
     );
 }
 
@@ -2145,7 +2145,7 @@ fn going_home_takes_the_shows_curve_too() {
 
 /// The non-goal of the whole change, written as a test: the same fade produces the
 /// same number at the same instant. If a single frame differs, that is a bug in this
-/// change rather than a new behaviour.
+/// change rather than a new behavior.
 ///
 /// The figures below were taken from the console before values stopped being stored —
 /// a four-second ease-in-out from dark to full, sampled every half second, which is
@@ -2432,7 +2432,7 @@ mod editing_a_standing_cue {
     /// must move that lamp and no other. The first version of this indexed the captures
     /// by parameter alone, collapsed a whole system into whichever fixture came last,
     /// and restarted twenty fades to a value that was not theirs. `demo.sh --demo
-    /// theatre` is what found it; this is what would have.
+    /// theater` is what found it; this is what would have.
     #[test]
     fn editing_one_fixtures_capture_leaves_the_others_where_they_are() {
         let one = a_fixture();

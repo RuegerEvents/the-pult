@@ -1,11 +1,11 @@
 <script lang="ts">
 	/**
-	 * The rig as a table: fixture down, parameter across, and a colour per cell that
+	 * The rig as a table: fixture down, parameter across, and a color per cell that
 	 * says **where the value came from**.
 	 *
-	 * Every other desk has this and puts a flag on a value to colour it. This console
+	 * Every other desk has this and puts a flag on a value to color it. This console
 	 * does not have to: the model already keeps what is *driving* each parameter, so
-	 * the colour falls out of `driving.ts`'s four layers plus whether a take is rolling
+	 * the color falls out of `driving.ts`'s four layers plus whether a take is rolling
 	 * over the key — `lib/sheet.ts` is that rule, pure and tested, and the panel calls
 	 * it rather than restating it.
 	 *
@@ -80,7 +80,7 @@
 	 *
 	 * `fadeGroup` rather than a second ordering of its own — the console already has
 	 * one answer to "what sort of parameter is this" and a table with a different one
-	 * would put colour in two places on two screens.
+	 * would put color in two places on two screens.
 	 */
 	const GROUPS = ['Intensity', 'Position', 'Color', 'Beam', 'Other'] as const;
 
@@ -92,9 +92,9 @@
 		 * What kind of value this parameter is, as its type declares it.
 		 *
 		 * Carried on the column rather than read off the live reading, because the
-		 * inspector needs the *shape* — a colour or a number — and the reading is
+		 * inspector needs the *shape* — a color or a number — and the reading is
 		 * `null` for every parameter nothing is driving and until this browser knows
-		 * the station's clock. Deciding from it offered a percent box for a colour,
+		 * the station's clock. Deciding from it offered a percent box for a color,
 		 * which is a control that does nothing: `withFloat` answers a `Color`
 		 * unchanged, there being no single number in one to move.
 		 */
@@ -141,7 +141,7 @@
 	 * The cue's own stack: the latest capture of every key over the cues up to it.
 	 *
 	 * The browser's `trackedThrough`, which mirrors `cue::tracked_through` and is held
-	 * to it by `testdata/tracking.json` — because a cue clicked in a list has to colour
+	 * to it by `testdata/tracking.json` — because a cue clicked in a list has to color
 	 * this table in the same frame, and a round trip inside that is a table that
 	 * flickers.
 	 */
@@ -282,20 +282,20 @@
 	};
 
 	/**
-	 * A colour is not a percentage.
+	 * A color is not a percentage.
 	 *
-	 * `withFloat` answers a `Color` unchanged — deliberately, since a colour has no
+	 * `withFloat` answers a `Color` unchanged — deliberately, since a color has no
 	 * single number to move — so a percent box over one is a control that does nothing.
-	 * Every parameter an operator edits here is either a number or a colour, and the
+	 * Every parameter an operator edits here is either a number or a color, and the
 	 * inspector offers whichever it is.
 	 */
-	const isColour = (value: ParameterCapture['value']) => value.type === 'Color';
+	const isColor = (value: ParameterCapture['value']) => value.type === 'Color';
 
 	const withHex = (like: ParameterCapture['value'], hex: string): ParameterCapture['value'] | null => {
 		const rgb = hexToRgb(hex);
 		if (!rgb || like.type !== 'Color') return null;
 		// The per-emitter overrides are kept: they are somebody's answer about a
-		// particular head, and a colour picker is not the place to throw them away.
+		// particular head, and a color picker is not the place to throw them away.
 		return { type: 'Color', value: { ...rgb, overrides: like.value.overrides } };
 	};
 
@@ -379,7 +379,7 @@
 		{@const fixture = rows.find((f) => f.id === picked?.fixtureId)}
 		<div class="inspector">
 			<span class="what">
-				<!-- `kindLabel`, not the raw map key: "Colour" is what an operator calls
+				<!-- `kindLabel`, not the raw map key: "Color" is what an operator calls
 				     it and `ColorRgb` is what `live_fades` calls it. -->
 				{fixture?.name ?? '—'} · {columns.find((c) => c.key === picked?.key)?.label ?? picked.key}
 			</span>
@@ -387,7 +387,7 @@
 				{@const capture = pickedCapture}
 				<label>
 					value
-					{#if isColour(capture.value)}
+					{#if isColor(capture.value)}
 						<input
 							class="swatch"
 							type="color"
@@ -469,7 +469,7 @@
 				{#if value}
 					<label>
 						value
-						{#if isColour(value.value)}
+						{#if isColor(value.value)}
 							<input
 								class="swatch"
 								type="color"
@@ -527,15 +527,15 @@
 					{@const now = $output.value(fixture.id, column.key)}
 					<label>
 						set to
-						{#if isColour(column.shape)}
-							<!-- The colour it is showing, so the picker opens on it rather than
+						{#if isColor(column.shape)}
+							<!-- The color it is showing, so the picker opens on it rather than
 							     on black — and the declared shape when nothing is driving it. -->
 							<input
 								class="swatch"
 								type="color"
-								value={hexOf(now && isColour(now) ? now : column.shape)}
+								value={hexOf(now && isColor(now) ? now : column.shape)}
 								onchange={(e) => {
-									const next = withHex(now && isColour(now) ? now : column.shape, e.currentTarget.value);
+									const next = withHex(now && isColor(now) ? now : column.shape, e.currentTarget.value);
 									if (next) setValue([fixture.id], column.kind, next);
 								}}
 							/>
@@ -562,7 +562,7 @@
 		</div>
 	{/if}
 
-	<!-- The legend, which is what makes the colours readable to somebody who has not
+	<!-- The legend, which is what makes the colors readable to somebody who has not
 	     stood behind this desk before. -->
 	<footer>
 		{#each ['programmer', 'track', 'effect', 'cue', 'tracked', 'home'] as const as kind (kind)}
@@ -644,8 +644,8 @@
 		border-bottom: 1px solid var(--line-strong);
 		white-space: nowrap;
 	}
-	/* The fade groups, tinted only in the heading: a column of colour would fight
-	   the colours that carry the meaning. */
+	/* The fade groups, tinted only in the heading: a column of color would fight
+	   the colors that carry the meaning. */
 	.group-intensity { color: #d4d4d8; }
 	.group-position { color: #93c5fd; }
 	.group-color { color: #f0abfc; }
@@ -708,7 +708,7 @@
 		font-size: 9px;
 	}
 
-	/* The whole claim of this panel, in six colours. `lib/sheet.ts` decides which. */
+	/* The whole claim of this panel, in six colors. `lib/sheet.ts` decides which. */
 	.src-programmer { color: var(--src-programmer); }
 	.src-track { color: var(--src-track); }
 	.src-effect { color: var(--src-effect); }

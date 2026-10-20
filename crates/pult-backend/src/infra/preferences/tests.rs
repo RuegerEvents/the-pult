@@ -48,10 +48,10 @@ fn a_depth_out_of_range_is_brought_back_inside_it() {
 
 /// A file written by an older build, which knew fewer settings than this one.
 #[test]
-fn a_setting_this_build_does_not_recognise_is_ignored() {
+fn a_setting_this_build_does_not_recognize_is_ignored() {
     let own = own_file();
     std::fs::create_dir_all(own.0.parent().unwrap()).unwrap();
-    std::fs::write(&own.0, "history_depth = 300\nfavourite_colour = \"amber\"").unwrap();
+    std::fs::write(&own.0, "history_depth = 300\nfavorite_color = \"amber\"").unwrap();
 
     assert_eq!(load().history_depth, 300);
 }

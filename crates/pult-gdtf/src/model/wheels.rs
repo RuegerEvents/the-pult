@@ -1,6 +1,6 @@
 //! `<Wheels>`: the discrete things a fixture can put in the beam.
 //!
-//! A gobo wheel, a colour wheel, a prism, an animation disc. Each slot becomes a
+//! A gobo wheel, a color wheel, a prism, an animation disc. Each slot becomes a
 //! named position the console offers instead of a raw number, which is the
 //! difference between "Gobo 1 at 37%" and "Gobo 1: Breakup".
 

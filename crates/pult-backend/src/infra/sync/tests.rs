@@ -507,7 +507,7 @@ async fn local_writes_never_reach_the_operation_log() {
     );
 }
 
-/// The behavioural catch-up tests above would also pass if every peer were sent a
+/// The behavioral catch-up tests above would also pass if every peer were sent a
 /// snapshot, so these pin the decision itself.
 mod catch_up_decision {
     use super::*;

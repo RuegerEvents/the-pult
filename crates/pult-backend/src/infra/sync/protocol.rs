@@ -341,7 +341,7 @@ mod tests {
 
     /// The hazard `run_peer_loop` is built around, demonstrated.
     ///
-    /// A cancelled `read_frame` has already taken the length prefix off the wire and
+    /// A canceled `read_frame` has already taken the length prefix off the wire and
     /// has nowhere to put it back, so the next read treats the body as a length and
     /// the stream never recovers. In the peer loop this looked like a connection that
     /// died for no reason, rarely, under load — a whole afternoon of "flaky tests".
@@ -349,7 +349,7 @@ mod tests {
     /// If someone moves the read back into the `select!`, this test still passes, but
     /// it is here so the next person finds out why the task exists.
     #[tokio::test]
-    async fn a_cancelled_read_desynchronises_the_stream() {
+    async fn a_canceled_read_desynchronizes_the_stream() {
         let (mut client, mut server) = tokio::io::duplex(1024);
 
         // Only the length prefix, so the read has to wait for a body that is not
@@ -358,12 +358,12 @@ mod tests {
         client.write_all(&(frame.len() as u32).to_be_bytes()).await.unwrap();
         client.flush().await.unwrap();
 
-        let cancelled = tokio::time::timeout(
+        let canceled = tokio::time::timeout(
             std::time::Duration::from_millis(50),
             read_frame(&mut server),
         )
         .await;
-        assert!(cancelled.is_err(), "the read has to be pending for this to prove anything");
+        assert!(canceled.is_err(), "the read has to be pending for this to prove anything");
 
         // The rest of the first frame, then a second, whole one.
         client.write_all(&frame).await.unwrap();
@@ -376,7 +376,7 @@ mod tests {
             next,
             Ok(SyncMessage::Heartbeat { seq: 1 }) | Ok(SyncMessage::HeartbeatAck { seq: 2 })
         );
-        assert!(!recovered, "a cancelled read cannot be resumed; got {next:?}");
+        assert!(!recovered, "a canceled read cannot be resumed; got {next:?}");
     }
 
     #[tokio::test]

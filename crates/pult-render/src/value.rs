@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 pub enum ParameterValue {
     Float(f32),
     Int(i32),
-    /// A device-independent colour, plus levels named for specific emitters where
+    /// A device-independent color, plus levels named for specific emitters where
     /// somebody wanted a particular one at a particular place.
     ///
     /// The overrides are the escape hatch from [`crate::color::mix`]: the derived
     /// answer is right for nearly every fixture and wrong for the head whose white is
-    /// warmer than its file says. Defaulted on the wire, so every colour written
+    /// warmer than its file says. Defaulted on the wire, so every color written
     /// before they existed reads as one with none.
     Color {
         r: f32,
@@ -36,8 +36,8 @@ impl ParameterValue {
     /// resolving a relative write should all agree on what a delta does, and the
     /// only way to be sure of that is for there to be one of it.
     ///
-    /// Floats are normalised 0..1 everywhere in the console, so that is the range a
-    /// nudge comes to rest inside: past the top is the top, not beyond it. A colour
+    /// Floats are normalized 0..1 everywhere in the console, so that is the range a
+    /// nudge comes to rest inside: past the top is the top, not beyond it. A color
     /// moves on every channel, which is what makes a nudge on one mean "brighter"
     /// rather than "redder". `Bool` and `Text` refuse — addition means nothing to a
     /// relay or to a line of text, and quietly doing nothing would be worse than
@@ -51,7 +51,7 @@ impl ParameterValue {
                 ParameterValue::Int(v.saturating_add(delta.round() as i32))
             }
             // The overrides move with it: an operator who pinned the white to a half
-            // and then asked for "a bit brighter" meant the whole thing, and a colour
+            // and then asked for "a bit brighter" meant the whole thing, and a color
             // whose derived half moved while its pinned half stayed would change hue
             // on a brightness nudge.
             ParameterValue::Color { r, g, b, overrides } => ParameterValue::Color {
@@ -105,7 +105,7 @@ pub fn interpolate(from: &ParameterValue, to: &ParameterValue, t: f32) -> Parame
     }
 }
 
-/// The per-emitter half of a colour fade.
+/// The per-emitter half of a color fade.
 ///
 /// A key both ends name interpolates. A key only the destination names arrives with
 /// the fade rather than jumping at the start, and a key only the source names lets go
@@ -138,7 +138,7 @@ fn interpolate_overrides(
 }
 
 impl ParameterValue {
-    /// A plain colour, with nothing pinned. What almost every caller means.
+    /// A plain color, with nothing pinned. What almost every caller means.
     pub fn rgb(r: f32, g: f32, b: f32) -> Self {
         ParameterValue::Color { r, g, b, overrides: BTreeMap::new() }
     }

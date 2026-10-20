@@ -72,9 +72,9 @@
 	const layerName = (id: string | null) =>
 		id === null ? '—' : ($layers.find((layer) => layer.id === id)?.name ?? 'a layer that has gone');
 
-	/** What it is: the catalogue piece it names, a mesh it carries, or its kind. */
+	/** What it is: the catalog piece it names, a mesh it carries, or its kind. */
 	function what(object: SceneObject): string {
-		const entry = piece(object.catalogue);
+		const entry = piece(object.catalog);
 		if (entry) return entry.title;
 		if (object.geometry.length > 0 || object.symbol) return 'Imported mesh';
 		return object.kind === 'Group' ? 'Group' : object.kind;

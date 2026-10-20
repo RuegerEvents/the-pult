@@ -157,7 +157,7 @@ async fn a_persons_changes_come_back_newest_first() {
     }
 
     let log = recent_by_people(&pool, 2).await.unwrap();
-    assert_eq!(log.len(), 2, "the limit is honoured");
+    assert_eq!(log.len(), 2, "the limit is honored");
     assert_eq!(log[0].value, "v3");
     assert_eq!(log[1].value, "v2");
 }

@@ -235,7 +235,7 @@ fn a_chase(easing: Easing) -> RunningEffect {
 }
 
 /// The reason a step carries a value rather than a level: a chase can be three
-/// colours, not three brightnesses of one.
+/// colors, not three brightnesses of one.
 #[test]
 fn a_hard_chase_shows_each_step_from_where_it_starts() {
     let chase = a_chase(Easing::Step);
@@ -250,7 +250,7 @@ fn a_hard_chase_shows_each_step_from_where_it_starts() {
 fn a_linear_chase_crossfades_between_its_steps() {
     let chase = a_chase(Easing::Linear);
     // A sixth of a cycle in is halfway from the first step to the second.
-    let ParameterValue::Color { r, g, b, .. } = effect_value_at(&chase, 1_000 / 6) else { panic!("a colour") };
+    let ParameterValue::Color { r, g, b, .. } = effect_value_at(&chase, 1_000 / 6) else { panic!("a color") };
     assert_near(r, 0.5, "half out of red");
     assert_near(g, 0.5, "half into green");
     assert_close(b, 0.0, "no blue yet");
@@ -261,7 +261,7 @@ fn a_linear_chase_crossfades_between_its_steps() {
 #[test]
 fn the_last_step_wraps_round_to_the_first() {
     let chase = a_chase(Easing::Linear);
-    let ParameterValue::Color { r, g, b, .. } = effect_value_at(&chase, 5_000 / 6) else { panic!("a colour") };
+    let ParameterValue::Color { r, g, b, .. } = effect_value_at(&chase, 5_000 / 6) else { panic!("a color") };
     assert_near(b, 0.5, "half out of blue");
     assert_near(r, 0.5, "half into red");
     assert_close(g, 0.0, "green is behind us");

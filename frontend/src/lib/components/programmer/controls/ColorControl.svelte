@@ -1,13 +1,13 @@
 <script lang="ts">
 	/**
-	 * A colour, three ways at once.
+	 * A color, three ways at once.
 	 *
-	 * The square is for finding a colour, the faders for adjusting one, and the hex
+	 * The square is for finding a color, the faders for adjusting one, and the hex
 	 * field for entering the one somebody wrote down. They all edit the same value,
 	 * so which is the right one depends only on what the operator already knows.
 	 *
 	 * Hue and saturation only. How bright a lantern is belongs to Intensity, and a
-	 * colour picker that dimmed the light as well would leave two controls fighting
+	 * color picker that dimmed the light as well would leave two controls fighting
 	 * over the same thing.
 	 */
 
@@ -78,7 +78,7 @@
 	}
 </script>
 
-<div class="colour">
+<div class="color">
 	<div
 		class="square"
 		bind:this={square}
@@ -127,7 +127,7 @@
 </div>
 
 <style>
-	.colour {
+	.color {
 		display: flex;
 		gap: 10px;
 		align-items: flex-start;

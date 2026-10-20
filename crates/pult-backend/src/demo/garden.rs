@@ -43,7 +43,7 @@ use pult_schema::types::{
     parameter_key,
     pixels::{self, NodePixels, PixelStrip, StripMode},
     scene::{SceneObject, SceneObjectKind, Transform},
-    surface::{ColourStop, Surface, SurfaceTile, TileSize, TileTarget},
+    surface::{ColorStop, Surface, SurfaceTile, TileSize, TileTarget},
     timeline::{
         AtEnd, AudioClip, AudioDestination, NodeAudioMode, Timeline, TimelineAction, TimelineEnd,
         TimelineEvent, TimelineSource, TimelineTrack,
@@ -56,7 +56,7 @@ use uuid::Uuid;
 use super::{
     id,
     kit::{
-        a_clamped_fixture, a_cue, a_fixture, a_piece, a_stack, a_type, at, boom, capture, colour,
+        a_clamped_fixture, a_cue, a_fixture, a_piece, a_stack, a_type, at, boom, capture, color,
         dmx, draw, facing, hue, intensity, level, pan, posed, production, truss_run, under,
         weighing,
     },
@@ -78,18 +78,18 @@ pub const V0_INFO: &str = r#"{
     { "port": 3, "name": "Relay 4", "access": "readwrite", "dataType": "boolean", "default": 0.0, "class": "switch" },
     { "port": 4, "name": "Sensor 1", "access": "readonly", "dataType": "boolean", "class": "contact" },
     { "port": 5, "name": "Sensor 2", "access": "readonly", "dataType": "boolean", "class": "contact" },
-    { "port": 6, "name": "Colour", "access": "readwrite", "dataType": "color", "class": "color", "head": 1 },
+    { "port": 6, "name": "Color", "access": "readwrite", "dataType": "color", "class": "color", "head": 1 },
     { "port": 7, "name": "Brightness", "access": "readwrite", "dataType": "number", "unit": "percent", "minimum": 0.0, "maximum": 1.0, "default": 0.0, "class": "intensity", "head": 1 },
-    { "port": 8, "name": "Colour 2", "access": "readwrite", "dataType": "color", "head": 1 },
+    { "port": 8, "name": "Color 2", "access": "readwrite", "dataType": "color", "head": 1 },
     { "port": 9, "name": "Effect", "access": "readwrite", "dataType": "string", "class": "pixel-effect", "head": 1 },
     { "port": 10, "name": "Speed", "access": "readwrite", "dataType": "number", "unit": "hertz", "minimum": 0.0, "maximum": 10.0, "default": 1.0, "class": "speed", "head": 1 },
     { "port": 11, "name": "Size", "access": "readwrite", "dataType": "number", "unit": "percent", "minimum": 0.0, "maximum": 1.0, "default": 0.25, "class": "size", "head": 1 },
     { "port": 12, "name": "Reverse", "access": "readwrite", "dataType": "boolean", "default": 0.0, "class": "reverse", "head": 1 },
     { "port": 13, "name": "Mirror", "access": "readwrite", "dataType": "boolean", "default": 0.0, "class": "mirror", "head": 1 },
     { "port": 14, "name": "Segments", "access": "readwrite", "dataType": "number", "unit": "unitless", "minimum": 1.0, "maximum": 16.0, "default": 1.0, "class": "segments", "head": 1 },
-    { "port": 15, "name": "Colour", "access": "readwrite", "dataType": "color", "class": "color", "head": 2 },
+    { "port": 15, "name": "Color", "access": "readwrite", "dataType": "color", "class": "color", "head": 2 },
     { "port": 16, "name": "Brightness", "access": "readwrite", "dataType": "number", "unit": "percent", "minimum": 0.0, "maximum": 1.0, "default": 0.0, "class": "intensity", "head": 2 },
-    { "port": 17, "name": "Colour 2", "access": "readwrite", "dataType": "color", "head": 2 },
+    { "port": 17, "name": "Color 2", "access": "readwrite", "dataType": "color", "head": 2 },
     { "port": 18, "name": "Effect", "access": "readwrite", "dataType": "string", "class": "pixel-effect", "head": 2 },
     { "port": 19, "name": "Speed", "access": "readwrite", "dataType": "number", "unit": "hertz", "minimum": 0.0, "maximum": 10.0, "default": 1.0, "class": "speed", "head": 2 },
     { "port": 20, "name": "Size", "access": "readwrite", "dataType": "number", "unit": "percent", "minimum": 0.0, "maximum": 1.0, "default": 0.25, "class": "size", "head": 2 },
@@ -171,11 +171,11 @@ struct Node {
 /// Where the maze runs: along X, between walls at these two depths.
 const MAZE_FRONT: f32 = 0.0;
 const MAZE_BACK: f32 = -4.0;
-/// Each area is six metres of path, the first starting here.
+/// Each area is six meters of path, the first starting here.
 const MAZE_START: f32 = -12.0;
 const AREA_LENGTH: f32 = 6.0;
 
-fn area_centre(area: usize) -> f32 {
+fn area_center(area: usize) -> f32 {
     MAZE_START + AREA_LENGTH * (area as f32 + 0.5)
 }
 
@@ -185,7 +185,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     // ── Types ────────────────────────────────────────────────────────────────
 
     let par = weighing(
-        a_type("RGB par", vec![intensity(), colour()]),
+        a_type("RGB par", vec![intensity(), color()]),
         2.5,
         60.0,
         (0.22, 0.25, 0.22),
@@ -223,7 +223,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             .await?;
 
     // Eight IBC containers in a row across the garden, each a 1.2 m tank lit from
-    // inside. A deck stretched to a tank's height is the nearest piece the catalogue
+    // inside. A deck stretched to a tank's height is the nearest piece the catalog
     // has to a plastic cube in a steel cage.
     let mut ibcs = Vec::new();
     for n in 0..8 {
@@ -238,7 +238,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             class: None,
             geometry: Vec::new(),
             symbol: None,
-            catalogue: None,
+            catalog: None,
             properties: serde_json::Value::Null,
             locked: false,
             weight_kg: None,
@@ -253,13 +253,13 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                 scale: Vec3 { x: 1.2, y: 5.8, z: 1.0 },
                 ..Transform::default()
             },
-            ..catalogue_piece("deck-1x1")
+            ..catalog_piece("deck-1x1")
         };
         into.create("scene_objects", &tank).await?;
         ibcs.push(ibc.id);
     }
 
-    // The maze: a path along X between two walls, four areas of six metres.
+    // The maze: a path along X between two walls, four areas of six meters.
     for area in 0..4 {
         for side in [MAZE_FRONT, MAZE_BACK] {
             for panel in 0..3 {
@@ -294,25 +294,25 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         NodeRole {
             serial: SERIALS[0],
             name: "Area 1",
-            at: Vec3 { x: area_centre(0), y: 0.3, z: MAZE_BACK + 0.4 },
-            strips: [effect_strip(Vec3 { x: area_centre(0) - 3.0, y: wall_top, z: MAZE_BACK + 0.05 }), None],
+            at: Vec3 { x: area_center(0), y: 0.3, z: MAZE_BACK + 0.4 },
+            strips: [effect_strip(Vec3 { x: area_center(0) - 3.0, y: wall_top, z: MAZE_BACK + 0.05 }), None],
         },
         NodeRole {
             serial: SERIALS[1],
             name: "Area 2",
-            at: Vec3 { x: area_centre(1), y: 0.3, z: MAZE_BACK + 0.4 },
-            strips: [sacn_strip(10, Vec3 { x: area_centre(1) - 3.0, y: wall_top, z: MAZE_BACK + 0.05 }), None],
+            at: Vec3 { x: area_center(1), y: 0.3, z: MAZE_BACK + 0.4 },
+            strips: [sacn_strip(10, Vec3 { x: area_center(1) - 3.0, y: wall_top, z: MAZE_BACK + 0.05 }), None],
         },
         NodeRole {
             serial: SERIALS[2],
             name: "Area 3",
-            at: Vec3 { x: area_centre(2), y: 0.3, z: MAZE_BACK + 0.4 },
-            strips: [effect_strip(Vec3 { x: area_centre(2) - 3.0, y: wall_top, z: MAZE_BACK + 0.05 }), None],
+            at: Vec3 { x: area_center(2), y: 0.3, z: MAZE_BACK + 0.4 },
+            strips: [effect_strip(Vec3 { x: area_center(2) - 3.0, y: wall_top, z: MAZE_BACK + 0.05 }), None],
         },
         NodeRole {
             serial: SERIALS[3],
             name: "Area 4",
-            at: Vec3 { x: area_centre(3), y: 0.3, z: MAZE_BACK + 0.4 },
+            at: Vec3 { x: area_center(3), y: 0.3, z: MAZE_BACK + 0.4 },
             strips: [None, None],
         },
         NodeRole {
@@ -397,7 +397,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             &format!("Skeleton {n}"),
             skeleton.id,
             address(skeleton.channel_count),
-            at(area_centre(area) + 1.5, 0.0, MAZE_BACK + 0.6),
+            at(area_center(area) + 1.5, 0.0, MAZE_BACK + 0.6),
         );
         into.create("fixtures", &fixture).await?;
         skeletons.push(fixture.id);
@@ -715,8 +715,8 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     let green = "#22c55e";
     let red = "#ef4444";
     let occupancy = vec![
-        ColourStop { at: 0.0, colour: green.into() },
-        ColourStop { at: 1.0, colour: red.into() },
+        ColorStop { at: 0.0, color: green.into() },
+        ColorStop { at: 1.0, color: red.into() },
     ];
     let mut tiles = vec![
         tile("Entrance", None, TileSize::Full, TileTarget::Heading),
@@ -745,7 +745,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             TileSize::Half,
             TileTarget::VariableReadout {
                 variable_id: open.id,
-                stops: vec![ColourStop { at: 0.0, colour: red.into() }, ColourStop { at: 1.0, colour: green.into() }],
+                stops: vec![ColorStop { at: 0.0, color: red.into() }, ColorStop { at: 1.0, color: green.into() }],
             },
         ),
         tile("Open / shut", None, TileSize::Half, TileTarget::VariableSetter { variable_id: open.id, op: VariableOp::Toggle }),
@@ -888,8 +888,8 @@ fn facing_up() -> Vec3 {
     Vec3 { x: 0.0, y: 1.0, z: 0.0 }
 }
 
-fn catalogue_piece(catalogue_id: &str) -> SceneObject {
-    let piece = pult_schema::types::piece(catalogue_id).expect("in the catalogue");
+fn catalog_piece(catalog_id: &str) -> SceneObject {
+    let piece = pult_schema::types::piece(catalog_id).expect("in the catalog");
     SceneObject {
         id: id(),
         name: piece.title.to_string(),
@@ -900,7 +900,7 @@ fn catalogue_piece(catalogue_id: &str) -> SceneObject {
         class: None,
         geometry: Vec::new(),
         symbol: None,
-        catalogue: Some(piece.id.to_string()),
+        catalog: Some(piece.id.to_string()),
         properties: serde_json::Value::Null,
         locked: false,
         weight_kg: None,
@@ -919,8 +919,8 @@ fn variable(name: &str, kind: VariableKind, initial: f64) -> Variable {
     }
 }
 
-fn tile(label: &str, colour: Option<&str>, size: TileSize, target: TileTarget) -> SurfaceTile {
-    SurfaceTile { id: id(), label: label.into(), colour: colour.map(str::to_string), size, target }
+fn tile(label: &str, color: Option<&str>, size: TileSize, target: TileTarget) -> SurfaceTile {
+    SurfaceTile { id: id(), label: label.into(), color: color.map(str::to_string), size, target }
 }
 
 fn a_timeline(name: &str, end: Option<TimelineEnd>) -> Timeline {
@@ -963,7 +963,7 @@ fn a_clip(name: &str, sha: &str, start_ms: u64, destination: AudioDestination) -
 }
 
 /// A strip the node draws, told what to draw: the node's own effect by name, its
-/// colour, brightness and speed. Speed is a fader over the port's own 0–10 Hz.
+/// color, brightness and speed. Speed is a fader over the port's own 0–10 Hz.
 fn node_effect(strip: Uuid, effect: &str, (r, g, b): (f32, f32, f32), brightness: f32, hz: f32) -> Vec<ParameterCapture> {
     vec![
         capture(strip, named_kind("Effect"), ParameterValue::Text(effect.into())),

@@ -26,7 +26,7 @@ struct Args {
     /// so a copied bundle no longer clones the station that made it.
     #[arg(long, value_name = "FILE")]
     identity: Option<std::path::PathBuf>,
-    /// Put one of the demo shows in, if the show has no rig yet: haunt, theatre,
+    /// Put one of the demo shows in, if the show has no rig yet: haunt, theater,
     /// club or festival.
     #[arg(long, value_name = "ID")]
     demo: Option<pult_backend::demo::Demo>,

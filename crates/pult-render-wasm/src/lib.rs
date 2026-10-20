@@ -115,7 +115,7 @@ pub const TEXT: f32 = 5.0;
 /// Four floats per parameter: a tag and up to three components.
 ///
 /// Fixed width rather than variable, so the page indexes into the answer by position
-/// and never parses it. Four because a colour has three components and everything
+/// and never parses it. Four because a color has three components and everything
 /// else has one; the waste is a few kilobytes on a rig nobody is looking at all of.
 pub const STRIDE: usize = 4;
 
@@ -144,10 +144,10 @@ fn pack(value: Option<ParameterValue>, out: &mut [f32]) {
     }
 }
 
-/// What each of a fixture's emitters should be at, for one colour.
+/// What each of a fixture's emitters should be at, for one color.
 ///
 /// A free function rather than a method, because the question is about a *fixture* and
-/// a colour somebody is dragging, not about anything the show is driving: the colour
+/// a color somebody is dragging, not about anything the show is driving: the color
 /// control asks it as the picker moves, before any of it has been written.
 ///
 /// The same [`pult_render::color::mix`] the station's DMX connector calls, so the
@@ -180,14 +180,14 @@ pub fn effect_values(effects: JsValue, now_ms: f64) -> Result<Vec<f32>, JsValue>
     Ok(out)
 }
 
-/// A shape's level after `travelled` cycles, 0..1, for drawing its waveform.
+/// A shape's level after `traveled` cycles, 0..1, for drawing its waveform.
 ///
 /// Every shape, including the two that never repeat, which a drawing written in
 /// TypeScript would otherwise have to hash for itself.
 #[wasm_bindgen]
-pub fn shape_level(shape: JsValue, width: f32, travelled: f64, salt: u32) -> Result<f32, JsValue> {
+pub fn shape_level(shape: JsValue, width: f32, traveled: f64, salt: u32) -> Result<f32, JsValue> {
     let shape: pult_render::Shape = serde_wasm_bindgen::from_value(shape)?;
-    Ok(pult_render::shape_level(shape, width, travelled, salt))
+    Ok(pult_render::shape_level(shape, width, traveled, salt))
 }
 
 /// A serializer that answers with plain objects and arrays.
@@ -398,7 +398,7 @@ impl Evaluator {
     /// no second answer to when a recording is speaking.
     ///
     /// Which matters because **a track says nothing before its first point**: a key a
-    /// rolling take merely carries is not a key it is asserting, and colouring one
+    /// rolling take merely carries is not a key it is asserting, and coloring one
     /// green would be the sheet claiming a source the lamps do not have.
     ///
     /// Asked only while a sheet is open and a timeline is running, so a settled
@@ -412,12 +412,12 @@ impl Evaluator {
             .collect()
     }
 
-    /// One parameter's per-emitter overrides, for the colour control alone.
+    /// One parameter's per-emitter overrides, for the color control alone.
     ///
     /// Separate from [`Evaluator::evaluate`] for the reason [`Evaluator::text`] is: the
     /// packed answer is a fixed four floats, a map of names to levels does not fit in
     /// it, and widening the stride would make every frame of every rig pay for a panel
-    /// that is open on one screen. The colour control asks for this; nothing else does.
+    /// that is open on one screen. The color control asks for this; nothing else does.
     pub fn color_overrides(&self, key: &str, now_ms: f64) -> Result<JsValue, JsValue> {
         let now = now_ms.max(0.0) as u64;
         let overrides = match self.composed(key).and_then(|d| pult_render::value_at(&d, now)) {

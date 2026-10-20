@@ -129,7 +129,7 @@
 	const GROUPS: { key: keyof FadeCurves; label: string }[] = [
 		{ key: 'intensity', label: 'Intensity' },
 		{ key: 'position', label: 'Position' },
-		{ key: 'color', label: 'Colour' },
+		{ key: 'color', label: 'Color' },
 		{ key: 'beam', label: 'Beam' },
 		{ key: 'other', label: 'Everything else' }
 	];

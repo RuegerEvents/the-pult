@@ -1,12 +1,12 @@
 /**
  * The stage, as maths.
  *
- * Both stage views — the plan and the 3D rig — read positions and colours through
+ * Both stage views — the plan and the 3D rig — read positions and colors through
  * here, so the two cannot disagree about where anything is or what it is doing.
  *
  * # Which way is which
  *
- * The rig lives in metres. **Y is up. X increases to the right as seen from front
+ * The rig lives in meters. **Y is up. X increases to the right as seen from front
  * of house. Z increases downstage, towards the audience.**
  *
  * That last one is chosen rather than inherited, and for two reasons that agree: a
@@ -35,7 +35,7 @@ import type { Showing } from './stores/output.js';
 
 // ── Where things are ──────────────────────────────────────────────────────────
 
-/** A point on the floor, in metres. The two axes a ground plan can show. */
+/** A point on the floor, in meters. The two axes a ground plan can show. */
 export type PlanPoint = { x: number; z: number };
 
 /**
@@ -79,14 +79,14 @@ export const planToWorld = (point: PlanPoint, y: number): Vec3 => ({ x: point.x,
  * squared up without moving where it starts.
  */
 export function pixelToPlan(plan: StagePlan, px: number, py: number): PlanPoint {
-	const s = plan.metres_per_pixel;
+	const s = plan.meters_per_pixel;
 	const [dx, dz] = rotate(px * s, py * s, plan.rotation_deg);
 	return { x: plan.origin.x + dx, z: plan.origin.z + dz };
 }
 
 export function planToPixel(plan: StagePlan, point: PlanPoint): { px: number; py: number } {
 	const [dx, dz] = rotate(point.x - plan.origin.x, point.z - plan.origin.z, -plan.rotation_deg);
-	return { px: dx / plan.metres_per_pixel, py: dz / plan.metres_per_pixel };
+	return { px: dx / plan.meters_per_pixel, py: dz / plan.meters_per_pixel };
 }
 
 /**
@@ -97,7 +97,7 @@ export function planToPixel(plan: StagePlan, point: PlanPoint): { px: number; py
  * plan's old origin says nothing about where the new one belongs.
  */
 export function originForPixel(plan: StagePlan, px: number, py: number): PlanPoint {
-	const s = plan.metres_per_pixel;
+	const s = plan.meters_per_pixel;
 	const [dx, dz] = rotate(px * s, py * s, plan.rotation_deg);
 	return { x: -dx, z: -dz };
 }
@@ -110,10 +110,10 @@ function rotate(x: number, z: number, degrees: number): [number, number] {
 	return [x * cos - z * sin, x * sin + z * cos];
 }
 
-/** How wide and deep a plan is on the floor, in metres. */
+/** How wide and deep a plan is on the floor, in meters. */
 export const planExtent = (plan: StagePlan) => ({
-	width: plan.width_px * plan.metres_per_pixel,
-	depth: plan.height_px * plan.metres_per_pixel
+	width: plan.width_px * plan.meters_per_pixel,
+	depth: plan.height_px * plan.meters_per_pixel
 });
 
 /**
@@ -125,14 +125,14 @@ export const planExtent = (plan: StagePlan) => ({
 export function calibrationScale(
 	a: { px: number; py: number },
 	b: { px: number; py: number },
-	metres: number
+	meters: number
 ): number | null {
 	const pixels = Math.hypot(b.px - a.px, b.py - a.py);
-	if (pixels < 1 || !(metres > 0)) return null;
-	return metres / pixels;
+	if (pixels < 1 || !(meters > 0)) return null;
+	return meters / pixels;
 }
 
-/** A box in metres that holds every placed fixture, with room to breathe. */
+/** A box in meters that holds every placed fixture, with room to breathe. */
 export function fixtureBounds(
 	fixtures: Fixture[],
 	margin = 2,
@@ -161,7 +161,7 @@ const asNumber = (value: ParameterValue | undefined): number | null => {
 };
 
 /**
- * What a fixture is putting out: a colour and how much of it, 0–1.
+ * What a fixture is putting out: a color and how much of it, 0–1.
  *
  * Asked of a [`Showing`] rather than read off the fixture, because nothing stores what
  * a parameter is doing any more — the console keeps what is *driving* it and every
@@ -174,19 +174,19 @@ export function fixtureOutput(
 	showing: Showing
 ): { r: number; g: number; b: number; level: number } {
 	const read = (kind: ParameterKind) => showing.value(fixture.id, parameterKey(kind)) ?? undefined;
-	const colour = read('ColorRgb');
+	const color = read('ColorRgb');
 	const rgb =
-		colour?.type === 'Color' ? colour.value : { r: 1, g: 1, b: 1 };
-	// A fixture with no dimmer channel is as bright as its colour: a colour-mixing
+		color?.type === 'Color' ? color.value : { r: 1, g: 1, b: 1 };
+	// A fixture with no dimmer channel is as bright as its color: a color-mixing
 	// LED with everything up is on, and reporting it dark would be a lie.
 	const intensity = asNumber(read('Intensity'));
 	// A relay driving a practical is either on or off, and that is its level.
 	const switched = asNumber(read({ Switch: 0 }));
-	const level = intensity ?? switched ?? (colour ? 1 : 0);
+	const level = intensity ?? switched ?? (color ? 1 : 0);
 	return { r: rgb.r, g: rgb.g, b: rgb.b, level: clamp(level) };
 }
 
-/** That output as a CSS colour, dimmed by its own level. */
+/** That output as a CSS color, dimmed by its own level. */
 export function fixtureTint(fixture: Fixture, showing: Showing): string {
 	const { r, g, b, level } = fixtureOutput(fixture, showing);
 	const byte = (v: number) => Math.round(clamp(v) * level * 255);
@@ -229,7 +229,7 @@ export function travelOf(
 }
 
 /**
- * The direction a fixture points with pan and tilt both centred.
+ * The direction a fixture points with pan and tilt both centered.
  *
  * `objects` is the drawing it hangs in. Without it the answer is the fixture's own
  * rotation, which is right for a rig nobody has drawn and wrong for a light on a
@@ -237,7 +237,7 @@ export function travelOf(
  * two stage views both do.
  */
 function restDirection(fixture: Fixture, objects?: Map<string, SceneObject>): Vec3 {
-	return normalise(fixtureFacing(fixture, objects) ?? HANGING);
+	return normalize(fixtureFacing(fixture, objects) ?? HANGING);
 }
 
 /** Compass bearing of a direction on the floor: degrees from downstage towards +X. */
@@ -260,7 +260,7 @@ const hasParameter = (type: FixtureType | undefined, kind: ParameterKind) =>
 /**
  * Where a moving head is pointing, as an angle on the plan in degrees.
  *
- * Pan is reported 0–1 across the fixture's whole travel, centred on the way the
+ * Pan is reported 0–1 across the fixture's whole travel, centered on the way the
  * fixture hangs, so 0.5 is always the rest bearing however the head was rigged.
  */
 export function panAngle(
@@ -327,7 +327,7 @@ export function aimAt(
 ): { pan: number | null; tilt: number | null } {
 	const at = fixturePoint(fixture, objects);
 	if (!at) return { pan: null, tilt: null };
-	const towards = normalise({ x: target.x - at.x, y: target.y - at.y, z: target.z - at.z });
+	const towards = normalize({ x: target.x - at.x, y: target.y - at.y, z: target.z - at.z });
 	const rest = restDirection(fixture, objects);
 
 	const pan = hasParameter(type, 'Pan')
@@ -396,7 +396,7 @@ export function beamDirection(
  *
  * `maxThrow` is what keeps that handle in reach. A beam near the horizontal lands
  * arbitrarily far away and one above it never lands at all, so the honest answer is
- * a point tens of metres off the plan — which is a handle nobody can take hold of,
+ * a point tens of meters off the plan — which is a handle nobody can take hold of,
  * and which slides out from under the pointer the moment a drag flattens the beam.
  * Capped, it stops at the furthest distance worth drawing and still says which way
  * the light is going.
@@ -424,19 +424,19 @@ export function beamSpot(
 	};
 }
 
-function normalise(v: Vec3): Vec3 {
+function normalize(v: Vec3): Vec3 {
 	const length = Math.hypot(v.x, v.y, v.z) || 1;
 	return { x: v.x / length, y: v.y / length, z: v.z / length };
 }
 
-/** How far a beam runs before it meets the floor, in metres. */
+/** How far a beam runs before it meets the floor, in meters. */
 export function throwDistance(from: Vec3, direction: Vec3, floorY = 0): number {
 	if (direction.y >= -1e-3) return 12;
 	return Math.min(40, Math.max(0.5, (from.y - floorY) / -direction.y));
 }
 
 /**
- * How long to *draw* a beam whose axis meets the floor after `length` metres.
+ * How long to *draw* a beam whose axis meets the floor after `length` meters.
  *
  * The drawn beam is a cone cut square to its own axis, and a square cut at the
  * axis's floor hit is level with the floor only when the beam is vertical. Aimed at
@@ -446,15 +446,15 @@ export function throwDistance(from: Vec3, direction: Vec3, floorY = 0): number {
  * the floor, and the floor — the shader's fade over the deck and the deck's own
  * depth — does the cutting, which is the only cut that is level with it.
  *
- * The highest point of the end ring sits `r · sin θ` above the ring's centre, θ being
+ * The highest point of the end ring sits `r · sin θ` above the ring's center, θ being
  * the beam's angle from the vertical and `r` the ring's radius, which itself grows
- * with the length by `spread` per metre. Solving for the extra run that puts the
- * centre that far under the floor gives the closed form below. A beam grazing the
+ * with the length by `spread` per meter. Solving for the extra run that puts the
+ * center that far under the floor gives the closed form below. A beam grazing the
  * floor so flat that it widens faster than it descends has no such length, and gets
  * the longest throw drawn at all.
  */
 export function drawnLength(length: number, direction: Vec3, spread: number, lens: number): number {
-	const d = normalise(direction);
+	const d = normalize(direction);
 	if (d.y >= -1e-3) return length;
 	const sinTheta = Math.hypot(d.x, d.z);
 	const tanTheta = sinTheta / -d.y;

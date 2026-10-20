@@ -1,7 +1,7 @@
 /**
  * Making one piece meet another.
  *
- * `crates/pult-schema/tests/stock.rs` states the mating rule over the whole catalogue
+ * `crates/pult-schema/tests/stock.rs` states the mating rule over the whole catalog
  * from the station's side; this is the browser's, and it checks the things only this
  * side does — what counts as a *free* joint, and what a `+` handle builds.
  */
@@ -20,7 +20,7 @@ import {
 } from './snap.js';
 import { piece } from './stock.js';
 
-function object(id: string, catalogue: string | null, transform: Transform): SceneObject {
+function object(id: string, catalog: string | null, transform: Transform): SceneObject {
 	return {
 		id,
 		name: id,
@@ -31,7 +31,7 @@ function object(id: string, catalogue: string | null, transform: Transform): Sce
 		class: null,
 		geometry: [],
 		symbol: null,
-		catalogue,
+		catalog,
 		properties: null,
 		locked: false,
 		weight_kg: null
@@ -44,7 +44,7 @@ const at = (x: number, y: number, z: number): Transform => ({
 });
 
 describe('the grid', () => {
-	it('rounds to half a metre, and leaves a number alone when it is off', () => {
+	it('rounds to half a meter, and leaves a number alone when it is off', () => {
 		expect(toGrid(5.9847, 0.5)).toBe(6);
 		expect(toGrid(5.9847, 0)).toBe(5.9847);
 		expect(pointToGrid({ x: 1.2, y: 0.1, z: -0.4 }, 0.5)).toEqual({ x: 1, y: 0, z: -0.5 });
@@ -71,7 +71,7 @@ describe('a piece’s joints', () => {
 
 describe('which joints are free', () => {
 	it('is worked out from the geometry, not from a field', () => {
-		// Two two-metre sections end to end: four joints, and the two in the middle are
+		// Two two-meter sections end to end: four joints, and the two in the middle are
 		// bolted together, so a run offers a handle at each end and nowhere else.
 		const left = object('l', 'f34-2m', at(-1, 6, 0));
 		const right = object('r', 'f34-2m', at(1, 6, 0));
@@ -98,8 +98,8 @@ describe('snapping one piece to another', () => {
 		const snap = snapConnectors(dragged, connectorsOf(moving, dragged), theirs);
 
 		expect(snap).not.toBeNull();
-		// Two metres of truss meeting two metres of truss: the second one's middle is
-		// exactly two metres from the first's.
+		// Two meters of truss meeting two meters of truss: the second one's middle is
+		// exactly two meters from the first's.
 		expect(snap!.transform.position.x).toBeCloseTo(2);
 		expect(snap!.transform.position.y).toBeCloseTo(6);
 		expect(snap!.transform.position.z).toBeCloseTo(0);
@@ -134,8 +134,8 @@ describe('snapping one piece to another', () => {
 		const snap = snapConnectors(dragged, connectorsOf(moving, dragged), theirs);
 
 		expect(snap).not.toBeNull();
-		// A two-metre section standing on a plate whose joint is 90 mm up: its middle
-		// is a metre above that.
+		// A two-meter section standing on a plate whose joint is 90 mm up: its middle
+		// is a meter above that.
 		expect(snap!.transform.position.y).toBeCloseTo(1.09);
 		// And it is standing up, not lying down: its own X now runs along the world's Y.
 		const turned = snap!.transform.rotation;
@@ -194,7 +194,7 @@ describe('the + handle', () => {
 		const end = freeConnectors(connectorsOf(bar, bar.transform))[0];
 
 		expect(placedOnConnector('deck-1x1', end)).toBeNull();
-		// And the catalogue is what says which pieces do: a pipe end takes a pipe.
+		// And the catalog is what says which pieces do: a pipe end takes a pipe.
 		expect(piece('pipe-3m')!.connectors[0].kind).toBe('PipeEnd');
 	});
 });

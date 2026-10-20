@@ -171,12 +171,12 @@ pub struct ClockSync {
     pub measured_at: Option<Timestamp>,
 }
 
-/// One colour of a readout, from `at` upwards.
+/// One color of a readout, from `at` upwards.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ColourStop {
+pub struct ColorStop {
     pub at: f64,
-    /// A CSS colour, `#rrggbb`.
-    pub colour: String,
+    /// A CSS color, `#rrggbb`.
+    pub color: String,
 }
 
 /// A socket on the fixture.
@@ -244,7 +244,7 @@ pub struct CueShot {
 /// Which end of a bar a rigger measures from.
 ///
 /// Every crew has a convention and none of them is the right one: some hang from stage
-/// left because that is where the truss numbering starts, some from the centre line
+/// left because that is where the truss numbering starts, some from the center line
 /// because that is what the drawing is symmetrical about, and some from whichever end
 /// the tape happens to be tied to. A drawing that dimensioned from the wrong end is a
 /// drawing somebody measures wrong from, so this is asked rather than assumed.
@@ -263,8 +263,8 @@ pub enum Datum {
     #[default]
     Left,
     Right,
-    /// The middle of the bar, which on a symmetrical rig is the centre line.
-    Centre,
+    /// The middle of the bar, which on a symmetrical rig is the center line.
+    Center,
 }
 
 /// What the beat detector found, before anybody agreed to it.
@@ -345,9 +345,9 @@ pub struct DmxChannelLayout {
     /// The named ranges of this channel, in order. Empty for a plain continuous one.
     #[serde(default)]
     pub functions: Vec<ChannelFunctionRange>,
-    /// For a colour parameter, which emitter of the type this byte carries.
+    /// For a color parameter, which emitter of the type this byte carries.
     ///
-    /// A colour is one parameter and several channels — an RGBW head has four — so
+    /// A color is one parameter and several channels — an RGBW head has four — so
     /// the layout entry that says "this byte is the white one" is what lets one
     /// `Color` value become four bytes without the connector guessing an order.
     #[serde(default)]
@@ -425,20 +425,20 @@ pub struct EffectTemplate {
 
 /// One light source in the fixture.
 ///
-/// The list that makes a colour mixable. Given a colour and these, the console works
+/// The list that makes a color mixable. Given a color and these, the console works
 /// out a level per emitter; without them an RGBW head's fourth channel is a number
 /// with no meaning and stays dark.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Emitter {
     /// The GDTF emitter name — `Red`, `White`, `Lime` — which is also how a
-    /// per-emitter override in a colour value names it.
+    /// per-emitter override in a color value names it.
     pub name: String,
-    /// Where this emitter sits in linear RGB, from its CIE colour. `None` for one the
+    /// Where this emitter sits in linear RGB, from its CIE color. `None` for one the
     /// file did not measure, which then mixes by its name and nothing else.
     #[serde(default)]
     pub rgb: Option<Vec3>,
     /// A subtractive element — a CMY flag — rather than a source. Full means *less*
-    /// light, so it is the complement of the colour it is named for.
+    /// light, so it is the complement of the color it is named for.
     #[serde(default)]
     pub subtractive: bool,
 }
@@ -480,7 +480,7 @@ pub struct Fixture {
     /// resolved against the parent piece's chords, and for an imported truss those
     /// come off the mesh's own bounds — which the station never loads, because only
     /// `frontend/src/lib/geometry.ts` measures a mesh. So the *browser* is the writer
-    /// for every parent, whether the piece came out of the catalogue or out of a
+    /// for every parent, whether the piece came out of the catalog or out of a
     /// drawing, and what keeps its arithmetic equal to
     /// [`crate::types::mount::Mount::transform`]'s is `testdata/mounts.json`.
     ///
@@ -619,9 +619,9 @@ pub struct FixtureGeometry {
     #[serde(default)]
     pub parent: Option<String>,
     pub kind: GeometryKind,
-    /// Where this part sits relative to its parent, in metres, in console axes.
+    /// Where this part sits relative to its parent, in meters, in console axes.
     pub offset: Vec3,
-    /// Length, width, height in metres, for the box to draw when there is no mesh.
+    /// Length, width, height in meters, for the box to draw when there is no mesh.
     #[serde(default)]
     pub size: Option<Vec3>,
     /// The mesh in the asset store, where one was extracted.
@@ -643,7 +643,7 @@ pub struct FixturePhysical {
     pub weight_kg: Option<f32>,
     #[serde(default)]
     pub power_w: Option<f32>,
-    /// Length, width, height in metres.
+    /// Length, width, height in meters.
     #[serde(default)]
     pub dimensions_m: Option<Vec3>,
     #[serde(default)]
@@ -659,7 +659,7 @@ pub struct FixturePhysical {
     #[serde(default)]
     pub beam_angle_deg: Option<f32>,
     /// A point of light with no beam: one pixel of a strip. The rig view draws a dot in
-    /// its colour where it would otherwise draw a lantern and a cone.
+    /// its color where it would otherwise draw a lantern and a cone.
     #[serde(default)]
     pub pixel: bool,
 }
@@ -879,7 +879,7 @@ pub struct FrameCost {
     /// half of emitting to work on — assembly and the socket writes are both per
     /// universe, and they do not respond to the same fixes.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub assembling_mean_ms: f32,
     /// How many frames the window contained. Never zero: a connector that emitted
@@ -900,7 +900,7 @@ pub struct FrameCost {
     /// UDP, IP and Ethernet headers under it. A wire carries perhaps 5% more than
     /// this says.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub bytes: u64,
     #[serde(default)]
@@ -961,7 +961,7 @@ pub struct Group {
     pub query: SelectionQuery,
 }
 
-/// What a table's rows are grouped and subtotalled by.
+/// What a table's rows are grouped and subtotaled by.
 #[derive(
     Debug,
     Clone,
@@ -1009,7 +1009,7 @@ pub enum IfRunning {
     Restart,
 }
 
-/// What colours a drafting viewport.
+/// What colors a drafting viewport.
 #[derive(
     Debug,
     Clone,
@@ -1021,7 +1021,7 @@ pub enum IfRunning {
     serde::Deserialize
 )]
 pub enum Ink {
-    /// Black on white, with line weight carrying what colour would have.
+    /// Black on white, with line weight carrying what color would have.
     #[default]
     Mono,
     ByLayer,
@@ -1242,7 +1242,7 @@ pub struct Marker {
 
 /// Where a fixture is clamped on the piece it hangs off.
 ///
-/// `along` is metres from the piece's own origin, which for every catalogue piece is
+/// `along` is meters from the piece's own origin, which for every catalog piece is
 /// its middle — so a light in the middle of a bar reads as zero whatever length of
 /// bar it turns out to be. `roll` is degrees about the chord, and it snaps to the
 /// quarter turns because that is what a hook clamp does: 0 hangs, 180 stands the
@@ -1253,7 +1253,7 @@ pub struct Mount {
     /// refuses: a piece that lost a chord between two versions of this console should
     /// leave the light on the truss.
     pub chord: u8,
-    /// Metres along the chord from the piece's origin.
+    /// Meters along the chord from the piece's origin.
     pub along: f32,
     /// Degrees about the chord. Zero hangs.
     pub roll: f32,
@@ -1467,7 +1467,7 @@ pub struct ParameterCapture {
     pub parameter_kind: ParameterKind,
     pub value: ParameterValue,
     /// How long this capture takes when the parameter is going *up*, and when it is
-    /// going nowhere a console can rank — a colour, a relay. Zero means the cue's.
+    /// going nowhere a console can rank — a color, a relay. Zero means the cue's.
     pub fade_in_ms: u32,
     /// The same, for a parameter coming *down*. Zero means the cue's out time, and a
     /// cue with no out time either means the in time: a show that never says
@@ -1527,7 +1527,7 @@ pub struct ParameterDefinition {
     /// Which encoder page this belongs on: `Dimmer`, `Position`, `Color`, `Beam`.
     #[serde(default)]
     pub feature_group: Option<String>,
-    /// The light sources a colour parameter mixes across. Empty on everything else.
+    /// The light sources a color parameter mixes across. Empty on everything else.
     #[serde(default)]
     pub emitters: Vec<Emitter>,
 }
@@ -1577,8 +1577,8 @@ pub enum ParameterKind {
     ColorWheel(u8),
     Prism(u8),
     Frost(u8),
-    /// Correlated colour temperature in kelvin, for a variable-white fixture. Not a
-    /// colour: a tunable-white bar has this and no RGB at all.
+    /// Correlated color temperature in kelvin, for a variable-white fixture. Not a
+    /// color: a tunable-white bar has this and no RGB at all.
     ColorTemperature,
     Raw(u8),
     /// A switched output: a relay, a dry contact the console closes.
@@ -1633,7 +1633,7 @@ pub enum PhysicalUnit {
     Seconds,
     Hertz,
     Kelvin,
-    Metres,
+    Meters,
     Watts,
 }
 
@@ -1665,7 +1665,7 @@ pub struct PixelStrip {
     pub output: u8,
     pub mode: StripMode,
     pub count: u16,
-    /// The colour order on the strip's own wire. The universes always carry R, G, B
+    /// The color order on the strip's own wire. The universes always carry R, G, B
     /// (and W), so this matters to the node and to nothing here but the channel count.
     pub order: String,
     /// Where pixel 0's first channel is, in `sacn` mode. Kept in `effect` mode too, so
@@ -1675,7 +1675,7 @@ pub struct PixelStrip {
     /// How long the node holds its last frame when every source has gone.
     #[serde(default)]
     pub hold_ms: u32,
-    /// Distance from one pixel to the next, in metres: 60 to the metre unless said.
+    /// Distance from one pixel to the next, in meters: 60 to the meter unless said.
     #[serde(default)]
     pub pitch_m: f32,
 }
@@ -1927,9 +1927,9 @@ pub enum RecordSource {
     Programmer { release: bool },
 }
 
-/// A rectangle on the sheet, in millimetres from its top-left corner.
+/// A rectangle on the sheet, in millimeters from its top-left corner.
 ///
-/// Millimetres rather than fractions of the page, because a viewport at 1:50 is a
+/// Millimeters rather than fractions of the page, because a viewport at 1:50 is a
 /// window of a known size onto the rig and a fraction would change what it framed when
 /// somebody moved the sheet from A3 to A2.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
@@ -1989,23 +1989,23 @@ pub struct SceneObject {
     /// Or a shared one, which is how a rig of forty identical truss sections holds
     /// one mesh rather than forty.
     pub symbol: Option<Uuid>,
-    /// Or none of the above: a piece out of the console's own catalogue, named
-    /// rather than modelled — `"f34-2m"` is two metres of box truss and the browser
+    /// Or none of the above: a piece out of the console's own catalog, named
+    /// rather than modeled — `"f34-2m"` is two meters of box truss and the browser
     /// draws one.
     ///
     /// Last of the three, and a mesh that came with a drawing wins: it is the truth
     /// about that object. This is what a console draws for a rig it made itself,
     /// where until now there was nothing to draw and the lights hung in the air.
     ///
-    /// See [`crate::types::catalogue`].
+    /// See [`crate::types::catalog`].
     #[serde(default)]
-    pub catalogue: Option<String>,
-    /// What a piece out of the catalogue was asked for: a deck's leg height, a
-    /// panel's finish. Declared per piece in [`crate::types::catalogue`], so the
+    pub catalog: Option<String>,
+    /// What a piece out of the catalog was asked for: a deck's leg height, a
+    /// panel's finish. Declared per piece in [`crate::types::catalog`], so the
     /// keys are the piece's and an object carrying a key the piece never declared
     /// is simply ignored rather than refused.
     ///
-    /// An object out of a drawing has an empty map: a mesh somebody modelled says
+    /// An object out of a drawing has an empty map: a mesh somebody modeled says
     /// what it is, and there is nothing here to ask it.
     ///
     /// A JSON column, the way `PluginPackage::config` is.
@@ -2015,17 +2015,17 @@ pub struct SceneObject {
     ///
     /// The show's rather than the browser's, unlike layer visibility: locking the
     /// house rig so nobody drags it is a decision about the rig, and a lock only
-    /// one screen honoured would be no lock at all. A locked object is still drawn,
+    /// one screen honored would be no lock at all. A locked object is still drawn,
     /// still pickable and still says what it is — what it has is no gizmo.
     #[serde(default)]
     pub locked: bool,
     /// What this one weighs, in kilograms, where somebody has said.
     ///
-    /// Overrides the nominal figure a catalogue piece carries, and is the only weight
+    /// Overrides the nominal figure a catalog piece carries, and is the only weight
     /// there is for an object out of a drawing — MVR says where a truss is and never
     /// what it weighs. A loading table distinguishes the two: a total resting on
     /// entered weights is a different claim from one resting on
-    /// [`crate::types::catalogue::StockPiece::weight_kg`], and printing them as the
+    /// [`crate::types::catalog::StockPiece::weight_kg`], and printing them as the
     /// same number is how a nominal figure becomes a rigging decision.
     #[serde(default)]
     pub weight_kg: Option<f32>,
@@ -2104,7 +2104,7 @@ pub enum SelectionOrder {
         #[serde(default)]
         descending: Option<bool>,
     },
-    /// Outwards from a point, which is what makes a centre-out chase possible.
+    /// Outwards from a point, which is what makes a center-out chase possible.
     ByDistance { from: Vec3 },
 }
 
@@ -2135,8 +2135,8 @@ pub enum SelectionTerm {
     OfType { type_id: Uuid },
     /// Case-insensitive substring of the fixture's name.
     Named { text: String },
-    /// Within `radius` metres of a point.
-    Sphere { centre: Vec3, radius: f32 },
+    /// Within `radius` meters of a point.
+    Sphere { center: Vec3, radius: f32 },
     /// Inside an axis-aligned region. The two corners may be given either way round.
     Box { from: Vec3, to: Vec3 },
     /// The spec's radial selection: a cone from a point, opening along a direction.
@@ -2321,13 +2321,13 @@ pub struct Show {
     pub mvr_xchange: XchangeSettings,
 }
 
-/// One named position on a wheel: a gobo, a colour, a prism facet.
+/// One named position on a wheel: a gobo, a color, a prism facet.
 ///
 /// What turns "Gobo 1 at 37%" into "Gobo 1: Breakup".
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Slot {
     pub name: String,
-    /// The colour of this slot, where it has one, as linear RGB. A colour wheel's
+    /// The color of this slot, where it has one, as linear RGB. A color wheel's
     /// slots do; a gobo wheel's do not.
     #[serde(default)]
     pub color: Option<Vec3>,
@@ -2380,7 +2380,7 @@ pub enum Spread {
     /// One cycle spread across the selection.
     Linear,
     /// Symmetric about the middle of the selection.
-    Centre,
+    Center,
     /// Linear, from the other end.
     Reversed,
     /// Mirrored in `n` wings.
@@ -2400,11 +2400,11 @@ pub struct StagePlan {
     /// The image's own size, so the view can lay it out before the bytes arrive.
     pub width_px: u32,
     pub height_px: u32,
-    /// The world point, in metres, that the image's top-left corner sits on.
+    /// The world point, in meters, that the image's top-left corner sits on.
     pub origin: Vec3,
     /// How much of the room one image pixel covers. Set by measuring something on
     /// the plan whose real length is known.
-    pub metres_per_pixel: f32,
+    pub meters_per_pixel: f32,
     pub rotation_deg: f32,
     pub opacity: f32,
     pub visible: bool,
@@ -2467,7 +2467,7 @@ pub struct Station {
     /// that was told about a fade once are not two samples of one number.
     ///
     /// Defaulted, so a peer running a build that cannot say still sends a row that
-    /// deserialises.
+    /// deserializes.
     #[serde(default)]
     pub frame_costs: Vec<FrameCost>,
     /// What the *machine* is doing, as against what this console is costing.
@@ -2479,7 +2479,7 @@ pub struct Station {
     /// a station at 4% on a machine at 96% is not a comfortable station, it is a
     /// console about to be starved by something nobody is looking at.
     ///
-    /// All defaulted, so a peer on an older build still deserialises.
+    /// All defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub machine: MachineStats,
     /// What this machine's network interfaces carried over the window just reported,
@@ -2496,7 +2496,7 @@ pub struct Station {
     /// sends to itself would otherwise arrive twice — sent and received — and swamp
     /// the figure it is there to give.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub net_received: u64,
     #[serde(default)]
@@ -2525,7 +2525,7 @@ pub struct Station {
     /// each one says what it took. `None` on a leader, which is at the top of the
     /// ladder rather than in a slot.
     ///
-    /// Defaulted, so a peer on an older build still deserialises.
+    /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub sacn_slot: Option<u8>,
     /// When this station last said any of the above.
@@ -2602,8 +2602,8 @@ pub struct SurfaceTile {
     pub id: Uuid,
     /// What the tile says. Empty means the name of what it points at.
     pub label: String,
-    /// A CSS colour for the tile itself, `#rrggbb`.
-    pub colour: Option<String>,
+    /// A CSS color for the tile itself, `#rrggbb`.
+    pub color: Option<String>,
     pub size: TileSize,
     pub target: TileTarget,
 }
@@ -2664,7 +2664,7 @@ pub enum TableKind {
 pub struct TextBlock {
     pub rect: Rect,
     pub text: String,
-    /// Cap height in millimetres. 2.5 mm is a drawing's small text, 5 mm a heading.
+    /// Cap height in millimeters. 2.5 mm is a drawing's small text, 5 mm a heading.
     #[serde(default)]
     pub size_mm: f32,
     #[serde(default)]
@@ -2694,9 +2694,9 @@ pub enum TileTarget {
     /// What a variable holds: a flag as a light, a number as a figure.
     VariableReadout {
         variable_id: Uuid,
-        /// The colour for each value, the highest stop not above it winning. Empty
-        /// means the tile's own colour when the value is on and grey when off.
-        stops: Vec<ColourStop>,
+        /// The color for each value, the highest stop not above it winning. Empty
+        /// means the tile's own color when the value is on and gray when off.
+        stops: Vec<ColorStop>,
     },
     /// Change a variable. Unattributed, through the `variable.*` RPCs, so a phone
     /// resetting an area writes no row in the History panel.
@@ -2713,7 +2713,7 @@ pub enum TileTarget {
     /// Take a sequence off.
     SequenceOff { sequence_id: Uuid },
     /// What one parameter of one fixture is putting out now — a traffic light's
-    /// colour, a relay — evaluated in the page the way the sheet does it.
+    /// color, a relay — evaluated in the page the way the sheet does it.
     Parameter { fixture_id: Uuid, parameter: ParameterKind },
 }
 
@@ -2830,7 +2830,7 @@ pub enum TimelineSource {
     ///
     /// `offset_frames` is signed and is subtracted from the decoded position, because
     /// a show that starts at `01:00:00:00` is the normal case rather than the odd one:
-    /// timecode from an hour is how a reel says "this is the programme and not the
+    /// timecode from an hour is how a reel says "this is the program and not the
     /// leader".
     Ltc { fps: LtcRate, offset_frames: i64 },
 }
@@ -2858,7 +2858,7 @@ pub struct TimelineTrack {
 
 /// Where something is, what it is turned to, and how big it is.
 ///
-/// Metres, and XYZ Euler degrees — three.js's default order, and so the console's,
+/// Meters, and XYZ Euler degrees — three.js's default order, and so the console's,
 /// stated here and assumed everywhere else.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Transform {
@@ -2913,11 +2913,11 @@ pub enum TriggerSource {
 pub struct User {
     pub id: Uuid,
     pub name: String,
-    /// How this user's changes are marked in the history, as a CSS colour.
+    /// How this user's changes are marked in the history, as a CSS color.
     ///
     /// Persisted rather than derived from the id, so somebody who dislikes the one
     /// they were given can change it and it stays changed.
-    pub colour: String,
+    pub color: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -2957,7 +2957,7 @@ pub enum VariableOp {
     Reset,
 }
 
-/// A point in the rig, in metres, from whatever origin the show uses.
+/// A point in the rig, in meters, from whatever origin the show uses.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Vec3 {
     pub x: f32,
@@ -3001,7 +3001,7 @@ pub struct Version {
     /// Nothing reads it yet. It is here because a version is the only record of a
     /// past state that survives the oplog's retention, and a diff between two of
     /// them has to be able to say which came first on which station — which a
-    /// timestamp across machines with unsynchronised clocks cannot.
+    /// timestamp across machines with unsynchronized clocks cannot.
     #[serde(default)]
     pub clock: VectorClock,
 }
@@ -3084,7 +3084,7 @@ pub enum ViewStyle {
         /// drawing — that would be a document changing the show it documents, and on a
         /// console with the lamps on it would be visible in the room.
         ///
-        /// Several, because a look is usually more than one sequence: a colour state
+        /// Several, because a look is usually more than one sequence: a color state
         /// and a movement running over it. They are applied in order, so a later one
         /// wins where two capture the same parameter.
         #[serde(default)]
@@ -3110,7 +3110,7 @@ pub struct ViewportBlock {
     /// every time.
     #[serde(default)]
     pub layers: Option<Vec<Uuid>>,
-    /// The lines of a head's label, in order. Empty for an unlabelled drawing.
+    /// The lines of a head's label, in order. Empty for an unlabeled drawing.
     #[serde(default)]
     pub labels: Vec<LabelField>,
     #[serde(default)]

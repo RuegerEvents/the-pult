@@ -9,11 +9,11 @@
 //!
 //! # Layers
 //!
-//! Fire is intensity and colour moving together, and a candle is a flicker with a warm
-//! colour drifting under it. So an entry is a list of [`EffectLayer`]s, one per
+//! Fire is intensity and color moving together, and a candle is a flicker with a warm
+//! color drifting under it. So an entry is a list of [`EffectLayer`]s, one per
 //! parameter, each applied to the fixtures in the selection that have that parameter.
 //! A layer a fixture cannot take is skipped for that fixture rather than refused for
-//! the selection: "fire" on a row of single-colour pars is still the flicker.
+//! the selection: "fire" on a row of single-color pars is still the flicker.
 //!
 //! # A copy, not a reference
 //!
@@ -261,15 +261,15 @@ mod tests {
     }
 
     /// Every layer's ends are the kind of value its parameter holds, or applying one
-    /// would write a colour into an intensity.
+    /// would write a color into an intensity.
     #[test]
     fn every_layer_speaks_its_parameters_type() {
         for template in default_effect_templates() {
             for layer in &template.layers {
-                let colour = matches!(layer.kind, ParameterKind::ColorRgb);
+                let color = matches!(layer.kind, ParameterKind::ColorRgb);
                 let fits = |v: &ParameterValue| match v {
-                    ParameterValue::Color { .. } => colour,
-                    ParameterValue::Float(_) => !colour,
+                    ParameterValue::Color { .. } => color,
+                    ParameterValue::Float(_) => !color,
                     _ => false,
                 };
                 assert!(fits(&layer.low) && fits(&layer.high), "{} ends", template.name);

@@ -1,7 +1,7 @@
 //! The scalar types GDTF spells as strings.
 //!
 //! DIN SPEC 15800 gives most of its attributes a syntax rather than a type: a DMX
-//! value is `255/1`, a colour is three comma-separated numbers in CIE xyY, a
+//! value is `255/1`, a color is three comma-separated numbers in CIE xyY, a
 //! position is four brace-wrapped rows of four. Each of them gets a `FromStr` and a
 //! `Display` here, and serde goes through those, so the object model can hold a
 //! parsed value and still write back exactly the shape the schema expects.
@@ -82,10 +82,10 @@ where
 /// A *value* an attribute might not really have.
 ///
 /// [`de_from_str_opt`] with the last step softened: where that one fails the whole
-/// fixture over an attribute it cannot parse, this reads it as absent. For a colour
+/// fixture over an attribute it cannot parse, this reads it as absent. For a color
 /// that is the right answer and the strict version is the wrong one — a real Robe
 /// file writes `Color="nan,nan,nan"` on a black slot, which says the slot has no
-/// colour rather than that the file is broken.
+/// color rather than that the file is broken.
 pub fn de_value_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -248,9 +248,9 @@ impl fmt::Display for DmxValue {
 
 serde_via_string!(DmxValue);
 
-// ── Colour ───────────────────────────────────────────────────────────
+// ── Color ───────────────────────────────────────────────────────────
 
-/// A colour in CIE 1931 xyY, which is how GDTF says every colour it knows.
+/// A color in CIE 1931 xyY, which is how GDTF says every color it knows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColorCie {
     pub x: f32,
@@ -267,18 +267,18 @@ impl FromStr for ColorCie {
         let mut next = || -> Result<f32, ParseError> {
             parts
                 .next()
-                .ok_or_else(|| ParseError::new("CIE colour", s))?
+                .ok_or_else(|| ParseError::new("CIE color", s))?
                 .parse()
-                .map_err(|_| ParseError::new("CIE colour", s))
+                .map_err(|_| ParseError::new("CIE color", s))
         };
         let (x, y, luminance) = (next()?, next()?, next()?);
-        // `Color="nan,nan,nan"` is in a real Robe file, on a colour wheel's black
+        // `Color="nan,nan,nan"` is in a real Robe file, on a color wheel's black
         // slot, and Rust parses "nan" into a number quite happily. What follows is
         // worse than a refusal: a NaN reaches the schema, `serde_json` writes it as
         // `null`, and the row is stored and can never be read back — silent loss with
-        // no bad data to blame. A colour that is not a number is not a colour.
+        // no bad data to blame. A color that is not a number is not a color.
         if !x.is_finite() || !y.is_finite() || !luminance.is_finite() {
-            return Err(ParseError::new("CIE colour", s));
+            return Err(ParseError::new("CIE color", s));
         }
         Ok(ColorCie { x, y, luminance })
     }
@@ -293,10 +293,10 @@ impl fmt::Display for ColorCie {
 serde_via_string!(ColorCie);
 
 impl ColorCie {
-    /// This colour as linear sRGB in 0..1, ignoring luminance.
+    /// This color as linear sRGB in 0..1, ignoring luminance.
     ///
-    /// What an emitter's colour is for: mixing needs a direction in RGB space, and
-    /// the console has no colour management to do anything cleverer with xyY.
+    /// What an emitter's color is for: mixing needs a direction in RGB space, and
+    /// the console has no color management to do anything cleverer with xyY.
     pub fn to_linear_rgb(self) -> [f32; 3] {
         if self.y.abs() < 1e-6 {
             return [0.0, 0.0, 0.0];
@@ -360,7 +360,7 @@ serde_via_string!(Node);
 // ── Matrices ─────────────────────────────────────────────────────────
 
 /// A GDTF `Position`: four brace-wrapped rows of four numbers, row-major, with the
-/// translation in the last row and in **millimetres**.
+/// translation in the last row and in **millimeters**.
 ///
 /// Held row-major exactly as written. Converting to the console's space is
 /// [`to_console`], and it is the only place that knows about the axis swap.
@@ -379,7 +379,7 @@ impl Default for Matrix {
 }
 
 impl Matrix {
-    /// The translation part, in the file's own millimetres.
+    /// The translation part, in the file's own millimeters.
     pub fn translation_mm(&self) -> [f32; 3] {
         [self.0[3][0], self.0[3][1], self.0[3][2]]
     }
@@ -499,7 +499,7 @@ serde_via_string!(Rotation);
 
 // ── Space conversion ─────────────────────────────────────────────────
 
-/// GDTF and MVR are millimetres, X right, Y upstage, Z up. The console is metres,
+/// GDTF and MVR are millimeters, X right, Y upstage, Z up. The console is meters,
 /// Y up, Z downstage.
 ///
 /// `(x, z, −y) / 1000` and nothing else. The tempting `(x, z, y)` swap has
@@ -511,8 +511,8 @@ pub fn to_console(mm: [f32; 3]) -> [f32; 3] {
 }
 
 /// The inverse of [`to_console`], for export.
-pub fn from_console(metres: [f32; 3]) -> [f32; 3] {
-    [metres[0] * 1000.0, -metres[2] * 1000.0, metres[1] * 1000.0]
+pub fn from_console(meters: [f32; 3]) -> [f32; 3] {
+    [meters[0] * 1000.0, -meters[2] * 1000.0, meters[1] * 1000.0]
 }
 
 /// The same change of basis applied to a rotation, so an imported yoke turns the way
@@ -615,12 +615,12 @@ pub fn num(value: f32) -> String {
 mod tests {
     use super::*;
 
-    /// A real Robe file writes this on a colour wheel's black slot, and Rust parses
+    /// A real Robe file writes this on a color wheel's black slot, and Rust parses
     /// "nan" into a number without complaint. What follows is worse than a refusal: a
-    /// NaN reaches the schema, serialises as `null`, and the row can never be read
+    /// NaN reaches the schema, serializes as `null`, and the row can never be read
     /// back — a fixture type stored and lost with nothing to blame.
     #[test]
-    fn a_colour_that_is_not_a_number_is_not_a_colour() {
+    fn a_color_that_is_not_a_number_is_not_a_color() {
         assert!("nan,nan,nan".parse::<ColorCie>().is_err());
         assert!("0.31,nan,100".parse::<ColorCie>().is_err());
         assert!("inf,0.3,100".parse::<ColorCie>().is_err());
@@ -692,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cie_colour_round_trips_and_points_the_right_way() {
+    fn a_cie_color_round_trips_and_points_the_right_way() {
         let red: ColorCie = "0.6400,0.3300,21.26".parse().unwrap();
         let rgb = red.to_linear_rgb();
         assert!(rgb[0] > rgb[1] && rgb[0] > rgb[2], "{rgb:?}");

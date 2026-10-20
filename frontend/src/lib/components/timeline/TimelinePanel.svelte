@@ -22,7 +22,7 @@
 	 * console's work to produce a thumbnail.
 	 *
 	 * **And the detector proposes; this panel confirms.** *Detect beats* draws its
-	 * answer over the waveform in its own colour and changes nothing; *Use this grid*
+	 * answer over the waveform in its own color and changes nothing; *Use this grid*
 	 * is the write. A console that silently rewrote the grid of a show somebody had
 	 * already programmed against would be worse than one that could not detect
 	 * anything.
@@ -395,7 +395,7 @@
 	 * in a row below.
 	 *
 	 * What it does **not** simplify is the tempo, because the obvious reading is wrong.
-	 * The model works at 50 frames a second, so every beat is quantised to 20 ms — at
+	 * The model works at 50 frames a second, so every beat is quantized to 20 ms — at
 	 * 128 bpm a 468.75 ms beat lands on 460 or 480, whose median is 460, and
 	 * `60000 / median` is 130.4. Over a minute that walks a whole bar out of step. So
 	 * the tempo comes from the **span** divided by the number of beats the span holds,

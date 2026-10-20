@@ -74,8 +74,8 @@ pub struct Patch {
     /// name — it walks a flat list and writes bytes.
     ///
     /// Grouped by *parameter* rather than by channel, and that is the whole point of
-    /// the shape: an RGBW head's colour is four bytes and one value, and a flat list
-    /// of channels would evaluate the same colour four times a frame.
+    /// the shape: an RGBW head's color is four bytes and one value, and a flat list
+    /// of channels would evaluate the same color four times a frame.
     placed: Vec<PlacedParameter>,
     /// Every universe this patch occupies, ascending.
     ///
@@ -115,11 +115,11 @@ struct PlacedParameter {
     default: ParameterValue,
     /// Every emitter of this parameter, in the order the type lists them.
     ///
-    /// On the parameter rather than only on the channels, because *decoding* a colour
+    /// On the parameter rather than only on the channels, because *decoding* a color
     /// is a question about the whole parameter: `unmix` is handed one level per
     /// emitter at once and picks the primaries out of that list, so it has to see the
     /// list the mixer saw and in the same order. Empty for everything that is not a
-    /// colour.
+    /// color.
     emitters: Vec<EmitterSpec>,
     channels: Vec<PlacedChannel>,
 }
@@ -130,13 +130,13 @@ struct PlacedChannel {
     /// The break's 1-based start address in that universe.
     address: u16,
     layout: DmxChannelLayout,
-    /// The one emitter this channel drives, for a colour. `None` on everything else —
-    /// and on a colour channel whose mode named an emitter the type does not have,
+    /// The one emitter this channel drives, for a color. `None` on everything else —
+    /// and on a color channel whose mode named an emitter the type does not have,
     /// which is a channel there is nothing honest to write into.
     ///
     /// Resolved here rather than per frame: the mixer wants a spec, the schema holds
     /// an `Emitter`, and converting between them per channel per frame was measurably
-    /// the whole cost of colour on a rig of five hundred.
+    /// the whole cost of color on a rig of five hundred.
     emitter: Option<EmitterSpec>,
 }
 
@@ -277,7 +277,7 @@ impl Patch {
                 };
 
                 // Beside the other bytes of the same parameter where there are any,
-                // so the frame evaluates a colour once and writes four bytes from it.
+                // so the frame evaluates a color once and writes four bytes from it.
                 match placed.iter_mut().rev().find(|each| {
                     each.fixture == index && each.key == layout.parameter_key
                 }) {
@@ -468,7 +468,7 @@ pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Univer
             continue;
         }
         let fixture = &patch.fixtures[parameter.fixture];
-        // Once, however many bytes it comes to: an RGBW head's colour is one
+        // Once, however many bytes it comes to: an RGBW head's color is one
         // evaluation and four writes, not four of each.
         let driving = pult_render::Driving {
             track: patch.track_at(fixture.id, &parameter.key),

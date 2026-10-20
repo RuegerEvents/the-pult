@@ -107,7 +107,7 @@ export function defaultDirectionFor(kind: ParameterKind): ParameterDirection {
  * The third of three, and the console needed one: [`kindLabel`] answers "which of the
  * fixed options is this", which is what the type editor's selector round-trips through
  * and must not change, and [`parameterKindLabel`] answers "what is this called in
- * `live_fades`". Neither is a name to put in front of somebody — a colour column
+ * `live_fades`". Neither is a name to put in front of somebody — a color column
  * headed `ColorRgb`, and an inspector saying `Cyc 1 · ColorRgb`, are the map key
  * showing through.
  *
@@ -120,9 +120,9 @@ export function displayLabel(kind: ParameterKind): string {
 	if (typeof kind === 'string') {
 		switch (kind) {
 			case 'ColorRgb':
-				return 'Colour';
+				return 'Color';
 			case 'ColorTemperature':
-				return 'Colour temp.';
+				return 'Color temp.';
 			case 'GoboIndex':
 				return 'Gobo';
 			default:
@@ -130,7 +130,7 @@ export function displayLabel(kind: ParameterKind): string {
 		}
 	}
 	if ('Named' in kind) return kind.Named;
-	if ('ColorWheel' in kind) return `Colour wheel ${kind.ColorWheel}`;
+	if ('ColorWheel' in kind) return `Color wheel ${kind.ColorWheel}`;
 	if ('GoboRotation' in kind) return `Gobo rotation ${kind.GoboRotation}`;
 	if ('Gobo' in kind) return `Gobo ${kind.Gobo}`;
 	if ('Prism' in kind) return `Prism ${kind.Prism}`;
@@ -254,7 +254,7 @@ export function addressLabel(fixture: Fixture): string {
 }
 
 /**
- * Where the implicit mode puts each parameter: one byte each, three for a colour, in
+ * Where the implicit mode puts each parameter: one byte each, three for a color, in
  * the order the type lists them. `null` for anything that takes no DMX channel — an
  * input, or a parameter on a module port.
  *
@@ -271,13 +271,13 @@ export function implicitChannels(parameters: ParameterDefinition[]): (number | n
 	return parameters.map((parameter) => {
 		if (parameter.direction === 'Input' || parameter.binding !== null) return null;
 		const start = next;
-		next += isColourValue(parameter.default_value) ? 3 : 1;
+		next += isColorValue(parameter.default_value) ? 3 : 1;
 		return start;
 	});
 }
 
-/** Whether a parameter's resting value is a colour, which is three bytes and not one. */
-function isColourValue(value: ParameterValue): boolean {
+/** Whether a parameter's resting value is a color, which is three bytes and not one. */
+function isColorValue(value: ParameterValue): boolean {
 	return value.type === 'Color';
 }
 
@@ -314,7 +314,7 @@ export function footprint(fixtureType: FixtureType | undefined, address: Fixture
 /**
  * Whether a mode places a parameter at all.
  *
- * What the programmer greys a control out on: a head in its basic mode has no zoom,
+ * What the programmer grays a control out on: a head in its basic mode has no zoom,
  * and offering one that goes nowhere is worse than saying it is not there. A type with
  * no modes places everything, which is what it always did.
  */

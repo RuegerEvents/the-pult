@@ -8,7 +8,7 @@
  * against the browser's idea of Helvetica, a sheet laid out on a Mac and printed from a
  * Linux tablet would place its labels differently.
  *
- * So the console ships a font — Open Sans, under the SIL Open Font Licence, in
+ * So the console ships a font — Open Sans, under the SIL Open Font License, in
  * `static/fonts/` — measures every string against **its** metrics through fontkit, and
  * hands the same bytes to `pdf-lib` to embed. The SVG asks for the same face by name
  * through an `@font-face` pointing at the same file. One face, one set of advances,
@@ -133,7 +133,7 @@ export function fontFaceCss(): string {
  * symptom is a file that does not match the preview it was approved from.
  *
  * The anchor is resolved here as well, so that `end`-anchored text lands on the same
- * millimetre in both — SVG could do it with `text-anchor` and PDF cannot, and letting
+ * millimeter in both — SVG could do it with `text-anchor` and PDF cannot, and letting
  * each do it its own way is the same trap one level down.
  */
 export function textOrigin(

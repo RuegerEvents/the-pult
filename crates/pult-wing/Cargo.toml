@@ -12,7 +12,7 @@ license.workspace = true
 # machine, which is the whole reason the transport is somebody else's problem.
 #
 # The certificate exchange (container 0x0029) is deliberately absent. It is the onPC
-# licence dongle, nothing here needs it, and the corpus does not carry it either.
+# license dongle, nothing here needs it, and the corpus does not carry it either.
 [dependencies]
 # For MA's `hardware_configurations.xml`, which is read where it lies rather than
 # converted into anything this repository has to carry. Parsing a string is not an OS,

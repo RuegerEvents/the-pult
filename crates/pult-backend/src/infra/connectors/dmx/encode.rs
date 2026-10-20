@@ -3,17 +3,17 @@
 //! Pure, and separate from the render loop, because this is where every arithmetic
 //! decision that can be silently wrong lives: how wide a channel is, whether the fine
 //! byte follows the coarse one or sits nine slots later, what a named range means for
-//! an integer, and which byte of a colour is the white one.
+//! an integer, and which byte of a color is the white one.
 //!
 //! Two rules hold throughout.
 //!
-//! **A value is normalised; a channel has a width.** Everything in the console is
+//! **A value is normalized; a channel has a width.** Everything in the console is
 //! 0..1, and a channel of *n* bytes holds `round(v · (2^8ⁿ − 1))` — so full is full at
 //! every width, rather than 255 shifted up and eight zero bits short.
 //!
 //! **Offsets are a list, not a start.** `Offset="1,9"` is a real thing a real head
 //! writes, and a writer that took the first offset and wrote the rest after it would
-//! put the fine byte on top of somebody's colour.
+//! put the fine byte on top of somebody's color.
 
 use pult_render::color::EmitterSpec;
 use pult_schema::types::dmx_mode::DmxChannelLayout;
@@ -39,7 +39,7 @@ pub fn write_channel(
 
 /// The number this value comes to on this channel, at this channel's width.
 ///
-/// `None` for a value that has no byte: a line of text on a DMX line, or a colour on
+/// `None` for a value that has no byte: a line of text on a DMX line, or a color on
 /// a channel that names no emitter and so cannot say which component it carries.
 pub fn raw_for(
     layout: &DmxChannelLayout,
@@ -70,7 +70,7 @@ pub fn raw_for(
             // One emitter, worked out directly, from a spec the patch resolved once.
             // Mixing the whole fixture and picking one level out of the answer is the
             // same arithmetic and allocates a vector of names per channel per frame —
-            // which on a rig of five hundred was measurably the whole cost of colour.
+            // which on a rig of five hundred was measurably the whole cost of color.
             scale(pult_render::color::level_from([*r, *g, *b], overrides, emitter?), max)
         }
     })

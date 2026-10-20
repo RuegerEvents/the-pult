@@ -33,7 +33,7 @@ pub const OPLOG_RETENTION_MINUTES_DEFAULT: u32 = 60;
 /// every peer that blinks is sent the whole show.
 pub const OPLOG_RETENTION_MINUTES_MIN: u32 = 1;
 /// A week. Past this the retention is not bounding anything an operator would
-/// recognise as a session.
+/// recognize as a session.
 pub const OPLOG_RETENTION_MINUTES_MAX: u32 = 60 * 24 * 7;
 
 /// The settings that outlive a show.
@@ -81,7 +81,7 @@ pub struct Preferences {
     /// is is show data, because it is a fact about the room rather than about the
     /// screen looking at it. This is what *this* desk starts a new show with.
     ///
-    /// A station in an office and a station in a theatre reasonably disagree about
+    /// A station in an office and a station in a theater reasonably disagree about
     /// the default, which is the whole argument for it being a preference at all.
     pub haze_density: f32,
     pub haze_turbulence: f32,

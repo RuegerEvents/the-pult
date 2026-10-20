@@ -109,7 +109,7 @@ describe('pixels and milliseconds', () => {
 
 	/**
 	 * The rule that makes a wheel feel like a map: what is under the pointer stays
-	 * under the pointer. Zooming about the centre instead walks the thing being looked
+	 * under the pointer. Zooming about the center instead walks the thing being looked
 	 * at off the screen.
 	 */
 	it('zooms about the point it was given', () => {

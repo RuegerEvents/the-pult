@@ -2,8 +2,8 @@
  * Is the drawing to scale?
  *
  * The one question a plan has to be able to answer, asked directly: put two points a
- * known number of metres apart into the projection, and measure how far apart they land
- * in millimetres. Everything else about a viewport is arrangement; this is the claim.
+ * known number of meters apart into the projection, and measure how far apart they land
+ * in millimeters. Everything else about a viewport is arrangement; this is the claim.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -13,7 +13,7 @@ import {
 	extentIn,
 	fittedDenominator,
 	hull,
-	mmPerMetre,
+	mmPerMeter,
 	painted,
 	toPage,
 	type Camera
@@ -24,22 +24,22 @@ const RECT = { x: 0, y: 0, w: 100, h: 100 };
 function cameraAt(denominator: number, axis: 'plan' | 'front' | 'section' = 'plan'): Camera {
 	return {
 		basis: basisFor(axis),
-		centre: { x: 0, y: 0, z: 0 },
-		scale: mmPerMetre(denominator),
+		center: { x: 0, y: 0, z: 0 },
+		scale: mmPerMeter(denominator),
 		rect: RECT
 	};
 }
 
 describe('scale', () => {
-	it('puts a metre 20 mm apart at 1:50', () => {
-		expect(mmPerMetre(50)).toBeCloseTo(20);
-		expect(mmPerMetre(100)).toBeCloseTo(10);
-		expect(mmPerMetre(35)).toBeCloseTo(28.5714, 3);
+	it('puts a meter 20 mm apart at 1:50', () => {
+		expect(mmPerMeter(50)).toBeCloseTo(20);
+		expect(mmPerMeter(100)).toBeCloseTo(10);
+		expect(mmPerMeter(35)).toBeCloseTo(28.5714, 3);
 	});
 
 	it('holds the same scale everywhere on the page', () => {
 		const camera = cameraAt(50);
-		// The same one-metre step, at the middle of the frame and near its corner.
+		// The same one-meter step, at the middle of the frame and near its corner.
 		const middle = [
 			toPage({ x: 0, y: 0, z: 0 }, camera),
 			toPage({ x: 1, y: 0, z: 0 }, camera)
@@ -89,7 +89,7 @@ describe('where each view looks from', () => {
 
 describe('fitting', () => {
 	it('gives the denominator that just fills the frame', () => {
-		// Ten metres across a 100 mm frame is 1:100 before padding.
+		// Ten meters across a 100 mm frame is 1:100 before padding.
 		const fitted = fittedDenominator({ across: 10, up: 5 }, RECT, 1);
 		expect(fitted).toBeCloseTo(100);
 	});
@@ -111,15 +111,15 @@ describe('fitting', () => {
 		expect(up).toBeCloseTo(4);
 	});
 
-	it('centres on what it is framing', () => {
-		const { centre } = extentIn(
+	it('centers on what it is framing', () => {
+		const { center } = extentIn(
 			[
 				{ x: 2, y: 0, z: 0 },
 				{ x: 8, y: 0, z: 0 }
 			],
 			basisFor('plan')
 		);
-		expect(centre.x).toBeCloseTo(5);
+		expect(center.x).toBeCloseTo(5);
 	});
 });
 

@@ -12,7 +12,7 @@ import {
 	inCone,
 	isManualList,
 	NO_ORDER,
-	normalise,
+	normalize,
 	sortSelection,
 	type SelectionQuery
 } from './selection.js';
@@ -79,7 +79,7 @@ describe('geometry', () => {
 		const near = evaluate(
 			query({
 				clauses: [
-					{ combine: 'Add', term: { kind: 'Sphere', centre: { x: 0, y: 5, z: 2 }, radius: 1.5 } }
+					{ combine: 'Add', term: { kind: 'Sphere', center: { x: 0, y: 5, z: 2 }, radius: 1.5 } }
 				]
 			}),
 			rig
@@ -163,7 +163,7 @@ describe('geometry', () => {
 
 	it('a direction of nothing selects nothing rather than everything', () => {
 		expect(inCone({ x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, 90, 10)).toBe(false);
-		expect(normalise({ x: 0, y: 0, z: 0 })).toBeNull();
+		expect(normalize({ x: 0, y: 0, z: 0 })).toBeNull();
 	});
 
 	it('a box with no volume still matches a point exactly on it', () => {
@@ -180,7 +180,7 @@ describe('geometry', () => {
 		const huge = evaluate(
 			query({
 				clauses: [
-					{ combine: 'Add', term: { kind: 'Sphere', centre: { x: 0, y: 0, z: 0 }, radius: 1e6 } }
+					{ combine: 'Add', term: { kind: 'Sphere', center: { x: 0, y: 0, z: 0 }, radius: 1e6 } }
 				]
 			}),
 			rig
@@ -264,7 +264,7 @@ describe('the order the selection comes out in', () => {
 		expect(right).toEqual(['Front 4', 'Front 3', 'Front 2', 'Front 1']);
 	});
 
-	/** Outwards from a point, which is what makes a centre-out chase possible. */
+	/** Outwards from a point, which is what makes a center-out chase possible. */
 	it('sorts outwards from a point', () => {
 		const out = evaluate(
 			{ ...everything, order: { kind: 'ByDistance', from: { x: 0, y: 5, z: 2 } } },

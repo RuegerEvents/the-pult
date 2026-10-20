@@ -15,20 +15,20 @@ const SUFFIX: Record<PhysicalUnit, string> = {
 	Seconds: ' s',
 	Hertz: ' Hz',
 	Kelvin: ' K',
-	Metres: ' m',
+	Meters: ' m',
 	Watts: ' W'
 };
 
 /** The readout of a 0..1 value: `short` for inside a fader, `text` for a screen reader. */
 export function physicalReadout(
-	normalised: number,
+	normalized: number,
 	range: PhysicalRange | null | undefined
 ): { short: string; text: string } {
 	if (!range || range.unit === 'Percent' && range.from === 0 && range.to === 100) {
-		const percent = `${Math.round(normalised * 100)}`;
+		const percent = `${Math.round(normalized * 100)}`;
 		return { short: percent, text: `${percent}%` };
 	}
-	const value = range.from + (range.to - range.from) * normalised;
+	const value = range.from + (range.to - range.from) * normalized;
 	const span = Math.abs(range.to - range.from);
 	// As many places as the span needs to move in hundredths of its travel.
 	const places = span >= 100 ? 0 : span >= 10 ? 1 : 2;

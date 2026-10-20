@@ -36,7 +36,7 @@ pub enum Report {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Command {
     SetLed { channel: usize, level: u8 },
-    SetRgb { r: usize, g: usize, b: usize, colour: [u8; 3] },
+    SetRgb { r: usize, g: usize, b: usize, color: [u8; 3] },
     AllLeds { level: u8 },
     SetFader { index: usize, value: u16 },
     ReleaseFader { index: usize },
@@ -321,7 +321,7 @@ pub fn apply(out: &Shared, cmd: &Command) {
     let mut o = out.lock().unwrap();
     match *cmd {
         Command::SetLed { channel, level } => o.set_led(channel, level),
-        Command::SetRgb { r, g, b, colour } => o.set_rgb(r, g, b, colour),
+        Command::SetRgb { r, g, b, color } => o.set_rgb(r, g, b, color),
         Command::AllLeds { level } => o.all_leds(level),
         Command::SetFader { index, value } => o.set_fader(index, value),
         Command::ReleaseFader { index } => o.release_fader(index),

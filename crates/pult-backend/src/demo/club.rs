@@ -27,7 +27,7 @@ use super::{
     id,
     kit::{
         a_clamped_fixture, a_cue, a_fixture, a_piece, a_preset, a_preset_value, a_stack, a_type,
-        aimed, capture, colour, facing, from_preset, intensity,
+        aimed, capture, color, facing, from_preset, intensity,
         level, pan, posed, production, strobe_rate, tilt, truss_run, under, weighing,
         Addresses,
     },
@@ -38,13 +38,13 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     into.name_the_show("Club").await?;
 
     let mover = weighing(
-        a_type("Beam 7R", vec![intensity(), colour(), pan(), tilt()]),
+        a_type("Beam 7R", vec![intensity(), color(), pan(), tilt()]),
         20.0,
         380.0,
         (0.30, 0.47, 0.25),
     );
     let wash =
-        weighing(a_type("LED Wash", vec![intensity(), colour()]), 9.0, 250.0, (0.30, 0.35, 0.30));
+        weighing(a_type("LED Wash", vec![intensity(), color()]), 9.0, 250.0, (0.30, 0.35, 0.30));
     let strobe = weighing(
         a_type("Strobe", vec![intensity(), strobe_rate()]),
         8.5,
@@ -76,7 +76,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         .await?;
     }
 
-    // Eight positions along each twelve-metre truss, a mover and a wash by turns, all
+    // Eight positions along each twelve-meter truss, a mover and a wash by turns, all
     // clamped under the bar. Interleaved along it rather than the washes hung on a
     // second line beside it: the first version of this demo put them 600 mm off the
     // truss, and a light that hangs off nothing is what that drew.
@@ -224,7 +224,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         // an operator drops to when the room needs to calm down.
         with_fade(
             a_cue(
-                "Centre",
+                "Center",
                 4.0,
                 movers
                     .iter()
@@ -245,7 +245,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         ),
     ];
 
-    // Two colour palettes, and the two cues below reference them — so editing *Warm*
+    // Two color palettes, and the two cues below reference them — so editing *Warm*
     // while its cue is standing changes what the washes are doing, with nobody
     // pressing Go. Which is the only way to see what a preset is for.
     let warm_rgb = ParameterValue::rgb(1.0, 0.55, 0.2);
@@ -266,7 +266,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     let wash_looks = vec![
         with_fade(
             a_cue(
-                "Colour chase",
+                "Color chase",
                 1.0,
                 shaped(&washes, ParameterKind::ColorRgb, Shape::Sine, on_beat(0.25),
                        ParameterValue::rgb(1.0, 0.0, 0.4), ParameterValue::rgb(0.0, 0.6, 1.0), 0.5),
@@ -360,7 +360,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     //
     // The two effects are caught at different moments on purpose. The movers are six
     // seconds in, a good way round their sweep; the washes are given twelve, because
-    // their colour chase runs at a quarter of the beat and at six they would still be
+    // their color chase runs at a quarter of the beat and at six they would still be
     // near the pink they started from. Sampling both at the same instant would have been
     // the obvious thing and would have made half the rig look like it was not doing
     // anything.

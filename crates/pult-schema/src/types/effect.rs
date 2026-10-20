@@ -80,7 +80,7 @@ pub enum Spread {
     /// One cycle spread across the selection.
     Linear,
     /// Symmetric about the middle of the selection.
-    Centre,
+    Center,
     /// Linear, from the other end.
     Reversed,
     /// Mirrored in `n` wings.

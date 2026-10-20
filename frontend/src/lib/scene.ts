@@ -62,7 +62,7 @@ export function byId(objects: SceneObject[]): Map<string, SceneObject> {
  *
  * Worked out through the matrix rather than by negating the three fields, because
  * negating them is only right when there is no rotation: the inverse of "moved two
- * metres and then turned" is "turned back and then moved two metres in the turned
+ * meters and then turned" is "turned back and then moved two meters in the turned
  * frame", and −position is neither half of that.
  */
 export function inverse(transform: Transform): Transform {

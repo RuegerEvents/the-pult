@@ -46,7 +46,7 @@ impl FromRef<AppState> for ConfigState {
     }
 }
 
-/// What a show travelling in or out touches: where the show is, where new ones go,
+/// What a show traveling in or out touches: where the show is, where new ones go,
 /// and the pool to copy the database through.
 #[derive(Clone)]
 pub struct ShowsState {
@@ -93,7 +93,7 @@ where
     Router::new()
         .route("/assets", post(upload).get(list_assets))
         .route("/assets/{sha}", get(download))
-        // The catalogue's own pieces, generated rather than stored. Beside the asset
+        // The catalog's own pieces, generated rather than stored. Beside the asset
         // store and deliberately not in it: the store refuses a write with no show
         // open and the welcome screen still draws a rig, a generated mesh that
         // outlived the code that generated it would be a stale asset nobody could
@@ -737,7 +737,7 @@ async fn upload(
     }
 }
 
-/// One catalogue piece as a `.glb`.
+/// One catalog piece as a `.glb`.
 ///
 /// `?p=<json>` is what the piece was asked for — a deck's leg height. It is brought
 /// to its canonical form before anything is generated, so a browser that spelled the
@@ -755,7 +755,7 @@ async fn stock(
     headers: HeaderMap,
 ) -> Response {
     let Some(id) = file.strip_suffix(".glb") else {
-        return (StatusCode::NOT_FOUND, "the catalogue is served as .glb").into_response();
+        return (StatusCode::NOT_FOUND, "the catalog is served as .glb").into_response();
     };
     // A malformed `p` is treated as nothing said rather than refused: the properties
     // are a request about how to draw a deck, and a deck drawn at its default height
@@ -766,7 +766,7 @@ async fn stock(
         .unwrap_or(serde_json::Value::Null);
 
     let Some(bytes) = pult_schema::stock::stock_glb(id, &properties) else {
-        return (StatusCode::NOT_FOUND, format!("this console has no {id} in its catalogue"))
+        return (StatusCode::NOT_FOUND, format!("this console has no {id} in its catalog"))
             .into_response();
     };
 

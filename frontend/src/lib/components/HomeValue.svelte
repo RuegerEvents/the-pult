@@ -3,7 +3,7 @@
 	 * One parameter's home value, editable.
 	 *
 	 * A control per kind of value rather than a text box holding JSON: a level is a
-	 * percentage, a relay is on or off, a colour is a colour. Small enough to sit in a
+	 * percentage, a relay is on or off, a color is a color. Small enough to sit in a
 	 * patch row, because that is where an operator is when they decide that this
 	 * house light comes up rather than going dark.
 	 *
@@ -69,16 +69,16 @@
 	/>
 {:else if value.type === 'Color'}
 	<input
-		class="colour"
+		class="color"
 		type="color"
 		aria-label="{label} rests at"
 		value={asHex(value)}
 		onchange={(e) =>
 			onchange({
 				type: 'Color',
-				// The pinned emitters survive an edit of the colour: somebody who set
+				// The pinned emitters survive an edit of the color: somebody who set
 				// the white by hand and then dragged the picker meant to change the
-				// colour, not to let go of the white.
+				// color, not to let go of the white.
 				value: { ...fromHex(e.currentTarget.value), overrides: value.value.overrides }
 			})}
 	/>
@@ -99,7 +99,7 @@
 	.text {
 		width: 7em;
 	}
-	.colour {
+	.color {
 		width: 2em;
 		height: 1.5em;
 		padding: 0;

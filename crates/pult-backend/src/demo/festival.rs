@@ -19,7 +19,7 @@
 //!
 //! The trusses are runs of real sections and the heads hang off them, so dragging a
 //! truss moves its lights. Deterministic, and it needs no asset: everything comes out
-//! of the console's own catalogue, so opening this costs no download and no network.
+//! of the console's own catalog, so opening this costs no download and no network.
 
 use anyhow::Result;
 use pult_schema::types::{
@@ -39,13 +39,13 @@ use super::{
         a_clamped_fixture, a_cue, a_fixture, a_piece, a_preset, a_preset_value, a_stack,
         a_type_with_beam, aimed, boom, from_preset,
         posed, production, weighing,
-        capture, colour, facing, hue, intensity, level, on, pan, strobe_rate, tilt, truss_run,
+        capture, color, facing, hue, intensity, level, on, pan, strobe_rate, tilt, truss_run,
         under, Addresses,
     },
     now_ms, Seeder,
 };
 
-/// Fifteen metres of overhead truss, which is five three-metre lengths.
+/// Fifteen meters of overhead truss, which is five three-meter lengths.
 const SPAN: f32 = 15.0;
 
 /// The five kinds of light in this rig, as indices into the types the seed makes.
@@ -64,19 +64,19 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     // Five types, each with the beam angle the rig view draws it at: a wash is wide,
     // a beam is a pencil, and a blinder is a lamp with no lens at all.
     let spot = weighing(
-        a_type_with_beam("Spot 350", vec![intensity(), colour(), pan(), tilt()], 14.0),
+        a_type_with_beam("Spot 350", vec![intensity(), color(), pan(), tilt()], 14.0),
         22.0,
         450.0,
         (0.35, 0.55, 0.30),
     );
     let wash = weighing(
-        a_type_with_beam("Wash 19×40W", vec![intensity(), colour(), pan(), tilt()], 28.0),
+        a_type_with_beam("Wash 19×40W", vec![intensity(), color(), pan(), tilt()], 28.0),
         25.0,
         800.0,
         (0.40, 0.50, 0.34),
     );
     let beam = weighing(
-        a_type_with_beam("Beam 7R", vec![intensity(), colour(), pan(), tilt()], 4.0),
+        a_type_with_beam("Beam 7R", vec![intensity(), color(), pan(), tilt()], 4.0),
         20.0,
         380.0,
         (0.30, 0.47, 0.25),
@@ -89,7 +89,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     );
     let strobe =
         weighing(
-            a_type_with_beam("LED Strobe", vec![intensity(), colour(), strobe_rate()], 60.0),
+            a_type_with_beam("LED Strobe", vec![intensity(), color(), strobe_rate()], 60.0),
             12.0,
             1000.0,
             (0.55, 0.30, 0.20),
@@ -131,7 +131,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
 
     // ── The room ──────────────────────────────────────────────────────────────
     //
-    // A sixteen-by-ten stage a metre up, out of decks scaled to four-by-two, and a
+    // A sixteen-by-ten stage a meter up, out of decks scaled to four-by-two, and a
     // wall of flats behind it. The audience is at +Z.
     for row in 0..5 {
         for column in 0..4 {
@@ -272,10 +272,10 @@ pub async fn seed(into: &Seeder) -> Result<()> {
 
     // And six washes up each tower on sidearms, looking across the stage.
     for (t, (tower, handle)) in towers.iter().enumerate() {
-        // Clamped to the chord that faces centre stage. A tower is a run stood on its
+        // Clamped to the chord that faces center stage. A tower is a run stood on its
         // end, so its own X runs up the world's Y and `along` is the height up it —
         // which is what makes the mount the same two degrees here as on a bar.
-        // The clamp goes on the chord facing centre stage, and the roll pushes the
+        // The clamp goes on the chord facing center stage, and the roll pushes the
         // body out along it: a tower is a run turned a quarter about Z, so its local
         // −Y is the world's +X.
         let (side_name, aim, chord, roll) = if t == 0 {
@@ -371,10 +371,10 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     let all = |on: &[Uuid], at: f32| -> Vec<ParameterCapture> {
         on.iter().map(|f| level(*f, at)).collect()
     };
-    let coloured = |on: &[Uuid], at: f32, r: f32, g: f32, b: f32| -> Vec<ParameterCapture> {
+    let colored = |on: &[Uuid], at: f32, r: f32, g: f32, b: f32| -> Vec<ParameterCapture> {
         on.iter().flat_map(|f| [level(*f, at), hue(*f, r, g, b)]).collect()
     };
-    // Two colour palettes over the beams, and the "Beam chase" cue below references
+    // Two color palettes over the beams, and the "Beam chase" cue below references
     // the first — so editing *Beam cyan* while it is standing changes the back wall
     // with nobody pressing Go.
     let cyan = ParameterValue::rgb(0.2, 0.9, 1.0);
@@ -415,7 +415,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         into,
         "Front",
         vec![
-            with_fade(a_cue("Stage wash", 1.0, coloured(&front, 0.85, 1.0, 0.92, 0.8)), 3_000),
+            with_fade(a_cue("Stage wash", 1.0, colored(&front, 0.85, 1.0, 0.92, 0.8)), 3_000),
             with_fade(
                 a_cue(
                     "Key and fill",
@@ -438,14 +438,14 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     )
     .await?;
 
-    // Washes: the overhead colour, rolling slowly the moment the show opens.
+    // Washes: the overhead color, rolling slowly the moment the show opens.
     a_stack(
         into,
         "Washes",
         vec![
             with_fade(
                 a_cue(
-                    "Colour roll",
+                    "Color roll",
                     1.0,
                     joined(vec![
                         all(&washes, 0.7),
@@ -456,9 +456,9 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                 ),
                 3_000,
             ),
-            with_fade(a_cue("Deep blue", 2.0, coloured(&washes, 0.6, 0.05, 0.15, 0.9)), 4_000),
-            with_fade(a_cue("Amber", 3.0, coloured(&washes, 0.8, 1.0, 0.55, 0.15)), 4_000),
-            with_fade(a_cue("White", 4.0, coloured(&washes, 0.5, 1.0, 1.0, 1.0)), 2_000),
+            with_fade(a_cue("Deep blue", 2.0, colored(&washes, 0.6, 0.05, 0.15, 0.9)), 4_000),
+            with_fade(a_cue("Amber", 3.0, colored(&washes, 0.8, 1.0, 0.55, 0.15)), 4_000),
+            with_fade(a_cue("White", 4.0, colored(&washes, 0.5, 1.0, 1.0, 1.0)), 2_000),
             out(&washes, 5.0),
         ],
         true,
@@ -476,7 +476,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                     "Tilt wave",
                     1.0,
                     joined(vec![
-                        coloured(&spots, 0.5, 0.9, 0.95, 1.0),
+                        colored(&spots, 0.5, 0.9, 0.95, 1.0),
                         shaped(&spots, ParameterKind::Tilt, Shape::Sine, on_beat(0.25),
                                ParameterValue::Float(0.35), ParameterValue::Float(0.65), 0.5,
                                Direction::Forward),
@@ -485,7 +485,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                 3_000,
             ),
             with_fade(
-                a_cue("Fan", 2.0, joined(vec![coloured(&spots, 0.8, 1.0, 1.0, 1.0), fanned(&spots, 0.3, 0.7)])),
+                a_cue("Fan", 2.0, joined(vec![colored(&spots, 0.8, 1.0, 1.0, 1.0), fanned(&spots, 0.3, 0.7)])),
                 2_500,
             ),
             with_fade(
@@ -493,7 +493,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                     "Ballyhoo",
                     3.0,
                     joined(vec![
-                        coloured(&spots, 0.9, 1.0, 1.0, 1.0),
+                        colored(&spots, 0.9, 1.0, 1.0, 1.0),
                         shaped(&spots, ParameterKind::Pan, Shape::Triangle, on_beat(0.5),
                                ParameterValue::Float(0.3), ParameterValue::Float(0.7), 0.5,
                                Direction::Forward),
@@ -505,7 +505,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                 1_000,
             ),
             with_fade(
-                a_cue("Centre", 4.0, joined(vec![coloured(&spots, 0.6, 1.0, 1.0, 1.0), fanned(&spots, 0.5, 0.5)])),
+                a_cue("Center", 4.0, joined(vec![colored(&spots, 0.6, 1.0, 1.0, 1.0), fanned(&spots, 0.5, 0.5)])),
                 3_000,
             ),
             out(&spots, 5.0),
@@ -569,7 +569,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                 a_cue(
                     "Beam fan",
                     2.0,
-                    joined(vec![coloured(&beams, 0.9, 0.9, 0.3, 1.0), fanned(&beams, 0.25, 0.75), all(&strobes, 0.0)]),
+                    joined(vec![colored(&beams, 0.9, 0.9, 0.3, 1.0), fanned(&beams, 0.25, 0.75), all(&strobes, 0.0)]),
                 ),
                 2_000,
             ),
@@ -621,7 +621,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         "Floor",
         vec![
             with_fade(
-                a_cue("Fan up", 1.0, joined(vec![coloured(&floor_beams, 0.8, 1.0, 0.1, 0.6), fanned(&floor_beams, 0.3, 0.7)])),
+                a_cue("Fan up", 1.0, joined(vec![colored(&floor_beams, 0.8, 1.0, 0.1, 0.6), fanned(&floor_beams, 0.3, 0.7)])),
                 1_500,
             ),
             with_fade(
@@ -629,7 +629,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                     "Sweep",
                     2.0,
                     joined(vec![
-                        coloured(&floor_beams, 0.9, 0.3, 0.6, 1.0),
+                        colored(&floor_beams, 0.9, 0.3, 0.6, 1.0),
                         shaped(&floor_beams, ParameterKind::Pan, Shape::Triangle, on_beat(0.25),
                                ParameterValue::Float(0.3), ParameterValue::Float(0.7), 0.5,
                                Direction::Forward),
@@ -643,16 +643,16 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     )
     .await?;
 
-    // The towers: a colour from each side, and a chase to Go to.
+    // The towers: a color from each side, and a chase to Go to.
     a_stack(
         into,
         "Side",
         vec![
-            with_fade(a_cue("Magenta", 1.0, coloured(&towers, 0.7, 1.0, 0.1, 0.6)), 3_000),
-            with_fade(a_cue("Cyan", 2.0, coloured(&towers, 0.7, 0.1, 0.8, 1.0)), 3_000),
+            with_fade(a_cue("Magenta", 1.0, colored(&towers, 0.7, 1.0, 0.1, 0.6)), 3_000),
+            with_fade(a_cue("Cyan", 2.0, colored(&towers, 0.7, 0.1, 0.8, 1.0)), 3_000),
             with_fade(
                 a_cue(
-                    "Colour chase",
+                    "Color chase",
                     3.0,
                     joined(vec![
                         all(&towers, 0.8),
@@ -680,7 +680,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     .await?;
 
     // Four sequences at once, which is what a festival look is: a stage wash to see
-    // the band by, the spots ballyhooing over it, the towers chasing colour, and the
+    // the band by, the spots ballyhooing over it, the towers chasing color, and the
     // floor beams fanned up over the crowd.
     //
     // Read back by name rather than kept in scope, because this demo builds its stacks
@@ -689,7 +689,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     //
     // The times differ per cue and each one is a decision. The wash is a plain fade and
     // is simply past it. The ballyhoo is a movement effect at 6 s, far enough round that
-    // the heads are spread rather than stacked. The colour chase gets 9 s, because it
+    // the heads are spread rather than stacked. The color chase gets 9 s, because it
     // runs at half the beat and would still be near its magenta at six. The floor fan
     // gets 4 s — its beams are static once up, so more time buys nothing.
     let cues: Vec<pult_schema::types::cue::Cue> = into.rows("cues").await?;
@@ -699,7 +699,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     let beauty: Vec<CueShot> = [
         shot("Stage wash", 5_000),
         shot("Ballyhoo", 6_000),
-        shot("Colour chase", 9_000),
+        shot("Color chase", 9_000),
         shot("Fan up", 4_000),
     ]
     .into_iter()

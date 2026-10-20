@@ -187,15 +187,15 @@ crossbeam-queue = "0.3"
 rten = { version = "0.26", features = ["fft"] }
 rten-tensor = "0.26"
 
-# The inference runtime, optimised even in a debug build.
+# The inference runtime, optimized even in a debug build.
 #
 # Measured before it was written here: the beat detector's own test takes **63 seconds**
-# unoptimised and **0.44 seconds** at `--release`, on the same machine and the same
+# unoptimized and **0.44 seconds** at `--release`, on the same machine and the same
 # thirty seconds of audio. That is not a slow debug build, it is a matrix kernel whose
 # whole point is SIMD running as scalar Rust — and it is the difference between "detect
 # the beats" being a button somebody presses while developing and being one they learn
 # not to. Nothing else in the workspace is opted in: this is the one dependency whose
-# unoptimised form is unusable rather than merely slower.
+# unoptimized form is unusable rather than merely slower.
 [profile.dev.package.rten]
 opt-level = 3
 [profile.dev.package.rten-gemm]

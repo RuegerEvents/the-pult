@@ -185,7 +185,7 @@
 						class="mode"
 						class:on={$view.projection === value}
 						title={value === 'ortho'
-							? 'Straight on: parallel lines stay parallel and a metre is a metre wherever it is. What a plan and a section are.'
+							? 'Straight on: parallel lines stay parallel and a meter is a meter wherever it is. What a plan and a section are.'
 							: 'A picture of the room.'}
 						onclick={() => setView({ projection: value })}
 					>

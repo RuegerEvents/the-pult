@@ -605,7 +605,7 @@ async fn a_type_this_console_made_for_itself_still_exports_as_something_openable
     assert_eq!(
         pult_gdtf::resolve::footprint(gdtf, mode),
         vec![4],
-        "a dimmer and three colour channels",
+        "a dimmer and three color channels",
     );
     assert!(pult_gdtf::validate::check(gdtf).is_empty());
 }

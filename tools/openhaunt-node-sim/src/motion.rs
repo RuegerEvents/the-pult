@@ -117,8 +117,8 @@ pub fn ease(name: &str, t: f32) -> f32 {
 /// stops being able to tell one of those milliseconds from the next long before that.
 pub fn cycle_position(rate_hz: f32, backward: bool, phase: f32, t0: i64, now_ms: i64) -> f32 {
     let cycles = (now_ms - t0) as f64 / 1000.0 * rate_hz as f64;
-    let travelled = if backward { -cycles } else { cycles };
-    (travelled + phase as f64).rem_euclid(1.0) as f32
+    let traveled = if backward { -cycles } else { cycles };
+    (traveled + phase as f64).rem_euclid(1.0) as f32
 }
 
 // ── Payload arithmetic ────────────────────────────────────────────────────────
@@ -258,11 +258,11 @@ pub fn step_value(steps: &[Step], x: f32) -> Option<Value> {
     if span <= 0.0 {
         span += 1.0;
     }
-    let mut travelled = x - step.at;
-    if travelled < 0.0 {
-        travelled += 1.0;
+    let mut traveled = x - step.at;
+    if traveled < 0.0 {
+        traveled += 1.0;
     }
-    Some(blend(&step.value, &next.value, ease(&step.easing, (travelled / span).clamp(0.0, 1.0))))
+    Some(blend(&step.value, &next.value, ease(&step.easing, (traveled / span).clamp(0.0, 1.0))))
 }
 
 // ── Reading a descriptor off the wire ─────────────────────────────────────────

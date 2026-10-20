@@ -43,7 +43,7 @@ export const split = (
 ): LayoutNode => ({
 	type: 'Split',
 	direction,
-	sizes: normalise(sizes ?? children.map(() => 1)),
+	sizes: normalize(sizes ?? children.map(() => 1)),
 	children
 });
 
@@ -244,11 +244,11 @@ export function tidy(node: LayoutNode): LayoutNode {
 
 	if (children.length === 0) return tabs([]);
 	if (children.length === 1) return children[0];
-	return { type: 'Split', direction: node.direction, sizes: normalise(sizes), children };
+	return { type: 'Split', direction: node.direction, sizes: normalize(sizes), children };
 }
 
 /** Shares that sum to one, and never to nothing. */
-export function normalise(sizes: number[]): number[] {
+export function normalize(sizes: number[]): number[] {
 	const total = sizes.reduce((a, b) => a + (b > 0 ? b : 0), 0);
 	if (!(total > 0)) return sizes.map(() => 1 / Math.max(sizes.length, 1));
 	return sizes.map((s) => (s > 0 ? s : 0) / total);

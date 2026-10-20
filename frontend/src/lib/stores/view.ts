@@ -25,7 +25,7 @@ export type RenderMode = 'wireframe' | 'cones' | 'real' | 'photoreal';
 
 export const RENDER_MODES: { value: RenderMode; label: string; blurb: string }[] = [
 	{ value: 'wireframe', label: 'Wireframe', blurb: 'Trusses and bodies as lines, and a line to where each light points. Costs almost nothing.' },
-	{ value: 'cones', label: 'Cones', blurb: 'Flat cones in each light\'s colour, nothing added. Never goes white, and cheap enough for any rig.' },
+	{ value: 'cones', label: 'Cones', blurb: 'Flat cones in each light\'s color, nothing added. Never goes white, and cheap enough for any rig.' },
 	{ value: 'real', label: 'Real', blurb: 'Beams through the haze. The working view.' },
 	{ value: 'photoreal', label: 'Photoreal', blurb: 'Beams summed in high dynamic range, tone-mapped and bloomed, so crossing beams roll off instead of clipping.' }
 ];
@@ -57,15 +57,15 @@ export type ViewSettings = {
 	resolution: number;
 	projection: Projection;
 	/**
-	 * What a dragged piece snaps to, in metres. Zero is off.
+	 * What a dragged piece snaps to, in meters. Zero is off.
 	 *
-	 * Half a metre, which is a truss bay and a deck edge and the unit a rig is
+	 * Half a meter, which is a truss bay and a deck edge and the unit a rig is
 	 * actually set out in. Alt bypasses it for the one time in twenty when somebody
 	 * means 1.37 m.
 	 */
 	grid: number;
 	/**
-	 * The height the work plane sits at, in metres: where a piece dragged onto a plan
+	 * The height the work plane sits at, in meters: where a piece dragged onto a plan
 	 * or a three-quarter view lands.
 	 *
 	 * Zero is the deck. A bar goes in at six, and then everything else dropped goes in

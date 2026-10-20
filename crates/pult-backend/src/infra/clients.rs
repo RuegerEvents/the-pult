@@ -7,7 +7,7 @@
 //!
 //! Keyed by the *short* session id — the eight characters `LogSource::Browser`
 //! already carries — so a warning in the System Log and a row in the System panel can
-//! be recognised as the same tab without a lookup between them.
+//! be recognized as the same tab without a lookup between them.
 //!
 //! Publishing on every report rather than on a tick, because a report is already
 //! rate-limited to one every couple of seconds per browser and there are a handful of

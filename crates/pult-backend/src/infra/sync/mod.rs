@@ -391,7 +391,7 @@ impl SyncManager {
                         Some(cmd) => self.handle_command(cmd).await,
                     }
                 }
-                // A peer finished its handshake, dialled or accepted.
+                // A peer finished its handshake, dialed or accepted.
                 connected = self.connected_rx.recv() => {
                     if let Some((peer_id, sender, bytes)) = connected {
                         info!("[sync] registered peer {}", peer_id.0);
@@ -668,7 +668,7 @@ impl SyncManager {
     /// the peer task waits on the engine, and nothing drains anything.
     ///
     /// A peer whose outbox is full is a peer that is not keeping up, and one that far
-    /// behind is not synchronised whatever we do next. Dropping the *message* would
+    /// behind is not synchronized whatever we do next. Dropping the *message* would
     /// leave the two nodes quietly disagreeing, so the connection goes instead: the
     /// peer reconnects and catches up from the oplog, which is a path that already
     /// exists and is already tested.

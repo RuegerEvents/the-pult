@@ -10,7 +10,7 @@
 //! holds the connections.
 //!
 //! **A commit is deliberate.** A button and a comment, never a change to the rig. The
-//! whole rig, never a subset and never targeted: `ForStationsUUID` is honoured on the
+//! whole rig, never a subset and never targeted: `ForStationsUUID` is honored on the
 //! way in and always empty on the way out.
 //!
 //! **Applying is one act and one gesture.** Apply fetches the bytes and runs the same
@@ -166,7 +166,7 @@ struct Known {
     /// Whether [`Known::endpoint`] is somewhere this console can open a connection to.
     ///
     /// In TCP mode it usually is not. A message arriving over TCP comes from the
-    /// *ephemeral* port the sender dialled out of, and every interaction is a short
+    /// *ephemeral* port the sender dialed out of, and every interaction is a short
     /// connection — so the address a join was received from is dead the moment it
     /// closes. The listening address comes from mDNS and from nowhere else, which is
     /// why discovery is not optional in that mode however much is already known.
@@ -782,7 +782,7 @@ impl XchangeManager {
             return;
         }
         // A WebSocket connection is its own address and stays open; a TCP one is the
-        // ephemeral port somebody dialled out of and is gone the moment it closes.
+        // ephemeral port somebody dialed out of and is gone the moment it closes.
         let dialable = !matches!(endpoint, Endpoint::Tcp(_));
         let entry = self.stations.entry(station_uuid).or_insert_with(|| Known {
             name: name.to_string(),

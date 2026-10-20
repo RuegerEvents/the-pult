@@ -99,7 +99,7 @@ function aTruss(id: string): SceneObject {
 		class: null,
 		geometry: [],
 		symbol: null,
-		catalogue: 'f34-3m',
+		catalog: 'f34-3m',
 		properties: null,
 		locked: false,
 		weight_kg: null
@@ -157,7 +157,7 @@ const textsOf = (items: { kind: string }[]) =>
 	items.filter((i) => i.kind === 'text').map((i) => (i as unknown as { text: string }).text);
 
 describe('the page', () => {
-	it('is A3 landscape in millimetres', async () => {
+	it('is A3 landscape in millimeters', async () => {
 		const font = await realMetrics();
 		const drawing = composeSheet(aSheet(), context({}, font));
 		expect(drawing.width).toBe(420);
@@ -337,7 +337,7 @@ describe('dimensions', () => {
 	 * sections instead and drew nothing at all, because no fixture is parented to one.
 	 */
 	function aRun() {
-		const handle = { ...aTruss('run'), name: 'FOH bar', kind: 'Group', catalogue: null };
+		const handle = { ...aTruss('run'), name: 'FOH bar', kind: 'Group', catalog: null };
 		const sections = [-4.5, -1.5, 1.5, 4.5].map((x, i) => ({
 			...aTruss(`s${i}`),
 			parent: 'run',
@@ -379,7 +379,7 @@ describe('dimensions', () => {
 			)
 		);
 		const texts = textsOf(drawing.items);
-		// Three metres between each pair, and the run is 12 m so the first head is 3 m
+		// Three meters between each pair, and the run is 12 m so the first head is 3 m
 		// from the left end.
 		expect(texts).toContain('3000');
 		expect(texts.filter((t) => t === '3000').length).toBeGreaterThanOrEqual(2);

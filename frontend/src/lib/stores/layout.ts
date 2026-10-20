@@ -39,7 +39,7 @@ export const tree = writable<LayoutNode>(DEFAULT_PRESET.tree);
 export const active = writable<Active>({ kind: 'preset', key: DEFAULT_PRESET.key });
 export const dirty = writable(false);
 /** One panel filling the workspace, for a moment of needing all the room. */
-export const maximised = writable<string | null>(null);
+export const maximized = writable<string | null>(null);
 
 // ── Remembering it locally ────────────────────────────────────────────────────
 
@@ -86,7 +86,7 @@ export function applyPreset(key: string): void {
 	tree.set(preset.tree);
 	active.set({ kind: 'preset', key });
 	dirty.set(false);
-	maximised.set(null);
+	maximized.set(null);
 	remember();
 }
 
@@ -94,7 +94,7 @@ export function applyLayout(layout: Layout): void {
 	tree.set(tidy(layout.tree));
 	active.set({ kind: 'show', id: layout.id });
 	dirty.set(false);
-	maximised.set(null);
+	maximized.set(null);
 	remember();
 }
 

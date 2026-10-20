@@ -33,7 +33,7 @@ bracketed form — so every release needs one and it has to be spelled that way.
   new Network panel or in `[network]` in `preferences.toml`. An output names its own
   per station, so two universes can leave by two cables. sACN's multicast finally sets
   the outgoing interface, which nothing here ever did. Saying nothing keeps exactly the
-  old behaviour; naming a cable that is not there stops that one service and says so on
+  old behavior; naming a cable that is not there stops that one service and says so on
   the station's row, so a console in the booth can read the stage rack's fault — and it
   starts by itself when the cable appears, without a restart.
 - **A show is a folder, and Save is a version.** A showfile is now `Name.pult/` — the
@@ -43,15 +43,15 @@ bracketed form — so every release needs one and it has to be spelled that way.
   autosave every fifteen minutes with a rolling window.
 - **A welcome screen.** Started with no arguments the console comes up with no show
   open and offers recent shows, the shows folder, sessions on the network, a `.pultz`
-  to import, and four demo shows it makes for itself: Haunt, Theatre, Club and
+  to import, and four demo shows it makes for itself: Haunt, Theater, Club and
   Festival. `--show` and `--demo` skip it.
-- **A stock catalogue.** The rig view can draw F34 truss, stage decks, wall panels and
+- **A stock catalog.** The rig view can draw F34 truss, stage decks, wall panels and
   flats without being given a mesh, so a console that has never imported a drawing
   still has a room to hang lights in.
 - **Beams that read as light.** The 3D rig view draws a real volumetric beam: bright
   in the middle and nothing at the edge, flaring when you look into the lens, starting
   at the width of the lens rather than at a point, fading out over the deck rather than
-  clipping through it, and a dim beam keeps its hue instead of going grey. The beam
+  clipping through it, and a dim beam keeps its hue instead of going gray. The beam
   angle is the one the fixture's own GDTF measured. How hazy the room is is a setting
   on the show, seeded from a station preference, so everyone opening the file sees the
   room the designer lit.
@@ -76,7 +76,7 @@ bracketed form — so every release needs one and it has to be spelled that way.
   what no fixture is lighting, and the resolution the view renders at. Kept on this
   screen, not in the show; the haze stays the show's.
 - **Four render modes.** Wireframe (trusses and bodies as lines, and a line to where
-  each light points), Cones (flat cones in each light's colour, never white), Real
+  each light points), Cones (flat cones in each light's color, never white), Real
   (beams through the haze) and Photoreal (beams summed in high dynamic range,
   tone-mapped and bloomed, so crossing beams roll off instead of clipping to white).
   On the View sheet, per screen.
@@ -111,13 +111,13 @@ bracketed form — so every release needs one and it has to be spelled that way.
   defects rather than fixing them: a geometry was being rebuilt for every fixture on
   every frame of every fade, and every material in the scene was being recompiled
   whenever a fade crossed 1% of full. The grid is now infinite and antialiased instead
-  of stopping at 40 metres, gizmo rings can no longer hide inside the fixture they
+  of stopping at 40 meters, gizmo rings can no longer hide inside the fixture they
   belong to, and touching the view cancels a camera move in progress.
 
 - **The rig view draws only when there is something new to see**, and at most sixty
   times a second. A ProMotion display was being drawn a hundred and twenty times a
-  second whether or not anything moved, with every unlit fixture still rasterised as
-  a cone that discarded every fragment; a dark theatre held a GPU at forty percent
+  second whether or not anything moved, with every unlit fixture still rasterized as
+  a cone that discarded every fragment; a dark theater held a GPU at forty percent
   and the festival pinned one. A settled dark rig now costs nothing.
 - **The Festival demo is a rig of five kinds** — profiles, spots, washes, blinders,
   beams and LED strobes on six trusses, a floor package and two towers — with seven
@@ -151,7 +151,7 @@ bracketed form — so every release needs one and it has to be spelled that way.
   interface carrying four universes of fifty-nine costs a fifteenth of the frame rather
   than all of it. Splitting a rig across two interfaces works, and the wire viewer no
   longer offers universes an output is not carrying.
-- **The Theatre demo's booms were horizontal**, and the Club demo's washes hung in the
+- **The Theater demo's booms were horizontal**, and the Club demo's washes hung in the
   air beside the truss. Booms stand up now, with their lanterns on sidearms, and
   everything in every demo is clamped under its bar at the same distance. The cyc
   batten's cells no longer overhang its ends.
@@ -278,9 +278,9 @@ bracketed form — so every release needs one and it has to be spelled that way.
 - **A cue can fade two ways.** The *out* time beside the *in* time, on the cue and on
   each captured value: a parameter takes the out time when the cue asks it to come
   down and the in time when it asks it to go up, which is the split fade every
-  theatre desk has. A cue with no out time set fades one way in both directions, so
+  theater desk has. A cue with no out time set fades one way in both directions, so
   nothing an existing show does has changed. Only levels and whole numbers can be
-  said to be going down — a colour has no agreed ranking and a relay has no in
+  said to be going down — a color has no agreed ranking and a relay has no in
   between, so those take the in time rather than have the console guess at one.
 - **Keep a light where you have aimed it.** A *take* button in the patch panel's Home
   column stores what a fixture is putting out right now as where it rests. Which is
@@ -307,7 +307,7 @@ bracketed form — so every release needs one and it has to be spelled that way.
   but a disagreement the audience can watch; the console's own number decides what a
   *new* show starts with.
 
-- **Settings, in the two flavours a console needs.** A new Settings panel, and the
+- **Settings, in the two flavors a console needs.** A new Settings panel, and the
   first thing in it: how many changes a show keeps for undo and the history panel.
   The show's own number travels in the showfile, so two consoles working one show
   agree about how far back Ctrl-Z goes. The console's number lives on the machine and
@@ -335,7 +335,7 @@ bracketed form — so every release needs one and it has to be spelled that way.
   undo is a query over the oplog. An undo therefore replicates to peers like any
   other write, and redo is undoing an undo. Everything editable can be taken back;
   a Go cannot, because an operator reaching for Ctrl-Z does not mean "move the
-  lights". A new History panel shows what everyone has changed, colour-coded and
+  lights". A new History panel shows what everyone has changed, color-coded and
   named, with undos shown as themselves rather than tidied away.
 - **Selection is a question about the rig, not a list of fixtures.** Select by
   type, by name, within a radius, inside a region, or inside a cone from a point —
@@ -347,7 +347,7 @@ bracketed form — so every release needs one and it has to be spelled that way.
   still works and combines with the rest; *Freeze* turns a question back into a
   plain list.
 - **Effects.** A shape or a list of keyframes, applied across a selection and
-  spread as a chase, from the centre out, in wings, in groups or at random. A new
+  spread as a chase, from the center out, in wings, in groups or at random. A new
   Effects panel builds one against a live waveform with a dot per fixture; the
   Programmer shows an amber chip for a parameter under an effect rather than a
   number, because the value beneath is only where it falls back to. Effects are
@@ -365,7 +365,7 @@ bracketed form — so every release needs one and it has to be spelled that way.
   retained `openhaunt/clock` so every node times its cycles against the same
   answer. A port that advertises nothing is driven exactly as before.
 - **Cue timing has somewhere to be typed.** Fade in and out, follow mode, and
-  per-capture fade, delay and curve — all honoured by the playback engine since it
+  per-capture fade, delay and curve — all honored by the playback engine since it
   landed, and none of them reachable. A running cue now shows a strip of the fades
   and effects it is actually producing, which during a three second fade is not
   what the cue list says. Cues can be inserted between two others and dragged into
@@ -373,7 +373,7 @@ bracketed form — so every release needs one and it has to be spelled that way.
 - **Panels that can change the show open read-only.** An Edit toggle in the tile
   chrome unlocks one and closing it locks it again, because a console is a tablet
   on a truss as often as it is a desk. Locked controls are absent rather than
-  greyed out. Controls across the programmer are sized for a finger.
+  grayed out. Controls across the programmer are sized for a finger.
 - **Fixture types can be edited properly.** Rename one, set each parameter's
   default value with the right control for its kind, and pick `Raw` or `Named`, so
   a light nobody has written a profile for can be patched without editing JSON.
@@ -438,7 +438,7 @@ bracketed form — so every release needs one and it has to be spelled that way.
   a sequence needs an Off where that Go was.
 - **Clearing the programmer lands on where a parameter rests**, not on a hardcoded
   zero. On a dimmer that is the same thing; on a house light that comes up, or a
-  mover whose tilt sits centred, it is not.
+  mover whose tilt sits centered, it is not.
 
 ### Removed
 
@@ -450,8 +450,8 @@ bracketed form — so every release needs one and it has to be spelled that way.
 
 ### Fixed
 
-- **A colour wheel's black slot no longer loses a fixture type.** A real fixture file
-  writes `nan` where that slot's colour goes; the console read it as a number, stored
+- **A color wheel's black slot no longer loses a fixture type.** A real fixture file
+  writes `nan` where that slot's color goes; the console read it as a number, stored
   it, and could never read the row back. The type was there and gone at the same time.
 - **An optional number in the show no longer comes back empty.** A field like a
   fixture's unit number was written to the showfile and read back as nothing, because
@@ -511,7 +511,7 @@ bracketed form — so every release needs one and it has to be spelled that way.
   its window edits the running node: identity, module descriptor, and every port —
   access, data type, unit, range and class. Applying stops the node and starts a
   new one in its place without the window closing, so a module nobody has built is
-  something to try rather than something to write. Presets for the catalogue,
+  something to try rather than something to write. Presets for the catalog,
   worked examples in `tools/openhaunt-node-sim/configs/`, and `--write-config` to
   get a file to start editing.
 
@@ -556,5 +556,5 @@ places no condition on the program that links it. This repository does not modif
 **Beat This!** — the beat detector's inference path and its model weights — is MIT,
 © Institute of Computational Perception, JKU Linz, by way of the MIT-licensed
 `beat-this-rs`. The vendored code carries its attribution in
-`crates/pult-audio/src/beats.rs` and the licence sits beside the models in
+`crates/pult-audio/src/beats.rs` and the license sits beside the models in
 `crates/pult-audio/models/`.

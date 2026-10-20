@@ -1,6 +1,6 @@
 {
   "about": [
-    "A colour, a fixture's emitters, and the level each of them comes to.",
+    "A color, a fixture's emitters, and the level each of them comes to.",
     "",
     "Read by two test suites — crates/pult-render-wasm/tests/corpus.rs natively, and",
     "frontend/src/lib/evaluator.test.ts against the wasm build of the same crate — for",
@@ -24,7 +24,7 @@
       "expect": [1.0, 0.5, 0.0]
     },
     {
-      "name": "an RGBW head lights its white die with the neutral part of the colour",
+      "name": "an RGBW head lights its white die with the neutral part of the color",
       "color": { "r": 1.0, "g": 0.4, "b": 0.4 },
       "emitters": [
         { "name": "Red", "rgb": [1.0, 0.0, 0.0] },
@@ -46,13 +46,13 @@
       "expect": [1.0, 0.0, 0.0, 0.0]
     },
     {
-      "name": "an amber die takes as much of itself as fits under the colour",
+      "name": "an amber die takes as much of itself as fits under the color",
       "color": { "r": 1.0, "g": 0.5, "b": 0.0 },
       "emitters": [{ "name": "Amber", "rgb": [1.0, 0.5, 0.0] }],
       "expect": [1.0]
     },
     {
-      "name": "and nothing at all on a colour it is not in",
+      "name": "and nothing at all on a color it is not in",
       "color": { "r": 0.0, "g": 1.0, "b": 0.0 },
       "emitters": [{ "name": "Amber", "rgb": [1.0, 0.5, 0.0] }],
       "expect": [0.0]

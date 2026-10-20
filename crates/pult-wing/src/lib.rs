@@ -6,7 +6,7 @@
 //! * [`chunk`] — the grammar. Every frame is one chunk, and a chunk is a tag, a length
 //!   and a body that is either bytes or more chunks.
 //! * [`proto`] — what the tags mean, and [`Message`], which is a frame with its
-//!   container recognised.
+//!   container recognized.
 //! * [`input`] / [`output`] — the blocks inside a real-time frame, decoded into events
 //!   and encoded from state.
 //! * [`map`] — which index is which control, read out of MA's own table.

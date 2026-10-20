@@ -3,7 +3,7 @@
 //! The spec calls for output plugins that translate high-level data into whatever
 //! protocol a fixture speaks, with network-based communication preferred over
 //! DMX-centric workflows. So the shape here is a plugin trait and a manager, and
-//! Art-Net is one implementation of that trait rather than the centre of it.
+//! Art-Net is one implementation of that trait rather than the center of it.
 //!
 //! Which plugins exist is show data. [`OutputManager`] is handed the `outputs`
 //! collection and reconciles what it is running against it, so an output can be
@@ -511,7 +511,7 @@ impl OutputManager {
     }
 
     /// Seed a plugin without going through a configuration. Test-only: it is how a
-    /// stand-in for a protocol gets in, so the manager's own behaviour can be tested
+    /// stand-in for a protocol gets in, so the manager's own behavior can be tested
     /// without a socket on the other end.
     ///
     /// It is recorded as *configured* as well as running, because the manager now

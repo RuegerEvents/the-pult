@@ -28,7 +28,7 @@ pub struct ParameterCapture {
     pub parameter_kind: ParameterKind,
     pub value: ParameterValue,
     /// How long this capture takes when the parameter is going *up*, and when it is
-    /// going nowhere a console can rank — a colour, a relay. Zero means the cue's.
+    /// going nowhere a console can rank — a color, a relay. Zero means the cue's.
     pub fade_in_ms: u32,
     /// The same, for a parameter coming *down*. Zero means the cue's out time, and a
     /// cue with no out time either means the in time: a show that never says

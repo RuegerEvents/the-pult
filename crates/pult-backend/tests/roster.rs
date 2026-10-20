@@ -777,7 +777,7 @@ async fn removing_a_plugin_is_an_ordinary_edit_and_takes_back_like_one() {
         .set(
             vec![PathSegment::Key("users".into()), PathSegment::Key("__create".into())],
             Lifecycle::Persisted,
-            json!({ "id": user, "name": "Operator", "colour": "#ff0000" }),
+            json!({ "id": user, "name": "Operator", "color": "#ff0000" }),
         )
         .await
         .expect("a user");

@@ -119,7 +119,7 @@
 								<input type="number" min="1" max="512" value={draft.address}
 									oninput={(e) => edit(row.head, row.strip, { address: Number(e.currentTarget.value) })} />
 							</label>
-							<label>Per metre
+							<label>Per meter
 								<input type="number" min="1" max="200" value={Math.round(1 / draft.pitch_m)}
 									oninput={(e) => edit(row.head, row.strip, { pitch_m: 1 / Math.max(1, Number(e.currentTarget.value)) })} />
 							</label>

@@ -71,13 +71,13 @@ export async function stageLayer(): Promise<string> {
 	return id;
 }
 
-/** Put one catalogue piece in the room, and answer its id. */
+/** Put one catalog piece in the room, and answer its id. */
 export async function placePiece(
-	catalogueId: string,
+	catalogId: string,
 	transform: Transform,
 	options: { parent?: string | null; name?: string; properties?: unknown } = {}
 ): Promise<string | null> {
-	const entry = piece(catalogueId);
+	const entry = piece(catalogId);
 	if (!entry) return null;
 
 	return asOneAct(async () => {
@@ -93,7 +93,7 @@ export async function placePiece(
 			class: null,
 			geometry: [],
 			symbol: null,
-			catalogue: entry.id,
+			catalog: entry.id,
 			properties: canonicalProperties(entry, options.properties),
 			locked: false,
 			weight_kg: null
@@ -300,7 +300,7 @@ function nudged(transform: Transform, by: number): Transform {
  * The question the delete prompt is asking, or nothing.
  *
  * Mounted once at the root of the app rather than inside a tile, because a modal
- * belongs to the window: a prompt drawn inside a small panel would be a dialogue in a
+ * belongs to the window: a prompt drawn inside a small panel would be a dialog in a
  * corner, and one drawn inside the *rig* would be missing whenever somebody deleted
  * from the objects list.
  */

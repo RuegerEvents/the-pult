@@ -24,7 +24,7 @@ use pult_schema::{
 use super::*;
 use crate::{engine::ShowEngine, infra::showfile};
 
-// ── The catalogue, as a device would know it ──────────────────────────────────
+// ── The catalog, as a device would know it ──────────────────────────────────
 //
 // A test-side table on purpose. In a unit test this *is* the firmware, and the
 // firmware is the only thing entitled to know what a module's ports are — the
@@ -67,7 +67,7 @@ fn firmware(module_type: u16) -> Firmware {
             "LED Strip",
             0,
             serde_json::json!({ "ports": [
-                { "port": 0, "name": "Strip colour", "access": "readwrite",
+                { "port": 0, "name": "Strip color", "access": "readwrite",
                   "dataType": "color", "class": "color",
                   "effects": { "shapes": ["sine", "triangle", "square", "saw-up", "saw-down"],
                                "steps": true, "transitions": true } },
@@ -867,8 +867,8 @@ async fn a_sensor_reading_lands_on_the_parameter_its_port_is_bound_to() {
 async fn an_input_from_a_device_nobody_adopted_changes_nothing() {
     let h = harness().await;
     // One adopted device, so there is a broker; the stray one is beside it.
-    h.resolve("neighbour", MAINS_RELAY, None).await;
-    h.devices.adopt("neighbour".into()).await.unwrap();
+    h.resolve("neighbor", MAINS_RELAY, None).await;
+    h.devices.adopt("neighbor".into()).await.unwrap();
     h.resolve("stray", DIGITAL_IN, None).await;
 
     let node = a_node_on_the_broker(&h, "stray").await;
@@ -1021,7 +1021,7 @@ async fn a_node_nobody_adopted_is_not_configured_when_it_appears() {
 }
 
 #[tokio::test]
-async fn a_console_restarted_mid_show_recognises_the_devices_it_had_adopted() {
+async fn a_console_restarted_mid_show_recognizes_the_devices_it_had_adopted() {
     // Adoption lives in the fixture, which is persisted; the device list is not.
     // A fresh manager against the same show has to work it out from the fixtures.
     let (addr, log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
@@ -1073,7 +1073,7 @@ async fn what_a_port_says_it_can_trace_reaches_the_directory() {
         0,
         serde_json::json!({
             "ports": [
-                { "port": 0, "name": "Strip colour", "access": "readwrite", "dataType": "color",
+                { "port": 0, "name": "Strip color", "access": "readwrite", "dataType": "color",
                   "class": "color",
                   "effects": { "shapes": ["sine", "square"], "steps": true, "transitions": true } },
                 { "port": 1, "name": "Brightness", "access": "readwrite", "dataType": "number",
@@ -1087,10 +1087,10 @@ async fn what_a_port_says_it_can_trace_reaches_the_directory() {
 
     let entry = h.directory.borrow().entries.get("strip1").cloned().expect("in the directory");
     let caps = entry.effects.expect("the node said something");
-    let colour = caps.port(0).expect("port 0 did");
-    assert!(colour.has_shape("sine"));
-    assert!(colour.steps);
-    assert!(colour.transitions);
+    let color = caps.port(0).expect("port 0 did");
+    assert!(color.has_shape("sine"));
+    assert!(color.steps);
+    assert!(color.transitions);
     assert!(caps.port(1).is_none(), "and port 1 did not, so it offers nothing");
 }
 

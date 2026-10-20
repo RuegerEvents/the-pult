@@ -513,7 +513,7 @@ pub async fn start(config: Config) -> Result<Running> {
         pool.clone(),
     );
     // With the machine rather than with the show: a folder is a thing somebody
-    // copies, and an id that travelled with it would make the second machine to open
+    // copies, and an id that traveled with it would make the second machine to open
     // the show a second claimant of the first one's outputs.
     let node_id = config
         .node_id

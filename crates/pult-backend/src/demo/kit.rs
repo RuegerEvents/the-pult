@@ -18,7 +18,7 @@
 
 use anyhow::Result;
 use pult_schema::types::{
-    catalogue,
+    catalog,
     cue::{Cue, FollowMode, ParameterCapture},
     fixture::{
         Fixture, FixtureAddress, FixtureType, ParameterDefinition, ParameterKind, ParameterValue,
@@ -75,7 +75,7 @@ pub fn aimed(x: f32, y: f32, z: f32, direction: Vec3) -> Transform {
 /// *run* rather than to whichever section it happens to be over, and why every demo
 /// hangs its lights off the run.
 pub fn run_chords() -> &'static [Chord] {
-    catalogue::piece("f34-3m").expect("the catalogue has a three-metre length").chords
+    catalog::piece("f34-3m").expect("the catalog has a three-meter length").chords
 }
 
 /// A fixture clamped under a bar, aimed somewhere.
@@ -95,8 +95,8 @@ pub fn under(mount: Mount, direction: Vec3) -> Transform {
 /// The same on something that has been turned — a boom, which is a run stood on end.
 ///
 /// A fixture's position is relative to what it hangs off, rotation included, so a
-/// lantern on a vertical boom has to be written in the boom's own frame, where a metre
-/// up the boom is a metre along its local X. The mount is already in that frame; the
+/// lantern on a vertical boom has to be written in the boom's own frame, where a meter
+/// up the boom is a meter along its local X. The mount is already in that frame; the
 /// *aim* is the part a demo thinks about in world terms, and undoing the run's own
 /// rotation is what this does — so no show file hand-inverts one.
 ///
@@ -123,7 +123,7 @@ pub fn dmx(universe: u16, address: u16) -> FixtureAddress {
 }
 
 /// A fixture type with an implicit mode: a byte per output parameter in the order
-/// they are listed, and three for a colour.
+/// they are listed, and three for a color.
 pub fn a_type(name: &str, parameters: Vec<ParameterDefinition>) -> FixtureType {
     FixtureType {
         id: id(),
@@ -152,11 +152,11 @@ pub fn a_type_with_beam(name: &str, parameters: Vec<ParameterDefinition>, degree
 /// power tables are honest about what they cannot account for, so a demo whose types say
 /// nothing exports a sheet reading `≥ 400 kg nominal` with every fixture listed as
 /// unknown — the tables working correctly and the demo failing to show them working,
-/// which is what the first Theatre export did.
+/// which is what the first Theater export did.
 ///
 /// The figures are representative of the *class* of instrument rather than of any one
-/// product, the way [`pult_schema::types::catalogue`]'s truss weights are, because
-/// nothing in a demo is a real hire item. Dimensions are metres: along X, up Y, through Z.
+/// product, the way [`pult_schema::types::catalog`]'s truss weights are, because
+/// nothing in a demo is a real hire item. Dimensions are meters: along X, up Y, through Z.
 pub fn weighing(
     mut kind: FixtureType,
     kg: f32,
@@ -173,7 +173,7 @@ pub fn intensity() -> ParameterDefinition {
     ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))
 }
 
-pub fn colour() -> ParameterDefinition {
+pub fn color() -> ParameterDefinition {
     ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(1.0, 1.0, 1.0))
 }
 
@@ -265,38 +265,38 @@ impl Addresses {
 /// moves everything on it, which is the whole reason a fixture's position is
 /// relative to what it hangs off.
 ///
-/// `metres` is how many of it, made of three-metre lengths; the run is centred on
-/// `centre` and runs along X.
+/// `meters` is how many of it, made of three-meter lengths; the run is centered on
+/// `center` and runs along X.
 pub async fn truss_run(
     into: &Seeder,
     name: &str,
     layer: Option<Uuid>,
-    centre: Vec3,
-    metres: f32,
+    center: Vec3,
+    meters: f32,
 ) -> Result<Uuid> {
-    Ok(run_of_sections(into, name, layer, Transform::at(centre), metres).await?.0)
+    Ok(run_of_sections(into, name, layer, Transform::at(center), meters).await?.0)
 }
 
-/// A boom: the same run of truss stood on its end, centred on `centre`.
+/// A boom: the same run of truss stood on its end, centered on `center`.
 ///
 /// The handle is turned a quarter about Z, so the sections' own X runs up the world's
 /// Y. What a caller gets back beside the id is the handle's transform, which is what
 /// [`on`] needs to hang a lantern on it — a fixture on a boom is written in the
-/// boom's frame, and the first Theatre demo did not, so its "booms" were two more
+/// boom's frame, and the first Theater demo did not, so its "booms" were two more
 /// horizontal bars with their lanterns stacked in the air beside them.
 pub async fn boom(
     into: &Seeder,
     name: &str,
     layer: Option<Uuid>,
-    centre: Vec3,
-    metres: f32,
+    center: Vec3,
+    meters: f32,
 ) -> Result<(Uuid, Transform)> {
     let stood_up = Transform {
-        position: centre,
+        position: center,
         rotation: Vec3 { x: 0.0, y: 0.0, z: 90.0 },
         ..Transform::default()
     };
-    run_of_sections(into, name, layer, stood_up, metres).await
+    run_of_sections(into, name, layer, stood_up, meters).await
 }
 
 async fn run_of_sections(
@@ -304,10 +304,10 @@ async fn run_of_sections(
     name: &str,
     layer: Option<Uuid>,
     handle: Transform,
-    metres: f32,
+    meters: f32,
 ) -> Result<(Uuid, Transform)> {
-    let section = catalogue::piece("f34-3m").expect("the catalogue has a three-metre length");
-    let sections = (metres / section.size.x).round().max(1.0) as usize;
+    let section = catalog::piece("f34-3m").expect("the catalog has a three-meter length");
+    let sections = (meters / section.size.x).round().max(1.0) as usize;
     let span = sections as f32 * section.size.x;
 
     let run = SceneObject {
@@ -322,7 +322,7 @@ async fn run_of_sections(
         symbol: None,
         // The handle itself draws nothing: it is a place to take hold of, and the
         // sections under it are what there is to see.
-        catalogue: None,
+        catalog: None,
         properties: serde_json::Value::Null,
         locked: false,
         weight_kg: None,
@@ -343,7 +343,7 @@ async fn run_of_sections(
                 class: None,
                 geometry: Vec::new(),
                 symbol: None,
-                catalogue: Some(section.id.to_string()),
+                catalog: Some(section.id.to_string()),
                 properties: serde_json::Value::Null,
                 locked: false,
                 weight_kg: None,
@@ -354,16 +354,16 @@ async fn run_of_sections(
     Ok((run.id, handle))
 }
 
-/// One piece out of the catalogue, placed. Decks, walls and flats.
+/// One piece out of the catalog, placed. Decks, walls and flats.
 pub async fn a_piece(
     into: &Seeder,
     name: &str,
-    catalogue_id: &str,
+    catalog_id: &str,
     transform: Transform,
     layer: Option<Uuid>,
 ) -> Result<Uuid> {
-    let piece = catalogue::piece(catalogue_id)
-        .unwrap_or_else(|| panic!("{catalogue_id} is not in the catalogue"));
+    let piece = catalog::piece(catalog_id)
+        .unwrap_or_else(|| panic!("{catalog_id} is not in the catalog"));
     let object = SceneObject {
         id: id(),
         name: name.to_string(),
@@ -374,7 +374,7 @@ pub async fn a_piece(
         class: None,
         geometry: Vec::new(),
         symbol: None,
-        catalogue: Some(piece.id.to_string()),
+        catalog: Some(piece.id.to_string()),
         properties: serde_json::Value::Null,
         locked: false,
         weight_kg: None,
@@ -496,7 +496,7 @@ pub async fn a_stack(into: &Seeder, name: &str, cues: Vec<Cue>, start: bool) -> 
     Ok(sequence.id)
 }
 
-/// A colour that walks through the evening, for a cyc or a wash.
+/// A color that walks through the evening, for a cyc or a wash.
 pub fn sky(step: usize) -> ParameterValue {
     const SKY: &[(f32, f32, f32)] = &[
         (0.10, 0.20, 0.60),
@@ -626,13 +626,13 @@ mod tests {
             class: None,
             geometry: Vec::new(),
             symbol: None,
-            catalogue: None,
+            catalog: None,
             properties: serde_json::Value::Null,
             locked: false,
             weight_kg: None,
         };
         let objects = vec![boom.clone()];
-        // A metre up the boom, clamped to the chord that faces centre stage.
+        // A meter up the boom, clamped to the chord that faces center stage.
         let local = on(&handle, Mount::along(1.0), facing::FROM_LEFT);
         let world = world_transform(&local, Some(boom.id), &by_id(&objects));
 
@@ -641,7 +641,7 @@ mod tests {
             near(world.position.x, -6.65)
                 && near(world.position.y, 2.5)
                 && near(world.position.z, -0.145),
-            "a metre up the boom on a clamp landed at {:?}",
+            "a meter up the boom on a clamp landed at {:?}",
             world.position,
         );
         let back = world.facing_direction();
@@ -652,7 +652,7 @@ mod tests {
         );
     }
 
-    /// A lantern under an F34 hangs 350 mm below its centre line, which is the figure
+    /// A lantern under an F34 hangs 350 mm below its center line, which is the figure
     /// every demo used before there were chords to hang off — 145 mm to the bottom
     /// chord and 205 mm of clamp and body under it. The first Club demo hung its
     /// washes 300 mm below and 600 mm *beside* the bar, and what that drew was a row

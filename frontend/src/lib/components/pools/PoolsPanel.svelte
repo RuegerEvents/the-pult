@@ -11,8 +11,8 @@
 	 * page, which is a bound physical thing and a different piece of work — the
 	 * Playback and Cues panels are what runs a sequence today.
 	 *
-	 * **The group tags are derived and never stored.** A preset that grows a colour is
-	 * a colour preset from that moment, which is why the pool is one flat list with a
+	 * **The group tags are derived and never stored.** A preset that grows a color is
+	 * a color preset from that moment, which is why the pool is one flat list with a
 	 * filter over it rather than five pools somebody has to file things into.
 	 *
 	 * And a preset button says **how much of it applies**: with a selection it is the
