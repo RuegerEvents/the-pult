@@ -123,6 +123,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             // two consoles replaying this cue start the same cycle rather than each
             // remembering its own.
             t0: None,
+            template: None,
         }),
         ..capture(fixture.id, ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
     };

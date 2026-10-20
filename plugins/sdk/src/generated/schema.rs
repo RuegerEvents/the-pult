@@ -366,6 +366,24 @@ pub struct DmxMode {
     pub channels: Vec<DmxChannelLayout>,
 }
 
+/// One parameter's part of a template.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EffectLayer {
+    /// What it drives. Applied to the fixtures in the selection that have this.
+    pub kind: ParameterKind,
+    pub curve: Curve,
+    pub rate: Rate,
+    pub low: ParameterValue,
+    pub high: ParameterValue,
+    pub width: f32,
+    pub direction: Direction,
+    pub spread: Spread,
+    /// How many cycles the spread covers across the selection. A chase over a strip
+    /// with `2` runs twice along it, which is what a pixel desk calls segments.
+    #[serde(default)]
+    pub spread_cycles: f32,
+}
+
 /// A periodic instruction for one fixture parameter.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EffectSpec {
@@ -391,6 +409,18 @@ pub struct EffectSpec {
     /// every Go. A [`Rate::Master`] ignores this either way: the master's own anchor
     /// is what keeps every effect on one master in step.
     pub t0: Option<u64>,
+    /// The pool entry this was applied from, if any: a record of where the copy came
+    /// from, so a panel can name it. Never followed; see `effect_template`.
+    #[serde(default)]
+    pub template: Option<Uuid>,
+}
+
+/// A named effect in the pool.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EffectTemplate {
+    pub id: Uuid,
+    pub name: String,
+    pub layers: Vec<EffectLayer>,
 }
 
 /// One light source in the fixture.

@@ -3683,6 +3683,7 @@ mod relative {
             phase: 0.0,
             spread: Spread::Even,
             t0: None,
+            template: None,
         });
         h.engine
             .set(create_path("programmer_values"), Lifecycle::Synced, json(&entry))

@@ -5,6 +5,7 @@ import type { PathProxy, SubscribeOptions } from './proxy.js';
 import type { PultWsClient } from './client.js';
 import { createDataProxy } from './proxy.js';
 import type { Cue } from '../generated/Cue.js';
+import type { EffectTemplate } from '../generated/EffectTemplate.js';
 import type { Fixture } from '../generated/Fixture.js';
 import type { FixtureType } from '../generated/FixtureType.js';
 import type { Flow } from '../generated/Flow.js';
@@ -39,6 +40,10 @@ import type { Version } from '../generated/Version.js';
 // ── Entity handles ───────────────────────────────────────────────────────────
 
 export type CueEntity = PathProxy<Cue> & {
+  delete(): Promise<void>;
+};
+
+export type EffectTemplateEntity = PathProxy<EffectTemplate> & {
   delete(): Promise<void>;
 };
 
@@ -180,6 +185,20 @@ export type CueCollection = {
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: CueEntity;
+};
+
+export type EffectTemplateCollection = {
+  get(): Promise<EffectTemplate[]>;
+  set(value: EffectTemplate[]): Promise<void>;
+  subscribe(cb: (value: EffectTemplate[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: EffectTemplate[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): EffectTemplateEntity;
+  nth(n: number): EffectTemplateEntity;
+  create(entity: EffectTemplate): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: EffectTemplateEntity;
 };
 
 export type FixtureCollection = {
@@ -593,6 +612,7 @@ export type VersionCollection = {
 /** Typed root for the pult:data context. Every field maps to a live path proxy. */
 export type DataRoot = {
   cues: CueCollection;
+  effect_templates: EffectTemplateCollection;
   fixtures: FixtureCollection;
   fixture_types: FixtureTypeCollection;
   flows: FlowCollection;

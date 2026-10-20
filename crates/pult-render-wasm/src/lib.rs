@@ -159,6 +159,37 @@ pub fn emitter_levels(color: JsValue, emitters: JsValue) -> Result<JsValue, JsVa
     Ok(pult_render::mix(&color, &emitters).serialize(&plain_javascript())?)
 }
 
+/// What each of a list of effects is asserting at `now_ms`, packed like
+/// [`Evaluator::evaluate`]: [`STRIDE`] floats each, in the order given.
+///
+/// For the Effects panel's preview, which shows what an effect *will* do across a
+/// selection before anything is applied: nothing it draws is driving the rig, so it
+/// does not belong in the evaluator's own map. The arithmetic is the one the lamps
+/// take, which is the whole reason the preview asks here rather than working it out.
+#[wasm_bindgen]
+pub fn effect_values(effects: JsValue, now_ms: f64) -> Result<Vec<f32>, JsValue> {
+    let effects: Vec<RunningEffect> = serde_wasm_bindgen::from_value(effects)?;
+    let mut out = vec![0.0; effects.len() * STRIDE];
+    let now = now_ms.max(0.0) as u64;
+    for (i, effect) in effects.iter().enumerate() {
+        pack(
+            Some(pult_render::effect_value_at(effect, now)),
+            &mut out[i * STRIDE..(i + 1) * STRIDE],
+        );
+    }
+    Ok(out)
+}
+
+/// A shape's level after `travelled` cycles, 0..1, for drawing its waveform.
+///
+/// Every shape, including the two that never repeat, which a drawing written in
+/// TypeScript would otherwise have to hash for itself.
+#[wasm_bindgen]
+pub fn shape_level(shape: JsValue, width: f32, travelled: f64, salt: u32) -> Result<f32, JsValue> {
+    let shape: pult_render::Shape = serde_wasm_bindgen::from_value(shape)?;
+    Ok(pult_render::shape_level(shape, width, travelled, salt))
+}
+
 /// A serializer that answers with plain objects and arrays.
 ///
 /// `serde_wasm_bindgen`'s default turns a map into a JS `Map`, which is right for a

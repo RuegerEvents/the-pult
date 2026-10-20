@@ -287,6 +287,7 @@ mod tests {
             phase: 0.0,
             spread: Spread::Even,
             t0: None,
+            template: None,
         });
         pass.observe(100, &[shape]);
         assert!(pass.is_empty());

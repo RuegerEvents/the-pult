@@ -151,6 +151,7 @@ mod tests {
                 spread: Spread::Linear,
                 // A stored capture never carries an anchor: the cue's `went_at` is it.
                 t0: None,
+                template: None,
             }),
             easing: Some(Easing::EaseInOut),
             preset: None,

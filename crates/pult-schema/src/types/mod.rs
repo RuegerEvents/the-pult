@@ -25,6 +25,7 @@ pub mod mount;
 pub mod network;
 pub mod group;
 pub mod preset;
+pub mod effect_template;
 pub mod version;
 pub mod paperwork;
 pub mod xchange;
@@ -83,6 +84,9 @@ pub use programmer::{
     programmer_entry_id, ProgrammerValue, ProgrammerValueCreate, ProgrammerValuePatch,
 };
 pub use layout::{Layout, LayoutCreate, LayoutNode, LayoutPatch, SplitDirection};
+pub use effect_template::{
+    default_effect_templates, EffectLayer, EffectTemplate, EffectTemplateCreate, EffectTemplatePatch,
+};
 pub use preset::{preset_index, Preset, PresetCreate, PresetPatch, PresetValue};
 pub use group::{
     evaluate, Group, GroupCreate, GroupPatch, SelectionAxis, SelectionClause, SelectionCombine,

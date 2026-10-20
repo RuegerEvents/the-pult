@@ -11,6 +11,7 @@
  */
 
 import type { Curve, EffectSpec, ParameterKind, ParameterValue, Shape, Spread, Step } from './generated/index.js';
+import { shapeLevel } from './evaluator.js';
 
 // ── Spreads ───────────────────────────────────────────────────────────────────
 
@@ -24,7 +25,15 @@ import type { Curve, EffectSpec, ParameterKind, ParameterValue, Shape, Spread, S
  *
  * A selection of one is always in phase with itself, whatever was asked for.
  */
-export function phases(spread: Spread, n: number): number[] {
+export function phases(spread: Spread, n: number, cycles = 1): number[] {
+	const base = spreadPhases(spread, n);
+	if (cycles === 1) return base;
+	// Covering more than one cycle across the selection is a chase that runs twice
+	// along a strip; less than one bunches it. Wrapped, so a phase stays 0..1.
+	return base.map((p) => (((p * cycles) % 1) + 1) % 1);
+}
+
+function spreadPhases(spread: Spread, n: number): number[] {
 	if (n <= 0) return [];
 	if (n === 1) return [0];
 
@@ -120,6 +129,12 @@ export function curveLevel(shape: Shape, width: number, x: number): number {
 			return x;
 		case 'SawDown':
 			return 1 - x;
+		// The two that never repeat are hashed, and the hash is the evaluator's alone:
+		// a drawing asks it rather than keeping a third copy. The first cycle, unsalted,
+		// is what a waveform of one draws, and nothing at all until the wasm is here.
+		case 'Flicker':
+		case 'Lightning':
+			return shapeLevel(shape, width, x) ?? 0;
 		default:
 			return 0;
 	}
@@ -272,7 +287,7 @@ export function defaultSpec(kind: ParameterKind, fallback: ParameterValue): Effe
 export function shapesFor(value: ParameterValue): Shape[] {
 	if (value.type === 'Text') return [];
 	if (value.type === 'Bool') return ['Square'];
-	return ['Sine', 'Triangle', 'Square', 'SawUp', 'SawDown'];
+	return ['Sine', 'Triangle', 'Square', 'SawUp', 'SawDown', 'Flicker', 'Lightning'];
 }
 
 export function zeroLike(like: ParameterValue): ParameterValue {

@@ -14,7 +14,7 @@
  * during server-side rendering.
  */
 
-import type { ParameterValue } from './generated/index.js';
+import type { ParameterValue, RunningEffect, Shape } from './generated/index.js';
 import type { DrivenBy } from './driving.js';
 
 /** How a packed answer says what kind of value it is. See `pult-render-wasm`. */
@@ -51,9 +51,13 @@ type Instance = {
 type Wasm = {
 	default: () => Promise<unknown>;
 	Evaluator: new () => Instance;
+	effect_values(effects: unknown, nowMs: number): Float32Array;
+	shape_level(shape: unknown, width: number, travelled: number, salt: number): number;
 };
 
 let instance: Instance | null = null;
+/** The module itself, for the two free functions the Effects panel previews with. */
+let module: Wasm | null = null;
 let loading: Promise<Instance | null> | null = null;
 
 /**
@@ -69,6 +73,7 @@ export function loadEvaluator(): Promise<Instance | null> {
 		try {
 			const wasm = (await import('./evaluator/pult_render_wasm.js')) as unknown as Wasm;
 			await wasm.default();
+			module = wasm;
 			instance = new wasm.Evaluator();
 			return instance;
 		} catch (e) {
@@ -81,6 +86,31 @@ export function loadEvaluator(): Promise<Instance | null> {
 
 /** The loaded evaluator, or `null` while it is not. */
 export const evaluator = (): Instance | null => instance;
+
+/**
+ * What each of these effects is asserting at `nowMs`, packed like `evaluate`.
+ *
+ * For a preview: nothing here is driving the rig, so it never enters the evaluator's
+ * own map. `null` while the evaluator is not loaded, and the preview draws nothing.
+ */
+export function effectValues(effects: RunningEffect[], nowMs: number): Float32Array | null {
+	if (!module || effects.length === 0) return null;
+	try {
+		return module.effect_values(effects, nowMs);
+	} catch (e) {
+		console.warn('[pult] effect preview', e);
+		return null;
+	}
+}
+
+/**
+ * A shape's level after `travelled` cycles, for drawing its waveform, including the
+ * two shapes that never repeat. `null` while the evaluator is not loaded.
+ */
+export function shapeLevel(shape: Shape, width: number, travelled: number, salt = 0): number | null {
+	if (!module) return null;
+	return module.shape_level(shape, width, travelled, salt >>> 0);
+}
 
 /** Hand over everything driving the rig. Called when the show changes, not per frame. */
 export function setDriving(driving: Record<string, DrivenBy>): void {

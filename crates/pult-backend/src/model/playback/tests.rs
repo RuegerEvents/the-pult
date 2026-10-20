@@ -1226,6 +1226,7 @@ fn a_sine(phase: f32) -> EffectSpec {
         phase,
         spread: Spread::Even,
         t0: None,
+        template: None,
     }
 }
 
@@ -1925,6 +1926,7 @@ fn taking_a_sequence_off_stops_its_effects() {
         phase: 0.0,
         spread: Spread::Even,
         t0: None,
+        template: None,
     });
     let cue = a_cue(0, vec![capture]);
     let mut fixtures = vec![fixture.clone()];

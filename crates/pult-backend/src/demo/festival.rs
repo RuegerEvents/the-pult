@@ -362,6 +362,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                     phase: n as f32 / on.len().max(1) as f32,
                     spread: Spread::Linear,
                     t0: None,
+                    template: None,
                 }),
                 ..capture(*fixture, kind.clone(), low.clone())
             })

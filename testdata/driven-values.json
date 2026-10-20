@@ -1289,6 +1289,156 @@
       }
     },
     {
+      "name": "a flicker is a hashed level, the same on every runtime",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Flicker"
+          },
+          "rate_hz": 2.0,
+          "low": {
+            "type": "Float",
+            "value": 0.2
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.25,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 1234,
+      "expect": {
+        "type": "Float",
+        "value": 0.47981566
+      }
+    },
+    {
+      "name": "and one cycle later is a different level, because it never repeats",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Flicker"
+          },
+          "rate_hz": 2.0,
+          "low": {
+            "type": "Float",
+            "value": 0.2
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.25,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 1734,
+      "expect": {
+        "type": "Float",
+        "value": 0.7289632
+      }
+    },
+    {
+      "name": "lightning that strikes this cycle is falling from its flash",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Lightning"
+          },
+          "rate_hz": 0.2,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.3,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 100,
+      "expect": {
+        "type": "Float",
+        "value": 0.6474842
+      }
+    },
+    {
+      "name": "lightning skips a cycle now and then",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Lightning"
+          },
+          "rate_hz": 0.2,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.3,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 15100,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "lightning is dark outside its window",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Lightning"
+          },
+          "rate_hz": 0.2,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.3,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        }
+      },
+      "at": 3000,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
       "name": "an effect beats a fade",
       "driving": {
         "effect": {

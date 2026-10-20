@@ -948,6 +948,18 @@ reaches a `Read` node the same way. **A flow's write is seen on the next pass, n
 inside the one that made it**, and a `Gate` reads its level from before the pulse. That
 is the whole cycle rule, plus a cut at `MAX_CHAIN` passes that react to nothing else.
 
+## An effect is kept as a template, and a strip has no dimmer
+
+`effect_templates` is the pool: an entry is `layers`, one per parameter, holding
+everything an effect is except what the selection decides. **Applying copies**, with
+`EffectSpec::template` recording where from, because a spec's phase came from a
+selection that is gone by the time anybody edits the template. Phases are worked out
+**in the selection's order**, never the patch's. `Shape::Flicker` and
+`Shape::Lightning` read the absolute cycle count and hash it, salted by phase, so they
+never repeat and are still the same number on every runtime. The Effects panel's
+preview asks `effect_values` in the wasm, so it shows what the lamps will do.
+An intensity layer reaches a colour-only pixel as a grey of that level. See task 75.
+
 ## The loop, and a colour that says where a value came from
 
 Select, set, store, play, update — the loop every other desk has. Four panels and three

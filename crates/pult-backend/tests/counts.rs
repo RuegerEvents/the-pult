@@ -660,3 +660,94 @@ async fn a_pir_counting_into_a_variable_writes_no_history() {
          anybody's edit, and every row of it pushes an operator's own work out of Ctrl-Z."
     );
 }
+
+/// A new show's effect pool is there, and nobody put it there: seeding it is not an
+/// operator's act, so the first Ctrl-Z on a fresh show reaches the operator's own first
+/// change rather than taking "Fire" out of the pool.
+#[tokio::test]
+async fn a_new_show_has_its_effect_pool_and_no_history_for_it() {
+    let station = a_station().await;
+    let pool = station
+        .engine
+        .get(vec![PathSegment::Key("effect_templates".into())])
+        .await
+        .expect("the pool");
+    let count = match &pool {
+        serde_json::Value::Object(rows) => rows.len(),
+        serde_json::Value::Array(rows) => rows.len(),
+        _ => 0,
+    };
+    assert_eq!(count, 9, "the Halloween templates are seeded: {pool}");
+
+    let history = station.engine.history(100).await;
+    let seeded = history
+        .iter()
+        .filter(|op| op.path.first() == Some(&PathSegment::Key("effect_templates".into())))
+        .count();
+    assert_eq!(seeded, 0, "seeding the pool wrote {seeded} rows into the history");
+}
+
+/// Applying a template across a selection is a write per fixture per layer, to as
+/// many programmer rows, and it is one act: the Effects panel opens a gesture round all
+/// of them. As with a store across three cues, the oplog cannot fold writes to
+/// different rows, so what is asserted is what one Ctrl-Z means: one gesture, and one
+/// undo takes every fixture's effect back.
+#[tokio::test]
+async fn applying_an_effect_to_a_selection_is_one_undo() {
+    let station = a_station().await;
+    let fixtures = a_rig(&station, 12).await;
+    let who = Uuid::new_v4();
+    let gesture = Uuid::new_v4();
+
+    for (i, fixture) in fixtures.iter().enumerate() {
+        station
+            .engine
+            .set_as(
+                who,
+                Some(gesture),
+                vec![PathSegment::Key("programmer_values".into()), PathSegment::Key("__create".into())],
+                Lifecycle::Synced,
+                serde_json::json!({
+                    "id": Uuid::new_v4(),
+                    "fixture_id": fixture,
+                    "parameter_kind": "Intensity",
+                    "value": { "type": "Float", "value": 0.0 },
+                    "effect": {
+                        "effect_id": Uuid::nil(),
+                        "curve": { "Shape": "Flicker" },
+                        "rate": { "Hz": 3.0 },
+                        "low": { "type": "Float", "value": 0.35 },
+                        "high": { "type": "Float", "value": 1.0 },
+                        "width": 0.5,
+                        "direction": "Forward",
+                        "phase": i as f32 / 12.0,
+                        "spread": { "Random": { "seed": 1 } },
+                        "t0": 1000,
+                        "template": Uuid::nil()
+                    },
+                    "preset": null,
+                    "locked": false
+                }),
+            )
+            .await
+            .expect("the programmer takes the effect");
+    }
+
+    let history = station.engine.history(100).await;
+    let gestures: std::collections::HashSet<_> =
+        history.iter().filter_map(|entry| entry.gesture).collect();
+    assert_eq!(gestures.len(), 1, "applying one effect to twelve fixtures was {} acts", gestures.len());
+
+    station.engine.undo(who, false).await;
+    let held = station
+        .engine
+        .get(vec![PathSegment::Key("programmer_values".into())])
+        .await
+        .expect("the programmer");
+    let left = match &held {
+        serde_json::Value::Object(rows) => rows.len(),
+        serde_json::Value::Array(rows) => rows.len(),
+        _ => 0,
+    };
+    assert_eq!(left, 0, "one undo left {left} fixtures still running the effect");
+}

@@ -200,6 +200,7 @@
 							{value}
 							label={row.label}
 							choices={row.choices}
+							range={row.physical}
 							tint={isHeld(row.key) ? 'var(--live)' : 'var(--accent)'}
 							oninput={(next) => put(row.kind, next)}
 						/>

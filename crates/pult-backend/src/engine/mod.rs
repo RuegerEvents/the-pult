@@ -3232,8 +3232,11 @@ impl ShowEngine {
             Err(e) => warn!("[engine] load_from_showfile: ShowState deserialization failed: {e}"),
         }
         self.seed_default_user().await;
-        self.seed_the_show().await;
+        let new_show = self.seed_the_show().await;
         self.seed_the_sheets().await;
+        if new_show {
+            self.seed_the_effect_pool().await;
+        }
         // A showfile that has been round a long tech week arrives past both
         // retentions, and this is the largest cut it will ever take.
         self.prune_the_log();
@@ -3375,17 +3378,17 @@ impl ShowEngine {
     ///
     /// Unattributed, like the default user beside it: nobody asked for it, and an
     /// operator pressing Ctrl-Z on a fresh show should reach their own first change.
-    async fn seed_the_show(&mut self) {
+    async fn seed_the_show(&mut self) -> bool {
         use pult_schema::types::show::Show;
 
         let path: Path = vec![PathSegment::Key("show".into())];
         if self.state.get_by_path(&path).is_some_and(|v| !v.is_null()) {
-            return;
+            return false;
         }
         // No name to seed with is a station with no bundle open: an in-memory show
         // that nothing will ever read again, and giving it a row would be inventing a
         // show nobody asked for.
-        let Some(name) = self.seed_name.clone() else { return };
+        let Some(name) = self.seed_name.clone() else { return false };
 
         let prefs = crate::infra::preferences::load();
         let show = Show {
@@ -3404,10 +3407,10 @@ impl ShowEngine {
                 ..Default::default()
             },
         };
-        let Ok(value) = serde_json::to_value(&show) else { return };
+        let Ok(value) = serde_json::to_value(&show) else { return false };
         if let Err(e) = self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await {
             warn!("[engine] could not seed the show: {e}");
-            return;
+            return false;
         }
         self.record_write(&path, Lifecycle::Persisted);
         self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none()).await;
@@ -3415,6 +3418,7 @@ impl ShowEngine {
         if let Some(sync) = &self.sync {
             sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
         }
+        true
     }
 
     /// The six default paperwork sheets, into a show that has none.
@@ -3457,6 +3461,36 @@ impl ShowEngine {
                 self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await
             {
                 warn!("[engine] could not seed the paperwork sheets: {e}");
+                return;
+            }
+            self.record_write(&path, Lifecycle::Persisted);
+            self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none())
+                .await;
+            self.broadcast_after_set(&path, value.clone());
+            if let Some(sync) = &self.sync {
+                sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none())
+                    .await;
+            }
+        }
+    }
+
+    /// The effect pool's Halloween templates, into a show that has just been made.
+    ///
+    /// Gated on the show row having been created by this open rather than on the
+    /// collection being empty, so it is *new only* in the strict sense: a show whose
+    /// pool somebody emptied on purpose stays empty, and a show made before the pool
+    /// existed is not handed one. Unattributed, like the show row it rides with.
+    async fn seed_the_effect_pool(&mut self) {
+        for template in pult_schema::types::default_effect_templates() {
+            let path: Path = vec![
+                PathSegment::Key("effect_templates".into()),
+                PathSegment::Key("__create".into()),
+            ];
+            let Ok(value) = serde_json::to_value(&template) else { continue };
+            if let Err(e) =
+                self.apply_set(path.clone(), value.clone(), Lifecycle::Persisted).await
+            {
+                warn!("[engine] could not seed the effect pool: {e}");
                 return;
             }
             self.record_write(&path, Lifecycle::Persisted);

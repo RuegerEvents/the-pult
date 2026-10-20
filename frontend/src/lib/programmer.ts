@@ -18,7 +18,7 @@ import type {
 	ProgrammerValue
 } from './generated/index.js';
 import { fadeGroup } from './fade.js';
-import type { FadeGroup } from './generated/index.js';
+import type { FadeGroup, PhysicalRange } from './generated/index.js';
 import { displayLabel, modeHas, modeOf, parameterKey } from './patch.js';
 import type { Showing } from './stores/output.js';
 
@@ -77,6 +77,11 @@ export type EditableParameter = {
 	 * port says which effects the node draws. Empty is free text.
 	 */
 	choices: string[];
+	/**
+	 * What its 0..1 spans, where the type says: a strip's Speed is 0 to 10 Hz, and
+	 * reads as hertz rather than as a fraction of its travel.
+	 */
+	physical: PhysicalRange | null;
 	/** How many of the selected fixtures actually have it. */
 	count: number;
 	/**
@@ -135,6 +140,7 @@ export function editableParameters(
 				defaultValue: parameter.default_value,
 				choices:
 					parameter.default_value.type === 'Text' ? parameter.slots.map((slot) => slot.name) : [],
+				physical: parameter.physical ?? null,
 				count: 1,
 				unreachable: reachable ? 0 : 1,
 				mixed: false

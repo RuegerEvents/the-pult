@@ -6175,6 +6175,117 @@ cargo test --release -p pult-backend --lib pixel_frame_cost -- --ignored --nocap
 cd frontend && npx vitest run src/lib/strips.test.ts
 ```
 
+### 75. Fire on a strip, and a pool to keep it in
+
+Effects programming, built 2026-10-21 for the Heinz Horror Garten. The user named four
+things wrong with the Effects panel: no preview, too many form fields, no library, and
+nothing for a pixel strip. Task 68 had already left "an effect pool" undone. The *What is
+next* entry asked six questions, answered below, and left the list when this was built.
+
+**A pool entry is a template, and a template is layers.** `effect_templates` is a
+PERSISTED collection of `EffectTemplate { id, name, layers }`. A layer is everything an
+effect spec is except what the selection decides: curve, rate, ends, width, direction,
+spread, and the parameter it drives. Fire is two layers, intensity and colour, and Apply
+is one act over both. A layer reaches the fixtures in the selection that have its
+parameter, and one nothing selected can take is left out rather than refused, with the
+panel saying so. `spread_cycles` is new: how many cycles the spread covers across the
+selection. On a strip that is "segments", and on a row of heads it is how far apart they
+run. `phases(spread, n, cycles)` wraps the old phases into one cycle.
+
+**A copy, not a reference.** Task 68's preset rule does not fit. A spec's phase is a
+number per fixture, worked out from a selection that is gone by the time anybody edits
+the template, so an edit could not reach a running effect without rebuilding a spread
+nobody can rebuild. Applying copies, and `EffectSpec::template` (optional, defaulted)
+records where the copy came from. Updating a pool entry changes the next apply and
+nothing that is running or stored, and the panel says so when you press Update.
+
+**Seeded on a new show, strictly.** Nine Halloween templates: flicker, candle,
+lightning, heartbeat, fire, chase, breathing, police and strobe burst. They are seeded by
+the engine when `seed_the_show` has just made the show row. That is a stricter gate than
+the sheets' (an empty collection), so a pool somebody emptied stays empty, and a show
+made before this existed is not handed one. Unattributed, like the show row, and the
+counts test pins that: a fresh show's first Ctrl-Z reaches the operator's own first
+change. Their ids are v5 names, so two builds agree on what "Fire" is.
+
+**Two shapes that never repeat.** Flicker, candle and fire fit the model as it was only
+if every cycle is the same flicker, and lightning that strikes the same way every seven
+seconds is not lightning. So `pult-render` gained `Shape::Flicker` (smooth value noise,
+eight knots a cycle) and `Shape::Lightning` (a burst of one to three falling flashes at
+the top of the cycle, inside `width` of it, in seven cycles of ten). Both read the
+*absolute* cycle count through the new `travelled()` and hash it, with integer
+arithmetic only (SplitMix64's finaliser, 24 bits kept), so the station and the browser
+agree to the bit. That is pinned by five new `driven-values.json` cases read by both
+compilations. The hash is salted with the fixture's phase: a random spread makes every
+candle flicker on its own, and an even spread makes the whole rig strike at once. Heartbeat,
+chase, police and strobe burst needed nothing new: they are step lists and square waves.
+
+**A node never runs those two.** `supports()` asks a port for the shape by name and no
+node advertises `flicker` or `lightning`, so the console streams values to it, as it
+does for anything a node cannot run. The node's own pixel effects (task 74) are a
+different thing with the same names: for a strip in `effect` mode the panel offers the
+node's effect list instead of building one.
+
+**The preview asks the evaluator.** `pult-render-wasm` exports `effect_values` (a list of
+running effects at a moment, packed like `evaluate`) and `shape_level` (for drawing a
+waveform, including the two that hash). The preview evaluates exactly what Apply would
+write, per layer, and combines them per fixture, colour scaled by intensity, one cell
+per fixture in selection order. It animates only while an `IntersectionObserver` says it
+is on screen and the tab is not hidden. TypeScript's `curveLevel` keeps the five
+periodic shapes it always had and asks the wasm for the other two, so there is still no
+TypeScript copy of anything that could drift.
+
+**The picture is the control.** Drag across the waveform for rate (doubling every 120 px,
+measured from where the drag began), drag the dashed line for a square's duty or the
+storm's window, and drag the two level tabs for low and high. Drag the handle over the
+preview for `spread_cycles`, snapped to quarters. A Float step list is a grid you click
+or paint. Every drag is one gesture. The numbers are still there, under *Numbers*.
+
+**Order is the selection's.** The old panel filtered `$fixtures` by membership, which is
+patch order: task 74's leftover. It reads `$selection` now, so a strip's cells recalled
+with *Select pixels* chase along the strip, and a saved group chases in the order it
+was saved.
+
+**A pixel has no dimmer.** A strip's cells carry a colour and nothing else, and nearly
+every look in the pool is an intensity. So `templateApply` gives an intensity layer to a
+colour-only fixture *as* its colour: white scaled by the level, step values included.
+It does that only where the template does not say what colour the fixture is, so fire on
+a strip is its colour layer, which already flickers. The strip controls (from the start,
+from the end, mirror, segments, lit part, a gradient of as many colours as you like) are
+all the existing spread machinery: `Linear`, `Reversed`, `Centre`, `spread_cycles`,
+a square's width, and a colour step list run across the cells.
+
+**A fader reads in its own unit.** `EditableParameter::physical` carries the type's
+`PhysicalRange` through to `Fader`, and `units.ts` writes the readout, so a strip's Speed
+reads `1.0 Hz` rather than `10`. A parameter with no range reads as a percent, as every
+fader always did. Task 74's other leftover.
+
+### The traps
+
+- **A layout written by `addInitScript` is written on every navigation.** The first rig
+  screenshot reloaded the page and came back as the panels it started with. A page that
+  needs a second layout needs a second page.
+- **`stopPropagation` on a handle hides the drag from the gesture.** `asOneGesture`
+  listens on the element that captures the pointer, so a handle that stopped the event
+  made its drag a stream of separate undos. One listener reads `data-drag` instead.
+- **`a_restored_show_is_the_show_as_it_was` flakes**, about one run in five of the
+  `shows` binary, on this commit and on the one before it. It reads the restored file and
+  then asks the console, which may still be between stations. Not widened here; recorded.
+
+### What is not done
+
+- Nothing has been looked at on a real strip or under real haze.
+- Editing a pool entry does not reach a running or stored effect, by design.
+- The node's own effects cannot be stored in the pool: they are values, not a shape.
+- The preview has no picture for a position effect beyond a level.
+
+```
+cargo test -p pult-render effect                      # the two that never repeat
+cargo test -p pult-render-wasm                        # the corpus, natively
+cargo test -p pult-schema effect_template             # the seeded pool
+cargo test -p pult-backend --test counts              # seeded unattributed; an apply is one undo
+cd frontend && npx vitest run src/lib/effectPool.test.ts src/lib/evaluator.test.ts
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -6521,6 +6632,11 @@ turned out to be wrong. It stayed unnumbered for less than a day.
 #### flow-state
 
 **Built on 2026-10-19 as task 69.** The questions that were here, and their answers,
+are that task's record now.
+
+#### effect-pool
+
+**Built on 2026-10-21 as task 75.** The questions that were here, and their answers,
 are that task's record now.
 
 #### 3d-programmer-remainder

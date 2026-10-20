@@ -116,6 +116,11 @@ pub struct EffectSpec {
     /// every Go. A [`Rate::Master`] ignores this either way: the master's own anchor
     /// is what keeps every effect on one master in step.
     pub t0: Option<u64>,
+    /// The pool entry this was applied from, if any: a record of where the copy came
+    /// from, so a panel can name it. Never followed; see `effect_template`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub template: Option<Uuid>,
 }
 
 #[cfg(test)]
@@ -148,6 +153,7 @@ mod tests {
             phase: 0.75,
             spread: Spread::Wings(2),
             t0: Some(1_756_550_400_123),
+            template: None,
         };
 
         let back: EffectSpec = serde_json::from_value(serde_json::to_value(&spec).unwrap()).unwrap();

@@ -12,6 +12,12 @@ CREATE TABLE IF NOT EXISTS cues (
     "easing" TEXT
 );
 
+CREATE TABLE IF NOT EXISTS effect_templates (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "layers" TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS fixtures (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,

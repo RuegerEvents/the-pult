@@ -488,6 +488,9 @@ fn shape_name(shape: Shape) -> &'static str {
         Shape::Square => "square",
         Shape::SawUp => "saw-up",
         Shape::SawDown => "saw-down",
+        // No node advertises these, so `supports` says no and the values are streamed.
+        Shape::Flicker => "flicker",
+        Shape::Lightning => "lightning",
     }
 }
 

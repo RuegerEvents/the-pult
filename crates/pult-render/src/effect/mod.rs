@@ -17,6 +17,20 @@
 //! Sine is `0.5 + 0.5·sin(2πx)`, so a cycle starts at half and peaks a quarter in.
 //! That is the phase convention the wire protocol assumes and the one a node has to
 //! match.
+//!
+//! # Two shapes that do not repeat
+//!
+//! [`Shape::Flicker`] and [`Shape::Lightning`] are not functions of the cycle position
+//! alone. Lightning that strikes the same way every seven seconds stops being
+//! lightning after the second strike, so they read the *absolute* cycle count and hash
+//! it into the next knot or the next strike. They are still pure: the count comes from
+//! the anchor and the moment, exactly as the position does, so every station and the
+//! browser see the same flash. The hash is salted with the fixture's phase, so a
+//! random spread makes every fixture flicker independently and an even spread makes
+//! the whole rig strike at once, which is what lightning does.
+//!
+//! Neither is in the table a node shares. A node advertises the shapes it can run
+//! itself, and it never advertises these, so the console streams values for them.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -25,7 +39,10 @@ use crate::value::{interpolate, ParameterValue};
 
 // ── What is running ───────────────────────────────────────────────────────────
 
-/// The five shapes, evaluated over one cycle.
+/// The shapes a value can trace.
+///
+/// The first five are evaluated over one cycle and repeat exactly. The last two read
+/// the absolute cycle count as well, so they never repeat (see the module doc).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub enum Shape {
@@ -34,6 +51,25 @@ pub enum Shape {
     Square,
     SawUp,
     SawDown,
+    /// Smooth value noise, [`FLICKER_KNOTS`] new levels a cycle. A candle, a torch, a
+    /// failing tube, depending on the rate and the range.
+    Flicker,
+    /// Dark, then a burst of one to three falling flashes at the top of the cycle,
+    /// inside the first `width` of it. Not every cycle strikes.
+    Lightning,
+}
+
+/// How many new levels [`Shape::Flicker`] picks per cycle.
+pub const FLICKER_KNOTS: f64 = 8.0;
+
+/// How often a cycle of [`Shape::Lightning`] strikes at all.
+pub const LIGHTNING_STRIKES: f32 = 0.7;
+
+impl Shape {
+    /// Whether this shape reads the absolute cycle count and so never repeats.
+    pub fn is_random(self) -> bool {
+        matches!(self, Shape::Flicker | Shape::Lightning)
+    }
 }
 
 /// How one value gives way to the next.
@@ -142,16 +178,24 @@ pub fn cycle_position(
     t0: u64,
     now_ms: u64,
 ) -> f32 {
-    let elapsed_ms = now_ms as i64 - t0 as i64;
-    let cycles = elapsed_ms as f64 / 1000.0 * rate_hz as f64;
-    let travelled = match direction {
-        Direction::Forward => cycles,
-        Direction::Backward => -cycles,
-    };
     // `rem_euclid` rather than `%`: a cue rendered before its own anchor, which clock
     // skew between stations makes ordinary, must wrap to the top of the cycle rather
     // than to a negative position.
-    (travelled + phase as f64).rem_euclid(1.0) as f32
+    travelled(rate_hz, direction, phase, t0, now_ms).rem_euclid(1.0) as f32
+}
+
+/// How many cycles an effect has travelled by `now_ms`, phase included, unwrapped.
+///
+/// [`cycle_position`] is this wrapped into one cycle. The two shapes that never repeat
+/// need the whole number as well, to know *which* cycle they are in.
+pub fn travelled(rate_hz: f32, direction: Direction, phase: f32, t0: u64, now_ms: u64) -> f64 {
+    let elapsed_ms = now_ms as i64 - t0 as i64;
+    let cycles = elapsed_ms as f64 / 1000.0 * rate_hz as f64;
+    let along = match direction {
+        Direction::Forward => cycles,
+        Direction::Backward => -cycles,
+    };
+    along + phase as f64
 }
 
 /// A shape's level at a cycle position, 0..1.
@@ -176,7 +220,61 @@ pub fn curve_level(shape: Shape, width: f32, x: f32) -> f32 {
         }
         Shape::SawUp => x,
         Shape::SawDown => 1.0 - x,
+        // The first cycle of each, unsalted: what a waveform of one draws.
+        Shape::Flicker | Shape::Lightning => shape_level(shape, width, x as f64, 0),
     }
+}
+
+/// A shape's level after `travelled` cycles, 0..1, for any shape.
+///
+/// The periodic five only look at where in the cycle that is. Flicker and lightning
+/// also look at which cycle it is, and `salt` keeps two fixtures apart.
+pub fn shape_level(shape: Shape, width: f32, travelled: f64, salt: u32) -> f32 {
+    match shape {
+        Shape::Flicker => {
+            let along = travelled * FLICKER_KNOTS;
+            let knot = along.floor();
+            let t = (along - knot) as f32;
+            let knot = knot as i64;
+            let a = lattice(knot, salt);
+            let b = lattice(knot + 1, salt);
+            // Smoothstep between knots: a level that holds and then moves, rather than
+            // the zigzag a straight line between random points draws.
+            a + (b - a) * (t * t * (3.0 - 2.0 * t))
+        }
+        Shape::Lightning => {
+            let cycle = travelled.floor();
+            let x = (travelled - cycle) as f32;
+            let cycle = cycle as i64;
+            if lattice(cycle, salt ^ 0x5157) >= LIGHTNING_STRIKES {
+                return 0.0;
+            }
+            let window = width.clamp(0.02, 1.0);
+            if x >= window {
+                return 0.0;
+            }
+            // One to three flashes, each sharper than it is long, in the window.
+            let flashes = 1 + (lattice(cycle, salt ^ 0x0F1A) * 3.0).min(2.999) as i64;
+            let length = window / flashes as f32;
+            let j = ((x / length) as i64).min(flashes - 1);
+            let t = (x - j as f32 * length) / length;
+            let peak = 0.45 + 0.55 * lattice(cycle * 4 + j, salt ^ 0x9EAC);
+            peak * (1.0 - t) * (1.0 - t)
+        }
+        periodic => curve_level(periodic, width, travelled.rem_euclid(1.0) as f32),
+    }
+}
+
+/// A lattice point hashed to 0..1: SplitMix64's finaliser over the index and a salt.
+///
+/// Integer arithmetic only, so a page and a station agree to the bit. 24 bits of the
+/// result are kept, which is every bit an `f32` mantissa can hold exactly.
+fn lattice(index: i64, salt: u32) -> f32 {
+    let mut z = (index as u64) ^ ((salt as u64) << 32) ^ 0x9E37_79B9_7F4A_7C15;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 40) as f32 / (1u64 << 24) as f32
 }
 
 /// The shape of a transition, 0..1 in, 0..1 out.
@@ -265,11 +363,14 @@ pub fn step_value(steps: &[Step], x: f32) -> Option<ParameterValue> {
 
 /// What one running effect is asserting at `now_ms`.
 pub fn effect_value_at(effect: &RunningEffect, now_ms: u64) -> ParameterValue {
-    let x = cycle_position(effect.rate_hz, effect.direction, effect.phase, effect.t0, now_ms);
+    let along = travelled(effect.rate_hz, effect.direction, effect.phase, effect.t0, now_ms);
+    let x = along.rem_euclid(1.0) as f32;
     match &effect.curve {
-        Curve::Shape(shape) => {
-            blend(&effect.low, &effect.high, curve_level(*shape, effect.width, x))
-        }
+        Curve::Shape(shape) => blend(
+            &effect.low,
+            &effect.high,
+            shape_level(*shape, effect.width, along, effect.phase.to_bits()),
+        ),
         // A step list that has lost its steps holds the bottom of its range, which is
         // dark for an intensity and off for a relay.
         Curve::Steps(steps) => step_value(steps, x).unwrap_or_else(|| effect.low.clone()),

@@ -9,19 +9,25 @@
 	 * ends.
 	 */
 
+	import type { PhysicalRange } from '$lib/generated/index.js';
+	import { physicalReadout } from '$lib/units.js';
 	import { asOneGesture, nudging } from '$lib/stores/gesture.js';
 
 	let {
 		value,
 		oninput,
 		tint = 'var(--accent)',
-		label = 'Level'
+		label = 'Level',
+		range = null
 	}: {
 		value: number;
 		oninput: (value: number) => void;
 		tint?: string;
 		label?: string;
+		/** Where the type says what 0..1 spans, the readout is in that unit. */
+		range?: PhysicalRange | null;
 	} = $props();
+
 
 	let track = $state<HTMLDivElement | null>(null);
 	/// Where a fine drag is measured from. Reset whenever shift goes down or up, so
@@ -29,6 +35,7 @@
 	let anchor: { x: number; value: number; fine: boolean } | null = $state(null);
 
 	const clamp = (v: number) => Math.min(1, Math.max(0, v));
+	const readout = $derived(physicalReadout(clamp(value), range));
 
 	function fractionAt(clientX: number): number {
 		if (!track) return value;
@@ -102,7 +109,7 @@
 	aria-valuemin="0"
 	aria-valuemax="1"
 	aria-valuenow={value}
-	aria-valuetext="{Math.round(value * 100)}%"
+	aria-valuetext={readout.text}
 	onpointerdown={down}
 	onpointermove={move}
 	onpointerup={up}
@@ -110,7 +117,7 @@
 	onkeydown={key}
 >
 	<div class="fill" style:width="{clamp(value) * 100}%" style:background={tint}></div>
-	<span class="readout">{Math.round(clamp(value) * 100)}</span>
+	<span class="readout">{readout.short}</span>
 </div>
 
 <style>
