@@ -39,6 +39,14 @@ pub struct Station {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub http_addr: String,
+    /// Where an OpenHaunt node reaches this station's broker, as `ip:port`, were it
+    /// to lead. The leader lists every station's in the broker list it hands its nodes
+    /// (`openhaunt/brokers`, doc 15), leader first, so a node whose leader dies finds
+    /// the next one without anybody having to see it over mDNS. Empty from an older
+    /// peer, which is then simply not in the list.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub broker_addr: String,
     #[pult(lifecycle = SYNCED)]
     pub cpu_percent: f32,
     #[pult(lifecycle = SYNCED)]
@@ -463,6 +471,7 @@ mod tests {
             is_leader: true,
             sync_addr: "10.0.0.5:7701".into(),
             http_addr: "10.0.0.5:7700".into(),
+            broker_addr: String::new(),
             cpu_percent: 12.5,
             mem_used: 4_000_000_000,
             mem_total: 16_000_000_000,

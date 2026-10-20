@@ -1213,3 +1213,106 @@ async fn the_console_says_what_time_it_is_once_driving_starts() {
     })
     .await;
 }
+
+// ── The broker list ───────────────────────────────────────────────────────────
+
+fn a_station_at(id: Uuid, broker_addr: &str) -> pult_schema::types::station::Station {
+    pult_schema::types::station::Station {
+        id,
+        hostname: String::new(),
+        is_leader: false,
+        sync_addr: String::new(),
+        http_addr: String::new(),
+        broker_addr: broker_addr.to_string(),
+        cpu_percent: 0.0,
+        mem_used: 0,
+        mem_total: 0,
+        uptime_s: 0,
+        output_plugins: Vec::new(),
+        computes_fixtures: 0,
+        total_fixtures: 0,
+        frame_costs: Vec::new(),
+        machine: Default::default(),
+        net_received: 0,
+        net_sent: 0,
+        net_window_ms: 0,
+        clock: Default::default(),
+        sacn_slot: None,
+        last_seen: Utc::now(),
+    }
+}
+
+#[test]
+fn the_broker_list_puts_the_leader_first_and_every_other_station_after_it() {
+    let me = NodeId(Uuid::from_u128(5));
+    let stations = vec![
+        a_station_at(Uuid::from_u128(9), "10.0.0.9:1883"),
+        a_station_at(me.0, "10.0.0.5:1883"),
+        a_station_at(Uuid::from_u128(2), "10.0.0.2:1883"),
+        // An older peer says nothing, and is not in the list.
+        a_station_at(Uuid::from_u128(3), ""),
+        // Two stations on one address are one door.
+        a_station_at(Uuid::from_u128(4), "10.0.0.2:1883"),
+    ];
+    assert_eq!(
+        broker_list("10.0.0.5:1883", me, &stations),
+        vec!["10.0.0.5:1883", "10.0.0.2:1883", "10.0.0.9:1883"],
+        "this station first, the rest in a stable order",
+    );
+}
+
+#[test]
+fn the_broker_list_is_as_long_as_a_node_keeps() {
+    let me = NodeId(Uuid::from_u128(1));
+    let stations: Vec<_> =
+        (2..10u128).map(|n| a_station_at(Uuid::from_u128(n), &format!("10.0.0.{n}:1883"))).collect();
+    let list = broker_list("10.0.0.1:1883", me, &stations);
+    assert_eq!(list.len(), MAX_BROKERS);
+    assert_eq!(list[0], "10.0.0.1:1883");
+}
+
+#[tokio::test]
+async fn a_node_is_told_every_broker_and_the_list_is_retained_for_one_nobody_has_seen() {
+    let (addr, log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
+    let h = harness().await;
+    h.resolve("listed", MAINS_RELAY, Some(addr)).await;
+    h.devices.adopt("listed".into()).await.unwrap();
+
+    let advertised = h.state().await.broker_addr.expect("driving");
+    let configs = log.lock().unwrap().configs.clone();
+    assert_eq!(configs[0]["mqtt"]["brokers"], serde_json::json!([advertised]), "a lone station lists itself");
+
+    // A node that arrived by its list subscribes and is handed the list straight away.
+    let mut options = MqttOptions::new("walked-here", "127.0.0.1", broker_port(&h).await);
+    options.set_keep_alive(std::time::Duration::from_secs(5));
+    let (client, mut eventloop) = AsyncClient::new(options, 16);
+    client.subscribe("openhaunt/brokers", QoS::AtLeastOnce).await.unwrap();
+    let heard = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) = eventloop.poll().await {
+                if p.topic == "openhaunt/brokers" {
+                    return (p.retain, serde_json::from_slice::<serde_json::Value>(&p.payload).unwrap());
+                }
+            }
+        }
+    })
+    .await
+    .expect("the retained list arrives on subscribe");
+    assert!(heard.0, "retained, so it is there for whoever subscribes next");
+    assert_eq!(heard.1, serde_json::json!({ "brokers": [advertised] }));
+}
+
+#[tokio::test]
+async fn a_station_that_stops_driving_closes_its_door() {
+    let h = harness().await;
+    h.resolve("door1", DIGITAL_IN, None).await;
+    h.devices.adopt("door1".into()).await.unwrap();
+    let port = broker_port(&h).await;
+    assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok(), "open while it drives");
+
+    h.become_follower().await;
+    eventually("the door to close", || async {
+        tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err()
+    })
+    .await;
+}

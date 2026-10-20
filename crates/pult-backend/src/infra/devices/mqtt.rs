@@ -132,6 +132,18 @@ pub fn audio_topic(serial: &str, verb: &str) -> String {
 /// answer immediately rather than after up to a second of rendering against nothing.
 pub const CLOCK_TOPIC: &str = "openhaunt/clock";
 
+/// Where the leader publishes its broker list, retained (doc 15).
+///
+/// One topic for every node, like the clock: a node that walked to this broker by its
+/// list after a failover is told the new order the moment it subscribes, whether or
+/// not anybody here has ever seen it over mDNS.
+pub const BROKERS_TOPIC: &str = "openhaunt/brokers";
+
+/// What the leader publishes on [`BROKERS_TOPIC`]: `host:port`s, leader first.
+pub fn brokers_payload(brokers: &[String]) -> Vec<u8> {
+    serde_json::json!({ "brokers": brokers }).to_string().into_bytes()
+}
+
 /// What the console publishes on [`CLOCK_TOPIC`].
 ///
 /// `seq` counts up so a node can tell a fresh sample from a retained one replayed

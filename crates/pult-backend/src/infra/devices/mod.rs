@@ -222,6 +222,12 @@ pub struct DeviceManager {
     /// Counts up with every clock publish, so a node can tell a fresh sample from a
     /// retained one replayed after the broker restarted.
     clock_seq: u64,
+    /// The port nodes dial, open while this station drives them and closed the moment
+    /// it stops. See [`broker`].
+    door: Option<broker::FrontDoor>,
+    /// The broker list this station last handed its nodes, leader first (doc 15).
+    /// Empty while not driving.
+    brokers: Vec<String>,
 }
 
 impl DeviceManager {
@@ -254,6 +260,8 @@ impl DeviceManager {
                 mqtt_tx,
                 on_broker: Default::default(),
                 clock_seq: 0,
+                door: None,
+                brokers: Vec::new(),
             },
             DeviceHandle(tx),
             directory_rx,
@@ -267,6 +275,9 @@ impl DeviceManager {
         // Leadership changes arrive as writes to the LOCAL session state, which is
         // the same thing playback gates follow cues on.
         let mut sessions = self.engine.subscribe_pattern(PathPattern::new("session")).await;
+        // Who else is in the session, and where their brokers are: what the broker list
+        // a leader hands its nodes is made of.
+        let mut stations = self.engine.subscribe_pattern(PathPattern::new("stations/**")).await;
 
         self.push_state().await;
         // A console restarted mid-show comes up already leading, with devices already
@@ -318,6 +329,7 @@ impl DeviceManager {
                 }
                 Some(event) = mqtt_rx.recv() => self.handle_mqtt(event).await,
                 Some(_) = sessions.next() => self.reconsider_leadership().await,
+                Some(_) = stations.next() => self.refresh_brokers().await,
                 _ = clock.tick() => self.publish_clock().await,
                 _ = strips.tick() => self.reconcile_all_strips().await,
             }
@@ -349,8 +361,12 @@ impl DeviceManager {
                 if let Some(mqtt) = self.mqtt.take() {
                     mqtt.stop();
                 }
-                // The broker thread stays up — it is started once per process — but
-                // this node is no longer the one nodes should publish to.
+                // The broker thread stays up — it cannot be stopped — but its door
+                // closes, so every node on it drops and walks its list to whoever
+                // leads now. Holding a node this station no longer commands would
+                // leave its inputs with nobody to act on them.
+                self.door = None;
+                self.brokers.clear();
                 self.state.broker_addr = None;
             }
         }
@@ -368,26 +384,60 @@ impl DeviceManager {
     }
 
     async fn start_driving(&mut self) {
-        let listen = broker::ensure(self.broker_port);
+        let inside = broker::ensure(self.broker_port);
+        match broker::FrontDoor::open(self.broker_port, inside).await {
+            Ok(door) => self.door = Some(door),
+            Err(e) => warn!(
+                "[devices] could not open port {} to the nodes: {e}; none of them can reach this station",
+                self.broker_port
+            ),
+        }
         let advertised = broker::advertised_addr(
             std::net::IpAddr::V4(crate::infra::local_ipv4()),
-            listen.port(),
+            self.broker_port,
         );
         self.state.broker_addr = Some(advertised.clone());
 
-        // The console reaches its own broker over loopback whatever it advertises.
+        // The console reaches its own broker over loopback, past the door.
         // The client id carries the node id: a broker disconnects the older of two
         // clients claiming the same one, so two consoles sharing a broker would
         // otherwise take turns kicking each other off.
-        let local = format!("127.0.0.1:{}", listen.port());
         let client_id = format!("the-pult-{}", &self.node_id.0.to_string()[..8]);
-        self.mqtt = Some(MqttLink::connect(&local, &client_id, self.mqtt_tx.clone()));
+        self.mqtt = Some(MqttLink::connect(&inside.to_string(), &client_id, self.mqtt_tx.clone()));
         info!("[devices] driving devices, broker advertised as {advertised}");
 
         self.ensure_openhaunt_output().await;
 
         // A device adopted by a previous leader is pointing at a broker that is no
-        // longer listening, so every online one has to be told where to look now.
+        // longer listening. One it walked here by its list hears the new list on the
+        // retained topic the moment it subscribes; one mDNS shows is told over HTTP as
+        // well, which is also what reaches a node that has never had a list.
+        self.brokers.clear();
+        self.refresh_brokers().await;
+    }
+
+    /// Hand the nodes the broker list, if it has changed: this station first, then
+    /// every other station of the session that says where its broker is (doc 15).
+    ///
+    /// Retained on `openhaunt/brokers`, so every node on this broker has it, including
+    /// one that walked here by its list and that no browse on this station has ever
+    /// seen; and over HTTP to every adopted node mDNS shows, so a node not yet on any
+    /// broker learns it too.
+    async fn refresh_brokers(&mut self) {
+        if self.mqtt.is_none() {
+            return;
+        }
+        let Some(own) = self.state.broker_addr.clone() else { return };
+        let stations: Vec<pult_schema::types::station::Station> = self.read("stations").await;
+        let list = broker_list(&own, self.node_id, &stations);
+        if list == self.brokers {
+            return;
+        }
+        info!("[devices] broker list: {}", list.join(", "));
+        self.brokers = list;
+        if let Some(mqtt) = &self.mqtt {
+            mqtt.publish(mqtt::BROKERS_TOPIC.to_string(), mqtt::brokers_payload(&self.brokers), true);
+        }
         for serial in self.adopted_and_online() {
             self.push_config(&serial).await;
         }
@@ -450,9 +500,10 @@ impl DeviceManager {
     async fn handle_mqtt(&mut self, event: MqttEvent) {
         match event {
             MqttEvent::Input { serial, port, value, .. } => {
-                if !self.state.discovered.contains_key(&serial) {
-                    return;
-                }
+                // Not gated on mDNS: a node that walked here by its broker list after
+                // a failover may be one no browse on this station has seen, and what it
+                // reports is still the show's. Being adopted is the gate, and that is
+                // what the port lookup below answers.
                 let Some((fixture_id, key)) = self.parameter_on_port(&serial, port).await else {
                     debug!("[devices] {serial} port {port} is not bound to a parameter");
                     return;
@@ -986,7 +1037,10 @@ impl DeviceManager {
     /// Tell a node where to publish, and what to do with the universe it gateways.
     async fn push_config(&self, serial: &str) {
         let Some(broker) = &self.state.broker_addr else { return };
-        let mut config = serde_json::json!({ "mqtt": { "broker": broker } });
+        // `broker` for a node from before lists, which reads nothing else; `brokers`
+        // for one that can fail over on its own (doc 15). The first is always ours.
+        let brokers = if self.brokers.is_empty() { vec![broker.clone()] } else { self.brokers.clone() };
+        let mut config = serde_json::json!({ "mqtt": { "broker": broker, "brokers": brokers } });
 
         if let Some(universe) = self.gateway_universe(serial).await {
             config["dmx"] = serde_json::json!({ "protocol": "sacn", "universe": universe });
@@ -1434,6 +1488,32 @@ mod erased {
 /// The mdns-sd receiver is blocking, so it gets its own thread and forwards over a
 /// channel — the same shape `SessionManager` uses. Every node browses, follower or
 /// not: seeing what is on the network costs nothing and is worth showing.
+/// The broker list a leader hands its nodes: its own address first, then every other
+/// station's that says where its broker is, in a stable order and at most
+/// [`MAX_BROKERS`] long, with nobody listed twice.
+///
+/// Leader first is the whole point: a node prefers the first entry, so a list that
+/// put a follower there would send every node to a door that is closed.
+pub fn broker_list(own: &str, me: NodeId, stations: &[pult_schema::types::station::Station]) -> Vec<String> {
+    let mut others: Vec<&pult_schema::types::station::Station> =
+        stations.iter().filter(|s| s.id != me.0 && !s.broker_addr.is_empty()).collect();
+    others.sort_by_key(|s| s.id);
+    let mut list = vec![own.to_string()];
+    for station in others {
+        if list.len() == MAX_BROKERS {
+            break;
+        }
+        if !list.contains(&station.broker_addr) {
+            list.push(station.broker_addr.clone());
+        }
+    }
+    list
+}
+
+/// How many brokers a node is told about. The firmware keeps this many (doc 15);
+/// a session of more stations than that has a spare for every node anyway.
+pub const MAX_BROKERS: usize = 4;
+
 pub fn spawn_mdns_browser(
     devices: DeviceHandle,
     net: crate::infra::net::NetHandle,

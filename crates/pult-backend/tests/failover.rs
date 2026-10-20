@@ -9,14 +9,20 @@
 //! stops its tasks without telling anybody, the way a kernel tidies up after `kill -9`.
 //! A clean shutdown would be the case that matters least: nobody yanks a cable politely.
 //!
-//! Two stations in one process share two things a real pair would not: the show clock
-//! (`pult_schema::clock` is per process) and the OpenHaunt broker (started once per
-//! process). So the clock's continuity is not something this can see, and a node
-//! moving to the new leader's broker is proved in the device manager's own tests.
+//! Two stations in one process share one thing a real pair would not: the show clock
+//! (`pult_schema::clock` is per process), so its continuity is not something this can
+//! see. Each has a broker of its own behind its own door, though, so a node walking its
+//! broker list to the new leader is (doc 15): a simulated node that only the dead leader
+//! ever knew the address of.
 
 use std::time::Duration;
 
-use pult_backend::{demo::Demo, Config, Running};
+use openhaunt_node_sim::{Input, ModuleKind, SimConfig};
+use pult_backend::{
+    demo::Demo,
+    infra::devices::{DeviceCommand, DeviceEvent},
+    Config, Running,
+};
 use pult_schema::{
     path::PathSegment,
     types::{station::Station, timeline::Timeline, Fixture, Sequence, Variable},
@@ -135,9 +141,9 @@ async fn lamp(station: &Running, entrance: Uuid, relay: u8) -> Option<bool> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_spare_carries_on_when_the_leader_dies_mid_scare() {
-    let broker = a_free_port();
-    let leader = a_station("leader", Some(Demo::Garden), broker).await;
-    let spare = a_station("spare", None, broker).await;
+    // A broker each, the way two machines have: what the node is told is two doors.
+    let leader = a_station("leader", Some(Demo::Garden), a_free_port()).await;
+    let spare = a_station("spare", None, a_free_port()).await;
 
     // By address, the way a spare is joined on a network whose mDNS does not reach —
     // and the only way here, where this process may not send multicast at all.
@@ -191,6 +197,67 @@ async fn the_spare_carries_on_when_the_leader_dies_mid_scare() {
         let wanted = wanted.clone();
         let dir = spare_assets.clone();
         async move { wanted.iter().all(|sha| dir.join(sha).exists()) }
+    })
+    .await;
+
+    // Area 1's node, real enough to fail over: an OpenHaunt simulator the *leader* is
+    // told about, the way its mDNS browse would tell it, and the spare never is. Whatever
+    // brings it to the spare after the kill, it is not discovery.
+    let serial = fixtures
+        .iter()
+        .find(|f| f.id == area1)
+        .and_then(|f| f.address.serial())
+        .expect("area 1 is a node")
+        .to_string();
+    let area1_node = openhaunt_node_sim::start(SimConfig::new(ModuleKind::NodeV0, serial.clone()))
+        .await
+        .expect("the simulated node starts");
+    let txt = [
+        ("sn", serial.as_str()),
+        ("mod", "0x0f01"),
+        ("name", "Area 1"),
+        ("fw", "0.4.0-sim"),
+        ("v", "1"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    leader
+        .devices
+        .0
+        .send(DeviceCommand::Event(DeviceEvent::Resolved {
+            serial: serial.clone(),
+            ip: "127.0.0.1".into(),
+            port: area1_node.http_addr.port(),
+            host: format!("openhaunt-{serial}.local."),
+            txt,
+        }))
+        .await
+        .expect("the leader hears of the node");
+    let station_broker = |station: &Running| {
+        let station = station.node_id.0;
+        let leader = &leader;
+        async move {
+            read::<Station>(leader, "stations")
+                .await
+                .into_iter()
+                .find(|s| s.id == station)
+                .map(|s| s.broker_addr)
+                .unwrap_or_default()
+        }
+    };
+    let leader_door = station_broker(&leader).await;
+    let spare_door = station_broker(&spare).await;
+    assert!(!leader_door.is_empty() && !spare_door.is_empty(), "both stations say where their door is");
+    eventually("the node is on the leader, and knows the spare", Duration::from_secs(20), || {
+        let snapshot = area1_node.snapshot.clone();
+        let (leader_door, spare_door) = (leader_door.clone(), spare_door.clone());
+        async move {
+            let s = snapshot.borrow().clone();
+            s.mqtt_connected
+                && s.broker.as_deref() == Some(leader_door.as_str())
+                && s.brokers == vec![leader_door, spare_door]
+        }
     })
     .await;
 
@@ -277,6 +344,32 @@ async fn the_spare_carries_on_when_the_leader_dies_mid_scare() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(inside(&spare, "Area 1 inside").await, 2.0, "each edge counted once");
 
+    // The node walked its list to the spare, which never saw it over mDNS, and its next
+    // edge counts once there: three in, not two and not four.
+    eventually("the node is on the spare's broker", Duration::from_secs(30), || {
+        let snapshot = area1_node.snapshot.clone();
+        let spare_door = spare_door.clone();
+        async move {
+            let s = snapshot.borrow().clone();
+            s.mqtt_connected && s.broker.as_deref() == Some(spare_door.as_str())
+        }
+    })
+    .await;
+    assert!(
+        area1_node.snapshot.borrow().brokers.first() == Some(&spare_door),
+        "and was told the spare leads now",
+    );
+    for closed in [true, false] {
+        area1_node.inputs.send(Input::Contact { port: 4, state: closed }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    }
+    eventually("the node's own edge counts a third group in", Duration::from_secs(5), || async {
+        inside(&spare, "Area 1 inside").await == 3.0
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(inside(&spare, "Area 1 inside").await, 3.0, "the node's edge counted once");
+
     // The light at the entrance follows area 2 on the spare.
     walk(&spare, area2, 4).await;
     eventually("red while area 2 is busy", Duration::from_secs(5), || async {
@@ -300,5 +393,6 @@ async fn the_spare_carries_on_when_the_leader_dies_mid_scare() {
     })
     .await;
 
+    area1_node.stop.stop().await;
     spare.shutdown("the test is over").await;
 }

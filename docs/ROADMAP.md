@@ -6441,17 +6441,19 @@ and never asks.
   sockets, so the peer sees the link go and elects within milliseconds. A pulled power
   cable or a frozen machine closes nothing, and is noticed after `PEER_TIMEOUT` — 16 s of
   heartbeats unanswered. For those 16 s nothing fires: a PIR goes to a broker that is gone
-  and a scare is missed. Shortening it is a trade against wifi, and not made here.
+  and a scare is missed. Shortening it is a trade against wifi, and not made here. **The
+  user's call (2026-10-20): it stays at 16 s.** Since task 78 the edges of that gap are
+  queued on the node and arrive late rather than not at all.
 - **The nodes move by mDNS.** A promoted leader starts its broker and posts its address to
   every adopted node it can *see* (`adopted_and_online`, from its own browse). A spare
   whose mDNS does not reach finds no node online, tells none of them, and they go on
   retrying the dead leader's broker. Joining by address does not fix that half: a node
-  has one broker and no list. The firmware taking an ordered list of brokers is the fix,
-  and it is not made.
-- **Two stations in one process share a clock and a broker.** `pult_schema::clock` and
-  `broker::ensure` are per process, so the test cannot see the show clock's continuity
-  across the failover (task 64's rule) or a node changing broker; both are proved where
-  they live.
+  has one broker and no list. The firmware taking an ordered list of brokers is the fix:
+  task 78.
+- **Two stations in one process share a clock**, and until task 78 a broker.
+  `pult_schema::clock` is per process, so the test cannot see the show clock's continuity
+  across the failover (task 64's rule). The broker is per door port since task 78, which
+  is what lets the same test watch a node change broker.
 - **A node voice is replayed, not restarted.** The promoted leader has sent nothing, so
   its first schedule pass sends `play` for every sounding voice with the `at` it started
   at; the node, already playing that voice name, crossfades onto the same position. That
@@ -6464,7 +6466,8 @@ and never asks.
 ### What is not done
 
 - Nothing of it has run on two Macs, a real switch, or a node changing broker.
-- The 16 s of a silent death, and nodes re-pointed only by mDNS (above).
+- The 16 s of a silent death (kept, by the user's call), and nodes re-pointed only by
+  mDNS (task 78).
 - `demo.sh --demo garden --two` writes each station's pid to `.demo/station-<port>.pid`
   and prints the rehearsal; it has not been walked through by hand with the sims.
 
@@ -6472,6 +6475,81 @@ and never asks.
 cargo test -p pult-backend --test failover   # the leader dies mid-scare
 cargo test -p pult-backend --test shows      # restore, demo and list, waiting properly
 scripts/demo.sh --demo garden --two          # then: kill -9 $(cat .demo/station-7700.pid)
+```
+
+### 78. A node that finds the next leader itself
+
+Task 77's open half, built 2026-10-20 on the user's call: nodes have to reach the new leader's
+broker after a failover without anybody having found them over mDNS. The other half of that
+entry, `PEER_TIMEOUT`, the user decided to leave at 16 s. The protocol is OpenHaunt/node
+`docs/15-brokers.md`; the firmware is `oh_brokers` plus `oh_mqtt` (0.4.0).
+
+**A node is told every broker, leader first, and walks the list itself.** At most four
+`host:port`s, in `mqtt.brokers` on `POST /api/v1/config` and, retained, on
+`openhaunt/brokers`. It keeps them in NVS. When the broker it is on goes, it tries the next
+entry after 200 ms, and backs off 1 s, doubling to 8 s, once a whole pass has failed. A new
+list whose first entry is not where it is moves it at once. Both channels are needed, for
+two different nodes: HTTP for one that is on no broker yet, which is adoption; the retained
+topic for one that walked to a leader that has never seen it and so can't post to it.
+`mqtt.broker` stays beside the list, set to its first entry, for firmware from before.
+
+**Only the leader's broker takes a node, and that is the whole answer to "who owns it".**
+`broker.rs` is now two halves: rumqttd on loopback, which cannot be stopped, and a
+`FrontDoor` on the configured port that pipes through to it and is open exactly while the
+station drives. Stopping leading closes the door, every node on it drops, and the walk can
+only end where the show is being run from. The other design, a broker that starts on
+promotion, falls at the same place: rumqttd can't be stopped, so a station that had led and
+then stopped would go on holding every node that walked to it, with nobody acting on what
+they report. Every station runs no broker until it leads, which is where 1883 was before.
+
+**The list is made of station rows.** `Station::broker_addr` is where each station's door
+would be, written the way the device manager advertises its own (`local_ipv4:port`).
+`devices::broker_list` puts this station first and the rest by id, so one session always
+produces one list. The device manager follows `stations/**` and republishes only when the
+list changed.
+
+### The traps
+
+- **A node's input was gated on mDNS.** `handle_mqtt` dropped every input from a serial
+  missing from this station's `discovered`, and a node that walked here after the kill is
+  exactly that. The rehearsal's node reached the spare and its PIR counted nothing. Being
+  adopted is the gate now, which the port lookup already answers.
+- **A broker per process was a broker shared by every test in the binary.** It was a
+  `OnceLock`, so every `DeviceManager` in a test binary talked to whichever port the first
+  one asked for. Harmless while topics were all per serial; a retained list on that shared
+  broker would have moved one test's node into another test's console. Per door port now.
+- **The door has to be retried on open.** A station replacing another on the same port (a
+  show opened) can find the old door still bound: an abort lands at the next suspension
+  point (task 52's rule). `FrontDoor::open` retries for two seconds.
+- **esp-mqtt reconnects to the same URI on its own**, which is the one thing a list must not
+  do. The firmware turns auto-reconnect off and drives the walk from a timer
+  (`esp_mqtt_client_set_uri`, `esp_mqtt_client_reconnect`), with a generation number so a
+  retry meant for a client that has since been replaced is dropped. The client's lifecycle
+  takes a lock of its own: the backlog lock is taken by the client's task, which stopping a
+  client waits for.
+
+**`tests/failover.rs` proves the walk.** A simulated Area 1 node is told about only by the
+leader (an injected `Resolved`; the spare never hears of it). It is on the leader with
+`[leader, spare]` in hand; after `Running::kill` it is on the spare's broker with the spare
+first, and its own PIR edge counts a third group into area 1, once. With the list cut to one
+entry, the test fails. `openhaunt-node-sim` walks its list by `brokers.rs`, the firmware's
+rule in Rust, and queues 32 inputs while it is on no broker, as the firmware does.
+
+### What is not done
+
+- Nothing of it has run on hardware: the esp-mqtt path with auto-reconnect off is written
+  from the documentation.
+- The address in the list is `local_ipv4`, the interface with the default route — task 65's
+  trap, inherited from what the broker always advertised. A station on an isolated lighting
+  network with no default route lists `127.0.0.1`. It should come from the `openhaunt`
+  network preference.
+- A session of more than four stations lists the first four.
+
+```
+cargo test -p pult-backend --test failover          # a node walks its list to the spare
+cargo test -p pult-backend --lib infra::devices     # the list, the door, the retained topic
+cargo test -p openhaunt-node-sim brokers            # the walk, as the firmware does it
+cmake -S test/host -B build/host && ctest --test-dir build/host   # in OpenHaunt/firmware
 ```
 
 ## What is next
@@ -6973,17 +7051,6 @@ what is left is the gaps in it — which is why this is an entry rather than a f
   against, and `scripts/check-api-compat.sh` proves an older one still runs.
 
 ### Interop
-
-#### node-broker-failover
-
-Task 77 left one half of the hot spare on mDNS: a promoted leader re-points only the
-nodes its own browse can see, and a node has one broker. Questions: does the firmware
-take an ordered list of brokers (every station that could lead, pushed on adoption and on
-every membership change), and does every station then run its broker rather than only the
-leader — or does a node fall back to browsing `_pult._tcp` for the leader itself? And
-`PEER_TIMEOUT` (16 s): what is a silent death allowed to cost a maze, against what a
-shorter timeout costs on wifi?
-
 
 #### gdtf-share-panel-polish
 

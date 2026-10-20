@@ -1560,6 +1560,15 @@ fetches what is missing, both ways, without knowing which collections name an as
 follower plays nothing, so it used to fetch nothing, and was promoted holding none of the
 sound. See task 77, and `tests/failover.rs` for the leader killed mid-scare.
 
+**And a node finds the next leader itself.** Every station's row says where its broker
+door is (`Station::broker_addr`), and the leader hands its nodes the list, itself first,
+over HTTP and on the retained `openhaunt/brokers` (OpenHaunt doc 15). **Only the leader's
+door is open** — `infra/devices/broker.rs` is rumqttd behind a `FrontDoor` that closes when
+the station stops driving, because rumqttd cannot be stopped and a follower holding a node
+is a node whose inputs nobody acts on. So the walk can only end at whoever leads. A node's
+input is **not gated on mDNS**: one that walked here may be one no browse here has seen.
+A broker is per door port, not per process, so two stations in one test are two brokers.
+
 **Which station sends an output is part of the same question.** Art-Net and OpenHaunt
 have no way to arbitrate between two senders, so `OutputConfig::node_id` being `None`
 resolves to **the leader** for those kinds — resolved rather than refused, because `None`

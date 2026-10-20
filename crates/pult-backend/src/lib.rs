@@ -80,6 +80,9 @@ pub struct Running {
     /// Where a view is pushed at the browsers, and where one from a peer arrives.
     pub updates: crate::engine::UpdateBroadcast,
     pub serve: JoinHandle<Result<()>>,
+    /// This station's OpenHaunt device manager, for a test that has to tell it about a
+    /// node without mDNS — which is every test, on a machine that may not multicast.
+    pub devices: crate::infra::devices::DeviceHandle,
     /// MVR-xchange on this station, for a caller that wants to commit or apply
     /// without a browser to click in — which is what the tests want, the same way
     /// `sync` is here so a test can join a peer without going through discovery.
@@ -778,7 +781,14 @@ pub async fn start(config: Config) -> Result<Running> {
             .or_else(|| shows_dir(&config))
             .unwrap_or_else(std::env::temp_dir),
         net.clone(),
-    );
+    )
+    // The same address the device manager advertises when it leads, so the broker
+    // list a leader hands its nodes names each station the way that station would
+    // name itself.
+    .with_broker(crate::infra::devices::broker::advertised_addr(
+        std::net::IpAddr::V4(crate::infra::local_ipv4()),
+        config.openhaunt_broker_port,
+    ));
     tasks.push(tokio::spawn(reporter.run()));
 
     // Only the leader prunes: two nodes deleting each other's rows on different
@@ -901,7 +911,7 @@ pub async fn start(config: Config) -> Result<Running> {
         assets: assets.clone(),
         sync: sync_handle,
         session: session_handle,
-        devices: device_handle,
+        devices: device_handle.clone(),
         plugins: plugin_handle,
         // Built even where nobody has a login: it costs a client with an empty cookie
         // jar, and asking it anything without one answers "set a login" rather than
@@ -1002,6 +1012,7 @@ pub async fn start(config: Config) -> Result<Running> {
         updates: broadcast,
         serve,
         xchange: xchange_handle,
+        devices: device_handle,
         bundle,
         shows,
         stopping,

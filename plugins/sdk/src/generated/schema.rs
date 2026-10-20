@@ -2427,6 +2427,13 @@ pub struct Station {
     /// fetches from. Defaulted, because an older peer will not send it.
     #[serde(default)]
     pub http_addr: String,
+    /// Where an OpenHaunt node reaches this station's broker, as `ip:port`, were it
+    /// to lead. The leader lists every station's in the broker list it hands its nodes
+    /// (`openhaunt/brokers`, doc 15), leader first, so a node whose leader dies finds
+    /// the next one without anybody having to see it over mDNS. Empty from an older
+    /// peer, which is then simply not in the list.
+    #[serde(default)]
+    pub broker_addr: String,
     pub cpu_percent: f32,
     pub mem_used: u64,
     pub mem_total: u64,

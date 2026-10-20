@@ -22,6 +22,7 @@ use std::{
 };
 
 pub mod audio;
+pub mod brokers;
 pub mod motion;
 pub mod pixels;
 
@@ -602,8 +603,10 @@ pub struct Snapshot {
     pub sacn_addr: Option<String>,
     /// Whether a console has ever sent `POST /api/v1/config`.
     pub adopted: bool,
-    /// The broker it was told to publish to, which is what adoption amounts to.
+    /// The broker it is on, or trying: the entry of its list it has got to.
     pub broker: Option<String>,
+    /// Every broker it was told about, leader first (doc 15).
+    pub brokers: Vec<String>,
     pub mqtt_connected: bool,
     /// Output ports as the node holds them, keyed by port number.
     pub outputs: BTreeMap<String, Value>,
@@ -823,7 +826,7 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
 
     let (config_tx, received_config) = watch::channel(None);
     let (state_tx, state) = watch::channel(BTreeMap::new());
-    let (broker_tx, broker_rx) = watch::channel(None::<String>);
+    let (broker_tx, broker_rx) = watch::channel(Vec::<String>::new());
     let (inputs, inputs_rx) = mpsc::channel(64);
     let (frames_tx, sacn_frames) = mpsc::channel(64);
     let (audio_tx, audio_commands) = watch::channel(Vec::new());
@@ -833,6 +836,7 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         sacn_addr: None,
         adopted: false,
         broker: None,
+        brokers: Vec::new(),
         mqtt_connected: false,
         outputs: BTreeMap::new(),
         effects: BTreeMap::new(),
@@ -906,7 +910,7 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
 async fn serve_http(
     node: Node,
     stop: &Stopper,
-    broker: watch::Sender<Option<String>>,
+    broker: watch::Sender<Vec<String>>,
 ) -> Result<SocketAddr> {
     let port = node.config.http_port;
     let broker = Arc::new(broker);
@@ -921,9 +925,10 @@ async fn serve_http(
                     let broker = broker.clone();
                     async move {
                         info!("[sim] {} configured: {body}", node.config.serial);
-                        if let Some(addr) = body["mqtt"]["broker"].as_str() {
-                            let _ = broker.send(Some(addr.to_string()));
-                            node.describe(|s| s.broker = Some(addr.to_string()));
+                        let list = brokers::from_json(&body["mqtt"]);
+                        if !list.is_empty() {
+                            node.describe(|s| s.brokers = list.clone());
+                            let _ = broker.send(list);
                         }
                         // A node accepts `dmx` only where its own description said
                         // it forwards a universe. Anything else is a console that
@@ -1097,32 +1102,102 @@ async fn identify(State(node): State<Node>) -> Json<Value> {
 
 // ── MQTT ──────────────────────────────────────────────────────────────────────
 
-/// Wait to be told where the broker is, then behave like a node on it.
+/// Wait to be told where the brokers are, then behave like a node on one of them —
+/// the first that answers, in the order the console listed them (doc 15).
 async fn run_mqtt(
     node: Node,
-    mut broker: watch::Receiver<Option<String>>,
+    mut told: watch::Receiver<Vec<String>>,
     mut inputs: mpsc::Receiver<Input>,
     auto: Option<Duration>,
 ) {
     // Nothing is published before the console asks for it: a node is discovered,
     // not configured, and until it is configured it has nowhere to publish to.
-    let addr = loop {
-        if let Some(addr) = broker.borrow_and_update().clone() {
-            break addr;
+    let mut brokers = brokers::BrokerList::default();
+    loop {
+        let list = told.borrow_and_update().clone();
+        if brokers.set(&list, None) {
+            break;
         }
-        if broker.changed().await.is_err() {
+        if told.changed().await.is_err() {
             return;
         }
+    }
+
+    let mut timers = Timers {
+        audio_status: tokio::time::interval(Duration::from_secs(1)),
+        was_playing: false,
+        health: tokio::time::interval(Duration::from_secs(10)),
+        ticker: auto.map(tokio::time::interval),
+        started: tokio::time::Instant::now(),
+        auto_state: false,
+        // What happened while no broker would have it, flushed when one does: the
+        // firmware keeps 32, in order, and so does this.
+        backlog: std::collections::VecDeque::new(),
     };
 
+    loop {
+        let Some(addr) = brokers.current().map(str::to_string) else { return };
+        node.describe(|s| {
+            s.broker = Some(addr.clone());
+            s.brokers = brokers.entries().to_vec();
+        });
+        match on_one_broker(&node, &addr, &mut brokers, &mut told, &mut inputs, &mut timers).await {
+            Session::Moved => {}
+            Session::Lost => {
+                let wait = brokers.failed();
+                // Told a new list while waiting is told now, not after the wait.
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    changed = told.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        let list = told.borrow_and_update().clone();
+                        brokers.set(&list, None);
+                    }
+                }
+            }
+            Session::Over => return,
+        }
+    }
+}
+
+struct Timers {
+    audio_status: tokio::time::Interval,
+    was_playing: bool,
+    health: tokio::time::Interval,
+    ticker: Option<tokio::time::Interval>,
+    started: tokio::time::Instant,
+    auto_state: bool,
+    backlog: std::collections::VecDeque<Input>,
+}
+
+enum Session {
+    /// Told to be somewhere else: try the list's first entry now.
+    Moved,
+    /// The broker refused, or went: try the next one.
+    Lost,
+    /// The node is being put away.
+    Over,
+}
+
+/// One connection to one broker, until it ends.
+async fn on_one_broker(
+    node: &Node,
+    addr: &str,
+    brokers: &mut brokers::BrokerList,
+    told: &mut watch::Receiver<Vec<String>>,
+    inputs: &mut mpsc::Receiver<Input>,
+    timers: &mut Timers,
+) -> Session {
     let serial = node.config.serial.clone();
     let status = format!("openhaunt/{serial}/status");
-    let (host, port) = split_addr(&addr);
+    let (host, port) = split_addr(addr);
     let mut options = MqttOptions::new(format!("openhaunt-{serial}"), host, port);
     options.set_keep_alive(Duration::from_secs(10));
     options.set_last_will(LastWill::new(&status, "offline", QoS::AtLeastOnce, true));
 
-    let (client, mut eventloop) = AsyncClient::new(options, 32);
+    let (client, mut eventloop) = AsyncClient::new(options, 64);
     let _ = client.publish(&status, QoS::AtLeastOnce, true, "offline").await;
     let _ = client.publish(&status, QoS::AtLeastOnce, true, "online").await;
     // Both verbs, not just `set`: a port can be handed a shape as well as a value.
@@ -1132,63 +1207,98 @@ async fn run_mqtt(
     // Not under this node's serial. The console publishes one clock for every node
     // on the broker, because the whole point is that they agree with each other.
     let _ = client.subscribe(motion::CLOCK_TOPIC, QoS::AtLeastOnce).await;
+    // And one broker list, retained, which is how a node that walked here after a
+    // failover learns the new order without anybody having found it over mDNS.
+    let _ = client.subscribe(BROKERS_TOPIC, QoS::AtLeastOnce).await;
     if node.config.audio.is_some() {
         let _ = client.subscribe(format!("openhaunt/{serial}/audio/+"), QoS::AtLeastOnce).await;
     }
-    let mut audio_status = tokio::time::interval(Duration::from_secs(1));
-    let mut was_playing = false;
-
-    let mut health = tokio::time::interval(Duration::from_secs(10));
-    let mut ticker = auto.map(tokio::time::interval);
-    let started = tokio::time::Instant::now();
-    let mut auto_state = false;
+    let mut connected = false;
 
     loop {
         tokio::select! {
             event = eventloop.poll() => match event {
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
                     if publish.topic == motion::CLOCK_TOPIC {
-                        take_clock_sample(&node, &publish.payload, publish.retain);
+                        take_clock_sample(node, &publish.payload, publish.retain);
+                    } else if publish.topic == BROKERS_TOPIC {
+                        let body: Value = serde_json::from_slice(&publish.payload).unwrap_or(Value::Null);
+                        let list = brokers::from_json(&body);
+                        if brokers.set(&list, Some(addr)) {
+                            info!("[sim] {serial} told to move: {}", list.join(", "));
+                            let _ = client.publish(&status, QoS::AtLeastOnce, true, "offline").await;
+                            let _ = client.disconnect().await;
+                            return Session::Moved;
+                        }
+                        node.describe(|s| s.brokers = brokers.entries().to_vec());
                     } else if let Some(verb) = publish.topic.strip_prefix(&format!("openhaunt/{serial}/audio/")) {
                         if verb != "status" {
                             let body = serde_json::from_slice(&publish.payload).unwrap_or(Value::Null);
                             node.audio.command(verb, body).await;
                         }
                     } else {
-                        apply_output(&node, &publish.topic, &publish.payload);
+                        apply_output(node, &publish.topic, &publish.payload);
                     }
                 }
                 // The one packet worth noticing on its own: until it arrives the
                 // node is configured but not yet talking to anything.
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    connected = true;
+                    brokers.connected();
+                    info!("[sim] {serial} on {addr}");
                     node.describe(|s| s.mqtt_connected = true);
+                    while let Some(input) = timers.backlog.pop_front() {
+                        publish_input(&client, node, input).await;
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    connection_lost(&node, &e);
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    connection_lost(node, &e);
+                    if connected {
+                        warn!("[sim] {serial} lost {addr}: {e}");
+                    }
+                    return Session::Lost;
                 }
             },
 
+            changed = told.changed() => {
+                if changed.is_err() {
+                    return Session::Over;
+                }
+                let list = told.borrow_and_update().clone();
+                if brokers.set(&list, if connected { Some(addr) } else { None }) {
+                    let _ = client.disconnect().await;
+                    return Session::Moved;
+                }
+                node.describe(|s| s.brokers = brokers.entries().to_vec());
+            }
+
             Some(input) = inputs.recv() => {
-                publish_input(&client, &node, input).await;
+                if connected {
+                    publish_input(&client, node, input).await;
+                } else {
+                    if timers.backlog.len() == 32 {
+                        timers.backlog.pop_front();
+                    }
+                    timers.backlog.push_back(input);
+                }
             }
 
             // Once a second while something plays, and once more when it goes quiet:
             // the rule the firmware follows.
-            _ = audio_status.tick(), if node.config.audio.is_some() => {
+            _ = timers.audio_status.tick(), if node.config.audio.is_some() && connected => {
                 let status = node.audio.status();
-                if status.is_some() || was_playing {
+                if status.is_some() || timers.was_playing {
                     let body = status.clone().unwrap_or_else(|| json!({ "voices": [], "underruns": 0, "master": 1.0, "locked": true }));
                     let topic = format!("openhaunt/{serial}/audio/status");
                     let _ = client.publish(topic, QoS::AtLeastOnce, false, body.to_string()).await;
                 }
-                was_playing = status.is_some();
+                timers.was_playing = status.is_some();
             }
 
-            _ = health.tick() => {
+            _ = timers.health.tick(), if connected => {
                 let payload = json!({
-                    "uptime_s": started.elapsed().as_secs(),
+                    "uptime_s": timers.started.elapsed().as_secs(),
                     "temp_c": 38.5,
                     "poe_class": 3,
                     "errors": [],
@@ -1197,17 +1307,20 @@ async fn run_mqtt(
                 let _ = client.publish(topic, QoS::AtLeastOnce, false, payload.to_string()).await;
             }
 
-            _ = async { ticker.as_mut().unwrap().tick().await }, if ticker.is_some() => {
-                auto_state = !auto_state;
+            _ = async { timers.ticker.as_mut().unwrap().tick().await }, if timers.ticker.is_some() && connected => {
+                timers.auto_state = !timers.auto_state;
                 // Whatever this node said it reads, driven the way its data type
                 // asks — a boolean toggles, a number walks its declared range.
-                if let Some(input) = unprompted(&node, auto_state) {
-                    publish_input(&client, &node, input).await;
+                if let Some(input) = unprompted(node, timers.auto_state) {
+                    publish_input(&client, node, input).await;
                 }
             }
         }
     }
 }
+
+/// Where the console publishes its broker list, retained (doc 15).
+pub const BROKERS_TOPIC: &str = "openhaunt/brokers";
 
 /// The reading or edge a node with `--auto` reports on its own, on the first port
 /// it described as `readonly`. None where the module reads nothing.

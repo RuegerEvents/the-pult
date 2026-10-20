@@ -4210,6 +4210,17 @@ impl StationEntity {
         self.at.field("http_addr")
     }
 
+    /// Where an OpenHaunt node reaches this station's broker, as `ip:port`, were it
+    /// to lead. The leader lists every station's in the broker list it hands its nodes
+    /// (`openhaunt/brokers`, doc 15), leader first, so a node whose leader dies finds
+    /// the next one without anybody having to see it over mDNS. Empty from an older
+    /// peer, which is then simply not in the list.
+    ///
+    /// SYNCED.
+    pub fn broker_addr(&self) -> Field<String> {
+        self.at.field("broker_addr")
+    }
+
     /// SYNCED.
     pub fn cpu_percent(&self) -> Field<f32> {
         self.at.field("cpu_percent")

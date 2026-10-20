@@ -34,6 +34,8 @@ pub struct StationReporter {
     sync_addr: std::net::SocketAddr,
     /// Where this station serves HTTP, so a peer can fetch an asset from it.
     http_addr: String,
+    /// Where an OpenHaunt node reaches this station's broker door, were it to lead.
+    broker_addr: String,
     /// The latest reading of the machine and of this process, from the thread that
     /// takes them. `None` until the first one has landed.
     samples: watch::Receiver<Option<Sample>>,
@@ -286,6 +288,7 @@ impl StationReporter {
             engine,
             sync_addr,
             http_addr,
+            broker_addr: String::new(),
             samples: spawn_probe(absolute(showfile)),
             hostname: System::host_name().unwrap_or_else(|| "console".to_string()),
             started: std::time::Instant::now(),
@@ -293,6 +296,13 @@ impl StationReporter {
             frames,
             clock_said: None,
         }
+    }
+
+    /// Say where this station's OpenHaunt broker door is, so the leader can list it
+    /// for its nodes. A station that never says has no entry in that list.
+    pub fn with_broker(mut self, broker_addr: String) -> Self {
+        self.broker_addr = broker_addr;
+        self
     }
 
     pub async fn run(mut self) {
@@ -376,6 +386,7 @@ impl StationReporter {
             is_leader,
             sync_addr: self.sync_addr.to_string(),
             http_addr: self.http_addr.clone(),
+            broker_addr: self.broker_addr.clone(),
             cpu_percent: sample.cpu_percent,
             mem_used: sample.mem_used,
             mem_total: sample.mem_total,
