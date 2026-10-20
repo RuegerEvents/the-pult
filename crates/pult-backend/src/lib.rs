@@ -626,6 +626,7 @@ pub async fn start(config: Config) -> Result<Running> {
     // adopts or commands any of them.
     let (device_mgr, device_handle, device_directory) =
         DeviceManager::new(node_id, engine_handle.clone(), config.openhaunt_broker_port);
+    let device_mgr = device_mgr.with_net(net.clone());
     tasks.push(tokio::spawn(device_mgr.run()));
     let devices_mdns = spawn_mdns_browser(device_handle.clone(), net.clone());
 
@@ -782,13 +783,9 @@ pub async fn start(config: Config) -> Result<Running> {
             .unwrap_or_else(std::env::temp_dir),
         net.clone(),
     )
-    // The same address the device manager advertises when it leads, so the broker
-    // list a leader hands its nodes names each station the way that station would
-    // name itself.
-    .with_broker(crate::infra::devices::broker::advertised_addr(
-        std::net::IpAddr::V4(crate::infra::local_ipv4()),
-        config.openhaunt_broker_port,
-    ));
+    // Every address this station's broker door is reachable at, so the broker list a
+    // leader hands its nodes can name each station on the network the nodes are on.
+    .with_broker(config.openhaunt_broker_port);
     tasks.push(tokio::spawn(reporter.run()));
 
     // Only the leader prunes: two nodes deleting each other's rows on different

@@ -6527,6 +6527,20 @@ list changed.
   retry meant for a client that has since been replaced is dropped. The client's lifecycle
   takes a lock of its own: the backlog lock is taken by the client's task, which stopping a
   client waits for.
+- **The door was named by the route table, and a lighting network has no route.**
+  `local_ipv4` asks which way a packet to the internet would leave; on an isolated show LAN
+  the answer is loopback, and every node would have been told to walk to 127.0.0.1. Each
+  station now publishes every address its door is reachable at (`Station::broker_doors`:
+  the `openhaunt` cable if one is named, otherwise every non-loopback IPv4, the routed one
+  first, loopback only on a machine with nothing else — `infra::net::reachable`), and the
+  leader names each station by the door **nearest the nodes it has seen**, by shared leading
+  bits rather than a prefix length nobody carries. **One list for every node, not one per
+  node**: it is retained on a topic every node reads and also posted per node, a node keeps
+  whichever arrived last, and two orderings would be a node flipping between them. The same
+  flaw was in the session's mDNS record (now each interface's own address, `addr_auto`, as
+  the xchange already did) and in the `sync_addr`/`http_addr` a station publishes, which read
+  `0.0.0.0` — from another machine that is the machine itself, so task 77's asset copying
+  would have fetched the spare's sound from its own disk on two real Macs.
 
 **`tests/failover.rs` proves the walk.** A simulated Area 1 node is told about only by the
 leader (an injected `Resolved`; the spare never hears of it). It is on the leader with
@@ -6539,10 +6553,11 @@ rule in Rust, and queues 32 inputs while it is on no broker, as the firmware doe
 
 - Nothing of it has run on hardware: the esp-mqtt path with auto-reconnect off is written
   from the documentation.
-- The address in the list is `local_ipv4`, the interface with the default route — task 65's
-  trap, inherited from what the broker always advertised. A station on an isolated lighting
-  network with no default route lists `127.0.0.1`. It should come from the `openhaunt`
-  network preference.
+- A station on two networks publishes one `http_addr`, the first reachable address: a peer
+  that is only on the *other* network fetches assets from an address it cannot reach.
+  Naming the session cable in preferences avoids it; publishing all of them, as the broker
+  doors now are, would fix it.
+- `openhaunt-node-sim` still advertises itself at `local_ipv4`. Real nodes are unaffected.
 - A session of more than four stations lists the first four.
 
 ```

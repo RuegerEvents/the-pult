@@ -47,6 +47,14 @@ pub struct Station {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub broker_addr: String,
+    /// Every address that door is reachable at, best first; `broker_addr` is the first
+    /// of them, kept for a peer that reads nothing else. Plural because a console in a
+    /// venue usually has two networks, and which one its nodes are on is something
+    /// only the leader — which has seen the nodes — can answer. Never loopback while
+    /// the machine has anything else (`infra::net::reachable`).
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub broker_doors: Vec<String>,
     #[pult(lifecycle = SYNCED)]
     pub cpu_percent: f32,
     #[pult(lifecycle = SYNCED)]
@@ -472,6 +480,7 @@ mod tests {
             sync_addr: "10.0.0.5:7701".into(),
             http_addr: "10.0.0.5:7700".into(),
             broker_addr: String::new(),
+            broker_doors: Vec::new(),
             cpu_percent: 12.5,
             mem_used: 4_000_000_000,
             mem_total: 16_000_000_000,

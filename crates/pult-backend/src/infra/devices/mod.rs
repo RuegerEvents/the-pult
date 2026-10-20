@@ -212,6 +212,9 @@ pub struct DeviceManager {
     http: reqwest::Client,
     /// Where this node's own broker listens, when it is the one driving.
     broker_port: u16,
+    /// This station's cables, for working out which of its addresses a node can
+    /// reach its broker door at.
+    net: crate::infra::net::NetHandle,
     /// The connection to the broker. Present only while driving.
     mqtt: Option<MqttLink>,
     mqtt_tx: mpsc::Sender<MqttEvent>,
@@ -256,6 +259,7 @@ impl DeviceManager {
                 directory,
                 http,
                 broker_port,
+                net: crate::infra::net::Network::unconfigured(),
                 mqtt: None,
                 mqtt_tx,
                 on_broker: Default::default(),
@@ -266,6 +270,13 @@ impl DeviceManager {
             DeviceHandle(tx),
             directory_rx,
         )
+    }
+
+    /// The station's own network, so the broker it advertises is on a cable the
+    /// `openhaunt` preference names. Without one, every interface this machine has.
+    pub fn with_net(mut self, net: crate::infra::net::NetHandle) -> Self {
+        self.net = net;
+        self
     }
 
     pub async fn run(mut self) {
@@ -392,10 +403,9 @@ impl DeviceManager {
                 self.broker_port
             ),
         }
-        let advertised = broker::advertised_addr(
-            std::net::IpAddr::V4(crate::infra::local_ipv4()),
-            self.broker_port,
-        );
+        let advertised = self.own_door().unwrap_or_else(|| {
+            broker::advertised_addr(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), self.broker_port)
+        });
         self.state.broker_addr = Some(advertised.clone());
 
         // The console reaches its own broker over loopback, past the door.
@@ -416,6 +426,17 @@ impl DeviceManager {
         self.refresh_brokers().await;
     }
 
+    /// Where the nodes this station has seen are, for choosing which door to name.
+    fn node_addresses(&self) -> Vec<std::net::Ipv4Addr> {
+        self.state.discovered.values().filter_map(|d| d.ip.parse().ok()).collect()
+    }
+
+    /// The door this station names itself by to its nodes: whichever of its own is
+    /// nearest the nodes it has seen ([`broker::nearest_door`]).
+    fn own_door(&self) -> Option<String> {
+        broker::nearest_door(&broker::doors(&self.net, self.broker_port), &self.node_addresses())
+    }
+
     /// Hand the nodes the broker list, if it has changed: this station first, then
     /// every other station of the session that says where its broker is (doc 15).
     ///
@@ -427,9 +448,17 @@ impl DeviceManager {
         if self.mqtt.is_none() {
             return;
         }
+        // Re-chosen every time: a node discovered on the lighting network since the
+        // last list is what says which of this station's cables they are on.
+        if let Some(own) = self.own_door() {
+            if self.state.broker_addr.as_ref() != Some(&own) {
+                self.state.broker_addr = Some(own);
+                self.push_state().await;
+            }
+        }
         let Some(own) = self.state.broker_addr.clone() else { return };
         let stations: Vec<pult_schema::types::station::Station> = self.read("stations").await;
-        let list = broker_list(&own, self.node_id, &stations);
+        let list = broker_list(&own, self.node_id, &stations, &self.node_addresses());
         if list == self.brokers {
             return;
         }
@@ -1494,17 +1523,37 @@ mod erased {
 ///
 /// Leader first is the whole point: a node prefers the first entry, so a list that
 /// put a follower there would send every node to a door that is closed.
-pub fn broker_list(own: &str, me: NodeId, stations: &[pult_schema::types::station::Station]) -> Vec<String> {
-    let mut others: Vec<&pult_schema::types::station::Station> =
-        stations.iter().filter(|s| s.id != me.0 && !s.broker_addr.is_empty()).collect();
+///
+/// **One list, not one per node**, although a node on another subnet would be better
+/// served by its own ordering. The list is retained on `openhaunt/brokers`, which every
+/// node on this broker reads, and also posted to each node over HTTP; a node keeps
+/// whichever arrived last, so a per-node HTTP list would be overwritten by the shared
+/// one on the next subscribe, and the two disagreeing is a node that flips between
+/// them. Instead each station is named by the one of its doors nearest the nodes as a
+/// whole ([`broker::nearest_door`]) — on a rig, they are on one lighting network.
+pub fn broker_list(
+    own: &str,
+    me: NodeId,
+    stations: &[pult_schema::types::station::Station],
+    nodes: &[std::net::Ipv4Addr],
+) -> Vec<String> {
+    let mut others: Vec<&pult_schema::types::station::Station> = stations.iter().filter(|s| s.id != me.0).collect();
     others.sort_by_key(|s| s.id);
     let mut list = vec![own.to_string()];
     for station in others {
         if list.len() == MAX_BROKERS {
             break;
         }
-        if !list.contains(&station.broker_addr) {
-            list.push(station.broker_addr.clone());
+        // An older peer publishes only the one address.
+        let doors = if station.broker_doors.is_empty() {
+            vec![station.broker_addr.clone()]
+        } else {
+            station.broker_doors.clone()
+        };
+        let doors: Vec<String> = doors.into_iter().filter(|d| !d.is_empty()).collect();
+        let Some(door) = broker::nearest_door(&doors, nodes) else { continue };
+        if !list.contains(&door) {
+            list.push(door);
         }
     }
     list

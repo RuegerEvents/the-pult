@@ -4221,6 +4221,17 @@ impl StationEntity {
         self.at.field("broker_addr")
     }
 
+    /// Every address that door is reachable at, best first; `broker_addr` is the first
+    /// of them, kept for a peer that reads nothing else. Plural because a console in a
+    /// venue usually has two networks, and which one its nodes are on is something
+    /// only the leader — which has seen the nodes — can answer. Never loopback while
+    /// the machine has anything else (`infra::net::reachable`).
+    ///
+    /// SYNCED.
+    pub fn broker_doors(&self) -> Field<Vec<String>> {
+        self.at.field("broker_doors")
+    }
+
     /// SYNCED.
     pub fn cpu_percent(&self) -> Field<f32> {
         self.at.field("cpu_percent")

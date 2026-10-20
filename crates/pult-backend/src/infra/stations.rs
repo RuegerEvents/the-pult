@@ -34,8 +34,10 @@ pub struct StationReporter {
     sync_addr: std::net::SocketAddr,
     /// Where this station serves HTTP, so a peer can fetch an asset from it.
     http_addr: String,
-    /// Where an OpenHaunt node reaches this station's broker door, were it to lead.
-    broker_addr: String,
+    /// The port this station's OpenHaunt broker door opens on, were it to lead. The
+    /// addresses it is reachable at are worked out per report, because a cable plugged
+    /// in after the console came up is a door the nodes can use.
+    broker_port: Option<u16>,
     /// The latest reading of the machine and of this process, from the thread that
     /// takes them. `None` until the first one has landed.
     samples: watch::Receiver<Option<Sample>>,
@@ -288,7 +290,7 @@ impl StationReporter {
             engine,
             sync_addr,
             http_addr,
-            broker_addr: String::new(),
+            broker_port: None,
             samples: spawn_probe(absolute(showfile)),
             hostname: System::host_name().unwrap_or_else(|| "console".to_string()),
             started: std::time::Instant::now(),
@@ -300,8 +302,8 @@ impl StationReporter {
 
     /// Say where this station's OpenHaunt broker door is, so the leader can list it
     /// for its nodes. A station that never says has no entry in that list.
-    pub fn with_broker(mut self, broker_addr: String) -> Self {
-        self.broker_addr = broker_addr;
+    pub fn with_broker(mut self, port: u16) -> Self {
+        self.broker_port = Some(port);
         self
     }
 
@@ -380,13 +382,19 @@ impl StationReporter {
         self.net.set_standing(crate::infra::net::Standing { is_leader, sacn_slot });
         self.publish_network(sample.interfaces.clone()).await;
 
+        let broker_doors = match self.broker_port {
+            Some(port) => crate::infra::devices::broker::doors(&self.net, port),
+            None => Vec::new(),
+        };
+
         Station {
             id: self.node_id.0,
             hostname: self.hostname.clone(),
             is_leader,
-            sync_addr: self.sync_addr.to_string(),
-            http_addr: self.http_addr.clone(),
-            broker_addr: self.broker_addr.clone(),
+            sync_addr: dialable(&self.sync_addr.to_string(), &self.net),
+            http_addr: dialable(&self.http_addr, &self.net),
+            broker_addr: broker_doors.first().cloned().unwrap_or_default(),
+            broker_doors,
             cpu_percent: sample.cpu_percent,
             mem_used: sample.mem_used,
             mem_total: sample.mem_total,
@@ -601,10 +609,44 @@ pub async fn prune_stale(engine: &EngineHandle, keep_for: chrono::Duration) {
     }
 }
 
+/// An address as another machine should dial it: a listener bound on every interface
+/// says `0.0.0.0`, which from a peer is *that peer itself*, so the host is replaced by
+/// the first address this station is reachable at for the session
+/// ([`crate::infra::net::reachable`]). A peer fetching a clip from "0.0.0.0:7700" asks
+/// its own disk and gets nothing — the spare with no sound, on two real machines.
+fn dialable(addr: &str, net: &crate::infra::net::Network) -> String {
+    let Ok(parsed) = addr.parse::<std::net::SocketAddr>() else { return addr.to_string() };
+    if !parsed.ip().is_unspecified() {
+        return addr.to_string();
+    }
+    let here = crate::infra::net::reachable_for(net, &pult_schema::types::network::NetService::Session);
+    match here.first() {
+        Some(ip) => std::net::SocketAddr::new(std::net::IpAddr::V4(*ip), parsed.port()).to_string(),
+        None => addr.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pult_schema::path::PathSegment;
+
+    #[test]
+    fn a_listener_on_every_interface_is_advertised_at_one_a_peer_can_dial() {
+        // `0.0.0.0` from another machine is that machine; on a lighting network with
+        // no route, the old fallback would have been loopback, which is the same.
+        let net = crate::infra::net::Network::unconfigured();
+        net.observe(vec![
+            pult_schema::types::network::NetInterface {
+                name: "lo0".into(), addresses: vec!["127.0.0.1".into()], up: true, loopback: true,
+            },
+            pult_schema::types::network::NetInterface {
+                name: "en5".into(), addresses: vec!["10.0.1.7".into()], up: true, loopback: false,
+            },
+        ]);
+        assert_eq!(dialable("0.0.0.0:7700", &net), "10.0.1.7:7700");
+        assert_eq!(dialable("127.0.0.1:7701", &net), "127.0.0.1:7701", "a bound address is what it is");
+    }
 
     fn a_cost(name: &str, frames: u32) -> FrameCost {
         FrameCost {

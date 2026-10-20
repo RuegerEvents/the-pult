@@ -92,14 +92,15 @@ pub struct SessionManager {
     discovered_leader_ids: HashMap<Uuid, NodeId>,
     discovered_show_ids: HashMap<Uuid, Uuid>,
     mdns: ServiceDaemon,
-    /// The address this station advertises itself at.
+    /// The address this station advertises itself at, where the session was told a
+    /// cable; `None` advertises each interface's own address on that interface.
     ///
-    /// What the session's own interface setting resolved to, and otherwise
-    /// [`local_ipv4`] — which asks the route table, and so answers with the *house*
-    /// LAN on a console that has one beside a lighting network. That was the silent
-    /// defect here: the address a peer was told to dial for the show was decided by
-    /// which cable reaches the internet.
-    advertise_at: std::net::Ipv4Addr,
+    /// Not `infra::local_ipv4`, twice over. It asks the route table, so it answered with
+    /// the *house* LAN on a console that has one beside a lighting network — the
+    /// address a peer was told to dial for the show was decided by which cable reaches
+    /// the internet — and on a lighting network with no route at all it answered
+    /// loopback, so the peer was told to dial itself.
+    advertise_at: Option<std::net::Ipv4Addr>,
     /// A handle to our own command channel, for the promotion bridge.
     self_tx: mpsc::Sender<SessionCommand>,
 }
@@ -368,7 +369,6 @@ impl SessionManager {
     async fn advertise(&mut self, session_id: Uuid, show_id: Uuid, show_name: String) {
         let instance_name = format!("pult-{}", &self.node_id.0.to_string()[..8]);
         let hostname = format!("{}.local.", gethostname());
-        let ip = self.advertise_at;
 
         let mut props = HashMap::new();
         props.insert("session_id".to_string(), session_id.to_string());
@@ -377,14 +377,12 @@ impl SessionManager {
         props.insert("node_id".to_string(), self.node_id.0.to_string());
         props.insert("leader_node_id".to_string(), self.node_id.0.to_string());
 
-        match ServiceInfo::new(
-            SERVICE_TYPE,
-            &instance_name,
-            &hostname,
-            IpAddr::V4(ip),
-            self.sync_port,
-            props,
-        ) {
+        let info = match self.advertise_at {
+            Some(ip) => ServiceInfo::new(SERVICE_TYPE, &instance_name, &hostname, IpAddr::V4(ip), self.sync_port, props),
+            None => ServiceInfo::new(SERVICE_TYPE, &instance_name, &hostname, (), self.sync_port, props)
+                .map(ServiceInfo::enable_addr_auto),
+        };
+        match info {
             Ok(info) => match self.mdns.register(info) {
                 Ok(()) => {
                     info!("[session] advertising session {session_id}");
@@ -489,7 +487,7 @@ impl SessionManager {
 /// this machine, which `scripts/demo.sh --two` is and a rig never is.
 ///
 /// IPv4 before IPv6 where both are offered, because a console advertises an IPv4
-/// address for itself ([`local_ipv4`]) and preferring the family it named keeps two
+/// address for itself and preferring the family it named keeps two
 /// stations agreeing about which path they are on.
 ///
 /// **An IPv6 link-local address is dropped rather than ranked last**, because it cannot

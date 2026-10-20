@@ -2434,6 +2434,13 @@ pub struct Station {
     /// peer, which is then simply not in the list.
     #[serde(default)]
     pub broker_addr: String,
+    /// Every address that door is reachable at, best first; `broker_addr` is the first
+    /// of them, kept for a peer that reads nothing else. Plural because a console in a
+    /// venue usually has two networks, and which one its nodes are on is something
+    /// only the leader — which has seen the nodes — can answer. Never loopback while
+    /// the machine has anything else (`infra::net::reachable`).
+    #[serde(default)]
+    pub broker_doors: Vec<String>,
     pub cpu_percent: f32,
     pub mem_used: u64,
     pub mem_total: u64,

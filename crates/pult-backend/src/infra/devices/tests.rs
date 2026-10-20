@@ -1224,6 +1224,7 @@ fn a_station_at(id: Uuid, broker_addr: &str) -> pult_schema::types::station::Sta
         sync_addr: String::new(),
         http_addr: String::new(),
         broker_addr: broker_addr.to_string(),
+        broker_doors: Vec::new(),
         cpu_percent: 0.0,
         mem_used: 0,
         mem_total: 0,
@@ -1255,7 +1256,7 @@ fn the_broker_list_puts_the_leader_first_and_every_other_station_after_it() {
         a_station_at(Uuid::from_u128(4), "10.0.0.2:1883"),
     ];
     assert_eq!(
-        broker_list("10.0.0.5:1883", me, &stations),
+        broker_list("10.0.0.5:1883", me, &stations, &[]),
         vec!["10.0.0.5:1883", "10.0.0.2:1883", "10.0.0.9:1883"],
         "this station first, the rest in a stable order",
     );
@@ -1266,9 +1267,48 @@ fn the_broker_list_is_as_long_as_a_node_keeps() {
     let me = NodeId(Uuid::from_u128(1));
     let stations: Vec<_> =
         (2..10u128).map(|n| a_station_at(Uuid::from_u128(n), &format!("10.0.0.{n}:1883"))).collect();
-    let list = broker_list("10.0.0.1:1883", me, &stations);
+    let list = broker_list("10.0.0.1:1883", me, &stations, &[]);
     assert_eq!(list.len(), MAX_BROKERS);
     assert_eq!(list[0], "10.0.0.1:1883");
+}
+
+#[test]
+fn a_station_with_two_networks_is_named_by_the_one_the_nodes_are_on() {
+    // The venue: the house LAN has the default route and is first in the station's
+    // own list; the nodes are on the lighting network, which has no route at all.
+    let me = NodeId(Uuid::from_u128(1));
+    let mut spare = a_station_at(Uuid::from_u128(2), "192.168.1.20:1883");
+    spare.broker_doors = vec!["192.168.1.20:1883".into(), "10.0.0.20:1883".into()];
+    let nodes = ["10.0.0.42".parse().unwrap(), "10.0.0.43".parse().unwrap()];
+    assert_eq!(
+        broker_list("10.0.0.5:1883", me, &[spare.clone()], &nodes),
+        vec!["10.0.0.5:1883", "10.0.0.20:1883"],
+        "the spare on the cable its nodes can reach",
+    );
+    // Seen nowhere yet, a station is named the way it names itself.
+    assert_eq!(broker_list("10.0.0.5:1883", me, &[spare], &[]), vec!["10.0.0.5:1883", "192.168.1.20:1883"]);
+}
+
+#[test]
+fn the_nearest_door_ignores_a_node_on_loopback() {
+    let doors = vec!["192.168.1.5:1883".to_string(), "10.0.0.5:1883".to_string()];
+    assert_eq!(broker::nearest_door(&doors, &["10.0.0.9".parse().unwrap()]).as_deref(), Some("10.0.0.5:1883"));
+    // A simulator on this machine says nothing about which network a remote station
+    // should be reached on.
+    assert_eq!(broker::nearest_door(&doors, &["127.0.0.1".parse().unwrap()]).as_deref(), Some("192.168.1.5:1883"));
+    assert_eq!(broker::nearest_door(&[], &[]), None);
+}
+
+#[test]
+fn a_lighting_network_with_no_route_is_the_door_and_loopback_never_is() {
+    // The regression: `local_ipv4` asks which way a packet to the internet leaves,
+    // and a lighting network has no way out — so the door was 127.0.0.1.
+    let net = crate::infra::net::Network::unconfigured();
+    net.observe(vec![
+        pult_schema::types::network::NetInterface { name: "lo0".into(), addresses: vec!["127.0.0.1".into()], up: true, loopback: true },
+        pult_schema::types::network::NetInterface { name: "en5".into(), addresses: vec!["10.0.1.7".into()], up: true, loopback: false },
+    ]);
+    assert_eq!(broker::doors(&net, 1883), vec!["10.0.1.7:1883"]);
 }
 
 #[tokio::test]

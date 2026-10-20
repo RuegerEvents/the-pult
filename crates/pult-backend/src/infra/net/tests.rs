@@ -172,7 +172,7 @@ async fn a_restricted_daemon_is_on_the_interface_it_was_told_and_not_the_others(
     };
     assert_eq!(
         restrict_mdns(&advertiser, Some(loopback)),
-        loopback,
+        Some(loopback),
         "what a service advertises is what it bound"
     );
 
@@ -224,4 +224,24 @@ async fn saw_it(rx: mdns_sd::Receiver<mdns_sd::ServiceEvent>) -> bool {
     })
     .await
     .unwrap_or(false)
+}
+
+#[test]
+fn a_lighting_network_with_no_route_is_reachable_and_loopback_is_not() {
+    // The venue's lighting network has no default route, so the route table answers
+    // nothing and the old fallback answered 127.0.0.1.
+    let found = vec![iface("lo0", "127.0.0.1"), iface("en5", "10.0.1.7")];
+    assert_eq!(reachable(None, &found, None), vec!["10.0.1.7".parse::<Ipv4Addr>().unwrap()]);
+}
+
+#[test]
+fn the_routed_address_comes_first_and_a_bound_one_alone() {
+    let found = vec![iface("en0", "192.168.1.5"), iface("en5", "10.0.1.7"), iface("en6", "169.254.3.3")];
+    let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+    // One network says exactly what it always said.
+    assert_eq!(reachable(None, &found, Some(ip("10.0.1.7"))), vec![ip("10.0.1.7"), ip("192.168.1.5"), ip("169.254.3.3")]);
+    // Told a cable, that cable and nothing else.
+    assert_eq!(reachable(Some(ip("10.0.1.7")), &found, Some(ip("192.168.1.5"))), vec![ip("10.0.1.7")]);
+    // A machine with nothing but loopback has nobody remote to mislead.
+    assert_eq!(reachable(None, &[iface("lo0", "127.0.0.1")], None), vec![Ipv4Addr::LOCALHOST]);
 }

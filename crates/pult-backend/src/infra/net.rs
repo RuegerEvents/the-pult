@@ -354,14 +354,18 @@ impl Network {
 /// Loopback is enabled explicitly where the address is a loopback one, because
 /// `mdns-sd` disables it by default — and it is the one interface restriction a test
 /// machine can actually make.
-pub fn restrict_mdns(daemon: &mdns_sd::ServiceDaemon, address: Option<Ipv4Addr>) -> Ipv4Addr {
+///
+/// Answers the address to advertise where it was told one, and `None` where it was
+/// not — in which case the caller registers with `enable_addr_auto`, so the daemon
+/// puts *each interface's own* address in the record it sends out of that interface.
+/// The old answer here was [`crate::infra::local_ipv4`], which on a lighting network
+/// with no default route is loopback: a peer was told to dial 127.0.0.1.
+pub fn restrict_mdns(daemon: &mdns_sd::ServiceDaemon, address: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
     say_if_multicast_is_refused();
-    let Some(address) = address else {
-        return crate::infra::local_ipv4();
-    };
+    let address = address?;
     if let Err(e) = daemon.disable_interface(mdns_sd::IfKind::All) {
         warn!("[network] could not restrict an mDNS daemon: {e}");
-        return address;
+        return Some(address);
     }
     if address.is_loopback() {
         let _ = daemon.enable_interface(mdns_sd::IfKind::LoopbackV4);
@@ -369,19 +373,56 @@ pub fn restrict_mdns(daemon: &mdns_sd::ServiceDaemon, address: Option<Ipv4Addr>)
     if let Err(e) = daemon.enable_interface(mdns_sd::IfKind::Addr(IpAddr::V4(address))) {
         warn!("[network] could not put an mDNS daemon on {address}: {e}");
     }
-    address
+    Some(address)
 }
 
-/// The address to tell other machines to reach this station at.
+/// Every address another machine could reach this station at, best first, for a
+/// service bound on `bound` — or on every interface, where it was told nothing.
 ///
-/// What a service actually bound where it was told which cable, and otherwise
-/// [`crate::infra::local_ipv4`] — which asks the route table and is therefore the
-/// *house* LAN on a console with two networks. That is the defect this replaces: the
-/// address a peer was told to dial for the show was decided by which cable reaches
-/// the internet. It stays as the fallback because a console that has said nothing
-/// about cables has to keep working exactly as it did.
-pub fn advertised(bound: Option<Ipv4Addr>) -> Ipv4Addr {
-    bound.unwrap_or_else(crate::infra::local_ipv4)
+/// What a service actually bound wins outright: that is task 65's rule, and a door on
+/// the lighting network is not reachable from the house LAN however it is advertised.
+/// Told nothing, it is every IPv4 address on an interface that is up and not loopback,
+/// with `routed` — the address the route table would leave by, when it is not loopback
+/// — first, so a console with one network says exactly what it always said. A
+/// link-local `169.254/16` address comes last: it reaches the segment and nothing else.
+///
+/// **Loopback only when there is nothing else**, and the reason is the whole defect
+/// this exists for. [`crate::infra::local_ipv4`] asks the route table which way a
+/// packet to the internet would leave, and a venue's lighting network has no route to
+/// the internet — so the answer was 127.0.0.1, and every node on that network was told
+/// to dial itself. A machine with no interface but loopback has no remote client to
+/// mislead: whoever is asking is on this machine.
+pub fn reachable(bound: Option<Ipv4Addr>, interfaces: &[NetInterface], routed: Option<Ipv4Addr>) -> Vec<Ipv4Addr> {
+    if let Some(bound) = bound.filter(|b| !b.is_unspecified()) {
+        return vec![bound];
+    }
+    let usable = |ip: &Ipv4Addr| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_broadcast() && !ip.is_multicast();
+    let mut found: Vec<Ipv4Addr> = interfaces
+        .iter()
+        .filter(|i| i.up && !i.loopback)
+        .flat_map(|i| i.ipv4())
+        .filter(usable)
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    found.retain(|ip| seen.insert(*ip));
+    // Stable, so the list a node is handed does not reshuffle between two reports.
+    found.sort_by_key(|ip| (Some(*ip) != routed, ip.is_link_local()));
+    if found.is_empty() {
+        found.push(Ipv4Addr::LOCALHOST);
+    }
+    found
+}
+
+/// [`reachable`] for one of this station's own services, as it stands now.
+pub fn reachable_for(net: &Network, service: &NetService) -> Vec<Ipv4Addr> {
+    let bound = net
+        .bindings()
+        .into_iter()
+        .find(|b| &b.service == service)
+        .and_then(|b| b.bound)
+        .and_then(|b| b.parse::<Ipv4Addr>().ok());
+    let routed = Some(crate::infra::local_ipv4()).filter(|ip| !ip.is_loopback());
+    reachable(bound, &net.interfaces(), routed)
 }
 
 /// Bind a UDP socket on the interface a service was given, or on every one.

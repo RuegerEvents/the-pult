@@ -84,6 +84,44 @@ pub fn advertised_addr(local_ip: std::net::IpAddr, port: u16) -> String {
     format!("{local_ip}:{port}")
 }
 
+/// Every `ip:port` this station's door can be reached at, best first: on the cable
+/// the `openhaunt` preference names, or else every address this machine has that is
+/// not loopback ([`crate::infra::net::reachable`]).
+pub fn doors(net: &crate::infra::net::Network, port: u16) -> Vec<String> {
+    crate::infra::net::reachable_for(net, &pult_schema::types::network::NetService::OpenHaunt)
+        .into_iter()
+        .map(|ip| advertised_addr(std::net::IpAddr::V4(ip), port))
+        .collect()
+}
+
+/// Which of a station's doors to hand the nodes: the one nearest the nodes.
+///
+/// "Nearest" is the longest run of leading bits shared with a node's address, summed
+/// over the nodes, and it is a stand-in for "on the same subnet" that needs no prefix
+/// length — which the inventory does not carry, and which a leader could not know
+/// for a *follower's* interfaces anyway. A station with a house LAN on 192.168.1.5 and
+/// the lighting network on 10.0.0.5 shares no leading bits between its house address
+/// and a node at 10.0.0.42, and 26 between its show address and it.
+///
+/// A node on loopback says nothing about which network a *remote* station should be
+/// reached on, so it is not counted. With nothing to go on, the station's own first
+/// door — the one it would name itself by.
+pub fn nearest_door(doors: &[String], nodes: &[Ipv4Addr]) -> Option<String> {
+    let nodes: Vec<Ipv4Addr> = nodes.iter().copied().filter(|n| !n.is_loopback()).collect();
+    let score = |door: &String| -> u32 {
+        let Some(ip) = door.parse::<SocketAddr>().ok().and_then(|a| match a.ip() {
+            std::net::IpAddr::V4(v4) => Some(v4),
+            std::net::IpAddr::V6(_) => None,
+        }) else {
+            return 0;
+        };
+        nodes.iter().map(|n| (u32::from(ip) ^ u32::from(*n)).leading_zeros()).sum()
+    };
+    // `max_by_key` keeps the last of equals; reversing keeps the first, which is the
+    // station's own preference when the nodes cannot tell the doors apart.
+    doors.iter().rev().max_by_key(|d| score(d)).cloned()
+}
+
 /// The configured port, open to the nodes, while this station drives them.
 ///
 /// Dropping it closes the listener and every connection through it — which is what
