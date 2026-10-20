@@ -6906,9 +6906,10 @@ it is a variant nothing in this build can name.
 - *A `Vec<String>` of channel names round-trips TOML; a `BTreeMap<u16, String>` does not.*
   A test writes a card name with spaces in it and an empty name in the middle.
 
-**Not done.** A zone's mapping for a station is made on that station's own page — a
+**Not done.** ~~A zone's mapping for a station is made on that station's own page — a
 browser cannot name another machine's channels, since the names live in that machine's
-preferences. No per-zone level or EQ. A clip cannot go to two zones; a zone with two
+preferences.~~ Any station's zones are mapped from any station since task 83; the names
+are still each machine's own to change. No per-zone level or EQ. A clip cannot go to two zones; a zone with two
 speakers' worth of channels can. Nothing has been played through Dante itself.
 ~~A zone holding Dante channels and a node speaker drew the whole clip red when only the
 node was down.~~ A clip half heard is its own state since task 83.
@@ -7105,11 +7106,27 @@ pointer is over it; the clip inspector says *Partly: playing, except node a2 is 
 network*. Red is kept for silence, because the two are different things to fix with the
 house in.
 
+**Mapping another Mac's zones from this one.** The zone→channel map was always on the
+zone row, keyed by station; what a booth could not see was the *other* machine's card and
+what it calls its channels. Each station now publishes a SYNCED `station_audio` row, keyed
+by its `NodeId` and written only when it moves (the `station_networks` rule): the card it
+plays through, its alias, its channel count and its channel names. The names are re-read
+when `preferences.toml`'s modification time moves, so naming a channel reaches the other
+stations without a restart. Setup → Audio's matrix gains a picker over the session's
+stations, and maps any of them with that station's names on the columns.
+
+*Decided: names are read-only from a distance.* Renaming another machine's channels from
+here would mean one console rewriting another's settings file down the sync link, which is
+exactly what `LogRaise` refuses to do to a peer's log level; and the act that has to be done
+from the booth is the mapping, which is show data and already works. So the matrix says
+"its names are its own and are changed on its own page", and maps.
+
 ```
 cd plugins && cargo test -p command-line-core           # the grammar
 cargo test -p pult-schema --test cell_targets_corpus    # where a value lands, both sides
 cargo test -p pult-backend --lib interop::gdtf          # a master, cells, a one-color mode
 cargo test -p pult-schema --lib zone                    # silent, partial, fine
+cargo test -p pult-backend --test zones                 # another station's card, by name
 scripts/build-plugins.sh --debug && cargo test -p pult-backend --test plugins
 ```
 

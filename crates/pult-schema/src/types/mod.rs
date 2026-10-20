@@ -41,7 +41,9 @@ pub use effect::{
     Curve, Direction, Easing, EffectSpec, EffectSource, Rate, RunningEffect, RunningFade, Shape,
     Spread, Step,
 };
-pub use zone::{node_targets, station_channels, SpeakerZone, SpeakerZoneCreate, SpeakerZonePatch, ZoneNode};
+pub use zone::{
+    node_targets, station_channels, SpeakerZone, SpeakerZoneCreate, SpeakerZonePatch, StationAudio, ZoneNode,
+};
 pub use variable::{Variable, VariableCreate, VariableKind, VariableOp, VariablePatch};
 pub use surface::{ColorStop, Surface, SurfaceCreate, SurfacePatch, SurfaceTile, TileSize, TileTarget};
 pub use speedmaster::{SpeedMaster, SpeedMasterCreate, SpeedMasterPatch};

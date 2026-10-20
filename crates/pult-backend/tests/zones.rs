@@ -23,7 +23,9 @@ fn own_preferences() {
         let path = dir.join("preferences.toml");
         std::fs::write(
             &path,
-            "[audio]\ninput = \"no input device in tests\"\noutput = \"no output device in tests\"\n",
+            "[audio]\ninput = \"no input device in tests\"\noutput = \"no output device in tests\"\n\n\
+             [audio.names.\"no output device in tests\"]\nalias = \"Garden Dante\"\n\
+             channels = [\"FOH L\", \"FOH R\", \"Area 2\"]\n",
         )
         .expect("a preferences file");
         // SAFETY: inside `call_once`, before any station in this process has started.
@@ -202,3 +204,32 @@ async fn a_spare_plays_a_zone_on_its_own_channels() {
 
     spare.shutdown("the test is over").await;
 }
+
+/// The booth maps the spare's zones: every station publishes what it plays through and
+/// what it calls the channels, so another station's matrix can show them by name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_station_says_what_its_channels_are_called() {
+    use pult_schema::types::StationAudio;
+
+    let leader = a_station("named-leader").await;
+    let spare = a_station("named-spare").await;
+    let at = format!("127.0.0.1:{}", leader.sync_addr.port());
+    spare.call_rpc("session.joinAt", serde_json::json!({ "address": at })).await.expect("the spare joins");
+    eventually("the spare is a follower", Duration::from_secs(10), || async {
+        is_follower(&spare).await && !is_follower(&leader).await
+    })
+    .await;
+
+    let spare_id = spare.node_id.0;
+    eventually("the leader reads the spare's card and its names", Duration::from_secs(15), || async {
+        let rows: Vec<StationAudio> = read(&leader, "station_audio").await;
+        rows.iter().any(|row| {
+            row.id == spare_id
+                && row.alias.as_deref() == Some("Garden Dante")
+                && row.channel_names == ["FOH L", "FOH R", "Area 2"]
+                && row.device.as_deref() == Some("no output device in tests")
+        })
+    })
+    .await;
+}
+

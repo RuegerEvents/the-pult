@@ -21,7 +21,7 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { showData } from '$lib/stores/show.js';
 	import { audioOutput } from '$lib/stores/timelines.js';
-	import { audioPrefs, createZone, loadAudioPrefs, nameDevice, namesFor, stationNames, zones } from '$lib/stores/zones.js';
+	import { audioPrefs, createZone, loadAudioPrefs, nameDevice, namesFor, stationAudio, stationNames, zones } from '$lib/stores/zones.js';
 	import { writePreferences } from '$lib/preferences.js';
 	import { getClientContext, getStationContext } from '$lib/ws/context.js';
 	import { channelName, freshZoneName, mappingOn, needsMapping, toggleChannel, unmappedOn, widthName, zoneProblem } from '$lib/zones.js';
@@ -39,7 +39,6 @@
 	let newWidth = $state(1);
 
 	const here = $derived($station?.nodeId ?? null);
-	const hereName = $derived($stationNames.find((s) => s.id === here)?.name ?? 'this station');
 
 	/** The card this station plays through: the one it names, or the system default. */
 	const card = $derived.by((): AudioDevice | null => {
@@ -60,6 +59,31 @@
 	const channels = $derived.by(() => {
 		const mapped = here ? $zones.flatMap((z) => z.channels[here] ?? []) : [];
 		const last = Math.min(64, Math.max(channelCount, ...mapped));
+		return Array.from({ length: last }, (_, i) => i + 1);
+	});
+
+	// ── The matrix: any station's, mapped from here ───────────────────────────────
+
+	/**
+	 * Whose channels the matrix maps: this station's by default, or any other in the
+	 * session, read off the `station_audio` row it publishes — so the booth can map the
+	 * spare's zones. Its names are its own preference and are shown, not edited, here:
+	 * one console rewriting another machine's settings file is what `LogRaise` refuses
+	 * too, and the mapping is all that has to be done from a distance.
+	 */
+	let mapFor = $state<string | null>(null);
+	const target = $derived(mapFor ?? here);
+	const atHome = $derived(target === here);
+	const targetName = $derived($stationNames.find((s) => s.id === target)?.name ?? 'this station');
+	const targetRow = $derived($stationAudio.find((r) => r.id === target) ?? null);
+	const matrixNames = $derived(
+		atHome ? names : targetRow ? { alias: targetRow.alias, channels: targetRow.channel_names } : undefined
+	);
+	const matrixCard = $derived(atHome ? cardName : (targetRow?.device ?? null));
+	const matrixCount = $derived(atHome ? channelCount : Math.min(64, targetRow?.channels || 2));
+	const matrixChannels = $derived.by(() => {
+		const mapped = target ? $zones.flatMap((z) => z.channels[target] ?? []) : [];
+		const last = Math.min(64, Math.max(matrixCount, ...mapped));
 		return Array.from({ length: last }, (_, i) => i + 1);
 	});
 
@@ -105,8 +129,8 @@
 
 	function toggle(zoneId: string, channel: number) {
 		const zone = $zones.find((z) => z.id === zoneId);
-		if (!zone || !here) return;
-		void showData().speaker_zones.byId(zone.id).channels.set(toggleChannel(zone, here, channel));
+		if (!zone || !target) return;
+		void showData().speaker_zones.byId(zone.id).channels.set(toggleChannel(zone, target, channel));
 	}
 
 	const groups = (list: AudioDevice[]) =>
@@ -246,39 +270,58 @@
 				{/each}
 			</div>
 
-			<h4>On {hereName}{names?.alias ? ` · ${names.alias}` : cardName ? ` · ${cardName}` : ''}</h4>
+			<header class="matrix-head">
+				<h4>On {targetName}{matrixNames?.alias ? ` · ${matrixNames.alias}` : matrixCard ? ` · ${matrixCard}` : ''}</h4>
+				{#if $stationNames.length > 1}
+					<span class="spacer"></span>
+					<div class="segmented" role="group" aria-label="Whose channels">
+						{#each $stationNames as s (s.id)}
+							<button type="button" class:on={target === s.id} onclick={() => (mapFor = s.id)}
+								>{s.id === here ? `${s.name} (here)` : s.name}</button
+							>
+						{/each}
+					</div>
+				{/if}
+			</header>
+			{#if !atHome}
+				<p class="note">
+					{targetName}'s channel names are its own and are changed on its own page; the
+					mapping is the show's, and is made here.
+					{#if !targetRow}It has not said what card it plays through yet.{/if}
+				</p>
+			{/if}
 			<div class="matrix-scroll">
 				<table class="matrix">
 					<thead>
 						<tr>
 							<th class="corner"></th>
-							{#each channels as channel (channel)}
+							{#each matrixChannels as channel (channel)}
 								<th
-									class:missing={channel > channelCount}
-									title={channel > channelCount ? `${channelName(names, channel)} — this card has not got it` : channelName(names, channel)}
+									class:missing={channel > matrixCount}
+									title={channel > matrixCount ? `${channelName(matrixNames, channel)} — this card has not got it` : channelName(matrixNames, channel)}
 								>
 									<span class="number">{channel}</span>
-									{#if names?.channels?.[channel - 1]}<span class="cname">{names.channels[channel - 1]}</span>{/if}
+									{#if matrixNames?.channels?.[channel - 1]}<span class="cname">{matrixNames.channels[channel - 1]}</span>{/if}
 								</th>
 							{/each}
 						</tr>
 					</thead>
 					<tbody>
 						{#each $zones as zone (zone.id)}
-							{@const mapped = here ? (mappingOn(zone, here) ?? []) : []}
-							{@const problem = here ? zoneProblem(zone, here, hereName) : null}
+							{@const mapped = target ? (mappingOn(zone, target) ?? []) : []}
+							{@const problem = target ? zoneProblem(zone, target, targetName) : null}
 							<tr>
 								<th class="zone" style:--zone={zone.color ?? 'var(--cat-setup)'}>
 									<span class="zname">{zone.name}</span>
 									<span class="zwidth" class:warn={problem !== null && needsMapping(zone)}>{problem ?? widthName(zone.width)}</span>
 								</th>
-								{#each channels as channel (channel)}
+								{#each matrixChannels as channel (channel)}
 									<td>
 										<button
 											class="cell"
 											class:on={mapped.includes(channel)}
-											disabled={!$canEdit || !here}
-											aria-label="{zone.name} on {channelName(names, channel)}"
+											disabled={!$canEdit || !target}
+											aria-label="{zone.name} on {channelName(matrixNames, channel)}"
 											aria-pressed={mapped.includes(channel)}
 											onclick={() => toggle(zone.id, channel)}
 										></button>
@@ -443,5 +486,14 @@
 	}
 	.cell:disabled {
 		cursor: default;
+	}
+	.matrix-head {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	.matrix-head .spacer {
+		flex: 1;
 	}
 </style>

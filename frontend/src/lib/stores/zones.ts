@@ -17,6 +17,8 @@ import type { DeviceNames } from '$lib/zones.js';
 
 export const zones = collection('speaker_zones');
 export const stations = collection('stations');
+/** What each station plays through and what it calls its channels, by station id. */
+export const stationAudio = collection('station_audio');
 
 /** The stations, as a picker names them. */
 export const stationNames: Readable<{ id: string; name: string }[]> = derived(stations, ($stations) =>

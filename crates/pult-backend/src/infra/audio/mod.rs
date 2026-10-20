@@ -89,7 +89,7 @@ use pult_schema::{
     },
 };
 use tokio::sync::{mpsc, oneshot};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{engine::EngineHandle, infra::assets::AssetStore};
@@ -241,6 +241,12 @@ struct Chasing {
 /// Owns the devices, the decoded files and what is playing.
 pub struct AudioManager {
     node_id: NodeId,
+    /// What this station calls its cards and channels, and when the preferences file
+    /// it was read from last changed: re-read when that moves, so a name typed on this
+    /// station's page reaches the others without a restart.
+    names: (Option<std::time::SystemTime>, std::collections::BTreeMap<String, DeviceNames>),
+    /// The `station_audio` row last written, so it is written only when it moves.
+    station_said: Option<pult_schema::types::StationAudio>,
     /// What this machine is called, for a fault that has to say which station has not
     /// mapped a zone — the status row of the one station the browser is on.
     station_name: String,
@@ -327,6 +333,8 @@ impl AudioManager {
                 clip_faults: HashMap::new(),
                 clip_channels: HashMap::new(),
                 nodes: nodes::Nodes::new(prefs.node_stream_delay_ms),
+                names: (None, prefs.names.clone()),
+                station_said: None,
             },
             AudioHandle(tx),
         )
@@ -1147,6 +1155,45 @@ impl AudioManager {
             let path = vec![PathSegment::Key("audio_output".into())];
             let _ = self.engine.set(path, Lifecycle::Local, json).await;
         }
+        self.publish_station_audio().await;
+    }
+
+    /// Say what this station plays through and what it calls it, for the other
+    /// stations' zone matrices — and only when that moved.
+    async fn publish_station_audio(&mut self) {
+        // The names are this machine's preference and may have been edited since start.
+        let modified = crate::infra::preferences::path()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok());
+        if modified.is_some() && modified != self.names.0 {
+            self.names = (modified, crate::infra::preferences::load().audio.names);
+        }
+        let device = self.output.as_ref().map(|o| o.device_name.clone()).or_else(|| self.prefs.output.clone());
+        let named = device.as_ref().and_then(|d| self.names.1.get(d)).cloned().unwrap_or_default();
+        let channels = self
+            .output
+            .as_ref()
+            .map_or(named.channels.len() as u16, |o| o.channels);
+        let row = pult_schema::types::StationAudio {
+            id: self.node_id.0,
+            device,
+            alias: named.alias,
+            channels,
+            channel_names: named.channels,
+        };
+        if self.station_said.as_ref() == Some(&row) {
+            return;
+        }
+        let Ok(value) = serde_json::to_value(&row) else { return };
+        let path = vec![PathSegment::Key("station_audio".into()), PathSegment::Id(row.id)];
+        if self.engine.set(path, Lifecycle::Synced, value.clone()).await.is_err() {
+            let create = vec![PathSegment::Key("station_audio".into()), PathSegment::Key("__create".into())];
+            if let Err(e) = self.engine.set(create, Lifecycle::Synced, value).await {
+                debug!("[audio] could not publish this station's card: {e}");
+                return;
+            }
+        }
+        self.station_said = Some(row);
     }
 }
 

@@ -4587,6 +4587,161 @@ impl StationEntity {
     }
 }
 
+// ── station_audio ───────────────────────────────────────────────────────
+
+/// What one station plays through, and what it calls the card and its channels: the
+/// SYNCED `station_audio` collection, keyed by the station's `NodeId`.
+///
+/// So a zone can be mapped for a machine from another one — the booth mapping the
+/// spare's channels — with the names that machine gave them. The names stay that
+/// machine's preference (`[audio.names]`); this row only says what they are, and a
+/// station rewrites it only when something in it moved, like `station_networks`.
+/// SYNCED and not PERSISTED for the reason that one is: which card is in a machine does
+/// not travel with a show.
+///
+/// The `station_audio` collection.
+pub fn station_audio() -> StationAudioCollection {
+    StationAudioCollection { at: Collection::at("station_audio") }
+}
+
+/// The `station_audio` collection, reached by [`station_audio()`].
+pub struct StationAudioCollection {
+    at: Collection,
+}
+
+impl StationAudioCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<StationAudio>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> StationAudioEntity {
+        StationAudioEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> StationAudioEntity {
+        StationAudioEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &StationAudio) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `station_audio` row, reached by [`StationAudioCollection::by_id`] or
+/// [`StationAudioCollection::nth`].
+pub struct StationAudioEntity {
+    at: Entity,
+}
+
+impl StationAudioEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<StationAudio, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &StationAudio) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// The station's `NodeId`.
+    ///
+    /// SYNCED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// The output card, by its own name: open, or the one the station is told to use.
+    ///
+    /// SYNCED.
+    pub fn device(&self) -> Field<Option<String>> {
+        self.at.field("device")
+    }
+
+    /// What the station calls it.
+    ///
+    /// SYNCED.
+    pub fn alias(&self) -> Field<Option<String>> {
+        self.at.field("alias")
+    }
+
+    /// How many output channels it has: the open card's count, or as many as are named
+    /// when nothing is open yet.
+    ///
+    /// SYNCED.
+    pub fn channels(&self) -> Field<u16> {
+        self.at.field("channels")
+    }
+
+    /// The channel names, the first being channel 1; empty is unnamed.
+    ///
+    /// SYNCED.
+    pub fn channel_names(&self) -> Field<Vec<String>> {
+        self.at.field("channel_names")
+    }
+}
+
 // ── station_networks ────────────────────────────────────────────────────
 
 /// What one station's networking looks like: what it has, and what it did with it.

@@ -30,6 +30,7 @@ import type { SpeakerZone } from '../generated/SpeakerZone.js';
 import type { SpeedMaster } from '../generated/SpeedMaster.js';
 import type { StagePlan } from '../generated/StagePlan.js';
 import type { Station } from '../generated/Station.js';
+import type { StationAudio } from '../generated/StationAudio.js';
 import type { StationNetwork } from '../generated/StationNetwork.js';
 import type { Surface } from '../generated/Surface.js';
 import type { Symbol } from '../generated/Symbol.js';
@@ -141,6 +142,10 @@ export type StagePlanEntity = PathProxy<StagePlan> & {
 };
 
 export type StationEntity = PathProxy<Station> & {
+  delete(): Promise<void>;
+};
+
+export type StationAudioEntity = PathProxy<StationAudio> & {
   delete(): Promise<void>;
 };
 
@@ -528,6 +533,20 @@ export type StationCollection = {
   [n: number]: StationEntity;
 };
 
+export type StationAudioCollection = {
+  get(): Promise<StationAudio[]>;
+  set(value: StationAudio[]): Promise<void>;
+  subscribe(cb: (value: StationAudio[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: StationAudio[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): StationAudioEntity;
+  nth(n: number): StationAudioEntity;
+  create(entity: StationAudio): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: StationAudioEntity;
+};
+
 export type StationNetworkCollection = {
   get(): Promise<StationNetwork[]>;
   set(value: StationNetwork[]): Promise<void>;
@@ -656,6 +675,7 @@ export type DataRoot = {
   speed_masters: SpeedMasterCollection;
   stage_plans: StagePlanCollection;
   stations: StationCollection;
+  station_audio: StationAudioCollection;
   station_networks: StationNetworkCollection;
   surfaces: SurfaceCollection;
   symbols: SymbolCollection;

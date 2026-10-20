@@ -2609,6 +2609,30 @@ pub struct Station {
     pub last_seen: Timestamp,
 }
 
+/// What one station plays through, and what it calls the card and its channels: the
+/// SYNCED `station_audio` collection, keyed by the station's `NodeId`.
+///
+/// So a zone can be mapped for a machine from another one — the booth mapping the
+/// spare's channels — with the names that machine gave them. The names stay that
+/// machine's preference (`[audio.names]`); this row only says what they are, and a
+/// station rewrites it only when something in it moved, like `station_networks`.
+/// SYNCED and not PERSISTED for the reason that one is: which card is in a machine does
+/// not travel with a show.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StationAudio {
+    /// The station's `NodeId`.
+    pub id: Uuid,
+    /// The output card, by its own name: open, or the one the station is told to use.
+    pub device: Option<String>,
+    /// What the station calls it.
+    pub alias: Option<String>,
+    /// How many output channels it has: the open card's count, or as many as are named
+    /// when nothing is open yet.
+    pub channels: u16,
+    /// The channel names, the first being channel 1; empty is unnamed.
+    pub channel_names: Vec<String>,
+}
+
 /// What one station's networking looks like: what it has, and what it did with it.
 ///
 /// **A collection of its own rather than fields on the `Station` row, and the reason is

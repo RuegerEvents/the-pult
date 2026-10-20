@@ -136,6 +136,37 @@ pub fn node_targets(destination: &AudioDestination, zones: &[SpeakerZone]) -> Ve
     }
 }
 
+/// What one station plays through, and what it calls the card and its channels: the
+/// SYNCED `station_audio` collection, keyed by the station's `NodeId`.
+///
+/// So a zone can be mapped for a machine from another one — the booth mapping the
+/// spare's channels — with the names that machine gave them. The names stay that
+/// machine's preference (`[audio.names]`); this row only says what they are, and a
+/// station rewrites it only when something in it moved, like `station_networks`.
+/// SYNCED and not PERSISTED for the reason that one is: which card is in a machine does
+/// not travel with a show.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, PultSchema)]
+#[ts(export)]
+#[pult(table = "station_audio")]
+pub struct StationAudio {
+    /// The station's `NodeId`.
+    #[pult(lifecycle = SYNCED, primary_key)]
+    pub id: Uuid,
+    /// The output card, by its own name: open, or the one the station is told to use.
+    #[pult(lifecycle = SYNCED)]
+    pub device: Option<String>,
+    /// What the station calls it.
+    #[pult(lifecycle = SYNCED)]
+    pub alias: Option<String>,
+    /// How many output channels it has: the open card's count, or as many as are named
+    /// when nothing is open yet.
+    #[pult(lifecycle = SYNCED)]
+    pub channels: u16,
+    /// The channel names, the first being channel 1; empty is unnamed.
+    #[pult(lifecycle = SYNCED)]
+    pub channel_names: Vec<String>,
+}
+
 /// Whether a clip is sounding everywhere it goes, somewhere, or nowhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipHealth {

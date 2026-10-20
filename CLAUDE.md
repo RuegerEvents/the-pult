@@ -1823,8 +1823,12 @@ card, and a spare promoted mid-scare must play the zone on *its* channels.
 anything is decoded: a zone it has not mapped, or mapped to the wrong width, is a
 `clip_faults` entry naming the zone and the station, never a fold onto channels it has;
 `clip_channels` on the status row says where each clip comes out here. A zone may hold
-node speakers too, not keyed by station. Device aliases and channel names are the
-station's `[audio.names]`; Setup → Audio is the card, the names and the matrix. See task 81.
+node speakers too, not keyed by station, and a clip some of whose members fail is
+`clip_partial`, not `clip_faults` — that is kept for silence (`zone::clip_health`). Device
+aliases and channel names are the station's `[audio.names]`, published to the others as
+the SYNCED `station_audio` row so any station's zones are mapped from any station; the
+names are changed only on their own machine. Setup → Audio is the card, the names and the
+matrix. See tasks 81 and 83.
 
 **A node's loudspeaker is somewhere a clip can go.** `AudioDestination::Node` hands a
 clip to an OpenHaunt node, which plays it from its own flash at a show time or from an
