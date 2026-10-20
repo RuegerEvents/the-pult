@@ -62,6 +62,7 @@ export const KIND_NEEDS_NAME = 'Named';
  */
 export function kindLabel(kind: ParameterKind): string {
 	if (typeof kind === 'string') return kind;
+	if ('Cell' in kind) return kindLabel(kind.Cell.of);
 	if ('Named' in kind) return kind.Named;
 	return Object.keys(kind)[0];
 }
@@ -117,6 +118,9 @@ export function defaultDirectionFor(kind: ParameterKind): ParameterDirection {
  * called it, which is already the operator's word.
  */
 export function displayLabel(kind: ParameterKind): string {
+	if (typeof kind === 'object' && 'Cell' in kind) {
+		return `${displayLabel(kind.Cell.of)} ${kind.Cell.cell}`;
+	}
 	if (typeof kind === 'string') {
 		switch (kind) {
 			case 'ColorRgb':
@@ -143,6 +147,7 @@ export function displayLabel(kind: ParameterKind): string {
 /** A parameter kind as a string, including the tagged variants. */
 export function parameterKindLabel(kind: ParameterKind): string {
 	if (typeof kind === 'string') return kind;
+	if ('Cell' in kind) return `${parameterKindLabel(kindBase(kind))}${CELL_SEPARATOR}${kind.Cell.cell}`;
 	if ('Raw' in kind) return `Raw:${kind.Raw}`;
 	if ('Switch' in kind) return `Switch:${kind.Switch}`;
 	if ('Named' in kind) return `Named:${kind.Named}`;
@@ -152,6 +157,76 @@ export function parameterKindLabel(kind: ParameterKind): string {
 	if ('Prism' in kind) return `Prism:${kind.Prism}`;
 	if ('Frost' in kind) return `Frost:${kind.Frost}`;
 	return `Contact:${kind.Contact}`;
+}
+
+/** Between a key and its cell: `ColorRgb@7`. `CELL_SEPARATOR` in `fixture.rs`. */
+export const CELL_SEPARATOR = '@';
+
+/**
+ * A key split into the parameter it is of and the cell it is in, or `null` where it
+ * has none. `split_cell` in `fixture.rs`; `testdata/cell-keys.json` holds the two.
+ */
+export function splitCell(key: string): [string, number | null] {
+	const at = key.lastIndexOf(CELL_SEPARATOR);
+	if (at < 0) return [key, null];
+	const tail = key.slice(at + 1);
+	if (!/^[0-9]+$/.test(tail)) return [key, null];
+	const n = Number(tail);
+	if (n < 1 || n > 65535) return [key, null];
+	return [key.slice(0, at), n];
+}
+
+/** The kind without its cell. `ParameterKind::base`. */
+export function kindBase(kind: ParameterKind): ParameterKind {
+	return typeof kind === 'object' && 'Cell' in kind ? kindBase(kind.Cell.of) : kind;
+}
+
+/** Which cell a kind is in, for a per-cell kind. */
+export function kindCell(kind: ParameterKind): number | null {
+	return typeof kind === 'object' && 'Cell' in kind ? kind.Cell.cell : null;
+}
+
+/** A kind in one cell. `ParameterKind::in_cell`. */
+export function inCell(kind: ParameterKind, cell: number): ParameterKind {
+	return { Cell: { cell, of: kindBase(kind) } };
+}
+
+/**
+ * The definition a key reads back to: `FixtureType::parameter_for_key`. A cell key
+ * reads to its per-cell parameter on a type with that many cells, and a plain key to
+ * a parameter that is not per cell.
+ */
+export function parameterForKey(type: FixtureType, key: string): ParameterDefinition | null {
+	const [base, cell] = splitCell(key);
+	return (
+		type.parameters.find(
+			(p) =>
+				parameterKey(p.kind) === base &&
+				(cell !== null ? p.per_cell && cell <= type.cells : !p.per_cell || type.cells === 0)
+		) ?? null
+	);
+}
+
+/** Whether a type has cells to expand. `FixtureType::has_cells`. */
+export function hasCells(type: FixtureType | undefined | null): boolean {
+	return !!type && type.cells > 0 && type.parameters.some((p) => p.per_cell);
+}
+
+/**
+ * Every output an operator can set, as the kind it is held under: `FixtureType::controls`.
+ * A whole parameter once, a per-cell one once per cell, cell by cell.
+ */
+export function controls(type: FixtureType): { kind: ParameterKind; parameter: ParameterDefinition }[] {
+	const outputs = type.parameters.filter((p) => p.direction === 'Output');
+	const out = outputs
+		.filter((p) => !(p.per_cell && type.cells > 0))
+		.map((p) => ({ kind: p.kind, parameter: p }));
+	if (type.cells > 0) {
+		for (let cell = 1; cell <= type.cells; cell++) {
+			for (const p of outputs.filter((p) => p.per_cell)) out.push({ kind: inCell(p.kind, cell), parameter: p });
+		}
+	}
+	return out;
 }
 
 /** The live_values map key for a parameter. Must match parameter_key in the backend. */

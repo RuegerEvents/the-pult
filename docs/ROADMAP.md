@@ -7036,6 +7036,66 @@ U4's in task 81)
   today's per-pixel fixtures does (`SCHEMA_GENERATION` again). Cost: evaluating per
   cell has to stay inside task 74's 1 ms for ten 1024-pixel strips.
 
+### Multi-cell fixtures (U5): a strip is one fixture
+
+The user's call (see *UI direction*): a pixel strip is **one** fixture with parameters
+per cell, and a GDTF LED bar is the same thing. Task 74 made every pixel its own fixture
+hung off a scene object, which kept the evaluator untouched and made a 1024-pixel strip
+1024 rows in the patch, the sheet and the rig. The questions, answered before building:
+
+- **A cell is part of the kind, not a new key shape.** `ParameterKind::Cell { cell, of }`,
+  spelled `ColorRgb@7` as a key, cells counted from 1. Everything in this console is
+  already keyed by `(fixture, kind)` or `(fixture, key)` — the programmer, captures,
+  presets, `live_fades`, `live_effects`, takes, a mode's `parameter_key`, the wire
+  decoder — and every one of them carries a cell with no field added and no consumer
+  forked. The precedent is in the enum already: `Gobo(2)` is the second gobo wheel, an
+  instance index inside the kind. A structural `(fixture, cell, key)` would have changed
+  the shape of all of those, both compilations of the evaluator and the track codec,
+  for a number a key can spell. `pult-render` does not change at all: it never knew
+  what a key meant. What has to know is the place a key is *read back to its parameter*
+  — `FixtureType::parameter_for_key`, mirrored in `patch.ts` — and the place a kind is
+  *classified* (fade groups, preset tags, labels), which asks the kind's `base()`. The
+  spelling is held by `testdata/cell-keys.json`, read by both suites.
+- **A type says how many cells it has, and each parameter says whether it repeats.**
+  `FixtureType::cells` (0 is a fixture with no cells) and
+  `ParameterDefinition::per_cell`. A bar's master dimmer and strobe are the fixture's;
+  its RGB is per cell. `FixtureType::controls()` is the expanded list — every whole
+  parameter once and every per-cell one once per cell, as kinds — and it is what the
+  implicit mode, the programmer, home and "send it home" iterate. A mode's channel
+  layout already names a key per channel, so a per-cell channel simply names
+  `ColorRgb@7`; GDTF geometry references and their offsets become exactly that.
+- **A selection picks fixtures, and then cells.** `SelectionQuery::cells`, a list of
+  spans applied to every multi-cell fixture the query answers — MA's `.`, so "these
+  three strips, cells 1 to 20" is one query. Empty is the whole fixture. One span list
+  per query rather than per fixture, deliberately: a sub-selection is a question about
+  a *kind of place on* a fixture, and two strips cut differently is two selections.
+  `group::elements()` and `selection.ts`'s `elements()` turn a query's answer into the
+  ordered `(fixture, cell)` list everything downstream acts on — fixture order first,
+  then cell order — held together by new cases in `testdata/selection-queries.json`.
+- **An effect spreads across elements**, so a chase over three strips runs along all
+  their cells end to end, in selection order. The Effects panel offers *each fixture*
+  beside it, which restarts the spread per fixture (three strips chasing in step).
+  The preview draws one cell per element.
+- **Setting a per-cell parameter on a whole multi-cell fixture writes every cell.** A
+  strip has no "whole-strip color" parameter to be overridden per cell; there is one
+  color per cell, and selecting the strip is selecting all of them.
+- **`pixels::plan` goes, with everything it made.** The strip head *is* the fixture: in
+  `sacn` mode its type is a strip type (`pixels::strip_type`, cells = count, one
+  per-cell color with three or four emitters, a mode whose breaks are the universes the
+  170/128 spill puts it across), and in `effect` mode it is the node's head type with
+  the nine ports, as before. The scene object per strip, the cell rows, the strip's
+  saved group, `FixturePhysical::pixel` and *Select pixels* are removed; where a strip
+  is drawn comes from the fixture's own position and the strip's pitch. Its universes
+  come from `FixtureAddress::dmx_placement`, which a DMX fixture and a `sacn` strip
+  both answer, so the DMX family renders a strip with nothing else taught.
+  `SCHEMA_GENERATION` is 9.
+- **The UI.** One row per strip in patch, sheet and Devices; the sheet expands a
+  multi-cell fixture into its cells; the rig draws a strip's cells as one instanced
+  line; the Values panel sets a cell sub-selection like any selection.
+- **Cost.** Ten 1024-pixel strips were 0.8 ms of evaluation as ten thousand fixtures.
+  As ten fixtures of 1024 keys each it is the same number of `value_at` calls; the
+  per-fixture overhead goes away. Measured, not assumed.
+
 ### The order
 
 Sections below are themes, not sequence. This list is the sequence, and it is the

@@ -113,6 +113,7 @@ pub fn derive_fixture_type_with_thumbnail(
         // Filled in by the caller, which is the half of this that can store bytes.
         plan_symbol: PlanSymbol::Auto,
         thumbnail: None,
+        cells: 0,
     };
     (fixture_type, warnings, thumbnail(file))
 }

@@ -3,14 +3,15 @@
 	 * How each pixel strip on one node is patched: the node drawing it from nine
 	 * parameters, or the console drawing every pixel and sending it as sACN.
 	 *
-	 * The station works the cells out — where each pixel lands, the spill into the next
+	 * The station works the layout out — where each pixel lands, the spill into the next
 	 * universe — so this asks with `device.strip` and shows what comes back. Nothing
-	 * here knows the spill rule; the universes it prints are read off the cells.
+	 * here knows the spill rule; the universes it prints are the node's own. A strip is
+	 * one fixture whatever its mode, so selecting it is selecting every pixel.
 	 */
 	import { getClientContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
 	import { collection } from '$lib/stores/show.js';
-	import { recall, select } from '$lib/stores/selection.js';
+	import { select } from '$lib/stores/selection.js';
 	import type { DiscoveredDevice, Fixture, PixelStrip, StripMode } from '$lib/generated/index.js';
 	import { stripRows, stripSummary } from '$lib/strips.js';
 
@@ -19,9 +20,8 @@
 
 	const client = getClientContext();
 	const fixtures = collection('fixtures');
-	const groups = collection('groups');
 
-	const rows = $derived(stripRows(device, $fixtures as Fixture[], $groups));
+	const rows = $derived(stripRows(device, $fixtures as Fixture[]));
 
 	/** What the operator is changing, per head, until Apply. */
 	let drafts = $state<Record<number, PixelStrip>>({});
@@ -58,11 +58,6 @@
 		}
 	}
 
-	function selectCells(groupId: string | null) {
-		const group = $groups.find((g) => g.id === groupId);
-		if (group) recall(group.query);
-	}
-
 	const orders = $derived(device.pixels?.orders ?? ['GRB', 'RGB']);
 	const max = $derived(device.pixels?.max_count ?? 1024);
 </script>
@@ -75,16 +70,16 @@
 			<div class="strip">
 				<div class="strip-head">
 					<span class="name">{row.fixture.name}</span>
-					<span class="summary dim">{stripSummary(row.strip, row.cells)}</span>
-					{#if row.mode === 'sacn'}
-						<button class="chip-btn" onclick={() => selectCells(row.groupId)} title="Select every pixel, in order along the strip">
-							Select pixels
-						</button>
-					{:else}
-						<button class="chip-btn" onclick={() => select(row.fixture.id)} title="Select the strip, to set what the node draws">
-							Select
-						</button>
-					{/if}
+					<span class="summary dim">{stripSummary(row.strip, row.running)}</span>
+					<button
+						class="chip-btn"
+						onclick={() => select(row.fixture.id)}
+						title={row.mode === 'sacn'
+							? 'Select the strip: every pixel, in order along it'
+							: 'Select the strip, to set what the node draws'}
+					>
+						Select
+					</button>
 				</div>
 				{#if row.running && row.running.mode !== row.strip.mode}
 					<p class="warn">The node is running it as {row.running.mode}; it is being put back.</p>

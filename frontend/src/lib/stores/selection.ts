@@ -21,7 +21,10 @@
 
 import { derived, get, writable, type Readable } from 'svelte/store';
 
+import type { CellSpan, Element } from '$lib/generated/index.js';
+import { hasCells } from '$lib/patch.js';
 import {
+	elements as elementsOf,
 	EMPTY_QUERY,
 	evaluate,
 	idsQuery,
@@ -33,6 +36,7 @@ import {
 import { collection } from './show.js';
 
 const fixtures = collection('fixtures');
+const fixtureTypes = collection('fixture_types');
 /// What a fixture may hang off. A light on a truss is where the truss put it, so a
 /// geometric term in a query reads a world position rather than the row's own numbers.
 const sceneObjects = collection('scene_objects');
@@ -67,6 +71,40 @@ export const selection: Readable<string[]> = derived(
 
 /** Membership, for a component that only needs to ask about one fixture. */
 export const selected = derived(selection, ($selection) => new Set($selection));
+
+/**
+ * What the selection acts on: each fixture, and for a multi-cell one each of its cells
+ * the query's spans pick. `elements` in `selection.ts` is the rule; this is it applied
+ * to the rig as it stands, so a strip patched longer has more cells in the selection
+ * without anybody re-selecting it.
+ */
+export const elements: Readable<Element[]> = derived(
+	[selection, query, fixtures, fixtureTypes],
+	([$selection, $query, $fixtures, $types]) => {
+		const typeOf = new Map($fixtures.map((f) => [f.id, f.fixture_type_id]));
+		const types = new Map($types.map((t) => [t.id, t]));
+		return elementsOf($selection, $query.cells ?? [], (id) => {
+			const type = types.get(typeOf.get(id) ?? '');
+			return hasCells(type) ? (type?.cells ?? 0) : 0;
+		});
+	}
+);
+
+/** Whether anything selected has cells, for the panels that offer a cell field. */
+export const hasCellsSelected: Readable<boolean> = derived(elements, ($elements) =>
+	$elements.some((e) => e.cell !== null)
+);
+
+/** Cut every multi-cell fixture in the selection to these cells. Empty is all of them. */
+export function setCells(cells: CellSpan[]) {
+	query.update((q) => ({ ...q, cells }));
+}
+
+/** Just these cells of this one fixture, for a drag across a strip in the rig. */
+export function selectCells(id: string, cells: CellSpan[]) {
+	handOrder.set([]);
+	query.set(idsQuery([id], undefined, cells));
+}
 
 /** How many, and what the query says, for the panel's heading. */
 export const isQuery = derived(query, ($query) => !isManualList($query));

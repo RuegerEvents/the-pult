@@ -147,13 +147,91 @@ pub enum SelectionOrder {
 pub struct SelectionQuery {
     pub clauses: Vec<SelectionClause>,
     pub order: SelectionOrder,
+    /// Which cells of every multi-cell fixture the query answers: MA's `.`, so "these
+    /// three strips, cells 1 to 20" is one query. Empty is the whole fixture. Applied
+    /// after the clauses and the order, by [`elements`]; a fixture with no cells is in
+    /// whole whatever this says, since there is nothing of it to cut.
+    ///
+    /// One list for the query rather than one per fixture, deliberately: a
+    /// sub-selection is a question about a kind of place *on* a fixture, and two
+    /// strips cut differently are two selections.
+    #[serde(default)]
+    pub cells: Vec<CellSpan>,
 }
 
 impl SelectionQuery {
     /// The query a fresh console has: nothing selected, in the order it was picked.
     pub fn empty() -> Self {
-        SelectionQuery { clauses: Vec::new(), order: SelectionOrder::Manual { order: Vec::new() } }
+        SelectionQuery {
+            clauses: Vec::new(),
+            order: SelectionOrder::Manual { order: Vec::new() },
+            cells: Vec::new(),
+        }
     }
+}
+
+/// A run of cells, both ends included, counted from 1. `from` past `to` runs backwards,
+/// which is how a chase along a strip is made to start at its far end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CellSpan {
+    pub from: u16,
+    pub to: u16,
+}
+
+/// One thing a selection acts on: a fixture, or one cell of one.
+///
+/// What everything downstream of a selection walks — setting a value, spreading an
+/// effect, storing a cue — so that a chase over three strips runs along their cells
+/// and a par beside them is one step of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Element {
+    pub fixture: Uuid,
+    /// `None` for a fixture with no cells.
+    pub cell: Option<u16>,
+}
+
+/// The elements of a selection, in order: each fixture in the order the query put
+/// them, and within a multi-cell fixture its cells in the order the spans list them.
+///
+/// `cells_of` says how many cells a fixture has (0 for none). Given rather than worked
+/// out here because the browser and the station hold the types differently, and this
+/// is the half of the rule that has to be the same on both: `selection.ts`'s
+/// `elements` is the other, held to this by `testdata/selection-queries.json`.
+pub fn elements(picked: &[Uuid], spans: &[CellSpan], cells_of: impl Fn(&Uuid) -> u16) -> Vec<Element> {
+    let mut out = Vec::new();
+    for fixture in picked {
+        let count = cells_of(fixture);
+        if count == 0 {
+            out.push(Element { fixture: *fixture, cell: None });
+            continue;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut push = |cell: u16, out: &mut Vec<Element>| {
+            if (1..=count).contains(&cell) && seen.insert(cell) {
+                out.push(Element { fixture: *fixture, cell: Some(cell) });
+            }
+        };
+        if spans.is_empty() {
+            for cell in 1..=count {
+                push(cell, &mut out);
+            }
+            continue;
+        }
+        for span in spans {
+            if span.from <= span.to {
+                for cell in span.from..=span.to.min(count) {
+                    push(cell, &mut out);
+                }
+            } else {
+                for cell in (span.to..=span.from.min(count)).rev() {
+                    push(cell, &mut out);
+                }
+            }
+        }
+    }
+    out
 }
 
 // ── The entity ────────────────────────────────────────────────────────────────

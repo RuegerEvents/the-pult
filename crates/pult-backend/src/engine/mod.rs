@@ -13,7 +13,7 @@ use pult_schema::{
         client::ClientStatsMap,
         devices::DevicesState,
         fixture::{
-            home_value, output_parameters, Fixture, FixtureType, ParameterDirection,
+            home_value, Fixture, FixtureType, ParameterDirection,
             ParameterKind, ParameterValue,
         },
         input::InputStatuses,
@@ -2530,9 +2530,7 @@ impl ShowEngine {
         let kinds: Vec<ParameterKind> = match &named {
             Some(kind) => {
                 let definition = fixture_type
-                    .parameters
-                    .iter()
-                    .find(|p| p.kind == *kind)
+                    .parameter_for_kind(kind)
                     .ok_or_else(|| bad("that fixture has no such parameter"))?;
                 if definition.direction != ParameterDirection::Output {
                     return Err(bad(
@@ -2542,7 +2540,7 @@ impl ShowEngine {
                 }
                 vec![kind.clone()]
             }
-            None => output_parameters(&fixture_type).map(|p| p.kind.clone()).collect(),
+            None => fixture_type.controls().into_iter().map(|(kind, _)| kind).collect(),
         };
 
         let mut writes = Vec::new();
@@ -2659,9 +2657,7 @@ impl ShowEngine {
         let kinds: Vec<ParameterKind> = match &named {
             Some(kind) => {
                 let definition = fixture_type
-                    .parameters
-                    .iter()
-                    .find(|p| p.kind == *kind)
+                    .parameter_for_kind(kind)
                     .ok_or_else(|| bad("that fixture has no such parameter"))?;
                 if definition.direction != ParameterDirection::Output {
                     return Err(bad(
@@ -2671,7 +2667,7 @@ impl ShowEngine {
                 }
                 vec![kind.clone()]
             }
-            None => output_parameters(&fixture_type).map(|p| p.kind.clone()).collect(),
+            None => fixture_type.controls().into_iter().map(|(kind, _)| kind).collect(),
         };
 
         // Evaluated at one instant for the whole fixture, so a mover caught mid-fade

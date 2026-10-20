@@ -72,3 +72,31 @@ fn the_corpus_is_worth_reading() {
         "an unplaced fixture is what the geometric terms are tested against"
     );
 }
+
+#[derive(Deserialize)]
+struct ElementsCorpus {
+    elements: Vec<ElementsCase>,
+}
+
+#[derive(Deserialize)]
+struct ElementsCase {
+    name: String,
+    picked: Vec<Uuid>,
+    cells: Vec<pult_schema::types::group::CellSpan>,
+    counts: HashMap<Uuid, u16>,
+    expected: Vec<pult_schema::types::group::Element>,
+}
+
+#[test]
+fn every_elements_case_in_the_corpus() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/selection-queries.json");
+    let corpus: ElementsCorpus =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).expect("the corpus parses");
+    assert!(!corpus.elements.is_empty());
+    for case in corpus.elements {
+        let got = pult_schema::types::group::elements(&case.picked, &case.cells, |id| {
+            case.counts.get(id).copied().unwrap_or(0)
+        });
+        assert_eq!(got, case.expected, "corpus case {:?}", case.name);
+    }
+}

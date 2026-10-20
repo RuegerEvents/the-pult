@@ -18,7 +18,7 @@ use pult_schema::{
     types::{
         evaluate,
         fixture::{
-            driving, output_parameters, parameter_key, FixtureType, HeldByProgrammer,
+            driving, parameter_key, FixtureType, HeldByProgrammer,
             ParameterKind,
         },
         scene::SceneObject,
@@ -1038,7 +1038,7 @@ async fn what_is_it_doing(
     let keys: Vec<String> = match (&kind, fixture_type) {
         (Some(kind), _) => vec![parameter_key(kind)],
         (None, Some(fixture_type)) => {
-            output_parameters(fixture_type).map(|p| parameter_key(&p.kind)).collect()
+            fixture_type.controls().iter().map(|(kind, _)| parameter_key(kind)).collect()
         }
         // Patched to a type this station has not got. Whatever the fixture overrides
         // for itself is still the truth about it, so that is what it can answer with.
@@ -1109,9 +1109,7 @@ async fn grab_into_the_programmer(
             .find(|fixture| fixture.id == fixture_id)
             .and_then(|fixture| types.iter().find(|t| t.id == fixture.fixture_type_id))
             .and_then(|fixture_type| {
-                output_parameters(fixture_type)
-                    .find(|p| parameter_key(&p.kind) == key)
-                    .map(|p| p.kind.clone())
+                fixture_type.controls().into_iter().find(|(kind, _)| parameter_key(kind) == key).map(|(kind, _)| kind)
             })
         else {
             continue;

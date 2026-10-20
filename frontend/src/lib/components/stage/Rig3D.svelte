@@ -56,6 +56,8 @@
 		aimAt,
 		beamDirection,
 		drawnLength,
+		cellOutputs,
+		cellPoints,
 		fixtureOutput,
 		fixturePoint,
 		planExtent,
@@ -129,7 +131,7 @@
 	} from '$lib/stores/scene.js';
 	import { setValue } from '$lib/stores/programmer.js';
 	import { output as showing, watching, type Showing } from '$lib/stores/output.js';
-	import { parameterKey } from '$lib/patch.js';
+	import { controls, parameterKey } from '$lib/patch.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import {
@@ -286,9 +288,11 @@
 	/// strictly visible, deliberately: a beam that stopped being evaluated because the
 	/// camera turned would freeze where it was.
 	$effect(() => {
-		const keys = placed.flatMap((fixture) =>
-			(typeOf(fixture)?.parameters ?? []).map((p) => `${fixture.id}/${parameterKey(p.kind)}`)
-		);
+		// Every control, so a strip's pixels are watched cell by cell.
+		const keys = placed.flatMap((fixture) => {
+			const type = typeOf(fixture);
+			return type ? controls(type).map((c) => `${fixture.id}/${parameterKey(c.kind)}`) : [];
+		});
 		const registered = watching(keys);
 		return () => registered.stop();
 	});
@@ -302,6 +306,12 @@
 			const length = throwDistance(at, direction);
 			const output = fixtureOutput(fixture, values);
 			const bearing = bearingOnFloor(fixture, type, values);
+			// A multi-cell fixture with no beam of its own — a strip — is drawn as its
+			// cells, each the light it is putting out.
+			const cellsAt = cellPoints(fixture, type, $objectsById);
+			const cells = cellsAt.length
+				? { at: cellsAt, out: cellOutputs(fixture, type, values) }
+				: null;
 			// The beam angle the file measured, where there is one. `stage.ts` reads
 			// the type's own range; the constant is the fallback and says so.
 			const half = (type?.physical?.beam_angle_deg ?? 14) / 2;
@@ -317,6 +327,7 @@
 				length,
 				output,
 				bearing,
+				cells,
 				// tan of the half-angle: the whole of what a zoom costs the shader.
 				spread: Math.tan((Math.max(0.5, half) * Math.PI) / 180),
 				// A shutter that is closed shuts the beam off entirely; absent means
@@ -488,6 +499,19 @@
 		beamMesh.count = 0;
 		root.add(beamMesh);
 
+		// ── The cells ───────────────────────────────────────────────────────────
+		//
+		// Every cell of every multi-cell fixture, one instance each: ten 1024-pixel
+		// strips are one draw call. Grown like the beams and never shrunk.
+		const cellMesh = new THREE.InstancedMesh(
+			new THREE.SphereGeometry(0.012, 8, 6),
+			new THREE.MeshBasicMaterial({ color: 0xffffff }),
+			1
+		);
+		cellMesh.frustumCulled = false;
+		cellMesh.count = 0;
+		root.add(cellMesh);
+
 		// ── The aim lines, for the wireframe mode ────────────────────────────────
 		//
 		// One segment per fixture from the lens to where the beam lands, in the
@@ -567,6 +591,9 @@
 			timer: gpuTimer(renderer),
 			/** What each fixture was drawn as last frame, so a frame that changes nothing is not drawn. */
 			previous: new Float32Array(0),
+			cellMesh,
+			/** And each cell, the same way. */
+			cellPrevious: new Float32Array(0),
 			/** Fixture bodies, kept between frames and keyed by fixture id. */
 			bodies: new Map<string, THREE.Mesh>(),
 			/** Drawn scene objects, keyed by object id. */
@@ -837,8 +864,8 @@
 				}
 			}
 
-			// A pixel has no beam to draw and lights no floor: it is the dot below.
-			const pixel = !!beam.type?.physical?.pixel;
+			// A strip has no beam to draw and lights no floor: it is its cells, below.
+			const pixel = !!beam.cells;
 
 			if (level > 0.0005 && !pixel) {
 				scratchQuat.setFromUnitVectors(DOWN, scratchDirection);
@@ -898,6 +925,47 @@
 		if (hazy && lit > 0 && density > 0.001) animated = true;
 
 		built.beamMesh.count = lit;
+
+		// ── Cells ───────────────────────────────────────────────────────────────
+		const cellCount = list.reduce((n, b) => n + (b.cells?.at.length ?? 0), 0);
+		if (built.cellMesh.instanceMatrix.count < cellCount) {
+			const capacity = Math.max(64, 1 << Math.ceil(Math.log2(cellCount)));
+			built.cellMesh.instanceMatrix = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 16), 16);
+			built.cellMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+			built.cellMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
+			built.cellPrevious = new Float32Array(capacity * 6).fill(NaN);
+		}
+		if (built.cellPrevious.length < cellCount * 6) built.cellPrevious = new Float32Array(cellCount * 6).fill(NaN);
+		let cellAt = 0;
+		let cellsChanged = false;
+		for (const beam of list) {
+			if (!beam.cells) continue;
+			beam.cells.at.forEach((point, n) => {
+				const out = beam.cells!.out[n];
+				const glow = out.level * 2.5;
+				const now = [point.x, point.y, point.z, out.r * glow, out.g * glow, out.b * glow];
+				for (let k = 0; k < 6; k++) {
+					const value = Math.fround(now[k]);
+					if (built.cellPrevious[cellAt * 6 + k] !== value) {
+						cellsChanged = true;
+						built.cellPrevious[cellAt * 6 + k] = value;
+					}
+				}
+				scratchMatrix.makeTranslation(point.x, point.y, point.z);
+				built.cellMesh.setMatrixAt(cellAt, scratchMatrix);
+				scratchDimmed.setRGB(Math.max(0.04, now[3]), Math.max(0.04, now[4]), Math.max(0.04, now[5]));
+				built.cellMesh.setColorAt(cellAt, scratchDimmed);
+				cellAt += 1;
+			});
+		}
+		if (built.cellMesh.count !== cellAt) cellsChanged = true;
+		built.cellMesh.count = cellAt;
+		if (cellsChanged) {
+			changed = true;
+			built.cellMesh.instanceMatrix.needsUpdate = true;
+			if (built.cellMesh.instanceColor) built.cellMesh.instanceColor.needsUpdate = true;
+		}
+
 		if (changed) {
 			built.beamMesh.instanceMatrix.needsUpdate = true;
 			colors.needsUpdate = true;

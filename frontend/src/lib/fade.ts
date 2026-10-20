@@ -15,6 +15,7 @@
  */
 
 import type { Easing, FadeCurves, FadeGroup } from './generated/index.js';
+import { splitCell } from './patch.js';
 
 /**
  * The group a parameter key belongs to.
@@ -23,7 +24,8 @@ import type { Easing, FadeCurves, FadeGroup } from './generated/index.js';
  * the name before the colon, never by which one of them it is.
  */
 export function fadeGroup(key: string): FadeGroup {
-	switch (key.split(':')[0]) {
+	// A cell is the parameter it is a cell of: `ColorRgb@7` is a color.
+	switch (splitCell(key)[0].split(':')[0]) {
 		case 'Intensity':
 			return 'Intensity';
 		case 'Pan':

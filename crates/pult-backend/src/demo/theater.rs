@@ -184,6 +184,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
                         term: SelectionTerm::Named { text: name.to_string() },
                     }],
                     order: SelectionOrder::ByName,
+                    cells: Vec::new(),
                 },
             },
         )

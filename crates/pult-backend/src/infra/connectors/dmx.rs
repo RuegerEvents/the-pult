@@ -9,7 +9,7 @@ use pult_render::color::EmitterSpec;
 use pult_schema::types::{
     dmx_mode::DmxChannelLayout,
     fixture::{
-        driving, emitters_of, Emitter, Fixture, FixtureAddress, FixtureType, ParameterDirection,
+        driving, emitters_of, Emitter, Fixture, FixtureType,
         ParameterValue,
     },
     output::{UniverseFrame, UniverseSummary, UniverseTraffic},
@@ -213,15 +213,19 @@ impl Patch {
         let mut warned: HashSet<(Uuid, String)> = HashSet::new();
 
         for (index, fixture) in self.fixtures.iter().enumerate() {
-            let FixtureAddress::Dmx { mode: mode_name, breaks } = &fixture.address else {
+            // A DMX fixture, or a node's strip drawn by the console: both say where
+            // their bytes go, and nothing below needs to know which it is.
+            let Some((mode_name, breaks)) = fixture.address.dmx_placement() else {
                 continue;
             };
+            let mode_name = mode_name.to_string();
+            let breaks = breaks.into_owned();
             let Some(fixture_type) = self.fixture_type(fixture) else {
                 // Patched to a type that is not in the show. Nothing sensible to send.
                 continue;
             };
             if !fixture_type.dmx_modes.is_empty()
-                && !fixture_type.has_mode(mode_name)
+                && !fixture_type.has_mode(&mode_name)
                 && warned.insert((fixture_type.id, mode_name.clone()))
             {
                 tracing::warn!(
@@ -230,25 +234,25 @@ impl Patch {
                     "no such mode on this type; falling back to its first"
                 );
             }
-            let mode = fixture_type.mode(mode_name);
+            let mode = fixture_type.mode(&mode_name);
 
             // Every break this unit occupies, so a universe exists for it even when
             // nothing in it is driven. A patched fixture's universe is on the wire
             // whether or not the show is doing anything to it, which is what keeps a
             // rig of sensors from silently dropping its universe off the network.
-            for entry in breaks {
+            for entry in &breaks {
                 if !universes.contains(&entry.universe) {
                     universes.push(entry.universe);
                 }
             }
 
             // What the type says about each parameter, by key, so the loop below does
-            // one lookup rather than a scan per channel.
+            // one lookup rather than a scan per channel. Every control rather than every
+            // definition: a strip's thousand pixel keys all read back to one color.
             let by_key: HashMap<String, (&ParameterValue, Vec<Emitter>)> = fixture_type
-                .parameters
-                .iter()
-                .filter(|p| p.direction == ParameterDirection::Output)
-                .map(|p| (parameter_key(&p.kind), (&p.default_value, emitters_of(p))))
+                .controls()
+                .into_iter()
+                .map(|(kind, p)| (parameter_key(&kind), (&p.default_value, emitters_of(p))))
                 .collect();
 
             for layout in &mode.channels {

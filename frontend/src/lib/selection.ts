@@ -38,6 +38,8 @@
  */
 
 import type {
+	CellSpan,
+	Element,
 	Fixture,
 	FixtureType,
 	SceneObject,
@@ -69,11 +71,78 @@ export type { SelectionQuery };
 export const NO_ORDER: SelectionOrder = { kind: 'Manual', order: [] };
 
 /** The query a fresh console has: nothing selected, in the order it was picked. */
-export const EMPTY_QUERY: SelectionQuery = { clauses: [], order: NO_ORDER };
+export const EMPTY_QUERY: SelectionQuery = { clauses: [], order: NO_ORDER, cells: [] };
 
 /** The query a plain click builds. Manual picking is a query like any other. */
-export function idsQuery(ids: string[], order: Order = NO_ORDER): SelectionQuery {
-	return { clauses: [{ combine: 'Add', term: { kind: 'Ids', ids } }], order };
+export function idsQuery(ids: string[], order: Order = NO_ORDER, cells: CellSpan[] = []): SelectionQuery {
+	return { clauses: [{ combine: 'Add', term: { kind: 'Ids', ids } }], order, cells };
+}
+
+// ── Cells ─────────────────────────────────────────────────────────────────────
+
+export type { CellSpan, Element };
+
+/**
+ * The elements of a selection, in order: each fixture in the order the query put
+ * them, and within a multi-cell fixture its cells in the order the spans list them.
+ * Empty spans are the whole fixture; a fixture with no cells is in whole whatever
+ * they say.
+ *
+ * `elements` in `group.rs`; `testdata/selection-queries.json` holds the two.
+ */
+export function elements(
+	picked: string[],
+	spans: CellSpan[],
+	cellsOf: (fixtureId: string) => number
+): Element[] {
+	const out: Element[] = [];
+	for (const fixture of picked) {
+		const count = cellsOf(fixture);
+		if (count === 0) {
+			out.push({ fixture, cell: null });
+			continue;
+		}
+		const seen = new Set<number>();
+		const push = (cell: number) => {
+			if (cell >= 1 && cell <= count && !seen.has(cell)) {
+				seen.add(cell);
+				out.push({ fixture, cell });
+			}
+		};
+		if (spans.length === 0) {
+			for (let cell = 1; cell <= count; cell++) push(cell);
+			continue;
+		}
+		for (const span of spans) {
+			if (span.from <= span.to) {
+				for (let cell = span.from; cell <= Math.min(span.to, count); cell++) push(cell);
+			} else {
+				for (let cell = Math.min(span.from, count); cell >= span.to; cell--) push(cell);
+			}
+		}
+	}
+	return out;
+}
+
+/** `1-20`, `5`, `20-1`, `1-4, 9`: what an operator types for a cell sub-selection. */
+export function parseCellSpans(text: string): CellSpan[] | null {
+	const trimmed = text.trim();
+	if (trimmed === '') return [];
+	const spans: CellSpan[] = [];
+	for (const part of trimmed.split(',')) {
+		const m = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+		if (!m) return null;
+		const from = Number(m[1]);
+		const to = m[2] === undefined ? from : Number(m[2]);
+		if (from < 1 || to < 1 || from > 65535 || to > 65535) return null;
+		spans.push({ from, to });
+	}
+	return spans;
+}
+
+/** The spans as an operator would type them back. */
+export function cellSpansText(spans: CellSpan[]): string {
+	return spans.map((s) => (s.from === s.to ? `${s.from}` : `${s.from}-${s.to}`)).join(', ');
 }
 
 /** Whether this query is just a hand-picked list, which the panel says differently. */

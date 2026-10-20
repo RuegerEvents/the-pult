@@ -506,5 +506,21 @@
       },
       "expected": []
     }
+  ],
+  "elements_about": [
+    "How a selection's fixtures become what it acts on: each fixture in order, and a",
+    "multi-cell fixture's cells within it, cut by the query's `cells` spans. `counts` says",
+    "how many cells each fixture has; one it does not name has none. Read by group.rs's",
+    "`elements` and selection.ts's `elements` through the two corpus tests."
+  ],
+  "elements": [
+    {"name": "a fixture with no cells is itself", "picked": ["f0000000-0000-4000-8000-000000000001"], "cells": [], "counts": {}, "expected": [{"fixture": "f0000000-0000-4000-8000-000000000001", "cell": null}]},
+    {"name": "a strip with no spans is every cell, in order", "picked": ["e0000000-0000-4000-8000-000000000001"], "cells": [], "counts": {"e0000000-0000-4000-8000-000000000001": 4}, "expected": [{"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 1}, {"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 2}, {"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 3}, {"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 4}]},
+    {"name": "a span cuts the strip", "picked": ["e0000000-0000-4000-8000-000000000001"], "cells": [{"from": 2, "to": 3}], "counts": {"e0000000-0000-4000-8000-000000000001": 4}, "expected": [{"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 2}, {"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 3}]},
+    {"name": "a span runs backwards when it is written backwards", "picked": ["e0000000-0000-4000-8000-000000000001"], "cells": [{"from": 4, "to": 2}], "counts": {"e0000000-0000-4000-8000-000000000001": 4}, "expected": [{"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 4}, {"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 3}, {"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 2}]},
+    {"name": "one span list cuts every strip, fixture order first", "picked": ["e0000000-0000-4000-8000-000000000002", "e0000000-0000-4000-8000-000000000001"], "cells": [{"from": 1, "to": 2}], "counts": {"e0000000-0000-4000-8000-000000000001": 4, "e0000000-0000-4000-8000-000000000002": 3}, "expected": [{"fixture": "e0000000-0000-4000-8000-000000000002", "cell": 1}, {"fixture": "e0000000-0000-4000-8000-000000000002", "cell": 2}, {"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 1}, {"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 2}]},
+    {"name": "a span past the last cell stops at it", "picked": ["e0000000-0000-4000-8000-000000000002"], "cells": [{"from": 2, "to": 9}], "counts": {"e0000000-0000-4000-8000-000000000002": 3}, "expected": [{"fixture": "e0000000-0000-4000-8000-000000000002", "cell": 2}, {"fixture": "e0000000-0000-4000-8000-000000000002", "cell": 3}]},
+    {"name": "a cell named twice is acted on once", "picked": ["e0000000-0000-4000-8000-000000000001"], "cells": [{"from": 1, "to": 2}, {"from": 2, "to": 1}], "counts": {"e0000000-0000-4000-8000-000000000001": 4}, "expected": [{"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 1}, {"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 2}]},
+    {"name": "a par beside a cut strip stays whole", "picked": ["f0000000-0000-4000-8000-000000000001", "e0000000-0000-4000-8000-000000000001"], "cells": [{"from": 3, "to": 3}], "counts": {"e0000000-0000-4000-8000-000000000001": 4}, "expected": [{"fixture": "f0000000-0000-4000-8000-000000000001", "cell": null}, {"fixture": "e0000000-0000-4000-8000-000000000001", "cell": 3}]}
   ]
 }

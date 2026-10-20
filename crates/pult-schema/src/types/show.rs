@@ -179,6 +179,8 @@ impl FadeGroup {
     pub fn of_key(key: &str) -> Self {
         // Indexed kinds are `Gobo:1`, `ColorWheel:2`, `Named:Fog output` — the group
         // is decided by the name, never by which one of them it is.
+        // And a cell is the parameter it is a cell of: `ColorRgb@7` is a color.
+        let (key, _) = crate::types::fixture::split_cell(key);
         match key.split(':').next().unwrap_or(key) {
             "Intensity" => Self::Intensity,
             "Pan" | "Tilt" => Self::Position,

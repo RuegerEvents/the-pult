@@ -8,7 +8,7 @@ import { get, writable } from 'svelte/store';
 import Sparkles from '@lucide/svelte/icons/sparkles';
 
 import type { EffectTemplate, Fixture, FixtureType } from '$lib/generated/index.js';
-import { templateApply } from '$lib/effectPool.js';
+import { splitTarget, targetIds, templateApply } from '$lib/effectPool.js';
 import { copyName, registerKind } from '$lib/objects.js';
 import {
 	applyLayers,
@@ -17,7 +17,7 @@ import {
 	templates
 } from '$lib/stores/effectPool.js';
 import { revealPanel } from '$lib/stores/layout.js';
-import { selection } from '$lib/stores/selection.js';
+import { elements } from '$lib/stores/selection.js';
 import { collection, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';
 import TemplateInspector from '$lib/components/effects/TemplateInspector.svelte';
@@ -32,10 +32,10 @@ export const openTemplate = writable<EffectTemplate | null>(null);
 export async function applyToSelection(template: EffectTemplate): Promise<number> {
 	const byId = new Map<string, Fixture>(get(fixtures).map((f) => [f.id, f]));
 	const typeById = new Map<string, FixtureType>(get(types).map((t) => [t.id, t]));
-	const order = get(selection).filter((id) => byId.has(id));
+	const order = targetIds(get(elements).filter((e) => byId.has(e.fixture)));
 	const applies = templateApply(template, order, byId, typeById);
 	await applyLayers(applies);
-	return new Set(applies.flatMap((a) => a.order)).size;
+	return new Set(applies.flatMap((a) => a.order).map((t) => splitTarget(t).fixture)).size;
 }
 
 registerKind<EffectTemplate>({

@@ -6,15 +6,14 @@
 //! node draws every pixel from nine ports the head's own fixture type carries, and in
 //! `sacn` mode the console draws every pixel and the node reads universes.
 //!
-//! **In `sacn` mode a pixel is a fixture.** A cell is an ordinary DMX-addressed fixture
-//! with a color, hung off one scene object that is the strip, so everything the console
-//! already does to a selection of fixtures — spread, phase, width, a chase in the order
-//! somebody picked — it does to a strip's cells, and the DMX family renders them with
-//! nothing taught. The alternative, one fixture with a cell count, would have needed
-//! the evaluator, both compilations of it and every consumer to learn what a cell is.
+//! **In `sacn` mode the strip is one fixture with a cell per pixel.** Its type is
+//! [`strip_type`]: a color per cell, and a mode whose breaks are the universes the
+//! 170-to-a-universe spill puts it across — so the DMX family renders it from
+//! [`crate::types::fixture::FixtureAddress::dmx_placement`] like any other fixture, and
+//! everything that walks a selection's elements walks its pixels. Task 74 made every
+//! pixel its own fixture instead; see task 82 for why that changed.
 //!
-//! Everything here is pure: [`plan`] says what the show should hold for a strip, and the
-//! station makes the writes.
+//! Everything here is pure: the station makes the writes.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -22,15 +21,11 @@ use uuid::Uuid;
 
 use crate::types::dmx_mode::{DmxBreak, DmxChannelLayout, DmxMode};
 use crate::types::fixture::{
-    rgb_emitters, Emitter, Fixture, FixtureAddress, FixturePhysical, FixtureType,
-    FixtureTypeSource, ParameterDefinition, ParameterKind, ParameterValue, Vec3, DEFAULT_MODE,
+    parameter_key, rgb_emitters, Emitter, FixturePhysical, FixtureType, FixtureTypeSource,
+    ParameterDefinition, ParameterKind, ParameterValue, Vec3, DEFAULT_MODE,
 };
-use crate::types::group::{
-    Group, SelectionClause, SelectionCombine, SelectionOrder, SelectionQuery, SelectionTerm,
-};
-use crate::types::scene::{SceneObject, SceneObjectKind, Transform};
 
-/// Fixed for ever, like every namespace here: changing it orphans every cell.
+/// Fixed for ever, like every namespace here: changing it re-types every strip.
 const NAMESPACE: Uuid = Uuid::from_u128(0x7069_7865_6c73_4f48_9a1d_6f6f7e2c8a02);
 
 /// The most pixels the node drives on one output, from its own `max_count`. A strip is
@@ -244,200 +239,82 @@ impl PixelStrip {
     }
 }
 
-// ── The fixtures a strip becomes ──────────────────────────────────────────────
+// ── The fixture a strip is ───────────────────────────────────────────────────
 
-/// The scene object a strip's cells hang off: the strip itself, to the rig view.
-pub fn strip_object_id(serial: &str, head: u8) -> Uuid {
-    Uuid::new_v5(&NAMESPACE, format!("strip/{serial}/{head}").as_bytes())
+impl PixelStrip {
+    /// One break per universe the strip reaches, each at the address its first pixel
+    /// lands on there. What [`strip_type`]'s mode is laid out against, and what the
+    /// strip's address answers for `dmx_placement`.
+    pub fn placement(&self) -> Vec<DmxBreak> {
+        let mut breaks: Vec<DmxBreak> = Vec::new();
+        for at in self.layout() {
+            if breaks.last().is_none_or(|b| b.universe != at.universe) {
+                breaks.push(at);
+            }
+        }
+        breaks
+    }
 }
 
-/// The saved group that is one strip's cells, in order along it.
-pub fn strip_group_id(serial: &str, head: u8) -> Uuid {
-    Uuid::new_v5(&NAMESPACE, format!("group/{serial}/{head}").as_bytes())
-}
-
-/// One cell's id. Derived, so a count that shrinks and grows again finds the same rows
-/// and whatever a cue captured against pixel 37 is pixel 37 again.
-pub fn cell_id(serial: &str, head: u8, index: u16) -> Uuid {
-    Uuid::new_v5(&NAMESPACE, format!("cell/{serial}/{head}/{index}").as_bytes())
-}
-
-/// The fixture type every cell of one channel count shares.
-pub fn cell_type(rgbw: bool) -> FixtureType {
+/// The type a strip in `sacn` mode is: one color per cell, laid out across universes.
+///
+/// Derived from the count, the channel count and the start address — which decides
+/// how many pixels fit in the first universe — and from nothing else, so every strip
+/// of one shape shares a row, and moving a strip to another universe moves its address
+/// and not its type.
+pub fn strip_type(strip: &PixelStrip) -> FixtureType {
     let mut emitters = rgb_emitters();
-    if rgbw {
+    if strip.rgbw() {
         emitters.push(Emitter {
             name: "White".into(),
             rgb: Some(Vec3 { x: 1.0, y: 1.0, z: 1.0 }),
             subtractive: false,
         });
     }
-    let key = crate::types::fixture::parameter_key(&ParameterKind::ColorRgb);
-    let name = if rgbw { "Pixel RGBW" } else { "Pixel RGB" };
-    FixtureType {
-        id: Uuid::new_v5(&NAMESPACE, name.as_bytes()),
-        name: name.into(),
-        manufacturer: "OpenHaunt".into(),
-        long_name: name.into(),
-        channel_count: emitters.len() as u16,
-        parameters: vec![ParameterDefinition {
-            emitters: emitters.clone(),
-            ..ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
-        }],
+    let address = strip.address.clamp(1, UNIVERSE);
+    let name = format!("Pixel strip, {} {}", strip.count, if strip.rgbw() { "RGBW" } else { "RGB" });
+
+    let breaks = strip.placement();
+    let mut channels = Vec::new();
+    let mut footprint = vec![0u16; breaks.len()];
+    for (index, at) in strip.layout().into_iter().enumerate() {
+        let break_index = breaks.iter().position(|b| b.universe == at.universe).unwrap_or(0);
+        let start = at.address - breaks[break_index].address + 1;
+        let key = parameter_key(&ParameterKind::ColorRgb.in_cell(index as u16 + 1));
         // Always R, G, B (, W) in a universe: the node reorders for its own wire.
-        dmx_modes: vec![DmxMode {
-            name: DEFAULT_MODE.into(),
-            breaks: vec![emitters.len() as u16],
-            channels: emitters
-                .iter()
-                .enumerate()
-                .map(|(index, emitter)| DmxChannelLayout {
-                    parameter_key: key.clone(),
-                    break_index: 0,
-                    offsets: vec![index as u16 + 1],
-                    default: 0,
-                    functions: Vec::new(),
-                    emitter: Some(emitter.name.clone()),
-                })
-                .collect(),
-        }],
-        physical: FixturePhysical {
-            dimensions_m: Some(Vec3 { x: 0.01, y: 0.01, z: 0.01 }),
-            pixel: true,
-            ..FixturePhysical::default()
-        },
-        source: FixtureTypeSource::Node,
-        ..FixtureType::default()
-    }
-}
-
-/// What the show should hold for one strip head, worked out before anything is written.
-#[derive(Debug, Clone)]
-pub struct StripPlan {
-    /// The head with its new address.
-    pub head: Fixture,
-    /// Rows to create where the show has none: the strip's object, its group and the
-    /// cells' type. Written only if absent, so a strip somebody has moved stays moved.
-    pub object: SceneObject,
-    pub cell_type: Option<FixtureType>,
-    /// The group is always written, because its order is the cells.
-    pub group: Option<Group>,
-    pub create: Vec<Fixture>,
-    /// Cells that exist and have to move to another address or place.
-    pub update: Vec<Fixture>,
-    pub delete: Vec<Uuid>,
-}
-
-/// What patching `head` as `strip` takes.
-///
-/// `cells` are the fixtures hanging off the strip's object now. A cell keeps where an
-/// operator put it only along the strip: its address and its place on the strip are
-/// the strip's, and are rewritten. Everything else about it — a name somebody typed, a
-/// layer — survives a count change.
-pub fn plan(head: &Fixture, strip: PixelStrip, cells: &[Fixture]) -> StripPlan {
-    let (serial, head_no) = match &head.address {
-        FixtureAddress::OpenHaunt { serial, head, .. } => (serial.clone(), head.unwrap_or(0)),
-        FixtureAddress::Dmx { .. } => (String::new(), 0),
-    };
-    let object_id = strip_object_id(&serial, head_no);
-    let mut new_head = head.clone();
-    if let FixtureAddress::OpenHaunt { strip: s, .. } = &mut new_head.address {
-        *s = Some(strip.clone());
-    }
-
-    let object = SceneObject {
-        id: object_id,
-        name: head.name.clone(),
-        kind: SceneObjectKind::Group,
-        transform: Transform::default(),
-        parent: None,
-        layer: head.layer,
-        class: None,
-        geometry: Vec::new(),
-        symbol: None,
-        catalog: None,
-        properties: serde_json::Value::Null,
-        locked: false,
-        weight_kg: None,
-    };
-
-    let wanted: Vec<(Uuid, DmxBreak)> = if strip.mode == StripMode::Sacn {
-        strip
-            .layout()
-            .into_iter()
-            .enumerate()
-            .map(|(index, at)| (cell_id(&serial, head_no, index as u16), at))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let cell_type = cell_type(strip.rgbw());
-
-    let mut create = Vec::new();
-    let mut update = Vec::new();
-    for (index, (id, at)) in wanted.iter().enumerate() {
-        let address = FixtureAddress::Dmx { mode: DEFAULT_MODE.into(), breaks: vec![*at] };
-        let position = Some(Transform::at(Vec3 { x: index as f32 * strip.pitch_m, y: 0.0, z: 0.0 }));
-        match cells.iter().find(|c| c.id == *id) {
-            Some(existing) => {
-                let mut cell = existing.clone();
-                cell.address = address;
-                cell.position = position;
-                cell.parent = Some(object_id);
-                cell.fixture_type_id = cell_type.id;
-                let same = serde_json::to_value(&cell).ok() == serde_json::to_value(existing).ok();
-                if !same {
-                    update.push(cell);
-                }
-            }
-            None => create.push(Fixture {
-                id: *id,
-                name: format!("{} {}", head.name, index + 1),
-                fixture_type_id: cell_type.id,
-                address,
-                position,
-                parent: Some(object_id),
-                layer: head.layer,
-                unit_number: Some(index as u32 + 1),
-                ..Fixture::default()
-            }),
+        for (n, emitter) in emitters.iter().enumerate() {
+            let offset = start + n as u16;
+            footprint[break_index] = footprint[break_index].max(offset);
+            channels.push(DmxChannelLayout {
+                parameter_key: key.clone(),
+                break_index: break_index as u8,
+                offsets: vec![offset],
+                default: 0,
+                functions: Vec::new(),
+                emitter: Some(emitter.name.clone()),
+            });
         }
     }
-    let delete = cells
-        .iter()
-        .filter(|c| !wanted.iter().any(|(id, _)| *id == c.id))
-        .map(|c| c.id)
-        .collect();
 
-    let sacn = strip.mode == StripMode::Sacn;
-    let group = sacn.then(|| Group {
-        id: strip_group_id(&serial, head_no),
-        name: head.name.clone(),
-        color: None,
-        query: SelectionQuery {
-            clauses: vec![
-                SelectionClause {
-                    combine: SelectionCombine::Add,
-                    term: SelectionTerm::Hanging { object: object_id },
-                },
-                SelectionClause {
-                    combine: SelectionCombine::Keep,
-                    term: SelectionTerm::OfType { type_id: cell_type.id },
-                },
-            ],
-            // Along the strip, pixel 0 first, which is the order a chase runs in.
-            order: SelectionOrder::Manual { order: wanted.iter().map(|(id, _)| *id).collect() },
-        },
-    });
-
-    StripPlan {
-        head: new_head,
-        object,
-        cell_type: sacn.then_some(cell_type),
-        group,
-        create,
-        update,
-        delete,
+    FixtureType {
+        id: Uuid::new_v5(
+            &NAMESPACE,
+            format!("strip/{}/{}/{address}", strip.count, strip.channels()).as_bytes(),
+        ),
+        name: name.clone(),
+        manufacturer: "OpenHaunt".into(),
+        long_name: name,
+        channel_count: footprint.first().copied().unwrap_or(0),
+        parameters: vec![ParameterDefinition {
+            emitters,
+            per_cell: true,
+            ..ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
+        }],
+        dmx_modes: vec![DmxMode { name: DEFAULT_MODE.into(), breaks: footprint, channels }],
+        physical: FixturePhysical::default(),
+        source: FixtureTypeSource::Node,
+        cells: strip.count,
+        ..FixtureType::default()
     }
 }
 
@@ -458,20 +335,6 @@ mod tests {
         }
     }
 
-    fn head() -> Fixture {
-        Fixture {
-            id: crate::types::openhaunt::head_fixture_id("4d5e6f", 2),
-            name: "Gate strip".into(),
-            fixture_type_id: Uuid::nil(),
-            address: FixtureAddress::OpenHaunt {
-                serial: "4d5e6f".into(),
-                universe: None,
-                head: Some(2),
-                strip: None,
-            },
-            ..Fixture::default()
-        }
-    }
 
     #[test]
     fn three_hundred_rgb_pixels_spill_into_a_second_universe_at_170() {
@@ -505,56 +368,9 @@ mod tests {
         assert_eq!(strip(2, "RGB", 7, 511).universes(), vec![8]);
     }
 
-    #[test]
-    fn an_effect_strip_reads_no_universes_and_has_no_cells() {
-        let mut s = strip(60, "GRB", 1, 1);
-        s.mode = StripMode::Effect;
-        assert!(s.universes().is_empty());
-        let p = plan(&head(), s, &[]);
-        assert!(p.create.is_empty() && p.group.is_none() && p.cell_type.is_none());
-    }
 
-    #[test]
-    fn a_sacn_strip_is_a_cell_per_pixel_along_its_object() {
-        let p = plan(&head(), strip(4, "GRB", 9, 1), &[]);
-        assert_eq!(p.create.len(), 4);
-        let object = strip_object_id("4d5e6f", 2);
-        assert!(p.create.iter().all(|c| c.parent == Some(object)));
-        assert_eq!(p.create[3].position.unwrap().position.x, 0.3);
-        assert_eq!(p.create[1].address.breaks()[0], DmxBreak { universe: 9, address: 4 });
-        assert_eq!(p.head.address.strip().unwrap().count, 4);
-        let group = p.group.unwrap();
-        assert_eq!(
-            group.query.order,
-            SelectionOrder::Manual { order: p.create.iter().map(|c| c.id).collect() },
-            "a chase runs along the strip",
-        );
-    }
 
-    #[test]
-    fn a_strip_that_shrinks_and_grows_keeps_its_cells() {
-        let first = plan(&head(), strip(4, "GRB", 9, 1), &[]);
-        let shrunk = plan(&head(), strip(2, "GRB", 9, 1), &first.create);
-        assert_eq!(shrunk.delete, vec![first.create[2].id, first.create[3].id]);
-        assert!(shrunk.create.is_empty() && shrunk.update.is_empty(), "nothing else moved");
 
-        let mut named = first.create[1].clone();
-        named.name = "The one by the gate".into();
-        let moved = plan(&head(), strip(4, "GRB", 20, 1), &[first.create[0].clone(), named]);
-        assert_eq!(moved.create.len(), 2, "pixels 3 and 4 come back with their own ids");
-        assert_eq!(moved.create[0].id, first.create[2].id);
-        assert_eq!(moved.update.len(), 2, "and the two that stayed move universe");
-        assert_eq!(moved.update[1].name, "The one by the gate");
-    }
-
-    #[test]
-    fn rgbw_cells_carry_a_white_channel() {
-        let t = cell_type(true);
-        assert_eq!(t.dmx_modes[0].breaks, vec![4]);
-        assert_eq!(t.dmx_modes[0].channels[3].emitter.as_deref(), Some("White"));
-        assert!(t.physical.pixel);
-        assert_ne!(cell_type(true).id, cell_type(false).id);
-    }
 
     #[test]
     fn a_node_running_something_else_is_put_back() {
@@ -586,5 +402,49 @@ mod tests {
         assert!(strip(10, "RGBW", 1, 1).problem(Some(&pixels)).is_some());
         assert!(strip(10, "GRB", 0, 1).problem(Some(&pixels)).is_some());
         assert!(strip(10, "GRB", 1, 1).problem(Some(&pixels)).is_none());
+    }
+
+    #[test]
+    fn an_effect_strip_reads_no_universes() {
+        let mut s = strip(60, "GRB", 1, 1);
+        s.mode = StripMode::Effect;
+        assert!(s.universes().is_empty());
+    }
+
+    #[test]
+    fn a_sacn_strip_is_one_fixture_with_a_cell_per_pixel() {
+        let t = strip_type(&strip(4, "GRB", 9, 1));
+        assert_eq!(t.cells, 4);
+        assert!(t.has_cells());
+        let keys: Vec<&str> = t.dmx_modes[0].channels.iter().map(|c| c.parameter_key.as_str()).collect();
+        assert_eq!(&keys[..4], ["ColorRgb@1", "ColorRgb@1", "ColorRgb@1", "ColorRgb@2"]);
+        assert_eq!(t.dmx_modes[0].channels[3].offsets, vec![4], "pixel 2 starts at 4");
+        assert_eq!(t.dmx_modes[0].breaks, vec![12]);
+    }
+
+    #[test]
+    fn a_strip_across_two_universes_is_two_breaks() {
+        let s = strip(300, "GRB", 5, 1);
+        assert_eq!(s.placement(), vec![DmxBreak { universe: 5, address: 1 }, DmxBreak { universe: 6, address: 1 }]);
+        let t = strip_type(&s);
+        assert_eq!(t.dmx_modes[0].breaks, vec![510, 390]);
+        let pixel_171: Vec<_> =
+            t.dmx_modes[0].channels.iter().filter(|c| c.parameter_key == "ColorRgb@171").collect();
+        assert!(pixel_171.iter().all(|c| c.break_index == 1));
+        assert_eq!(pixel_171[0].offsets, vec![1]);
+    }
+
+    #[test]
+    fn rgbw_pixels_carry_a_white_channel_and_a_type_of_their_own() {
+        let rgbw = strip_type(&strip(2, "GRBW", 1, 1));
+        assert_eq!(rgbw.dmx_modes[0].channels[3].emitter.as_deref(), Some("White"));
+        assert_eq!(rgbw.dmx_modes[0].breaks, vec![8]);
+        assert_ne!(rgbw.id, strip_type(&strip(2, "GRB", 1, 1)).id);
+    }
+
+    #[test]
+    fn a_strip_moved_to_another_universe_keeps_its_type() {
+        assert_eq!(strip_type(&strip(60, "GRB", 1, 1)).id, strip_type(&strip(60, "GRB", 7, 1)).id);
+        assert_ne!(strip_type(&strip(60, "GRB", 1, 1)).id, strip_type(&strip(60, "GRB", 1, 100)).id);
     }
 }

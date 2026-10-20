@@ -188,6 +188,9 @@ pub fn attribute_for(kind: &ParameterKind) -> String {
         ParameterKind::Humidity => "Control1".into(),
         ParameterKind::AirQuality => "Control1".into(),
         ParameterKind::Text => "Control1".into(),
+        // A cell's attribute is its parameter's: GDTF says which cell by the geometry
+        // a channel sits on, never by the attribute name.
+        ParameterKind::Cell { of, .. } => attribute_for(of),
     }
 }
 

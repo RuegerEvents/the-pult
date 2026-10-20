@@ -29,6 +29,7 @@ import type {
 	Sequence
 } from '$lib/generated/index.js';
 import { parameterKey } from '$lib/patch.js';
+import { kindOn, splitTarget } from '$lib/effectPool.js';
 import {
 	applyPreset,
 	entryId,
@@ -175,11 +176,15 @@ export async function setEffect(
 	specs: Record<string, EffectSpec>
 ): Promise<void> {
 	const data = showData();
-	const key = parameterKey(kind);
 	const at = Date.now();
 	const current = new Map(held.map((entry) => [entry.id, entry]));
 
-	for (const [fixtureId, spec] of Object.entries(specs)) {
+	// Keyed by target: a fixture, or `fixture@cell` for one cell of a multi-cell one,
+	// which holds the parameter under its cell's own kind.
+	for (const [target, spec] of Object.entries(specs)) {
+		const fixtureId = splitTarget(target).fixture;
+		const heldKind = kindOn(kind, target);
+		const key = parameterKey(heldKind);
 		const id = entryId(fixtureId, key);
 		const anchored = { ...spec, t0: at };
 		// A value pending from a fader drag would land after this and cover it.
@@ -191,7 +196,7 @@ export async function setEffect(
 			await data.programmer_values.create({
 				id,
 				fixture_id: fixtureId,
-				parameter_kind: kind,
+				parameter_kind: heldKind,
 				// Where the parameter falls back to if the effect cannot be rendered.
 				value: spec.low,
 				effect: anchored,

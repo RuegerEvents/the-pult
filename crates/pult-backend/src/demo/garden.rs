@@ -38,6 +38,7 @@ use pult_schema::types::{
     effect_template::{default_effect_templates, EffectTemplate},
     fixture::{Fixture, FixtureAddress, ParameterKind, ParameterValue, Vec3},
     flow::{FlowNodeKind, IfRunning, TriggerAction, TriggerCondition, TriggerSource},
+    group::Element,
     mount::Mount,
     openhaunt::{self, NodeDescription},
     parameter_key,
@@ -165,9 +166,9 @@ struct Node {
     serial: &'static str,
     /// Head 0: the relays and the two sensors.
     node: Uuid,
-    /// The strips' head fixtures, and for an sACN strip its cells along it.
+    /// The strips' head fixtures, and for an sACN strip its pixels along it.
     strips: [Uuid; 2],
-    cells: [Vec<Uuid>; 2],
+    cells: [Vec<Element>; 2],
 }
 
 // ── The look of the place ────────────────────────────────────────────────────
@@ -444,14 +445,14 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     let fire: Vec<Uuid> = tanks.iter().copied().step_by(3).collect();
     let candle: Vec<Uuid> = tanks.iter().copied().skip(1).step_by(3).collect();
     let flicker: Vec<Uuid> = tanks.iter().copied().skip(2).step_by(3).collect();
-    halloween.captures.extend(from_template(template("Fire"), &fire, &kinds_of));
-    halloween.captures.extend(from_template(template("Candle"), &candle, &kinds_of, ));
-    halloween.captures.extend(from_template(template("Flicker"), &flicker, &kinds_of));
+    halloween.captures.extend(from_template(template("Fire"), &whole(&fire), &kinds_of));
+    halloween.captures.extend(from_template(template("Candle"), &whole(&candle), &kinds_of));
+    halloween.captures.extend(from_template(template("Flicker"), &whole(&flicker), &kinds_of));
     // The gate breathes purple.
     for par in &gate {
         halloween.captures.push(hue(*par, 0.5, 0.0, 1.0));
     }
-    halloween.captures.extend(from_template(template("Breathing"), &gate, &|_| vec![ParameterKind::Intensity]));
+    halloween.captures.extend(from_template(template("Breathing"), &whole(&gate), &|_| vec![ParameterKind::Intensity]));
     // The lanterns on the landscape nodes' relays, and the pumpkins on fire.
     for name in landscape {
         for relay in 0..2 {
@@ -465,7 +466,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     for tank in &tanks {
         late.captures.push(capture(*tank, ParameterKind::ColorRgb, ParameterValue::rgb(0.6, 0.0, 0.0)));
     }
-    late.captures.extend(from_template(template("Flicker"), &tanks, &|_| vec![ParameterKind::Intensity]));
+    late.captures.extend(from_template(template("Flicker"), &whole(&tanks), &|_| vec![ParameterKind::Intensity]));
     for par in &gate {
         late.captures.push(level(*par, 0.3));
     }
@@ -510,9 +511,17 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             // white the moment the area wakes.
             1 => {
                 let cells = &this.cells[0];
-                rest.captures.extend(from_template(template("Chase"), cells, &|_| vec![ParameterKind::ColorRgb]));
+                // The pool's chase, run in color: a pixel has no dimmer of its own.
+                let mut chase = template("Chase").clone();
+                for layer in &mut chase.layers {
+                    layer.kind = ParameterKind::ColorRgb;
+                    layer.low = ParameterValue::rgb(0.0, 0.0, 0.0);
+                    layer.high = ParameterValue::rgb(0.6, 0.0, 0.0);
+                }
+                rest.captures.extend(from_template(&chase, cells, &|_| vec![ParameterKind::ColorRgb]));
                 for cell in cells {
-                    scare.captures.push(capture(*cell, ParameterKind::ColorRgb, ParameterValue::rgb(1.0, 1.0, 1.0)));
+                    let kind = ParameterKind::ColorRgb.in_cell(cell.cell.unwrap_or(1));
+                    scare.captures.push(capture(cell.fixture, kind, ParameterValue::rgb(1.0, 1.0, 1.0)));
                 }
             }
             _ => {}
@@ -839,7 +848,7 @@ async fn patch_node(
     }
 
     let mut strips = [Uuid::nil(); 2];
-    let mut cells: [Vec<Uuid>; 2] = [Vec::new(), Vec::new()];
+    let mut cells: [Vec<Element>; 2] = [Vec::new(), Vec::new()];
     let mut node = Uuid::nil();
     for head in description.head_numbers() {
         let fixture_type = openhaunt::head_type_from(V0_MODULE, "Node V0", &description, head, &pixels.effects);
@@ -889,26 +898,16 @@ async fn patch_node(
         }
         strips[usize::from(head - 1)] = fixture.id;
         match strip.filter(|s| s.mode == StripMode::Sacn) {
+            // A strip the console draws is one fixture of the strip's own type, a cell
+            // per pixel, placed where the strip starts.
             Some(strip) => {
-                // The cells the strip's plan says, hung off the strip's own object,
-                // which is placed where the strip runs.
-                let plan = pixels::plan(&fixture, strip, &[]);
-                if let Some(cell_type) = &plan.cell_type {
-                    if made.insert(cell_type.id) {
-                        into.create("fixture_types", cell_type).await?;
-                    }
+                let strip_type = pixels::strip_type(&strip);
+                if made.insert(strip_type.id) {
+                    into.create("fixture_types", &strip_type).await?;
                 }
-                let object = SceneObject { transform: at(place.x, place.y, place.z), ..plan.object.clone() };
-                into.create("scene_objects", &object).await?;
-                let head_fixture = Fixture { position: Some(Transform::default()), parent: Some(object.id), ..plan.head.clone() };
-                into.create("fixtures", &head_fixture).await?;
-                for cell in &plan.create {
-                    into.create("fixtures", cell).await?;
-                    cells[usize::from(head - 1)].push(cell.id);
-                }
-                if let Some(group) = &plan.group {
-                    into.create("groups", group).await?;
-                }
+                into.create("fixtures", &Fixture { fixture_type_id: strip_type.id, ..fixture.clone() }).await?;
+                cells[usize::from(head - 1)] =
+                    (1..=strip.count).map(|cell| Element { fixture: fixture.id, cell: Some(cell) }).collect();
             }
             None => into.create("fixtures", &fixture).await?,
         }
@@ -1019,18 +1018,27 @@ fn node_effect(strip: Uuid, effect: &str, (r, g, b): (f32, f32, f32), brightness
 /// A pool template, applied to some fixtures the way the Effects panel applies one:
 /// one effect id per layer across the selection, each fixture's phase from the
 /// template's spread, and the template named so the panel can say where it came from.
+/// A list of fixtures as the elements of a selection: each one whole.
+fn whole(fixtures: &[Uuid]) -> Vec<Element> {
+    fixtures.iter().map(|f| Element { fixture: *f, cell: None }).collect()
+}
+
 fn from_template(
     template: &EffectTemplate,
-    fixtures: &[Uuid],
+    elements: &[Element],
     kinds_of: &dyn Fn(Uuid) -> Vec<ParameterKind>,
 ) -> Vec<ParameterCapture> {
     let mut captures = Vec::new();
     for layer in &template.layers {
         let effect_id = id();
-        let chosen: Vec<Uuid> =
-            fixtures.iter().copied().filter(|f| kinds_of(*f).contains(&layer.kind)).collect();
+        let chosen: Vec<&Element> =
+            elements.iter().filter(|e| kinds_of(e.fixture).contains(&layer.kind)).collect();
         let offsets = phases(layer.spread, chosen.len(), layer.spread_cycles);
-        for (fixture, phase) in chosen.iter().zip(offsets) {
+        for (element, phase) in chosen.iter().zip(offsets) {
+            let (fixture, kind) = match element.cell {
+                Some(cell) => (&element.fixture, layer.kind.in_cell(cell)),
+                None => (&element.fixture, layer.kind.clone()),
+            };
             captures.push(ParameterCapture {
                 effect: Some(EffectSpec {
                     effect_id,
@@ -1045,7 +1053,7 @@ fn from_template(
                     t0: None,
                     template: Some(template.id),
                 }),
-                ..capture(*fixture, layer.kind.clone(), layer.low.clone())
+                ..capture(*fixture, kind, layer.low.clone())
             });
         }
     }

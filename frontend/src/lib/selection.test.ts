@@ -4,7 +4,9 @@ import { describe, it, expect } from 'vitest';
 
 import type { Fixture, SceneObject, Vec3 } from './generated/index.js';
 import {
+	cellSpansText,
 	describe as describeQuery,
+	elements,
 	evaluate,
 	EMPTY_QUERY,
 	idsQuery,
@@ -13,6 +15,7 @@ import {
 	isManualList,
 	NO_ORDER,
 	normalize,
+	parseCellSpans,
 	sortSelection,
 	type SelectionQuery
 } from './selection.js';
@@ -379,5 +382,47 @@ describe('the corpus the station agrees with', () => {
 		expect(corpus.rig.length).toBeGreaterThanOrEqual(5);
 		expect(corpus.cases.length).toBeGreaterThanOrEqual(15);
 		expect(corpus.rig.some((f) => f.position === null)).toBe(true);
+	});
+});
+
+/**
+ * The other half of the corpus: how a selection's fixtures become the elements it
+ * acts on. `every_elements_case_in_the_corpus` in `selection_corpus.rs` reads the same.
+ */
+describe('the elements the station agrees with', () => {
+	type Case = {
+		name: string;
+		picked: string[];
+		cells: { from: number; to: number }[];
+		counts: Record<string, number>;
+		expected: { fixture: string; cell: number | null }[];
+	};
+	const corpus: { elements: Case[] } = JSON.parse(
+		readFileSync(new URL('../../../testdata/selection-queries.json', import.meta.url), 'utf8')
+	);
+	for (const c of corpus.elements) {
+		it(c.name, () => {
+			expect(elements(c.picked, c.cells, (id) => c.counts[id] ?? 0)).toEqual(c.expected);
+		});
+	}
+	it('is still worth reading', () => {
+		expect(corpus.elements.length).toBeGreaterThanOrEqual(6);
+	});
+});
+
+describe('typing a cell sub-selection', () => {
+	it('reads ranges, single cells, backwards ranges and lists', () => {
+		expect(parseCellSpans('1-20')).toEqual([{ from: 1, to: 20 }]);
+		expect(parseCellSpans(' 5 ')).toEqual([{ from: 5, to: 5 }]);
+		expect(parseCellSpans('20-1, 30')).toEqual([{ from: 20, to: 1 }, { from: 30, to: 30 }]);
+		expect(parseCellSpans('')).toEqual([]);
+	});
+	it('refuses what is not a cell', () => {
+		expect(parseCellSpans('0')).toBeNull();
+		expect(parseCellSpans('a-b')).toBeNull();
+		expect(parseCellSpans('1-')).toBeNull();
+	});
+	it('writes back what it reads', () => {
+		expect(cellSpansText([{ from: 1, to: 20 }, { from: 5, to: 5 }])).toBe('1-20, 5');
 	});
 });

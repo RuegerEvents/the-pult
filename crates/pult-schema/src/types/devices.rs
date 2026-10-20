@@ -85,10 +85,6 @@ pub struct DiscoveredDevice {
     /// `adopted_fixture_id`.
     #[serde(default)]
     pub head_fixtures: BTreeMap<u8, Uuid>,
-    /// The scene object each strip head's pixels hang off, keyed by head. Derived ids
-    /// the browser has no way to derive, so the station says them.
-    #[serde(default)]
-    pub strip_objects: BTreeMap<u8, Uuid>,
     /// What went wrong putting this node into the shape the show says, in words: a
     /// strip the node refused, a virtual module that wins over its strips.
     #[serde(default)]

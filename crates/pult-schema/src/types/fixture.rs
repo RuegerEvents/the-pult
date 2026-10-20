@@ -139,6 +139,25 @@ impl FixtureAddress {
         }
     }
 
+    /// Where this fixture's DMX bytes go: the mode and a place per break.
+    ///
+    /// A DMX fixture says so on its address. A node's strip patched in `sacn` mode is
+    /// the other thing that answers: its pixels go out in universes the node reads, laid
+    /// out by [`crate::types::pixels::PixelStrip::placement`] against the mode its type
+    /// has. Everything that renders or decodes DMX asks this rather than matching on
+    /// the address, so a strip needs nothing taught.
+    pub fn dmx_placement(&self) -> Option<(&str, Cow<'_, [DmxBreak]>)> {
+        match self {
+            FixtureAddress::Dmx { mode, breaks } => Some((mode.as_str(), Cow::Borrowed(breaks.as_slice()))),
+            FixtureAddress::OpenHaunt { strip: Some(strip), .. }
+                if strip.mode == crate::types::pixels::StripMode::Sacn =>
+            {
+                Some((DEFAULT_MODE, Cow::Owned(strip.placement())))
+            }
+            FixtureAddress::OpenHaunt { .. } => None,
+        }
+    }
+
     /// How a strip head is patched, for one that is.
     pub fn strip(&self) -> Option<&crate::types::pixels::PixelStrip> {
         match self {
@@ -192,6 +211,59 @@ pub enum ParameterKind {
     /// console has never heard of. The name it gave is the whole identity: it is
     /// what the operator sees and what the parameter key is built from.
     Named(String),
+    /// One cell of a multi-cell fixture's per-cell parameter: the seventh pixel's
+    /// color, the third segment of a bar. Counted from 1, spelled `ColorRgb@7` as a
+    /// key.
+    ///
+    /// Part of the kind rather than a field beside it, for the reason `Gobo(2)` is:
+    /// everything in the console is keyed by a fixture and a kind — the programmer,
+    /// a capture, a preset, a running fade, a take — so a cell that is part of the
+    /// kind reaches all of them with no field added and no consumer forked. Never
+    /// nested: [`ParameterKind::in_cell`] is how one is made.
+    Cell { cell: u16, of: Box<ParameterKind> },
+}
+
+impl ParameterKind {
+    /// The kind without its cell: what a parameter definition is declared as, and
+    /// what anything classifying a kind (fade groups, preset tags, labels) asks.
+    pub fn base(&self) -> &ParameterKind {
+        match self {
+            ParameterKind::Cell { of, .. } => of.base(),
+            kind => kind,
+        }
+    }
+
+    /// Which cell this is, for a per-cell kind.
+    pub fn cell(&self) -> Option<u16> {
+        match self {
+            ParameterKind::Cell { cell, .. } => Some(*cell),
+            _ => None,
+        }
+    }
+
+    /// This kind, in one cell. A cell of a cell is the inner kind in the new cell.
+    pub fn in_cell(&self, cell: u16) -> ParameterKind {
+        ParameterKind::Cell { cell, of: Box::new(self.base().clone()) }
+    }
+}
+
+/// The separator between a key and its cell: `ColorRgb@7`.
+pub const CELL_SEPARATOR: char = '@';
+
+/// A key split into the parameter it is of and the cell it is in.
+///
+/// `ColorRgb@7` is `("ColorRgb", Some(7))`; a key with no cell, or one whose tail is
+/// not a number (a `Named` port somebody called `a@b`), is the whole key and no cell.
+pub fn split_cell(key: &str) -> (&str, Option<u16>) {
+    match key.rsplit_once(CELL_SEPARATOR) {
+        Some((base, cell)) if !cell.is_empty() && cell.bytes().all(|b| b.is_ascii_digit()) => {
+            match cell.parse::<u16>() {
+                Ok(n) if n >= 1 => (base, Some(n)),
+                _ => (key, None),
+            }
+        }
+        _ => (key, None),
+    }
 }
 
 // What a parameter can be, and the arithmetic over it, live in `pult-render`: the
@@ -339,10 +411,6 @@ pub struct FixturePhysical {
     /// cone should be drawn at, instead of a constant that is right for no fixture.
     #[serde(default)]
     pub beam_angle_deg: Option<f32>,
-    /// A point of light with no beam: one pixel of a strip. The rig view draws a dot in
-    /// its color where it would otherwise draw a lantern and a cone.
-    #[serde(default)]
-    pub pixel: bool,
 }
 
 /// A socket on the fixture.
@@ -464,6 +532,10 @@ pub struct ParameterDefinition {
     /// The light sources a color parameter mixes across. Empty on everything else.
     #[serde(default)]
     pub emitters: Vec<Emitter>,
+    /// Whether this parameter exists once per cell, on a type with cells: a bar's RGB
+    /// is, its master dimmer is not. See [`FixtureType::cells`].
+    #[serde(default)]
+    pub per_cell: bool,
 }
 
 impl ParameterDefinition {
@@ -479,6 +551,7 @@ impl ParameterDefinition {
     slots: Vec::new(),
     feature_group: None,
     emitters: Vec::new(),
+    per_cell: false,
     }
     }
 
@@ -576,6 +649,13 @@ pub struct FixtureType {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub thumbnail: Option<String>,
+    /// How many cells one of these has: the pixels of a strip, the segments of a bar.
+    /// 0 is a fixture with none, which is almost every fixture. A parameter marked
+    /// [`ParameterDefinition::per_cell`] exists once per cell, as
+    /// [`ParameterKind::Cell`]; the rest exist once.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub cells: u16,
 }
 
 /// What a fixture of this type is drawn as, seen from above.
@@ -640,6 +720,50 @@ impl FixtureType {
         self.dmx_modes.iter().any(|mode| mode.name == name)
     }
 
+    /// The definition a key is read back to: the parameter itself for a whole one,
+    /// and the per-cell parameter for `ColorRgb@7` on a type with at least seven
+    /// cells. The one place a key becomes a parameter, so a cell key and a plain one
+    /// cannot be looked up two ways.
+    pub fn parameter_for_key(&self, key: &str) -> Option<&ParameterDefinition> {
+        let (base, cell) = split_cell(key);
+        self.parameters.iter().find(|p| {
+            parameter_key(&p.kind) == base
+                && match cell {
+                    Some(cell) => p.per_cell && cell <= self.cells,
+                    None => !p.per_cell || self.cells == 0,
+                }
+        })
+    }
+
+    /// The same, from a kind.
+    pub fn parameter_for_kind(&self, kind: &ParameterKind) -> Option<&ParameterDefinition> {
+        self.parameter_for_key(&parameter_key(kind))
+    }
+
+    /// Whether this type has cells, and so per-cell parameters to expand.
+    pub fn has_cells(&self) -> bool {
+        self.cells > 0 && self.parameters.iter().any(|p| p.per_cell)
+    }
+
+    /// Every output an operator can set, as the kind it is held under: a whole
+    /// parameter once, and a per-cell one once per cell, cell by cell. What the
+    /// implicit mode, sending a fixture home and anything else that walks "all of a
+    /// fixture's parameters" iterate.
+    pub fn controls(&self) -> Vec<(ParameterKind, &ParameterDefinition)> {
+        let mut out: Vec<(ParameterKind, &ParameterDefinition)> = output_parameters(self)
+            .filter(|p| !(p.per_cell && self.cells > 0))
+            .map(|p| (p.kind.clone(), p))
+            .collect();
+        if self.cells > 0 {
+            for cell in 1..=self.cells {
+                for p in output_parameters(self).filter(|p| p.per_cell) {
+                    out.push((p.kind.in_cell(cell), p));
+                }
+            }
+        }
+        out
+    }
+
     /// How many channels a mode occupies, per break.
     pub fn footprint(&self, mode: &str) -> Vec<u16> {
         self.mode(mode).breaks.clone()
@@ -653,8 +777,8 @@ impl FixtureType {
     fn implicit_mode(&self) -> DmxMode {
         let mut channels = Vec::new();
         let mut next = 1u16;
-        for parameter in output_parameters(self) {
-            let key = parameter_key(&parameter.kind);
+        for (kind, parameter) in self.controls() {
+            let key = parameter_key(&kind);
             let is_color = matches!(parameter.default_value, ParameterValue::Color { .. });
             let width = if is_color { 3 } else { 1 };
 
@@ -894,6 +1018,9 @@ pub fn parameter_key(kind: &ParameterKind) -> String {
         ParameterKind::AirQuality => "AirQuality".into(),
         ParameterKind::Text => "Text".into(),
         ParameterKind::Named(name) => format!("Named:{name}"),
+        // `@` is `CELL_SEPARATOR`, spelled out because this function is mirrored into
+        // the plugin SDK whole and the constant is not.
+        ParameterKind::Cell { cell, of } => format!("{}@{cell}", parameter_key(of)),
     }
 }
 
@@ -947,11 +1074,7 @@ pub fn home_value_ref_by_key<'a>(
     if let Some(overridden) = fixture.home_values.get(key) {
         return Some(overridden);
     }
-    fixture_type?
-        .parameters
-        .iter()
-        .find(|p| parameter_key(&p.kind) == key)
-        .map(|p| &p.default_value)
+    fixture_type?.parameter_for_key(key).map(|p| &p.default_value)
 }
 
 // ── What is driving a parameter ──────────────────────────────────────
@@ -1194,5 +1317,67 @@ mod tests {
         let text =
             ParameterValue::Text("HELLO".into()).nudged(1.0).expect_err("text cannot be nudged");
         assert!(text.contains("text"), "{text}");
+    }
+
+    // ── Cells ─────────────────────────────────────────────────────────────────
+
+    /// A three-cell bar: a master dimmer for the whole thing, and a color per cell.
+    fn a_bar() -> FixtureType {
+        let mut bar = a_type(vec![
+            ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0)),
+            ParameterDefinition {
+                per_cell: true,
+                emitters: rgb_emitters(),
+                ..ParameterDefinition::new(ParameterKind::ColorRgb, ParameterValue::rgb(0.0, 0.0, 0.0))
+            },
+        ]);
+        bar.cells = 3;
+        bar
+    }
+
+    #[test]
+    fn a_bar_s_controls_are_its_master_and_then_each_cell() {
+        let keys: Vec<String> = a_bar().controls().iter().map(|(kind, _)| parameter_key(kind)).collect();
+        assert_eq!(keys, ["Intensity", "ColorRgb@1", "ColorRgb@2", "ColorRgb@3"]);
+    }
+
+    #[test]
+    fn a_cell_key_is_read_back_to_its_parameter_and_no_further() {
+        let bar = a_bar();
+        assert_eq!(bar.parameter_for_key("ColorRgb@2").unwrap().kind, ParameterKind::ColorRgb);
+        assert!(bar.parameter_for_key("ColorRgb@4").is_none(), "past the last cell");
+        assert!(bar.parameter_for_key("ColorRgb").is_none(), "a per-cell parameter has no whole key");
+        assert!(bar.parameter_for_key("Intensity@1").is_none(), "the master is not per cell");
+        assert_eq!(bar.parameter_for_key("Intensity").unwrap().kind, ParameterKind::Intensity);
+    }
+
+    #[test]
+    fn a_cell_rests_where_its_parameter_does_unless_the_fixture_says_otherwise() {
+        let bar = a_bar();
+        let mut homes = HashMap::new();
+        homes.insert("ColorRgb@2".to_string(), ParameterValue::rgb(1.0, 0.0, 0.0));
+        let fixture = a_fixture(homes);
+        assert_eq!(home_value_by_key(&fixture, Some(&bar), "ColorRgb@1"), Some(ParameterValue::rgb(0.0, 0.0, 0.0)));
+        assert_eq!(home_value_by_key(&fixture, Some(&bar), "ColorRgb@2"), Some(ParameterValue::rgb(1.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn the_implicit_mode_repeats_a_per_cell_parameter_cell_by_cell() {
+        let mode = a_bar().modes().into_owned().remove(0);
+        let placed: Vec<(String, u16)> =
+            mode.channels.iter().map(|c| (c.parameter_key.clone(), c.offsets[0])).collect();
+        assert_eq!(placed[0], ("Intensity".into(), 1));
+        assert_eq!(placed[1], ("ColorRgb@1".into(), 2));
+        assert_eq!(placed[4], ("ColorRgb@2".into(), 5));
+        assert_eq!(placed[9], ("ColorRgb@3".into(), 10));
+        assert_eq!(mode.breaks, vec![10]);
+    }
+
+    #[test]
+    fn a_cell_of_a_cell_is_the_inner_kind_in_the_new_cell() {
+        let seven = ParameterKind::ColorRgb.in_cell(7);
+        assert_eq!(seven.in_cell(3), ParameterKind::ColorRgb.in_cell(3));
+        assert_eq!(seven.base(), &ParameterKind::ColorRgb);
+        assert_eq!(seven.cell(), Some(7));
     }
 }

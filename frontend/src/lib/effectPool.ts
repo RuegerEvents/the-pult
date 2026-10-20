@@ -19,39 +19,108 @@ import type {
 	Spread
 } from './generated/index.js';
 import { phases } from './effects.js';
-import { parameterKey } from './patch.js';
+import { inCell, kindBase, parameterKey, splitCell } from './patch.js';
+
+/**
+ * Something an effect is written onto: a fixture, or one cell of one, spelled
+ * `fixture` or `fixture@cell` — the cell key's own separator, so a target splits the
+ * way a key does. Fixture ids are uuids and never contain one.
+ */
+export type TargetId = string;
+
+/** A selection's elements as targets. */
+export function targetIds(elements: { fixture: string; cell: number | null }[]): TargetId[] {
+	return elements.map((e) => (e.cell === null ? e.fixture : `${e.fixture}@${e.cell}`));
+}
+
+/** A target back into its fixture and cell. */
+export function splitTarget(target: TargetId): { fixture: string; cell: number | null } {
+	const [fixture, cell] = splitCell(target);
+	return { fixture, cell };
+}
+
+/** The kind a layer's parameter is held under on one target: the cell's, on a cell. */
+export function kindOn(kind: ParameterKind, target: TargetId): ParameterKind {
+	const { cell } = splitTarget(target);
+	return cell === null ? kindBase(kind) : inCell(kind, cell);
+}
 
 /** One layer of a template, resolved against a selection. */
 export type LayerApply = {
 	/** Which of the template's layers this came from. */
 	layer: number;
 	kind: ParameterKind;
-	/** The fixtures that have this parameter, in selection order, and their specs. */
-	specs: Record<string, EffectSpec>;
+	/** The targets that have this parameter, in selection order, and their specs. */
+	specs: Record<TargetId, EffectSpec>;
 	/** In the same order, because a record's key order is not a promise. */
-	order: string[];
+	order: TargetId[];
 };
 
-/** Which of `selection` (in its order) have `kind` as an output parameter. */
+/**
+ * Which of `selection`'s targets (in its order) take `kind`, as the targets it is
+ * written to. A cell takes a per-cell parameter as itself; a cell of a fixture whose
+ * parameter is whole (a bar's master dimmer) takes it as the fixture, once.
+ */
 export function havingKind(
 	kind: ParameterKind,
-	selection: string[],
+	selection: TargetId[],
 	fixtures: Map<string, Fixture>,
 	types: Map<string, FixtureType>
-): string[] {
-	const key = parameterKey(kind);
-	return selection.filter((id) => {
+): TargetId[] {
+	const key = parameterKey(kindBase(kind));
+	const out: TargetId[] = [];
+	const seen = new Set<TargetId>();
+	for (const target of selection) {
+		const { fixture: id, cell } = splitTarget(target);
 		const fixture = fixtures.get(id);
 		const type = fixture && types.get(fixture.fixture_type_id);
-		return !!type?.parameters.some(
+		const param = type?.parameters.find(
 			(p) => p.direction === 'Output' && parameterKey(p.kind) === key
 		);
-	});
+		if (!param || !type) continue;
+		const perCell = param.per_cell && type.cells > 0;
+		// A per-cell parameter on a fixture selected whole is every cell of it.
+		const reached: TargetId[] = perCell
+			? cell !== null
+				? [target]
+				: Array.from({ length: type.cells }, (_, i) => `${id}@${i + 1}`)
+			: [id];
+		for (const t of reached) {
+			if (!seen.has(t)) {
+				seen.add(t);
+				out.push(t);
+			}
+		}
+	}
+	return out;
 }
 
 /** The phases a layer gives a selection of `n`, wrapped into one cycle. */
 export function layerPhases(layer: Pick<EffectLayer, 'spread' | 'spread_cycles'>, n: number): number[] {
 	return phases(layer.spread, n, layer.spread_cycles ?? 1);
+}
+
+/**
+ * Phases for targets, either across all of them or **restarting at each fixture**:
+ * three strips chasing in step rather than one chase running along all three.
+ */
+export function targetPhases(
+	layer: Pick<EffectLayer, 'spread' | 'spread_cycles'>,
+	targets: TargetId[],
+	eachFixture: boolean
+): number[] {
+	if (!eachFixture) return layerPhases(layer, targets.length);
+	const groups = new Map<string, number[]>();
+	targets.forEach((t, i) => {
+		const { fixture } = splitTarget(t);
+		groups.set(fixture, [...(groups.get(fixture) ?? []), i]);
+	});
+	const out = new Array<number>(targets.length).fill(0);
+	for (const indices of groups.values()) {
+		const offsets = layerPhases(layer, indices.length);
+		indices.forEach((at, i) => (out[at] = offsets[i] ?? 0));
+	}
+	return out;
 }
 
 /**
@@ -62,11 +131,12 @@ export function layerPhases(layer: Pick<EffectLayer, 'spread' | 'spread_cycles'>
  */
 export function layerSpecs(
 	layer: EffectLayer,
-	ids: string[],
+	ids: TargetId[],
 	template: string | null,
-	effectId: string = crypto.randomUUID()
-): Record<string, EffectSpec> {
-	const offsets = layerPhases(layer, ids.length);
+	effectId: string = crypto.randomUUID(),
+	eachFixture = false
+): Record<TargetId, EffectSpec> {
+	const offsets = targetPhases(layer, ids, eachFixture);
 	const out: Record<string, EffectSpec> = {};
 	ids.forEach((id, i) => {
 		out[id] = {
@@ -99,9 +169,10 @@ export function layerSpecs(
  */
 export function templateApply(
 	template: Pick<EffectTemplate, 'id' | 'layers'>,
-	selection: string[],
+	selection: TargetId[],
 	fixtures: Map<string, Fixture>,
-	types: Map<string, FixtureType>
+	types: Map<string, FixtureType>,
+	eachFixture = false
 ): LayerApply[] {
 	const out: LayerApply[] = [];
 	const colored = new Set(
@@ -109,14 +180,22 @@ export function templateApply(
 			.filter((l) => l.kind === 'ColorRgb')
 			.flatMap((l) => havingKind(l.kind, selection, fixtures, types))
 	);
-	const dimmable = new Set(havingKind('Intensity', selection, fixtures, types));
+	// By fixture: a bar with a master dimmer has a dimmer for all its cells.
+	const dimmable = new Set(
+		havingKind('Intensity', selection, fixtures, types).map((t) => splitTarget(t).fixture)
+	);
 	const colorOnly = havingKind('ColorRgb', selection, fixtures, types).filter(
-		(id) => !dimmable.has(id) && !colored.has(id)
+		(id) => !dimmable.has(splitTarget(id).fixture) && !colored.has(id)
 	);
 	template.layers.forEach((layer, index) => {
 		const order = havingKind(layer.kind, selection, fixtures, types);
 		if (order.length > 0) {
-			out.push({ layer: index, kind: layer.kind, order, specs: layerSpecs(layer, order, template.id || null) });
+			out.push({
+				layer: index,
+				kind: layer.kind,
+				order,
+				specs: layerSpecs(layer, order, template.id || null, undefined, eachFixture)
+			});
 		}
 		if (layer.kind === 'Intensity' && colorOnly.length > 0) {
 			const asColor = intensityAsColor(layer);
@@ -124,7 +203,7 @@ export function templateApply(
 				layer: index,
 				kind: 'ColorRgb',
 				order: colorOnly,
-				specs: layerSpecs(asColor, colorOnly, template.id || null)
+				specs: layerSpecs(asColor, colorOnly, template.id || null, undefined, eachFixture)
 			});
 		}
 	});

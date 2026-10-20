@@ -152,7 +152,10 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 /// 8. A clip goes to a speaker zone rather than to channel numbers: the
 ///    `AudioDestination::Station { channels }` variant is gone, so a generation-7 clip
 ///    routed to channels is a variant nothing in this build can name.
-pub(super) const SCHEMA_GENERATION: i64 = 8;
+/// 9. A pixel strip is one fixture with a cell per pixel, not a fixture per pixel hung
+///    off a scene object: a generation-8 show's cells would sit in the patch as
+///    fixtures of a type nothing makes any more, beside the strip that now draws them.
+pub(super) const SCHEMA_GENERATION: i64 = 9;
 
 /// Say plainly that a showfile is from another build, instead of panicking somewhere
 /// deep in a generated `from_columns`.

@@ -33,10 +33,12 @@
 		gridLevels,
 		pixelSpread,
 		readPixelSpread,
+		splitTarget,
+		targetIds,
 		templateApply
 	} from '$lib/effectPool.js';
 	import { editableParameters, hexToRgb, rgbToHex } from '$lib/programmer.js';
-	import { displayLabel, parameterKey } from '$lib/patch.js';
+	import { displayLabel, hasCells, parameterKey } from '$lib/patch.js';
 	import { effectiveHz } from '$lib/speedmasters.js';
 	import {
 		applyLayers,
@@ -47,7 +49,7 @@
 	} from '$lib/stores/effectPool.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { byKey, entries, setValue } from '$lib/stores/programmer.js';
-	import { selection } from '$lib/stores/selection.js';
+	import { elements, selection } from '$lib/stores/selection.js';
 	import { collection } from '$lib/stores/show.js';
 	import ValueControl from '../programmer/controls/ValueControl.svelte';
 	import Card from '../objects/Card.svelte';
@@ -63,15 +65,27 @@
 
 	const fixtureById = $derived(new Map<string, Fixture>($fixtures.map((f) => [f.id, f])));
 	const typeById = $derived(new Map<string, FixtureType>($types.map((t) => [t.id, t])));
-	/** The selection in its own order: a strip's cells along it, a group as it was saved. */
-	const order = $derived($selection.filter((id) => fixtureById.has(id)));
-	const picked = $derived(order.map((id) => fixtureById.get(id)!));
+	/**
+	 * What the selection acts on, in its own order: each fixture, and a strip's cells
+	 * along it — one target each, so a chase spreads across pixels and pars alike.
+	 */
+	const order = $derived(targetIds($elements.filter((e) => fixtureById.has(e.fixture))));
+	const picked = $derived(
+		$selection.filter((id) => fixtureById.has(id)).map((id) => fixtureById.get(id)!)
+	);
 	const shared = $derived(editableParameters($types, picked));
 
-	/** Every selected fixture is a pixel of a strip the console draws. */
+	/** Every selected fixture has cells: a strip the console draws, or a bar. */
 	const pixels = $derived(
-		picked.length > 1 && picked.every((f) => typeById.get(f.fixture_type_id)?.physical.pixel)
+		picked.length > 0 && picked.every((f) => hasCells(typeById.get(f.fixture_type_id)))
 	);
+	/**
+	 * Several multi-cell fixtures: one spread along all their cells end to end, or
+	 * restarting at each fixture so they run in step. Not stored with a template,
+	 * because it is a choice about this selection rather than about the effect.
+	 */
+	let eachFixture = $state(false);
+	const multiCell = $derived(picked.filter((f) => hasCells(typeById.get(f.fixture_type_id))).length > 1);
 	/** Every selected fixture is a strip the node draws itself. */
 	const nodeStrips = $derived(
 		picked.length > 0 &&
@@ -203,13 +217,15 @@
 	function load(template: EffectTemplate) {
 		layers = template.layers.map((l) => ({ ...l }));
 		// Open on a layer this selection can take: fire on a strip of pixels is its color.
-		const reached = templateApply(template, order, fixtureById, typeById);
+		const reached = templateApply(template, order, fixtureById, typeById, eachFixture);
 		active = Math.max(0, reached.length ? reached[0].layer : 0);
 		from = template;
 		notice = null;
 	}
 
-	const applies = $derived(templateApply({ id: from?.id ?? '', layers }, order, fixtureById, typeById));
+	const applies = $derived(
+		templateApply({ id: from?.id ?? '', layers }, order, fixtureById, typeById, eachFixture)
+	);
 	/** The fixtures the layer being edited reaches, as itself or as a pixel's color. */
 	const reaching = $derived(
 		applies.filter((a) => layers[a.layer] === layer).flatMap((a) => a.order)
@@ -218,14 +234,19 @@
 
 	async function apply() {
 		const written = await applyLayers(applies);
+		const reached = applies.flatMap((a) => a.order);
+		const fixtures = new Set(reached.map((t) => splitTarget(t).fixture)).size;
+		const cells = new Set(reached.filter((t) => splitTarget(t).cell !== null)).size;
 		notice = written
-			? `Applied to ${new Set(applies.flatMap((a) => a.order)).size} fixtures`
+			? cells > 0
+				? `Applied to ${cells} cells of ${fixtures} fixture${fixtures === 1 ? '' : 's'}`
+				: `Applied to ${fixtures} fixtures`
 			: 'Nothing selected can take this effect';
 	}
 
 	async function applyTemplate(template: EffectTemplate) {
 		load(template);
-		await applyLayers(templateApply(template, order, fixtureById, typeById));
+		await applyLayers(templateApply(template, order, fixtureById, typeById, eachFixture));
 	}
 
 	// "Open in Effects" from the menu, the Inspector or ⌘K lands here.
@@ -264,9 +285,12 @@
 	const running = $derived.by(() => {
 		if (!layer) return 0;
 		const key = parameterKey(layer.kind);
-		const chosen = new Set(order);
+		const chosen = new Set(picked.map((f) => f.id));
 		return $entries.filter(
-			(e) => e.effect && chosen.has(e.fixture_id) && parameterKey(e.parameter_kind) === key
+			(e) =>
+				e.effect &&
+				chosen.has(e.fixture_id) &&
+				parameterKey(e.parameter_kind).split('@')[0] === key
 		).length;
 	});
 
@@ -309,8 +333,11 @@
 	const effectParam = $derived(shared.find((p) => p.choices.length > 0));
 	const nodeParams = $derived(shared.filter((p) => p !== effectParam));
 
+	/** A node draws its own strip, so these are whole fixtures, never cells. */
+	const nodeStripIds = $derived(picked.map((f) => f.id));
+
 	function heldOr(key: string, fallback: ParameterValue): ParameterValue {
-		const first = order[0];
+		const first = nodeStripIds[0];
 		const held = first ? $byKey.get(`${first}/${key}`) : undefined;
 		return held?.value ?? fallback;
 	}
@@ -318,7 +345,7 @@
 	function nodeEffect(name: string) {
 		if (!effectParam) return;
 		beginGesture();
-		setValue(order, effectParam.kind, { type: 'Text', value: name });
+		setValue(nodeStripIds, effectParam.kind, { type: 'Text', value: name });
 		endGesture();
 	}
 </script>
@@ -396,7 +423,7 @@
 							value={heldOr(param.key, param.defaultValue)}
 							label={param.label}
 							range={param.physical}
-							oninput={(v) => setValue(order, param.kind, v)}
+							oninput={(v) => setValue(nodeStripIds, param.kind, v)}
 						/>
 					</div>
 				{/each}
@@ -432,7 +459,13 @@
 					{/each}
 				</select>
 			</div>
-			<span class="count">{reaching.length} of {picked.length} take {displayLabel(layer.kind)}</span>
+			<span class="count">{reaching.length} of {order.length} take {displayLabel(layer.kind)}</span>
+			{#if multiCell}
+				<label class="each">
+					<input type="checkbox" bind:checked={eachFixture} />
+					each fixture
+				</label>
+			{/if}
 			{#if running > 0}
 				<span class="already">{running} already running</span>
 			{/if}
@@ -742,6 +775,13 @@
 	.already {
 		color: var(--live);
 		font-size: var(--font-xs);
+	}
+	.each {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		color: var(--text-dim);
+		font-size: var(--font-sm);
 	}
 	.head .btn-primary {
 		margin-left: auto;

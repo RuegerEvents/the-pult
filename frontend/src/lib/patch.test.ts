@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 import type {
 	DmxMode,
+	ParameterKind,
 	Fixture,
 	FixtureAddress,
 	FixtureType,
@@ -10,6 +13,7 @@ import {
 	addressLabel,
 	channelRange,
 	clashingFixtures,
+	controls,
 	DEFAULT_MODE,
 	defaultDirectionFor,
 	defaultValueFor,
@@ -20,18 +24,24 @@ import {
 	fixtureMode,
 	footprint,
 	formatValue,
+	hasCells,
+	inCell,
 	isDmx,
+	kindBase,
+	kindCell,
 	kindFromLabel,
 	kindOption,
 	kindLabel,
 	modeHas,
 	modeOf,
 	nextFreeAddress,
+	parameterForKey,
 	parameterKey,
 	parameterKindLabel,
-	PARAMETER_KINDS
+	PARAMETER_KINDS,
+	splitCell
 } from './patch.js';
-import { aFixture } from './test-fixtures.js';
+import { aFixture, aFixtureType, aParameter } from './test-fixtures.js';
 
 function aTestFixture(partial: Partial<Fixture> = {}): Fixture {
 	return aFixture({
@@ -352,13 +362,13 @@ describe('the mode a fixture is patched in', () => {
 			connectors: [],
 			leg_height_m: null,
 			operating_temperature: null,
-			beam_angle_deg: null,
-			pixel: false
+			beam_angle_deg: null
 		},
 		geometry: [],
 		source: 'Manual',
 		plan_symbol: 'Auto',
-		thumbnail: null
+		thumbnail: null,
+		cells: 0
 	});
 
 	const inMode = (name: string): FixtureAddress => ({
@@ -467,5 +477,60 @@ describe('what an operator calls a parameter', () => {
 	it('is not the map key', () => {
 		expect(parameterKey({ Gobo: 2 })).toBe('Gobo:2');
 		expect(displayLabel({ Gobo: 2 })).not.toBe(parameterKey({ Gobo: 2 }));
+	});
+});
+
+/**
+ * How a cell is spelled as a key: `testdata/cell-keys.json`, read here and by
+ * `crates/pult-schema/tests/cell_keys.rs`. Every map in the console is keyed by that
+ * string, so a pixel spelled one way here and another on the station is lost.
+ */
+describe('the cell keys the station agrees with', () => {
+	type Corpus = {
+		kinds: { name: string; kind: ParameterKind; key: string }[];
+		keys: { name: string; key: string; base: string; cell: number | null }[];
+	};
+	const corpus: Corpus = JSON.parse(
+		readFileSync(new URL('../../../testdata/cell-keys.json', import.meta.url), 'utf8')
+	);
+	for (const c of corpus.kinds) {
+		it(`spells ${c.name}`, () => expect(parameterKey(c.kind)).toBe(c.key));
+	}
+	for (const c of corpus.keys) {
+		it(`reads ${c.name}`, () => expect(splitCell(c.key)).toEqual([c.base, c.cell]));
+	}
+});
+
+describe('a type with cells', () => {
+	const bar = aFixtureType({
+		cells: 3,
+		parameters: [
+			aParameter({ kind: 'Intensity', default_value: { type: 'Float', value: 0 } }),
+			aParameter({
+				kind: 'ColorRgb',
+				default_value: { type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } },
+				per_cell: true
+			})
+		]
+	});
+	it('lists its master and then each cell', () => {
+		expect(controls(bar).map((c) => parameterKey(c.kind))).toEqual([
+			'Intensity',
+			'ColorRgb@1',
+			'ColorRgb@2',
+			'ColorRgb@3'
+		]);
+	});
+	it('reads a cell key back to its parameter and no further', () => {
+		expect(parameterForKey(bar, 'ColorRgb@2')?.kind).toBe('ColorRgb');
+		expect(parameterForKey(bar, 'ColorRgb@4')).toBeNull();
+		expect(parameterForKey(bar, 'ColorRgb')).toBeNull();
+		expect(parameterForKey(bar, 'Intensity')?.kind).toBe('Intensity');
+		expect(hasCells(bar)).toBe(true);
+	});
+	it('labels a cell the way an operator counts', () => {
+		expect(displayLabel(inCell('ColorRgb', 7))).toBe('Color 7');
+		expect(kindBase(inCell({ Gobo: 2 }, 3))).toEqual({ Gobo: 2 });
+		expect(kindCell(inCell('Pan', 3))).toBe(3);
 	});
 });

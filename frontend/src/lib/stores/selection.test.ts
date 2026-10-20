@@ -217,7 +217,8 @@ describe('what a plugin surface can ask for', () => {
 			selection: {
 				query: {
 					clauses: [{ combine: 'Add', term: { kind: 'OfType', typeId: 'par' } }],
-					order: { kind: 'ByName' }
+					order: { kind: 'ByName' },
+					cells: []
 				}
 			}
 		});
@@ -249,7 +250,8 @@ describe('what a plugin surface can ask for', () => {
 			selection: {
 				query: {
 					clauses: [{ combine: 'Add', term: { kind: 'Everything' } }],
-					order: { kind: 'Manual', order: ['c', 'b'] }
+					order: { kind: 'Manual', order: ['c', 'b'] },
+					cells: []
 				}
 			}
 		});

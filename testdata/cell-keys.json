@@ -1,0 +1,18 @@
+{
+  "_comment": "How a cell of a multi-cell fixture is spelled as a key, and read back. Read by crates/pult-schema/tests/cell_keys.rs and frontend/src/lib/patch.test.ts: the browser and the station must spell ColorRgb@7 the same way, and agree on what is not a cell.",
+  "kinds": [
+    { "name": "a plain kind has no cell", "kind": "ColorRgb", "key": "ColorRgb" },
+    { "name": "a cell is the key, @ and the cell", "kind": { "Cell": { "cell": 7, "of": "ColorRgb" } }, "key": "ColorRgb@7" },
+    { "name": "an indexed kind keeps its index before the cell", "kind": { "Cell": { "cell": 12, "of": { "Gobo": 2 } } }, "key": "Gobo:2@12" },
+    { "name": "a named kind in a cell", "kind": { "Cell": { "cell": 1, "of": { "Named": "Fog output" } } }, "key": "Named:Fog output@1" }
+  ],
+  "keys": [
+    { "name": "no separator is no cell", "key": "Intensity", "base": "Intensity", "cell": null },
+    { "name": "a cell", "key": "ColorRgb@7", "base": "ColorRgb", "cell": 7 },
+    { "name": "an indexed kind in a cell", "key": "Gobo:2@12", "base": "Gobo:2", "cell": 12 },
+    { "name": "a tail that is not a number is part of the name", "key": "Named:a@b", "base": "Named:a@b", "cell": null },
+    { "name": "cell zero is not a cell", "key": "ColorRgb@0", "base": "ColorRgb@0", "cell": null },
+    { "name": "an empty tail is not a cell", "key": "Named:mail@", "base": "Named:mail@", "cell": null },
+    { "name": "only the last separator counts", "key": "Named:a@b@3", "base": "Named:a@b", "cell": 3 }
+  ]
+}

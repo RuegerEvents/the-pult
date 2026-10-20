@@ -29,8 +29,8 @@ import type {
 	StagePlan,
 	Vec3
 } from './generated/index.js';
-import { facing, worldTransform } from './scene.js';
-import { parameterKey } from './patch.js';
+import { eulerToBasis, facing, worldTransform } from './scene.js';
+import { hasCells, inCell, parameterKey } from './patch.js';
 import type { Showing } from './stores/output.js';
 
 // ── Where things are ──────────────────────────────────────────────────────────
@@ -184,6 +184,68 @@ export function fixtureOutput(
 	const switched = asNumber(read({ Switch: 0 }));
 	const level = intensity ?? switched ?? (color ? 1 : 0);
 	return { r: rgb.r, g: rgb.g, b: rgb.b, level: clamp(level) };
+}
+
+// ── Cells ─────────────────────────────────────────────────────────────────────
+
+/**
+ * How far apart a multi-cell fixture's cells are, in meters: a strip's own pitch, a
+ * type's length shared out among its cells, or a tenth of a meter when nothing says.
+ */
+export function cellPitch(fixture: Fixture, type: FixtureType): number {
+	const strip = 'OpenHaunt' in fixture.address ? fixture.address.OpenHaunt.strip : null;
+	if (strip?.pitch_m) return strip.pitch_m;
+	const length = type.physical?.dimensions_m?.x;
+	if (length && type.cells > 0) return length / type.cells;
+	return 0.1;
+}
+
+/**
+ * Where each cell of a multi-cell fixture is, cell 1 first: along the fixture's own X
+ * axis from where it is placed, so a strip runs the way it was hung and a bar lies
+ * along its length. Empty for a fixture with no cells or no place.
+ */
+export function cellPoints(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	objects?: Map<string, SceneObject>
+): Vec3[] {
+	if (!type || !hasCells(type) || !fixture.position) return [];
+	const placed = objects ? worldTransform(fixture.position, fixture.parent, objects) : fixture.position;
+	const basis = eulerToBasis(placed.rotation);
+	const axis = { x: basis[0][0], y: basis[1][0], z: basis[2][0] };
+	const pitch = cellPitch(fixture, type);
+	const from = placed.position;
+	return Array.from({ length: type.cells }, (_, i) => ({
+		x: from.x + axis.x * pitch * i,
+		y: from.y + axis.y * pitch * i,
+		z: from.z + axis.z * pitch * i
+	}));
+}
+
+/**
+ * What each cell is putting out, cell 1 first: its own color, at its own intensity
+ * where intensity is per cell, at the fixture's master where it is not, and at full
+ * where there is neither — a pixel is as bright as its color.
+ */
+export function cellOutputs(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	showing: Showing
+): { r: number; g: number; b: number; level: number }[] {
+	if (!type || !hasCells(type)) return [];
+	const read = (kind: ParameterKind) => showing.value(fixture.id, parameterKey(kind)) ?? undefined;
+	const perCell = (kind: ParameterKind) =>
+		type.parameters.some((p) => p.per_cell && parameterKey(p.kind) === parameterKey(kind));
+	const master = perCell('Intensity') ? undefined : asNumber(read('Intensity'));
+	return Array.from({ length: type.cells }, (_, i) => {
+		const cell = i + 1;
+		const color = read(perCell('ColorRgb') ? inCell('ColorRgb', cell) : 'ColorRgb');
+		const rgb = color?.type === 'Color' ? color.value : { r: 1, g: 1, b: 1 };
+		const own = perCell('Intensity') ? asNumber(read(inCell('Intensity', cell))) : undefined;
+		const level = own ?? master ?? (color ? 1 : 0);
+		return { r: rgb.r, g: rgb.g, b: rgb.b, level: clamp(level) };
+	});
 }
 
 /** That output as a CSS color, dimmed by its own level. */

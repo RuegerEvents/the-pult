@@ -223,7 +223,7 @@
 		<div class="rules">
 			{#each $query.clauses as clause, i (i)}
 				<span class="rule" class:drop={clause.combine === 'Drop'} class:keep={clause.combine === 'Keep'}>
-					{describeQuery({ clauses: [clause], order: $query.order }, $types)}
+					{describeQuery({ clauses: [clause], order: $query.order, cells: [] }, $types)}
 					<button class="rule-x" aria-label="Remove this rule" onclick={() => removeClause(i)}>×</button>
 				</span>
 			{/each}

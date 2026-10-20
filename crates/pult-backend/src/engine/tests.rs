@@ -3228,6 +3228,7 @@ mod groups {
                 term: SelectionTerm::OfType { type_id },
             }],
             order: SelectionOrder::ByName,
+            cells: Vec::new(),
         }
     }
 
@@ -3357,6 +3358,7 @@ mod groups {
                 // A hand order, which is exactly the one that used to live in a
                 // browser store and could not travel.
                 order: SelectionOrder::Manual { order: vec![rig[1].id, rig[0].id] },
+                cells: Vec::new(),
             },
         };
         here.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();

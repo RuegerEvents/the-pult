@@ -64,7 +64,8 @@
 		physical: null,
 		slots: [],
 		feature_group: null,
-		emitters: []
+		emitters: [],
+		per_cell: false
 	});
 
 	/**
@@ -147,15 +148,15 @@
 				connectors: [],
 				leg_height_m: null,
 				operating_temperature: null,
-				beam_angle_deg: null,
-				pixel: false
+				beam_angle_deg: null
 			},
 			geometry: [],
 			source: 'Manual',
 			// Nothing to draw a plan head from yet — no geometry, no thumbnail — so
 			// `Auto` will land on the generic symbol until somebody gives it either.
 			plan_symbol: 'Auto',
-			thumbnail: null
+			thumbnail: null,
+			cells: 0
 		});
 		newName = '';
 		creating = false;

@@ -23,11 +23,9 @@ use pult_schema::{
         devices::{DevicesState, DiscoveredDevice, NodeAudio},
         openhaunt::EffectCapability,
         fixture::{Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDirection},
-        group::Group,
         openhaunt,
         output::{OutputConfig, OutputKind},
         pixels::{self, NodePixels, PixelStrip, StripMode},
-        scene::SceneObject,
     },
 };
 use tokio::sync::{mpsc, oneshot, watch};
@@ -647,12 +645,6 @@ impl DeviceManager {
                         .get(&serial)
                         .map(|d| d.head_fixtures.clone())
                         .unwrap_or_default(),
-                    strip_objects: self
-                        .state
-                        .discovered
-                        .get(&serial)
-                        .map(|d| d.strip_objects.clone())
-                        .unwrap_or_default(),
                     faults: self
                         .state
                         .discovered
@@ -770,11 +762,6 @@ impl DeviceManager {
             device.head_fixtures = on_node()
                 .filter_map(|f| f.address.head().filter(|h| *h != 0).map(|h| (h, f.id)))
                 .collect();
-            device.strip_objects = on_node()
-                .filter(|f| f.address.strip().is_some())
-                .filter_map(|f| f.address.head())
-                .map(|h| (h, pixels::strip_object_id(&device.serial, h)))
-                .collect();
         }
     }
 
@@ -806,8 +793,18 @@ impl DeviceManager {
             if current.is_some_and(|t| !t.source.is_derived_from_a_node()) {
                 continue;
             }
-            let wanted =
-                openhaunt::head_type_from(device.module_type, &device.module_name, description, head, &effects);
+            // A strip in `sacn` mode is drawn by the console, so its type is the strip's
+            // own — a color per pixel — and not the nine ports the node offers for it.
+            let wanted = match fixture.address.strip().filter(|s| s.mode == StripMode::Sacn) {
+                Some(strip) => pixels::strip_type(strip),
+                None => openhaunt::head_type_from(
+                    device.module_type,
+                    &device.module_name,
+                    description,
+                    head,
+                    &effects,
+                ),
+            };
             let stored = types.iter().find(|t| t.id == wanted.id);
             let same = stored.and_then(|t| serde_json::to_value(t).ok())
                 == serde_json::to_value(&wanted).ok();
@@ -868,22 +865,27 @@ impl DeviceManager {
         };
         let mut fixture = None;
         for head in description.head_numbers() {
-            let fixture_type = openhaunt::head_type_from(
+            let node_type = openhaunt::head_type_from(
                 device.module_type,
                 &device.module_name,
                 description,
                 head,
                 &effects,
             );
-            self.ensure_fixture_type(&fixture_type).await?;
             let strip = device
                 .pixels
                 .as_ref()
                 .and_then(|p| p.strip_for_head(head))
                 .map(PixelStrip::from_node);
+            // A strip the node is already running in `sacn` mode is a strip of cells.
+            let fixture_type = match strip.as_ref().filter(|s| s.mode == StripMode::Sacn) {
+                Some(strip) => pixels::strip_type(strip),
+                None => node_type.clone(),
+            };
+            self.ensure_fixture_type(&fixture_type).await?;
             let name = match head {
                 0 => device.name.clone(),
-                _ => format!("{} {}", device.name, fixture_type.name),
+                _ => format!("{} {}", device.name, node_type.name),
             };
             let this = Fixture {
                 // Head 0 is the node's own fixture and was always a fresh id; every other
@@ -900,11 +902,6 @@ impl DeviceManager {
                 ..Fixture::default()
             };
             self.write(create_path("fixtures"), &this).await?;
-            // A strip the node is already running in `sacn` mode is a strip with cells.
-            if let Some(strip) = strip.filter(|s| s.mode == StripMode::Sacn) {
-                let plan = pixels::plan(&this, strip, &[]);
-                self.write_strip_plan(plan, None).await?;
-            }
             if head == 0 {
                 fixture = Some(this);
             }
@@ -939,36 +936,13 @@ impl DeviceManager {
         };
         device.adopted_fixture_id = None;
         device.head_fixtures.clear();
-        device.strip_objects.clear();
         device.faults.clear();
         let online = device.online;
 
-        // Every head, and what each strip in `sacn` mode put in the show for itself: its
-        // cells, the object they hang off and the group that is them.
+        // Every head. A strip is one of them, cells and all.
         let fixtures = self.fixtures().await;
-        let heads: Vec<&Fixture> =
-            fixtures.iter().filter(|f| f.address.serial() == Some(serial)).collect();
-        for head in &heads {
-            let object = pixels::strip_object_id(serial, head.address.head().unwrap_or(0));
-            for cell in fixtures.iter().filter(|f| f.parent == Some(object)) {
-                self.delete("fixtures", cell.id).await?;
-            }
-        }
-        for head in &heads {
+        for head in fixtures.iter().filter(|f| f.address.serial() == Some(serial)) {
             self.delete("fixtures", head.id).await?;
-        }
-        let objects: Vec<SceneObject> = self.read("scene_objects").await;
-        let groups: Vec<Group> = self.read("groups").await;
-        for head in &heads {
-            let number = head.address.head().unwrap_or(0);
-            let object = pixels::strip_object_id(serial, number);
-            if objects.iter().any(|o| o.id == object) {
-                self.delete("scene_objects", object).await?;
-            }
-            let group = pixels::strip_group_id(serial, number);
-            if groups.iter().any(|g| g.id == group) {
-                self.delete("groups", group).await?;
-            }
         }
         // Nothing left to remember about a device that is not here and not patched.
         if !online {
@@ -1131,14 +1105,10 @@ impl DeviceManager {
     /// switched to `sacn` mode goes unless somebody said where.
     async fn next_free_block(&self, count: u16, except: Uuid) -> u16 {
         let fixtures: Vec<Fixture> = self.fixtures().await;
-        let object_of = |f: &Fixture| f.address.serial().map(|s| {
-            pixels::strip_object_id(s, f.address.head().unwrap_or(0))
-        });
-        // The strip's own cells and its own universes are not in its way.
-        let mine = fixtures.iter().find(|f| f.id == except).and_then(object_of);
+        // The strip's own universes are not in its way.
         let taken: std::collections::BTreeSet<u16> = fixtures
             .iter()
-            .filter(|f| f.id != except && (mine.is_none() || f.parent != mine))
+            .filter(|f| f.id != except)
             .flat_map(|f| match &f.address {
                 FixtureAddress::Dmx { breaks, .. } => {
                     breaks.iter().map(|entry| entry.universe).collect::<Vec<_>>()
@@ -1322,83 +1292,43 @@ impl DeviceManager {
             return Err(problem);
         }
 
-        let object = pixels::strip_object_id(serial, head);
-        let cells: Vec<Fixture> =
-            fixtures.into_iter().filter(|f| f.parent == Some(object)).collect();
-        let plan = pixels::plan(&fixture, strip, &cells);
-        self.write_strip_plan(plan, Some((user, Uuid::new_v4()))).await?;
+        // The head takes the strip onto its address and, in `sacn` mode, the strip's own
+        // type: one gesture, so a strip patched is one Ctrl-Z however many pixels it has.
+        let mut patched = fixture.clone();
+        if let FixtureAddress::OpenHaunt { strip: s, .. } = &mut patched.address {
+            *s = Some(strip.clone());
+        }
+        let wanted = match strip.mode {
+            StripMode::Sacn => Some(pixels::strip_type(&strip)),
+            StripMode::Effect => {
+                let device = self.state.discovered.get(serial);
+                let description = device.and_then(|d| d.description.as_ref()).filter(|d| !d.is_empty());
+                description.map(|description| {
+                    let device = device.expect("a description is a device's");
+                    let effects = device.pixels.as_ref().map(|p| p.effects.clone()).unwrap_or_default();
+                    openhaunt::head_type_from(device.module_type, &device.module_name, description, head, &effects)
+                })
+            }
+        };
+        let gesture = Some(Uuid::new_v4());
+        let mut writes: Vec<(Path, serde_json::Value)> = Vec::new();
+        if let Some(wanted) = wanted {
+            let types: Vec<FixtureType> = self.read("fixture_types").await;
+            if !types.iter().any(|t| t.id == wanted.id) {
+                writes.push((create_path("fixture_types"), serde_json::to_value(&wanted).unwrap_or_default()));
+            }
+            patched.fixture_type_id = wanted.id;
+        }
+        writes.push((replace_path("fixtures", patched.id), serde_json::to_value(&patched).unwrap_or_default()));
+        for (path, value) in writes {
+            self.engine
+                .set_as(user, gesture, path, Lifecycle::Persisted, value)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
         self.reconcile_strips(serial).await;
         self.publish().await;
         Ok(fixture.id)
-    }
-
-    /// Make the writes a strip plan asks for.
-    ///
-    /// Under one gesture when somebody asked for it, so a strip patched with three
-    /// hundred cells is one Ctrl-Z. Unattributed when adoption does it, the way adoption
-    /// writes every other row.
-    async fn write_strip_plan(
-        &self,
-        plan: pixels::StripPlan,
-        by: Option<(Uuid, Uuid)>,
-    ) -> Result<(), String> {
-        let objects: Vec<SceneObject> = self.read("scene_objects").await;
-        let types: Vec<FixtureType> = self.read("fixture_types").await;
-        let groups: Vec<Group> = self.read("groups").await;
-        let mut writes: Vec<(Path, serde_json::Value)> = Vec::new();
-        let value = |v: &dyn erased::Json| v.json();
-
-        if let Some(cell_type) = &plan.cell_type {
-            if !types.iter().any(|t| t.id == cell_type.id) {
-                writes.push((create_path("fixture_types"), value(cell_type)));
-            }
-        }
-        let wants_object = plan.cell_type.is_some();
-        if wants_object && !objects.iter().any(|o| o.id == plan.object.id) {
-            writes.push((create_path("scene_objects"), value(&plan.object)));
-        }
-        writes.push((replace_path("fixtures", plan.head.id), value(&plan.head)));
-        for id in &plan.delete {
-            writes.push((delete_path("fixtures", *id), serde_json::Value::Null));
-        }
-        for cell in &plan.update {
-            writes.push((replace_path("fixtures", cell.id), value(cell)));
-        }
-        for cell in &plan.create {
-            writes.push((create_path("fixtures"), value(cell)));
-        }
-        match &plan.group {
-            Some(group) => {
-                let path = if groups.iter().any(|g| g.id == group.id) {
-                    replace_path("groups", group.id)
-                } else {
-                    create_path("groups")
-                };
-                writes.push((path, value(group)));
-            }
-            None => {
-                let id = plan.object.id;
-                let group = groups.iter().find(|g| {
-                    g.query.clauses.iter().any(|c| {
-                        c.term == pult_schema::types::group::SelectionTerm::Hanging { object: id }
-                    })
-                });
-                if let Some(group) = group {
-                    writes.push((delete_path("groups", group.id), serde_json::Value::Null));
-                }
-            }
-        }
-
-        for (path, value) in writes {
-            let written = match by {
-                Some((user, gesture)) => {
-                    self.engine.set_as(user, Some(gesture), path, Lifecycle::Persisted, value).await
-                }
-                None => self.engine.set(path, Lifecycle::Persisted, value).await,
-            };
-            written.map_err(|e| e.to_string())?;
-        }
-        Ok(())
     }
 
     /// Put every adopted node's strips into the shape the show says.
@@ -1495,18 +1425,6 @@ impl DeviceManager {
             (_, Some(said)) => format!("the node refused it: {said}"),
             (code, None) => format!("the node answered {code}"),
         })
-    }
-}
-
-/// Anything that can be written as a row.
-mod erased {
-    pub trait Json {
-        fn json(&self) -> serde_json::Value;
-    }
-    impl<T: serde::Serialize> Json for T {
-        fn json(&self) -> serde_json::Value {
-            serde_json::to_value(self).unwrap_or_default()
-        }
     }
 }
 

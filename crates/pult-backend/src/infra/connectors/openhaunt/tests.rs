@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use pult_schema::types::{
     fixture::{
-        FixtureType, ParameterDefinition, ParameterKind,
+        parameter_key, FixtureType, ParameterDefinition, ParameterKind,
     },
     openhaunt as modules,
     openhaunt::{EffectCapability, PortEffectCapability},
@@ -939,36 +939,29 @@ async fn a_chase_across_a_strip_arrives_at_the_node_as_its_universes() {
         },
         ..Fixture::default()
     };
-    let plan = pixels::plan(&head, strip, &[]);
-    let cell_type = plan.cell_type.clone().unwrap();
+    let strip_type = pixels::strip_type(&strip);
+    let mut head = Fixture { fixture_type_id: strip_type.id, ..head };
 
     // A block of red one pixel in eight wide, traveling along the strip once a second:
     // each cell a phase further on, in the strip's own order.
-    let n = plan.create.len();
-    let cells: Vec<Fixture> = plan
-        .create
-        .iter()
-        .enumerate()
-        .map(|(i, cell)| {
-            let mut cell = cell.clone();
-            cell.live_effects.insert(
-                "ColorRgb".into(),
-                RunningEffect {
-                    effect_id: Uuid::nil(),
-                    curve: Curve::Shape(Shape::Square),
-                    rate_hz: 1.0,
-                    low: ParameterValue::rgb(0.0, 0.0, 0.0),
-                    high: ParameterValue::rgb(1.0, 0.0, 0.0),
-                    width: 1.0 / 8.0,
-                    direction: Direction::Forward,
-                    phase: i as f32 / n as f32,
-                    t0: 0,
-                    source: EffectSource::Programmer,
-                },
-            );
-            cell
-        })
-        .collect();
+    let n = strip.count as usize;
+    for i in 0..n {
+        head.live_effects.insert(
+            parameter_key(&ParameterKind::ColorRgb.in_cell(i as u16 + 1)),
+            RunningEffect {
+                effect_id: Uuid::nil(),
+                curve: Curve::Shape(Shape::Square),
+                rate_hz: 1.0,
+                low: ParameterValue::rgb(0.0, 0.0, 0.0),
+                high: ParameterValue::rgb(1.0, 0.0, 0.0),
+                width: 1.0 / 8.0,
+                direction: Direction::Forward,
+                phase: i as f32 / n as f32,
+                t0: 0,
+                source: EffectSource::Programmer,
+            },
+        );
+    }
 
     let mut entry = an_entry("127.0.0.1", 0x0f01, None, true);
     entry.universes = vec![5, 6];
@@ -976,9 +969,7 @@ async fn a_chase_across_a_strip_arrives_at_the_node_as_its_universes() {
     let mut output =
         OpenHauntOutput::new(directory(vec![("chase", entry)]), devices, port, None).await.unwrap();
 
-    let mut fixtures = cells;
-    fixtures.push(head);
-    let rig = patch(fixtures, vec![cell_type]);
+    let rig = patch(vec![head], vec![strip_type]);
     output.send(&rig, &[], 0).await.unwrap();
 
     let mut frames = sim.pixel_frames.clone();
@@ -1023,7 +1014,7 @@ fn pixel_frame_cost() {
     use pult_schema::types::pixels::{self, PixelStrip, StripMode};
 
     let mut fixtures = Vec::new();
-    let mut cell_type = None;
+    let mut types = Vec::new();
     for node in 0..10u16 {
         let strip = PixelStrip {
             output: 0,
@@ -1035,16 +1026,16 @@ fn pixel_frame_cost() {
             hold_ms: 10_000,
             pitch_m: 1.0 / 60.0,
         };
+        let strip_type = pixels::strip_type(&strip);
         let serial = format!("n{node}");
-        let head = Fixture {
+        let mut head = Fixture {
+            fixture_type_id: strip_type.id,
             address: FixtureAddress::OpenHaunt { serial: serial.clone(), universe: None, head: Some(1), strip: Some(strip.clone()) },
             ..Fixture::default()
         };
-        let plan = pixels::plan(&head, strip, &[]);
-        cell_type = plan.cell_type.clone();
-        for (i, mut cell) in plan.create.into_iter().enumerate() {
-            cell.live_effects.insert(
-                "ColorRgb".into(),
+        for i in 0..1024u16 {
+            head.live_effects.insert(
+                parameter_key(&ParameterKind::ColorRgb.in_cell(i + 1)),
                 RunningEffect {
                     effect_id: Uuid::nil(),
                     curve: Curve::Shape(Shape::Sine),
@@ -1058,10 +1049,12 @@ fn pixel_frame_cost() {
                     source: EffectSource::Programmer,
                 },
             );
-            fixtures.push(cell);
         }
+        fixtures.push(head);
+        types.push(strip_type);
     }
-    let rig = patch(fixtures, vec![cell_type.unwrap()]);
+    types.dedup_by_key(|t| t.id);
+    let rig = patch(fixtures, types);
     let mut times = Vec::new();
     for frame in 0..60u64 {
         let began = std::time::Instant::now();

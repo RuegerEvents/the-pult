@@ -921,6 +921,16 @@ impl FixtureTypeEntity {
     pub fn thumbnail(&self) -> Field<Option<String>> {
         self.at.field("thumbnail")
     }
+
+    /// How many cells one of these has: the pixels of a strip, the segments of a bar.
+    /// 0 is a fixture with none, which is almost every fixture. A parameter marked
+    /// [`ParameterDefinition::per_cell`] exists once per cell, as
+    /// [`ParameterKind::Cell`]; the rest exist once.
+    ///
+    /// PERSISTED.
+    pub fn cells(&self) -> Field<u16> {
+        self.at.field("cells")
+    }
 }
 
 // ── flows ───────────────────────────────────────────────────────────────

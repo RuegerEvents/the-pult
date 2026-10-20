@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS fixture_types (
     "geometry" TEXT NOT NULL,
     "source" TEXT NOT NULL,
     "plan_symbol" TEXT NOT NULL,
-    "thumbnail" TEXT
+    "thumbnail" TEXT,
+    "cells" INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS flows (

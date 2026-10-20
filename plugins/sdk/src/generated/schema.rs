@@ -105,6 +105,14 @@ pub enum AudioDestination {
     Node { serial: String, #[serde(default)] mode: NodeAudioMode },
 }
 
+/// A run of cells, both ends included, counted from 1. `from` past `to` runs backwards,
+/// which is how a chase along a strip is made to start at its far end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CellSpan {
+    pub from: u16,
+    pub to: u16,
+}
+
 /// A named slice of a channel's range: "Open", "Breakup", "Strobe".
 ///
 /// Both ends filled in, unlike GDTF's own form, which gives only the start of each
@@ -663,10 +671,6 @@ pub struct FixturePhysical {
     /// cone should be drawn at, instead of a constant that is right for no fixture.
     #[serde(default)]
     pub beam_angle_deg: Option<f32>,
-    /// A point of light with no beam: one pixel of a strip. The rig view draws a dot in
-    /// its color where it would otherwise draw a lantern and a cone.
-    #[serde(default)]
-    pub pixel: bool,
 }
 
 /// Template describing what parameters a fixture type has.
@@ -734,6 +738,12 @@ pub struct FixtureType {
     /// thumbnail.
     #[serde(default)]
     pub thumbnail: Option<String>,
+    /// How many cells one of these has: the pixels of a strip, the segments of a bar.
+    /// 0 is a fixture with none, which is almost every fixture. A parameter marked
+    /// [`ParameterDefinition::per_cell`] exists once per cell, as
+    /// [`ParameterKind::Cell`]; the rest exist once.
+    #[serde(default)]
+    pub cells: u16,
 }
 
 /// Where a fixture type came from, which decides whether the console may rewrite it.
@@ -1547,6 +1557,10 @@ pub struct ParameterDefinition {
     /// The light sources a color parameter mixes across. Empty on everything else.
     #[serde(default)]
     pub emitters: Vec<Emitter>,
+    /// Whether this parameter exists once per cell, on a type with cells: a bar's RGB
+    /// is, its master dimmer is not. See [`FixtureType::cells`].
+    #[serde(default)]
+    pub per_cell: bool,
 }
 
 /// Which way a parameter flows.
@@ -1613,6 +1627,16 @@ pub enum ParameterKind {
     /// console has never heard of. The name it gave is the whole identity: it is
     /// what the operator sees and what the parameter key is built from.
     Named(String),
+    /// One cell of a multi-cell fixture's per-cell parameter: the seventh pixel's
+    /// color, the third segment of a bar. Counted from 1, spelled `ColorRgb@7` as a
+    /// key.
+    ///
+    /// Part of the kind rather than a field beside it, for the reason `Gobo(2)` is:
+    /// everything in the console is keyed by a fixture and a kind — the programmer,
+    /// a capture, a preset, a running fade, a take — so a cell that is part of the
+    /// kind reaches all of them with no field added and no consumer forked. Never
+    /// nested: [`ParameterKind::in_cell`] is how one is made.
+    Cell { cell: u16, of: Box<ParameterKind> },
 }
 
 /// What a parameter's 0..1 actually spans.
@@ -2138,6 +2162,16 @@ pub enum SelectionOrder {
 pub struct SelectionQuery {
     pub clauses: Vec<SelectionClause>,
     pub order: SelectionOrder,
+    /// Which cells of every multi-cell fixture the query answers: MA's `.`, so "these
+    /// three strips, cells 1 to 20" is one query. Empty is the whole fixture. Applied
+    /// after the clauses and the order, by [`elements`]; a fixture with no cells is in
+    /// whole whatever this says, since there is nothing of it to cut.
+    ///
+    /// One list for the query rather than one per fixture, deliberately: a
+    /// sub-selection is a question about a kind of place *on* a fixture, and two
+    /// strips cut differently are two selections.
+    #[serde(default)]
+    pub cells: Vec<CellSpan>,
 }
 
 /// One test a fixture either passes or fails.
@@ -3260,5 +3294,6 @@ pub fn parameter_key(kind: &ParameterKind) -> String {
         ParameterKind::AirQuality => "AirQuality".into(),
         ParameterKind::Text => "Text".into(),
         ParameterKind::Named(name) => format!("Named:{name}"),
+        ParameterKind::Cell { cell, of } => format!("{}@{cell}", parameter_key(of)),
     }
 }
