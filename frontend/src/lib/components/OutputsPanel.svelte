@@ -132,7 +132,9 @@
 			// mapping would decode a guest console's universe 1 straight over the
 			// house rig's.
 			universes: {},
-			enabled: true
+			enabled: true,
+			// The protocol's own port.
+			port: null
 		});
 		newInputName = '';
 		creatingInput = false;

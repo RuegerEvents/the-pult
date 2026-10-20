@@ -1659,6 +1659,17 @@ impl InputConfigEntity {
     pub fn enabled(&self) -> Field<bool> {
         self.at.field("enabled")
     }
+
+    /// The port to listen on, where it is not the one the protocol names (5568 for
+    /// sACN, 6454 for Art-Net). `None` is the protocol's own, which is what a real rig
+    /// wants. A port of its own is for two stations sharing one machine, where the
+    /// protocol's port is shared too and a unicast packet reaches only one of them,
+    /// and for a test that must not hear whatever else on the machine is speaking.
+    ///
+    /// PERSISTED.
+    pub fn port(&self) -> Field<Option<u16>> {
+        self.at.field("port")
+    }
 }
 
 // ── layers ──────────────────────────────────────────────────────────────

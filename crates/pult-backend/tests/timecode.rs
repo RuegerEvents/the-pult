@@ -125,6 +125,12 @@ async fn a_universe_this_station_sent_comes_back_in_as_a_programmer_value() {
     // it a gate rather than a guess about rounding.
     let expected = ParameterValue::Float(191.0 / 255.0);
     let fixture_id = a_dimmer(&station, 191.0 / 255.0).await;
+    // A port of the test's own rather than 5568. The protocol's port is shared by
+    // everything on this machine that speaks sACN, with `SO_REUSEPORT`, so a demo
+    // running beside the suite both took the packets this test sent and sent its own
+    // universe 1 into this test's merge — which failed the assertion with nothing
+    // wrong in the console.
+    let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
 
     create(
         &station,
@@ -136,7 +142,7 @@ async fn a_universe_this_station_sent_comes_back_in_as_a_programmer_value() {
             // Unicast at our own listener rather than the multicast group: a test must
             // not depend on this machine's multicast routing, and the packet on the
             // wire is byte for byte the same one.
-            target: Some(format!("127.0.0.1:{}", 5568)),
+            target: Some(format!("127.0.0.1:{port}")),
             universes: vec![1],
             enabled: true,
             node_id: Some(station.node_id),
@@ -158,6 +164,7 @@ async fn a_universe_this_station_sent_comes_back_in_as_a_programmer_value() {
             interfaces: Default::default(),
             universes: [(1u16, 1u16)].into_iter().collect(),
             enabled: true,
+            port: Some(port),
         })
         .unwrap(),
     )

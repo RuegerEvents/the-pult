@@ -871,7 +871,7 @@ fn traffic(input: &Listening, focus: Option<&str>, now: std::time::Instant) -> U
 
 /// Would these two configurations want the same socket and the same groups?
 fn same_socket(a: &InputConfig, b: &InputConfig) -> bool {
-    a.kind == b.kind && a.universes == b.universes
+    a.kind == b.kind && a.universes == b.universes && a.port == b.port
 }
 
 async fn wait_for_viewers(watching: Option<&mut Watching>) -> bool {
@@ -898,10 +898,10 @@ async fn open(
     interface: Option<Ipv4Addr>,
     frames: mpsc::Sender<Received>,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    let port = match config.kind {
+    let port = config.port.unwrap_or(match config.kind {
         InputKind::Sacn => super::sacn::SACN_PORT,
         InputKind::Artnet => super::artnet::ARTNET_PORT,
-    };
+    });
     let socket = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::DGRAM,

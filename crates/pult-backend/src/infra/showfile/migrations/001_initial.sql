@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS inputs (
     "node_id" TEXT,
     "interfaces" TEXT NOT NULL,
     "universes" TEXT NOT NULL,
-    "enabled" INTEGER NOT NULL
+    "enabled" INTEGER NOT NULL,
+    "port" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS layers (

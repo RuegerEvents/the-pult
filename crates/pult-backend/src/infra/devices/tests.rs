@@ -1322,12 +1322,27 @@ async fn a_node_is_told_every_broker_and_the_list_is_retained_for_one_nobody_has
     let configs = log.lock().unwrap().configs.clone();
     assert_eq!(configs[0]["mqtt"]["brokers"], serde_json::json!([advertised]), "a lone station lists itself");
 
-    // A node that arrived by its list subscribes and is handed the list straight away.
-    let mut options = MqttOptions::new("walked-here", "127.0.0.1", broker_port(&h).await);
+    // The list is published when the station gets round to it, which on a loaded
+    // machine is after a subscriber has already arrived — and a publish to somebody
+    // already subscribed is delivered live, with the retain flag clear. So one client
+    // waits for the list to exist at all, and only then does the node that arrived by
+    // its list subscribe: that is the claim, a list retained for one nobody has seen.
+    let port = broker_port(&h).await;
+    let first = listen_for_brokers("already-here", port).await;
+    assert_eq!(first.1, serde_json::json!({ "brokers": [advertised] }));
+    let heard = listen_for_brokers("walked-here", port).await;
+    assert!(heard.0, "retained, so it is there for whoever subscribes next");
+    assert_eq!(heard.1, serde_json::json!({ "brokers": [advertised] }));
+}
+
+/// Subscribes to the broker list as a fresh client, answering the first copy that
+/// arrives and whether it came retained.
+async fn listen_for_brokers(client_id: &str, port: u16) -> (bool, serde_json::Value) {
+    let mut options = MqttOptions::new(client_id, "127.0.0.1", port);
     options.set_keep_alive(std::time::Duration::from_secs(5));
     let (client, mut eventloop) = AsyncClient::new(options, 16);
     client.subscribe("openhaunt/brokers", QoS::AtLeastOnce).await.unwrap();
-    let heard = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             if let Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) = eventloop.poll().await {
                 if p.topic == "openhaunt/brokers" {
@@ -1337,9 +1352,7 @@ async fn a_node_is_told_every_broker_and_the_list_is_retained_for_one_nobody_has
         }
     })
     .await
-    .expect("the retained list arrives on subscribe");
-    assert!(heard.0, "retained, so it is there for whoever subscribes next");
-    assert_eq!(heard.1, serde_json::json!({ "brokers": [advertised] }));
+    .expect("the list arrives on subscribe")
 }
 
 #[tokio::test]
