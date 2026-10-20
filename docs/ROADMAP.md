@@ -6377,6 +6377,103 @@ scripts/demo.sh --demo garden                # and the five maze nodes as simula
 echo 'in 4 1' > .demo/Area-1.in; echo 'in 4 0' > .demo/Area-1.in   # a group walks into area 1
 ```
 
+### 77. A spare that has the sound, and a leader that dies untidily
+
+The rehearsal decision 16 of the Heinz Horror Garten asked for: two stations, the leader
+killed in the middle of a scare, and what the one that is left does. Built 2026-10-20.
+Its questions were the ones a hot spare is only a word without: does the maze's state
+survive, do the flows move and fire once, does a running scare go on rather than start
+again, do the outputs move, and does the spare actually hold what it needs to play. Two
+defects went ahead of it, and the rehearsal found two more.
+
+**`tests/failover.rs` is the rehearsal.** The Garden on one station, an empty show on the
+other joined to it, the whole maze replicated, a group walked into area 1, its scare
+running — and then `Running::kill`, which closes the leader's sockets and stops its tasks
+without telling anybody, the way the kernel tidies up after `kill -9`. On the spare:
+occupancy is still 1 (SYNCED, so it had it all along); the scare's anchor and position
+are untouched, so nobody restarted or located it; no Go the scare had already crossed is
+fired again (task 66's fired record is kept on every station); the next PIR edges count
+once each, 1 → 0 → 2 and never −1 or 4; the traffic light goes red and green with area 2;
+and the spare's own row says it leads and runs the OpenHaunt output. `shutdown` would have
+been the wrong test: it says goodbye, and nobody yanks a cable politely.
+
+**A spare holds every asset, both ways.** The first run failed on the line that had been
+assumed: the spare held none of the scare's sound. Assets are fetched on demand — by a
+browser drawing a mesh, by the station that plays a clip — and a follower plays nothing,
+so it fetched nothing, and the moment it was promoted it was told to play a scream whose
+only copy was on a machine that was gone. `infra::assets::mirror` now asks every peer
+what it holds (`GET /assets`, the store's own list, local storage only) every
+`MIRROR_EVERY` and fetches what is missing, verified against its own name as every peer
+fetch is. **Schema-blind on purpose**: it does not ask which collections name an asset,
+so a field that starts naming one tomorrow is covered with nothing changed here. Both
+ways, because an upload at a follower's tablet is the same problem pointed the other way.
+
+**A station can be joined by its address.** `session.joinAt { address }` dials a sync
+address and takes whoever answers as the leader — the handshake is the only thing that
+can say which node is at the other end, so `SyncHandle::dial_peer` now hands back the
+`NodeId` beside the address. The Sessions panel has a field for it. Discovery is a
+convenience for *finding* a station; joining one is a TCP connection, and a hot spare on a
+venue switch that drops multicast, or on a Mac never given Local Network access, must not
+rest on the convenience. `demo-session.mjs` falls back to it when the advert never
+arrives, which on this machine is always.
+
+**Two defects first.** `a_restored_show_is_the_show_as_it_was` asked the console what it
+had open the moment the file said "Act One"; the file is put back *before* the next
+station binds the port, so on a loaded machine the request landed in the gap and was
+refused. Two neighbours had the same shape — the demo test returned on five fixtures
+before the cues were seeded, the list test read `createdAt` before the show row was —
+and all three now wait for the thing they assert. Eight copies of the binary at once
+failed 24 runs in 24 before and none after. And **macOS Local Network**: `pult-gui` and
+`openhaunt-node-sim-gui` carry an `Info.plist` with `NSLocalNetworkUsageDescription` and
+`NSBonjourServices` (`_pult._tcp`, `_openhaunt._tcp`, `_mvrxchange._tcp`), which Tauri
+merges into the bundle and embeds in a dev binary. Without them macOS refuses multicast
+and never asks.
+
+### The traps
+
+- **The tests were writing the operator's recent list.** `shows.rs` named no preferences
+  file of its own, and a console records every show it opens beside `preferences.toml`,
+  so this machine's welcome screen offered ten temporary bundles the tests had already
+  deleted (cleaned up by hand). The binary now names its own once per process. Every
+  other integration test binary still reads the real `preferences.toml` — interfaces,
+  audio devices — unless it does the same; `audio.rs` and `failover.rs` do.
+- **A killed station is noticed at once; a dead one is not.** `kill -9` closes the
+  sockets, so the peer sees the link go and elects within milliseconds. A pulled power
+  cable or a frozen machine closes nothing, and is noticed after `PEER_TIMEOUT` — 16 s of
+  heartbeats unanswered. For those 16 s nothing fires: a PIR goes to a broker that is gone
+  and a scare is missed. Shortening it is a trade against wifi, and not made here.
+- **The nodes move by mDNS.** A promoted leader starts its broker and posts its address to
+  every adopted node it can *see* (`adopted_and_online`, from its own browse). A spare
+  whose mDNS does not reach finds no node online, tells none of them, and they go on
+  retrying the dead leader's broker. Joining by address does not fix that half: a node
+  has one broker and no list. The firmware taking an ordered list of brokers is the fix,
+  and it is not made.
+- **Two stations in one process share a clock and a broker.** `pult_schema::clock` and
+  `broker::ensure` are per process, so the test cannot see the show clock's continuity
+  across the failover (task 64's rule) or a node changing broker; both are proved where
+  they live.
+- **A node voice is replayed, not restarted.** The promoted leader has sent nothing, so
+  its first schedule pass sends `play` for every sounding voice with the `at` it started
+  at; the node, already playing that voice name, crossfades onto the same position. That
+  is right only while the spare holds the same bounce — which is what the mirror is for.
+
+- **The Stations panel reads a station's address as `0.0.0.0`**, the address it bound
+  rather than one anybody can dial — so it says which port to join and not which host.
+  The Sync section's hint asks for the other console's IP for that reason.
+
+### What is not done
+
+- Nothing of it has run on two Macs, a real switch, or a node changing broker.
+- The 16 s of a silent death, and nodes re-pointed only by mDNS (above).
+- `demo.sh --demo garden --two` writes each station's pid to `.demo/station-<port>.pid`
+  and prints the rehearsal; it has not been walked through by hand with the sims.
+
+```
+cargo test -p pult-backend --test failover   # the leader dies mid-scare
+cargo test -p pult-backend --test shows      # restore, demo and list, waiting properly
+scripts/demo.sh --demo garden --two          # then: kill -9 $(cat .demo/station-7700.pid)
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -6876,6 +6973,17 @@ what is left is the gaps in it — which is why this is an entry rather than a f
   against, and `scripts/check-api-compat.sh` proves an older one still runs.
 
 ### Interop
+
+#### node-broker-failover
+
+Task 77 left one half of the hot spare on mDNS: a promoted leader re-points only the
+nodes its own browse can see, and a node has one broker. Questions: does the firmware
+take an ordered list of brokers (every station that could lead, pushed on adoption and on
+every membership change), and does every station then run its broker rather than only the
+leader — or does a node fall back to browsing `_pult._tcp` for the leader itself? And
+`PEER_TIMEOUT` (16 s): what is a silent death allowed to cost a maze, against what a
+shorter timeout costs on wifi?
+
 
 #### gdtf-share-panel-polish
 

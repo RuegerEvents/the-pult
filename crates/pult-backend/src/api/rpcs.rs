@@ -72,6 +72,11 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         doc: "Join a discovered session as a follower.",
     },
     LocalRpcMeta {
+        method: "session.joinAt",
+        args_schema: r#"[{"name":"address","type":"string","optional":false}]"#,
+        doc: "Join the station at a sync address (`host:port`) as a follower, without having discovered it — for a network where mDNS does not reach.",
+    },
+    LocalRpcMeta {
         method: "session.leave",
         args_schema: "[]",
         doc: "Leave the session this station is following.",
@@ -724,6 +729,12 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             deps.session.join_session(session_id).await?;
             Ok(Value::Null)
         }
+        "session.joinAt" => {
+            let address = args["address"].as_str().ok_or("address is a host:port")?;
+            let addr = resolve_sync_address(address).await?;
+            deps.session.join_at(addr).await?;
+            Ok(Value::Null)
+        }
         "session.leave" => {
             let _ = deps
                 .session
@@ -743,6 +754,17 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
         }
         _ => Err(format!("unknown method: {method}")),
     }
+}
+
+/// `host:port`, where the host may be a name: a station somebody reads off another
+/// console's Stations panel is as often `booth.local` as it is an address.
+async fn resolve_sync_address(address: &str) -> Result<std::net::SocketAddr, String> {
+    let mut found = tokio::net::lookup_host(address)
+        .await
+        .map_err(|e| format!("{address} is not a host:port this station can reach: {e}"))?;
+    found
+        .find(|a| a.is_ipv4())
+        .ok_or_else(|| format!("{address} has no IPv4 address"))
 }
 
 /// Does this method name belong to the station rather than to an entity?

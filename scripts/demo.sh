@@ -262,6 +262,9 @@ start_station() {
     "$@" \
     > "$log" 2>&1 &
   PIDS+=($!)
+  # Written down so a rehearsal can kill exactly this station: `kill -9` on the pid
+  # in .demo/station-<port>.pid is the failover rehearsal.
+  echo $! > "$DEMO_DIR/station-$port.pid"
 
   for _ in $(seq 1 40); do
     port_free "$port" || break
@@ -389,7 +392,7 @@ if [ "$TWO" = 1 ]; then
   start_station "$SHOW_2" "$IDENTITY_2" "$PORT_2" "$SYNC_PORT_2" "$BROKER_PORT_2" "$DEMO_DIR/backend-2.log"
 
   echo "pairing the two stations"
-  if ! node "$ROOT/scripts/demo-session.mjs" "$PORT" "$PORT_2"; then
+  if ! node "$ROOT/scripts/demo-session.mjs" "$PORT" "$PORT_2" "$SYNC_PORT"; then
     echo "  (both stations still run — pair them from the Sessions panel)" >&2
   fi
 fi
@@ -445,6 +448,13 @@ if [ "$TWO" = 1 ]; then
   Open both tabs side by side: an edit on one appears on the other, each shows up
   in the other's Stations panel, and a value moved in the programmer on one is
   held on both.
+
+  Failover rehearsal — kill the first station the way a crash would:
+    kill -9 \$(cat .demo/station-$PORT.pid)
+  then watch the second tab: its Stations panel says it leads, the Maze surface
+  (/surface on :$PORT_2) keeps its counts, and a running scare carries on rather
+  than starting again. A killed process closes its sockets, so the takeover is at
+  once; a pulled cable is only noticed after the 16 s peer timeout.
 EOF
 fi
 

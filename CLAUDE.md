@@ -1548,6 +1548,18 @@ both advertises and browses, so a console kept on the lighting network will not 
 peer on the house LAN either — and adopting an OpenHaunt node it cannot reach is how a
 fixture ends up on a cable that cannot carry it.
 
+**A Mac refuses multicast to an app nobody allowed**, silently — "No route to host" at
+`debug`, which is mDNS finding nothing and multicast sACN never leaving. The desktop apps
+carry `NSLocalNetworkUsageDescription` and `NSBonjourServices` in their `Info.plist`; a
+`pult-backend` started from a shell inherits the **terminal's** permission (System
+Settings → Privacy & Security → Local Network). `session.joinAt { address }` joins a
+station by its sync address, so a spare never depends on discovery.
+
+**A spare holds every asset.** `infra::assets::mirror` asks each peer what it holds and
+fetches what is missing, both ways, without knowing which collections name an asset: a
+follower plays nothing, so it used to fetch nothing, and was promoted holding none of the
+sound. See task 77, and `tests/failover.rs` for the leader killed mid-scare.
+
 **Which station sends an output is part of the same question.** Art-Net and OpenHaunt
 have no way to arbitrate between two senders, so `OutputConfig::node_id` being `None`
 resolves to **the leader** for those kinds — resolved rather than refused, because `None`

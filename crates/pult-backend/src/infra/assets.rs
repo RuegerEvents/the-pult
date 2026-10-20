@@ -286,6 +286,63 @@ impl AssetStore {
     pub fn holds(&self, sha: &str) -> bool {
         self.file(sha).map(|path| path.exists()).unwrap_or(false)
     }
+
+    /// Every asset this station can serve: a row, and the file the row is about.
+    ///
+    /// What a peer mirroring this one asks for. A row whose file is missing is left
+    /// out, because offering it would send the peer to fetch something not here.
+    pub async fn list(&self) -> Result<Vec<String>> {
+        if self.dir.is_none() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT sha256 FROM assets ORDER BY sha256")
+            .fetch_all(&*self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|(sha,)| sha).filter(|sha| self.holds(sha)).collect())
+    }
+}
+
+/// How often a station looks for assets its peers hold and it does not.
+pub const MIRROR_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Hold every asset any peer holds, for as long as there is a peer to fetch from.
+///
+/// A hot spare is only a spare if it has the bytes. Assets are fetched on demand — by
+/// a browser drawing a mesh, by the station that plays a clip — and a follower plays
+/// nothing, so before this a follower held almost none of them: the moment the leader
+/// died it was promoted to play a scare whose sound was on a machine that was gone. So
+/// every station mirrors every other, both ways, by asking each peer what it holds.
+/// Schema-blind on purpose: it does not ask *which* collections name an asset, so a
+/// field that starts naming one tomorrow is covered with nothing changed here.
+pub async fn mirror(store: AssetStore, engine: EngineHandle, me: uuid::Uuid) {
+    let client = reqwest::Client::new();
+    let mut tick = tokio::time::interval(MIRROR_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        if store.dir().is_none() {
+            continue;
+        }
+        for addr in peer_addresses(&engine, me).await {
+            let listed = client
+                .get(format!("http://{addr}/assets"))
+                .header("x-pult-asset-relay", "1")
+                .timeout(PEER_ANSWERS_WITHIN)
+                .send()
+                .await;
+            let Ok(response) = listed else { continue };
+            let Ok(shas) = response.json::<Vec<String>>().await else { continue };
+            for sha in shas.iter().filter(|sha| !store.holds(sha)) {
+                // One at a time and from this peer: what it listed it holds, and a
+                // copy verified against its own name is a copy nobody can poison.
+                match fetch_from_peers(&store, sha, std::slice::from_ref(&addr)).await {
+                    Ok(Fetched::Got(_)) => debug!("[assets] mirrored {sha} from {addr}"),
+                    Ok(_) => {}
+                    Err(e) => debug!("[assets] could not mirror {sha} from {addr}: {e}"),
+                }
+            }
+        }
+    }
 }
 
 /// Fetch an asset this station has never seen from one that has.

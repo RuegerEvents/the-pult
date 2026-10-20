@@ -30,6 +30,11 @@ pub enum SessionCommand {
         session_id: Uuid,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Join the station at a sync address, with no advert to go by.
+    JoinAt {
+        addr: SocketAddr,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     Leave,
     Stop,
 }
@@ -49,6 +54,18 @@ impl SessionHandle {
     pub async fn join_session(&self, session_id: Uuid) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         let _ = self.0.send(SessionCommand::Join { session_id, reply: tx }).await;
+        rx.await.unwrap_or(Err("channel closed".into()))
+    }
+
+    /// Join the station at `addr` — its sync address — without having discovered it.
+    ///
+    /// The way in when mDNS is not: a venue switch that drops multicast, or a Mac whose
+    /// Local Network permission was never given. Discovery is a convenience for finding
+    /// a station; joining one is a TCP connection, and nothing about a hot spare should
+    /// rest on the convenience.
+    pub async fn join_at(&self, addr: SocketAddr) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.0.send(SessionCommand::JoinAt { addr, reply: tx }).await;
         rx.await.unwrap_or(Err("channel closed".into()))
     }
 }
@@ -262,6 +279,29 @@ impl SessionManager {
                 self.push_state().await;
                 info!("[session] joined session {session_id} at {addr}");
                 let _ = reply.send(Ok(()));
+            }
+
+            SessionCommand::JoinAt { addr, reply } => {
+                // No advert, so no session id and no show id to offer: a fresh id
+                // names this session from here on, and the show is whatever the
+                // handshake agrees. The node that answers is the one being joined,
+                // and so the leader.
+                let session_id = Uuid::new_v4();
+                match self.sync.dial_peer(vec![addr], session_id, Uuid::nil()).await {
+                    Ok((addr, leader)) => {
+                        self.sync.set_leader(leader).await;
+                        self.state.is_advertising = false;
+                        self.state.is_follower = true;
+                        self.state.session_id = Some(session_id);
+                        self.push_state().await;
+                        info!("[session] joined the station at {addr} by its address");
+                        let _ = reply.send(Ok(()));
+                    }
+                    Err(why) => {
+                        warn!("[session] could not join the station at {addr}: {why}");
+                        let _ = reply.send(Err(why));
+                    }
+                }
             }
 
             SessionCommand::Leave => {

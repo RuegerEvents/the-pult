@@ -91,7 +91,7 @@ where
     ShowsState: FromRef<S>,
 {
     Router::new()
-        .route("/assets", post(upload))
+        .route("/assets", post(upload).get(list_assets))
         .route("/assets/{sha}", get(download))
         // The catalogue's own pieces, generated rather than stored. Beside the asset
         // store and deliberately not in it: the store refuses a write with no show
@@ -791,6 +791,19 @@ async fn stock(
         header::HeaderValue::from_static("public, max-age=0, must-revalidate"),
     );
     (out, bytes).into_response()
+}
+
+/// The shas this station can serve, for a peer mirroring it. Local storage only,
+/// whatever the request says: a list relayed from a peer would be a promise of bytes
+/// this station would then have to go and fetch.
+async fn list_assets(State(state): State<AssetState>) -> Response {
+    match state.assets.list().await {
+        Ok(shas) => axum::Json(shas).into_response(),
+        Err(e) => {
+            debug!("[assets] could not list: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 async fn download(

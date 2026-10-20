@@ -45,7 +45,7 @@ pub enum SyncCommand {
         addrs: Vec<SocketAddr>,
         session_id: Uuid,
         show_id: Uuid,
-        reply: oneshot::Sender<Result<SocketAddr, String>>,
+        reply: oneshot::Sender<Result<(SocketAddr, NodeId), String>>,
     },
     /// Update which node is the current leader (for HelloAck).
     SetLeader(NodeId),
@@ -133,6 +133,20 @@ impl SyncHandle {
         session_id: Uuid,
         show_id: Uuid,
     ) -> Result<SocketAddr, String> {
+        self.dial_peer(addrs, session_id, show_id).await.map(|(addr, _)| addr)
+    }
+
+    /// The same, saying who answered as well as where.
+    ///
+    /// For joining a station by its address rather than by its advert, where nothing
+    /// but the handshake can say which node is at the other end — and that node is the
+    /// leader, because a station is only ever pointed at the one it is joining.
+    pub async fn dial_peer(
+        &self,
+        addrs: Vec<SocketAddr>,
+        session_id: Uuid,
+        show_id: Uuid,
+    ) -> Result<(SocketAddr, NodeId), String> {
         let (tx, rx) = oneshot::channel();
         self.0
             .send(SyncCommand::ConnectPeer { addrs, session_id, show_id, reply: tx })
@@ -495,7 +509,7 @@ impl SyncManager {
                     {
                         Ok((peer_id, sender, bytes)) => {
                             let _ = connected.send((peer_id, sender, bytes)).await;
-                            let _ = reply.send(Ok(addr));
+                            let _ = reply.send(Ok((addr, peer_id)));
                         }
                         Err(e) => {
                             let _ =

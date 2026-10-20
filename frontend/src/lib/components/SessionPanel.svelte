@@ -12,6 +12,9 @@
 	let session = $state<SessionInfo>({ is_advertising: false, is_follower: false, session_id: null, discovered: [] });
 	let joining = $state<string | null>(null);
 	let busy = $state(false);
+	// A station's sync address, typed in: the way in where mDNS does not reach — a
+	// venue switch that drops multicast, or a Mac never given Local Network access.
+	let address = $state('');
 
 	async function advertise() {
 		const show = await data.show.get();
@@ -30,6 +33,20 @@
 		joining = sessionId;
 		try {
 			await client.call('session.join', { sessionId });
+		} catch (e) {
+			addToast(`Join failed: ${e}`);
+		} finally {
+			joining = null;
+		}
+	}
+
+	async function joinAt() {
+		const at = address.trim();
+		if (!at) return;
+		joining = at;
+		try {
+			await client.call('session.joinAt', { address: at });
+			address = '';
 		} catch (e) {
 			addToast(`Join failed: ${e}`);
 		} finally {
@@ -130,6 +147,19 @@
 				{/each}
 			</div>
 		{/if}
+
+		<form class="join-at" onsubmit={(e) => { e.preventDefault(); joinAt(); }}>
+			<input
+				class="mono"
+				placeholder="host:sync-port, e.g. 10.0.0.2:7701"
+				aria-label="Join a station by its sync address"
+				bind:value={address}
+			/>
+			<button class="join-btn" type="submit" disabled={!address.trim() || joining === address.trim()}>
+				{joining === address.trim() && address.trim() ? '…' : 'Join'}
+			</button>
+		</form>
+		<p class="hint">Not listed? Join by the other console's IP and its sync port (7701 unless it was started with another).</p>
 
 		<button class="action-btn advertise-btn" onclick={advertise} disabled={busy}>
 			{busy ? 'Advertising…' : 'Advertise this show'}
@@ -274,4 +304,20 @@
 	}
 
 	.leave-btn:hover:not(:disabled) { border-color: #ef4444; color: #ef4444; }
+
+	.join-at {
+		display: flex;
+		gap: 6px;
+		margin-bottom: 4px;
+	}
+	.join-at input {
+		flex: 1;
+		min-width: 0;
+		font-size: 0.72rem;
+		padding: 3px 6px;
+		background: #1e1e1e;
+		border: 1px solid #333;
+		border-radius: 3px;
+		color: #ddd;
+	}
 </style>

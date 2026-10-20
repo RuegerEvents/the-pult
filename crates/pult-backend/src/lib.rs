@@ -216,6 +216,31 @@ impl Running {
     /// the show" — so a page that did not press the button can draw the same
     /// switching screen as the one that did, rather than a console that stopped
     /// answering.
+    /// Stop this station the way `kill -9` or a pulled power cable does: nothing is
+    /// asked, nothing is flushed, nobody is told. Its sockets close — which is what the
+    /// operating system does for a killed process, and what a peer sees as the link
+    /// going — and every task it started stops where it stands.
+    ///
+    /// For the failover tests, which are about what the station that is *left* does.
+    /// `shutdown` is the opposite of the case being proved: it says goodbye.
+    #[doc(hidden)]
+    pub async fn kill(self) {
+        self.sync.disconnect_all().await;
+        self.serve.abort();
+        for task in self.tasks.iter().chain(self.asked_to_stop.iter()) {
+            task.abort();
+        }
+        let _ = self.serve.await;
+        for task in self.tasks.into_iter().chain(self.asked_to_stop) {
+            let _ = task.await;
+        }
+        // A thread rather than a task, so it would otherwise go on advertising a
+        // station that is no longer there.
+        if let Some(mdns) = &self.devices_mdns {
+            let _ = mdns.shutdown();
+        }
+    }
+
     /// Answer one station RPC, the way a browser's WebSocket does.
     ///
     /// Here so that a test can press a button rather than reimplement one. The caller
@@ -697,6 +722,16 @@ pub async fn start(config: Config) -> Result<Running> {
                 warn!("[demo] could not seed {}: {e:#}", demo.id());
             }
         }));
+    }
+
+    // Every asset any peer holds, held here too: a spare that has to fetch a scare's
+    // sound from the leader the moment the leader dies has nothing to fetch it from.
+    if bundle.is_some() {
+        tasks.push(tokio::spawn(crate::infra::assets::mirror(
+            assets.clone(),
+            engine_handle.clone(),
+            node_id.0,
+        )));
     }
 
     // A snapshot on this disk that the show has forgotten gets its row put back —
