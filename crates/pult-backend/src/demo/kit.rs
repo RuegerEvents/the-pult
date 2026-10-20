@@ -525,7 +525,7 @@ pub async fn draw(
     name: &str,
     nodes: &[(FlowNodeKind, f32, f32)],
     wires: &[(usize, u8, usize, u8)],
-) -> Result<()> {
+) -> Result<Vec<Uuid>> {
     let flow = Flow { id: id(), name: name.to_string(), enabled: true };
     into.create("flows", &flow).await?;
 
@@ -557,7 +557,7 @@ pub async fn draw(
         )
         .await?;
     }
-    Ok(())
+    Ok(ids)
 }
 
 #[cfg(test)]

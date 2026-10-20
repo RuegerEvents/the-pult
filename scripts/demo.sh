@@ -22,8 +22,13 @@
 #                                any count, since the shape of the curve is the
 #                                answer and not one point on it
 #   scripts/demo.sh --demo <id>  one of the console's own shows instead of the
-#                                hand-made one: haunt, theatre, club, festival.
-#                                The same four the welcome screen offers
+#                                hand-made one: haunt, theatre, club, festival,
+#                                garden. The same five the welcome screen offers.
+#                                garden starts the maze's five OpenHaunt V0 nodes
+#                                as simulators instead of the usual three
+#   scripts/demo.sh --sim-windows  with --demo garden: open the maze nodes as
+#                                windows, whose buttons are the PIRs. Needs
+#                                cargo build -p openhaunt-node-sim-gui and its ui
 #   scripts/demo.sh --cues <n>   how many cues the generated stack has, held
 #                                apart from the rig size so one axis moves at a
 #                                time
@@ -82,6 +87,7 @@ CUES=
 SLICE=
 MEASURE=0
 MEASURE_BROWSER=0
+SIM_WINDOWS=0
 OUTPUT_FLAGS=()
 PROFILE=debug
 # A while loop rather than `for arg`, because --size takes a value.
@@ -93,7 +99,8 @@ while [ $# -gt 0 ]; do
     --two) TWO=1 ;;
     --plugins) PLUGINS=1 ;;
     --size) shift; SIZE=${1:-}; [ -n "$SIZE" ] || { echo "--size needs small, big, huge or a count" >&2; exit 2; } ;;
-    --demo) shift; DEMO=${1:-}; [ -n "$DEMO" ] || { echo "--demo needs haunt, theatre, club or festival" >&2; exit 2; } ;;
+    --demo) shift; DEMO=${1:-}; [ -n "$DEMO" ] || { echo "--demo needs haunt, theatre, club, festival or garden" >&2; exit 2; } ;;
+    --sim-windows) SIM_WINDOWS=1 ;;
     --cues) shift; CUES=${1:-}; [ -n "$CUES" ] || { echo "--cues needs a count" >&2; exit 2; } ;;
     --slice) shift; SLICE=${1:-}; [ -n "$SLICE" ] || { echo "--slice needs a fraction" >&2; exit 2; } ;;
     --measure) MEASURE=1 ;;
@@ -282,7 +289,43 @@ start_station "$SHOW" "$IDENTITY" "$PORT" "$SYNC_PORT" "$BROKER_PORT" "$DEMO_DIR
 
 # ── Simulated devices ─────────────────────────────────────────────────────────
 
-if [ "$SIMS" = 1 ]; then
+if [ "$SIMS" = 1 ] && [ "$DEMO" = garden ]; then
+  # The Garden's maze is five V0 nodes with these serials: the show already has
+  # their rows, so each one is adopted the moment it is found. Areas 1 and 2 count
+  # on Sensor 1 (in) and Sensor 2 (out); 3 and 4 on Sensor 1; the traffic light is
+  # the Entrance node's relays 1 and 2. Areas 1 and 2 have a loudspeaker.
+  echo "starting the Garden's five maze nodes"
+  GARDEN_NODES=("v02a01 Area-1 8811 --audio" "v02a02 Area-2 8812 --audio" "v01a03 Area-3 8813" "v01a04 Area-4 8814" "v02a05 Entrance 8815")
+  fd=3
+  for node in "${GARDEN_NODES[@]}"; do
+    # shellcheck disable=SC2086
+    set -- $node
+    serial=$1 name=$2 port=$3
+    shift 3
+    if [ "$SIM_WINDOWS" = 1 ]; then
+      "$ROOT/target/$PROFILE/openhaunt-node-sim-gui" --module v0 --serial "$serial" --port "$port" \
+        > "$DEMO_DIR/sim-$name.log" 2>&1 &
+    else
+      # A sensor on a simulator is a line on its stdin (`in 4 1`), so each one reads
+      # a pipe this script holds open — a writer has to exist for as long as the
+      # node does, or its first reader sees the end of input and stops listening.
+      fifo="$DEMO_DIR/$name.in"
+      rm -f "$fifo"
+      mkfifo "$fifo"
+      eval "exec $fd<>\"$fifo\""
+      fd=$((fd + 1))
+      "$ROOT/target/$PROFILE/openhaunt-node-sim" --module v0 --serial "$serial" --port "$port" ${@+"$@"} \
+        < "$fifo" > "$DEMO_DIR/sim-$name.log" 2>&1 &
+    fi
+    PIDS+=($!)
+  done
+  if [ "$SIM_WINDOWS" = 0 ]; then
+    echo "  a group walks into area 1:  echo 'in 4 1' > .demo/Area-1.in; echo 'in 4 0' > .demo/Area-1.in"
+    echo "  and out of it:              echo 'in 5 1' > .demo/Area-1.in; echo 'in 5 0' > .demo/Area-1.in"
+  fi
+  echo "  if no node appears in Setup → Devices, this process may not be allowed to send"
+  echo "  multicast: the backend log says so (see 'mDNS' in .demo/backend.log)"
+elif [ "$SIMS" = 1 ]; then
   echo "starting three simulated OpenHaunt nodes"
   # --auto presses contact 0 every couple of seconds, so a flow wired to it
   # visibly fires without anyone having to hold a button.

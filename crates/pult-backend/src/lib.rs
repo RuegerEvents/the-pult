@@ -691,8 +691,9 @@ pub async fn start(config: Config) -> Result<Running> {
     // it lands.
     if let Some(demo) = config.demo {
         let engine = engine_handle.clone();
+        let assets = assets.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = demo::seed(&engine, demo).await {
+            if let Err(e) = demo::seed_with(&engine, Some(assets), demo).await {
                 warn!("[demo] could not seed {}: {e:#}", demo.id());
             }
         }));

@@ -25,6 +25,8 @@ tracing-subscriber = { workspace = true }
 # A clip is named by the sha256 of its bytes, and a node checks that it is.
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The sACN port is shared: several simulated nodes on one machine all listen on 5568.
+socket2 = { workspace = true }
 
 [dev-dependencies]
 # Only the tests need an HTTP client: they drive this node through the same API a

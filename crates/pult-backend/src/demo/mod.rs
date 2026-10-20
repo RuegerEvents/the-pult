@@ -1,4 +1,4 @@
-//! Four shows the console can make for itself.
+//! Five shows the console can make for itself.
 //!
 //! A demo used to be a Node script driving a running station over the WebSocket, and
 //! for the *measurement* rigs it still is — `scripts/demo-seed.mjs` is deliberately
@@ -12,7 +12,7 @@
 //! which keeps validation, the oplog and the seeded operator exactly as they are for
 //! anything a person does. What they skip is the network, not the model.
 //!
-//! # Which four
+//! # Which five
 //!
 //! Each one exists to show something the others cannot.
 //!
@@ -25,8 +25,16 @@
 //! - **Festival** is scale and systems: a hundred and seventy-odd heads of five
 //!   kinds on trusses that are themselves scene objects, a layer per system, and
 //!   seven playbacks of which some are running and some are waiting for Go.
+//! - **Garden** is a haunt run by sensors rather than by an operator: ten OpenHaunt
+//!   nodes, a maze whose areas count who is in them, scares that are timelines with
+//!   sound and a recorded skeleton in them, a traffic light, and a phone surface.
+//!   Everything in it is show data — flows, variables, timelines — and nothing about
+//!   a maze is written anywhere in the console.
 //!
-//! None of them needs an asset, so a demo opens with no download and no network.
+//! None of them needs a file from anywhere, so a demo opens with no download and no
+//! network. The Garden is the one that makes assets — its screams, its wind and its
+//! skeleton's take are generated here, deterministically — and it skips them where
+//! the station has nowhere to put them.
 
 use anyhow::Result;
 use pult_schema::{lifecycle::Lifecycle, path::PathSegment, types::Fixture};
@@ -38,6 +46,7 @@ use crate::engine::EngineHandle;
 
 mod club;
 mod festival;
+mod garden;
 mod haunt;
 mod kit;
 mod theatre;
@@ -51,11 +60,12 @@ pub enum Demo {
     Theatre,
     Club,
     Festival,
+    Garden,
 }
 
 /// Every demo, in the order the welcome screen offers them: smallest first, because
 /// the first one somebody opens should be the one they can read.
-pub const ALL: &[Demo] = &[Demo::Haunt, Demo::Theatre, Demo::Club, Demo::Festival];
+pub const ALL: &[Demo] = &[Demo::Haunt, Demo::Theatre, Demo::Club, Demo::Festival, Demo::Garden];
 
 impl Demo {
     /// The id `--demo` takes and `show.new` carries.
@@ -65,6 +75,7 @@ impl Demo {
             Demo::Theatre => "theatre",
             Demo::Club => "club",
             Demo::Festival => "festival",
+            Demo::Garden => "garden",
         }
     }
 
@@ -78,6 +89,7 @@ impl Demo {
             Demo::Theatre => "Theatre",
             Demo::Club => "Club",
             Demo::Festival => "Festival",
+            Demo::Garden => "Heinz Horror Garten",
         }
     }
 
@@ -100,6 +112,11 @@ impl Demo {
                  package and two towers, seven playbacks deep. The one to open if \
                  you want to see the console work."
             }
+            Demo::Garden => {
+                "A haunt run by its sensors: ten OpenHaunt nodes, a four-area maze that \
+                 counts who is inside, scares with sound and a recorded skeleton, a \
+                 traffic light at the entrance, and a phone surface to run it from."
+            }
         }
     }
 }
@@ -119,7 +136,20 @@ impl std::str::FromStr for Demo {
 /// every start: `--demo` on a console that has been programmed since must not add a
 /// second rig on top of somebody's work.
 pub async fn seed(engine: &EngineHandle, demo: Demo) -> Result<()> {
-    let seeder = Seeder { engine: engine.clone() };
+    seed_with(engine, None, demo).await
+}
+
+/// The same, with somewhere to put what a demo generates.
+///
+/// Only the Garden makes anything — the sound its scares play and the take its
+/// skeleton runs — and a station with no store gets the Garden without them: every
+/// timeline, flow and surface is still there, and silent.
+pub async fn seed_with(
+    engine: &EngineHandle,
+    assets: Option<crate::infra::assets::AssetStore>,
+    demo: Demo,
+) -> Result<()> {
+    let seeder = Seeder { engine: engine.clone(), assets };
     if !seeder.rig_is_empty().await {
         info!("[demo] this show already has a rig; leaving it alone");
         return Ok(());
@@ -130,6 +160,7 @@ pub async fn seed(engine: &EngineHandle, demo: Demo) -> Result<()> {
         Demo::Theatre => theatre::seed(&seeder).await?,
         Demo::Club => club::seed(&seeder).await?,
         Demo::Festival => festival::seed(&seeder).await?,
+        Demo::Garden => garden::seed(&seeder).await?,
     }
     let fixtures = seeder.fixtures().await.len();
     info!("[demo] {} seeded: {fixtures} fixtures", demo.id());
@@ -143,9 +174,23 @@ pub async fn seed(engine: &EngineHandle, demo: Demo) -> Result<()> {
 /// which is the right failure for something an operator can delete and make again.
 pub struct Seeder {
     engine: EngineHandle,
+    assets: Option<crate::infra::assets::AssetStore>,
 }
 
 impl Seeder {
+    /// Store some bytes, answering their sha — or `None` where this station has no
+    /// store, or will not take them, which a demo treats as "go without".
+    pub async fn put(&self, mime: &str, bytes: &[u8]) -> Option<String> {
+        let store = self.assets.as_ref()?;
+        match store.put(mime, bytes).await {
+            Ok(sha) => Some(sha),
+            Err(e) => {
+                tracing::warn!("[demo] could not store a {mime}: {e:#}");
+                None
+            }
+        }
+    }
+
     /// Create one row in a collection.
     pub async fn create<T: Serialize>(&self, table: &str, value: &T) -> Result<()> {
         let path = vec![

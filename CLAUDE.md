@@ -558,13 +558,25 @@ Autosave is the leader's, on `autosave_minutes`, only when the oplog has moved, 
 its own window to `autosave_keep`. `backup_dir` mirrors each snapshot and the assets it
 points at somewhere else, and failing to is a warning rather than a failed Save.
 
-**Four demo shows, in Rust.** Haunt, Theatre, Club and Festival, seeded through
+**Five demo shows, in Rust.** Haunt, Theatre, Club, Festival and Garden, seeded through
 `EngineHandle` like anything else — so validation, the oplog and the seeded operator are
 what they are for a person; what they skip is the network, not the model. `--demo <id>`
 on both binaries and a card on the welcome screen. They are seeded **on a task**, not
 inside `start`: the listener is bound first, so awaiting two hundred writes there left
 the port accepting and answering nothing. `scripts/demo-seed.mjs` keeps the sized rigs,
 deliberately over the public API, because that one is the measurement instrument.
+
+**The Garden runs itself.** A haunt whose maze is flows, variables and timelines only —
+PIRs counting groups in, a gate for re-triggers, a traffic light, a phone surface — over
+ten V0 nodes patched the way adopting them would, so a real node or a simulator with one
+of its serials is adopted on sight. It is the one demo that makes assets (generated
+sound and a skeleton's take), through `seed_with`; `scripts/demo.sh --demo garden` starts
+its maze nodes, each fed from `.demo/<Area>.in`. See task 76.
+
+**A process that may not multicast finds nothing, and now says so.** On macOS that is the
+Local Network privacy setting of whatever app started it: every mDNS daemon browses an
+empty network with no error above `debug`. `infra::net::say_if_multicast_is_refused`
+warns once.
 
 **A demo never writes a rotation.** A fixture's own axis is −Y, so zero rotation *is*
 hanging, and `{90, 0, 0}` meaning "hanging" is a quarter turn away from it — which

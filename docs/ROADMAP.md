@@ -6286,6 +6286,97 @@ cargo test -p pult-backend --test counts              # seeded unattributed; an 
 cd frontend && npx vitest run src/lib/effectPool.test.ts src/lib/evaluator.test.ts
 ```
 
+### 76. A garden that runs itself, and a loop that did not
+
+A fifth demo, `--demo garden`, built 2026-10-20 for the Heinz Horror Garten, and a fix
+that went ahead of it. It had four questions to answer first — whether a maze needs any
+code, how a demo patches nodes nobody has adopted, where a demo gets sound from, and why
+the simulators were never found on this machine — and the answers are below.
+
+**First, the loop.** Task 71's screenshot run once saw a timeline that "ends 0:16 and
+starts again" run on to 1:46, and four tries did not repeat it. A test did, every time:
+a 200 ms loop with nothing else happening on the station wraps once and then runs on.
+The pass that acts on an end worked the next deadline out from the timelines it had read
+*before* the loop's own Play — where the playhead was still past the end — so it
+scheduled no wake at all. And nothing else woke the engine either, because the Play's
+write leaves the output version equal to the one the same pass then pushes. It hid in
+every earlier test because something always woke the loop: a fader, a watched parameter,
+the audio station correcting an anchor. The deadline is now worked out from the
+timelines as they stand after the end was acted on (`a_loop_goes_round_on_an_idle_station`).
+An idle station on a night with the house in is exactly the case, so this is the defect
+that would have been heard.
+
+**No code knows what a maze is.** Four areas: 1 and 2 count groups in and out on two
+PIRs into `Area n inside`, and a `Gate` over `Not(inside) And Maze open` lets the first
+group into an empty area set the scare off and nobody behind them; 3 and 4 have one PIR,
+and the scare timeline's own length is the lockout (`IfRunning::Ignore`). The traffic
+light is two relays on the Entrance node driven by `SetParameter`: red on area 2
+filling or the maze shutting, green on area 2 emptying while open or the maze opening
+with area 2 empty. Green is the relay's *home value*, so a show that has just opened
+says "go" before anybody has walked through. Every rule is a flow an operator can open
+and change, which was the test of task 69: a haunt needs no code.
+
+**A scare is a timeline**, as decided: a GoToCue into the area's own stack at zero and a
+Go back to Rest a second before its end, a scream in the area's Dante zone (station
+channel 3 + area), a bang from the node's own loudspeaker (`Node { mode: Clip }`), and in
+areas 2 and 4 a skeleton's take recorded against a laugh. The ambience is a 16 s bed that
+loops on the timeline's end. The IBC tanks are Fire, Candle and Flicker out of the pool
+(task 75), applied the way the panel applies them; the gate breathes.
+
+**The nodes are patched the way adopting them would patch them.** Ten V0s with fixed
+serials (`v02a01`…`v02a10`, the prefix naming the revision, five of each), a fixture per
+head with ids and types from `openhaunt::head_type_from` and `head_fixture_id`, and the
+two strips in `sacn` mode planned with `pixels::plan` — whose cells hang off a strip
+object the demo places. So a
+real node or a simulator with one of these serials is adopted the moment it is found, and
+its strip is put into the show's mode (seen: both sACN strips switched on the sims within
+a second). What a V0 says about itself is `garden::V0_INFO`, held to the simulator's own
+description by `the_garden_describes_a_v0_as_the_simulator_does`; a drift there would be
+ten nodes retyped the moment they came up.
+
+**The sound is generated, deterministically.** Wind, a scream, a bang and a laugh as
+PCM16 at 22.05 kHz from a seeded noise source, so the files and their shas are the same
+every time, and the skeleton's take is written to match the laugh — jaw open on each
+"ha", head turning, arms up and down. `demo::seed_with` hands the Garden the station's
+asset store; `seed` without one still seeds every timeline, flow and surface, silent.
+
+**The phone surface "Maze"**: the traffic light, each counting area's occupancy and a
+reset, the two single-PIR scares, the maze open/shut, the ambience and the garden look.
+
+### The traps
+
+- **The simulators were never found on this Mac because this process may not multicast.**
+  `mdns-sd` skips every interface it cannot send on with "No route to host" at `debug`,
+  so both the console and the node browsed an empty network and said nothing; unicast to
+  the same LAN went through. That is macOS's Local Network privacy setting applied to
+  whatever app started the process — here the agent's shell. It will be the same on site
+  for any app nobody allowed. `infra::net::say_if_multicast_is_refused` now `warn`s once,
+  with the remedy, from every mDNS daemon's setup; the simulator says the same. The rule
+  also stops multicast sACN leaving. `pult-gui` has no `NSLocalNetworkUsageDescription`,
+  which is worth checking before the desktop app goes to the venue.
+- **The demo test's "nothing hangs inside its bar" rule applies to what is clamped**
+  (`mount.is_some()`), not to everything with a parent: a par standing in a tank and a
+  pixel on its strip hang off something they are meant to be inside. No existing demo
+  had a parented fixture without a mount, so nothing was loosened.
+- **A sensor on a simulator is a line on its stdin**, so `demo.sh --demo garden` feeds
+  each maze node from a pipe it holds open for as long as the node runs; without a
+  writer the node's first read is end of input and it stops listening.
+
+### What is not done
+
+- Nothing of it has met real PIRs, relays or a Dante zone; the zones are channels 3–6
+  and a laptop's own output refuses them as faults, which is the right answer.
+- Area occupancy still drifts the way PIR counting does; the phone's Reset is the remedy,
+  by design.
+- The Garden's strip effects are fixed in the demo; there is no "pixel map" of the site.
+
+```
+cargo test -p pult-backend --lib a_loop_goes_round_on_an_idle_station
+cargo test -p pult-backend --lib demo        # the five, the V0 description, the maze on its sensors
+scripts/demo.sh --demo garden                # and the five maze nodes as simulators
+echo 'in 4 1' > .demo/Area-1.in; echo 'in 4 0' > .demo/Area-1.in   # a group walks into area 1
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

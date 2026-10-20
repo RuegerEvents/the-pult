@@ -1345,7 +1345,17 @@ async fn listen_for_sacn(
     frames: mpsc::Sender<(u16, Vec<u8>)>,
     pixels: Arc<pixels::Pixels>,
 ) -> Result<SocketAddr> {
-    let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port)).await?;
+    // Shared, the way a console's sACN input binds it: the Garden's demo runs five V0
+    // nodes on one machine and every one of them listens on 5568. A multicast universe
+    // reaches all of them; a unicast one reaches whichever the OS picks, which on one
+    // machine is as good as a simulator can do.
+    let shared = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)?;
+    shared.set_reuse_address(true)?;
+    #[cfg(unix)]
+    shared.set_reuse_port(true)?;
+    shared.set_nonblocking(true)?;
+    shared.bind(&std::net::SocketAddr::from(([0, 0, 0, 0], port)).into())?;
+    let socket = tokio::net::UdpSocket::from_std(shared.into())?;
     let addr = socket.local_addr()?;
     stop.holds(tokio::spawn(async move {
         let mut buffer = vec![0u8; 1500];
@@ -1378,6 +1388,19 @@ pub fn parse_e131(packet: &[u8]) -> Option<(u16, Vec<u8>)> {
 // ── mDNS ──────────────────────────────────────────────────────────────────────
 
 fn advertise(config: &NodeConfig, http_addr: SocketAddr, stop: &Stopper) -> Result<()> {
+    // The daemon skips every interface it may not send on and says so only at `debug`,
+    // so a node nobody can find would look exactly like one that is advertising. The
+    // usual cause on a Mac is the Local Network privacy setting of whatever app started
+    // this process; the console warns the same way (`infra::net`).
+    if let Ok(socket) = std::net::UdpSocket::bind(("0.0.0.0", 0)) {
+        if let Err(e) = socket.send_to(&[0u8; 12], ("224.0.0.251", 5353)) {
+            warn!(
+                "[sim] this process may not send multicast ({e}), so nothing will discover {}: \
+                 on macOS, allow Local Network access for the app that started it",
+                config.serial
+            );
+        }
+    }
     let daemon = mdns_sd::ServiceDaemon::new()?;
     let mut txt = std::collections::HashMap::new();
     txt.insert("v".to_string(), "1".to_string());

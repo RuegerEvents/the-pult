@@ -355,6 +355,7 @@ impl Network {
 /// `mdns-sd` disables it by default — and it is the one interface restriction a test
 /// machine can actually make.
 pub fn restrict_mdns(daemon: &mdns_sd::ServiceDaemon, address: Option<Ipv4Addr>) -> Ipv4Addr {
+    say_if_multicast_is_refused();
     let Some(address) = address else {
         return crate::infra::local_ipv4();
     };
@@ -394,3 +395,41 @@ pub async fn udp(address: Option<Ipv4Addr>) -> std::io::Result<tokio::net::UdpSo
 
 #[cfg(test)]
 mod tests;
+
+/// Say so, once per process, if this process may not send multicast at all.
+///
+/// Every mDNS daemon here — the session, the device browser, MVR-xchange — and every
+/// sACN output to a multicast group depends on it, and when it is refused the daemon
+/// says nothing above `debug`: it skips each interface with "No route to host" and
+/// browses an empty network. On macOS that is what the **Local Network** privacy
+/// setting does to a process whose app was never allowed it — found when a station
+/// started from an agent's shell discovered none of the simulators beside it, while
+/// unicast to the same LAN went through. A console in that state looks like a venue
+/// network with nothing on it, so it is a `warn` with the remedy in it.
+pub fn say_if_multicast_is_refused() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if let Some(e) = multicast_refused() {
+            warn!(
+                "[network] this process may not send multicast ({e}): no mDNS, so no peers or \
+                 OpenHaunt nodes will be found, and multicast sACN will not leave. On macOS, \
+                 allow Local Network access for the app that started the console \
+                 (System Settings → Privacy & Security → Local Network)"
+            );
+        }
+    });
+}
+
+/// Try one empty mDNS query to the group, on whatever interface the route table picks.
+///
+/// Twelve zero bytes is a DNS header with no questions — what `mdns-sd` itself sends
+/// to test a socket — so a responder that hears it has nothing to answer.
+pub fn multicast_refused() -> Option<std::io::Error> {
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    match socket.send_to(&[0u8; 12], (Ipv4Addr::new(224, 0, 0, 251), 5353)) {
+        Ok(_) => None,
+        // A machine with no network at all is not a refusal: there is nowhere to send.
+        Err(e) if e.kind() == std::io::ErrorKind::NetworkUnreachable => None,
+        Err(e) => Some(e),
+    }
+}
