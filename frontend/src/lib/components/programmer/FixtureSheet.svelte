@@ -35,7 +35,7 @@
 	import { drivenBy, drivingKey } from '$lib/driving.js';
 	import { recordingKeys } from '$lib/evaluator.js';
 	import { CURVE_LABELS, CURVES, fadeGroup } from '$lib/fade.js';
-	import { displayLabel, formatValue, parameterKey } from '$lib/patch.js';
+	import { displayLabel, formatValue, hasCells, inCell, parameterKey, splitCell } from '$lib/patch.js';
 	import { asFloat, hexToRgb, rgbToHex, withFloat } from '$lib/programmer.js';
 	import { SOURCE_LABELS, source, trackedSource, type Source } from '$lib/sheet.js';
 	import { collection } from '$lib/stores/show.js';
@@ -60,6 +60,25 @@
 	let picked = $state<{ fixtureId: string; key: string } | null>(null);
 
 	const typeOf = (fixture: Fixture) => $types.find((t) => t.id === fixture.fixture_type_id);
+
+	/**
+	 * Multi-cell fixtures opened into their cells. A strip is one row until somebody
+	 * asks to see its pixels: a thousand rows nobody asked for is a sheet nobody can read.
+	 */
+	let expanded = $state(new Set<string>());
+	function toggleCells(id: string) {
+		const next = new Set(expanded);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		expanded = next;
+	}
+	/** Whether this column is one the fixture holds per cell. */
+	const perCell = (fixture: Fixture, key: string) =>
+		!!typeOf(fixture)?.parameters.some((p) => p.per_cell && parameterKey(p.kind) === key);
+	const cellsOf = (fixture: Fixture) => {
+		const type = typeOf(fixture);
+		return hasCells(type) ? (type?.cells ?? 0) : 0;
+	};
 
 	/**
 	 * The rows.
@@ -178,9 +197,17 @@
 	/// parameters and nothing else, so a rig of thousands with a dozen on screen
 	/// costs a dozen.
 	$effect(() => {
-		const keys = rows.flatMap((fixture) =>
-			columns.map((column) => drivingKey(fixture.id, column.key))
-		);
+		const keys = rows.flatMap((fixture) => [
+			...columns.map((column) => drivingKey(fixture.id, column.key)),
+			// An open strip's cells, each its own key.
+			...(expanded.has(fixture.id)
+				? Array.from({ length: cellsOf(fixture) }, (_, i) =>
+						columns
+							.filter((c) => perCell(fixture, c.key))
+							.map((c) => drivingKey(fixture.id, `${c.key}@${i + 1}`))
+					).flat()
+				: [])
+		]);
 		const registered = watching(keys);
 		return () => registered.stop();
 	});
@@ -276,6 +303,15 @@
 		setValue([fixture.id], column.kind, withFloat(current, percent / 100));
 	}
 
+	/** The picked column, as the cell it is where a cell was picked. */
+	const pickedColumn = $derived.by(() => {
+		if (!picked) return undefined;
+		const [base, cell] = splitCell(picked.key);
+		const column = columns.find((c) => c.key === base);
+		if (!column || cell === null) return column;
+		return { ...column, key: picked.key, kind: inCell(column.kind, cell), label: `${column.label} ${cell}` };
+	});
+
 	const percentOf = (value: ParameterCapture['value']) => {
 		const n = asFloat(value);
 		return n === null ? '' : String(Math.round(n * 100));
@@ -346,9 +382,19 @@
 						<tr class:picked={$selected.has(fixture.id)}>
 							<th class="name">
 								<button class="row-name" onclick={() => select(fixture.id)}>{fixture.name}</button>
+								{#if cellsOf(fixture) > 0}
+									<button
+										class="cells-toggle"
+										aria-expanded={expanded.has(fixture.id)}
+										onclick={() => toggleCells(fixture.id)}
+										title="Show each of its {cellsOf(fixture)} cells"
+									>{expanded.has(fixture.id) ? '▾' : '▸'} {cellsOf(fixture)}</button>
+								{/if}
 							</th>
 							{#each columns as column (column.key)}
-								{@const c = cell(fixture, column.key)}
+								{@const c = perCell(fixture, column.key)
+									? { text: `${cellsOf(fixture)} cells`, source: 'none' as Source, from: null }
+									: cell(fixture, column.key)}
 								<td
 									class="src-{c.source}"
 									class:on={picked?.fixtureId === fixture.id && picked?.key === column.key}
@@ -366,6 +412,29 @@
 								</td>
 							{/each}
 						</tr>
+						{#if expanded.has(fixture.id)}
+							{#each Array.from({ length: cellsOf(fixture) }, (_, i) => i + 1) as n (n)}
+								<tr class="cell-row">
+									<th class="name"><span class="cell-name">{fixture.name} · {n}</span></th>
+									{#each columns as column (column.key)}
+										{#if perCell(fixture, column.key)}
+											{@const key = `${column.key}@${n}`}
+											{@const c = cell(fixture, key)}
+											<td
+												class="src-{c.source}"
+												class:on={picked?.fixtureId === fixture.id && picked?.key === key}
+											>
+												<button class="cell" onclick={() => (picked = { fixtureId: fixture.id, key })}>
+													{c.text}
+												</button>
+											</td>
+										{:else}
+											<td></td>
+										{/if}
+									{/each}
+								</tr>
+							{/each}
+						{/if}
 					{/each}
 				</tbody>
 			</table>
@@ -381,7 +450,7 @@
 			<span class="what">
 				<!-- `kindLabel`, not the raw map key: "Color" is what an operator calls
 				     it and `ColorRgb` is what `live_fades` calls it. -->
-				{fixture?.name ?? '—'} · {columns.find((c) => c.key === picked?.key)?.label ?? picked.key}
+				{fixture?.name ?? '—'} · {pickedColumn?.label ?? picked.key}
 			</span>
 			{#if pickedCapture}
 				{@const capture = pickedCapture}
@@ -465,7 +534,7 @@
 				</label>
 			{:else if shownPreset}
 				{@const value = presetCells.get(drivingKey(picked.fixtureId, picked.key))}
-				{@const column = columns.find((c) => c.key === picked?.key)}
+				{@const column = pickedColumn}
 				{#if value}
 					<label>
 						value
@@ -522,7 +591,7 @@
 					This cue does not capture it — what is shown is tracked from an earlier one.
 				</span>
 			{:else if fixture}
-				{@const column = columns.find((c) => c.key === picked?.key)}
+				{@const column = pickedColumn}
 				{#if column}
 					{@const now = $output.value(fixture.id, column.key)}
 					<label>
@@ -673,6 +742,21 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.cells-toggle {
+		margin-left: 6px;
+		background: none;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		color: var(--text-dim);
+		font-size: var(--font-xs);
+		cursor: pointer;
+		padding: 0 4px;
+	}
+	.cell-name {
+		color: var(--text-faint);
+		padding-left: 12px;
+		font-size: var(--font-xs);
 	}
 	tr.picked .row-name {
 		color: var(--text-bright);

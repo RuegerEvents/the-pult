@@ -93,9 +93,19 @@ let frame: number | null = null;
  * rival one beside it.
  */
 export function setValue(fixtureIds: string[], kind: ParameterKind, value: ParameterValue): void {
-	const key = parameterKey(kind);
-	for (const fixtureId of fixtureIds) {
-		pending.set(entryId(fixtureId, key), { fixtureId, kind, value });
+	setValueOn(
+		fixtureIds.map((fixtureId) => ({ fixtureId, kind })),
+		value
+	);
+}
+
+/**
+ * The same, onto targets that may each hold the parameter under its own kind: the
+ * cells of a strip, each its own `ColorRgb@n`. See `rowTargets`.
+ */
+export function setValueOn(targets: { fixtureId: string; kind: ParameterKind }[], value: ParameterValue): void {
+	for (const { fixtureId, kind } of targets) {
+		pending.set(entryId(fixtureId, parameterKey(kind)), { fixtureId, kind, value });
 	}
 	if (frame !== null) return;
 	frame = requestAnimationFrame(() => {

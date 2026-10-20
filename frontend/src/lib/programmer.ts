@@ -8,6 +8,7 @@
 
 import type {
 	Cue,
+	Element,
 	Fixture,
 	FixtureType,
 	ParameterCapture,
@@ -19,7 +20,7 @@ import type {
 } from './generated/index.js';
 import { fadeGroup } from './fade.js';
 import type { FadeGroup, PhysicalRange } from './generated/index.js';
-import { displayLabel, modeHas, modeOf, parameterKey } from './patch.js';
+import { displayLabel, inCell, kindBase, modeHas, modeOf, parameterKey } from './patch.js';
 import type { Showing } from './stores/output.js';
 
 // ── Entry ids ─────────────────────────────────────────────────────────────────
@@ -126,7 +127,8 @@ export function editableParameters(
 			// operator who cannot see it cannot work out why the light will not zoom —
 			// but it says so, and a selection where some fixtures can and some cannot
 			// says that too.
-			const reachable = modeHas(mode, key);
+			// A per-cell parameter is placed cell by cell; the first cell answers for it.
+			const reachable = modeHas(mode, parameter.per_cell && type.cells > 0 ? `${key}@1` : key);
 			const existing = rows.get(key);
 			if (existing) {
 				existing.count += 1;
@@ -149,6 +151,64 @@ export function editableParameters(
 	}
 
 	return [...rows.values()].map((row) => ({ ...row, mixed: row.count < fixtures.length }));
+}
+
+/** One parameter of one fixture, as the programmer holds it: a cell's has its cell. */
+export type Target = { fixtureId: string; kind: ParameterKind };
+
+/**
+ * Where setting one parameter of a selection lands: one target per element that has
+ * it. A cell takes a per-cell parameter as itself; a fixture with cells selected whole
+ * takes it on every cell; and a parameter that is the whole fixture's (a bar's master
+ * dimmer) is set once per fixture however many of its cells are selected.
+ */
+export function rowTargets(
+	kind: ParameterKind,
+	elements: Element[],
+	typeOf: (fixtureId: string) => FixtureType | undefined
+): Target[] {
+	const base = kindBase(kind);
+	const key = parameterKey(base);
+	const out: Target[] = [];
+	const seen = new Set<string>();
+	const add = (fixtureId: string, k: ParameterKind) => {
+		const id = `${fixtureId}/${parameterKey(k)}`;
+		if (seen.has(id)) return;
+		seen.add(id);
+		out.push({ fixtureId, kind: k });
+	};
+	for (const element of elements) {
+		const type = typeOf(element.fixture);
+		const param = type?.parameters.find((p) => p.direction === 'Output' && parameterKey(p.kind) === key);
+		if (!type || !param) continue;
+		if (param.per_cell && type.cells > 0) {
+			if (element.cell !== null) add(element.fixture, inCell(base, element.cell));
+			else for (let cell = 1; cell <= type.cells; cell++) add(element.fixture, inCell(base, cell));
+		} else {
+			add(element.fixture, base);
+		}
+	}
+	return out;
+}
+
+/** What a set of targets is showing, or nothing when they disagree. */
+export function commonValueOf(
+	targets: Target[],
+	showing: Showing
+): { value: ParameterValue | null; mixed: boolean } {
+	let found: ParameterValue | null = null;
+	let seen = false;
+	for (const target of targets) {
+		const value = showing.value(target.fixtureId, parameterKey(target.kind));
+		if (value === null) continue;
+		if (!seen) {
+			found = value;
+			seen = true;
+			continue;
+		}
+		if (!sameValue(found, value)) return { value: found, mixed: true };
+	}
+	return { value: found, mixed: false };
 }
 
 /**

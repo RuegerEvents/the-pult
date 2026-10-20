@@ -14,10 +14,11 @@
 	 */
 
 	import type { EffectSpec, ParameterKind, ParameterValue } from '$lib/generated/index.js';
-	import { commonValue, editableParameters } from '$lib/programmer.js';
-	import { formatValue, kindLabel } from '$lib/patch.js';
+	import { commonValueOf, editableParameters, rowTargets, type Target } from '$lib/programmer.js';
+	import { formatValue, kindLabel, parameterKey } from '$lib/patch.js';
+	import { cellSpansText, parseCellSpans } from '$lib/selection.js';
 	import { collection } from '$lib/stores/show.js';
-	import { selection } from '$lib/stores/selection.js';
+	import { elements, hasCellsSelected, query, selection, setCells } from '$lib/stores/selection.js';
 	import { revealPanel } from '$lib/stores/layout.js';
 	import { output, watching } from '$lib/stores/output.js';
 	import {
@@ -30,7 +31,7 @@
 		lockAll,
 		remove,
 		removeEffect,
-		setValue,
+		setValueOn,
 		toggleLock,
 		updateEdit
 	} from '$lib/stores/programmer.js';
@@ -54,6 +55,18 @@
 
 	const chosen = $derived($fixtures.filter((f) => $selection.includes(f.id)));
 	const rows = $derived(editableParameters($types, chosen));
+	const typeById = $derived(new Map($types.map((t) => [t.id, t])));
+	const fixtureTypeOf = $derived(new Map($fixtures.map((f) => [f.id, typeById.get(f.fixture_type_id)])));
+	/// Where each row lands: a fixture's own key, or each selected cell's.
+	const targetsOf = (kind: ParameterKind): Target[] =>
+		rowTargets(kind, $elements, (id) => fixtureTypeOf.get(id));
+	const targetKey = (t: Target) => `${t.fixtureId}/${parameterKey(t.kind)}`;
+	const cellCount = $derived($elements.filter((e) => e.cell !== null).length);
+	let cellText = $state('');
+	$effect(() => {
+		cellText = cellSpansText($query.cells ?? []);
+	});
+	const cellError = $derived(parseCellSpans(cellText) === null);
 	const editing = $derived($cues.find((c) => c.id === $editingCue) ?? null);
 	const anyUnlocked = $derived($entries.some((e) => !e.locked));
 
@@ -61,31 +74,31 @@
 	/// parameters and nothing else: a rig of thousands with a dozen selected costs a
 	/// dozen.
 	$effect(() => {
-		const keys = chosen.flatMap((fixture) => rows.map((row) => `${fixture.id}/${row.key}`));
+		const keys = rows.flatMap((row) => targetsOf(row.kind).map(targetKey));
 		const registered = watching(keys);
 		return () => registered.stop();
 	});
 
 	/** The value a control should be showing: what is held, else what is on stage. */
-	function valueOf(key: string, fallback: ParameterValue): ParameterValue {
-		const first = chosen[0];
-		const entry = first ? $byKey.get(`${first.id}/${key}`) : undefined;
+	function valueOf(kind: ParameterKind, fallback: ParameterValue): ParameterValue {
+		const targets = targetsOf(kind);
+		const first = targets[0];
+		const entry = first ? $byKey.get(targetKey(first)) : undefined;
 		if (entry) return entry.value;
-		return commonValue(chosen, key, $output).value ?? fallback;
+		return commonValueOf(targets, $output).value ?? fallback;
 	}
 
-	const isHeld = (key: string) => chosen.some((f) => $byKey.has(`${f.id}/${key}`));
+	const isHeld = (kind: ParameterKind) => targetsOf(kind).some((t) => $byKey.has(targetKey(t)));
 
-	const put = (kind: ParameterKind, value: ParameterValue) =>
-		setValue($selection, kind, value);
+	const put = (kind: ParameterKind, value: ParameterValue) => setValueOn(targetsOf(kind), value);
 
 	/// Pan and tilt also get a pad, because two numbers is not how anyone thinks
 	/// about where a light is pointing.
 	const panRow = $derived(rows.find((r) => r.kind === 'Pan') ?? null);
 	const tiltRow = $derived(rows.find((r) => r.kind === 'Tilt') ?? null);
-	const axisValue = (row: { key: string; defaultValue: ParameterValue } | null) => {
+	const axisValue = (row: { kind: ParameterKind; defaultValue: ParameterValue } | null) => {
 		if (!row) return null;
-		const value = valueOf(row.key, row.defaultValue);
+		const value = valueOf(row.kind, row.defaultValue);
 		return value.type === 'Float' ? value.value : null;
 	};
 
@@ -107,8 +120,28 @@
 	<header>
 		<h2>Programmer</h2>
 		<span class="count">
-			{$selection.length === 0 ? 'nothing selected' : `${$selection.length} selected`}
+			{$selection.length === 0
+				? 'nothing selected'
+				: cellCount > 0
+					? `${$selection.length} selected · ${cellCount} cells`
+					: `${$selection.length} selected`}
 		</span>
+		{#if $hasCellsSelected || ($query.cells ?? []).length > 0}
+			<!-- MA's `.`: which cells of every multi-cell fixture selected. Empty is all. -->
+			<label class="cells" title="Which cells: 1-20, 5, 20-1. Empty is every cell.">
+				cells
+				<input
+					class="input mono"
+					class:bad={cellError}
+					placeholder="all"
+					bind:value={cellText}
+					onchange={() => {
+						const spans = parseCellSpans(cellText);
+						if (spans) setCells(spans);
+					}}
+				/>
+			</label>
+		{/if}
 		<span class="spacer"></span>
 		<button
 			class="ghost"
@@ -166,9 +199,10 @@
 			{/if}
 
 			{#each rows as row (row.key)}
-				{@const value = valueOf(row.key, row.defaultValue)}
+				{@const value = valueOf(row.kind, row.defaultValue)}
 				{@const unreachable = row.unreachable === row.count}
-				<div class="row" class:held={isHeld(row.key)} class:unreachable>
+				{@const shown = commonValueOf(targetsOf(row.kind), $output)}
+				<div class="row" class:held={isHeld(row.kind)} class:unreachable>
 					<span class="label">
 						{row.label}
 						{#if row.mixed}<span class="mixed" title="Not every selected fixture has this">mixed</span>{/if}
@@ -189,10 +223,10 @@
 							<span class="waiting" title="This browser has not yet placed itself on the station's clock"
 								>—</span
 							>
-						{:else if commonValue(chosen, row.key, $output).mixed}
+						{:else if shown.mixed}
 							—
 						{:else}
-							{formatValue(commonValue(chosen, row.key, $output).value ?? undefined)}
+							{formatValue(shown.value ?? undefined)}
 						{/if}
 					</span>
 					<div class="control">
@@ -201,7 +235,7 @@
 							label={row.label}
 							choices={row.choices}
 							range={row.physical}
-							tint={isHeld(row.key) ? 'var(--live)' : 'var(--accent)'}
+							tint={isHeld(row.kind) ? 'var(--live)' : 'var(--accent)'}
 							oninput={(next) => put(row.kind, next)}
 						/>
 					</div>
@@ -317,6 +351,19 @@
 	.count {
 		color: var(--text-faint);
 		font-size: var(--font-xs);
+	}
+	.cells {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		color: var(--text-dim);
+		font-size: var(--font-xs);
+	}
+	.cells .input {
+		width: 7em;
+	}
+	.cells .bad {
+		border-color: var(--bad);
 	}
 	.spacer {
 		flex: 1;

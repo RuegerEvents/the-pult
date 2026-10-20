@@ -14,6 +14,7 @@ import {
 	asFloat,
 	commonValue,
 	editableParameters,
+	rowTargets,
 	entriesFromCue,
 	entryId,
 	hexToRgb,
@@ -27,6 +28,7 @@ import {
 	storeCaptures,
 	withFloat
 } from './programmer.js';
+import { parameterKey } from './patch.js';
 import { readingOf } from './stores/output.js';
 import { aFixture, aFixtureType, aParameter } from './test-fixtures.js';
 
@@ -537,5 +539,54 @@ describe('a preset dropped onto a cue', () => {
 		const a = out.find((c) => c.fixture_id === 'a')!;
 		expect(a.value).toEqual(v(0.8));
 		expect(a.fade_in_ms).toBe(3000);
+	});
+});
+
+describe('setting a parameter on cells', () => {
+	const color = { type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } } as const;
+	const strip = aFixtureType({
+		id: 'strip',
+		cells: 3,
+		parameters: [aParameter({ kind: 'ColorRgb', default_value: color, per_cell: true })]
+	});
+	const bar = aFixtureType({
+		id: 'bar',
+		cells: 2,
+		parameters: [
+			aParameter({ kind: 'Intensity', default_value: { type: 'Float', value: 0 } }),
+			aParameter({ kind: 'ColorRgb', default_value: color, per_cell: true })
+		]
+	});
+	const par = aFixtureType({
+		id: 'par',
+		parameters: [aParameter({ kind: 'ColorRgb', default_value: color })]
+	});
+	const typeOf = (id: string) => ({ s: strip, b: bar, p: par })[id as 's' | 'b' | 'p'];
+	const keys = (t: { fixtureId: string; kind: Parameters<typeof parameterKey>[0] }[]) =>
+		t.map((x) => `${x.fixtureId}/${parameterKey(x.kind)}`);
+
+	it('lands on each selected cell, and on a par beside them as itself', () => {
+		const targets = rowTargets('ColorRgb', [
+			{ fixture: 's', cell: 2 },
+			{ fixture: 's', cell: 3 },
+			{ fixture: 'p', cell: null }
+		], typeOf);
+		expect(keys(targets)).toEqual(['s/ColorRgb@2', 's/ColorRgb@3', 'p/ColorRgb']);
+	});
+
+	it('sets a bar’s master once however many of its cells are selected', () => {
+		const targets = rowTargets('Intensity', [
+			{ fixture: 'b', cell: 1 },
+			{ fixture: 'b', cell: 2 }
+		], typeOf);
+		expect(keys(targets)).toEqual(['b/Intensity']);
+	});
+
+	it('takes a per-cell parameter on a strip selected whole as every cell', () => {
+		expect(keys(rowTargets('ColorRgb', [{ fixture: 's', cell: null }], typeOf))).toEqual([
+			's/ColorRgb@1',
+			's/ColorRgb@2',
+			's/ColorRgb@3'
+		]);
 	});
 });

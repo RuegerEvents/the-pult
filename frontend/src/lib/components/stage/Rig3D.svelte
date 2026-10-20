@@ -90,7 +90,7 @@
 		rayOnPlane,
 		type Ray
 	} from '$lib/puppeteer.js';
-	import { clearSelection, selected, select, toggle } from '$lib/stores/selection.js';
+	import { clearSelection, selectCells, selected, select, toggle } from '$lib/stores/selection.js';
 	import {
 		fixtureIsVisible,
 		hiddenLayers,
@@ -594,6 +594,8 @@
 			cellMesh,
 			/** And each cell, the same way. */
 			cellPrevious: new Float32Array(0),
+			/** Which fixture and cell each instance of `cellMesh` is, for picking one. */
+			cellIndex: [] as { fixture: string; cell: number }[],
 			/** Fixture bodies, kept between frames and keyed by fixture id. */
 			bodies: new Map<string, THREE.Mesh>(),
 			/** Drawn scene objects, keyed by object id. */
@@ -938,9 +940,11 @@
 		if (built.cellPrevious.length < cellCount * 6) built.cellPrevious = new Float32Array(cellCount * 6).fill(NaN);
 		let cellAt = 0;
 		let cellsChanged = false;
+		built.cellIndex.length = 0;
 		for (const beam of list) {
 			if (!beam.cells) continue;
 			beam.cells.at.forEach((point, n) => {
+				built.cellIndex.push({ fixture: beam.fixture.id, cell: n + 1 });
 				const out = beam.cells!.out[n];
 				const glow = out.level * 2.5;
 				const now = [point.x, point.y, point.z, out.r * glow, out.g * glow, out.b * glow];
@@ -2147,6 +2151,26 @@
 				beginGrab(built, found.kind, found.id, event);
 				return;
 			}
+			// A cell of a strip: that cell, and a drag along the strip takes the run of
+			// cells between where it started and where it is — MA's `.` by hand.
+			const onCell = cellAt(built, event);
+			if (onCell) {
+				event.stopPropagation();
+				const from =
+					event.shiftKey && cellAnchor?.fixture === onCell.fixture ? cellAnchor.cell : onCell.cell;
+				cellAnchor = { fixture: onCell.fixture, cell: from };
+				selectCells(onCell.fixture, [{ from, to: onCell.cell }]);
+				clearObjects();
+				cellDrag = true;
+				built.controls.enabled = false;
+				const up = () => {
+					cellDrag = false;
+					built.controls.enabled = true;
+					window.removeEventListener('pointerup', up);
+				};
+				window.addEventListener('pointerup', up);
+				return;
+			}
 			// Not a gizmo: maybe a fixture body, which is what picking one is.
 			const body = bodyAt(built, event);
 			if (body) {
@@ -2194,6 +2218,13 @@
 		// fixture and nothing at all when the selection is empty.
 		const move = (event: PointerEvent) => {
 			if (grab) return;
+			if (cellDrag && cellAnchor) {
+				const over = cellAt(built, event);
+				if (over && over.fixture === cellAnchor.fixture) {
+					selectCells(over.fixture, [{ from: cellAnchor.cell, to: over.cell }]);
+				}
+				return;
+			}
 			hovered = gizmoAt(built, event);
 		};
 
@@ -2232,6 +2263,21 @@
 		caster.setFromCamera(ndc, built.camera);
 		const hit = caster.intersectObjects([...built.gizmos.keys()], false)[0];
 		return hit ? (built.gizmos.get(hit.object) ?? null) : null;
+	}
+
+	/** Where a cell drag started, so a shift-click or a drag runs from it. */
+	let cellAnchor: { fixture: string; cell: number } | null = null;
+	let cellDrag = false;
+
+	/** Which cell of which strip is under the pointer. */
+	function cellAt(built: Scene, event: PointerEvent): { fixture: string; cell: number } | null {
+		if (built.cellMesh.count === 0) return null;
+		const ndc = pointerNdc(event);
+		if (!ndc) return null;
+		caster.setFromCamera(ndc, built.camera);
+		const hit = caster.intersectObject(built.cellMesh, false)[0];
+		if (hit?.instanceId === undefined) return null;
+		return built.cellIndex[hit.instanceId] ?? null;
 	}
 
 	function bodyAt(built: Scene, event: PointerEvent): string | null {

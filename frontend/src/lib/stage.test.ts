@@ -3,6 +3,8 @@ import type { Fixture, FixtureType, ParameterValue, StagePlan } from './generate
 import {
 	HANGING,
 	aimAt,
+	cellOutputs,
+	cellPoints,
 	beamDirection,
 	beamSpot,
 	calibrationScale,
@@ -477,3 +479,66 @@ describe('the rig in three dimensions', () => {
 	});
 });
 
+
+describe('the cells of a strip', () => {
+	const strip = aFixtureType({
+		cells: 3,
+		parameters: [
+			aParameter({
+				kind: 'ColorRgb',
+				default_value: { type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } },
+				per_cell: true
+			})
+		]
+	});
+	const placed = aFixture({
+		position: {
+			position: { x: 1, y: 2, z: 3 },
+			rotation: { x: 0, y: 0, z: 0 },
+			scale: { x: 1, y: 1, z: 1 }
+		},
+		address: {
+			OpenHaunt: {
+				serial: 'n',
+				universe: null,
+				head: 1,
+				strip: {
+					output: 0,
+					mode: 'sacn',
+					count: 3,
+					order: 'GRB',
+					universe: 1,
+					address: 1,
+					hold_ms: 0,
+					pitch_m: 0.5
+				}
+			}
+		}
+	});
+
+	it('lie along the fixture, a pitch apart, from where it is placed', () => {
+		expect(cellPoints(placed, strip)).toEqual([
+			{ x: 1, y: 2, z: 3 },
+			{ x: 1.5, y: 2, z: 3 },
+			{ x: 2, y: 2, z: 3 }
+		]);
+	});
+
+	it('are each the color they are showing, at full where nothing dims them', () => {
+		const showing = {
+			at: 0,
+			value: (_: string, key: string) =>
+				key === 'ColorRgb@2'
+					? ({ type: 'Color', value: { r: 1, g: 0, b: 0, overrides: {} } } as const)
+					: null
+		};
+		const out = cellOutputs(placed, strip, showing as never);
+		expect(out).toHaveLength(3);
+		expect(out[1]).toEqual({ r: 1, g: 0, b: 0, level: 1 });
+		expect(out[0].level).toBe(0);
+	});
+
+	it('are none for a fixture with no cells', () => {
+		expect(cellPoints(placed, aFixtureType())).toEqual([]);
+	});
+});
