@@ -1075,12 +1075,31 @@ impl AudioManager {
             }
             let playing = self.playing.get(&timeline.id);
             let chasing = self.chasing.get(&timeline.id);
-            let mut clip_faults = self.clip_faults.get(&timeline.id).cloned().unwrap_or_default();
-            clip_faults.extend(node_faults.cloned().unwrap_or_default());
+            // Each clip's faults put against what its destination reaches: silent where
+            // every member failed, half heard where some did.
+            let station_faults = self.clip_faults.get(&timeline.id);
+            let mut clip_faults = std::collections::BTreeMap::new();
+            let mut clip_partial = std::collections::BTreeMap::new();
+            let no_nodes = std::collections::BTreeMap::new();
+            for clip in &timeline.clips {
+                let id = clip.id.to_string();
+                let station = station_faults.and_then(|f| f.get(&id)).map(String::as_str);
+                let nodes = node_faults.and_then(|f| f.get(&id)).unwrap_or(&no_nodes);
+                match pult_schema::types::zone::clip_health(&clip.destination, &self.zones, station, nodes) {
+                    pult_schema::types::zone::ClipHealth::Fine => {}
+                    pult_schema::types::zone::ClipHealth::Partial(failed) => {
+                        clip_partial.insert(id, failed);
+                    }
+                    pult_schema::types::zone::ClipHealth::Silent(why) => {
+                        clip_faults.insert(id, why);
+                    }
+                }
+            }
             if playing.is_none()
                 && chasing.is_none()
                 && !self.faults.contains_key(&timeline.id)
                 && clip_faults.is_empty()
+                && clip_partial.is_empty()
             {
                 // Nothing to say about a timeline with no audio and no timecode, which
                 // is most of them: an empty row would be a panel full of "no".
@@ -1108,6 +1127,7 @@ impl AudioManager {
                         drop_frame: c.drop_frame,
                     }),
                     clip_faults,
+                    clip_partial,
                     clip_channels: self.clip_channels.get(&timeline.id).cloned().unwrap_or_default(),
                 },
             );

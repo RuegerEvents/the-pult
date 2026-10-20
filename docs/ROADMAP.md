@@ -6910,6 +6910,8 @@ it is a variant nothing in this build can name.
 browser cannot name another machine's channels, since the names live in that machine's
 preferences. No per-zone level or EQ. A clip cannot go to two zones; a zone with two
 speakers' worth of channels can. Nothing has been played through Dante itself.
+~~A zone holding Dante channels and a node speaker drew the whole clip red when only the
+node was down.~~ A clip half heard is its own state since task 83.
 
 **Addendum (2026-10-21): the flakes task 81 could not rule itself out of.** Four races,
 none of them task 81's, each found by running the binary several times at once rather
@@ -7091,10 +7093,23 @@ and the MVR round trip still hold.
 *Trap:* two definitions of one kind made the Programmer count a bar twice — `editableParameters`
 keyed rows per definition — so a kind declared twice is one row, reachable if either way is.
 
+**A clip half heard is not a silent one.** A zone can hold this station's Dante channels
+and node loudspeakers, so a clip has members; one node offline used to put the clip in
+`clip_faults` and draw it red, though the Dante channels went on sounding. Faults are now
+gathered per member — the node half keyed by serial, since a zone may hold several — and
+`zone::clip_health` puts them against what the destination reaches: *Fine*, *Partial*
+with what failed, or *Silent* when every member failed. `clip_faults` keeps its meaning,
+nothing plays it, and `AudioStatus::clip_partial` is the new state. The lanes draw a
+half-heard clip amber with a red stripe along its foot and say what failed when the
+pointer is over it; the clip inspector says *Partly: playing, except node a2 is not on the
+network*. Red is kept for silence, because the two are different things to fix with the
+house in.
+
 ```
 cd plugins && cargo test -p command-line-core           # the grammar
 cargo test -p pult-schema --test cell_targets_corpus    # where a value lands, both sides
 cargo test -p pult-backend --lib interop::gdtf          # a master, cells, a one-color mode
+cargo test -p pult-schema --lib zone                    # silent, partial, fine
 scripts/build-plugins.sh --debug && cargo test -p pult-backend --test plugins
 ```
 

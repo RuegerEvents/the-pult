@@ -88,6 +88,12 @@
 	const faults = $derived(
 		rows.map((r) => ({ name: r.name, fault: $audioStatus?.[r.timelineId]?.clip_faults?.[r.id] })).filter((f) => f.fault)
 	);
+	/// Sounding, but not everywhere it goes: what failed, by member.
+	const partials = $derived(
+		rows
+			.map((r) => ({ name: r.name, failed: $audioStatus?.[r.timelineId]?.clip_partial?.[r.id] ?? [] }))
+			.filter((p) => p.failed.length)
+	);
 </script>
 
 <div class="fields">
@@ -286,6 +292,10 @@
 	{#each faults as f (f.name)}
 		<span class="label">Not playing</span>
 		<span class="says-bad">{rows.length > 1 ? `${f.name}: ` : ''}{f.fault}</span>
+	{/each}
+	{#each partials as p (p.name)}
+		<span class="label">Partly</span>
+		<span class="says-warn">{rows.length > 1 ? `${p.name}: ` : ''}playing, except {p.failed.join('; ')}</span>
 	{/each}
 </div>
 

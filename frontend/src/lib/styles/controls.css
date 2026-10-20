@@ -181,6 +181,12 @@
 	font-size: var(--font-sm);
 }
 
+/* Working, but not all of it: a clip one of whose speakers is down. */
+.says-warn {
+	color: var(--live);
+	font-size: var(--font-sm);
+}
+
 .segmented {
 	display: inline-flex;
 }

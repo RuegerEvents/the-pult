@@ -136,6 +136,48 @@ pub fn node_targets(destination: &AudioDestination, zones: &[SpeakerZone]) -> Ve
     }
 }
 
+/// Whether a clip is sounding everywhere it goes, somewhere, or nowhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipHealth {
+    /// Every member of its destination plays it.
+    Fine,
+    /// Some members play it and these do not, each said with what failed: an offline
+    /// node beside a Dante zone that is sounding is a clip half heard, not a silent one.
+    Partial(Vec<String>),
+    /// Nothing plays it, and why.
+    Silent(String),
+}
+
+/// Put a clip's faults against what its destination reaches: this station's channels
+/// (a zone mapped somewhere) and each node loudspeaker in it. Silent only when every
+/// member failed; a destination with no members at all is silent with what was said.
+///
+/// `station` is the fault the playing station has for the clip (a zone it has not
+/// mapped, a file it cannot decode), `nodes` the faults by node serial.
+pub fn clip_health(
+    destination: &AudioDestination,
+    zones: &[SpeakerZone],
+    station: Option<&str>,
+    nodes: &BTreeMap<String, String>,
+) -> ClipHealth {
+    if station.is_none() && nodes.is_empty() {
+        return ClipHealth::Fine;
+    }
+    let speakers: Vec<String> = node_targets(destination, zones).into_iter().map(|(s, _)| s).collect();
+    let station_member = match destination {
+        AudioDestination::Zone { zone } => zones.iter().any(|z| z.id == *zone && !z.channels.is_empty()),
+        AudioDestination::Node { .. } => false,
+    };
+    let said: Vec<String> = station.map(str::to_string).into_iter().chain(nodes.values().cloned()).collect();
+    let station_plays = station_member && station.is_none();
+    let a_node_plays = speakers.iter().any(|s| !nodes.contains_key(s));
+    if station_plays || a_node_plays {
+        ClipHealth::Partial(said)
+    } else {
+        ClipHealth::Silent(said.join("; "))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +269,34 @@ mod tests {
         let node = AudioDestination::Node { serial: "a2".into(), mode: NodeAudioMode::Clip };
         assert_eq!(station_channels(&node, &[], BOOTH, "booth"), None);
         assert_eq!(node_targets(&node, &[]).len(), 1);
+    }
+
+    #[test]
+    fn a_clip_is_silent_only_when_every_member_failed() {
+        let mut zone = a_zone(1);
+        zone.channels.insert(BOOTH, vec![4]);
+        zone.nodes = vec![ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Clip }];
+        let zones = vec![zone.clone()];
+        let none = BTreeMap::new();
+        let mut offline = BTreeMap::new();
+        offline.insert("a2".to_string(), "node a2 is not on the network".to_string());
+
+        assert_eq!(clip_health(&to(&zone), &zones, None, &none), ClipHealth::Fine);
+        // The node is down and the Dante channel sounds: half heard, not silent.
+        assert_eq!(
+            clip_health(&to(&zone), &zones, None, &offline),
+            ClipHealth::Partial(vec!["node a2 is not on the network".into()])
+        );
+        // Both down: nothing plays it.
+        assert_eq!(
+            clip_health(&to(&zone), &zones, Some("Area 2 is not mapped on booth"), &offline),
+            ClipHealth::Silent("Area 2 is not mapped on booth; node a2 is not on the network".into())
+        );
+        // A clip going to the node alone has nothing else to sound through.
+        let node = AudioDestination::Node { serial: "a2".into(), mode: NodeAudioMode::Clip };
+        assert_eq!(
+            clip_health(&node, &zones, None, &offline),
+            ClipHealth::Silent("node a2 is not on the network".into())
+        );
     }
 }

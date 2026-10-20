@@ -114,8 +114,9 @@ pub struct Nodes {
     /// the broker. A node that comes back has forgotten every voice.
     reachable: BTreeMap<String, bool>,
     streams: HashMap<String, Streamer>,
-    /// Why a node clip is not playing, keyed by timeline and then by clip.
-    pub(super) faults: HashMap<Uuid, BTreeMap<String, String>>,
+    /// Why a node clip is not playing, keyed by timeline, then by clip, then by the
+    /// node: a zone may hold several, and one of them being down is not all of them.
+    pub(super) faults: HashMap<Uuid, BTreeMap<String, BTreeMap<String, String>>>,
     published: Option<NodeAudioStates>,
 }
 
@@ -347,7 +348,7 @@ impl AudioManager {
         let timelines = self.timelines.clone();
         let zones = self.zones.clone();
         let mut wanted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let mut faults: HashMap<Uuid, BTreeMap<String, String>> = HashMap::new();
+        let mut faults: HashMap<Uuid, BTreeMap<String, BTreeMap<String, String>>> = HashMap::new();
         let mut streamed: BTreeMap<String, Vec<(Timeline, AudioClip)>> = BTreeMap::new();
 
         // Every adopted node with a loudspeaker is in `wanted`, if only with nothing, so a
@@ -361,8 +362,13 @@ impl AudioManager {
         for timeline in &timelines {
             for (clip, serial, mode) in node_clips(timeline, &zones) {
                 let serial = serial.as_str();
-                let fault = |faults: &mut HashMap<Uuid, BTreeMap<String, String>>, why: String| {
-                    faults.entry(timeline.id).or_default().insert(clip.id.to_string(), why);
+                let fault = |faults: &mut HashMap<Uuid, BTreeMap<String, BTreeMap<String, String>>>, why: String| {
+                    faults
+                        .entry(timeline.id)
+                        .or_default()
+                        .entry(clip.id.to_string())
+                        .or_default()
+                        .insert(serial.to_string(), why);
                 };
                 let Some(entry) = directory.entries.get(serial).filter(|e| e.online) else {
                     fault(&mut faults, format!("node {serial} is not on the network"));

@@ -654,11 +654,18 @@ pub struct AudioStatus {
     pub drift_ms: i32,
     /// Where timecode chasing has got to, where this timeline chases any.
     pub ltc: Option<LtcStatus>,
-    /// Clips that are not playing and why, keyed by clip id: a zone this station has
-    /// not mapped, a channel the device has not got, a file that would not decode. Per
-    /// clip because the rest of the timeline goes on sounding.
+    /// Clips that are not playing anywhere and why, keyed by clip id: a zone this
+    /// station has not mapped, a channel the device has not got, a file that would not
+    /// decode, a node that is not on the network. Per clip because the rest of the
+    /// timeline goes on sounding.
     #[serde(default)]
     pub clip_faults: std::collections::BTreeMap<String, String>,
+    /// Clips sounding through some of their destination and not the rest, keyed by clip
+    /// id, each with what failed: a zone's Dante channels playing while one of its node
+    /// speakers is offline. Kept apart from `clip_faults` because a clip half heard and
+    /// a silent one are different things to fix in a hurry. See `zone::clip_health`.
+    #[serde(default)]
+    pub clip_partial: std::collections::BTreeMap<String, Vec<String>>,
     /// Which of this station's output channels each clip comes out of, keyed by clip id:
     /// its zone, resolved through this station's own map. What a panel shows as "plays
     /// on 3–4 here", and what a promoted spare's row changes to.

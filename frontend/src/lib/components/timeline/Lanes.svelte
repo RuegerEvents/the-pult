@@ -123,6 +123,16 @@
 	const viewKey = $derived(`pult.waveform.${timeline.id}`);
 	const nodes = $derived(audioNodes($devices));
 	const faulted = $derived($audioStatus?.[timeline.id]?.clip_faults ?? {});
+	/// Clips sounding through some of where they go and not the rest: drawn amber with a
+	/// red stripe rather than red, which is kept for a clip nothing plays.
+	const partial = $derived($audioStatus?.[timeline.id]?.clip_partial ?? {});
+	/// What the pointer is over says what failed, since a canvas has no tooltips.
+	const hoverTitle = $derived.by(() => {
+		if (!hovering) return '';
+		if (faulted[hovering]) return `Not playing: ${faulted[hovering]}`;
+		const failed = partial[hovering];
+		return failed?.length ? `Playing, except: ${failed.join('; ')}` : '';
+	});
 
 	// ── What is on the timeline, laid out ─────────────────────────────────────
 
@@ -337,6 +347,7 @@
 			const right = Math.min(width, r.right);
 			const chosen = picked.has(refKey(item.ref));
 			const fault = !!faulted[clip.id];
+			const half = !fault && !!partial[clip.id]?.length;
 			ctx.fillStyle = chosen ? '#1f3d66' : '#18263b';
 			ctx.fillRect(left, r.top, right - left, r.bottom - r.top);
 			const peaks = clip.peaks ? peaksFor(clip.peaks, () => (dirty = true)) : null;
@@ -379,11 +390,16 @@
 			}
 			ctx.stroke();
 			const zoneColor = layout.lanes.find((l) => l.key === item.lane)?.color;
-			ctx.strokeStyle = fault ? '#ef4444' : chosen ? '#cfe0ff' : (zoneColor ?? '#2f6fd0');
+			ctx.strokeStyle = fault ? '#ef4444' : half ? '#f5a524' : chosen ? '#cfe0ff' : (zoneColor ?? '#2f6fd0');
 			ctx.lineWidth = chosen ? 2 : 1;
 			ctx.strokeRect(left + 0.5, r.top + 0.5, right - left - 1, r.bottom - r.top - 1);
 			ctx.lineWidth = 1;
-			ctx.fillStyle = fault ? '#ef4444' : '#e6efff';
+			if (half) {
+				// The part that is not sounding, as a stripe along the bottom edge.
+				ctx.fillStyle = '#ef4444';
+				ctx.fillRect(left + 1, r.bottom - 4, right - left - 2, 3);
+			}
+			ctx.fillStyle = fault ? '#ef4444' : half ? '#f5a524' : '#e6efff';
 			ctx.font = '11px system-ui, sans-serif';
 			ctx.fillText(`${clip.name || 'clip'}${clip.looped ? ' ⟲' : ''}${peaks ? '' : ' — reducing…'}`, left + 5, r.top + 13, Math.max(10, right - left - 10));
 		}
@@ -865,6 +881,7 @@
 		void view;
 		void picked;
 		void faulted;
+		void partial;
 		void $outlines;
 		void $sequences;
 		void $cues;
@@ -915,6 +932,7 @@
 				ondblclick={onDoubleClick}
 				onkeydown={onKeyDown}
 				onwheel={onWheel}
+				title={hoverTitle}
 			>
 				<canvas bind:this={canvas} style:width="{width}px" style:height="{canvasHeight}px"></canvas>
 			</div>
