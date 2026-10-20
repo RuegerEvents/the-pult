@@ -103,6 +103,9 @@ pub struct SessionManager {
     advertise_at: Option<std::net::Ipv4Addr>,
     /// A handle to our own command channel, for the promotion bridge.
     self_tx: mpsc::Sender<SessionCommand>,
+    /// Where "am I the leader" is read by everything that acts on it. Told the moment
+    /// the session changes, not on the reporter's tick: see [`Self::push_state`].
+    net: crate::infra::net::NetHandle,
 }
 
 impl SessionManager {
@@ -148,6 +151,7 @@ impl SessionManager {
                         mdns,
                         advertise_at,
                         self_tx: tx.clone(),
+                        net,
                     },
                     SessionHandle(tx),
                 );
@@ -170,6 +174,7 @@ impl SessionManager {
                 mdns,
                 advertise_at,
                 self_tx: tx.clone(),
+                net,
             },
             SessionHandle(tx),
         )
@@ -221,7 +226,13 @@ impl SessionManager {
     }
 
     /// Push current session state to the engine so all connected frontends see it.
+    ///
+    /// And tell the station's standing at once. The reporter works it out too, but on
+    /// its own two-second tick and only after the machine's first probe, which on a
+    /// slow disk is seconds: a spare that had joined went on believing it led for that
+    /// long, and played every timeline beside the real leader.
     async fn push_state(&self) {
+        self.net.set_leader(!self.state.is_follower);
         if let Ok(json) = serde_json::to_value(&self.state) {
             let path = vec![PathSegment::Key("session".into())];
             let _ = self.engine.set(path, Lifecycle::Local, json).await;

@@ -6932,6 +6932,14 @@ than by reading it:
   the leader by replication on a two-second report. With the zones test in the same
   process it lost that race; it now waits for both. Checked by building both tests into
   one binary and running it four at a time, twenty times.
+- *And a real one, found because the target directory mattered.* `tests/zones.rs` failed
+  nine runs in ten from `target/debug` and never from a fresh target directory. The
+  standing that decides who plays a timeline — and who runs an unowned Art-Net output —
+  was set only by the station reporter, which waits for the machine's first probe, and
+  the first disk enumeration reads the directory the executable sits in. Six hundred
+  thousand files there meant seconds in which a spare that had joined still believed it
+  led, and played beside the leader. The session now tells `Network::set_leader` the
+  moment `is_follower` changes; the reporter still sets the whole standing on its tick.
 
 ## What is next
 

@@ -216,6 +216,18 @@ impl Network {
         self.inner.read().map(|inner| inner.standing).unwrap_or_default()
     }
 
+    /// The session's half of the standing, the moment it changes. A leader is at the
+    /// top of the sACN ladder rather than in a slot; a follower keeps whatever slot
+    /// the reporter last claimed for it until the reporter claims again.
+    pub fn set_leader(&self, is_leader: bool) {
+        if let Ok(mut inner) = self.inner.write() {
+            inner.standing.is_leader = is_leader;
+            if is_leader {
+                inner.standing.sacn_slot = None;
+            }
+        }
+    }
+
     pub fn set_standing(&self, standing: Standing) {
         if let Ok(mut inner) = self.inner.write() {
             inner.standing = standing;
