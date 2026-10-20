@@ -1122,7 +1122,7 @@ impl ShowEngine {
                             break;
                         }
                         self.touch(&path);
-                        self.record_write(&path, lifecycle);
+                        self.record_write(&path, &value, lifecycle);
                         // A version's row has landed in memory; the file follows it
                         // once the row is on the disk. Here rather than in the verb
                         // above, because a version arriving from a peer, or a delete
@@ -1607,7 +1607,7 @@ impl ShowEngine {
         };
         if self.apply_set(path.clone(), value.clone(), lifecycle).await.is_ok() {
             self.touch(&path);
-            self.record_write(&path, lifecycle);
+            self.record_write(&path, &value, lifecycle);
             self.broadcast_after_set(&path, value.clone());
             if let Some(sync) = &self.sync {
                 sync.broadcast_synced(path, value, self.clock.clone(), Authorship::none()).await;
@@ -1657,7 +1657,7 @@ impl ShowEngine {
             // Everything, for the reason a `Call` is everything: the path is the
             // command's, and what running it wrote is not in it.
             self.touch_everything();
-            self.record_write(&path, Lifecycle::Synced);
+            self.record_write(&path, &args, Lifecycle::Synced);
             if let Some(sync) = &self.sync {
                 sync.broadcast_synced(path, args, self.clock.clone(), Authorship::none()).await;
             }
@@ -1885,7 +1885,7 @@ impl ShowEngine {
             return;
         }
         self.touch(&path);
-        self.record_write(&path, Lifecycle::Synced);
+        self.record_write(&path, &value, Lifecycle::Synced);
         self.log_local_write(&path, &value, Lifecycle::Synced, &Authorship::none()).await;
         self.broadcast_after_set(&path, value.clone());
         if let Some(sync) = &self.sync {
@@ -1978,7 +1978,7 @@ impl ShowEngine {
         }
 
         self.apply_set(path.clone(), values.clone(), Lifecycle::Synced).await?;
-        self.record_write(&path, Lifecycle::Synced);
+        self.record_write(&path, &values, Lifecycle::Synced);
         self.log_local_write(&path, &values, Lifecycle::Synced, &Authorship::none()).await;
         self.broadcast_after_set(&path, values.clone());
         if let Some(sync) = &self.sync {
@@ -2129,7 +2129,7 @@ impl ShowEngine {
             }
             moved.push(inverse.path.clone());
             self.touch(&inverse.path);
-            self.record_write(&inverse.path, lifecycle);
+            self.record_write(&inverse.path, &inverse.value, lifecycle);
             self.log_local_write(&inverse.path, &inverse.value, lifecycle, &written).await;
             self.broadcast_after_set(&inverse.path, inverse.value.clone());
             if lifecycle != Lifecycle::Local {
@@ -3055,7 +3055,7 @@ impl ShowEngine {
             PathSegment::Key(command.into()),
         ];
         self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await?;
-        self.record_write(&path, Lifecycle::Synced);
+        self.record_write(&path, &args, Lifecycle::Synced);
         if let Some(sync) = &self.sync {
             sync.broadcast_synced(path, args, self.clock.clone(), Authorship::none()).await;
         }
@@ -3067,7 +3067,8 @@ impl ShowEngine {
         // the sending node knew, and our next write has to be causally after it.
         self.clock.merge(&op.clock);
 
-        if !self.accepts(&op.path, &op.clock, op.node_id) {
+        let conflict = conflict_path(&op.path, &op.value);
+        if !self.accepts(&conflict, &op.clock, op.node_id) {
             debug!("[sync] dropping superseded write to {:?} from {}", op.path, op.node_id);
             return;
         }
@@ -3098,7 +3099,7 @@ impl ShowEngine {
             // its rig having moved.
             self.touch(&op.path);
             self.log_operation(&op).await;
-            self.path_clocks.insert(op.path.clone(), (op.clock, op.node_id));
+            self.path_clocks.insert(conflict, (op.clock, op.node_id));
             self.broadcast_after_set(&op.path, op.value);
             // A peer saved, so this station saves too — its own showfile, which is
             // the only thing it could honestly copy. That is what makes a version a
@@ -3155,11 +3156,11 @@ impl ShowEngine {
 
     /// Note that this node wrote a replicated path, so a peer's concurrent write to
     /// the same path can be ordered against it.
-    fn record_write(&mut self, path: &Path, lifecycle: Lifecycle) {
+    fn record_write(&mut self, path: &Path, value: &serde_json::Value, lifecycle: Lifecycle) {
         if lifecycle == Lifecycle::Local {
             return;
         }
-        self.path_clocks.insert(path.clone(), (self.clock.clone(), self.node_id));
+        self.path_clocks.insert(conflict_path(path, value), (self.clock.clone(), self.node_id));
     }
 
     /// Note a replicated write in the operation log, so a peer that reconnects can be
@@ -3344,7 +3345,7 @@ impl ShowEngine {
             warn!("[engine] could not seed the default user: {e}");
             return;
         }
-        self.record_write(&path, Lifecycle::Persisted);
+        self.record_write(&path, &value, Lifecycle::Persisted);
         self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none()).await;
         self.broadcast_after_set(&path, value.clone());
         if let Some(sync) = &self.sync {
@@ -3457,7 +3458,7 @@ impl ShowEngine {
             warn!("[engine] could not seed the show: {e}");
             return false;
         }
-        self.record_write(&path, Lifecycle::Persisted);
+        self.record_write(&path, &value, Lifecycle::Persisted);
         self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none()).await;
         self.broadcast_after_set(&path, value.clone());
         if let Some(sync) = &self.sync {
@@ -3508,7 +3509,7 @@ impl ShowEngine {
                 warn!("[engine] could not seed the paperwork sheets: {e}");
                 return;
             }
-            self.record_write(&path, Lifecycle::Persisted);
+            self.record_write(&path, &value, Lifecycle::Persisted);
             self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none())
                 .await;
             self.broadcast_after_set(&path, value.clone());
@@ -3538,7 +3539,7 @@ impl ShowEngine {
                 warn!("[engine] could not seed the effect pool: {e}");
                 return;
             }
-            self.record_write(&path, Lifecycle::Persisted);
+            self.record_write(&path, &value, Lifecycle::Persisted);
             self.log_local_write(&path, &value, Lifecycle::Persisted, &Authorship::none())
                 .await;
             self.broadcast_after_set(&path, value.clone());
@@ -3596,6 +3597,21 @@ impl ShowEngine {
 }
 
 // ── JSON helpers ──────────────────────────────────────────────────────────────
+
+/// The path two writes conflict on. A create is written to `[table, "__create"]`, and
+/// keyed by that every create in a table was one path: two stations each creating a row
+/// at once had one of the two dropped as "superseded" on the other, though they were
+/// two rows. A create conflicts with what else touches *its* row, `[table, id]`.
+fn conflict_path(path: &Path, value: &serde_json::Value) -> Path {
+    if let [PathSegment::Key(table), PathSegment::Key(verb)] = path.as_slice() {
+        if verb == "__create" {
+            if let Some(id) = value.get("id").and_then(|v| v.as_str()).and_then(|v| v.parse().ok()) {
+                return vec![PathSegment::Key(table.clone()), PathSegment::Id(id)];
+            }
+        }
+    }
+    path.clone()
+}
 
 /// `[table, id, field]`.
 fn entity_field_path(table: &str, id: Uuid, field: &str) -> Path {

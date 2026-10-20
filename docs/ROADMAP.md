@@ -7126,6 +7126,15 @@ unchanged *and still held*, and the engine takes a peer's whole SYNCED row for a
 never seen as the create it stands for. `a_station_says_what_its_channels_are_called` joins
 after the spare has published.
 
+*And under it, a worse one: two creates in one table were one write.* With the late join
+fixed, the leader still dropped the spare's `station_audio` create as "superseded". A
+create is written to `[table, "__create"]`, and the per-path clocks that order concurrent
+writes were keyed by that path — one path for every create in a table — so a peer's create
+the leader's own create had not seen lost to it, though they were two different rows. The
+same bug drops a cue programmed on one console while the other console creates one. A
+create's conflict path is now its row, `[table, id]` (`conflict_path` in the engine), and
+`a_peer_create_beside_a_local_one_is_another_row` holds it.
+
 *Decided: names are read-only from a distance.* Renaming another machine's channels from
 here would mean one console rewriting another's settings file down the sync link, which is
 exactly what `LogRaise` refuses to do to a peer's log level; and the act that has to be done

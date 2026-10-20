@@ -620,6 +620,47 @@ async fn a_peer_operation_is_applied_and_broadcast_locally() {
     );
 }
 
+/// Two stations each creating a row is two rows. A create used to conflict on
+/// `[table, "__create"]`, one path for the whole table, so a peer's create with a clock
+/// this station's own create had not seen was dropped as superseded — a spare's own
+/// `station_audio` row, or a cue programmed on the other console at the same moment.
+#[tokio::test]
+async fn a_peer_create_beside_a_local_one_is_another_row() {
+    use pult_schema::events::operation::{Operation, VectorClock};
+
+    let h = harness().await;
+    let here = a_sequence("Made here", vec![]);
+    h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&here)).await.unwrap();
+
+    let there = a_sequence("Made there", vec![]);
+    let op = Operation {
+        id: Uuid::new_v4(),
+        node_id: NodeId(Uuid::nil()),
+        seq: 1,
+        clock: VectorClock::default(),
+        path: create_path("sequences"),
+        value: json(&there),
+        lifecycle: Lifecycle::Persisted,
+        timestamp: Utc::now(),
+        user_id: None,
+        previous: None,
+        undoes: None,
+        gesture: None,
+    };
+    h.engine.0.send(EngineCommand::ApplyPeerOperation(op)).await.unwrap();
+
+    let mut held = serde_json::Value::Null;
+    for _ in 0..50 {
+        held = h.engine.get(entity_path("sequences", there.id)).await.unwrap_or_default();
+        if !held.is_null() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(held["name"], "Made there", "the peer's row arrived");
+    assert_eq!(h.engine.get(entity_path("sequences", here.id)).await.unwrap()["name"], "Made here");
+}
+
 // ── Registry-driven dispatch ──────────────────────────────────────────────────
 //
 // The engine names no entity type. These tests hold it to that.
