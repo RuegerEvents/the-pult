@@ -18,7 +18,7 @@ use std::net::{IpAddr, SocketAddr};
 use anyhow::Result;
 use pult_schema::types::{
     effect::{Curve, Direction, Easing, RunningEffect, RunningFade, Shape},
-    fixture::{Fixture, FixtureAddress, ParameterDirection, ParameterValue},
+    fixture::{Fixture, FixtureAddress, ParameterDirection, ParameterValue, PhysicalRange},
     openhaunt::PortEffectCapability,
     output::{MessageTraffic, OutputMessage, OutputSection, SectionBody},
 };
@@ -109,6 +109,8 @@ impl OpenHauntOutput {
         patch: &Patch,
         now_ms: u64,
     ) -> Result<(std::time::Duration, u64, u32)> {
+        // A gateway forwarding a universe and a strip in `sacn` mode are the same thing
+        // from here: a node that reads universes, sent each of them unicast.
         let gateways: Vec<(String, u16, SocketAddr)> = self
             .directory
             .borrow()
@@ -116,10 +118,11 @@ impl OpenHauntOutput {
             .iter()
             .filter(|(_, entry)| entry.online)
             .filter_map(|(serial, entry)| {
-                let universe = entry.universe?;
                 let ip: IpAddr = entry.ip.parse().ok()?;
-                Some((serial.clone(), universe, SocketAddr::new(ip, self.sacn_port)))
+                let addr = SocketAddr::new(ip, self.sacn_port);
+                Some(entry.universes.iter().map(move |u| (serial.clone(), *u, addr)))
             })
+            .flatten()
             .collect();
         if gateways.is_empty() {
             return Ok((std::time::Duration::ZERO, 0, 0));
@@ -198,7 +201,7 @@ impl OpenHauntOutput {
                     if let Some(payload) = capable
                         .as_ref()
                         .filter(|c| supports(c, effect))
-                        .and_then(|_| effect_payload(effect))
+                        .and_then(|_| effect_payload(effect, parameter.physical))
                     {
                         if self.last_sent_effect.get(&key) != Some(&payload) {
                             debug!("[openhaunt] {serial} port {port} traces {payload}");
@@ -229,7 +232,7 @@ impl OpenHauntOutput {
                     .filter(|_| driving.programmer.is_none() && driving.effect.is_none())
                 {
                     if capable.as_ref().is_some_and(|c| c.transitions) {
-                        let payload = transition_payload(fade);
+                        let payload = transition_payload(fade, parameter.physical);
                         if self.last_sent_effect.get(&key) != Some(&payload) {
                             debug!("[openhaunt] {serial} port {port} fades {payload}");
                             self.said.note(serial, port, "fades", &payload);
@@ -237,7 +240,7 @@ impl OpenHauntOutput {
                             // Where the fade is going is where the port will be when
                             // it lands, so recording it now means the arrival is not
                             // sent again as a value afterwards.
-                            self.last_sent.insert(key, port_payload(&fade.to));
+                            self.last_sent.insert(key, port_payload(&fade.to, parameter.physical));
                             self.devices.set_output(serial.to_string(), port, payload);
                         }
                         continue;
@@ -248,7 +251,7 @@ impl OpenHauntOutput {
                 // this frame's moment rather than read off a fixture.
                 let value = pult_render::value_at(&driving, now_ms)
                     .unwrap_or_else(|| parameter.default_value.clone());
-                let payload = port_payload(&value);
+                let payload = port_payload(&value, parameter.physical);
                 if self.last_sent.get(&key) == Some(&payload) {
                     continue;
                 }
@@ -380,7 +383,7 @@ impl OutputPlugin for OpenHauntOutput {
         }];
         if !gateways.universes.is_empty() {
             sections.push(OutputSection {
-                title: "sACN to the gateways".to_string(),
+                title: "sACN to the nodes".to_string(),
                 note: None,
                 body: SectionBody::Universes(gateways),
             });
@@ -451,10 +454,15 @@ impl MessageRing {
 /// The node described each port as a boolean, a number, a string or a colour, and
 /// the shape follows from that alone — which is why there is nothing here that has
 /// to know a relay from a strip.
-fn port_payload(value: &ParameterValue) -> serde_json::Value {
+/// A number goes out in the port's own range where it declared one: the console's 0..1
+/// is `from` to `to` on the node. See `openhaunt::physical_range`.
+fn port_payload(value: &ParameterValue, range: Option<PhysicalRange>) -> serde_json::Value {
     match value {
         ParameterValue::Bool(state) => serde_json::json!({ "state": state }),
-        ParameterValue::Float(level) => serde_json::json!({ "value": level }),
+        ParameterValue::Float(level) => match range {
+            Some(range) => serde_json::json!({ "value": range.to_physical(*level) }),
+            None => serde_json::json!({ "value": level }),
+        },
         ParameterValue::Int(n) => serde_json::json!({ "value": n }),
         ParameterValue::Text(text) => serde_json::json!({ "text": text }),
         ParameterValue::Color { r, g, b, .. } => serde_json::json!({
@@ -510,7 +518,7 @@ fn supports(capability: &PortEffectCapability, effect: &RunningEffect) -> bool {
 ///
 /// Values go out in the port's own payload shape rather than the schema's, so a node
 /// parses the endpoints of a shape with exactly the code it already uses for a `set`.
-fn effect_payload(effect: &RunningEffect) -> Option<serde_json::Value> {
+fn effect_payload(effect: &RunningEffect, range: Option<PhysicalRange>) -> Option<serde_json::Value> {
     let curve = match &effect.curve {
         Curve::Shape(shape) => serde_json::json!({ "shape": shape_name(*shape) }),
         Curve::Steps(steps) => serde_json::json!({
@@ -518,7 +526,7 @@ fn effect_payload(effect: &RunningEffect) -> Option<serde_json::Value> {
                 .iter()
                 .map(|step| serde_json::json!({
                     "at": step.at,
-                    "value": port_payload(&step.value),
+                    "value": port_payload(&step.value, range),
                     "easing": easing_name(step.easing),
                 }))
                 .collect::<Vec<_>>(),
@@ -535,8 +543,8 @@ fn effect_payload(effect: &RunningEffect) -> Option<serde_json::Value> {
             Direction::Backward => "backward",
         },
         "width": effect.width,
-        "low": port_payload(&effect.low),
-        "high": port_payload(&effect.high),
+        "low": port_payload(&effect.low, range),
+        "high": port_payload(&effect.high, range),
         "t0": effect.t0,
     }))
 }
@@ -547,8 +555,8 @@ fn effect_payload(effect: &RunningEffect) -> Option<serde_json::Value> {
 /// that ignores the timing keys entirely still lands on the right value — just
 /// immediately. That is the fallback the whole design leans on: unknown keys are
 /// harmless, so nothing has to be negotiated.
-fn transition_payload(fade: &RunningFade) -> serde_json::Value {
-    let mut payload = port_payload(&fade.to);
+fn transition_payload(fade: &RunningFade, range: Option<PhysicalRange>) -> serde_json::Value {
+    let mut payload = port_payload(&fade.to, range);
     if let Some(map) = payload.as_object_mut() {
         map.insert("fade_ms".into(), fade.duration_ms.into());
         map.insert("t0".into(), fade.t0.into());

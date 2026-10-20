@@ -650,3 +650,168 @@ async fn a_stream_mode_clip_reaches_the_node_as_rtp() {
     })
     .await;
 }
+
+// ── Heads and strips ──────────────────────────────────────────────────────────
+
+async fn types(h: &Harness) -> Vec<pult_schema::types::fixture::FixtureType> {
+    let value = h.engine.get(vec![PathSegment::Key("fixture_types".into())]).await.unwrap();
+    serde_json::from_value(value).unwrap()
+}
+
+async fn rows<T: serde::de::DeserializeOwned>(h: &Harness, table: &str) -> Vec<T> {
+    let value = h.engine.get(vec![PathSegment::Key(table.into())]).await.unwrap();
+    serde_json::from_value(value).unwrap()
+}
+
+fn type_of<'a>(
+    types: &'a [pult_schema::types::fixture::FixtureType],
+    fixture: &pult_schema::types::fixture::Fixture,
+) -> &'a pult_schema::types::fixture::FixtureType {
+    types.iter().find(|t| t.id == fixture.fixture_type_id).expect("a fixture has its type")
+}
+
+#[tokio::test]
+async fn a_v0_node_is_a_fixture_per_head_and_each_strip_has_its_own_colour() {
+    let h = harness().await;
+    let _sim = a_simulated_node(&h, ModuleKind::NodeV0, "e2e-v0").await;
+    let node = h.devices.adopt("e2e-v0".into()).await.unwrap();
+
+    let fixtures: Vec<_> =
+        h.fixtures().await.into_iter().filter(|f| f.address.serial() == Some("e2e-v0")).collect();
+    assert_eq!(fixtures.len(), 3, "the node, and a fixture per strip");
+    let types = types(&h).await;
+
+    let own = fixtures.iter().find(|f| f.id == node).unwrap();
+    assert_eq!(own.address.head(), Some(0));
+    assert_eq!(type_of(&types, own).parameters.len(), 6, "four relays and two sensors, no strip ports");
+
+    for head in [1u8, 2] {
+        let strip = fixtures.iter().find(|f| f.address.head() == Some(head)).unwrap();
+        assert_eq!(strip.id, openhaunt::head_fixture_id("e2e-v0", head), "derived, so stable");
+        let t = type_of(&types, strip);
+        assert_eq!(t.parameters.len(), 9);
+        assert!(t.parameters.iter().any(|p| p.kind == pult_schema::types::ParameterKind::ColorRgb));
+        let effect = t.parameters.iter().find(|p| !p.slots.is_empty()).expect("the Effect port");
+        assert!(effect.slots.iter().any(|s| s.name == "chase"));
+        assert_eq!(strip.address.strip().unwrap().mode, pult_schema::types::pixels::StripMode::Effect);
+    }
+    let state = h.state().await;
+    assert_eq!(state.discovered["e2e-v0"].head_fixtures.len(), 2);
+}
+
+#[tokio::test]
+async fn a_strip_patched_in_sacn_is_a_fixture_per_pixel_and_the_node_is_told() {
+    use pult_schema::types::pixels::{self, StripMode};
+
+    let h = harness().await;
+    let sim = a_simulated_node(&h, ModuleKind::NodeV0, "e2e-sacn").await;
+    h.devices.adopt("e2e-sacn".into()).await.unwrap();
+
+    let change = crate::infra::devices::StripChange {
+        mode: Some(StripMode::Sacn),
+        count: Some(300),
+        ..Default::default()
+    };
+    let head = h
+        .devices
+        .patch_strip("e2e-sacn".into(), 2, change, pult_schema::types::user::User::DEFAULT_ID)
+        .await
+        .unwrap();
+
+    // The node runs what the show says, in the universes the console picked.
+    let running = sim.pixels.strips()[1].clone();
+    assert_eq!(running.mode, "sacn");
+    assert_eq!(running.count, 300);
+    assert_eq!(running.universe, 1, "the first free run of two universes");
+
+    let fixtures = h.fixtures().await;
+    let object = pixels::strip_object_id("e2e-sacn", 2);
+    let cells: Vec<_> = fixtures.iter().filter(|f| f.parent == Some(object)).collect();
+    assert_eq!(cells.len(), 300);
+    assert_eq!(cells[170].address.breaks()[0].universe, 2, "spilled at 170");
+
+    // Its ports went away on the node, and so did its parameters here.
+    let types = types(&h).await;
+    let strip = fixtures.iter().find(|f| f.id == head).unwrap();
+    assert!(type_of(&types, strip).parameters.is_empty(), "the cells carry the colour now");
+
+    let groups: Vec<pult_schema::types::group::Group> = rows(&h, "groups").await;
+    assert!(groups.iter().any(|g| g.id == pixels::strip_group_id("e2e-sacn", 2)));
+
+    // The directory says the node reads both universes, which is what feeds it.
+    let entry = h.directory.borrow().entries["e2e-sacn"].clone();
+    assert_eq!(entry.universes, vec![1, 2]);
+
+    // And back: no cells, the nine ports back on the strip's fixture.
+    let back = crate::infra::devices::StripChange { mode: Some(StripMode::Effect), ..Default::default() };
+    h.devices
+        .patch_strip("e2e-sacn".into(), 2, back, pult_schema::types::user::User::DEFAULT_ID)
+        .await
+        .unwrap();
+    assert_eq!(sim.pixels.strips()[1].mode, "effect");
+    let fixtures = h.fixtures().await;
+    assert!(fixtures.iter().all(|f| f.parent != Some(object)));
+    let types = super::e2e_tests::types(&h).await;
+    let strip = fixtures.iter().find(|f| f.id == head).unwrap();
+    assert_eq!(type_of(&types, strip).parameters.len(), 9);
+}
+
+#[tokio::test]
+async fn a_node_running_another_mode_is_put_back_and_a_refusal_is_a_fault() {
+    use pult_schema::types::pixels::StripMode;
+
+    let h = harness().await;
+    let sim = a_simulated_node(&h, ModuleKind::NodeV0, "e2e-back").await;
+    h.devices.adopt("e2e-back".into()).await.unwrap();
+    let change = crate::infra::devices::StripChange {
+        mode: Some(StripMode::Sacn),
+        count: Some(10),
+        ..Default::default()
+    };
+    h.devices
+        .patch_strip("e2e-back".into(), 1, change, pult_schema::types::user::User::DEFAULT_ID)
+        .await
+        .unwrap();
+
+    // Somebody at the bench puts the strip back into effect mode.
+    sim.pixels.put(0, &serde_json::json!({ "mode": "effect" })).unwrap();
+    // The node announces itself again, as it does when its description changes.
+    h.resolve_at("e2e-back", ModuleKind::NodeV0.type_id(), loopback(sim.http_addr)).await;
+    let pixels = sim.pixels.clone();
+    eventually("the strip to be put back", || {
+        let pixels = pixels.clone();
+        async move { pixels.strips()[0].mode == "sacn" }
+    })
+    .await;
+
+    // A strip the node will not run is refused before anything is written.
+    let too_long = crate::infra::devices::StripChange { count: Some(5000), ..Default::default() };
+    let refused = h
+        .devices
+        .patch_strip("e2e-back".into(), 1, too_long, pult_schema::types::user::User::DEFAULT_ID)
+        .await;
+    assert!(refused.unwrap_err().contains("1 to 1024"));
+}
+
+#[tokio::test]
+async fn patching_a_strip_is_one_ctrl_z() {
+    use pult_schema::types::{pixels::{self, StripMode}, user::User};
+
+    let h = harness().await;
+    let _sim = a_simulated_node(&h, ModuleKind::NodeV0, "e2e-undo").await;
+    h.devices.adopt("e2e-undo".into()).await.unwrap();
+    let change = crate::infra::devices::StripChange {
+        mode: Some(StripMode::Sacn),
+        count: Some(40),
+        ..Default::default()
+    };
+    h.devices.patch_strip("e2e-undo".into(), 1, change, User::DEFAULT_ID).await.unwrap();
+    let object = pixels::strip_object_id("e2e-undo", 1);
+    assert_eq!(h.fixtures().await.iter().filter(|f| f.parent == Some(object)).count(), 40);
+
+    h.engine.undo(User::DEFAULT_ID, false).await;
+    let fixtures = h.fixtures().await;
+    assert_eq!(fixtures.iter().filter(|f| f.parent == Some(object)).count(), 0, "every pixel at once");
+    let strip = fixtures.iter().find(|f| f.id == openhaunt::head_fixture_id("e2e-undo", 1)).unwrap();
+    assert_eq!(strip.address.strip().unwrap().mode, StripMode::Effect, "and the mode with them");
+}

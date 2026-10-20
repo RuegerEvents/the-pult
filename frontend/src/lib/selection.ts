@@ -133,6 +133,19 @@ export function inBox(point: Vec3, from: Vec3, to: Vec3): boolean {
 
 // ── Evaluating ────────────────────────────────────────────────────────────────
 
+/** Whether a chain of parents starting at `parent` reaches `object`, however deep. */
+export function hangsOff(
+	parent: string | null,
+	object: string,
+	objects: Map<string, SceneObject>
+): boolean {
+	for (let depth = 0; depth < 64 && parent; depth++) {
+		if (parent === object) return true;
+		parent = objects.get(parent)?.parent ?? null;
+	}
+	return false;
+}
+
 function matches(term: Term, fixture: Fixture, objects: Map<string, SceneObject>): boolean {
 	switch (term.kind) {
 		case 'Everything':
@@ -143,6 +156,8 @@ function matches(term: Term, fixture: Fixture, objects: Map<string, SceneObject>
 			return fixture.fixture_type_id === term.typeId;
 		case 'Named':
 			return fixture.name.toLowerCase().includes(term.text.trim().toLowerCase());
+		case 'Hanging':
+			return hangsOff(fixture.parent, term.object, objects);
 		default:
 			break;
 	}
@@ -249,9 +264,14 @@ export function sortSelection(
 }
 
 /** A short account of what a query selects, for the panel to show. */
-export function describe(query: SelectionQuery, types: FixtureType[] = []): string {
+export function describe(
+	query: SelectionQuery,
+	types: FixtureType[] = [],
+	objects: SceneObject[] = []
+): string {
 	if (query.clauses.length === 0) return 'nothing';
 	const typeName = (id: string) => types.find((t) => t.id === id)?.name ?? 'a type';
+	const objectName = (id: string) => objects.find((o) => o.id === id)?.name ?? 'an object';
 
 	const parts = query.clauses.map(({ combine, term }, i) => {
 		const verb = i === 0 ? '' : combine === 'Add' ? 'plus ' : combine === 'Keep' ? 'of those, ' : 'except ';
@@ -270,6 +290,8 @@ export function describe(query: SelectionQuery, types: FixtureType[] = []): stri
 				return `${verb}in a region`;
 			case 'Cone':
 				return `${verb}in a ${term.angleDeg * 2}° beam`;
+			case 'Hanging':
+				return `${verb}hung off ${objectName(term.object)}`;
 		}
 	});
 	return parts.join(', ');

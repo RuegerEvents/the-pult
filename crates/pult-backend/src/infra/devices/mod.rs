@@ -23,8 +23,11 @@ use pult_schema::{
         devices::{DevicesState, DiscoveredDevice, NodeAudio},
         openhaunt::EffectCapability,
         fixture::{Fixture, FixtureAddress, FixtureType, ParameterBinding, ParameterDirection},
+        group::Group,
         openhaunt,
         output::{OutputConfig, OutputKind},
+        pixels::{self, NodePixels, PixelStrip, StripMode},
+        scene::SceneObject,
     },
 };
 use tokio::sync::{mpsc, oneshot, watch};
@@ -41,6 +44,9 @@ pub mod broker;
 pub mod mqtt;
 
 pub const SERVICE_TYPE: &str = "_openhaunt._tcp.local.";
+
+/// How often an adopted node's strips are compared with the show.
+const STRIP_CHECK: Duration = Duration::from_secs(5);
 
 // ── Events in ─────────────────────────────────────────────────────────────────
 
@@ -69,6 +75,14 @@ pub enum DeviceCommand {
     Identify { serial: String, reply: oneshot::Sender<Result<(), String>> },
     /// Unpatch a device's fixture. The device stays discovered.
     Forget { serial: String, reply: oneshot::Sender<Result<(), String>> },
+    /// Patch one strip head in a mode, as the operator `user` asked: one gesture.
+    PatchStrip {
+        serial: String,
+        head: u8,
+        change: StripChange,
+        user: Uuid,
+        reply: oneshot::Sender<Result<Uuid, String>>,
+    },
     /// Drive one output port on a node.
     SetOutput { serial: String, port: u8, value: serde_json::Value },
     /// Hand one output port a shape to trace, or `None` to take it back.
@@ -78,6 +92,19 @@ pub enum DeviceCommand {
     Audio { serial: String, verb: &'static str, payload: serde_json::Value },
     Event(DeviceEvent),
     Stop,
+}
+
+/// What a `device.strip` call changes about a strip. Everything left out stays.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StripChange {
+    pub mode: Option<StripMode>,
+    pub count: Option<u16>,
+    pub order: Option<String>,
+    pub universe: Option<u16>,
+    pub address: Option<u16>,
+    pub hold_ms: Option<u32>,
+    pub pitch_m: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -100,6 +127,22 @@ impl DeviceHandle {
     pub async fn forget(&self, serial: String) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         let _ = self.0.send(DeviceCommand::Forget { serial, reply: tx }).await;
+        rx.await.unwrap_or_else(|_| Err("device manager is gone".into()))
+    }
+
+    /// Patch a strip head in a mode. Answers the head's fixture id.
+    pub async fn patch_strip(
+        &self,
+        serial: String,
+        head: u8,
+        change: StripChange,
+        user: Uuid,
+    ) -> Result<Uuid, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .0
+            .send(DeviceCommand::PatchStrip { serial, head, change, user, reply: tx })
+            .await;
         rx.await.unwrap_or_else(|_| Err("device manager is gone".into()))
     }
 
@@ -139,7 +182,9 @@ pub struct DeviceEntry {
     pub ip: String,
     pub port: u16,
     pub module_type: u16,
-    pub universe: Option<u16>,
+    /// Every universe the node reads: the one a gateway forwards, and every one a strip
+    /// in `sacn` mode is patched to. The OpenHaunt connector unicasts each of them to it.
+    pub universes: Vec<u16>,
     pub online: bool,
     /// Which of this node's ports can trace a shape for themselves.
     ///
@@ -235,6 +280,12 @@ impl DeviceManager {
         let mut clock = tokio::time::interval(Duration::from_secs(1));
         clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+        // How often the strips are checked against the show. The show changes them
+        // without telling anybody here — an undo, a peer, a showfile opened — so this is
+        // the catch-all; a patch from this station reconciles at once.
+        let mut strips = tokio::time::interval(STRIP_CHECK);
+        strips.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         loop {
             tokio::select! {
                 cmd = self.rx.recv() => {
@@ -251,6 +302,9 @@ impl DeviceManager {
                         DeviceCommand::Forget { serial, reply } => {
                             let _ = reply.send(self.forget(&serial).await);
                         }
+                        DeviceCommand::PatchStrip { serial, head, change, user, reply } => {
+                            let _ = reply.send(self.patch_strip(&serial, head, change, user).await);
+                        }
                         DeviceCommand::SetOutput { serial, port, value } => {
                             self.set_output(&serial, port, value).await;
                         }
@@ -265,6 +319,7 @@ impl DeviceManager {
                 Some(event) = mqtt_rx.recv() => self.handle_mqtt(event).await,
                 Some(_) = sessions.next() => self.reconsider_leadership().await,
                 _ = clock.tick() => self.publish_clock().await,
+                _ = strips.tick() => self.reconcile_all_strips().await,
             }
         }
         if let Some(mqtt) = self.mqtt.take() {
@@ -395,9 +450,10 @@ impl DeviceManager {
     async fn handle_mqtt(&mut self, event: MqttEvent) {
         match event {
             MqttEvent::Input { serial, port, value, .. } => {
-                let Some(device) = self.state.discovered.get(&serial) else { return };
-                let Some(fixture_id) = device.adopted_fixture_id else { return };
-                let Some(key) = self.parameter_on_port(fixture_id, port).await else {
+                if !self.state.discovered.contains_key(&serial) {
+                    return;
+                }
+                let Some((fixture_id, key)) = self.parameter_on_port(&serial, port).await else {
                     debug!("[devices] {serial} port {port} is not bound to a parameter");
                     return;
                 };
@@ -434,22 +490,27 @@ impl DeviceManager {
         }
     }
 
-    /// The parameter key for whatever is bound to a port on a fixture.
+    /// The fixture and parameter key for whatever is bound to a port on a node.
     ///
     /// A node numbers its own terminals, so the port is the only thing both ends
-    /// agree on; the parameter's kind is this console's business alone.
-    async fn parameter_on_port(&self, fixture_id: Uuid, port: u8) -> Option<String> {
-        let fixture = self.fixtures().await.into_iter().find(|f| f.id == fixture_id)?;
+    /// agree on; the parameter's kind is this console's business alone. Ports are
+    /// numbered per node and not per head, so whichever of its fixtures binds the port
+    /// is the one it reports into.
+    async fn parameter_on_port(&self, serial: &str, port: u8) -> Option<(Uuid, String)> {
         let types: Vec<FixtureType> = self.read("fixture_types").await;
-        let fixture_type = types.into_iter().find(|t| t.id == fixture.fixture_type_id)?;
-        fixture_type
-            .parameters
-            .iter()
-            .find(|p| {
-                p.direction == ParameterDirection::Input
-                    && p.binding == Some(ParameterBinding::Port { index: port })
-            })
-            .map(|p| parameter_key(&p.kind))
+        self.fixtures().await.into_iter().filter(|f| f.address.serial() == Some(serial)).find_map(
+            |fixture| {
+                let fixture_type = types.iter().find(|t| t.id == fixture.fixture_type_id)?;
+                fixture_type
+                    .parameters
+                    .iter()
+                    .find(|p| {
+                        p.direction == ParameterDirection::Input
+                            && p.binding == Some(ParameterBinding::Port { index: port })
+                    })
+                    .map(|p| (fixture.id, parameter_key(&p.kind)))
+            },
+        )
     }
 
     // ── Discovery ─────────────────────────────────────────────────────────────
@@ -499,6 +560,25 @@ impl DeviceManager {
                         .discovered
                         .get(&serial)
                         .and_then(|d| d.audio_status.clone()),
+                    pixels: self.state.discovered.get(&serial).and_then(|d| d.pixels.clone()),
+                    head_fixtures: self
+                        .state
+                        .discovered
+                        .get(&serial)
+                        .map(|d| d.head_fixtures.clone())
+                        .unwrap_or_default(),
+                    strip_objects: self
+                        .state
+                        .discovered
+                        .get(&serial)
+                        .map(|d| d.strip_objects.clone())
+                        .unwrap_or_default(),
+                    faults: self
+                        .state
+                        .discovered
+                        .get(&serial)
+                        .map(|d| d.faults.clone())
+                        .unwrap_or_default(),
                     // The TXT record is enough to warn; `/api/v1/info` confirms below.
                     is_mains: txt.get("mains").map(|v| v == "1").unwrap_or(false),
                     online: true,
@@ -515,17 +595,12 @@ impl DeviceManager {
                 info!("[devices] {} ({}) at {ip}:{port}", device.name, device.module_name);
                 self.state.discovered.insert(serial.clone(), device);
 
-                if let Some((mains, description, effects, audio)) =
-                    self.ask_the_node_what_it_is(&serial).await
-                {
-                    if let Some(device) = self.state.discovered.get_mut(&serial) {
-                        device.is_mains = mains;
-                        device.description = Some(description);
-                        device.effects = effects;
-                        device.audio = audio;
-                    }
-                }
+                // Every resolve asks again, which is what makes a changed `desc` in the
+                // TXT record a refetch: the node re-announces when its description moves,
+                // and mDNS hands that over as another resolve.
+                self.refresh_description(&serial).await;
                 self.reconcile_adoptions().await;
+                self.retype(&serial).await;
 
                 // A node that has rebooted has forgotten where to publish, and it
                 // announcing itself again is the only notice we get. So does a node
@@ -571,10 +646,7 @@ impl DeviceManager {
     /// through that struct would give every node of its kind a fresh fixture type
     /// and orphan every parameter already patched against the old one. Serde drops
     /// the unknown key, the id stays put, and the capability is picked up alongside.
-    async fn ask_the_node_what_it_is(
-        &self,
-        serial: &str,
-    ) -> Option<(bool, openhaunt::NodeDescription, Option<EffectCapability>, Option<NodeAudio>)> {
+    async fn ask_the_node_what_it_is(&self, serial: &str) -> Option<WhatItIs> {
         let info: serde_json::Value = self.get_json(serial, "info").await?;
         let mains = info["module"]["flags"]
             .as_u64()
@@ -582,10 +654,23 @@ impl DeviceManager {
         let effects = openhaunt::effect_capability_from(&info);
         // Out of the raw body for the reason `effects` is, below.
         let audio = NodeAudio::from_info(&info);
+        let pixels = NodePixels::from_info(&info);
         // The whole body, not just the two keys: `ports` and `dmx` both default,
         // so firmware that predates self-description parses as having neither.
         let description = serde_json::from_value(info).unwrap_or_default();
-        Some((mains, description, effects, audio))
+        Some(WhatItIs { mains, description, effects, audio, pixels })
+    }
+
+    /// Ask the node what it is, and keep the answer.
+    async fn refresh_description(&mut self, serial: &str) {
+        let Some(what) = self.ask_the_node_what_it_is(serial).await else { return };
+        if let Some(device) = self.state.discovered.get_mut(serial) {
+            device.is_mains = what.mains;
+            device.description = Some(what.description);
+            device.effects = what.effects;
+            device.audio = what.audio;
+            device.pixels = what.pixels;
+        }
     }
 
     /// Work out which devices are adopted, from the fixtures rather than from memory.
@@ -597,10 +682,73 @@ impl DeviceManager {
     async fn reconcile_adoptions(&mut self) {
         let fixtures = self.fixtures().await;
         for device in self.state.discovered.values_mut() {
-            device.adopted_fixture_id = fixtures
-                .iter()
-                .find(|f| f.address.serial() == Some(device.serial.as_str()))
-                .map(|f| f.id);
+            let on_node = || {
+                fixtures.iter().filter(|f| f.address.serial() == Some(device.serial.as_str()))
+            };
+            device.adopted_fixture_id =
+                on_node().find(|f| f.address.head() == Some(0)).map(|f| f.id);
+            device.head_fixtures = on_node()
+                .filter_map(|f| f.address.head().filter(|h| *h != 0).map(|h| (h, f.id)))
+                .collect();
+            device.strip_objects = on_node()
+                .filter(|f| f.address.strip().is_some())
+                .filter_map(|f| f.address.head())
+                .map(|h| (h, pixels::strip_object_id(&device.serial, h)))
+                .collect();
+        }
+    }
+
+    /// Bring every fixture on a node onto the type its description says now.
+    ///
+    /// What [`FixtureTypeSource::Node`] has always promised: a node's own type is
+    /// rebuilt whenever the node describes itself again. Changing a strip's mode
+    /// changes its ports, so this is what makes a mode change reach the patch. A type
+    /// that came from anywhere else is left alone, and so is the type a fixture leaves
+    /// behind: a cue may still name it, and an unreferenced type costs a row.
+    ///
+    /// [`FixtureTypeSource::Node`]: pult_schema::types::fixture::FixtureTypeSource::Node
+    async fn retype(&mut self, serial: &str) {
+        if self.is_follower().await {
+            return;
+        }
+        let Some(device) = self.state.discovered.get(serial).cloned() else { return };
+        let Some(description) = device.description.as_ref().filter(|d| !d.is_empty()) else {
+            return;
+        };
+        let effects = device.pixels.as_ref().map(|p| p.effects.clone()).unwrap_or_default();
+        let types: Vec<FixtureType> = self.read("fixture_types").await;
+        for fixture in self.fixtures().await {
+            if fixture.address.serial() != Some(serial) {
+                continue;
+            }
+            let Some(head) = fixture.address.head() else { continue };
+            let current = types.iter().find(|t| t.id == fixture.fixture_type_id);
+            if current.is_some_and(|t| !t.source.is_derived_from_a_node()) {
+                continue;
+            }
+            let wanted =
+                openhaunt::head_type_from(device.module_type, &device.module_name, description, head, &effects);
+            let stored = types.iter().find(|t| t.id == wanted.id);
+            let same = stored.and_then(|t| serde_json::to_value(t).ok())
+                == serde_json::to_value(&wanted).ok();
+            if !same {
+                let path = match stored {
+                    Some(_) => replace_path("fixture_types", wanted.id),
+                    None => create_path("fixture_types"),
+                };
+                if let Err(e) = self.write(path, &wanted).await {
+                    warn!("[devices] {serial}: could not rebuild {}: {e}", wanted.name);
+                    continue;
+                }
+            }
+            if fixture.fixture_type_id != wanted.id {
+                info!("[devices] {serial} head {head} is now {}", wanted.name);
+                let mut moved = fixture.clone();
+                moved.fixture_type_id = wanted.id;
+                if let Err(e) = self.write(replace_path("fixtures", moved.id), &moved).await {
+                    warn!("[devices] {serial}: could not re-type head {head}: {e}");
+                }
+            }
         }
     }
 
@@ -629,44 +777,63 @@ impl DeviceManager {
             .filter(|d| !d.is_empty())
             .ok_or_else(|| format!("{serial} does not describe its ports; cannot adopt"))?;
 
-        let fixture_type =
-            openhaunt::fixture_type_from(device.module_type, &device.module_name, description);
-        self.ensure_fixture_type(&fixture_type).await?;
-
+        // One fixture per head: the node's own ports on head 0, and each strip (or
+        // whatever else the node calls a head) a fixture of its own, so two strips do
+        // not collide on one colour.
+        let effects = device.pixels.as_ref().map(|p| p.effects.clone()).unwrap_or_default();
         // A node carries a universe exactly when it says it forwards one.
         let universe = match description.dmx {
             Some(_) => Some(self.next_free_universe().await),
             None => None,
         };
-
-        let fixture = Fixture {
-            id: Uuid::new_v4(),
-            name: device.name.clone(),
-            fixture_type_id: fixture_type.id,
-            address: FixtureAddress::OpenHaunt { serial: serial.to_string(), universe },
-            position: None,
-            parent: None,
-            mount: None,
-            layer: None,
-            class: None,
-            focus: None,
-            fixture_number: None,
-            unit_number: None,
-            sensed_values: Default::default(),
-            live_effects: Default::default(),
-            live_fades: Default::default(),
-            home_values: Default::default(),
-        };
-        let value = serde_json::to_value(&fixture).map_err(|e| e.to_string())?;
-        self.engine
-            .set(create_path("fixtures"), Lifecycle::Persisted, value)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if let Some(device) = self.state.discovered.get_mut(serial) {
-            device.adopted_fixture_id = Some(fixture.id);
+        let mut fixture = None;
+        for head in description.head_numbers() {
+            let fixture_type = openhaunt::head_type_from(
+                device.module_type,
+                &device.module_name,
+                description,
+                head,
+                &effects,
+            );
+            self.ensure_fixture_type(&fixture_type).await?;
+            let strip = device
+                .pixels
+                .as_ref()
+                .and_then(|p| p.strip_for_head(head))
+                .map(PixelStrip::from_node);
+            let name = match head {
+                0 => device.name.clone(),
+                _ => format!("{} {}", device.name, fixture_type.name),
+            };
+            let this = Fixture {
+                // Head 0 is the node's own fixture and was always a fresh id; every other
+                // head is derived, so a second console adopting the node makes the same row.
+                id: if head == 0 { Uuid::new_v4() } else { openhaunt::head_fixture_id(serial, head) },
+                name,
+                fixture_type_id: fixture_type.id,
+                address: FixtureAddress::OpenHaunt {
+                    serial: serial.to_string(),
+                    universe: if head == 0 { universe } else { None },
+                    head: (head != 0).then_some(head),
+                    strip: strip.clone(),
+                },
+                ..Fixture::default()
+            };
+            self.write(create_path("fixtures"), &this).await?;
+            // A strip the node is already running in `sacn` mode is a strip with cells.
+            if let Some(strip) = strip.filter(|s| s.mode == StripMode::Sacn) {
+                let plan = pixels::plan(&this, strip, &[]);
+                self.write_strip_plan(plan, None).await?;
+            }
+            if head == 0 {
+                fixture = Some(this);
+            }
         }
+        let fixture = fixture.ok_or_else(|| format!("{serial} has no head 0"))?;
+
+        self.reconcile_adoptions().await;
         info!("[devices] adopted {serial} as fixture {}", fixture.id);
+        self.reconcile_strips(serial).await;
 
         // The first adoption is what brings the broker up. Until now nothing has
         // asked this node for anything, which is the point of the protocol.
@@ -690,14 +857,38 @@ impl DeviceManager {
         let Some(device) = self.state.discovered.get_mut(serial) else {
             return Err(format!("no device with serial {serial}"));
         };
-        let fixture_id = device.adopted_fixture_id.take();
+        device.adopted_fixture_id = None;
+        device.head_fixtures.clear();
+        device.strip_objects.clear();
+        device.faults.clear();
         let online = device.online;
 
-        if let Some(id) = fixture_id {
-            self.engine
-                .set(delete_path("fixtures", id), Lifecycle::Persisted, serde_json::Value::Null)
-                .await
-                .map_err(|e| e.to_string())?;
+        // Every head, and what each strip in `sacn` mode put in the show for itself: its
+        // cells, the object they hang off and the group that is them.
+        let fixtures = self.fixtures().await;
+        let heads: Vec<&Fixture> =
+            fixtures.iter().filter(|f| f.address.serial() == Some(serial)).collect();
+        for head in &heads {
+            let object = pixels::strip_object_id(serial, head.address.head().unwrap_or(0));
+            for cell in fixtures.iter().filter(|f| f.parent == Some(object)) {
+                self.delete("fixtures", cell.id).await?;
+            }
+        }
+        for head in &heads {
+            self.delete("fixtures", head.id).await?;
+        }
+        let objects: Vec<SceneObject> = self.read("scene_objects").await;
+        let groups: Vec<Group> = self.read("groups").await;
+        for head in &heads {
+            let number = head.address.head().unwrap_or(0);
+            let object = pixels::strip_object_id(serial, number);
+            if objects.iter().any(|o| o.id == object) {
+                self.delete("scene_objects", object).await?;
+            }
+            let group = pixels::strip_group_id(serial, number);
+            if groups.iter().any(|g| g.id == group) {
+                self.delete("groups", group).await?;
+            }
         }
         // Nothing left to remember about a device that is not here and not patched.
         if !online {
@@ -807,10 +998,11 @@ impl DeviceManager {
 
     /// The universe an adopted gateway forwards, if this device is one.
     async fn gateway_universe(&self, serial: &str) -> Option<u16> {
-        self.fixtures().await.into_iter().find_map(|f| match f.address {
-            FixtureAddress::OpenHaunt { serial: ref s, universe } if s == serial => universe,
-            _ => None,
-        })
+        self.fixtures()
+            .await
+            .into_iter()
+            .filter(|f| f.address.serial() == Some(serial))
+            .find_map(|f| f.address.gateway_universe())
     }
 
     /// Create the fixture type if the show does not already have it.
@@ -842,10 +1034,43 @@ impl DeviceManager {
                 FixtureAddress::Dmx { breaks, .. } => {
                     breaks.iter().map(|entry| entry.universe).collect::<Vec<_>>()
                 }
-                FixtureAddress::OpenHaunt { universe, .. } => universe.iter().copied().collect(),
+                FixtureAddress::OpenHaunt { universe, strip, .. } => universe
+                    .iter()
+                    .copied()
+                    .chain(strip.iter().flat_map(|s| s.universes()))
+                    .collect(),
             })
             .collect();
         (1..=u16::MAX).find(|n| !taken.contains(n)).unwrap_or(1)
+    }
+
+    /// The lowest universe from which `count` universes in a row are free: where a strip
+    /// switched to `sacn` mode goes unless somebody said where.
+    async fn next_free_block(&self, count: u16, except: Uuid) -> u16 {
+        let fixtures: Vec<Fixture> = self.fixtures().await;
+        let object_of = |f: &Fixture| f.address.serial().map(|s| {
+            pixels::strip_object_id(s, f.address.head().unwrap_or(0))
+        });
+        // The strip's own cells and its own universes are not in its way.
+        let mine = fixtures.iter().find(|f| f.id == except).and_then(object_of);
+        let taken: std::collections::BTreeSet<u16> = fixtures
+            .iter()
+            .filter(|f| f.id != except && (mine.is_none() || f.parent != mine))
+            .flat_map(|f| match &f.address {
+                FixtureAddress::Dmx { breaks, .. } => {
+                    breaks.iter().map(|entry| entry.universe).collect::<Vec<_>>()
+                }
+                FixtureAddress::OpenHaunt { universe, strip, .. } => universe
+                    .iter()
+                    .copied()
+                    .chain(strip.iter().flat_map(|s| s.universes()))
+                    .collect(),
+            })
+            .collect();
+        let count = count.max(1);
+        (1..=u16::MAX - count)
+            .find(|start| (*start..*start + count).all(|n| !taken.contains(&n)))
+            .unwrap_or(1)
     }
 
     // ── Talking to the engine ─────────────────────────────────────────────────
@@ -881,15 +1106,14 @@ impl DeviceManager {
 
         // The universe lives on the fixture, because the fixture is the only
         // persisted thing an adopted device has.
-        let universes: BTreeMap<String, Option<u16>> = self
-            .fixtures()
-            .await
-            .into_iter()
-            .filter_map(|f| match f.address {
-                FixtureAddress::OpenHaunt { serial, universe } => Some((serial, universe)),
-                FixtureAddress::Dmx { .. } => None,
-            })
-            .collect();
+        let mut universes: BTreeMap<String, Vec<u16>> = BTreeMap::new();
+        for fixture in self.fixtures().await {
+            if let FixtureAddress::OpenHaunt { serial, universe, strip, .. } = fixture.address {
+                let list = universes.entry(serial).or_default();
+                list.extend(universe);
+                list.extend(strip.iter().flat_map(|s| s.universes()));
+            }
+        }
 
         let _ = self.directory.send(DeviceDirectory {
             entries: self
@@ -903,7 +1127,7 @@ impl DeviceManager {
                             ip: d.ip.clone(),
                             port: d.port,
                             module_type: d.module_type,
-                            universe: universes.get(&d.serial).copied().flatten(),
+                            universes: universes.get(&d.serial).cloned().unwrap_or_default(),
                             online: d.online,
                             effects: d.effects.clone(),
                             audio: d.audio.clone(),
@@ -949,6 +1173,256 @@ impl DeviceManager {
             Ok(())
         } else {
             Err(format!("{} answered {}", serial, response.status()))
+        }
+    }
+}
+
+// ── Strips ────────────────────────────────────────────────────────────────────
+
+/// What one `/info` body says, read in one round trip.
+struct WhatItIs {
+    mains: bool,
+    description: openhaunt::NodeDescription,
+    effects: Option<EffectCapability>,
+    audio: Option<NodeAudio>,
+    pixels: Option<NodePixels>,
+}
+
+impl DeviceManager {
+    /// Patch a strip head in a mode, as one gesture of `user`'s.
+    ///
+    /// The station works the cells out, never the browser: the spill rule is the node's
+    /// and one implementation of it is enough. Then the node is told at once rather than
+    /// at the next check, so the operator sees the strip change while still looking.
+    async fn patch_strip(
+        &mut self,
+        serial: &str,
+        head: u8,
+        change: StripChange,
+        user: Uuid,
+    ) -> Result<Uuid, String> {
+        if self.is_follower().await {
+            return Err("only the node leading the session patches devices".into());
+        }
+        let fixtures = self.fixtures().await;
+        let fixture = fixtures
+            .iter()
+            .find(|f| f.address.serial() == Some(serial) && f.address.head() == Some(head))
+            .cloned()
+            .ok_or_else(|| format!("{serial} has no adopted head {head}"))?;
+        let current = fixture
+            .address
+            .strip()
+            .cloned()
+            .ok_or_else(|| format!("head {head} of {serial} is not a pixel strip"))?;
+
+        let mut strip = PixelStrip {
+            mode: change.mode.unwrap_or(current.mode),
+            count: change.count.unwrap_or(current.count),
+            order: change.order.clone().unwrap_or_else(|| current.order.clone()),
+            universe: change.universe.unwrap_or(current.universe),
+            address: change.address.unwrap_or(current.address),
+            hold_ms: change.hold_ms.unwrap_or(current.hold_ms),
+            pitch_m: change.pitch_m.unwrap_or(current.pitch_m),
+            output: current.output,
+        };
+        // A strip going to `sacn` that was never given a universe gets the first run of
+        // free ones it fits in, rather than universe 0, which sACN does not have.
+        if strip.mode == StripMode::Sacn && change.universe.is_none() && strip.universe == 0 {
+            strip.universe = 1;
+            strip.address = 1;
+            let needed = strip.universes().len() as u16;
+            strip.universe = self.next_free_block(needed, fixture.id).await;
+        }
+        let pixels = self.state.discovered.get(serial).and_then(|d| d.pixels.clone());
+        if let Some(problem) = strip.problem(pixels.as_ref()) {
+            return Err(problem);
+        }
+
+        let object = pixels::strip_object_id(serial, head);
+        let cells: Vec<Fixture> =
+            fixtures.into_iter().filter(|f| f.parent == Some(object)).collect();
+        let plan = pixels::plan(&fixture, strip, &cells);
+        self.write_strip_plan(plan, Some((user, Uuid::new_v4()))).await?;
+        self.reconcile_strips(serial).await;
+        self.publish().await;
+        Ok(fixture.id)
+    }
+
+    /// Make the writes a strip plan asks for.
+    ///
+    /// Under one gesture when somebody asked for it, so a strip patched with three
+    /// hundred cells is one Ctrl-Z. Unattributed when adoption does it, the way adoption
+    /// writes every other row.
+    async fn write_strip_plan(
+        &self,
+        plan: pixels::StripPlan,
+        by: Option<(Uuid, Uuid)>,
+    ) -> Result<(), String> {
+        let objects: Vec<SceneObject> = self.read("scene_objects").await;
+        let types: Vec<FixtureType> = self.read("fixture_types").await;
+        let groups: Vec<Group> = self.read("groups").await;
+        let mut writes: Vec<(Path, serde_json::Value)> = Vec::new();
+        let value = |v: &dyn erased::Json| v.json();
+
+        if let Some(cell_type) = &plan.cell_type {
+            if !types.iter().any(|t| t.id == cell_type.id) {
+                writes.push((create_path("fixture_types"), value(cell_type)));
+            }
+        }
+        let wants_object = plan.cell_type.is_some();
+        if wants_object && !objects.iter().any(|o| o.id == plan.object.id) {
+            writes.push((create_path("scene_objects"), value(&plan.object)));
+        }
+        writes.push((replace_path("fixtures", plan.head.id), value(&plan.head)));
+        for id in &plan.delete {
+            writes.push((delete_path("fixtures", *id), serde_json::Value::Null));
+        }
+        for cell in &plan.update {
+            writes.push((replace_path("fixtures", cell.id), value(cell)));
+        }
+        for cell in &plan.create {
+            writes.push((create_path("fixtures"), value(cell)));
+        }
+        match &plan.group {
+            Some(group) => {
+                let path = if groups.iter().any(|g| g.id == group.id) {
+                    replace_path("groups", group.id)
+                } else {
+                    create_path("groups")
+                };
+                writes.push((path, value(group)));
+            }
+            None => {
+                let id = plan.object.id;
+                let group = groups.iter().find(|g| {
+                    g.query.clauses.iter().any(|c| {
+                        c.term == pult_schema::types::group::SelectionTerm::Hanging { object: id }
+                    })
+                });
+                if let Some(group) = group {
+                    writes.push((delete_path("groups", group.id), serde_json::Value::Null));
+                }
+            }
+        }
+
+        for (path, value) in writes {
+            let written = match by {
+                Some((user, gesture)) => {
+                    self.engine.set_as(user, Some(gesture), path, Lifecycle::Persisted, value).await
+                }
+                None => self.engine.set(path, Lifecycle::Persisted, value).await,
+            };
+            written.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Put every adopted node's strips into the shape the show says.
+    async fn reconcile_all_strips(&mut self) {
+        if self.is_follower().await {
+            return;
+        }
+        let serials: Vec<String> = self
+            .state
+            .discovered
+            .values()
+            .filter(|d| d.online && !d.head_fixtures.is_empty() && d.pixels.is_some())
+            .map(|d| d.serial.clone())
+            .collect();
+        for serial in serials {
+            self.reconcile_strips(&serial).await;
+        }
+    }
+
+    /// Tell a node any strip the show patches differently from how it is running.
+    ///
+    /// **The show is the truth.** A node that rebooted into another mode, was factory
+    /// reset, or was set from a bench script is put back, the way a rebooted node is
+    /// sent its outputs again. What the node will not take is a fault on its row, in the
+    /// node's own words, and the next check tries again: a 409 says a stored virtual
+    /// module wins over the board's strips, which only somebody at the node can undo.
+    async fn reconcile_strips(&mut self, serial: &str) {
+        let Some(device) = self.state.discovered.get(serial).cloned() else { return };
+        if !device.online {
+            return;
+        }
+        let fixtures = self.fixtures().await;
+        let mut faults = Vec::new();
+        let mut changed = false;
+        for fixture in fixtures.iter().filter(|f| f.address.serial() == Some(serial)) {
+            let Some(strip) = fixture.address.strip() else { continue };
+            let head = fixture.address.head().unwrap_or(0);
+            let running = device.pixels.as_ref().and_then(|p| p.strip_for_head(head));
+            if running.is_some_and(|r| strip.agrees_with(r)) {
+                continue;
+            }
+            match self.put(serial, &format!("pixels/{}", strip.output), strip.node_body()).await {
+                Ok(()) => {
+                    info!("[devices] {serial} strip {} is now {:?}", strip.output, strip.mode);
+                    changed = true;
+                }
+                Err(e) => faults.push(format!("{}: {e}", fixture.name)),
+            }
+        }
+        if changed {
+            // A strip that changed mode owns other ports now. The node says so in its
+            // `desc` as well, but asking straight away is what puts the parameters in
+            // front of the operator who just pressed the button.
+            self.refresh_description(serial).await;
+            self.retype(serial).await;
+        }
+        let device = self.state.discovered.get_mut(serial);
+        if let Some(device) = device {
+            if device.faults != faults || changed {
+                device.faults = faults;
+                self.publish().await;
+            }
+        }
+    }
+
+    async fn write<T: serde::Serialize>(&self, path: Path, value: &T) -> Result<(), String> {
+        let value = serde_json::to_value(value).map_err(|e| e.to_string())?;
+        self.engine.set(path, Lifecycle::Persisted, value).await.map_err(|e| e.to_string())
+    }
+
+    async fn delete(&self, table: &str, id: Uuid) -> Result<(), String> {
+        self.engine
+            .set(delete_path(table, id), Lifecycle::Persisted, serde_json::Value::Null)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// `PUT` a body to the node, and say what it answered when that was not success.
+    async fn put(&self, serial: &str, endpoint: &str, body: serde_json::Value) -> Result<(), String> {
+        let base = self.base_url(serial).ok_or_else(|| format!("no device with serial {serial}"))?;
+        let url = format!("{base}/{endpoint}");
+        let response = self.http.put(&url).json(&body).send().await.map_err(|e| e.to_string())?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let said = response
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string));
+        Err(match (status.as_u16(), said) {
+            (409, _) => "a virtual module stored on the node wins over its strips".into(),
+            (_, Some(said)) => format!("the node refused it: {said}"),
+            (code, None) => format!("the node answered {code}"),
+        })
+    }
+}
+
+/// Anything that can be written as a row.
+mod erased {
+    pub trait Json {
+        fn json(&self) -> serde_json::Value;
+    }
+    impl<T: serde::Serialize> Json for T {
+        fn json(&self) -> serde_json::Value {
+            serde_json::to_value(self).unwrap_or_default()
         }
     }
 }
@@ -1051,6 +1525,10 @@ fn device_event(event: ServiceEvent) -> Option<DeviceEvent> {
 
 fn create_path(table: &str) -> Path {
     vec![PathSegment::Key(table.into()), PathSegment::Key("__create".into())]
+}
+
+fn replace_path(table: &str, id: Uuid) -> Path {
+    vec![PathSegment::Key(table.into()), PathSegment::Id(id)]
 }
 
 fn delete_path(table: &str, id: Uuid) -> Path {

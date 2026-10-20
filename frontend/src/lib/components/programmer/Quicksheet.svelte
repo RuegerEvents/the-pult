@@ -92,6 +92,7 @@
 			<ValueControl
 				{value}
 				label={row.label}
+				choices={row.choices}
 				tint={$byKey.has(`${fixture.id}/${row.key}`) ? 'var(--live)' : 'var(--accent)'}
 				oninput={(next) => put(row.kind, next)}
 			/>

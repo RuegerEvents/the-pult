@@ -206,7 +206,7 @@ fn a_fixture_patched_to_a_missing_type_is_skipped() {
 fn a_fixture_on_a_node_has_no_place_in_a_universe() {
     let ft = a_type(vec![dimmer()]);
     let mut fixture = a_fixture(&ft, 1, 1);
-    fixture.address = FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(1) };
+    fixture.address = FixtureAddress::node("1a2b3c", Some(1));
     holding(&mut fixture, "Intensity", ParameterValue::Float(1.0));
 
     let universes = render(&patch(vec![fixture], vec![ft]), 0);

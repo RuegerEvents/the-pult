@@ -5,6 +5,7 @@
 	import { select, selected, toggle } from '$lib/stores/selection.js';
 	import { editing } from '$lib/stores/editing.js';
 	import OutputGaps from './OutputGaps.svelte';
+	import StripPatch from './StripPatch.svelte';
 	import { bytesText } from '$lib/destination.js';
 	import type { DevicesState, DiscoveredDevice } from '$lib/generated/index.js';
 
@@ -189,6 +190,10 @@
 							Find
 						</button>
 					</div>
+
+					{#if device.adopted_fixture_id}
+						<StripPatch {device} unlocked={$unlocked && devices.active} />
+					{/if}
 
 					{#if open.has(device.serial)}
 						<!-- Everything the node has told this console about itself. Behind a

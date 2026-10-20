@@ -434,7 +434,7 @@ mod tests {
     }
 
     fn node(serial: &str, universe: Option<u16>) -> FixtureAddress {
-        FixtureAddress::OpenHaunt { serial: serial.into(), universe }
+        FixtureAddress::node(serial, universe)
     }
 
     fn dmx(universe: u16) -> FixtureAddress {

@@ -23,6 +23,7 @@ use std::{
 
 pub mod audio;
 pub mod motion;
+pub mod pixels;
 
 use anyhow::Result;
 use axum::{extract::State, routing::{get, post}, Json, Router};
@@ -72,6 +73,10 @@ pub struct PortDescription {
     /// a sine beside a relay that can only be chopped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<motion::PortEffects>,
+    /// The head this port belongs to. Absent is the node itself. See
+    /// `OpenHaunt/node/docs/14-pixels.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<u8>,
 }
 
 impl PortDescription {
@@ -92,7 +97,14 @@ impl PortDescription {
             default: None,
             class: None,
             effects: None,
+            head: None,
         }
+    }
+
+    /// The same port under another number.
+    pub fn with_port(mut self, port: u8) -> Self {
+        self.port = port;
+        self
     }
 
     /// Declare what this port can trace.
@@ -203,6 +215,9 @@ pub struct NodeConfig {
     /// Absent is a node without one. See [`audio::default_description`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<Value>,
+    /// The node's WS2812 outputs, each a head of its own. Empty is a node without any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pixels: Vec<pixels::StripConfig>,
 }
 
 fn yes() -> bool {
@@ -330,6 +345,9 @@ pub enum ModuleKind {
     Oled,
     DryContact,
     Environment,
+    /// The V0 prototype's own board: four relays, two sensor inputs and two strip
+    /// outputs, the module firmware 0.3 describes as `0x0F01`.
+    NodeV0,
 }
 
 impl ModuleKind {
@@ -342,6 +360,7 @@ impl ModuleKind {
             ModuleKind::Oled => 0x0005,
             ModuleKind::DryContact => 0x0006,
             ModuleKind::Environment => 0x0007,
+            ModuleKind::NodeV0 => 0x0f01,
         }
     }
 
@@ -354,6 +373,7 @@ impl ModuleKind {
             ModuleKind::Oled => "Display",
             ModuleKind::DryContact => "Dry Contacts",
             ModuleKind::Environment => "Environment Sensor",
+            ModuleKind::NodeV0 => "Node V0",
         }
     }
 
@@ -391,6 +411,15 @@ impl ModuleKind {
             advertise: false,
             auto_ms: None,
             audio: None,
+            pixels: self.pixels(),
+        }
+    }
+
+    /// The strip outputs this module has.
+    pub fn pixels(self) -> Vec<pixels::StripConfig> {
+        match self {
+            ModuleKind::NodeV0 => vec![pixels::StripConfig::default_for(0), pixels::StripConfig::default_for(1)],
+            _ => Vec::new(),
         }
     }
 
@@ -437,6 +466,17 @@ impl ModuleKind {
                         .effects(motion::PortEffects::switching())
                 })
                 .collect(),
+            ModuleKind::NodeV0 => (0..4)
+                .map(|n| {
+                    P::new(n, RELAY_NAMES[n as usize], "readwrite", "boolean")
+                        .default_at(0.0)
+                        .class("switch")
+                        .effects(motion::PortEffects::switching())
+                })
+                .chain((0..2).map(|n| {
+                    P::new(4 + n, SENSOR_NAMES[n as usize], "readonly", "boolean").class("contact")
+                }))
+                .collect(),
             ModuleKind::Environment => vec![
                 P::new(0, "Temperature", "readonly", "number")
                     .unit("degree-celsius")
@@ -475,11 +515,12 @@ impl ModuleKind {
             ModuleKind::Oled => "oled",
             ModuleKind::DryContact => "contact",
             ModuleKind::Environment => "env",
+            ModuleKind::NodeV0 => "v0",
         }
     }
 
     /// Every module, in the order a picker should offer them.
-    pub const ALL: [ModuleKind; 7] = [
+    pub const ALL: [ModuleKind; 8] = [
         ModuleKind::DigitalIn,
         ModuleKind::DryContact,
         ModuleKind::Environment,
@@ -487,6 +528,7 @@ impl ModuleKind {
         ModuleKind::Ws2812,
         ModuleKind::Oled,
         ModuleKind::DmxOut,
+        ModuleKind::NodeV0,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -498,6 +540,7 @@ impl ModuleKind {
             "oled" => ModuleKind::Oled,
             "contact" => ModuleKind::DryContact,
             "env" => ModuleKind::Environment,
+            "v0" => ModuleKind::NodeV0,
             _ => return None,
         })
     }
@@ -510,6 +553,10 @@ const INPUT_NAMES: [&str; 8] = [
 ];
 
 const CONTACT_NAMES: [&str; 4] = ["Contact 1", "Contact 2", "Contact 3", "Contact 4"];
+
+const RELAY_NAMES: [&str; 4] = ["Relay 1", "Relay 2", "Relay 3", "Relay 4"];
+
+const SENSOR_NAMES: [&str; 2] = ["Sensor 1", "Sensor 2"];
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -590,6 +637,10 @@ pub struct SimHandle {
     pub audio_commands: watch::Receiver<Vec<(String, Value)>>,
     /// Its loudspeaker: the clips it holds and the stream packets it has had.
     pub audio: Arc<audio::Audio>,
+    /// What each strip output in `sacn` mode has been sent, keyed by output.
+    pub pixel_frames: watch::Receiver<BTreeMap<u8, pixels::StripFrames>>,
+    /// The strips themselves, as they are running now.
+    pub pixels: Arc<pixels::Pixels>,
     /// Put the node away: its HTTP socket, its mDNS registration, its MQTT
     /// connection, its sACN socket. What a window needs in order to start a
     /// differently-configured node in its place without closing.
@@ -665,6 +716,8 @@ struct Node {
     clock: Arc<Mutex<motion::ClockOffset>>,
     /// Its loudspeaker, if its config gives it one.
     audio: Arc<audio::Audio>,
+    /// Its strip outputs, whose mode a console sets.
+    pixels: Arc<pixels::Pixels>,
 }
 
 impl Node {
@@ -788,7 +841,10 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
         started_ms: now_ms(),
     });
 
+    let (pixels, pixel_frames) = pixels::Pixels::new(node_config.pixels.clone());
+    let pixels = Arc::new(pixels);
     let node = Node {
+        pixels: pixels.clone(),
         config: node_config.clone(),
         config_tx: Arc::new(config_tx),
         state_tx: Arc::new(state_tx),
@@ -805,9 +861,11 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
 
     // A node listens for sACN exactly when it says it forwards a universe. There
     // is no module id involved: the description is the whole of the answer.
-    let sacn_addr = match node_config.dmx {
-        Some(_) => Some(listen_for_sacn(sacn_port, &stop, frames_tx).await?),
-        None => None,
+    // A strip may be switched to `sacn` at any moment, so a node with one listens from
+    // the start.
+    let sacn_addr = match node_config.dmx.is_some() || !pixels.is_empty() {
+        true => Some(listen_for_sacn(sacn_port, &stop, frames_tx, pixels.clone()).await?),
+        false => None,
     };
 
     node.describe(|s| {
@@ -828,6 +886,8 @@ pub async fn start(config: SimConfig) -> Result<SimHandle> {
 
     info!("[sim] {} on {http_addr}", node_config.serial);
     Ok(SimHandle {
+        pixel_frames,
+        pixels,
         audio_commands,
         audio: audio_handle,
         http_addr,
@@ -883,6 +943,8 @@ async fn serve_http(
             }),
         )
         .route("/api/v1/identify", post(identify))
+        .route("/api/v1/pixels", get(read_pixels))
+        .route("/api/v1/pixels/{output}", axum::routing::put(put_pixels))
         .route("/api/v1/audio/clips", get(list_clips))
         .route(
             "/api/v1/audio/clips/{sha}",
@@ -918,8 +980,12 @@ async fn info(State(node): State<Node>) -> Json<Value> {
         },
         // Only the device knows what it is. A controller reads this and builds its
         // fixture type from it; it carries no catalogue of module types.
-        "ports": node.config.ports,
+        "ports": node.config.ports.iter().cloned().chain(node.pixels.ports()).collect::<Vec<_>>(),
     });
+    if !node.pixels.is_empty() {
+        info["heads"] = node.pixels.heads();
+        info["pixels"] = node.pixels.describe();
+    }
     // `dmx` is present only on a node that forwards a universe: its absence is
     // what tells a console there is none to allocate.
     if let Some(dmx) = &node.config.dmx {
@@ -929,6 +995,33 @@ async fn info(State(node): State<Node>) -> Json<Value> {
         info["audio"] = node.audio.describe(audio);
     }
     Json(info)
+}
+
+async fn read_pixels(State(node): State<Node>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if node.pixels.is_empty() {
+        return (axum::http::StatusCode::NOT_FOUND, "this node has no strip outputs").into_response();
+    }
+    Json(node.pixels.status()).into_response()
+}
+
+async fn put_pixels(
+    State(node): State<Node>,
+    axum::extract::Path(output): axum::extract::Path<u8>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match node.pixels.put(output, &body) {
+        Ok(strip) => {
+            info!("[sim] {} strip {output} is now {strip}", node.config.serial);
+            Json(strip).into_response()
+        }
+        Err((code, error)) => (
+            axum::http::StatusCode::from_u16(code).unwrap_or(axum::http::StatusCode::BAD_REQUEST),
+            Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
 }
 
 fn no_audio() -> axum::response::Response {
@@ -1250,6 +1343,7 @@ async fn listen_for_sacn(
     port: u16,
     stop: &Stopper,
     frames: mpsc::Sender<(u16, Vec<u8>)>,
+    pixels: Arc<pixels::Pixels>,
 ) -> Result<SocketAddr> {
     let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port)).await?;
     let addr = socket.local_addr()?;
@@ -1258,9 +1352,10 @@ async fn listen_for_sacn(
         loop {
             let Ok(n) = socket.recv(&mut buffer).await else { break };
             if let Some(frame) = parse_e131(&buffer[..n]) {
-                if frames.send(frame).await.is_err() {
-                    break;
-                }
+                pixels.receive(frame.0, &frame.1);
+                // Nobody reading the gateway's frames is not a reason to stop counting
+                // the strips': a full channel drops, it does not end the node.
+                let _ = frames.try_send(frame);
             }
         }
     }));

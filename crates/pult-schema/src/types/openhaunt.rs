@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::types::fixture::{
     FixturePhysical, FixtureType, FixtureTypeSource, ParameterDefinition, ParameterDirection,
-    ParameterKind, ParameterValue,
+    ParameterKind, ParameterValue, PhysicalRange, PhysicalUnit, Slot,
 };
 
 /// Descriptor flag bit 6 means the module switches mains voltage.
@@ -84,6 +84,35 @@ pub struct PortDescription {
     /// the port becomes a named parameter instead.
     #[serde(default)]
     pub class: Option<String>,
+    /// Which of the node's heads this port belongs to. Absent is head 0, the node
+    /// itself, which is every port a node described before heads existed.
+    ///
+    /// Left out of the hash when absent, and that is load-bearing: [`fixture_type_id`]
+    /// hashes the description, and a `"head": null` on every port of a node that never
+    /// heard of heads would give it a new fixture type and orphan its patch.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub head: Option<u8>,
+}
+
+impl PortDescription {
+    /// The head this port belongs to, absent meaning the node's own.
+    pub fn head(&self) -> u8 {
+        self.head.unwrap_or(0)
+    }
+}
+
+/// One head other than the node itself: a fixture of its own on the same node. See
+/// `OpenHaunt/node/docs/14-pixels.md`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HeadDescription {
+    pub head: u8,
+    pub name: String,
+    /// A hint, like a port's `class`. `pixel-strip` is the one this console knows.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub kind: Option<String>,
 }
 
 /// A node that forwards a universe says so, and that is what makes it a gateway.
@@ -108,6 +137,10 @@ pub struct NodeDescription {
     pub ports: Vec<PortDescription>,
     #[serde(default)]
     pub dmx: Option<DmxDescription>,
+    /// The heads other than head 0, where the node has any. Left out of the hash when
+    /// empty, for the reason a port's `head` is.
+    #[serde(default)]
+    pub heads: Vec<HeadDescription>,
 }
 
 impl NodeDescription {
@@ -123,6 +156,32 @@ impl NodeDescription {
 
     pub fn outputs(&self) -> usize {
         self.ports.iter().filter(|p| p.access == PortAccess::ReadWrite).count()
+    }
+
+    /// Every head this node has: 0, then each one it lists or names on a port.
+    pub fn head_numbers(&self) -> Vec<u8> {
+        let mut heads: std::collections::BTreeSet<u8> = [0].into();
+        heads.extend(self.heads.iter().map(|h| h.head));
+        heads.extend(self.ports.iter().map(PortDescription::head));
+        heads.into_iter().collect()
+    }
+
+    /// What the node said about one head, and nothing about the others.
+    ///
+    /// For head 0 of a node that has no heads, this is the description itself, field for
+    /// field, so its fixture type keeps the id it has always had. A universe is the
+    /// node's, so only head 0 carries `dmx`.
+    pub fn for_head(&self, head: u8) -> NodeDescription {
+        NodeDescription {
+            ports: self.ports.iter().filter(|p| p.head() == head).cloned().collect(),
+            dmx: if head == 0 { self.dmx.clone() } else { None },
+            heads: self.heads.iter().filter(|h| h.head == head && head != 0).cloned().collect(),
+        }
+    }
+
+    /// What the node calls a head. Head 0 is the node, and named by the caller.
+    pub fn head_name(&self, head: u8) -> Option<&str> {
+        self.heads.iter().find(|h| h.head == head).map(|h| h.name.as_str())
     }
 }
 
@@ -215,8 +274,121 @@ pub fn effect_capability_from(info: &serde_json::Value) -> Option<EffectCapabili
 /// `new_v5` hashes the name it is given, so the description goes in whole.
 pub fn fixture_type_id(module_type: u16, description: &NodeDescription) -> Uuid {
     let mut name = module_type.to_be_bytes().to_vec();
-    name.extend_from_slice(&serde_json::to_vec(description).unwrap_or_default());
+    name.extend_from_slice(&hashed(description));
     Uuid::new_v5(&NAMESPACE, &name)
+}
+
+/// The bytes a description is hashed as: its JSON as it was before heads existed, with a
+/// head written only where there is one, so a node that predates heads hashes exactly as
+/// it always did.
+///
+/// A mirror rather than the type itself, because the schema's own serialisation writes
+/// every absent head as `null` (which the browser wants), and a `Value` would sort the
+/// keys and change every byte.
+fn hashed(description: &NodeDescription) -> Vec<u8> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Port<'a> {
+        port: u8,
+        name: &'a str,
+        access: PortAccess,
+        data_type: PortDataType,
+        unit: &'a Option<String>,
+        minimum: Option<f64>,
+        maximum: Option<f64>,
+        default: Option<f64>,
+        class: &'a Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        head: Option<u8>,
+    }
+    #[derive(Serialize)]
+    struct Description<'a> {
+        ports: Vec<Port<'a>>,
+        dmx: &'a Option<DmxDescription>,
+        #[serde(skip_serializing_if = "<[_]>::is_empty")]
+        heads: &'a [HeadDescription],
+    }
+    let mirror = Description {
+        ports: description
+            .ports
+            .iter()
+            .map(|p| Port {
+                port: p.port,
+                name: &p.name,
+                access: p.access,
+                data_type: p.data_type,
+                unit: &p.unit,
+                minimum: p.minimum,
+                maximum: p.maximum,
+                default: p.default,
+                class: &p.class,
+                head: p.head,
+            })
+            .collect(),
+        dmx: &description.dmx,
+        heads: &description.heads,
+    };
+    serde_json::to_vec(&mirror).unwrap_or_default()
+}
+
+/// The stable id of one head's fixture type.
+///
+/// Head 0 hashes exactly what [`fixture_type_id`] always hashed for a node without
+/// heads, so nothing adopted before heads existed changes type. Every other head
+/// carries its number into the hash, because strip 1 and strip 2 in the same mode
+/// describe identical ports and are still two fixtures on two outputs.
+pub fn head_type_id(module_type: u16, description: &NodeDescription, head: u8) -> Uuid {
+    let own = description.for_head(head);
+    if head == 0 {
+        return fixture_type_id(module_type, &own);
+    }
+    let mut name = module_type.to_be_bytes().to_vec();
+    name.extend_from_slice(b"head");
+    name.push(head);
+    name.extend_from_slice(&hashed(&own));
+    Uuid::new_v5(&NAMESPACE, &name)
+}
+
+/// The id of the fixture one head of one node becomes.
+///
+/// Derived, so two consoles adopting the same node make the same rows and a head
+/// that disappears and comes back finds its fixture again. Head 0 is not derived:
+/// a node's own fixture was always a fresh id, and what it is found by is its
+/// address.
+pub fn head_fixture_id(serial: &str, head: u8) -> Uuid {
+    Uuid::new_v5(&NAMESPACE, format!("fixture/{serial}/head/{head}").as_bytes())
+}
+
+/// The fixture type for one head of a node.
+///
+/// Built from that head's ports alone, which is what stops two strips colliding on one
+/// colour. `effects` is the node's `pixels.effects`, the vocabulary of a
+/// `pixel-effect` port, kept as that parameter's slots.
+pub fn head_type_from(
+    module_type: u16,
+    module_name: &str,
+    description: &NodeDescription,
+    head: u8,
+    effects: &[String],
+) -> FixtureType {
+    let own = description.for_head(head);
+    let name = match head {
+        0 => module_name.to_string(),
+        n => description.head_name(n).map(str::to_string).unwrap_or_else(|| format!("Head {n}")),
+    };
+    let mut fixture_type = fixture_type_from(module_type, &name, &own);
+    fixture_type.id = head_type_id(module_type, description, head);
+    for (parameter, port) in fixture_type.parameters.iter_mut().zip(&own.ports) {
+        if port.class.as_deref() == Some("pixel-effect") {
+            parameter.slots =
+                effects.iter().map(|e| Slot { name: e.clone(), ..Slot::default() }).collect();
+            if parameter.default_value == ParameterValue::Text(String::new()) {
+                parameter.default_value =
+                    ParameterValue::Text(effects.first().cloned().unwrap_or_else(|| "solid".into()));
+            }
+        }
+    }
+    fixture_type
 }
 
 /// The fixture type for a node that has described itself.
@@ -247,6 +419,7 @@ pub fn fixture_type_from(
                 PortAccess::ReadOnly => ParameterDirection::Input,
                 PortAccess::ReadWrite => ParameterDirection::Output,
             },
+            physical: physical_range(port),
             ..ParameterDefinition::on_port(
                 kind_for(port, seen.get(port.name.as_str()).copied().unwrap_or(1) > 1),
                 port.port,
@@ -291,11 +464,43 @@ fn kind_for(port: &PortDescription, name_is_shared: bool) -> ParameterKind {
     }
 }
 
+/// What a driven number port's 0..1 spans, where the node gave it a range that is not
+/// already 0..1.
+///
+/// A fader is 0..1 everywhere in this console, so a strip's Speed of 0–10 Hz, or its
+/// Segments of 1–16, was a control that could not get past the bottom of its own range:
+/// full was 1 Hz. The connector sends `from + (to − from) · v` instead, and the panel
+/// reads it in the port's own unit. Only on ports the console *drives*: a sensor's
+/// reading arrives in its own units and is kept as it came.
+pub fn physical_range(port: &PortDescription) -> Option<PhysicalRange> {
+    if port.access != PortAccess::ReadWrite || port.data_type != PortDataType::Number {
+        return None;
+    }
+    let (from, to) = (port.minimum?, port.maximum?);
+    if (from == 0.0 && to == 1.0) || to <= from {
+        return None;
+    }
+    let unit = match port.unit.as_deref() {
+        Some("hertz") => PhysicalUnit::Hertz,
+        Some("percent") => PhysicalUnit::Percent,
+        Some("degree") | Some("degrees") => PhysicalUnit::Degrees,
+        Some("second") | Some("seconds") => PhysicalUnit::Seconds,
+        _ => PhysicalUnit::None,
+    };
+    Some(PhysicalRange { from: from as f32, to: to as f32, unit })
+}
+
 /// Where a port sits before anything has driven it, from its type and `default`.
 fn default_value(port: &PortDescription) -> ParameterValue {
     match port.data_type {
         PortDataType::Boolean => ParameterValue::Bool(port.default.unwrap_or(0.0) != 0.0),
-        PortDataType::Number => ParameterValue::Float(port.default.unwrap_or(0.0) as f32),
+        PortDataType::Number => match physical_range(port) {
+            // Kept in the console's 0..1, so a range of 1–16 rests at 1 and not at 100%.
+            Some(range) => ParameterValue::Float(range.to_normalised(
+                port.default.unwrap_or(range.from as f64) as f32,
+            )),
+            None => ParameterValue::Float(port.default.unwrap_or(0.0) as f32),
+        },
         PortDataType::String => ParameterValue::Text(String::new()),
         PortDataType::Color => ParameterValue::rgb(0.0, 0.0, 0.0),
     }
@@ -493,9 +698,77 @@ mod tests {
             maximum: None,
             default: None,
             class: Some("switch".into()),
+            head: None,
         });
 
         assert_ne!(fixture_type_id(0x0004, &before), fixture_type_id(0x0004, &after));
+    }
+
+    /// The bytes every node adopted before heads existed was typed by. If this changes,
+    /// every one of them is re-typed the next time it describes itself.
+    #[test]
+    fn a_node_without_heads_hashes_as_it_always_did() {
+        let relay = described(0x0004);
+        let mut legacy = 0x0004u16.to_be_bytes().to_vec();
+        legacy.extend_from_slice(
+            br#"{"ports":[{"port":0,"name":"Relay","access":"readwrite","dataType":"boolean","unit":null,"minimum":null,"maximum":null,"default":0.0,"class":"switch"}],"dmx":null}"#,
+        );
+        assert_eq!(fixture_type_id(0x0004, &relay), Uuid::new_v5(&NAMESPACE, &legacy));
+        assert_eq!(head_type_id(0x0004, &relay, 0), fixture_type_id(0x0004, &relay));
+    }
+
+    #[test]
+    fn two_strips_on_one_node_are_two_fixtures_each_with_its_own_colour() {
+        let info = serde_json::json!({
+            "ports": [
+                { "port": 0, "name": "Relay 1", "access": "readwrite", "dataType": "boolean", "class": "switch" },
+                { "port": 6, "name": "Colour", "access": "readwrite", "dataType": "color", "class": "color", "head": 1 },
+                { "port": 9, "name": "Effect", "access": "readwrite", "dataType": "string", "class": "pixel-effect", "head": 1 },
+                { "port": 15, "name": "Colour", "access": "readwrite", "dataType": "color", "class": "color", "head": 2 },
+            ],
+            "heads": [
+                { "head": 1, "name": "Strip 1", "kind": "pixel-strip" },
+                { "head": 2, "name": "Strip 2", "kind": "pixel-strip" },
+            ],
+        });
+        let description: NodeDescription = serde_json::from_value(info).unwrap();
+        assert_eq!(description.head_numbers(), vec![0, 1, 2]);
+        let effects = vec!["solid".to_string(), "chase".to_string()];
+        let node = head_type_from(0x0f01, "Node V0", &description, 0, &effects);
+        let one = head_type_from(0x0f01, "Node V0", &description, 1, &effects);
+        let two = head_type_from(0x0f01, "Node V0", &description, 2, &effects);
+        assert_eq!(node.parameters.len(), 1, "the node keeps only its own ports");
+        assert_eq!(one.name, "Strip 1");
+        assert_eq!(one.parameters[0].kind, ParameterKind::ColorRgb);
+        assert_eq!(two.parameters[0].kind, ParameterKind::ColorRgb);
+        assert_ne!(one.id, two.id, "two strips in one mode are still two types");
+        assert_eq!(one.parameters[1].slots.len(), 2, "the effect port knows its words");
+        assert_eq!(one.parameters[1].default_value, ParameterValue::Text("solid".into()));
+        assert_ne!(head_fixture_id("a", 1), head_fixture_id("a", 2));
+    }
+
+    #[test]
+    fn a_driven_port_with_its_own_range_is_a_fader_across_that_range() {
+        let description: NodeDescription = serde_json::from_value(serde_json::json!({
+            "ports": [
+                { "port": 10, "name": "Speed", "access": "readwrite", "dataType": "number",
+                  "unit": "hertz", "minimum": 0, "maximum": 10, "default": 1 },
+                { "port": 14, "name": "Segments", "access": "readwrite", "dataType": "number",
+                  "minimum": 1, "maximum": 16, "default": 1 },
+                { "port": 7, "name": "Brightness", "access": "readwrite", "dataType": "number",
+                  "minimum": 0, "maximum": 1, "default": 0 },
+                { "port": 0, "name": "Temperature", "access": "readonly", "dataType": "number",
+                  "minimum": -40, "maximum": 85 },
+            ],
+        }))
+        .unwrap();
+        let ft = fixture_type_from(0x0f01, "Strip", &description);
+        let speed = ft.parameters[0].physical.expect("0–10 Hz is not 0..1");
+        assert_eq!((speed.from, speed.to, speed.unit), (0.0, 10.0, PhysicalUnit::Hertz));
+        assert_eq!(ft.parameters[0].default_value, ParameterValue::Float(0.1), "1 Hz of 10");
+        assert_eq!(ft.parameters[1].default_value, ParameterValue::Float(0.0), "1 is the bottom of 1–16");
+        assert!(ft.parameters[2].physical.is_none(), "0..1 is already the console's");
+        assert!(ft.parameters[3].physical.is_none(), "a reading is kept in its own units");
     }
 
     #[test]

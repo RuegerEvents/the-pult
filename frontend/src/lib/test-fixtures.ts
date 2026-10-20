@@ -22,7 +22,8 @@ export const NOTHING_PHYSICAL: FixturePhysical = {
 	connectors: [],
 	leg_height_m: null,
 	operating_temperature: null,
-	beam_angle_deg: null
+	beam_angle_deg: null,
+	pixel: false
 };
 
 /** A type with nothing in it. Spread it and name the fields the test is about. */

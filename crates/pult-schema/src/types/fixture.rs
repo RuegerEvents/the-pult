@@ -47,6 +47,18 @@ pub enum FixtureAddress {
     OpenHaunt {
         serial: String,
         universe: Option<u16>,
+        /// Which head of the node this fixture is. Absent is head 0, the node itself,
+        /// and every fixture adopted before heads existed. See
+        /// `crate::types::openhaunt::NodeDescription::for_head`.
+        #[serde(default)]
+        #[ts(optional = nullable)]
+        head: Option<u8>,
+        /// For a head that is a pixel strip: the mode it is patched in, and where its
+        /// pixels go. On the address for the reason a DMX mode is: it is not what the
+        /// light can do, it is where the bytes go. See [`crate::types::pixels`].
+        #[serde(default)]
+        #[ts(optional = nullable)]
+        strip: Option<crate::types::pixels::PixelStrip>,
     },
 }
 
@@ -102,6 +114,35 @@ impl FixtureAddress {
     pub fn serial(&self) -> Option<&str> {
         match self {
             FixtureAddress::OpenHaunt { serial, .. } => Some(serial),
+            FixtureAddress::Dmx { .. } => None,
+        }
+    }
+
+    /// A node's own fixture: head 0, no strip.
+    pub fn node(serial: impl Into<String>, universe: Option<u16>) -> Self {
+        FixtureAddress::OpenHaunt { serial: serial.into(), universe, head: None, strip: None }
+    }
+
+    /// Which head of its node this fixture is, for one that lives on a node.
+    pub fn head(&self) -> Option<u8> {
+        match self {
+            FixtureAddress::OpenHaunt { head, .. } => Some(head.unwrap_or(0)),
+            FixtureAddress::Dmx { .. } => None,
+        }
+    }
+
+    /// The universe a gateway forwards, for a node's own fixture that is one.
+    pub fn gateway_universe(&self) -> Option<u16> {
+        match self {
+            FixtureAddress::OpenHaunt { universe, .. } => *universe,
+            FixtureAddress::Dmx { .. } => None,
+        }
+    }
+
+    /// How a strip head is patched, for one that is.
+    pub fn strip(&self) -> Option<&crate::types::pixels::PixelStrip> {
+        match self {
+            FixtureAddress::OpenHaunt { strip, .. } => strip.as_ref(),
             FixtureAddress::Dmx { .. } => None,
         }
     }
@@ -298,6 +339,10 @@ pub struct FixturePhysical {
     /// cone should be drawn at, instead of a constant that is right for no fixture.
     #[serde(default)]
     pub beam_angle_deg: Option<f32>,
+    /// A point of light with no beam: one pixel of a strip. The rig view draws a dot in
+    /// its colour where it would otherwise draw a lantern and a cone.
+    #[serde(default)]
+    pub pixel: bool,
 }
 
 /// A socket on the fixture.
@@ -1103,7 +1148,7 @@ mod tests {
         assert_eq!(dmx.mode(), Some(DEFAULT_MODE));
         assert_eq!(dmx.serial(), None);
 
-        let node = FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(5) };
+        let node = FixtureAddress::node("1a2b3c", Some(5));
         assert_eq!(node.dmx_start(), None, "a node fixture has no slot in a universe");
         assert!(node.breaks().is_empty());
         assert_eq!(node.serial(), Some("1a2b3c"));

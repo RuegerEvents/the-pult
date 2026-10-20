@@ -22,7 +22,8 @@ struct Args {
     /// `--module`, and the flags below override it in turn.
     #[arg(long, value_name = "PATH")]
     config: Option<std::path::PathBuf>,
-    /// dmx, input, led, relay, oled, contact, or env.
+    /// dmx, input, led, relay, oled, contact, env, or v0 (the V0 prototype: four relays,
+    /// two sensors and two pixel strips).
     #[arg(long, default_value = "input")]
     module: String,
     #[arg(long)]

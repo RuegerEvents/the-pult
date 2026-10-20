@@ -555,7 +555,20 @@ pub enum FixtureAddress {
         /// Where each DMX break lands, break 1 first. Never empty.
         breaks: Vec<DmxBreak>,
     },
-    OpenHaunt { serial: String, universe: Option<u16> },
+    OpenHaunt {
+        serial: String,
+        universe: Option<u16>,
+        /// Which head of the node this fixture is. Absent is head 0, the node itself,
+        /// and every fixture adopted before heads existed. See
+        /// `crate::types::openhaunt::NodeDescription::for_head`.
+        #[serde(default)]
+        head: Option<u8>,
+        /// For a head that is a pixel strip: the mode it is patched in, and where its
+        /// pixels go. On the address for the reason a DMX mode is: it is not what the
+        /// light can do, it is where the bytes go. See [`crate::types::pixels`].
+        #[serde(default)]
+        strip: Option<PixelStrip>,
+    },
 }
 
 /// One node of a fixture's own geometry, flattened.
@@ -615,6 +628,10 @@ pub struct FixturePhysical {
     /// cone should be drawn at, instead of a constant that is right for no fixture.
     #[serde(default)]
     pub beam_angle_deg: Option<f32>,
+    /// A point of light with no beam: one pixel of a strip. The rig view draws a dot in
+    /// its colour where it would otherwise draw a lantern and a cone.
+    #[serde(default)]
+    pub pixel: bool,
 }
 
 /// Template describing what parameters a fixture type has.
@@ -1611,6 +1628,28 @@ pub enum PictureMode {
     Photoreal,
 }
 
+/// How a strip head is patched: on its address, beside the serial and the head.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PixelStrip {
+    /// The strip output on the board, the `<n>` in `/api/v1/pixels/<n>`.
+    pub output: u8,
+    pub mode: StripMode,
+    pub count: u16,
+    /// The colour order on the strip's own wire. The universes always carry R, G, B
+    /// (and W), so this matters to the node and to nothing here but the channel count.
+    pub order: String,
+    /// Where pixel 0's first channel is, in `sacn` mode. Kept in `effect` mode too, so
+    /// switching back and forth does not lose it.
+    pub universe: u16,
+    pub address: u16,
+    /// How long the node holds its last frame when every source has gone.
+    #[serde(default)]
+    pub hold_ms: u32,
+    /// Distance from one pixel to the next, in metres: 60 to the metre unless said.
+    #[serde(default)]
+    pub pitch_m: f32,
+}
+
 /// What a fixture of this type is drawn as, seen from above.
 ///
 /// See [`FixtureType::plan_symbol`] for why this is a choice and not a rule.
@@ -2078,6 +2117,10 @@ pub enum SelectionTerm {
     /// whole stage behind the fixtures you meant.
     #[serde(rename_all = "camelCase")]
     Cone { from: Vec3, direction: Vec3, angle_deg: f32, reach: f32 },
+    /// Everything hung off one object, however deep: a truss and its group handles, or
+    /// the handle a pixel strip's cells hang off. Not geometric, so a fixture hung off
+    /// it that has not been placed yet is still in it.
+    Hanging { object: Uuid },
 }
 
 /// An ordered list of cues (called a "sequence" by the operator).
@@ -2478,6 +2521,26 @@ pub struct StationNetwork {
     /// looked at. A station that has been up all afternoon with nothing replugged
     /// should say so rather than claim it noticed something two seconds ago.
     pub changed_at: Timestamp,
+}
+
+/// Which of the two ways a strip runs.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize
+)]
+#[serde(rename_all = "lowercase")]
+pub enum StripMode {
+    /// The node draws the pixels, from parameters.
+    #[default]
+    Effect,
+    /// The console draws the pixels, and sends them as sACN.
+    Sacn,
 }
 
 /// One page of tiles.

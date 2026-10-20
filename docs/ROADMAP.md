@@ -6049,6 +6049,132 @@ cargo test -p pult-backend --test takes          # a take stored, played, overdu
 cd frontend && npx vitest run src/lib/takes.test.ts
 ```
 
+### 74. A strip the console draws, and one the node does
+
+Pixel strips, built 2026-10-21 for the Heinz Horror Garten against
+`OpenHaunt/node/docs/14-pixels.md` (firmware `25376bc`). A V0 node has two WS2812
+outputs, each a **head** of its own, and each patched in one of two modes for the night:
+`effect`, where the node draws every pixel from nine parameters, or `sacn`, where the
+console draws every pixel and the node maps universes onto the strip. Task 11 left
+"per-pixel WS2812" open. The *What is next* entry asked seven questions, answered below,
+and left the list when it was built.
+
+**One fixture per head, and head 0 hashes as it always did.** `NodeDescription::for_head`
+is what a head says about itself, and `head_type_from` builds its type from that alone,
+so two strips no longer collide on one colour. A node without heads is, field for field,
+its own head 0, and `fixture_type_id` hashes it through a mirror of the description as
+it was before heads (`hashed` in `openhaunt.rs`): the schema writes an absent head as
+`null`, which the browser wants, and a `serde_json::Value` would have sorted the keys. A
+test pins the exact bytes a relay was always typed by. Head *n*'s fixture id is a v5 of
+serial and head, so two consoles adopting one node make the same rows; head 0 keeps the
+fresh id it always had and is found by its address. `FixtureAddress::OpenHaunt` gained
+`head` and `strip`, both defaulted.
+
+**"Rebuilt whenever the node describes itself" is now true.** `FixtureTypeSource::Node`
+had always said so and nothing did it. `DeviceManager::retype` runs on every resolve:
+each head's fixture is moved onto the type its description builds now, and a stored
+type of that id is rewritten when it differs (which is how a node's effect list reaches
+the Effect port's slots). Only Node-sourced types are touched, and a type a fixture
+leaves behind stays: a cue may still name it.
+
+**The mode lives on the strip's address, and the show is the truth.** `PixelStrip` sits
+on the head's `FixtureAddress::OpenHaunt` the way a DMX mode sits on a DMX address,
+because it is where the bytes go and not what the light can do. Adoption takes on
+whatever the node is running. `device.strip` (a station RPC, attributed, one gesture)
+changes it; the station then `PUT`s `/api/v1/pixels/<n>`, asks the node again, and
+re-types. A check every five seconds compares every adopted node's strips against the
+show and puts back one that rebooted into another mode, was factory reset or was set
+from a bench script; that is also what makes an undo or a peer's patch reach the node.
+What the node refuses is a fault on its device row in the node's own words, and a 409
+says the one thing only somebody at the node can fix: a stored virtual module wins.
+
+**The Effect port is a string with a vocabulary, and the vocabulary is its slots.**
+Fades, cues and the programmer already carried `Text`, which steps at the start of a
+fade, the right thing for a word. What was missing was the list, which the node gives
+as `pixels.effects`: it goes into the parameter's `slots`, the field a wheel's named
+positions already use, so no new field and no new rule. `EditableParameter::choices`
+reads it and `ChoiceControl` draws a list. A value the list lacks stays shown rather
+than being turned into the first word.
+
+**A ranged port is a fader across its range.** A strip's Speed is 0–10 Hz and its
+Segments 1–16, and a console fader is 0..1, so full Speed was 1 Hz. `physical_range`
+gives every driven number port whose range is not already 0..1 a `PhysicalRange`, its
+default is stored normalised, and the connector sends `from + (to − from) · v`, for a
+value, a fade's destination and a shape's ends alike. A *sensor's* range is left alone:
+a reading arrives in its own units and is kept as it came.
+
+**In `sacn` mode a pixel is a fixture.** The alternative was one fixture with a cell count
+and a repeating layout, which would have needed the evaluator, both compilations of it,
+the corpus and every consumer to learn what a cell is. As fixtures, spread, phase,
+width, the chase order, the sheet, the wire view and the sACN rendering all work with
+nothing taught: a cell is a DMX-addressed fixture of the shared `Pixel RGB`/`Pixel RGBW`
+type (channels always R, G, B, W; the node reorders for its own wire), hung off one
+scene object that *is* the strip, at `pitch_m` along its X. `pixels::plan` is pure and
+says what a patch takes: the head's new address, cells created, moved or deleted, the
+object and type if missing, and a saved group of the cells. Cell ids are derived from
+serial, head and index, so a strip that shrinks and grows finds pixel 37 again with
+whatever a cue captured against it. The spill rule is the node's (170 RGB or 128 RGBW a
+universe, the first holding what fits after the address) and is written once here and
+once, independently, in the simulator.
+
+**A strip's cells are one selection, by what they hang off.** `SelectionTerm::Hanging`
+is new: everything hung off one object at any depth, placed or not. In both evaluators
+and in `selection-queries.json`. The strip's group is `Hanging` kept to the cell type,
+in manual order along the strip, and *Select pixels* in the Devices panel recalls it.
+
+**The frames go the way a gateway's universe always went.** A strip in `sacn` mode is a
+node that reads universes, which the OpenHaunt connector already fed unicast to
+gateways. `DeviceEntry::universe` became `universes`, the gateway's plus every strip's,
+and the wire view's section is *sACN to the nodes*. No sACN output row to create or keep
+right, and the leader-only rule the connector follows is the hot spare's already.
+
+**It costs less than a millisecond.** Ten nodes of 1024 pixels with a sine on every
+one, 70 universes, evaluate and render in a median 0.82 ms per frame, worst 1.08 ms, in
+release (`pixel_frame_cost`, ignored, printed, never a gate). Cells need no fast path.
+
+**The rig draws a pixel as a dot.** `FixturePhysical::pixel` says a type is a point of
+light with no beam: no cone, no pool, never the brightest spotlight, a sphere glowing in
+its own colour.
+
+#### Traps
+
+- **A body made before the types arrived stays a lantern.** The rig view caches a body
+  per fixture, and a cell whose type had not reached the page when its body was made
+  drew as a 34 cm cylinder: 120 of them were a white wall. The geometry is set every
+  frame now.
+- **A `"head": null` would have re-typed every node in every show.** The first cut put
+  `skip_serializing_if` on the new fields to keep the hash, and ts-rs warns on every
+  one; the mirror is what keeps both the hash and the warning count where they were.
+- **The simulator's sACN listener waited on whoever read its frames.** A gateway's
+  frames went into a bounded channel with an awaited send, so a test that never read
+  them would have stopped the strips counting too, once both shared the socket. It
+  drops a frame instead of waiting now; found by reading, not by a failure.
+
+#### What is not done
+
+- **Never run on a strip.** The simulator counts frames and keeps the last image per
+  universe; the colours on real LEDs, RMT timing and multicast joins are the firmware's
+  unverified list.
+- **10,000 cells is 10,000 fixture rows.** Rendering them is cheap; a patch panel and a
+  sheet listing them are not designed for it, and the rig view has a mesh per cell.
+  Instancing the bodies (`rig-viewer-remainder`) would take that.
+- **The Values panel reads a ranged parameter as a fraction**, Speed at 10% rather
+  than 1 Hz. `PhysicalRange` is there to be read; no panel reads it yet.
+- **The Effects panel spreads in patch order**, not the group's manual order. Cells are
+  created in strip order so the two agree, but a strip patched after somebody reordered
+  the fixtures would chase in the wrong direction.
+- **The simulator does not re-announce `desc`.** Every resolve refetches `/info` anyway,
+  and the console asks again itself after a `PUT`, so nothing here waits on it.
+
+```
+cargo test -p pult-schema pixels                     # the spill, the plan, the put-back rule
+cargo test -p pult-schema openhaunt                  # heads, the old hash, ranged ports
+cargo test -p pult-backend --lib devices::e2e        # adopt a V0, patch a strip both ways
+cargo test -p pult-backend --lib connectors::openhaunt   # a chase arriving at the node
+cargo test --release -p pult-backend --lib pixel_frame_cost -- --ignored --nocapture
+cd frontend && npx vitest run src/lib/strips.test.ts
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

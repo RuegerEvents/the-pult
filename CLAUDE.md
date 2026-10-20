@@ -173,6 +173,17 @@ emitter list, each channel of a mode names the one it drives, and `pult_render::
 gets from a colour to a level per emitter — compiled twice like the rest of the
 evaluator and held together by `testdata/color-mix.json`.
 
+**A node is a fixture per head, and a strip in `sacn` mode is a fixture per pixel.**
+Ports carry a `head`; `NodeDescription::for_head` is what one head says, and head 0 of a
+node without heads hashes byte for byte as it always did (`hashed` in `openhaunt.rs`,
+pinned by a test) or every adopted node would be re-typed. `DeviceManager::retype` is
+what finally makes a `Node` type follow its node. A strip's mode lives on its address
+(`PixelStrip`), the show is the truth and a node running something else is put back.
+Cells are ordinary DMX fixtures hung off the strip's scene object, so spread, the chase
+order and the sACN render needed nothing new; `pixels::plan` is the one place they are
+worked out. A driven number port with its own range is a `PhysicalRange`, and the
+connector sends it in the port's units. See task 74.
+
 **A `.gdtf` is kept whole and the row is a reading of it.** The archive lives in the
 asset store and `FixtureTypeSource::Gdtf` points at it by sha256, so exporting hands
 back the file byte for byte and a later version of this console reads more out of the

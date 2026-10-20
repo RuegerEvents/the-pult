@@ -199,6 +199,7 @@
 						<ValueControl
 							{value}
 							label={row.label}
+							choices={row.choices}
 							tint={isHeld(row.key) ? 'var(--live)' : 'var(--accent)'}
 							oninput={(next) => put(row.kind, next)}
 						/>

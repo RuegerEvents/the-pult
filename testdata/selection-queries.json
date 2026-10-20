@@ -479,6 +479,32 @@
         "order": {"kind": "Manual", "order": []}
       },
       "expected": []
+    },
+    {
+      "name": "hanging off an object reaches what is hung on it",
+      "query": {
+        "clauses": [
+          {
+            "combine": "Add",
+            "term": {"kind": "Hanging", "object": "50000000-0000-4000-8000-000000000001"}
+          }
+        ],
+        "order": {"kind": "Manual", "order": []}
+      },
+      "expected": ["f0000000-0000-4000-8000-000000000007"]
+    },
+    {
+      "name": "hanging off an object nothing hangs from is nothing",
+      "query": {
+        "clauses": [
+          {
+            "combine": "Add",
+            "term": {"kind": "Hanging", "object": "50000000-0000-4000-8000-0000000000ff"}
+          }
+        ],
+        "order": {"kind": "Manual", "order": []}
+      },
+      "expected": []
     }
   ]
 }

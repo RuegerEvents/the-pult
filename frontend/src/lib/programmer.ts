@@ -72,6 +72,11 @@ export type EditableParameter = {
 	key: string;
 	label: string;
 	defaultValue: ParameterValue;
+	/**
+	 * The words a text parameter takes, where its type names them: a strip's Effect
+	 * port says which effects the node draws. Empty is free text.
+	 */
+	choices: string[];
 	/** How many of the selected fixtures actually have it. */
 	count: number;
 	/**
@@ -128,6 +133,8 @@ export function editableParameters(
 				key,
 				label: displayLabel(parameter.kind),
 				defaultValue: parameter.default_value,
+				choices:
+					parameter.default_value.type === 'Text' ? parameter.slots.map((slot) => slot.name) : [],
 				count: 1,
 				unreachable: reachable ? 0 : 1,
 				mixed: false

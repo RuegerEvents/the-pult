@@ -721,6 +721,12 @@
 	const DOWN = new THREE.Vector3(0, -1, 0);
 
 	const BODY_GEOMETRY = new THREE.CylinderGeometry(0.14, 0.11, 0.34, 16);
+	/**
+	 * A pixel on a strip: a point of light with no beam, drawn as a dot in its own
+	 * colour. A little larger than an LED, so a strip still reads from across a rig;
+	 * at 60 to the metre neighbours touch, which is what a lit strip looks like.
+	 */
+	const PIXEL_GEOMETRY = new THREE.SphereGeometry(0.01, 8, 6);
 
 	/** How many numbers describe one fixture's drawing, for the last-frame record. */
 	const PER_FIXTURE = 10;
@@ -831,7 +837,10 @@
 				}
 			}
 
-			if (level > 0.0005) {
+			// A pixel has no beam to draw and lights no floor: it is the dot below.
+			const pixel = !!beam.type?.physical?.pixel;
+
+			if (level > 0.0005 && !pixel) {
 				scratchQuat.setFromUnitVectors(DOWN, scratchDirection);
 				scratchMatrix.compose(scratchPosition, scratchQuat, scratchScale);
 				built.beamMesh.setMatrixAt(lit, scratchMatrix);
@@ -845,7 +854,7 @@
 				lit += 1;
 			}
 
-			if (level > brightestLevel) {
+			if (level > brightestLevel && !pixel) {
 				brightestLevel = level;
 				brightest = i;
 			}
@@ -854,7 +863,7 @@
 			let body = built.bodies.get(beam.fixture.id);
 			if (!body) {
 				body = new THREE.Mesh(
-					BODY_GEOMETRY,
+					pixel ? PIXEL_GEOMETRY : BODY_GEOMETRY,
 					new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.3 })
 				);
 				body.userData.fixtureId = beam.fixture.id;
@@ -863,6 +872,10 @@
 				built.root.add(body);
 			}
 			body.visible = true;
+			// Set every frame rather than when the body is made: a body made before the
+			// rig's types arrived is a lantern, and a pixel has to become a dot once they do.
+			const shape = pixel ? PIXEL_GEOMETRY : BODY_GEOMETRY;
+			if (body.geometry !== shape) body.geometry = shape;
 			body.position.copy(scratchPosition);
 			// The body's wider end is the lens, and that end does face down the beam —
 			// the opposite end from the one the beam is turned by.
@@ -874,7 +887,9 @@
 			// then the picture cannot tell you which lamp is on.
 			dimKeepingHue(scratchColour, level * 0.9, scratchDimmed);
 			material.emissive.copy(scratchDimmed);
-			material.emissiveIntensity = 1;
+			// A pixel *is* its light, so it glows at full rather than tinting a body.
+			material.emissiveIntensity = pixel ? 2.5 : 1;
+			if (pixel && !$selected.has(beam.fixture.id)) material.color.set(0x111111);
 		}
 
 		// A lit beam with haze in it drifts on the clock, so the picture is never

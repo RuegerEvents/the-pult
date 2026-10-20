@@ -802,7 +802,7 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
         id: Uuid::new_v4(),
         name: "Doorbell".into(),
         fixture_type_id: Uuid::new_v4(),
-        address: FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: None },
+        address: FixtureAddress::node("1a2b3c", None),
         position: None,
         sensed_values: Default::default(),
         live_effects: Default::default(),

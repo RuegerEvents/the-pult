@@ -307,7 +307,7 @@ fn a_fixture_with_two_breaks_prints_both() {
 
 #[test]
 fn a_node_fixture_prints_its_node_and_never_a_universe_it_has_not_got() {
-    let address = FixtureAddress::OpenHaunt { serial: "4d5e6f".into(), universe: None };
+    let address = FixtureAddress::node("4d5e6f", None);
     assert_eq!(address_of(&address), "node 4d5e6f");
 }
 

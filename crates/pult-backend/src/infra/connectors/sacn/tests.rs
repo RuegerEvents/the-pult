@@ -231,7 +231,7 @@ async fn a_fixture_on_a_node_puts_nothing_on_a_universe() {
     // settles. Moving a fixture after the fact moves nothing.
     let mut patch = a_dimmer_patch(1, 1.0);
     let mut fixture = patch.fixtures.remove(0);
-    fixture.address = FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: Some(1) };
+    fixture.address = FixtureAddress::node("1a2b3c", Some(1));
     let patch = Patch::new(vec![fixture], patch.fixture_types.into_values().collect(), vec![]);
     output.send(&patch, &[], 0).await.unwrap();
 

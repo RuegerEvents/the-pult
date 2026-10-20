@@ -30,6 +30,7 @@ pub mod paperwork;
 pub mod xchange;
 pub mod variable;
 pub mod surface;
+pub mod pixels;
 
 pub use fixture::{home_value, home_value_by_key, output_parameters, parameter_key, Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};

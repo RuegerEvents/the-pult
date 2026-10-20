@@ -17,6 +17,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::types::openhaunt::{EffectCapability, NodeDescription};
+use crate::types::pixels::NodePixels;
 
 /// What a node last said about itself on its health topic.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -75,6 +76,23 @@ pub struct DiscoveredDevice {
     /// has the console's clock.
     #[serde(default)]
     pub audio_status: Option<NodeAudioStatus>,
+    /// What the node says about its pixel strips, from the `pixels` object of `/info`.
+    /// None on a node with no strip output. Beside `description` for the reason
+    /// `effects` is.
+    #[serde(default)]
+    pub pixels: Option<NodePixels>,
+    /// The fixture each head other than 0 became, keyed by head. Head 0's is
+    /// `adopted_fixture_id`.
+    #[serde(default)]
+    pub head_fixtures: BTreeMap<u8, Uuid>,
+    /// The scene object each strip head's pixels hang off, keyed by head. Derived ids
+    /// the browser has no way to derive, so the station says them.
+    #[serde(default)]
+    pub strip_objects: BTreeMap<u8, Uuid>,
+    /// What went wrong putting this node into the shape the show says, in words: a
+    /// strip the node refused, a virtual module that wins over its strips.
+    #[serde(default)]
+    pub faults: Vec<String>,
     /// The module switches mains voltage. The panel says so before anything is
     /// adopted, because the consequence of a mistake here is not a dark light.
     pub is_mains: bool,

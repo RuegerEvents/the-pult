@@ -73,6 +73,10 @@ pub enum SelectionTerm {
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     Cone { from: Vec3, direction: Vec3, angle_deg: f32, reach: f32 },
+    /// Everything hung off one object, however deep: a truss and its group handles, or
+    /// the handle a pixel strip's cells hang off. Not geometric, so a fixture hung off
+    /// it that has not been placed yet is still in it.
+    Hanging { object: Uuid },
 }
 
 /// What a clause does to the running set. Read left to right.
@@ -237,6 +241,24 @@ pub fn world_position(
     Some(scene::world_transform(&local, fixture.parent, objects).position)
 }
 
+/// Whether a chain of parents starting at `parent` reaches `object`.
+///
+/// Bounded the way `world_transform` is, so a cycle somebody drew is not a hang.
+pub fn hangs_off(
+    mut parent: Option<Uuid>,
+    object: Uuid,
+    objects: &HashMap<Uuid, &SceneObject>,
+) -> bool {
+    for _ in 0..scene::MAX_DEPTH {
+        let Some(id) = parent else { return false };
+        if id == object {
+            return true;
+        }
+        parent = objects.get(&id).and_then(|o| o.parent);
+    }
+    false
+}
+
 fn matches(
     term: &SelectionTerm,
     fixture: &Fixture,
@@ -249,6 +271,7 @@ fn matches(
         SelectionTerm::Named { text } => {
             return fixture.name.to_lowercase().contains(text.trim().to_lowercase().as_str())
         }
+        SelectionTerm::Hanging { object } => return hangs_off(fixture.parent, *object, objects),
         _ => {}
     }
 

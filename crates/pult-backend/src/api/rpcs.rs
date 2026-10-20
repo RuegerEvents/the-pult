@@ -62,6 +62,11 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         doc: "Forget an adopted device and release its fixture.",
     },
     LocalRpcMeta {
+        method: "device.strip",
+        args_schema: r#"[{"name":"serial","type":"string","optional":false},{"name":"head","type":"number","optional":false},{"name":"mode","type":"'effect' | 'sacn'","optional":true},{"name":"count","type":"number","optional":true},{"name":"order","type":"string","optional":true},{"name":"universe","type":"number","optional":true},{"name":"address","type":"number","optional":true},{"name":"holdMs","type":"number","optional":true},{"name":"pitchM","type":"number","optional":true}]"#,
+        doc: "Patch a node's pixel strip in a mode: `effect`, where the node draws it, or `sacn`, a fixture per pixel the console draws. Anything left out stays. One Ctrl-Z; answers the strip's fixture id.",
+    },
+    LocalRpcMeta {
         method: "session.join",
         args_schema: r#"[{"name":"sessionId","type":"string","optional":false}]"#,
         doc: "Join a discovered session as a follower.",
@@ -414,6 +419,16 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
         "device.forget" => {
             deps.devices.forget(serial()?).await?;
             Ok(Value::Null)
+        }
+        "device.strip" => {
+            let head = args["head"]
+                .as_u64()
+                .and_then(|h| u8::try_from(h).ok())
+                .ok_or_else(|| "missing head".to_string())?;
+            let change: crate::infra::devices::StripChange = serde_json::from_value(args.clone())
+                .map_err(|e| format!("invalid strip: {e}"))?;
+            let id = deps.devices.patch_strip(serial()?, head, change, asking_user(deps)).await?;
+            serde_json::to_value(id).map_err(|e| e.to_string())
         }
         "parameter.value" => {
             let fixture_id: uuid::Uuid = serde_json::from_value(args["fixtureId"].clone())

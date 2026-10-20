@@ -352,7 +352,8 @@ describe('the mode a fixture is patched in', () => {
 			connectors: [],
 			leg_height_m: null,
 			operating_temperature: null,
-			beam_angle_deg: null
+			beam_angle_deg: null,
+			pixel: false
 		},
 		geometry: [],
 		source: 'Manual',

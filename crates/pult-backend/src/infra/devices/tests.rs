@@ -115,6 +115,9 @@ fn firmware(module_type: u16) -> Firmware {
                   "class": "air-quality" },
             ]}),
         ),
+        // The V0 board's own module. Its strips are heads the simulator describes; this
+        // is only the name its TXT record carries.
+        0x0f01 => ("Node V0", 0, serde_json::json!({ "ports": [] })),
         other => panic!("no firmware written for module {other:#06x}"),
     };
     Firmware { name, flags, description }
@@ -449,7 +452,7 @@ async fn adopting_a_node_patches_it_as_a_fixture_of_its_module_s_type() {
     assert_eq!(fixtures[0].id, fixture_id);
     assert_eq!(
         fixtures[0].address,
-        FixtureAddress::OpenHaunt { serial: "1a2b3c".into(), universe: None },
+        FixtureAddress::node("1a2b3c", None),
         "only a gateway carries a universe",
     );
 
@@ -613,7 +616,7 @@ async fn a_universe_is_allocated_to_the_node_that_says_it_forwards_one() {
     let fixtures = h.fixtures().await;
     let universe = |serial: &str| {
         fixtures.iter().find_map(|f| match &f.address {
-            FixtureAddress::OpenHaunt { serial: s, universe } if s == serial => Some(*universe),
+            FixtureAddress::OpenHaunt { serial: s, universe, .. } if s == serial => Some(*universe),
             _ => None,
         })
     };
