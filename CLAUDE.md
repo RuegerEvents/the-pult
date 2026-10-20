@@ -173,16 +173,24 @@ emitter list, each channel of a mode names the one it drives, and `pult_render::
 gets from a color to a level per emitter — compiled twice like the rest of the
 evaluator and held together by `testdata/color-mix.json`.
 
-**A node is a fixture per head, and a strip in `sacn` mode is a fixture per pixel.**
+**A node is a fixture per head, and a strip is one fixture with a cell per pixel.**
 Ports carry a `head`; `NodeDescription::for_head` is what one head says, and head 0 of a
 node without heads hashes byte for byte as it always did (`hashed` in `openhaunt.rs`,
 pinned by a test) or every adopted node would be re-typed. `DeviceManager::retype` is
-what finally makes a `Node` type follow its node. A strip's mode lives on its address
-(`PixelStrip`), the show is the truth and a node running something else is put back.
-Cells are ordinary DMX fixtures hung off the strip's scene object, so spread, the chase
-order and the sACN render needed nothing new; `pixels::plan` is the one place they are
-worked out. A driven number port with its own range is a `PhysicalRange`, and the
-connector sends it in the port's units. See task 74.
+what makes a `Node` type follow its node. A strip's mode lives on its address
+(`PixelStrip`), the show is the truth and a node running something else is put back. In
+`sacn` mode the head's type is `pixels::strip_type` and its bytes go where
+`FixtureAddress::dmx_placement` says — the one question every DMX renderer asks, so a
+strip needs nothing taught. A driven number port with its own range is a
+`PhysicalRange`, and the connector sends it in the port's units. See tasks 74 and 82.
+
+**A cell is part of the kind.** `ParameterKind::Cell { cell, of }`, spelled `ColorRgb@7`:
+everything keyed by a fixture and a kind or key carries cells with no field added, and
+`pult-render` never learned what one is. `FixtureType::cells` and
+`ParameterDefinition::per_cell` say what repeats; `controls()` walks a type's every
+settable key and `parameter_for_key` is **the one way** a key goes back to its parameter
+— never `parameter_key(&p.kind) == key`, which finds nothing for a cell. A GDTF
+geometry reference is a cell. `testdata/cell-keys.json` holds the spelling.
 
 **A `.gdtf` is kept whole and the row is a reading of it.** The archive lives in the
 asset store and `FixtureTypeSource::Gdtf` points at it by sha256, so exporting hands
@@ -606,7 +614,7 @@ and the MVR importer never guesses one: a drawing says what it is with its mesh,
 picking an `f34-2m` because the name said "truss" would put a measurement into
 somebody's rig that nobody measured.
 
-**A showfile is still not a migration target.** `SCHEMA_GENERATION` is 8 and refuses a
+**A showfile is still not a migration target.** `SCHEMA_GENERATION` is 9 and refuses a
 file from another generation by name. Opening also vacuums when more than a quarter of
 the file is free, which is the one moment nothing else is using it.
 
@@ -979,7 +987,8 @@ is the whole cycle rule, plus a cut at `MAX_CHAIN` passes that react to nothing 
 everything an effect is except what the selection decides. **Applying copies**, with
 `EffectSpec::template` recording where from, because a spec's phase came from a
 selection that is gone by the time anybody edits the template. Phases are worked out
-**in the selection's order**, never the patch's. `Shape::Flicker` and
+**in the selection's order**, never the patch's — over its *elements*, so a strip's cells
+each get one, and *each fixture* restarts the spread per fixture. `Shape::Flicker` and
 `Shape::Lightning` read the absolute cycle count and hash it, salted by phase, so they
 never repeat and are still the same number on every runtime. The Effects panel's
 preview asks `effect_values` in the wasm, so it shows what the lamps will do.
@@ -1162,7 +1171,7 @@ each is one Ctrl-Z. Two selections, deliberately separate: a `SelectionQuery` is
 question about the *rig* and `at 50` means the fixtures it answers, so `selectedObjects`
 is its own store and a truss is never in that scope.
 
-`SCHEMA_GENERATION` is 8.
+`SCHEMA_GENERATION` is 9.
 
 ```
 cargo test -p pult-schema                          # the corpora, the glb, the joints
@@ -1334,6 +1343,11 @@ downstage truss" stays true after somebody patches a fifth one. What is selected
 show's, a PERSISTED `groups` row holding the query itself. Recalling one takes on the
 question, so a fixture patched afterwards joins it, and `group 3` in the command line
 leaves exactly what clicking the group leaves.
+
+**And then which cells.** `SelectionQuery::cells` cuts every multi-cell fixture the query
+answers (MA's `.`); `elements()` — in `group.rs` and `selection.ts`, held by the corpus —
+is the ordered `(fixture, cell)` list a selection acts on, and `rowTargets` is where a
+value set on it lands. See task 82.
 
 Which means `SelectionQuery` is evaluated twice — `crates/pult-schema/src/types/group.rs`
 for the station and plugins, `frontend/src/lib/selection.ts` for the browser, because
@@ -1746,7 +1760,7 @@ else on the machine is listening to the same show LAN, so `SO_REUSEADDR` (and
 multicast group is joined *on* an interface as a separate act, and binding a receiver to
 a unicast address is what stops broadcast Art-Net arriving at all.
 
-`SCHEMA_GENERATION` is 8. `FollowMode::Timecode` is gone — a position written on a cue
+`SCHEMA_GENERATION` is 9. `FollowMode::Timecode` is gone — a position written on a cue
 is a clock the cue cannot see, and the same fact as a `timelines` event is a list an
 operator can read and drag.
 

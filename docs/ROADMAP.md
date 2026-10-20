@@ -6932,14 +6932,105 @@ than by reading it:
   the leader by replication on a two-second report. With the zones test in the same
   process it lost that race; it now waits for both. Checked by building both tests into
   one binary and running it four at a time, twenty times.
-- *And a real one, found because the target directory mattered.* `tests/zones.rs` failed
-  nine runs in ten from `target/debug` and never from a fresh target directory. The
-  standing that decides who plays a timeline — and who runs an unowned Art-Net output —
-  was set only by the station reporter, which waits for the machine's first probe, and
-  the first disk enumeration reads the directory the executable sits in. Six hundred
-  thousand files there meant seconds in which a spare that had joined still believed it
-  led, and played beside the leader. The session now tells `Network::set_leader` the
-  moment `is_follower` changes; the reporter still sets the whole standing on its tick.
+
+### 82. A strip is one fixture, and a cell is part of the kind
+
+The user's call (see *UI direction*, U5): a pixel strip is **one** fixture with
+parameters per cell, and a GDTF LED bar is the same thing. Task 74 had made every pixel
+a fixture hung off a scene object — the evaluator untouched, and a 1024-pixel strip a
+thousand rows in the patch, the sheet and the rig.
+
+**A cell is part of the kind, not a new key shape.** `ParameterKind::Cell { cell, of }`,
+spelled `ColorRgb@7` as a key, cells counted from 1. Everything here was already keyed by
+`(fixture, kind)` or `(fixture, key)` — the programmer, captures, presets, `live_fades`,
+`live_effects`, takes, a mode's `parameter_key`, the wire decoder — and every one of them
+carries a cell with no field added and no consumer forked. The precedent was in the enum
+already: `Gobo(2)` is an instance index inside a kind. A structural
+`(fixture, cell, key)` would have changed the shape of all of those, both compilations of
+the evaluator and the track codec, for a number a key can spell. **`pult-render` did not
+change at all** — it never knew what a key meant. What did is the one place a key is read
+back to its parameter, `FixtureType::parameter_for_key` (mirrored in `patch.ts`), and the
+places a kind is *classified* — fade groups, labels, preset tags — which strip the cell
+first. `parameter_key` is mirrored into the plugin SDK whole, so its cell arm spells `@`
+rather than naming `CELL_SEPARATOR`. `testdata/cell-keys.json` holds the spelling between
+the two suites.
+
+**A type says how many cells it has, and each parameter whether it repeats.**
+`FixtureType::cells` (0 is no cells) and `ParameterDefinition::per_cell`; a bar's master
+dimmer is the fixture's and its color is per cell. `FixtureType::controls()` is the
+expanded list — whole parameters once, per-cell ones cell by cell — and is what the
+implicit mode, *home*, *set home*, `parameter.value` and the grab iterate.
+
+**A selection picks fixtures, then cells.** `SelectionQuery::cells`, a list of spans
+(`from > to` runs backwards) applied to every multi-cell fixture the query answers —
+MA's `.`. One list per query, deliberately: a sub-selection is a question about a kind
+of place *on* a fixture, and two strips cut differently are two selections. A fixture
+with no cells is in whole whatever the spans say. `group::elements` and `selection.ts`'s
+`elements` are the ordered `(fixture, cell)` list everything downstream acts on — fixture
+order, then cell order — held together by the new `elements` half of
+`testdata/selection-queries.json`. The Values panel has a *cells* field; the rig picks a
+cell on a click and a run of them on a drag along a strip.
+
+**Setting a parameter lands on targets.** `rowTargets` (programmer.ts): a cell takes a
+per-cell parameter as itself, a multi-cell fixture selected whole takes it on every cell,
+and a whole parameter is set once per fixture however many of its cells are selected.
+`setValueOn` writes them; the Values panel and the Quicksheet use it.
+
+**An effect spreads across elements**, so a chase over two strips and a bar runs along
+all their cells end to end, in selection order. *each fixture* beside it restarts the
+spread per fixture (three strips chasing in step); it is the panel's choice for this
+apply and is not stored on the template. An effect's targets are spelled `fixture@cell`
+(`effectPool.ts`), which splits the way a key does.
+
+**`pixels::plan` is gone, and with it the cells' rows, their scene object, the strip's
+saved group, `FixturePhysical::pixel` and *Select pixels*.** A strip in `sacn` mode is the
+head fixture with `pixels::strip_type` — a color per cell with three or four emitters,
+and a mode whose breaks are the universes the 170/128 spill puts it across, its id
+derived from count, channel count and start address so moving a strip moves its address
+and not its type. `FixtureAddress::dmx_placement` is answered by a DMX fixture and by a
+`sacn` strip alike, and `place_channels` asks it rather than matching on the address, so
+the DMX family renders a strip untaught. `retype` keeps a `sacn` strip on its strip type
+when the node describes itself again. `SCHEMA_GENERATION` is 9.
+
+**A GDTF bar has its cells.** `pult-gdtf`'s resolved channels say which copy of a
+geometry reference they came from (`instance`), and the importer makes an attribute on
+a referenced geometry per cell and names each channel's cell. One reference is a part,
+not a cell: a par that references its single emitter has a color, not "cell 1". In the
+corpus the PixelBar has eight cells and the Aura XIP's backlight nineteen.
+
+**Cost.** Ten 1024-pixel strips with a chase on every pixel: **0.88 ms** median per frame
+(1.6 ms worst) as ten fixtures, against 0.8 ms as ten thousand — the same order, as it
+should be: the same number of `value_at` calls.
+
+**The traps.**
+
+- *A follower played for seconds after joining.* Not this task's, but found by it:
+  `tests/zones.rs` failed nine runs in ten from `target/debug` and never from a fresh
+  target directory. The standing that decides who plays (and who runs an unowned
+  Art-Net output) was set only on the reporter's tick, after the machine's first probe,
+  and that first probe reads the directory the executable sits in. The session now sets
+  `Network::set_leader` the moment `is_follower` changes.
+- *An SVG thumbnail refused the whole GDTF.* The importer preferred `Thumbnail.svg`, the
+  asset store does not take SVG, and the refusal took the import with it — the corpus's
+  PixelBar could not be imported at all. A thumbnail of a kind the store refuses is now
+  skipped; `tests/gdtf_corpus.rs` checks every corpus file plans only what the store takes.
+- *A per-cell parameter with no whole key.* A strip has no "strip color" for a cell to
+  override: `ColorRgb` on a strip type reads back to nothing. Everything that sets a
+  value on a selection had to go through `rowTargets`, including the Quicksheet, which
+  first wrote a key nothing read.
+
+**Not done.** A bar with both a master dimmer and per-cell dimmers on one attribute is
+read as all per-cell, so its master lands on cell 1. A one-color mode of a bar drives
+cell 1's color. The plan view draws a strip as its body only. The command line's grammar
+has no `.` yet. A cue captures cells key by key, so a 1024-pixel strip in a look is a
+thousand captures. Nothing has run on a real strip or bar.
+
+```
+cargo test -p pult-schema --test cell_keys        # the spelling, both sides
+cargo test -p pult-schema --test selection_corpus # elements, both sides
+cargo test -p pult-backend --test gdtf_corpus -- --ignored   # real bars have cells
+cargo test --release -p pult-backend --lib pixel_frame_cost -- --ignored --nocapture
+```
 
 ## What is next
 
@@ -7021,10 +7112,11 @@ and made these calls. Each one is the user's, with the reason given at the time.
 4. **U4, audio zones.** Done as task 81 (2026-10-20): `speaker_zones`, mapped per station
    on the zone row, node speakers as zone members, and Setup → Audio for the card, its
    channel names and the matrix.
-5. **U5, multi-cell fixtures**, with strips moved onto them.
+5. **U5, multi-cell fixtures.** Done as task 82 (2026-10-21): a cell is part of the kind,
+   a strip is one fixture, and a GDTF bar has its cells.
 
-**Questions each step has to answer** (U2's are answered in task 79, U3's in task 80,
-U4's in task 81)
+**Questions each step had to answer** (U2's are answered in task 79, U3's in task 80,
+U4's in task 81, U5's in task 82)
 
 - *U5.* The key: `(fixture, cell, parameter)` everywhere a `(fixture, parameter)` is
   today — `live_fades`, `live_effects`, `programmer_values`, captures, takes, the
@@ -7035,66 +7127,6 @@ U4's in task 81)
   importer collapses those today). What `pixels::plan` becomes, and what a show with
   today's per-pixel fixtures does (`SCHEMA_GENERATION` again). Cost: evaluating per
   cell has to stay inside task 74's 1 ms for ten 1024-pixel strips.
-
-### Multi-cell fixtures (U5): a strip is one fixture
-
-The user's call (see *UI direction*): a pixel strip is **one** fixture with parameters
-per cell, and a GDTF LED bar is the same thing. Task 74 made every pixel its own fixture
-hung off a scene object, which kept the evaluator untouched and made a 1024-pixel strip
-1024 rows in the patch, the sheet and the rig. The questions, answered before building:
-
-- **A cell is part of the kind, not a new key shape.** `ParameterKind::Cell { cell, of }`,
-  spelled `ColorRgb@7` as a key, cells counted from 1. Everything in this console is
-  already keyed by `(fixture, kind)` or `(fixture, key)` — the programmer, captures,
-  presets, `live_fades`, `live_effects`, takes, a mode's `parameter_key`, the wire
-  decoder — and every one of them carries a cell with no field added and no consumer
-  forked. The precedent is in the enum already: `Gobo(2)` is the second gobo wheel, an
-  instance index inside the kind. A structural `(fixture, cell, key)` would have changed
-  the shape of all of those, both compilations of the evaluator and the track codec,
-  for a number a key can spell. `pult-render` does not change at all: it never knew
-  what a key meant. What has to know is the place a key is *read back to its parameter*
-  — `FixtureType::parameter_for_key`, mirrored in `patch.ts` — and the place a kind is
-  *classified* (fade groups, preset tags, labels), which asks the kind's `base()`. The
-  spelling is held by `testdata/cell-keys.json`, read by both suites.
-- **A type says how many cells it has, and each parameter says whether it repeats.**
-  `FixtureType::cells` (0 is a fixture with no cells) and
-  `ParameterDefinition::per_cell`. A bar's master dimmer and strobe are the fixture's;
-  its RGB is per cell. `FixtureType::controls()` is the expanded list — every whole
-  parameter once and every per-cell one once per cell, as kinds — and it is what the
-  implicit mode, the programmer, home and "send it home" iterate. A mode's channel
-  layout already names a key per channel, so a per-cell channel simply names
-  `ColorRgb@7`; GDTF geometry references and their offsets become exactly that.
-- **A selection picks fixtures, and then cells.** `SelectionQuery::cells`, a list of
-  spans applied to every multi-cell fixture the query answers — MA's `.`, so "these
-  three strips, cells 1 to 20" is one query. Empty is the whole fixture. One span list
-  per query rather than per fixture, deliberately: a sub-selection is a question about
-  a *kind of place on* a fixture, and two strips cut differently is two selections.
-  `group::elements()` and `selection.ts`'s `elements()` turn a query's answer into the
-  ordered `(fixture, cell)` list everything downstream acts on — fixture order first,
-  then cell order — held together by new cases in `testdata/selection-queries.json`.
-- **An effect spreads across elements**, so a chase over three strips runs along all
-  their cells end to end, in selection order. The Effects panel offers *each fixture*
-  beside it, which restarts the spread per fixture (three strips chasing in step).
-  The preview draws one cell per element.
-- **Setting a per-cell parameter on a whole multi-cell fixture writes every cell.** A
-  strip has no "whole-strip color" parameter to be overridden per cell; there is one
-  color per cell, and selecting the strip is selecting all of them.
-- **`pixels::plan` goes, with everything it made.** The strip head *is* the fixture: in
-  `sacn` mode its type is a strip type (`pixels::strip_type`, cells = count, one
-  per-cell color with three or four emitters, a mode whose breaks are the universes the
-  170/128 spill puts it across), and in `effect` mode it is the node's head type with
-  the nine ports, as before. The scene object per strip, the cell rows, the strip's
-  saved group, `FixturePhysical::pixel` and *Select pixels* are removed; where a strip
-  is drawn comes from the fixture's own position and the strip's pitch. Its universes
-  come from `FixtureAddress::dmx_placement`, which a DMX fixture and a `sacn` strip
-  both answer, so the DMX family renders a strip with nothing else taught.
-  `SCHEMA_GENERATION` is 9.
-- **The UI.** One row per strip in patch, sheet and Devices; the sheet expands a
-  multi-cell fixture into its cells; the rig draws a strip's cells as one instanced
-  line; the Values panel sets a cell sub-selection like any selection.
-- **Cost.** Ten 1024-pixel strips were 0.8 ms of evaluation as ten thousand fixtures.
-  As ten fixtures of 1024 keys each it is the same number of `value_at` calls; the
-  per-fixture overhead goes away. Measured, not assumed.
 
 ### The order
 

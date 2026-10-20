@@ -12,11 +12,12 @@
 	 * up there and both end in the same buffer.
 	 */
 
-	import type { Fixture, ParameterValue } from '$lib/generated/index.js';
-	import { commonValue, editableParameters } from '$lib/programmer.js';
-	import { formatValue } from '$lib/patch.js';
+	import type { Fixture, ParameterKind, ParameterValue } from '$lib/generated/index.js';
+	import { commonValueOf, editableParameters, rowTargets, type Target } from '$lib/programmer.js';
+	import { formatValue, parameterKey } from '$lib/patch.js';
 	import { collection } from '$lib/stores/show.js';
-	import { byKey, remove, setValue } from '$lib/stores/programmer.js';
+	import { elements } from '$lib/stores/selection.js';
+	import { byKey, remove, setValueOn } from '$lib/stores/programmer.js';
 	import PanTiltPad from './controls/PanTiltPad.svelte';
 	import ValueControl from './controls/ValueControl.svelte';
 	import { output, watching } from '$lib/stores/output.js';
@@ -26,7 +27,16 @@
 	const types = collection('fixture_types');
 
 	const rows = $derived(editableParameters($types, [fixture]));
-	const held = $derived(rows.filter((row) => $byKey.has(`${fixture.id}/${row.key}`)));
+	const type = $derived($types.find((t) => t.id === fixture.fixture_type_id));
+	/// The cells of this fixture the selection holds, or the whole of it.
+	const mine = $derived.by(() => {
+		const own = $elements.filter((e) => e.fixture === fixture.id);
+		return own.length ? own : [{ fixture: fixture.id, cell: null }];
+	});
+	const targetsOf = (kind: ParameterKind): Target[] => rowTargets(kind, mine, () => type);
+	const keyOf = (t: Target) => `${t.fixtureId}/${parameterKey(t.kind)}`;
+	const isHeld = (kind: ParameterKind) => targetsOf(kind).some((t) => $byKey.has(keyOf(t)));
+	const held = $derived(rows.filter((row) => isHeld(row.kind)));
 
 	const panRow = $derived(rows.find((r) => r.kind === 'Pan') ?? null);
 	const tiltRow = $derived(rows.find((r) => r.kind === 'Tilt') ?? null);
@@ -34,31 +44,34 @@
 
 	/// This sheet's own parameters, evaluated every frame for as long as it is open.
 	$effect(() => {
-		const registered = watching(rows.map((row) => `${fixture.id}/${row.key}`));
+		const registered = watching(rows.flatMap((row) => targetsOf(row.kind).map(keyOf)));
 		return () => registered.stop();
 	});
 
-	function valueOf(key: string, fallback: ParameterValue): ParameterValue {
+	function valueOf(kind: ParameterKind, fallback: ParameterValue): ParameterValue {
+		const targets = targetsOf(kind);
+		const first = targets[0];
 		return (
-			$byKey.get(`${fixture.id}/${key}`)?.value ?? $output.value(fixture.id, key) ?? fallback
+			(first && $byKey.get(keyOf(first))?.value) ?? commonValueOf(targets, $output).value ?? fallback
 		);
 	}
 
-	const axis = (row: { key: string; defaultValue: ParameterValue } | null) => {
+	const axis = (row: { kind: ParameterKind; defaultValue: ParameterValue } | null) => {
 		if (!row) return null;
-		const value = valueOf(row.key, row.defaultValue);
+		const value = valueOf(row.kind, row.defaultValue);
 		return value.type === 'Float' ? value.value : null;
 	};
 
 	/// Only this fixture, whatever else is selected: the sheet is about the thing it
-	/// is attached to.
-	const put = (kind: (typeof rows)[number]['kind'], value: ParameterValue) =>
-		setValue([fixture.id], kind, value);
+	/// is attached to — and on a strip, the cells of it that are selected, or all.
+	const put = (kind: ParameterKind, value: ParameterValue) => setValueOn(targetsOf(kind), value);
 
 	async function clearThis() {
 		for (const row of held) {
-			const entry = $byKey.get(`${fixture.id}/${row.key}`);
-			if (entry) await remove(entry.id);
+			for (const target of targetsOf(row.kind)) {
+				const entry = $byKey.get(keyOf(target));
+				if (entry) await remove(entry.id);
+			}
 		}
 	}
 </script>
@@ -83,11 +96,11 @@
 	{/if}
 
 	{#each others as row (row.key)}
-		{@const value = valueOf(row.key, row.defaultValue)}
-		<div class="row" class:held={$byKey.has(`${fixture.id}/${row.key}`)}>
+		{@const value = valueOf(row.kind, row.defaultValue)}
+		<div class="row" class:held={isHeld(row.kind)}>
 			<span class="label">{row.label}</span>
 			<span class="readout mono">
-				{formatValue(commonValue([fixture], row.key, $output).value ?? undefined)}
+				{formatValue(commonValueOf(targetsOf(row.kind), $output).value ?? undefined)}
 			</span>
 			<ValueControl
 				{value}

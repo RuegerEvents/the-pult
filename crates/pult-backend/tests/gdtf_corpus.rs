@@ -51,3 +51,22 @@ fn every_real_file_names_only_keys_it_has() {
         }
     }
 }
+
+/// Every file imports: every asset its plan asks the store to keep is a kind the store
+/// takes. A file whose thumbnail was an SVG used to plan the SVG, which the store
+/// refuses, and the refusal took the whole import with it — the corpus's PixelBar
+/// could not be imported at all.
+#[test]
+#[ignore = "needs testdata/corpus/gdtf"]
+fn every_real_file_plans_only_what_the_store_takes() {
+    for (name, bytes) in corpus() {
+        let (plan, _) = pult_backend::infra::interop::gdtf::plan_import(&bytes, &[])
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        for (mime, _) in &plan.assets {
+            assert!(
+                pult_backend::infra::assets::ceiling_for(mime).is_some(),
+                "{name}: plans a {mime} the store will refuse"
+            );
+        }
+    }
+}

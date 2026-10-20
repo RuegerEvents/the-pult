@@ -90,7 +90,7 @@
 		rayOnPlane,
 		type Ray
 	} from '$lib/puppeteer.js';
-	import { clearSelection, selectCells, selected, select, toggle } from '$lib/stores/selection.js';
+	import { clearSelection, elements, selectCells, selected, select, toggle } from '$lib/stores/selection.js';
 	import {
 		fixtureIsVisible,
 		hiddenLayers,
@@ -504,7 +504,7 @@
 		// Every cell of every multi-cell fixture, one instance each: ten 1024-pixel
 		// strips are one draw call. Grown like the beams and never shrunk.
 		const cellMesh = new THREE.InstancedMesh(
-			new THREE.SphereGeometry(0.012, 8, 6),
+			new THREE.SphereGeometry(0.025, 8, 6),
 			new THREE.MeshBasicMaterial({ color: 0xffffff }),
 			1
 		);
@@ -935,29 +935,37 @@
 			built.cellMesh.instanceMatrix = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 16), 16);
 			built.cellMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 			built.cellMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
-			built.cellPrevious = new Float32Array(capacity * 6).fill(NaN);
+			built.cellPrevious = new Float32Array(capacity * 7).fill(NaN);
 		}
-		if (built.cellPrevious.length < cellCount * 6) built.cellPrevious = new Float32Array(cellCount * 6).fill(NaN);
+		if (built.cellPrevious.length < cellCount * 7) built.cellPrevious = new Float32Array(cellCount * 7).fill(NaN);
 		let cellAt = 0;
 		let cellsChanged = false;
 		built.cellIndex.length = 0;
+		// The cells the selection holds are drawn larger, so a run picked along a strip
+		// can be seen against the rest of it.
+		const picked = new Set(
+			$elements.filter((e) => e.cell !== null).map((e) => `${e.fixture}@${e.cell}`)
+		);
 		for (const beam of list) {
 			if (!beam.cells) continue;
 			beam.cells.at.forEach((point, n) => {
 				built.cellIndex.push({ fixture: beam.fixture.id, cell: n + 1 });
 				const out = beam.cells!.out[n];
 				const glow = out.level * 2.5;
-				const now = [point.x, point.y, point.z, out.r * glow, out.g * glow, out.b * glow];
-				for (let k = 0; k < 6; k++) {
+				const chosen = picked.has(`${beam.fixture.id}@${n + 1}`) ? 1 : 0;
+				const now = [point.x, point.y, point.z, out.r * glow, out.g * glow, out.b * glow, chosen];
+				for (let k = 0; k < 7; k++) {
 					const value = Math.fround(now[k]);
-					if (built.cellPrevious[cellAt * 6 + k] !== value) {
+					if (built.cellPrevious[cellAt * 7 + k] !== value) {
 						cellsChanged = true;
-						built.cellPrevious[cellAt * 6 + k] = value;
+						built.cellPrevious[cellAt * 7 + k] = value;
 					}
 				}
-				scratchMatrix.makeTranslation(point.x, point.y, point.z);
+				scratchMatrix.makeScale(chosen ? 2.2 : 1, chosen ? 2.2 : 1, chosen ? 2.2 : 1);
+				scratchMatrix.setPosition(point.x, point.y, point.z);
 				built.cellMesh.setMatrixAt(cellAt, scratchMatrix);
-				scratchDimmed.setRGB(Math.max(0.04, now[3]), Math.max(0.04, now[4]), Math.max(0.04, now[5]));
+				if (chosen && Math.max(now[3], now[4], now[5]) < 0.2) scratchDimmed.setHex(0x4a9eff);
+				else scratchDimmed.setRGB(Math.max(0.04, now[3]), Math.max(0.04, now[4]), Math.max(0.04, now[5]));
 				built.cellMesh.setColorAt(cellAt, scratchDimmed);
 				cellAt += 1;
 			});

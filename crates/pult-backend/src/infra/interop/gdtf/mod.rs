@@ -121,8 +121,9 @@ pub fn derive_fixture_type_with_thumbnail(
 /// The `Thumbnail` resource, as `(mime, bytes)`.
 ///
 /// GDTF names a thumbnail without an extension and the archive may carry a `.svg`, a
-/// `.png`, or both. The SVG is preferred: a plan head is drawn at whatever scale the
-/// sheet is at, and a 128-pixel PNG blown up to 20 mm of A3 is a smear. Neither is a
+/// `.png`, or both. The SVG would be preferred — a plan head is drawn at whatever scale
+/// the sheet is at, and a 128-pixel PNG blown up to 20 mm of A3 is a smear — where the
+/// asset store takes one, which it does not yet (see below). Neither is a
 /// failure — a type with no thumbnail draws from its geometry, which is what
 /// [`pult_schema::types::fixture::PlanSymbol::Auto`] tries first anyway.
 fn thumbnail(file: &GdtfFile) -> Option<(String, Vec<u8>)> {
@@ -131,6 +132,13 @@ fn thumbnail(file: &GdtfFile) -> Option<(String, Vec<u8>)> {
         return None;
     }
     for (extension, mime) in [("svg", "image/svg+xml"), ("png", "image/png")] {
+        // Only a kind the asset store takes. It does not take SVG — a drawing served
+        // from the console's own origin can carry script — and offering one made the
+        // store refuse it and the whole import with it, so a file whose thumbnail was
+        // an SVG could not be imported at all.
+        if crate::infra::assets::ceiling_for(mime).is_none() {
+            continue;
+        }
         let wanted = format!("{named}.{extension}");
         // Case-insensitively: a file written on Windows and read on Linux is the one
         // case where a resource name and its entry differ by nothing else.
