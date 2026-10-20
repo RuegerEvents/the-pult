@@ -2,26 +2,33 @@
 	/**
 	 * One tile: a strip of tabs and whatever the front one draws.
 	 *
-	 * The `+` menu offers the panels that are not open anywhere, so opening one twice
-	 * is not something the workspace can be talked into — two copies of the 3D rig
-	 * would be two scenes rendering the same room. It also leaves out the ones whose
-	 * home is Setup: those are errands, and the Setup dialog is where they are.
+	 * A tab is its panel's icon and title, and the active one wears its category's
+	 * color along its bottom edge — so a tile reads as "playback" or "stage" before a
+	 * word of it is read.
+	 *
+	 * The `+` opens the picker (`PanelPicker.svelte`). A panel already open somewhere
+	 * is offered there as "go to" rather than as a second copy — two copies of the 3D
+	 * rig would be two scenes rendering the same room.
 	 */
 
 	import type { LayoutNode } from '$lib/generated/index.js';
-	import { panelsIn, type Path } from '$lib/layout.js';
-	import { panelHome, type PanelMeta } from '$lib/layout/panels.js';
+	import { type Path } from '$lib/layout.js';
+	import { categoryColor } from '$lib/layout/categories.js';
+	import { type PanelMeta } from '$lib/layout/panels.js';
 	import {
 		beginTabDrag,
 		closePanel,
 		dragging,
 		maximized,
-		openPanel,
-		tree
+		openPanel
 	} from '$lib/stores/layout.js';
 	import { allPanels } from '$lib/stores/plugins.js';
 	import DropZones from './DropZones.svelte';
-	import EditToggle from './EditToggle.svelte';
+	import PanelPicker from './PanelPicker.svelte';
+	import Maximize2 from '@lucide/svelte/icons/maximize-2';
+	import Minimize2 from '@lucide/svelte/icons/minimize-2';
+	import Plus from '@lucide/svelte/icons/plus';
+	import X from '@lucide/svelte/icons/x';
 
 	let { node, path }: { node: Extract<LayoutNode, { type: 'Tabs' }>; path: Path } = $props();
 
@@ -31,11 +38,6 @@
 	// The merged registry: built-ins plus whatever the station's plugins offer
 	// right now. A panel id nobody recognizes falls through to the message below.
 	const meta: PanelMeta | null = $derived(shown ? ($allPanels[shown] ?? null) : null);
-	const spare = $derived(
-		Object.keys($allPanels).filter(
-			(id) => !panelsIn($tree).includes(id) && panelHome($allPanels[id]) !== 'setup'
-		)
-	);
 	const titleOf = (id: string): string => $allPanels[id]?.title ?? id;
 
 	function show(panel: string) {
@@ -50,6 +52,7 @@
 			{#each node.panels as panel, index (panel)}
 				<button
 					class="tab"
+					style:--cat={categoryColor($allPanels[panel]?.category)}
 					class:on={index === node.active}
 					class:ghost={$dragging?.panel === panel}
 					onpointerdown={(e) => {
@@ -57,7 +60,11 @@
 						beginTabDrag(path, panel, e);
 					}}
 				>
-					{titleOf(panel)}
+					{#if $allPanels[panel]}
+						{@const Icon = $allPanels[panel].icon}
+						<span class="mark" style:color={categoryColor($allPanels[panel].category)}><Icon size={13} /></span>
+					{/if}
+					<span class="title">{titleOf(panel)}</span>
 					<span
 						class="close"
 						role="button"
@@ -67,39 +74,15 @@
 							e.stopPropagation();
 							closePanel(path, panel);
 						}}
-					>✕</span>
+					><X size={11} /></span>
 				</button>
 			{/each}
 		</div>
 
-		<!-- Outside the strip, so many tabs scroll without taking these with them —
-		     and so the menu below is not clipped by the strip's own scrolling. -->
-		<div class="add">
-			<button class="chip" aria-label="Add a panel" onclick={() => (adding = !adding)}>+</button>
-			{#if adding}
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div class="menu" onpointerleave={() => (adding = false)}>
-					{#if spare.length === 0}
-						<span class="none">Every panel is already open.</span>
-					{:else}
-						{#each spare as id (id)}
-							<button
-								onclick={() => {
-									openPanel(path, id);
-									adding = false;
-								}}
-							>{titleOf(id)}</button>
-						{/each}
-					{/if}
-				</div>
-			{/if}
-		</div>
-
-		<!-- Before the maximize chip, so the toggle sits in the same place whether or
-		     not a tile can be maximized, and never moves under a thumb. -->
-		{#if shown && meta?.editable}
-			<EditToggle panel={shown} />
-		{/if}
+		<!-- Outside the strip, so many tabs scroll without taking these with them. -->
+		<button class="chip" aria-label="Add a panel" title="Add a panel" onclick={() => (adding = true)}>
+			<Plus size={14} />
+		</button>
 
 		{#if shown}
 			<button
@@ -107,7 +90,9 @@
 				title={$maximized === shown ? 'Back to the workspace' : 'Fill the workspace'}
 				aria-label="Maximize"
 				onclick={() => maximized.set($maximized === shown ? null : shown)}
-			>{$maximized === shown ? '⤡' : '⤢'}</button>
+			>
+				{#if $maximized === shown}<Minimize2 size={13} />{:else}<Maximize2 size={13} />{/if}
+			</button>
 		{/if}
 	</div>
 
@@ -126,6 +111,10 @@
 		<DropZones {path} />
 	{/if}
 </div>
+
+{#if adding}
+	<PanelPicker {path} onclose={() => (adding = false)} />
+{/if}
 
 <style>
 	.tile {
@@ -172,20 +161,28 @@
 		touch-action: none;
 	}
 	.tab:hover {
-		color: #ddd;
+		color: var(--text);
 	}
 	.tab.on {
 		color: var(--text-bright);
 		background: var(--bg);
-		border-bottom-color: var(--accent-solid);
+		border-bottom-color: var(--cat);
+	}
+	.mark {
+		display: inline-flex;
+		opacity: 0.75;
+	}
+	.tab.on .mark {
+		opacity: 1;
 	}
 	.tab.ghost {
 		opacity: 0.4;
 	}
 
 	.close {
+		display: inline-flex;
 		color: transparent;
-		font-size: 9px;
+		border-radius: 3px;
 		line-height: 1;
 	}
 	.tab:hover .close,
@@ -196,12 +193,9 @@
 		color: var(--bad);
 	}
 
-	.add {
-		position: relative;
-		display: flex;
-	}
-
 	.chip {
+		display: inline-flex;
+		align-items: center;
 		background: none;
 		border: none;
 		color: var(--text-faint);
@@ -213,41 +207,10 @@
 	.chip:hover {
 		color: var(--text-bright);
 	}
-
-	.menu {
-		position: absolute;
-		top: 100%;
-		/* Opening leftwards: the + sits at the right edge of the tile, and a menu
-		   hanging off it would be cut off by the tile next door. */
-		right: 0;
-		z-index: 30;
-		display: flex;
-		flex-direction: column;
-		min-width: 132px;
-		padding: 3px;
-		background: var(--bg-panel);
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius);
-		box-shadow: 0 6px 18px #0008;
-	}
-	.menu button {
-		text-align: left;
-		background: none;
-		border: none;
-		border-radius: 3px;
-		color: var(--text);
-		font: inherit;
-		font-size: var(--font-sm);
-		padding: 4px 8px;
-		cursor: pointer;
-	}
-	.menu button:hover {
-		background: var(--bg-hover);
-	}
-	.none {
-		color: var(--text-faint);
-		font-size: var(--font-xs);
-		padding: 4px 8px;
+	.chip:focus-visible,
+	.tab:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
 	}
 
 	.body {

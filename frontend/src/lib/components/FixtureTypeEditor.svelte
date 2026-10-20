@@ -19,18 +19,17 @@
 		kindOption,
 		PARAMETER_KINDS
 	} from '$lib/patch.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { backendOrigin } from '$lib/ws/endpoint.js';
 	import { userId } from '$lib/stores/user.js';
 
 	const backend = () => backendOrigin(window.location);
 	import ValueControl from './programmer/controls/ValueControl.svelte';
 	import FixtureTypeShare from './FixtureTypeShare.svelte';
+	import Dialog from './Dialog.svelte';
+	import { collection } from '$lib/stores/show.js';
 
 	const data = getDataContext();
-	// The same lock as the fixtures below it: this editor lives in the Patch panel
-	// and changing a type reaches every fixture already patched against it.
-	const unlocked = editing('patch');
 
 	let types = $state<FixtureType[]>([]);
 	/// What the last import said, shown until the next one or until it is dismissed.
@@ -240,6 +239,20 @@
 	}
 
 	onMount(() => data.fixture_types.subscribeDeep((v) => { types = v; }));
+
+	const fixtures = collection('fixtures');
+	/**
+	 * A type nothing is patched from deletes in place, and Ctrl-Z brings it back. One
+	 * the rig uses asks first: every fixture of it loses what its channels mean the
+	 * moment it goes, which is a whole rig going dark from one ×.
+	 */
+	let deleting = $state<FixtureType | null>(null);
+	const usedBy = (type: FixtureType) => $fixtures.filter((f) => f.fixture_type_id === type.id).length;
+
+	function askDelete(type: FixtureType) {
+		if (usedBy(type) === 0) void data.fixture_types.byId(type.id).delete();
+		else deleting = type;
+	}
 </script>
 
 <section class="block">
@@ -249,7 +262,7 @@
 			<button class="tab" class:on={tab === 'types'} onclick={() => (tab = 'types')}>In this show</button>
 			<button class="tab" class:on={tab === 'share'} onclick={() => (tab = 'share')}>From GDTF Share</button>
 		</nav>
-		{#if $unlocked && tab === 'types'}
+		{#if $canEdit && tab === 'types'}
 			<button
 				class="btn btn-ghost"
 				disabled={importing}
@@ -294,7 +307,7 @@
 	{#if tab === 'share'}
 		<FixtureTypeShare />
 	{:else}
-	{#if creating && $unlocked}
+	{#if creating && $canEdit}
 		<form class="new-row" onsubmit={(e) => { e.preventDefault(); createType(); }}>
 			<input class="input" placeholder="Type name, e.g. Source Four" bind:value={newName} use:focusOnMount />
 			<button class="btn btn-primary" type="submit">Create</button>
@@ -325,11 +338,11 @@
 					title="Export {type.name} as GDTF"
 					onclick={() => exportGdtf(type)}
 				>↓</button>
-				{#if $unlocked}
+				{#if $canEdit}
 					<button
 						class="btn btn-danger btn-icon"
 						title="Delete {type.name}"
-						onclick={() => data.fixture_types.byId(type.id).delete()}
+						onclick={() => askDelete(type)}
 					>×</button>
 				{:else}
 					<span></span>
@@ -381,7 +394,7 @@
 							</div>
 						{/if}
 
-						{#if $unlocked}
+						{#if $canEdit}
 								<input
 									class="input"
 									value={type.name}
@@ -393,7 +406,7 @@
 						</label>
 						<label class="field">
 							<span>Manufacturer</span>
-							{#if $unlocked}
+							{#if $canEdit}
 								<input
 									class="input"
 									value={type.manufacturer}
@@ -414,7 +427,7 @@
 									{@const slot = slotOf(type.parameters, i)}
 									<tr>
 										<td class="kind">
-											{#if !$unlocked}
+											{#if !$canEdit}
 												<span class="reading">{kindLabel(param.kind)}</span>
 											{:else}
 												<select
@@ -441,7 +454,7 @@
 											{/if}
 										</td>
 										<td>
-											{#if !$unlocked}
+											{#if !$canEdit}
 												<span class="reading">{param.direction === 'Input' ? 'Read' : 'Driven'}</span>
 											{:else}
 											<select
@@ -458,7 +471,7 @@
 											{/if}
 										</td>
 										<td>
-											{#if !$unlocked}
+											{#if !$canEdit}
 												<span class="reading">{onDmx ? 'DMX' : 'Port'}</span>
 											{:else}
 											<select
@@ -481,7 +494,7 @@
 											     sits belongs to a mode, and a type made here has the implicit
 											     one, which lays its parameters out in the order they are
 											     listed. A port is the operator's to choose. -->
-											{#if !$unlocked || onDmx}
+											{#if !$canEdit || onDmx}
 												<span class="reading">{slot}</span>
 											{:else}
 											<input
@@ -500,7 +513,7 @@
 											<!-- Where this parameter sits before anything drives it. Read by
 											     the output plugins for a fixture that has never been touched,
 											     so a moving head can rest centered rather than hard left. -->
-											{#if $unlocked}
+											{#if $canEdit}
 												<ValueControl
 													value={param.default_value}
 													label="Default"
@@ -511,7 +524,7 @@
 											{/if}
 										</td>
 										<td>
-											{#if $unlocked}
+											{#if $canEdit}
 												<button class="btn btn-danger btn-icon" onclick={() => removeParameter(type, i)}>×</button>
 											{/if}
 										</td>
@@ -519,7 +532,7 @@
 								{/each}
 							</tbody>
 						</table>
-						{#if $unlocked}
+						{#if $canEdit}
 							<button class="btn btn-ghost" onclick={() => addParameter(type)}>+ Parameter</button>
 						{/if}
 					</div>
@@ -530,7 +543,35 @@
 	{/if}
 </section>
 
+{#if deleting}
+	{@const count = usedBy(deleting)}
+	<Dialog title="Delete a fixture type" onclose={() => (deleting = null)}>
+		<p class="ask">
+			<b>{deleting.name}</b> is what {count} patched fixture{count === 1 ? '' : 's'}
+			{count === 1 ? 'is' : 'are'} made of. Deleting it leaves {count === 1 ? 'that fixture' : 'them'}
+			with no idea what {count === 1 ? 'its' : 'their'} channels do, and the rig stops sending
+			to {count === 1 ? 'it' : 'them'}. Ctrl-Z brings it back.
+		</p>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (deleting = null)}>Cancel</button>
+			<button
+				class="btn btn-danger"
+				onclick={() => {
+					const id = deleting!.id;
+					deleting = null;
+					void data.fixture_types.byId(id).delete();
+				}}>Delete it</button
+			>
+		{/snippet}
+	</Dialog>
+{/if}
+
 <style>
+	.ask {
+		padding: 14px;
+		font-size: var(--font-sm);
+		line-height: 1.5;
+	}
 	.tabs { display: flex; gap: 2px; margin-left: auto; }
 	.tab {
 		background: none;
@@ -595,7 +636,7 @@
 	.input.narrow { width: 5rem; }
 	.kind { display: flex; align-items: center; gap: 6px; }
 	.default-cell { min-width: 9rem; }
-	/* What a field shows when the panel is locked: the value, plainly, in the space
-	   the control would have taken, so unlocking does not reflow the table. */
+	/* What a field shows under the Show lock: the value, plainly, in the space the
+	   control would have taken, so locking does not reflow the table. */
 	.reading { color: var(--text); padding: 0 2px; }
 </style>

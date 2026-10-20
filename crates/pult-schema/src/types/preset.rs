@@ -65,6 +65,12 @@ pub struct Preset {
     /// is legal and does nothing — which is what one being built looks like.
     #[pult(lifecycle = PERSISTED)]
     pub values: Vec<PresetValue>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub color: Option<String>,
 }
 
 impl Preset {
@@ -107,6 +113,7 @@ mod tests {
 
     fn preset() -> Preset {
         Preset {
+            color: None,
             id: Uuid::from_u128(1),
             name: "Warm".into(),
             values: vec![
@@ -145,6 +152,7 @@ mod tests {
     #[test]
     fn an_indexed_kind_matches_by_key() {
         let preset = Preset {
+            color: None,
             id: Uuid::from_u128(2),
             name: "Break-up".into(),
             values: vec![PresetValue {

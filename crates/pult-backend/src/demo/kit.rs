@@ -455,7 +455,8 @@ pub async fn a_preset(
     name: &str,
     values: Vec<pult_schema::types::preset::PresetValue>,
 ) -> Result<Uuid> {
-    let preset = pult_schema::types::preset::Preset { id: id(), name: name.into(), values };
+    let preset =
+        pult_schema::types::preset::Preset { id: id(), name: name.into(), values, color: None };
     into.create("presets", &preset).await?;
     Ok(preset.id)
 }

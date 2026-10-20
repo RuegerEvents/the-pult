@@ -23,13 +23,12 @@
 		tidyBpm
 	} from '$lib/speedmasters.js';
 	import { collection } from '$lib/stores/show.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { getDataContext } from '$lib/ws/context.js';
 
 	const data = getDataContext();
 	const masters = collection('speed_masters');
 	const fixtures = collection('fixtures');
-	const unlocked = editing('speedmasters');
 
 	let creating = $state(false);
 	let newName = $state('');
@@ -132,14 +131,14 @@
 <div class="masters">
 	<header class="head">
 		<h2>Speed masters</h2>
-		{#if $unlocked}
+		{#if $canEdit}
 			<button class="btn btn-ghost" onclick={() => (creating = !creating)}>
 				{creating ? 'Cancel' : '+ Master'}
 			</button>
 		{/if}
 	</header>
 
-	{#if creating && $unlocked}
+	{#if creating && $canEdit}
 		<form class="new" onsubmit={(e) => { e.preventDefault(); createMaster(); }}>
 			<input class="input" placeholder="Name, e.g. Chases" bind:value={newName} use:focusOnMount />
 			<button class="btn btn-primary" type="submit">Create</button>
@@ -162,7 +161,7 @@
 				<!-- The dot is the beat, and it is the first thing to look at: an operator
 				     checking a tempo is checking whether this is flashing with the band. -->
 				<span class="beat" class:lit={on} aria-hidden="true"></span>
-				{#if $unlocked}
+				{#if $canEdit}
 					<input
 						class="input name"
 						value={master.name}
@@ -172,7 +171,7 @@
 					<span class="name">{master.name}</span>
 				{/if}
 				<span class="hz">{hz.toFixed(2)} Hz</span>
-				{#if $unlocked}
+				{#if $canEdit}
 					<button
 						class="btn btn-danger btn-icon"
 						title="Delete {master.name}"
@@ -212,7 +211,7 @@
 						<button
 							class="btn"
 							class:on={master.multiplier === m}
-							disabled={!$unlocked}
+							disabled={!$canEdit}
 							onclick={() => data.speed_masters.byId(master.id).multiplier.set(m)}
 						>{m === 1 ? '×1' : `×${m}`}</button>
 					{/each}

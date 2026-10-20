@@ -171,6 +171,12 @@ pub struct Group {
     /// those are worked out on demand, which is the whole point.
     #[pult(lifecycle = PERSISTED)]
     pub query: SelectionQuery,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub color: Option<String>,
 }
 
 // ── Geometry ──────────────────────────────────────────────────────────────────

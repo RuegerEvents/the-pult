@@ -433,6 +433,7 @@ export async function storePreset(name: string, include?: Set<string>): Promise<
 	const preset: Preset = {
 		id: crypto.randomUUID(),
 		name,
+		color: null,
 		values: presetValues(held, chosen)
 	};
 	await showData().presets.create(preset);

@@ -224,6 +224,7 @@ mod tests {
 
         let fixture = Uuid::from_u128(10);
         let preset = Preset {
+            color: None,
             id: Uuid::from_u128(1),
             name: "Warm".into(),
             values: vec![PresetValue {

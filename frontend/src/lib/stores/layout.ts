@@ -13,7 +13,6 @@
  */
 
 import { browser } from '$app/environment';
-import { stopEditing } from './editing.js';
 import { get, writable } from 'svelte/store';
 import type { Layout, LayoutNode } from '$lib/generated/index.js';
 import {
@@ -167,17 +166,7 @@ function firstTile(node: LayoutNode): Path {
 	return path;
 }
 
-/**
- * Close a panel, and lock it again on the way out.
- *
- * Reopening an hour later should start read-only. Without the `stopEditing`, closing
- * the Patch panel mid-edit and opening it again during a show would put an unlocked
- * delete button under a thumb with nothing having said so.
- */
-export const closePanel = (path: Path, panel: string) => {
-	stopEditing(panel);
-	change(removePanel(get(tree), path, panel));
-};
+export const closePanel = (path: Path, panel: string) => change(removePanel(get(tree), path, panel));
 export const dragGutter = (path: Path, gutter: number, delta: number) =>
 	change(resize(get(tree), path, gutter, delta));
 

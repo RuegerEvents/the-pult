@@ -14,6 +14,7 @@
 	import type { DiscoveredDevice, Fixture, PixelStrip, StripMode } from '$lib/generated/index.js';
 	import { stripRows, stripSummary } from '$lib/strips.js';
 
+	/** `unlocked`: the Show lock is off and this node is driven, so the mode may change. */
 	let { device, unlocked }: { device: DiscoveredDevice; unlocked: boolean } = $props();
 
 	const client = getClientContext();

@@ -12,7 +12,7 @@
 	import { calibrationScale, fixturePoint, originForPixel } from '$lib/stage.js';
 	import { at } from '$lib/scene.js';
 	import { collection } from '$lib/stores/show.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { shownPlanId } from '$lib/stores/stage.js';
 	import { selection } from '$lib/stores/selection.js';
 	import StagePlanView from './StagePlanView.svelte';
@@ -26,7 +26,6 @@
 	// Program and Move stay live: placing and aiming a light is what the panel is
 	// for. The lock covers the plan itself — its scale, its origin, its angle, and
 	// whether it is there at all.
-	const unlocked = editing('plan');
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
 
@@ -157,7 +156,7 @@
 			</select>
 		{/if}
 
-		{#if $unlocked}
+		{#if $canEdit}
 			<label class="ghost file">
 				{uploading ? 'Uploading…' : plan ? 'Replace plan' : 'Upload plan'}
 				<input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" onchange={choose} />
@@ -177,7 +176,7 @@
 			{/if}
 		{/if}
 
-		{#if plan && $unlocked}
+		{#if plan && $canEdit}
 			<button
 				class="ghost"
 				class:on={mode === 'scale'}

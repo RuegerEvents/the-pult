@@ -419,8 +419,32 @@ the element with a `pult` property: `call(method, args)` to your plugin,
 `get(path)` and `subscribe(pattern, cb)` to the show.
 `plugins/command-line/assets/panel.js` is the worked example.
 
-Either way the panel appears in every browser's `+` menu as soon as the
-plugin loads, and layouts saved with it open fine on consoles without it.
+Either way the panel appears in every browser's panel picker (the `+` on a
+tile, and ⌘K) as soon as the plugin loads, and layouts saved with it open fine
+on consoles without it.
+
+**An icon and a category**, on either kind, both optional:
+
+```toml
+[[panels]]
+id = "monitor"
+title = "My Monitor"
+element = "my-element"
+script = "panel.js"
+icon = "activity"          # drawn beside the title, on the tab and in the picker
+category = "system"        # which picker column, and which color its tab wears
+```
+
+`category` is one of `program`, `playback`, `automation`, `stage`, `system`,
+`setup`; without one a plugin's panels go under Program. `icon` is a
+[Lucide](https://lucide.dev) name from the short list a console carries —
+`activity`, `audio-waveform`, `bot`, `cable`, `gauge`, `lightbulb`,
+`message-square`, `mic`, `network`, `puzzle`, `scroll-text`,
+`sliders-horizontal`, `sparkles`, `terminal`, `timer`, `wand-sparkles`,
+`workflow` — and anything else draws the puzzle piece every plugin gets by
+default. A list rather than all of Lucide because a built-in panel's icon is
+chosen when the console is built and a plugin's when it loads, and carrying
+every icon by name would put thousands of them into the page.
 
 ## Shipping it: bundles
 

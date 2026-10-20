@@ -11,7 +11,7 @@
 	 * nowhere else: a hidden light still takes a cue and still answers a group.
 	 */
 	import { getDataContext } from '$lib/ws/context.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { collection } from '$lib/stores/show.js';
 	import {
 		hiddenLayers,
@@ -22,7 +22,6 @@
 	} from '$lib/stores/scene.js';
 
 	const data = getDataContext();
-	const unlocked = editing('layers');
 	const fixtures = collection('fixtures');
 
 	const countsFor = (id: string) => ({
@@ -59,9 +58,9 @@
 					<span class="of">
 						{counts.fixtures} fixtures, {counts.objects} objects
 					</span>
-					<!-- Locked is show data, so it is behind the same edit toggle every
-					     other write in the console is behind. -->
-					{#if $unlocked}
+					<!-- Locked is show data, so the Show lock hides it like every other
+					     write in the console. -->
+					{#if $canEdit}
 						<label class="lock">
 							<input
 								type="checkbox"

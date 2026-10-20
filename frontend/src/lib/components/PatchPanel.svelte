@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { focusOnMount } from '$lib/actions.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import PositionEditor from './PositionEditor.svelte';
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
@@ -8,6 +8,7 @@
 	import { output, watching } from '$lib/stores/output.js';
 	import type { Cue, Fixture, FixtureType, ParameterValue } from '$lib/generated/index.js';
 	import HomeValue from './HomeValue.svelte';
+	import Dialog from './Dialog.svelte';
 	import {
 		addressLabel,
 		channelRange,
@@ -26,7 +27,6 @@
 
 	const data = getDataContext();
 	// Selecting is always live; changing the rig is not. See `stores/editing.ts`.
-	const unlocked = editing('patch');
 
 	let fixtures = $state<Fixture[]>([]);
 	let types = $state<FixtureType[]>([]);
@@ -149,19 +149,27 @@
 	/// the universe of the first, one after the other: a starting point somebody can
 	/// correct, rather than a break with nowhere to go, which sends nothing.
 	/**
-	 * Change a fixture's mode, having said what it will cost.
+	 * A change to *where the bytes go*, waiting for Save.
 	 *
-	 * A basic mode has no zoom, and a cue that captured one goes on saying so while
-	 * nothing sends it. Finding that out on stage is the failure this dialog exists
-	 * to prevent — so the parameters this show's cues capture and the new mode does
-	 * not place are named *before* the write, and the operator decides.
+	 * Most of the patch is edited in place — a name, an address, a home value — because
+	 * each is one value and one Ctrl-Z. A mode or a type is not: it moves every channel
+	 * the fixture has, can drop parameters this show's cues capture, and on a DMX line
+	 * means the light does something else the moment it lands. So it is asked as a
+	 * dialog that says what it will cost, and nothing is written until Save.
 	 */
-	async function changeMode(fixture: Fixture, mode: string) {
-		const type = typeOf(fixture);
-		const wanted = type?.dmx_modes.find((m) => m.name === mode);
-		if (!wanted) return;
+	/** The one row's position or home values opened for editing, in place. */
+	let opened = $state<{ id: string; what: 'position' | 'home' } | null>(null);
 
-		const captured = [
+	let pending = $state<{
+		fixture: Fixture;
+		what: 'mode' | 'type';
+		value: string;
+		dropped: string[];
+	} | null>(null);
+
+	/** What this show's cues capture on one fixture, by parameter key. */
+	function capturedOn(fixture: Fixture): string[] {
+		return [
 			...new Set(
 				cues
 					.flatMap((cue) => cue.captures)
@@ -169,17 +177,32 @@
 					.map((capture) => parameterKey(capture.parameter_kind))
 			)
 		];
-		const dropped = droppedByMode(wanted, captured);
-		if (dropped.length > 0) {
-			const list = dropped.join(', ');
-			const ok = window.confirm(
-				`${mode} does not carry ${list}. ` +
-					`${dropped.length === 1 ? 'That parameter is' : 'Those parameters are'} captured in this ` +
-					`show's cues and will stop being sent. Change the mode anyway?`
-			);
-			if (!ok) return;
-		}
-		await setMode(fixture, mode);
+	}
+
+	function askMode(fixture: Fixture, mode: string) {
+		const wanted = typeOf(fixture)?.dmx_modes.find((m) => m.name === mode);
+		if (!wanted) return;
+		pending = { fixture, what: 'mode', value: mode, dropped: droppedByMode(wanted, capturedOn(fixture)) };
+	}
+
+	function askType(fixture: Fixture, typeId: string) {
+		const next = types.find((t) => t.id === typeId);
+		if (!next) return;
+		const keeps = new Set(next.parameters.map((p) => parameterKey(p.kind)));
+		pending = {
+			fixture,
+			what: 'type',
+			value: typeId,
+			dropped: capturedOn(fixture).filter((key) => !keeps.has(key))
+		};
+	}
+
+	async function savePending() {
+		const change = pending;
+		pending = null;
+		if (!change) return;
+		if (change.what === 'mode') await setMode(change.fixture, change.value);
+		else await data.fixtures.byId(change.fixture.id).fixture_type_id.set(change.value);
 	}
 
 	async function setMode(fixture: Fixture, mode: string) {
@@ -219,23 +242,71 @@
 			<!-- Removed from the DOM rather than disabled or dimmed. A control that is
 			     visible but inert invites a second, harder press; one that is not there
 			     says what it means. -->
-			{#if $unlocked}
+			{#if $canEdit}
 				<button class="btn btn-ghost" disabled={types.length === 0} onclick={() => (creating = !creating)}>
 					{creating ? 'Cancel' : '+ Fixture'}
 				</button>
 			{/if}
 		</header>
 
-		{#if creating && $unlocked}
-			<form class="new-row" onsubmit={(e) => { e.preventDefault(); createFixture(); }}>
-				<input class="input" placeholder="Fixture name" bind:value={newName} use:focusOnMount />
-				<select class="select" bind:value={newTypeId}>
-					{#each types as type (type.id)}
-						<option value={type.id}>{type.name}</option>
-					{/each}
-				</select>
-				<button class="btn btn-primary" type="submit">Patch</button>
-			</form>
+		{#if creating && $canEdit}
+			<!-- Patching a light is a dialog: it takes a type and lands on the next free
+			     address, and a half-filled row left in the table would be a fixture
+			     nobody meant to patch yet. -->
+			<Dialog title="Patch a fixture" onclose={() => (creating = false)}>
+				<form class="dialog-form" id="patch-new" onsubmit={(e) => { e.preventDefault(); createFixture(); }}>
+					<label>
+						<span>Name</span>
+						<input class="input" placeholder="e.g. Gate par 1" bind:value={newName} use:focusOnMount />
+					</label>
+					<label>
+						<span>Type</span>
+						<select class="select" bind:value={newTypeId}>
+							{#each types as type (type.id)}
+								<option value={type.id}>{type.name}</option>
+							{/each}
+						</select>
+					</label>
+					<p class="hint">It goes in universe 1 at the next free address; change either in the table.</p>
+				</form>
+				{#snippet footer()}
+					<button class="btn btn-ghost" onclick={() => (creating = false)}>Cancel</button>
+					<button class="btn btn-primary" type="submit" form="patch-new" disabled={!newName.trim()}>Patch</button>
+				{/snippet}
+			</Dialog>
+		{/if}
+
+		{#if pending}
+			{@const type = typeOf(pending.fixture)}
+			<Dialog
+				title={pending.what === 'mode' ? 'Change the mode' : 'Change the fixture type'}
+				onclose={() => (pending = null)}
+			>
+				<div class="dialog-form">
+					<p>
+						<b>{pending.fixture.name}</b>:
+						{#if pending.what === 'mode'}
+							{fixtureMode(pending.fixture.address) ?? DEFAULT_MODE} → <b>{pending.value}</b>
+							{@const wanted = type?.dmx_modes.find((m) => m.name === pending?.value)}
+							{#if wanted}<span class="hint">({wanted.breaks.join('+')} channels)</span>{/if}
+						{:else}
+							{type?.name ?? '—'} → <b>{types.find((t) => t.id === pending?.value)?.name}</b>
+						{/if}
+					</p>
+					<p class="hint">Every channel this fixture sends moves, the moment it is saved.</p>
+					{#if pending.dropped.length > 0}
+						<p class="warn">
+							The new {pending.what} does not carry {pending.dropped.join(', ')}.
+							{pending.dropped.length === 1 ? 'That parameter is' : 'Those are'} captured in this
+							show's cues and will stop being sent.
+						</p>
+					{/if}
+				</div>
+				{#snippet footer()}
+					<button class="btn btn-ghost" onclick={() => (pending = null)}>Cancel</button>
+					<button class="btn btn-primary" onclick={savePending}>Save</button>
+				{/snippet}
+			</Dialog>
 		{/if}
 
 		{#if types.length === 0}
@@ -265,7 +336,7 @@
 								></button>
 							</td>
 							<td>
-								{#if $unlocked}
+								{#if $canEdit}
 									<input
 										class="input"
 										value={fixture.name}
@@ -276,11 +347,15 @@
 								{/if}
 							</td>
 							<td>
-								{#if $unlocked}
+								{#if $canEdit}
 									<select
 										class="select"
 										value={fixture.fixture_type_id}
-										onchange={(e) => data.fixtures.byId(fixture.id).fixture_type_id.set(e.currentTarget.value)}
+										onchange={(e) => {
+											askType(fixture, e.currentTarget.value);
+											// The select goes back until Save says otherwise.
+											e.currentTarget.value = fixture.fixture_type_id;
+										}}
 									>
 										{#each types as t (t.id)}
 											<option value={t.id}>{t.name}</option>
@@ -296,11 +371,14 @@
 									     by the station from its parameters. There is nothing to
 									     pick between, so there is nothing to show. -->
 									<span class="hint">—</span>
-								{:else if $unlocked}
+								{:else if $canEdit}
 									<select
 										class="select"
 										value={fixtureMode(fixture.address) ?? DEFAULT_MODE}
-										onchange={(e) => changeMode(fixture, e.currentTarget.value)}
+										onchange={(e) => {
+											askMode(fixture, e.currentTarget.value);
+											e.currentTarget.value = fixtureMode(fixture.address) ?? DEFAULT_MODE;
+										}}
 									>
 										{#each type.dmx_modes as mode (mode.name)}
 											<option value={mode.name}>
@@ -314,7 +392,7 @@
 							</td>
 							{#if dmx}
 								<td>
-									{#if $unlocked}
+									{#if $canEdit}
 										<input
 											class="input narrow"
 											type="number"
@@ -327,7 +405,7 @@
 									{/if}
 								</td>
 								<td>
-									{#if $unlocked}
+									{#if $canEdit}
 										<input
 											class="input narrow"
 											type="number"
@@ -345,7 +423,7 @@
 										     place, and they need not be in the same universe. -->
 										<span class="brk">
 											break {i + 2}:
-											{#if $unlocked}
+											{#if $canEdit}
 												<input
 													class="input tiny"
 													type="number"
@@ -372,8 +450,8 @@
 								<td colspan="2" class="node-address">{addressLabel(fixture)}</td>
 							{/if}
 
-							<td class="position-cell">
-								{#if $unlocked}
+							<td class="position-cell" class:open={opened?.id === fixture.id && opened.what === 'position'}>
+								{#if $canEdit && opened?.id === fixture.id && opened.what === 'position'}
 									<!-- Dragging in the plan is right for a whole rig at once and
 									     useless for the one light that has to be at exactly 4.2
 									     meters because the drawing says so. -->
@@ -381,11 +459,23 @@
 										position={fixture.position}
 										onchange={(next) => data.fixtures.byId(fixture.id).position.set(next)}
 									/>
-								{:else if fixture.position}
-									{@const p = fixture.position.position}
-									<span class="coords">{p.x.toFixed(1)}, {p.y.toFixed(1)}, {p.z.toFixed(1)}</span>
+									<button class="btn btn-ghost done" onclick={() => (opened = null)}>Done</button>
 								{:else}
-									<span class="hint">not placed</span>
+									<!-- The value is the button: in place, opened by touching it, so the
+									     table reads as a patch and not as a wall of number fields. -->
+									<button
+										class="value"
+										disabled={!$canEdit}
+										title={$canEdit ? 'Edit the position' : undefined}
+										onclick={() => (opened = { id: fixture.id, what: 'position' })}
+									>
+										{#if fixture.position}
+											{@const p = fixture.position.position}
+											<span class="coords">{p.x.toFixed(1)}, {p.y.toFixed(1)}, {p.z.toFixed(1)}</span>
+										{:else}
+											<span class="hint">not placed</span>
+										{/if}
+									</button>
 								{/if}
 							</td>
 							<td class="live">
@@ -404,7 +494,7 @@
 								     type's answer is what the node said about its own port; an
 								     override is this unit's, and is the only place a house light
 								     can say that it comes up rather than going dark. -->
-								{#if type && $unlocked}
+								{#if type && $canEdit && opened?.id === fixture.id && opened.what === 'home'}
 									<!-- How an operator actually sets a house light's: aim it, look
 									     at it, keep it. The station reads its own output, so nothing
 									     here has to know what is on stage. -->
@@ -414,37 +504,44 @@
 										aria-label="Take {fixture.name}'s home values from its output"
 										onclick={() => data.fixtures.takeHome({ fixtureId: fixture.id })}
 									>take</button>
-								{/if}
-								{#if type}
 									{#each type.parameters as param (parameterKey(param.kind))}
 										{@const key = parameterKey(param.kind)}
 										{@const overridden = fixture.home_values[key]}
-										{#if $unlocked}
-											<span class="home-cell" class:overridden={overridden !== undefined}>
-												<HomeValue
-													label={kindLabel(param.kind)}
-													value={overridden ?? param.default_value}
-													onchange={(next) => setHome(fixture, key, next)}
-												/>
-												{#if overridden !== undefined}
-													<button
-														class="clear-home"
-														title="Back to what the type says"
-														aria-label="Clear the home value for {kindLabel(param.kind)}"
-														onclick={() => setHome(fixture, key, null)}
-													>×</button>
-												{/if}
-											</span>
-										{:else}
+										<span class="home-cell" class:overridden={overridden !== undefined}>
+											<HomeValue
+												label={kindLabel(param.kind)}
+												value={overridden ?? param.default_value}
+												onchange={(next) => setHome(fixture, key, next)}
+											/>
+											{#if overridden !== undefined}
+												<button
+													class="clear-home"
+													title="Back to what the type says"
+													aria-label="Clear the home value for {kindLabel(param.kind)}"
+													onclick={() => setHome(fixture, key, null)}
+												>×</button>
+											{/if}
+										</span>
+									{/each}
+									<button class="btn btn-ghost done" onclick={() => (opened = null)}>Done</button>
+								{:else if type}
+									<button
+										class="value"
+										disabled={!$canEdit}
+										title={$canEdit ? 'Edit where it rests' : undefined}
+										onclick={() => (opened = { id: fixture.id, what: 'home' })}
+									>
+										{#each type.parameters as param (parameterKey(param.kind))}
+											{@const overridden = fixture.home_values[parameterKey(param.kind)]}
 											<span class="chip" class:overridden={overridden !== undefined}>
 												{formatValue(overridden ?? param.default_value)}
 											</span>
-										{/if}
-									{/each}
+										{/each}
+									</button>
 								{/if}
 							</td>
 							<td>
-								{#if $unlocked}
+								{#if $canEdit}
 									<button
 										class="btn btn-danger btn-icon"
 										title="Unpatch {fixture.name}"
@@ -464,6 +561,22 @@
 </div>
 
 <style>
+	.dialog-form {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding: 14px;
+		font-size: var(--font-sm);
+	}
+	.dialog-form label {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.dialog-form label span {
+		color: var(--text-dim);
+		font-size: var(--font-xs);
+	}
 	/* Two numbers side by side for a break, in a cell already holding an address. */
 	.brk { display: block; color: #999; font-size: 11px; }
 	.input.tiny { width: 46px; }
@@ -506,16 +619,21 @@
 	.pick { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line-input); background: none; padding: 0; cursor: pointer; display: block; }
 	.pick:hover { border-color: var(--accent); }
 	.pick.on { background: var(--accent); border-color: var(--accent); }
-	.coords { color: #bbb; font-variant-numeric: tabular-nums; }
-	.node-address { color: #bbb; font-family: monospace; font-size: 12px; }
+	.coords { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+	.node-address { color: var(--text-dim); font-family: monospace; font-size: 12px; }
 	.live { display: flex; gap: 3px; flex-wrap: wrap; padding-top: 6px; }
 	.chip { background: #262626; border: 1px solid #333; border-radius: 3px; padding: 1px 6px; font-size: 11px; color: #bbb; font-variant-numeric: tabular-nums; }
-	.hint { color: #777; font-size: 11px; margin-left: 6px; }
-	.new-row { display: flex; gap: 6px; margin-bottom: 8px; }
-	.empty { color: #777; font-size: 13px; padding: 8px 0; }
-	.warn { color: #e08a55; font-size: 12px; margin-top: 8px; }
+	.hint { color: var(--text-faint); font-size: var(--font-xs); margin-left: 6px; }
+	.empty { color: var(--text-faint); font-size: var(--font-sm); padding: 8px 0; }
+	.warn { color: var(--live); font-size: var(--font-sm); margin-top: 8px; }
 	/* Buttons and inputs come from `styles/controls.css` now; `.narrow` is the one
 	   size this table needs that the shared sheet has no opinion about. */
 	.input.narrow { width: 5rem; }
-	.position-cell { min-width: 20rem; }
+	.position-cell { min-width: 9rem; }
+	.position-cell.open { min-width: 20rem; }
+	/* A value that opens its own editor: reads as the value, answers a touch. */
+	.value { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; background: none; border: 1px solid transparent; border-radius: var(--radius); padding: 4px 6px; color: inherit; font: inherit; text-align: left; cursor: pointer; min-height: 32px; }
+	.value:hover:not(:disabled) { border-color: var(--line-strong); background: var(--bg-hover); }
+	.value:disabled { cursor: default; }
+	.done { margin-top: 6px; }
 </style>

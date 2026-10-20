@@ -6567,6 +6567,138 @@ cargo test -p openhaunt-node-sim brokers            # the walk, as the firmware 
 cmake -S test/host -B build/host && ctest --test-dir build/host   # in OpenHaunt/firmware
 ```
 
+### 79. One grammar for every object, and no edit mode
+
+U2 of the UI direction (see *What is next*), built 2026-10-20. The user's calls are
+recorded there; this is what they became, and the six questions that entry asked of U2.
+
+**A panel has a category and an icon.** `PanelMeta` gained `category` (Program,
+Playback, Automation, Stage, System, Setup) and `icon`, a Lucide component (ISC,
+`@lucide/svelte`, imported per icon so the bundle carries only the ones used).
+`editable` is gone. The color is the category's (`--cat-*` in `tokens.css`) and never
+the panel's: six stay readable, thirty-six would be noise. Each reads at 7:1 or better
+against `--bg-chrome`, and `layout/panels.test.ts` checks that from the token file, along
+with every registry entry naming a category and an icon nobody else has — read from
+the source, so the test needs none of the panels' components to load. Program is
+orange, not the console's amber, because amber already means a value the programmer is
+holding. A tab is icon plus title, with the category's color along the active tab's
+edge; the maximized bar and Setup's nav use the same pair.
+
+**A plugin names its icon from a short list.** A manifest's `[[surfaces]]` and
+`[[panels]]` take optional `icon` and `category`. A built-in panel names its icon at
+build time and the bundler keeps exactly those; a plugin names one at run time, and
+reaching every Lucide icon by name would put thousands into the binary that serves the
+page. So `layout/pluginIcons.ts` carries seventeen likely ones, an unknown name draws
+the puzzle piece, and a plugin with no category files under Program.
+
+**The `+` is a picker.** `PanelPicker.svelte`, through `Dialog`: a column per category, a
+search field holding the focus, arrows and Enter. Open panels are listed as "go to"
+rather than hidden, which makes the picker also the way to find a panel buried in a
+tab; Setup errands open Setup at that section. What it offers is `layout/picker.ts`,
+pure and tested.
+
+**⌘K is a palette, and the palette is a registry.** `commands.ts` holds *sources*: a
+function answering what it offers now. The panels, every object of every kind, and the
+console's own verbs (the Show lock, the command line) are three sources; a panel adds
+commands by registering one, and the palette never learns what a panel is. Sources are
+asked each time it opens, so a preset made a second ago is there. Matching is
+`fuzzy.ts`, shared with the picker so the two cannot disagree about whether "rig" finds
+the 3D Rig. **⌘K used to land in the command line.** It opens the palette now, and the
+command line is a palette entry wherever a plugin offers one.
+
+**Objects have one grammar.** `objects.ts` is a registry of *kinds*: how to list a
+kind's rows, what a tap does, its verbs, the component that inspects it. Each kind is
+registered by a `*.kind.ts` file in `lib/kinds/`, which the root imports with a glob,
+so nothing anywhere lists kinds. Registered now: group, preset, effect, surface,
+sequence, cue, timeline, flow and variable. From the registry come:
+
+- `Card.svelte`: name, a left edge in the object's color or its category's, a state
+  line, a progress bar, an optional level a sideways drag sets. Tap acts; ⌘/Ctrl-click
+  or the corner dot makes it the *subject*; right-click or a long-press opens the menu;
+  it drags (as `application/x-pult-object`) unless the Show lock is on. The dot is a
+  finger's and a pen's way to say "inspect" — they have no modifier keys — and shows on
+  hover under a mouse and always on a coarse pointer.
+- `ContextMenu.svelte`: one, at the root, so no tile can clip it and there is never more
+  than one. Acts first, the kind's own verbs next, then Rename, Duplicate, Delete — always
+  last, always in the same place — and a row of swatches for the color.
+- `InspectorPanel.svelte`: what every kind shares (the name in place, the color) above
+  whatever the kind's own inspector adds. Several of one kind: the shared fields edit all
+  of them, as one gesture, and the kind's inspector gets every row. Several kinds: a
+  section each.
+- The subject is **per browser**, a store beside the fixture selection and never the
+  same thing: the fixture selection is a question about the rig, the subject is which
+  pool object is being edited.
+- `color: Option<String>` on groups, presets, effect templates and surfaces — a field,
+  so no generation bump.
+
+Converted to it: the Pools panel (groups and presets), the effect pool, and the list of
+surfaces in the Surfaces panel. **Drag to assign** has its first target: a preset card
+dropped on a cue row writes the preset into that cue *by reference*, one write
+(`presetIntoCue`), keeping each parameter's timing. A surface's own tiles keep their
+big-button look: they are what a phone presses, and a card is a desk's object.
+
+**No edit mode, and one Show lock.** `EditToggle` and `stores/editing.ts` are gone. Every
+panel reads `canEdit` (`stores/showLock.ts`), which is true unless the Show lock is on.
+The lock is a top-bar button, **per browser** in `localStorage`: a SYNCED lock would let
+one tablet lock the desk where somebody is fixing a cue mid-show, and let them unlock
+every tablet by fixing it; a lock is about the hands at this screen. It survives a
+reload, so a tablet locked for the night does not come back unlocked after a cold
+restart. Locked, a console acts — Go, recall, play, a fader, a variable's +1 — and every
+edit handle, structural menu verb and drag is gone. The phone surface was always
+act-only.
+
+**In place, or a dialog: the rule.** *A property is edited where it is shown when it is
+one value and Ctrl-Z can take it back. It asks, with Save and Cancel, when one act moves
+several things at once, or when nothing can take it back.* Applied:
+
+| Property | How |
+|---|---|
+| Names, colors, numbers, home values, positions, fades, variable bounds, cue order | In place. A position and a fixture's home values show as values and open their editors on a touch, so the patch table reads as a patch |
+| Patching a new fixture | Dialog: name and type, then the next free address |
+| A fixture's mode or type | Dialog, saying what moves and which captured parameters stop being sent (it was a `window.confirm`, and only when something dropped) |
+| Deleting a fixture type the rig uses | Dialog, with how many fixtures lose their meaning; unused ones delete in place |
+| Deleting a pool object, a fixture, a cue | In place: one Ctrl-Z |
+| Deleting a scene object with children | Dialog (the existing `DeletePrompt`) |
+| A network service's cable | Dialog: a station preference, so Ctrl-Z cannot reach it, and moving it cuts off whoever used the old cable |
+| Removing a plugin, forgetting what one left | Dialog: the row comes back with Ctrl-Z, its memory on every station does not |
+| Restoring a version | Dialog (as before) |
+| A pixel strip's mode | Its own Apply (as before) |
+| Quick creates that need a name (a sequence, a type, a variable, a master, a surface) | In place |
+
+**Where it stopped.** The Edit-toggle section of CLAUDE.md is replaced by the rule above.
+Panels not converted to cards yet: playback, cues, timelines, variables and flows are
+registered *kinds* (so the palette, the menu and the Inspector reach them) but still draw
+their own rows. Older panels still carry hard-coded hex values outside the chrome this
+touched.
+
+#### The traps
+
+- **`npm i` and the lockfile, again.** Task 72's trap was that Playwright sat in the
+  lockfile and not in `package.json`, so installing anything pruned it. Playwright is in
+  `package.json` now and the trap is gone. The lockfile was still rebuilt by hand with
+  only `@lucide/svelte` added, because npm on macOS also hoists `@emnapi/*` into it,
+  which is the platform difference CI's Linux image was set up to avoid. `npm ci` on
+  macOS refuses the committed lockfile, before this change as after; Linux is the
+  platform it is checked on.
+- **A struct literal with a field added in front.** Adding `color` broke forty-odd Rust
+  literals. A script that patched them by compiler line number misplaced the second fix
+  in any file where it had already inserted a line above it — one landed inside a
+  function body. Patch from the bottom of a file up, or one file at a time.
+- **A long-press ends in a click.** Without swallowing it, holding a preset to reach its
+  menu also applied it. `actions.ts`'s `longPress` eats the click that follows one, and
+  ignores a mouse, which has a right button.
+- **The automation color failed its own test** at 6.94:1, and moved from `#a78bfa` to
+  `#b9a6fc`.
+
+#### What is not done
+
+- Never tried on a real tablet: long-press, the corner dot and drag-to-assign are
+  measured in Chromium with a mouse.
+- The other panels' own rows are not cards yet, and a preset onto a cue is the only drop
+  target.
+- No per-kind field derivation from `EntityMeta`: each kind's inspector is written by
+  hand, and a kind without one gets the name and the color only.
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -6639,25 +6771,15 @@ and made these calls. Each one is the user's, with the reason given at the time.
    ("Strip color", "Color 2"); they are values, not field names, no V0 board has been
    flashed yet, and a node already running older firmware simply keeps saying
    "Strip colour" until it is updated.
-2. **U2, the design foundation**: categories, icons and colors in `PanelMeta`; the
-   picker modal; ⌘K; the card component; the shared context menu; the Inspector panel;
-   no edit mode, with the Show lock.
+2. **U2, the design foundation.** Done as task 79 (2026-10-20): categories, icons and
+   colors in `PanelMeta`; the picker modal; ⌘K; the card component; the shared context
+   menu; the Inspector panel; no edit mode, with the Show lock.
 3. **U3, the timeline**, as option A, its inspector being the Inspector's component.
 4. **U4, audio zones**, plus naming devices and channels per station.
 5. **U5, multi-cell fixtures**, with strips moved onto them.
 
-**Questions each step has to answer**
+**Questions each step has to answer** (U2's are answered in task 79)
 
-- *U2.* What the Inspector shows for a selection of several objects of one kind
-  (common fields, mixed values) and of several kinds. Which store "the subject"
-  lives in, and whether it is per browser (surely) or per tile. How a panel *declares*
-  its objects to the card, the menu and the Inspector without a list somewhere that
-  enumerates them — the `EntityMeta` registry is the obvious source of field types,
-  so most of an inspector can be derived. Which properties get a Save/Cancel dialog;
-  write the rule down, not just the list. What the Show lock locks: edit handles and
-  the context menu's structural verbs, but not acts, and is it SYNCED (every screen
-  of the console) or per browser. What the corner dot is on a pen or a mouse. What
-  becomes of Setup's nav, which today has the panels' only grouping.
 - *U3.* Lane order and whether a user can reorder lanes; how a take's lanes group by
   fixture; zoom and snap on touch; what the left list collapses to on a narrow tile;
   how the beat grid and the detector's proposal draw on the ruler.

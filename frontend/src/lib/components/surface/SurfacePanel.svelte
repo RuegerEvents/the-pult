@@ -2,9 +2,9 @@
 	/**
 	 * Surfaces: the pages a phone runs the show from, made here.
 	 *
-	 * Locked, this is the surface as a phone sees it — pressable, so a desk can run the
-	 * maze too — and the link to open it on one. Unlocked, it is the list of tiles to
-	 * build it out of. A surface is show data and the phone view is
+	 * The surface as a phone sees it — pressable, so a desk can run the maze too — and
+	 * the link to open it on one, beside the list of tiles to build it out of. Under the
+	 * Show lock only the first half is drawn. A surface is show data and the phone view is
 	 * `routes/surface/[[id]]`, which draws the same `SurfaceTiles` with no workspace
 	 * around it.
 	 *
@@ -36,18 +36,18 @@
 	} from '$lib/surface.js';
 	import { displayLabel, parameterKey } from '$lib/patch.js';
 	import { collection } from '$lib/stores/show.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { surfaceShow } from '$lib/stores/surface.js';
 	import { getDataContext, getStationContext } from '$lib/ws/context.js';
 	import SurfaceTiles from './SurfaceTiles.svelte';
+	import Card from '$lib/components/objects/Card.svelte';
 	import QrCode from './QrCode.svelte';
 
 	const data = getDataContext();
 	const station = getStationContext();
 	const surfaces = collection('surfaces');
 	const networks = collection('station_networks');
-	const unlocked = editing('surface');
 
 	let chosen = $state<string | null>(null);
 	let creating = $state(false);
@@ -97,7 +97,7 @@
 		const name = newName.trim();
 		if (!name) return;
 		const id = crypto.randomUUID();
-		await data.surfaces.create({ id, name, tiles: [] });
+		await data.surfaces.create({ id, name, tiles: [], color: null });
 		chosen = id;
 		newName = '';
 		creating = false;
@@ -151,27 +151,21 @@
 
 <div class="surface-panel">
 	<header class="head">
-		{#if $surfaces.length > 0}
-			<select class="input" value={surface?.id ?? ''} onchange={(e) => (chosen = e.currentTarget.value)}>
-				{#each $surfaces as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
-			</select>
-		{:else}
-			<h2>Surfaces</h2>
-		{/if}
+		<h2>Surfaces</h2>
 		<span class="spacer"></span>
 		{#if surface}
 			<button class="btn btn-ghost" onclick={() => (showLink = !showLink)}>
 				{showLink ? 'Hide link' : 'Open on a phone'}
 			</button>
 		{/if}
-		{#if $unlocked}
+		{#if $canEdit}
 			<button class="btn btn-ghost" onclick={() => (creating = !creating)}>
 				{creating ? 'Cancel' : '+ Surface'}
 			</button>
 		{/if}
 	</header>
 
-	{#if creating && $unlocked}
+	{#if creating && $canEdit}
 		<form class="row" onsubmit={(e) => { e.preventDefault(); createSurface(); }}>
 			<input class="input" placeholder="Name, e.g. Maze entrance" bind:value={newName} use:focusOnMount />
 			<button class="btn btn-primary" type="submit">Create</button>
@@ -179,6 +173,23 @@
 	{/if}
 
 	{#if problem}<p class="problem">{problem}</p>{/if}
+
+	{#if $surfaces.length > 0}
+		<!-- The surfaces as cards: a tap shows one here, and the shared menu opens it
+		     full-screen, copies its phone link, renames, paints or deletes it. -->
+		<div class="boards">
+			{#each $surfaces as s (s.id)}
+				<Card
+					ref={{ kind: 'surface', id: s.id }}
+					name={s.name}
+					color={s.color}
+					state="{s.tiles.length} tile{s.tiles.length === 1 ? '' : 's'}"
+					on={surface?.id === s.id}
+					onact={() => (chosen = s.id)}
+				/>
+			{/each}
+		</div>
+	{/if}
 
 	{#if !surface}
 		<p class="empty">
@@ -207,7 +218,7 @@
 		{/if}
 
 		<div class="work">
-			{#if $unlocked}
+			{#if $canEdit}
 				<div class="build">
 					<div class="row">
 						<input
@@ -402,8 +413,8 @@
 				</div>
 			{/if}
 
-			<div class="preview" class:framed={$unlocked}>
-				{#if $unlocked}<p class="hint">As a phone draws it:</p>{/if}
+			<div class="preview" class:framed={$canEdit}>
+				{#if $canEdit}<p class="hint">As a phone draws it:</p>{/if}
 				<SurfaceTiles {surface} show={$surfaceShow} />
 			</div>
 		</div>
@@ -435,4 +446,9 @@
 	.hint { color: #777; font-size: 12px; }
 	.empty { color: #777; font-size: 12px; line-height: 1.4; }
 	.problem { color: #e05555; font-size: 12px; }
+	.boards {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
 </style>

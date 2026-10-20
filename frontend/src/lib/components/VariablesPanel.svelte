@@ -16,13 +16,12 @@
 	import type { Variable, VariableKind } from '$lib/generated/index.js';
 	import { currentValue, variableLabel } from '$lib/flow.js';
 	import { collection } from '$lib/stores/show.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 
 	const data = getDataContext();
 	const client = getClientContext();
 	const variables = collection('variables');
-	const unlocked = editing('variables');
 
 	let creating = $state(false);
 	let newName = $state('');
@@ -66,14 +65,14 @@
 <div class="variables">
 	<header class="head">
 		<h2>Variables</h2>
-		{#if $unlocked}
+		{#if $canEdit}
 			<button class="btn btn-ghost" onclick={() => (creating = !creating)}>
 				{creating ? 'Cancel' : '+ Variable'}
 			</button>
 		{/if}
 	</header>
 
-	{#if creating && $unlocked}
+	{#if creating && $canEdit}
 		<form class="new" onsubmit={(e) => { e.preventDefault(); createVariable(); }}>
 			<input class="input" placeholder="Name, e.g. Area 2 inside" bind:value={newName} use:focusOnMount />
 			<select class="input" bind:value={newKind}>
@@ -97,7 +96,7 @@
 	{#each $variables as variable (variable.id)}
 		<section class="variable" class:on={currentValue(variable) !== 0}>
 			<div class="top">
-				{#if $unlocked}
+				{#if $canEdit}
 					<input
 						class="input name"
 						value={variable.name}
@@ -109,7 +108,7 @@
 				<span class="value" title={variable.value === null ? 'At its initial value' : ''}>
 					{variableLabel(variable)}
 				</span>
-				{#if $unlocked}
+				{#if $canEdit}
 					<button
 						class="btn btn-danger btn-icon"
 						title="Delete {variable.name}"
@@ -142,7 +141,7 @@
 				</button>
 			</div>
 
-			{#if $unlocked}
+			{#if $canEdit}
 				<div class="build">
 					<label>
 						starts at

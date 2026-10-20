@@ -49,6 +49,20 @@
 	--src-track: #4ade80;
 	--src-home: #6b7280;
 
+	/*
+	 * The six panel categories (`layout/categories.ts`). Chosen for a dark ground: each
+	 * reads at better than 7:1 against `--bg-chrome`, so the active tab's edge and the
+	 * picker's column headings are legible at 11px. Program is orange rather than the
+	 * console's amber, because amber already *means* something — a value the
+	 * programmer is holding — and a tab must not look like a live value.
+	 */
+	--cat-program: #fb923c;
+	--cat-playback: #34d399;
+	--cat-automation: #b9a6fc;
+	--cat-stage: #60a5fa;
+	--cat-system: #94a3b8;
+	--cat-setup: #f472b6;
+
 	--radius: 4px;
 	--font-md: 14px;
 	--font-sm: 12px;

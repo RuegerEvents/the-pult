@@ -2217,6 +2217,7 @@ mod presets {
 
     fn a_preset(fixture_id: Uuid, level: f32) -> Preset {
         Preset {
+            color: None,
             id: Uuid::new_v4(),
             name: "Warm".into(),
             values: vec![PresetValue {

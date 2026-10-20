@@ -175,6 +175,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         into.create(
             "groups",
             &Group {
+                color: None,
                 id: id(),
                 name: name.to_string(),
                 query: SelectionQuery {

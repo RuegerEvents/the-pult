@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS cues (
 CREATE TABLE IF NOT EXISTS effect_templates (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
-    "layers" TEXT NOT NULL
+    "layers" TEXT NOT NULL,
+    "color" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fixtures (
@@ -77,7 +78,8 @@ CREATE TABLE IF NOT EXISTS flow_nodes (
 CREATE TABLE IF NOT EXISTS groups (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
-    "query" TEXT NOT NULL
+    "query" TEXT NOT NULL,
+    "color" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS inputs (
@@ -145,7 +147,8 @@ CREATE TABLE IF NOT EXISTS plugin_packages (
 CREATE TABLE IF NOT EXISTS presets (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
-    "values" TEXT NOT NULL
+    "values" TEXT NOT NULL,
+    "color" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS classes (
@@ -222,7 +225,8 @@ CREATE TABLE IF NOT EXISTS stage_plans (
 CREATE TABLE IF NOT EXISTS surfaces (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
-    "tiles" TEXT NOT NULL
+    "tiles" TEXT NOT NULL,
+    "color" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS symbols (

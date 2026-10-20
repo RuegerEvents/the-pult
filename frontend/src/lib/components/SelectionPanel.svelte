@@ -122,7 +122,7 @@
 	async function saveGroup() {
 		const name = groupName.trim();
 		if (!name) return;
-		await data.groups.create({ id: crypto.randomUUID(), name, query: asSavedQuery() });
+		await data.groups.create({ id: crypto.randomUUID(), name, query: asSavedQuery(), color: null });
 		groupName = '';
 		naming = false;
 	}

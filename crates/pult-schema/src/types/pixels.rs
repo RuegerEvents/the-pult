@@ -413,6 +413,7 @@ pub fn plan(head: &Fixture, strip: PixelStrip, cells: &[Fixture]) -> StripPlan {
     let group = sacn.then(|| Group {
         id: strip_group_id(&serial, head_no),
         name: head.name.clone(),
+        color: None,
         query: SelectionQuery {
             clauses: vec![
                 SelectionClause {

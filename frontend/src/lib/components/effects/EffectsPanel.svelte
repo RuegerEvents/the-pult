@@ -2,8 +2,8 @@
 	/**
 	 * Building an effect for the selection: from the pool, by hand, or for a strip.
 	 *
-	 * No Edit toggle: this panel *is* an editor, and everything it applies goes to the
-	 * programmer, which is the scratch buffer. Nothing reaches the show until it is
+	 * This panel *is* an editor, and everything it applies goes to the programmer,
+	 * which is the scratch buffer. Nothing reaches the show until it is
 	 * stored into a cue — except the pool itself, which is show data and changes only
 	 * when somebody presses Store or Update.
 	 *
@@ -50,6 +50,9 @@
 	import { selection } from '$lib/stores/selection.js';
 	import { collection } from '$lib/stores/show.js';
 	import ValueControl from '../programmer/controls/ValueControl.svelte';
+	import Card from '../objects/Card.svelte';
+	import { openTemplate } from '$lib/kinds/effects.kind.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import EffectPreview from './EffectPreview.svelte';
 	import EffectWave from './EffectWave.svelte';
 	import StepGrid from './StepGrid.svelte';
@@ -225,6 +228,14 @@
 		await applyLayers(templateApply(template, order, fixtureById, typeById));
 	}
 
+	// "Open in Effects" from the menu, the Inspector or ⌘K lands here.
+	$effect(() => {
+		const asked = $openTemplate;
+		if (!asked) return;
+		load(asked);
+		openTemplate.set(null);
+	});
+
 	async function store() {
 		const name = naming?.trim();
 		if (!name) return;
@@ -328,7 +339,7 @@
 				/>
 				<button class="btn btn-primary" onclick={store} disabled={!naming?.trim()}>Store</button>
 				<button class="btn btn-ghost" onclick={() => (naming = null)}>Cancel</button>
-			{:else}
+			{:else if $canEdit}
 				<button class="btn" onclick={() => (naming = '')} disabled={layers.length === 0}>Store as new</button>
 				{#if from}
 					<button class="btn" onclick={update}>Update “{from.name}”</button>
@@ -341,19 +352,17 @@
 		{:else}
 			<div class="tiles">
 				{#each $templates as template (template.id)}
-					<div class="tile" class:on={from?.id === template.id}>
-						<button class="tile-load" onclick={() => load(template)} title="Load, to look and change">
-							<span class="tile-name">{template.name}</span>
-							<span class="tile-tags">{tags(template)}</span>
-						</button>
-						<button
-							class="tile-go"
-							onclick={() => applyTemplate(template)}
-							disabled={order.length === 0}
-							aria-label="Apply {template.name} to the selection"
-							title="Apply to the selection"
-						>▶</button>
-					</div>
+					<!-- Tap applies to the selection and loads it here, so what just happened
+					     is what the editor below shows. -->
+					<Card
+						ref={{ kind: 'effect', id: template.id }}
+						name={template.name}
+						color={template.color}
+						state={tags(template)}
+						on={from?.id === template.id}
+						dim={order.length === 0}
+						onact={() => (order.length === 0 ? load(template) : applyTemplate(template))}
+					/>
 				{/each}
 			</div>
 		{/if}
@@ -692,49 +701,6 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
 		gap: 6px;
-	}
-	.tile {
-		display: flex;
-		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		background: var(--bg-raised, var(--bg-sunken));
-		overflow: hidden;
-	}
-	.tile.on {
-		border-color: var(--accent);
-	}
-	.tile-load {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 2px;
-		padding: 8px 10px;
-		min-height: 48px;
-		border: none;
-		background: transparent;
-		color: inherit;
-		text-align: left;
-		cursor: pointer;
-	}
-	.tile-name {
-		font-weight: 600;
-	}
-	.tile-tags {
-		font-size: var(--font-xs);
-		color: var(--text-dim);
-	}
-	.tile-go {
-		width: 34px;
-		border: none;
-		border-left: 1px solid var(--line);
-		background: transparent;
-		color: var(--live);
-		cursor: pointer;
-	}
-	.tile-go:disabled {
-		color: var(--text-dim);
-		cursor: default;
 	}
 	.head {
 		display: flex;

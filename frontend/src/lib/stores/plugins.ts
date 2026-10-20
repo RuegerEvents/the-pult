@@ -16,6 +16,8 @@ import { derived, readable, type Readable } from 'svelte/store';
 
 import type { PluginsState } from '$lib/generated/index.js';
 import { PANELS, type PanelMeta } from '$lib/layout/panels.js';
+import { isCategory } from '$lib/layout/categories.js';
+import { pluginIcon } from '$lib/layout/pluginIcons.js';
 import { showClient } from './show.js';
 
 import BarSurface from '$lib/components/plugins/BarSurface.svelte';
@@ -60,6 +62,10 @@ export const pluginPanels: Readable<Record<string, PanelMeta>> = derived(
 					title: surface.title,
 					component: surface.kind === 'bar' ? BarSurface : ConsoleSurface,
 					fills: true,
+					// A plugin's command line or bar is something somebody programs
+					// through, so it files under Program unless it says otherwise.
+					category: isCategory(surface.category) ? surface.category : 'program',
+					icon: pluginIcon(surface.icon),
 					props: { pluginId: plugin.id, surfaceId: surface.id, status: plugin.status }
 				};
 			}
@@ -68,6 +74,8 @@ export const pluginPanels: Readable<Record<string, PanelMeta>> = derived(
 					title: panel.title,
 					component: WebComponentPanel,
 					fills: panel.fills,
+					category: isCategory(panel.category) ? panel.category : 'program',
+					icon: pluginIcon(panel.icon),
 					props: {
 						pluginId: plugin.id,
 						element: panel.element,

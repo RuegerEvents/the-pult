@@ -192,6 +192,34 @@ const captureKey = (capture: { fixture_id: string; parameter_kind: ParameterKind
 	`${capture.fixture_id}/${parameterKey(capture.parameter_kind)}`;
 
 /**
+ * A preset dropped onto a cue: every value it holds, as a capture that *references*
+ * it — reference first, literal beside it, the rule a stored programmer entry follows.
+ *
+ * A merge: what the cue held for other parameters stays, and a parameter the preset
+ * also holds keeps its timing and easing, so dragging a palette onto a cue changes
+ * what it says and not how it moves. One write of the whole list, so one Ctrl-Z.
+ */
+export function presetIntoCue(existing: ParameterCapture[], preset: Preset): ParameterCapture[] {
+	const before = new Map(existing.map((capture) => [captureKey(capture), capture]));
+	const stored: ParameterCapture[] = preset.values.map((v) => {
+		const kept = before.get(captureKey(v));
+		return {
+			fixture_id: v.fixture_id,
+			parameter_kind: v.parameter_kind,
+			value: v.value,
+			preset: preset.id,
+			fade_in_ms: kept?.fade_in_ms ?? 0,
+			fade_out_ms: kept?.fade_out_ms ?? 0,
+			delay_in_ms: kept?.delay_in_ms ?? 0,
+			effect: null,
+			easing: kept?.easing ?? null
+		};
+	});
+	const taken = new Set(stored.map(captureKey));
+	return [...existing.filter((capture) => !taken.has(captureKey(capture))), ...stored];
+}
+
+/**
  * What a cue's captures become once the programmer is stored into it.
  *
  * *Merge* keeps everything the cue already said and overwrites only the parameters

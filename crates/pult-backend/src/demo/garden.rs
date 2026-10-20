@@ -753,7 +753,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         tile("Garden Go", None, TileSize::Half, TileTarget::SequenceGo { sequence_id: garden }),
         tile("All off", Some(red), TileSize::Half, TileTarget::SequenceOff { sequence_id: garden }),
     ]);
-    into.create("surfaces", &Surface { id: id(), name: "Maze".into(), tiles }).await?;
+    into.create("surfaces", &Surface { id: id(), name: "Maze".into(), tiles, color: None }).await?;
 
     into.describe_the_production(production(
         "Heinz Horror Garten",

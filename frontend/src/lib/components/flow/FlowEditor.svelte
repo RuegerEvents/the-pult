@@ -28,7 +28,7 @@
 	import { canConnect, graphOf, nextNodePosition, nodeTag } from '$lib/flow.js';
 
 	import { setFlowContext } from './context.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import ActionNode from './ActionNode.svelte';
 	import ButtonNode from './ButtonNode.svelte';
 	import ConditionNode from './ConditionNode.svelte';
@@ -51,7 +51,6 @@
 	let selectedId = $state<string | null>(null);
 	// A flow's name is how an operator finds it in a list of twenty, so renaming is
 	// behind the lock along with deleting: both are edits to the show, done rarely.
-	const unlocked = editing('flows');
 	let renaming = $state<string | null>(null);
 	let draftName = $state('');
 
@@ -276,7 +275,7 @@
 			<ul>
 				{#each flows as flow (flow.id)}
 					<li>
-						{#if renaming === flow.id && $unlocked}
+						{#if renaming === flow.id && $canEdit}
 							<form
 								class="rename"
 								onsubmit={(e) => { e.preventDefault(); saveName(flow.id); }}
@@ -294,10 +293,10 @@
 								class="pick"
 								class:current={flow.id === selectedId}
 								class:off={!flow.enabled}
-								title={$unlocked ? 'Click to open, double-click to rename' : undefined}
+								title={$canEdit ? 'Click to open, double-click to rename' : undefined}
 								onclick={() => (selectedId = flow.id)}
 								ondblclick={() => {
-									if (!$unlocked) return;
+									if (!$canEdit) return;
 									renaming = flow.id;
 									draftName = flow.name;
 								}}
@@ -311,7 +310,7 @@
 							checked={flow.enabled}
 							onchange={(e) => data.flows.byId(flow.id).enabled.set(e.currentTarget.checked)}
 						/>
-						{#if $unlocked}
+						{#if $canEdit}
 							<button class="danger" title="Delete flow" onclick={() => deleteFlow(flow)}>×</button>
 						{/if}
 					</li>

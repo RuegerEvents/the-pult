@@ -20,6 +20,7 @@ import {
 	mergePresetValues,
 	nudge,
 	presetGroups,
+	presetIntoCue,
 	presetReach,
 	presetValues,
 	rgbToHex,
@@ -403,6 +404,7 @@ describe('presets', () => {
 	const preset: Preset = {
 		id: 'p1',
 		name: 'Warm',
+		color: null,
 		values: [
 			{ fixture_id: 'f1', parameter_kind: 'Intensity', value: value(0.8) },
 			{ fixture_id: 'f1', parameter_kind: 'Pan', value: value(0.25) },
@@ -497,5 +499,43 @@ describe('presets', () => {
 
 		const [back] = entriesFromCue({ id: 'c', name: 'x', number: 1, captures: [capture], follow_mode: 'Manual', fade_in_ms: 0, fade_out_ms: 0, easing: null, is_active: false });
 		expect(back.preset).toBe('p1');
+	});
+});
+
+describe('a preset dropped onto a cue', () => {
+	const v = (n: number): ParameterValue => ({ type: 'Float', value: n });
+	const preset: Preset = {
+		id: 'warm',
+		name: 'Warm',
+		color: null,
+		values: [
+			{ fixture_id: 'a', parameter_kind: 'Intensity', value: v(0.8) },
+			{ fixture_id: 'b', parameter_kind: 'Intensity', value: v(0.6) }
+		]
+	};
+	const capture = (fixture: string, kind: 'Intensity' | 'Pan', value: number, fade = 0) => ({
+		fixture_id: fixture,
+		parameter_kind: kind,
+		value: v(value),
+		preset: null,
+		fade_in_ms: fade,
+		fade_out_ms: 0,
+		delay_in_ms: 0,
+		effect: null,
+		easing: null
+	});
+
+	it('captures every value by reference, and keeps what the cue said about anything else', () => {
+		const out = presetIntoCue([capture('a', 'Pan', 0.5)], preset);
+		expect(out).toHaveLength(3);
+		expect(out.filter((c) => c.preset === 'warm')).toHaveLength(2);
+		expect(out.find((c) => c.parameter_kind === 'Pan')?.preset).toBeNull();
+	});
+
+	it('changes what a parameter says, not how it moves', () => {
+		const out = presetIntoCue([capture('a', 'Intensity', 0.1, 3000)], preset);
+		const a = out.find((c) => c.fixture_id === 'a')!;
+		expect(a.value).toEqual(v(0.8));
+		expect(a.fade_in_ms).toBe(3000);
 	});
 });

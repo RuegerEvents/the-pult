@@ -864,11 +864,20 @@ a log subscribes while it is mounted, a wire view *is* an `output.watch`. And th
 modals that had each grown their own opinion about Escape and the backdrop are one
 `Dialog.svelte`.
 
-**Setup carries the Edit toggle**, because Setup is chrome. `EditToggle` belongs to the
-tile and not to the panel — it is the same control with the same meaning everywhere, and
-a panel's own buttons are what it must not be mistaken for — so every chrome that renders
-an `editable` panel has to carry one. The maximized view does; the Setup dialog did not,
-which left Plugins and Settings read-only with nothing anywhere to unlock them.
+**There is no edit mode, and one Show lock.** Edit handles live on the object: *a property
+is edited where it is shown when it is one value and Ctrl-Z can take it back, and asks
+with Save and Cancel when one act moves several things or nothing can take it back* —
+a mode change, a new fixture, a network cable, removing a plugin. Every panel reads
+`canEdit` from `stores/showLock.ts`; the lock is a top-bar button, per browser, that
+leaves acts working and hides every edit handle. See task 79 for the table.
+
+**Panels have a category and an icon; objects have one grammar.** `PanelMeta.category`
+is one of six (`layout/categories.ts`), its color is a `--cat-*` token, and `icon` is a
+Lucide component. A pool object is a *kind* registered by a `*.kind.ts` file in
+`lib/kinds/` (imported by glob, so nothing lists them): tap acts, ⌘-click or the corner
+dot makes it the Inspector's subject, right-click or a long-press opens the one
+`ContextMenu`, and ⌘K finds it through the `commands.ts` registry. A new kind needs no
+change to the card, the menu, the Inspector or the palette.
 
 The **`values` panel** is the programmer: it sets fixture parameters into a shared
 SYNCED `programmer_values` buffer that takes priority over playback until the values

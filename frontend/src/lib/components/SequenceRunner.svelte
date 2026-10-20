@@ -3,13 +3,12 @@
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Sequence, Cue } from '$lib/generated/index.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { collection } from '$lib/stores/show.js';
 
 	const data = getDataContext();
 	// GO and reset stay live: they are what a show is run with. What the lock covers
 	// is rewriting the cue list while it is being run from.
-	const unlocked = editing('playback');
 	/** For the running strip: what each station is actually rendering. */
 	const fixtures = collection('fixtures');
 
@@ -94,12 +93,12 @@
 <div class="runner">
 	<div class="runner-header">
 		<h2 class="section-title">Sequences</h2>
-		{#if !creatingSeq && $unlocked}
+		{#if !creatingSeq && $canEdit}
 			<button class="new-btn" onclick={() => (creatingSeq = true)}>+ New</button>
 		{/if}
 	</div>
 
-	{#if creatingSeq && $unlocked}
+	{#if creatingSeq && $canEdit}
 		<form
 			class="new-seq-form"
 			onsubmit={(e) => {
@@ -155,7 +154,7 @@
 								onkeydown={(e) => { if (e.key === 'Escape') editingSeqId = null; }}
 							/>
 						</form>
-					{:else if $unlocked}
+					{:else if $canEdit}
 						<span
 							class="seq-name"
 							title="Click to rename"
@@ -169,7 +168,7 @@
 					{/if}
 					<div class="seq-header-right">
 						<span class="seq-id dim mono">{seq.id.slice(0, 6)}</span>
-						{#if $unlocked}
+						{#if $canEdit}
 							<button
 								class="icon-btn delete-btn"
 								title="Delete sequence"

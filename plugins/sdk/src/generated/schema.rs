@@ -421,6 +421,11 @@ pub struct EffectTemplate {
     pub id: Uuid,
     pub name: String,
     pub layers: Vec<EffectLayer>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 /// One light source in the fixture.
@@ -959,6 +964,11 @@ pub struct Group {
     /// What the group asks of the rig. Not the fixtures it currently picks out —
     /// those are worked out on demand, which is the whole point.
     pub query: SelectionQuery,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 /// What a table's rows are grouped and subtotaled by.
@@ -1803,6 +1813,11 @@ pub struct Preset {
     /// What it says, per fixture and parameter. A preset that names no fixture at all
     /// is legal and does nothing — which is what one being built looks like.
     pub values: Vec<PresetValue>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 /// One parameter of one fixture, as a preset holds it.
@@ -2594,6 +2609,11 @@ pub struct Surface {
     pub name: String,
     /// The tiles, in reading order, as one JSON column.
     pub tiles: Vec<SurfaceTile>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

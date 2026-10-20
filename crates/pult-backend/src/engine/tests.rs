@@ -3241,7 +3241,7 @@ mod groups {
             h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
         }
 
-        let group = Group { id: Uuid::new_v4(), name: "Movers".into(), query: of_type(movers) };
+        let group = Group { id: Uuid::new_v4(), name: "Movers".into(), query: of_type(movers), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
 
         let resolved = rpcs::dispatch(
@@ -3284,7 +3284,7 @@ mod groups {
 
         // Whereas a group whose query currently matches nothing resolves to nothing.
         let empty =
-            Group { id: Uuid::new_v4(), name: "Nothing".into(), query: of_type(Uuid::new_v4()) };
+            Group { id: Uuid::new_v4(), name: "Nothing".into(), query: of_type(Uuid::new_v4()), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&empty)).await.unwrap();
         let resolved =
             rpcs::dispatch("selection.resolve", json!({ "groupId": empty.id }), &deps(&h.engine))
@@ -3303,7 +3303,7 @@ mod groups {
             .set(create_path("fixtures"), Lifecycle::Persisted, json(&at("Spot", 0.0, type_id)))
             .await
             .unwrap();
-        let group = Group { id: Uuid::new_v4(), name: "Spots".into(), query: of_type(type_id) };
+        let group = Group { id: Uuid::new_v4(), name: "Spots".into(), query: of_type(type_id), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
 
         let before = showfile::oplog::len(&h.pool).await.unwrap();
@@ -3346,6 +3346,7 @@ mod groups {
         }
 
         let group = Group {
+            color: None,
             id: Uuid::new_v4(),
             name: "Movers".into(),
             query: SelectionQuery {
@@ -3408,6 +3409,7 @@ mod groups {
         let h = harness().await;
         let user = Uuid::new_v4();
         let group = Group {
+            color: None,
             id: Uuid::new_v4(),
             name: "Specials".into(),
             query: of_type(Uuid::new_v4()),
@@ -3466,7 +3468,7 @@ mod groups {
         for f in [at("B", 1.0, type_id), at("A", -1.0, type_id)] {
             h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&f)).await.unwrap();
         }
-        let group = Group { id: Uuid::new_v4(), name: "All".into(), query: of_type(type_id) };
+        let group = Group { id: Uuid::new_v4(), name: "All".into(), query: of_type(type_id), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
 
         let before =
@@ -4279,6 +4281,7 @@ mod home {
                 .await;
 
         let preset = Preset {
+            color: None,
             id: Uuid::new_v4(),
             name: "Warm".into(),
             values: vec![PresetValue {

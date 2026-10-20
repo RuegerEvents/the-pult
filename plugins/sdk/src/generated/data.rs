@@ -397,6 +397,15 @@ impl EffectTemplateEntity {
     pub fn layers(&self) -> Field<Vec<EffectLayer>> {
         self.at.field("layers")
     }
+
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
+    }
 }
 
 // ── fixtures ────────────────────────────────────────────────────────────
@@ -1482,6 +1491,15 @@ impl GroupEntity {
     /// PERSISTED.
     pub fn query(&self) -> Field<SelectionQuery> {
         self.at.field("query")
+    }
+
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
     }
 }
 
@@ -2703,6 +2721,15 @@ impl PresetEntity {
     /// PERSISTED.
     pub fn values(&self) -> Field<Vec<PresetValue>> {
         self.at.field("values")
+    }
+
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
     }
 }
 
@@ -4670,6 +4697,15 @@ impl SurfaceEntity {
     /// PERSISTED.
     pub fn tiles(&self) -> Field<Vec<SurfaceTile>> {
         self.at.field("tiles")
+    }
+
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
     }
 }
 

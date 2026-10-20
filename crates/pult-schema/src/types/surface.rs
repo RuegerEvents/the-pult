@@ -102,6 +102,12 @@ pub struct Surface {
     /// The tiles, in reading order, as one JSON column.
     #[pult(lifecycle = PERSISTED)]
     pub tiles: Vec<SurfaceTile>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub color: Option<String>,
 }
 
 #[cfg(test)]

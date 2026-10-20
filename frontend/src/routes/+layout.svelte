@@ -17,7 +17,6 @@
 	import { initShowStores } from '$lib/stores/show.js';
 	import { identifyOnConnect } from '$lib/stores/user.js';
 	import { isTextField, redo, shortcutFor, undo } from '$lib/stores/undo.js';
-	import { focusConsole } from '$lib/stores/plugins.js';
 	import { restoreLayout } from '$lib/stores/layout.js';
 	import { reportBrowserErrors } from '$lib/errors.js';
 	import { reportBrowserStats } from '$lib/stats.js';
@@ -34,6 +33,15 @@
 	import UserBar from '$lib/components/UserBar.svelte';
 	import { connection } from '$lib/stores/connection.js';
 	import { isSurfacePath } from '$lib/surface.js';
+	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import ContextMenu from '$lib/components/objects/ContextMenu.svelte';
+	import { registerBuiltInCommands } from '$lib/commands.js';
+	import { showLocked, toggleShowLock } from '$lib/stores/showLock.js';
+	import Lock from '@lucide/svelte/icons/lock';
+	import LockOpen from '@lucide/svelte/icons/lock-open';
+	import Search from '@lucide/svelte/icons/search';
+	// Every object kind registers itself when its module loads; see `$lib/kinds/`.
+	import '$lib/kinds/index.js';
 	import '$lib/styles/tokens.css';
 	import '$lib/styles/controls.css';
 
@@ -78,6 +86,8 @@
 	// Which tiles this browser had up last time. The layouts themselves are the
 	// show's; which one is on screen is this operator's.
 	restoreLayout();
+	// What ⌘K can find: the panels, every object, the console's own verbs.
+	registerBuiltInCommands();
 	// And who this browser is, so its writes can be taken back. Said again on every
 	// reconnect by the client itself — a socket that came back anonymous would keep
 	// working and quietly stop being undoable.
@@ -90,6 +100,9 @@
 	// has the System panel open. A browser worth knowing about is precisely the one
 	// with nobody in front of it, so this cannot be something a panel opts into.
 	reportBrowserStats(client, frameMeter);
+
+	/** Whether the ⌘K palette is open. */
+	let palette = $state(false);
 
 	/** The verbs in the top bar, so the keymap can press the same buttons. */
 	let verbs = $state<ReturnType<typeof Verbs> | null>(null);
@@ -114,12 +127,12 @@
 	 */
 	function onKey(event: KeyboardEvent) {
 		if (chromeless) return;
-		// Ctrl/Cmd+K lands in a command line, wherever one is open. Allowed even
-		// from a text field: the browsers' own use of the key is a search bar,
-		// and stealing it from an input is exactly what an operator mid-rename
-		// pressing it means.
+		// Ctrl/Cmd+K opens the palette — panels, objects, verbs, and the command line
+		// among them. Allowed even from a text field: the browsers' own use of the key
+		// is a search bar, and an operator pressing it mid-rename means the console.
 		if (event.key.toLowerCase() === 'k' && (event.ctrlKey || event.metaKey)) {
-			if (focusConsole()) event.preventDefault();
+			event.preventDefault();
+			if ($station?.show) palette = !palette;
 			return;
 		}
 		// Ctrl/Cmd+S is Save, which on this console means "take a version" — there is
@@ -290,6 +303,24 @@
 				<Verbs bind:this={verbs} />
 			{/if}
 			<span class="spacer"></span>
+			{#if $station?.show}
+				<button class="find" title="Find anything (⌘K)" onclick={() => (palette = true)}>
+					<Search size={14} /><span>Find</span><kbd>⌘K</kbd>
+				</button>
+				<!-- The one lock there is. Off, every edit handle is where its object is;
+				     on, the console still acts and changes nothing. See `stores/showLock.ts`. -->
+				<button
+					class="lock"
+					class:on={$showLocked}
+					aria-pressed={$showLocked}
+					title={$showLocked
+						? 'Show lock is on: acts work, nothing can be edited. Click to unlock.'
+						: 'Lock the show: hide every edit handle on this screen'}
+					onclick={toggleShowLock}
+				>
+					{#if $showLocked}<Lock size={14} /><span>Show locked</span>{:else}<LockOpen size={14} /><span>Lock</span>{/if}
+				</button>
+			{/if}
 			<UserBar />
 			<ConnectionStatus {connected} />
 		</header>
@@ -314,6 +345,13 @@
 {/if}
 
 <Toasts />
+
+<!-- One context menu for every object, at the root so no tile can clip it. -->
+<ContextMenu />
+
+{#if palette}
+	<CommandPalette onclose={() => (palette = false)} />
+{/if}
 
 <!-- Everything that is done once, over the workspace rather than inside it. At the
      root because it is a mode of the whole window, and because the menu that opens
@@ -343,8 +381,8 @@
 	}
 
 	:global(body) {
-		background: #1a1a1a;
-		color: #e0e0e0;
+		background: var(--bg);
+		color: var(--text);
 		font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
 		font-size: 14px;
 	}
@@ -360,9 +398,9 @@
 		align-items: center;
 		gap: 16px;
 		padding: 0 16px;
-		height: 40px;
-		background: #111;
-		border-bottom: 1px solid #333;
+		height: 44px;
+		background: var(--bg-chrome);
+		border-bottom: 1px solid var(--line-strong);
 		flex-shrink: 0;
 	}
 
@@ -370,10 +408,45 @@
 		flex: 1;
 	}
 
+	.find,
+	.lock {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		height: 28px;
+		padding: 0 10px;
+		background: var(--bg-raised);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius);
+		color: var(--text-dim);
+		font: inherit;
+		font-size: var(--font-sm);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.find:hover,
+	.lock:hover {
+		color: var(--text-bright);
+		border-color: var(--line-input);
+	}
+	.find kbd {
+		font: inherit;
+		font-size: 10px;
+		color: var(--text-faint);
+		border: 1px solid var(--line-strong);
+		border-radius: 3px;
+		padding: 0 4px;
+	}
+	.lock.on {
+		color: var(--live);
+		border-color: var(--live);
+		background: color-mix(in srgb, var(--live) 12%, transparent);
+	}
+
 	.setup-btn {
 		background: none;
 		border: none;
-		color: var(--text-dim, #888);
+		color: var(--text-dim);
 		font: inherit;
 		font-size: var(--font-sm, 12px);
 		font-weight: 600;
@@ -383,17 +456,17 @@
 	}
 	.setup-btn:hover,
 	.setup-btn.on {
-		color: var(--text-bright, #fff);
+		color: var(--text-bright);
 	}
 	.caret {
 		margin-left: 5px;
-		color: var(--text-faint, #555);
+		color: var(--text-faint);
 	}
 
 	.brand {
 		font-weight: 600;
 		letter-spacing: 0.05em;
-		color: #fff;
+		color: var(--text-bright);
 		white-space: nowrap;
 	}
 
@@ -402,7 +475,7 @@
 		font-weight: 400;
 		font-size: 0.7rem;
 		letter-spacing: 0;
-		color: #666;
+		color: var(--text-faint);
 	}
 
 	main {

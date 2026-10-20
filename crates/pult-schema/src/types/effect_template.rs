@@ -71,6 +71,12 @@ pub struct EffectTemplate {
     pub name: String,
     #[pult(lifecycle = PERSISTED)]
     pub layers: Vec<EffectLayer>,
+    /// The card's color, as `#rrggbb`, or `None` for its panel category's color.
+    /// What an operator paints a pool object to find it again; it means nothing to
+    /// the rig.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub color: Option<String>,
 }
 
 impl EffectTemplate {
@@ -79,6 +85,7 @@ impl EffectTemplate {
             id: Uuid::new_v5(&NAMESPACE, name.as_bytes()),
             name: name.to_string(),
             layers,
+            color: None,
         }
     }
 }

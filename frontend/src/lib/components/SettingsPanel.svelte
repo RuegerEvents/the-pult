@@ -19,12 +19,11 @@
 	import { CURVE_LABELS, CURVES } from '$lib/fade.js';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { readPreferences, writePreferences, type Preferences } from '$lib/preferences.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { getClientContext } from '$lib/ws/context.js';
 
 	const data = getDataContext();
 	const client = getClientContext();
-	const unlocked = editing('settings');
 
 	let show = $state<Show | null>(null);
 	let prefs = $state<Preferences | null>(null);
@@ -210,7 +209,7 @@
 		{:else}
 			<div class="row">
 				<label for="show-history">History kept</label>
-				{#if $unlocked}
+				{#if $canEdit}
 					<input
 						id="show-history"
 						class="input"
@@ -234,7 +233,7 @@
 
 			<div class="row">
 				<label for="show-home-fade">Letting go takes</label>
-				{#if $unlocked}
+				{#if $canEdit}
 					<input
 						id="show-home-fade"
 						class="input"
@@ -259,7 +258,7 @@
 
 			<div class="row">
 				<label for="show-haze">Haze</label>
-				{#if $unlocked}
+				{#if $canEdit}
 					<input
 						id="show-haze"
 						class="input"
@@ -278,7 +277,7 @@
 
 			<div class="row">
 				<label for="show-haze-turbulence">Haze moves</label>
-				{#if $unlocked}
+				{#if $canEdit}
 					<input
 						id="show-haze-turbulence"
 						class="input"
@@ -301,7 +300,7 @@
 					{#each GROUPS as group (group.key)}
 						<label class="curve">
 							<span>{group.label}</span>
-							{#if $unlocked}
+							{#if $canEdit}
 								<select
 									class="input"
 									value={show.fade_curves[group.key]}
@@ -351,7 +350,7 @@
 		{:else}
 			<div class="row">
 				<label for="new-history">New shows keep</label>
-				{#if $unlocked}
+				{#if $canEdit}
 					<input
 						id="new-history"
 						class="input"
@@ -369,7 +368,7 @@
 			</div>
 			<div class="row">
 				<label for="new-home-fade">New shows let go in</label>
-				{#if $unlocked}
+				{#if $canEdit}
 					<input
 						id="new-home-fade"
 						class="input"
@@ -387,7 +386,7 @@
 			</div>
 			<div class="row">
 				<label for="audio-out">Plays audio through</label>
-				{#if $unlocked}
+				{#if $canEdit}
 					<select
 						id="audio-out"
 						class="input wide"
@@ -418,7 +417,7 @@
 			</div>
 			<div class="row">
 				<label for="audio-in">Hears timecode on</label>
-				{#if $unlocked}
+				{#if $canEdit}
 					<select
 						id="audio-in"
 						class="input wide"
@@ -453,7 +452,7 @@
 					{#each GROUPS as group (group.key)}
 						<label class="curve">
 							<span>{group.label}</span>
-							{#if $unlocked}
+							{#if $canEdit}
 								<select
 									class="input"
 									value={prefs.fadeCurves[group.key]}

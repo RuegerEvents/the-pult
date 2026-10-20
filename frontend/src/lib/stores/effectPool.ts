@@ -33,7 +33,7 @@ export async function applyLayers(applies: LayerApply[]): Promise<number> {
 
 /** Keep what is being built as a new pool entry. */
 export async function storeTemplate(name: string, layers: EffectLayer[]): Promise<EffectTemplate> {
-	const template: EffectTemplate = { id: crypto.randomUUID(), name, layers };
+	const template: EffectTemplate = { id: crypto.randomUUID(), name, layers, color: null };
 	await showData().effect_templates.create(template);
 	return template;
 }

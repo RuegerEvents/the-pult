@@ -3,7 +3,7 @@
 	import { getClientContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
 	import { select, selected, toggle } from '$lib/stores/selection.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import OutputGaps from './OutputGaps.svelte';
 	import StripPatch from './StripPatch.svelte';
 	import { bytesText } from '$lib/destination.js';
@@ -13,7 +13,6 @@
 
 	// Find and Select stay live: neither changes the show. Adopt patches a fixture
 	// and Forget unpatches one, which is what the lock is for.
-	const unlocked = editing('devices');
 
 	let devices = $state<DevicesState>({ discovered: {}, broker_addr: null, active: false });
 	let busy = $state<string | null>(null);
@@ -162,7 +161,7 @@
 							>
 								Select
 							</button>
-							{#if $unlocked}
+							{#if $canEdit}
 								<button
 									class="chip-btn"
 									disabled={busy === device.serial || !devices.active}
@@ -171,7 +170,7 @@
 									Forget
 								</button>
 							{/if}
-						{:else if $unlocked}
+						{:else if $canEdit}
 							<button
 								class="chip-btn adopt"
 								disabled={busy === device.serial || !devices.active || !ports(device)}
@@ -192,7 +191,7 @@
 					</div>
 
 					{#if device.adopted_fixture_id}
-						<StripPatch {device} unlocked={$unlocked && devices.active} />
+						<StripPatch {device} unlocked={$canEdit && devices.active} />
 					{/if}
 
 					{#if open.has(device.serial)}

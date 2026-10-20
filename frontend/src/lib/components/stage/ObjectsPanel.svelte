@@ -20,7 +20,7 @@
 	 */
 	import type { SceneObject } from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
-	import { editing } from '$lib/stores/editing.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 	import { piece } from '$lib/stock.js';
 	import { clearSelection } from '$lib/stores/selection.js';
 	import { collection } from '$lib/stores/show.js';
@@ -35,7 +35,6 @@
 	} from '$lib/stores/scene.js';
 
 	const data = getDataContext();
-	const unlocked = editing('objects');
 	const fixtures = collection('fixtures');
 
 	/** The drawing as a tree, flattened depth-first with the depth kept. */
@@ -126,11 +125,11 @@
 					{#if lights > 0}
 						<span class="of">{lights} {lights === 1 ? 'light' : 'lights'}</span>
 					{/if}
-					<!-- Lock is show data, so it is behind the same edit toggle every other
-					     write in the console is behind. A locked piece keeps its gizmo away
+					<!-- Lock is show data, so the Show lock hides it like every other write
+					     in the console. A locked piece keeps its gizmo away
 					     and stays selectable: a piece you cannot pick is a piece whose name
 					     and layer you cannot read. -->
-					{#if $unlocked}
+					{#if $canEdit}
 						<label class="lock">
 							<input
 								type="checkbox"

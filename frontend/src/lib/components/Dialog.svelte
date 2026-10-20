@@ -32,7 +32,7 @@
 		children: Snippet;
 		/**
 		 * Controls that belong to the dialog's own chrome rather than to its content —
-		 * an Edit toggle, say. Beside the title, where a tile puts the same thing.
+		 * a search field, say. Beside the title, where a tile puts its own chips.
 		 */
 		actions?: Snippet;
 		/** The row of answers, if there is one. */
