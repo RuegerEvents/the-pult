@@ -172,6 +172,10 @@ describe('a fader in its own unit', () => {
 	it('reads a parameter with no range as a percent, as before', () => {
 		expect(physicalReadout(0.5, null)).toEqual({ short: '50', text: '50%' });
 	});
+	it('reads a GDTF dimmer, whose percent is 0 to 1, as a percent', () => {
+		expect(physicalReadout(0.5, { from: 0, to: 1, unit: 'Percent' })).toEqual({ short: '50', text: '50%' });
+		expect(physicalReadout(0.25, { from: -1, to: 1, unit: 'Percent' }).text).toBe('-50%');
+	});
 	it('reads a pan in whole degrees', () => {
 		expect(physicalReadout(0.5, { from: -270, to: 270, unit: 'Degrees' }).short).toBe('0°');
 	});

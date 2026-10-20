@@ -7150,6 +7150,14 @@ under them. A second finger turns a pending touch or a band into a pinch (the ba
 dropped and the selection it was changing put back); a finger already dragging a clip
 keeps dragging it. `timeline/pinch.ts` is the arithmetic, tested; `Lanes.svelte` routes.
 
+**Three small things the screenshots found.** A GDTF states a dimmer's Percent as 0 to 1
+— every file in the corpus does — and task 75's unit readout printed a bar's master at
+half as "0.50%"; a percent range inside ±1 now reads as a fraction. The Programmer's *In
+programmer* list labeled two cells of one bar "Intensity, Intensity" because it used the
+round-trip label rather than `displayLabel`, which says "Intensity 2". And Focus framed a
+strip as the point at its origin, so a run of cells along it ran out of the side of the
+picture; it now takes in the cells as drawn.
+
 ```
 cd plugins && cargo test -p command-line-core           # the grammar
 cargo test -p pult-schema --test cell_targets_corpus    # where a value lands, both sides

@@ -1542,7 +1542,20 @@
 		const from = new THREE.Vector3();
 		built.camera.getWorldPosition(from);
 		// The selection and nothing else: no pieces of the drawing, and no floor.
-		const box = rigBounds(chosen, $objectsById, { pieces: [], margin: 0.6, toFloor: false });
+		const box = { ...rigBounds(chosen, $objectsById, { pieces: [], margin: 0.6, toFloor: false }) };
+		// A strip or a bar is as long as its cells, not a point at its origin: framed as
+		// one, a selection along a strip ran out of the side of the picture. The cells
+		// the selection holds, or every cell of a fixture selected whole, as drawn.
+		const picked = new Set($elements.filter((e) => e.cell !== null).map((e) => `${e.fixture}@${e.cell}`));
+		const at = new THREE.Vector3();
+		built.cellIndex.forEach((cell, i) => {
+			if (!$selected.has(cell.fixture)) return;
+			if (picked.size && !picked.has(`${cell.fixture}@${cell.cell}`)) return;
+			built.cellMesh.getMatrixAt(i, scratchMatrix);
+			at.setFromMatrixPosition(scratchMatrix);
+			box.min = { x: Math.min(box.min.x, at.x - 0.6), y: Math.min(box.min.y, at.y - 0.6), z: Math.min(box.min.z, at.z - 0.6) };
+			box.max = { x: Math.max(box.max.x, at.x + 0.6), y: Math.max(box.max.y, at.y + 0.6), z: Math.max(box.max.z, at.z + 0.6) };
+		});
 		take(focusShot(box, from, aspect()));
 	}
 

@@ -81,6 +81,17 @@
 	);
 	const matrixCard = $derived(atHome ? cardName : (targetRow?.device ?? null));
 	const matrixCount = $derived(atHome ? channelCount : Math.min(64, targetRow?.channels || 2));
+	/**
+	 * A station as the picker names it: its hostname, and its card's alias beside it
+	 * where two machines share a hostname — two MacBooks both called "MacBook-Pro" are
+	 * the ordinary case, and a picker of two identical words is no picker.
+	 */
+	const stationLabel = (s: { id: string; name: string }) => {
+		const shared = $stationNames.filter((o) => o.name === s.name).length > 1;
+		if (!shared) return s.name;
+		const alias = $stationAudio.find((r) => r.id === s.id)?.alias;
+		return `${s.name} · ${alias || s.id.slice(0, 8)}`;
+	};
 	const matrixChannels = $derived.by(() => {
 		const mapped = target ? $zones.flatMap((z) => z.channels[target] ?? []) : [];
 		const last = Math.min(64, Math.max(matrixCount, ...mapped));
@@ -277,7 +288,7 @@
 					<div class="segmented" role="group" aria-label="Whose channels">
 						{#each $stationNames as s (s.id)}
 							<button type="button" class:on={target === s.id} onclick={() => (mapFor = s.id)}
-								>{s.id === here ? `${s.name} (here)` : s.name}</button
+								>{stationLabel(s)}{s.id === here ? ' (here)' : ''}</button
 							>
 						{/each}
 					</div>

@@ -15,7 +15,7 @@
 
 	import type { EffectSpec, ParameterKind, ParameterValue } from '$lib/generated/index.js';
 	import { commonValueOf, editableParameters, rowTargets, type Target } from '$lib/programmer.js';
-	import { formatValue, kindLabel, modeHas, modeOf, parameterKey } from '$lib/patch.js';
+	import { displayLabel, formatValue, modeHas, modeOf, parameterKey } from '$lib/patch.js';
 	import { cellSpansText, parseCellSpans } from '$lib/selection.js';
 	import { collection } from '$lib/stores/show.js';
 	import { elements, hasCellsSelected, query, selection, setCells, targetElements } from '$lib/stores/selection.js';
@@ -223,7 +223,7 @@
 					<span class="label">
 						{row.label}
 						{#if row.mixed}<span class="mixed" title="Not every selected fixture has this">mixed</span>{/if}
-						{#if $hasCellsSelected && wholeForCells(row.kind)}
+						{#if ($query.cells ?? []).length > 0 && wholeForCells(row.kind)}
 							<!-- Cells are cut, but the mode has one of these for the whole
 							     fixture (a bar's one-color mode): the value goes there. -->
 							<span class="mixed" title="This fixture's mode has one of these for the whole fixture, not one per cell"
@@ -279,7 +279,7 @@
 						<span class="fixture">{group.fixture.name}</span>
 						{#each group.held as entry (entry.id)}
 							<div class="entry" class:locked={entry.locked}>
-								<span class="param">{kindLabel(entry.parameter_kind)}</span>
+								<span class="param">{displayLabel(entry.parameter_kind)}</span>
 								{#if entry.effect}
 									<!-- The value under an effect is only where it falls back to, so
 									     showing it would be showing a number the light is not at.
@@ -321,7 +321,7 @@
 								<button
 									class="icon drop"
 									title="Give this parameter back to playback"
-									aria-label="Remove {kindLabel(entry.parameter_kind)}"
+									aria-label="Remove {displayLabel(entry.parameter_kind)}"
 									onclick={() => remove(entry.id)}
 								>
 									✕

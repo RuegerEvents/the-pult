@@ -24,10 +24,16 @@ export function physicalReadout(
 	normalized: number,
 	range: PhysicalRange | null | undefined
 ): { short: string; text: string } {
-	if (!range || range.unit === 'Percent' && range.from === 0 && range.to === 100) {
+	// A GDTF says a dimmer's Percent as 0 to 1 — every file in the corpus does — so a
+	// percent range inside ±1 is a fraction and reads ×100, or a master at half reads
+	// "0.50%". Either spelling of 0..100% reads as the plain percent every fader shows.
+	const fraction = range?.unit === 'Percent' && Math.max(Math.abs(range.from), Math.abs(range.to)) <= 1;
+	const scaled = range && fraction ? { ...range, from: range.from * 100, to: range.to * 100 } : range;
+	if (!scaled || (scaled.unit === 'Percent' && scaled.from === 0 && scaled.to === 100)) {
 		const percent = `${Math.round(normalized * 100)}`;
 		return { short: percent, text: `${percent}%` };
 	}
+	range = scaled;
 	const value = range.from + (range.to - range.from) * normalized;
 	const span = Math.abs(range.to - range.from);
 	// As many places as the span needs to move in hundredths of its travel.
