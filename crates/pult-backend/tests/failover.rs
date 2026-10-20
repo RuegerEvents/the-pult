@@ -246,9 +246,14 @@ async fn the_spare_carries_on_when_the_leader_dies_mid_scare() {
                 .unwrap_or_default()
         }
     };
+    // Each station writes its own row on its own two-second report, and the spare's
+    // reaches the leader by replication: waited for, not read once and assumed.
+    eventually("both stations say where their door is", Duration::from_secs(10), || async {
+        !station_broker(&leader).await.is_empty() && !station_broker(&spare).await.is_empty()
+    })
+    .await;
     let leader_door = station_broker(&leader).await;
     let spare_door = station_broker(&spare).await;
-    assert!(!leader_door.is_empty() && !spare_door.is_empty(), "both stations say where their door is");
     eventually("the node is on the leader, and knows the spare", Duration::from_secs(20), || {
         let snapshot = area1_node.snapshot.clone();
         let (leader_door, spare_door) = (leader_door.clone(), spare_door.clone());

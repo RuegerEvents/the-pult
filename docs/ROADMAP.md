@@ -6911,6 +6911,28 @@ browser cannot name another machine's channels, since the names live in that mac
 preferences. No per-zone level or EQ. A clip cannot go to two zones; a zone with two
 speakers' worth of channels can. Nothing has been played through Dante itself.
 
+**Addendum (2026-10-21): the flakes task 81 could not rule itself out of.** Four races,
+none of them task 81's, each found by running the binary several times at once rather
+than by reading it:
+
+- *Every simulated loudspeaker listened on 5004*, the firmware's port, so the first
+  simulator on a machine heard every other node's stream — `a_stream_mode_clip_reaches_
+  the_node_as_rtp` failed five runs in ten at that load, and the garden's five sims were
+  the same bug outside a test. A node may now name its port in `info.audio.stream.port`
+  (OpenHaunt doc 13, optional, absent is 5004); the simulator claims a free one, and the
+  console sends `start` to whatever the node named.
+- *The console subscribed to its four topic shapes in four packets*, so a node could be
+  heard online (its retained status had landed) while its input edges were not yet being
+  listened for, and a non-retained edge was lost. One `SUBSCRIBE` now carries all four,
+  and the broker tests' node waits until it is heard before it says anything.
+- *A test slept 160 ms and read the node's output twice*; on a loaded machine the node's
+  first sample came later than that and the test read `None` twice. It now waits for a
+  first sample and then for a different one.
+- *The failover test read both stations' broker doors once*, but the spare's row reaches
+  the leader by replication on a two-second report. With the zones test in the same
+  process it lost that race; it now waits for both. Checked by building both tests into
+  one binary and running it four at a time, twenty times.
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

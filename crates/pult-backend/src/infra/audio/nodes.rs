@@ -659,7 +659,8 @@ impl AudioManager {
                 continue;
             }
             let Ok(ip) = entry.ip.parse::<std::net::IpAddr>() else { continue };
-            let address = SocketAddr::new(ip, STREAM_PORT);
+            let port = audio.stream.as_ref().and_then(|s| s.port).unwrap_or(STREAM_PORT);
+            let address = SocketAddr::new(ip, port);
             let channels = audio.channels() as usize;
             let rate = audio.rate.max(8_000);
 
@@ -943,7 +944,7 @@ fn stream(
             serial.clone(),
             "stream",
             serde_json::json!({
-                "op": "start", "port": STREAM_PORT, "rate": rate, "channels": channels,
+                "op": "start", "port": address.port(), "rate": rate, "channels": channels,
                 "ssrc": ssrc, "ts": session.ts, "at": session.at, "gain": 1.0,
             }),
         );

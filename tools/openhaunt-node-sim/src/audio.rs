@@ -31,6 +31,21 @@ pub fn default_description() -> Value {
     })
 }
 
+/// Gives a loudspeaker that names no stream port one of its own. Every real node has
+/// its own address and can listen on 5004; several simulators on one machine cannot,
+/// and the one that got there first would hear every other node's stream. So a
+/// simulator says which port it took, in `stream.port`, and the console sends there.
+pub fn claim_stream_port(audio: &mut Option<Value>) {
+    let Some(stream) = audio.as_mut().and_then(|a| a.get_mut("stream")) else { return };
+    if stream.get("port").is_some() {
+        return;
+    }
+    let free = std::net::UdpSocket::bind(("0.0.0.0", 0)).and_then(|s| s.local_addr()).map(|a| a.port());
+    if let (Ok(port), Some(object)) = (free, stream.as_object_mut()) {
+        object.insert("port".into(), json!(port));
+    }
+}
+
 #[derive(Default)]
 pub struct Audio {
     clips: Mutex<BTreeMap<String, Vec<u8>>>,

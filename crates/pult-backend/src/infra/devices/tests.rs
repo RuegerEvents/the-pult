@@ -771,7 +771,20 @@ async fn a_node_on_the_broker(h: &Harness, serial: &str) -> AsyncClient {
         .publish(format!("openhaunt/{serial}/status"), QoS::AtLeastOnce, true, "online")
         .await
         .unwrap();
+    // The console has heard it, so it is subscribed to everything else the node will
+    // say: one SUBSCRIBE covers every shape. Publishing an edge before this is a race
+    // with the console's own subscription, and a non-retained edge would be lost.
+    let serial = serial.to_string();
+    eventually("the console to hear the node", || {
+        let serial = serial.clone();
+        async move { heard(h, &serial).await }
+    })
+    .await;
     client
+}
+
+async fn heard(h: &Harness, serial: &str) -> bool {
+    h.directory.borrow().entries.get(serial).is_some_and(|e| e.on_broker)
 }
 
 pub(super) async fn eventually<F, Fut>(what: &str, mut check: F)

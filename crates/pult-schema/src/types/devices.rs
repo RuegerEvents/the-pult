@@ -144,6 +144,10 @@ pub struct NodeClipBudget {
 pub struct NodeStreamCaps {
     pub payload: String,
     pub max_buffer_ms: u32,
+    /// The UDP port the node listens on for the stream. Absent is 5004; a node that
+    /// shares an address with others (a simulator) names its own.
+    #[serde(default)]
+    pub port: Option<u16>,
 }
 
 impl NodeAudio {

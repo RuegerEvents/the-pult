@@ -821,7 +821,8 @@ async fn run_renderer(node: Node) {
 }
 
 pub async fn start(config: SimConfig) -> Result<SimHandle> {
-    let SimConfig { node: node_config, sacn_port } = config;
+    let SimConfig { node: mut node_config, sacn_port } = config;
+    audio::claim_stream_port(&mut node_config.audio);
     let node_config = Arc::new(node_config);
 
     let (config_tx, received_config) = watch::channel(None);

@@ -396,14 +396,22 @@ async fn a_node_that_can_trace_a_shape_is_left_to_get_on_with_it() {
     let summary = sim.snapshot.borrow().effects["1"]["summary"].as_str().unwrap().to_string();
     assert!(summary.contains("sine"), "and it knows what it is tracing: {summary}");
 
-    // And now it moves without being told again. Nothing is sent in this window.
+    // And now it moves without being told again: `send` is not called in this window,
+    // so every change the node shows is one it made itself. Waited for, never slept
+    // for: a loaded machine runs the node's tick late, and a fixed window read two
+    // `None`s before the first sample had been drawn.
+    eventually("the node to draw its first sample", || {
+        let watching = watching.clone();
+        async move { watching.borrow().outputs.contains_key("1") }
+    })
+    .await;
     let first = sim.snapshot.borrow().outputs.get("1").cloned();
-    tokio::time::sleep(std::time::Duration::from_millis(160)).await;
-    let second = sim.snapshot.borrow().outputs.get("1").cloned();
-    assert!(
-        first != second,
-        "the node should have moved on its own: {first:?} then {second:?}",
-    );
+    eventually("the node to move on its own", || {
+        let watching = watching.clone();
+        let first = first.clone();
+        async move { watching.borrow().outputs.get("1").cloned() != first }
+    })
+    .await;
 
     // Taking the shape away stops it, and the console follows with a value.
     let mut settled = patch.fixtures.clone();

@@ -176,10 +176,13 @@ impl MqttLink {
         let (stop, mut stopped) = tokio::sync::oneshot::channel();
 
         tokio::spawn(async move {
-            for topic in SUBSCRIPTIONS {
-                if let Err(e) = subscriber.subscribe(*topic, QoS::AtLeastOnce).await {
-                    warn!("[devices] cannot subscribe to {topic}: {e}");
-                }
+            // One SUBSCRIBE for every shape, so the broker grants them together: a
+            // node seen online (its retained status arrived) is a node whose input
+            // edges are already being listened for. Four packets left a window in
+            // which a status had landed and an edge was dropped on the floor.
+            let filters = SUBSCRIPTIONS.iter().map(|t| rumqttc::SubscribeFilter::new(t.to_string(), QoS::AtLeastOnce));
+            if let Err(e) = subscriber.subscribe_many(filters).await {
+                warn!("[devices] cannot subscribe: {e}");
             }
             loop {
                 let event = tokio::select! {
