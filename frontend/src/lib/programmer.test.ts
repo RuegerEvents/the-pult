@@ -606,6 +606,7 @@ describe('the cell-targets corpus', () => {
 	) as {
 		types: Record<string, Spec>;
 		fixtures: Record<string, string>;
+		reaches?: Record<string, string[]>;
 		cases: { name: string; kind: ParameterKind; elements: Element[]; expected: string[] }[];
 	};
 	const types = Object.fromEntries(
@@ -623,7 +624,8 @@ describe('the cell-targets corpus', () => {
 	const typeOf = (id: string) => types[corpus.fixtures[id]];
 	for (const c of corpus.cases) {
 		it(c.name, () => {
-			const got = rowTargets(c.kind, c.elements, typeOf).map((t) => `${t.fixtureId}/${parameterKey(t.kind)}`);
+			const reaches = (id: string, key: string) => corpus.reaches?.[id]?.includes(key) ?? true;
+			const got = rowTargets(c.kind, c.elements, typeOf, reaches).map((t) => `${t.fixtureId}/${parameterKey(t.kind)}`);
 			expect(got).toEqual(c.expected);
 		});
 	}

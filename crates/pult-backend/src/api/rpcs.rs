@@ -1260,7 +1260,17 @@ async fn selection_targets(
             type_of_fixture.get(id).filter(|t| t.has_cells()).map_or(0, |t| t.cells)
         })
     };
-    let landed = targets(kind, &picked, |id| type_of_fixture.get(id).copied());
+    let address: std::collections::HashMap<uuid::Uuid, &pult_schema::types::fixture::FixtureAddress> =
+        fixtures.iter().map(|f| (f.id, &f.address)).collect();
+    let landed = targets(
+        kind,
+        &picked,
+        |id| type_of_fixture.get(id).copied(),
+        |id, key| match (type_of_fixture.get(id), address.get(id)) {
+            (Some(fixture_type), Some(address)) => fixture_type.reaches(address, key),
+            _ => true,
+        },
+    );
     serde_json::to_value(landed).map_err(|e| e.to_string())
 }
 

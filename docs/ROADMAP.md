@@ -7019,9 +7019,9 @@ should be: the same number of `value_at` calls.
   value on a selection had to go through `rowTargets`, including the Quicksheet, which
   first wrote a key nothing read.
 
-**Not done.** A bar with both a master dimmer and per-cell dimmers on one attribute is
+**Not done.** ~~A bar with both a master dimmer and per-cell dimmers on one attribute is
 read as all per-cell, so its master lands on cell 1. A one-color mode of a bar drives
-cell 1's color. The plan view draws a strip as its body only. ~~The command line's grammar
+cell 1's color.~~ Both fixed in task 83. The plan view draws a strip as its body only. ~~The command line's grammar
 has no `.` yet.~~ It has, since task 83. A cue captures cells key by key, so a 1024-pixel strip in a look is a
 thousand captures. Nothing has run on a real strip or bar.
 
@@ -7067,9 +7067,34 @@ it broke the group test the moment the rule moved.
 `cd plugins && cargo test` builds the grammar core only, and the component is built by
 `scripts/build-plugins.sh`, which nothing had run since.
 
+**A bar's master, and a bar's one-color mode.** One GDTF attribute can be reached two
+ways: on the bar (a master dimmer, or the RGB of a one-color mode) and on each cell. The
+importer now declares the kind once per way — a whole definition and a per-cell one, told
+apart by `per_cell`, which `parameter_for_key` already read keys against — and a channel on
+no reference carries the whole key. So the master is `Intensity` beside `Intensity@1..n`,
+and the one-color mode's channels are `ColorRgb` and `Intensity`, not cell 1's.
+
+*The rule for setting one, decided:* the **mode** decides, because a kind declared both ways
+means two modes, or a master beside its cells, and only the patch knows which. A fixture
+selected whole takes the whole key where its mode carries it (the master, the one color),
+and every cell otherwise. A cell takes its own key where its mode carries it, and the
+whole key otherwise: in a one-color mode the bar has no cells, its one color is all there
+is, and setting "cell 3 red" there can only mean the bar — the Programmer says *whole
+fixture* beside the row so nobody is surprised. The alternative, letting a per-cell value
+silently not reach the output, was rejected: a fader that does nothing is the failure this
+console already refuses everywhere else. `targets` and `rowTargets` take a `reaches`
+callback (`FixtureType::reaches`, `modeOf`/`modeHas`), and the corpus says which keys each
+fixture's mode carries. `testdata/gdtf/mastered-bar` is a three-cell bar with a master and
+a one-color mode, so this is tested with no corpus downloaded; the PixelBar, the Aura XIP
+and the MVR round trip still hold.
+
+*Trap:* two definitions of one kind made the Programmer count a bar twice — `editableParameters`
+keyed rows per definition — so a kind declared twice is one row, reachable if either way is.
+
 ```
 cd plugins && cargo test -p command-line-core           # the grammar
 cargo test -p pult-schema --test cell_targets_corpus    # where a value lands, both sides
+cargo test -p pult-backend --lib interop::gdtf          # a master, cells, a one-color mode
 scripts/build-plugins.sh --debug && cargo test -p pult-backend --test plugins
 ```
 

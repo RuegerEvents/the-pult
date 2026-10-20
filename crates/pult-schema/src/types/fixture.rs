@@ -740,6 +740,20 @@ impl FixtureType {
         self.parameter_for_key(&parameter_key(kind))
     }
 
+    /// Whether the mode a unit at this address is patched in carries this key: the
+    /// named mode, or the first where the name is not one of this type's, and every
+    /// key for a type with no written modes. `patch.ts`'s `modeOf` and `modeHas` are
+    /// the browser's half.
+    pub fn reaches(&self, address: &FixtureAddress, key: &str) -> bool {
+        if self.dmx_modes.is_empty() {
+            return true;
+        }
+        let named = address.mode().and_then(|name| self.dmx_modes.iter().find(|m| m.name == name));
+        named
+            .or_else(|| self.dmx_modes.first())
+            .is_some_and(|mode| mode.channels.iter().any(|c| c.parameter_key == key))
+    }
+
     /// Whether this type has cells, and so per-cell parameters to expand.
     pub fn has_cells(&self) -> bool {
         self.cells > 0 && self.parameters.iter().any(|p| p.per_cell)

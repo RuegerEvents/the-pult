@@ -300,6 +300,53 @@ fn a_multi_cell_bar_has_a_cell_per_referenced_pixel() {
     }
 }
 
+/// A master dimmer on the bar and a dimmer on each cell are two parameters of one kind,
+/// and a one-color mode's RGB is the whole bar's rather than cell 1's.
+#[test]
+fn a_bar_has_a_master_beside_its_cells_and_a_one_color_mode_is_the_whole_bar() {
+    let (fixture_type, warnings) = derive("mastered-bar");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(fixture_type.cells, 3);
+
+    let declared: Vec<(String, bool)> = fixture_type
+        .parameters
+        .iter()
+        .map(|p| (parameter_key(&p.kind), p.per_cell))
+        .collect();
+    for wanted in [("Intensity", false), ("Intensity", true), ("ColorRgb", false), ("ColorRgb", true)] {
+        assert!(
+            declared.contains(&(wanted.0.to_string(), wanted.1)),
+            "{wanted:?} is declared: {declared:?}"
+        );
+    }
+
+    let keys = |mode: &str| -> std::collections::BTreeSet<String> {
+        fixture_type.mode(mode).channels.iter().map(|c| c.parameter_key.clone()).collect()
+    };
+    let pixel = keys("Pixel");
+    assert!(pixel.contains("Intensity"), "the master is the bar's: {pixel:?}");
+    for cell in 1..=3 {
+        assert!(pixel.contains(&format!("Intensity@{cell}")), "{pixel:?}");
+        assert!(pixel.contains(&format!("ColorRgb@{cell}")), "{pixel:?}");
+    }
+    assert!(!pixel.contains("ColorRgb"), "the pixel mode has no whole-bar color: {pixel:?}");
+    assert_eq!(
+        keys("Single").into_iter().collect::<Vec<_>>(),
+        ["ColorRgb", "Intensity"],
+        "the one-color mode drives the whole bar, not cell 1"
+    );
+
+    // Every key a mode carries reads back to its own definition.
+    for mode in ["Pixel", "Single"] {
+        for channel in &fixture_type.mode(mode).channels {
+            let definition = fixture_type
+                .parameter_for_key(&channel.parameter_key)
+                .unwrap_or_else(|| panic!("{} reads back", channel.parameter_key));
+            assert_eq!(definition.per_cell, channel.parameter_key.contains('@'), "{}", channel.parameter_key);
+        }
+    }
+}
+
 #[test]
 fn a_minimal_file_is_still_a_fixture_type() {
     let (fixture_type, warnings) = derive("minimal");

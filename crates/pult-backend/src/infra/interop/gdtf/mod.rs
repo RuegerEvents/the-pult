@@ -166,6 +166,13 @@ fn thumbnail(file: &GdtfFile) -> Option<(String, Vec<u8>)> {
 /// carry is a per-cell parameter rather than one parameter twelve channels deep — which
 /// is what collapsing by kind used to make of it, a twelve-cell bar with one color.
 /// The cell count is the most references any mode expands.
+///
+/// **And one attribute can be both.** A bar's master dimmer sits on the bar and each
+/// cell's dimmer on the cell, and a one-color mode puts its RGB on the bar where the
+/// pixel mode puts it on each cell. So a kind is declared once per way it is reached:
+/// whole where some channel carries it on no reference, per cell where some channel
+/// carries it on one. Two definitions of one kind, told apart by `per_cell`, which is
+/// exactly what [`FixtureType::parameter_for_key`] already reads a key against.
 fn derive_parameters(
     gdtf: &GdtfType,
     warnings: &mut Vec<Warning>,
@@ -180,7 +187,7 @@ fn derive_parameters(
 
     let mut parameters: Vec<ParameterDefinition> = Vec::new();
     let mut emitters: Vec<Emitter> = Vec::new();
-    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut seen: BTreeMap<(String, bool), usize> = BTreeMap::new();
     let mut cells: u16 = 0;
 
     for mode in &gdtf.dmx_modes.items {
@@ -216,7 +223,8 @@ fn derive_parameters(
                 }
             }
 
-            if let Some(at) = seen.get(&key) {
+            let per_cell = channel.instance.is_some();
+            if let Some(at) = seen.get(&(key.clone(), per_cell)) {
                 // A parameter reached from more than one mode: keep the richer
                 // description rather than the first one seen, so a head whose basic
                 // mode has an 8-bit pan and whose extended mode says the travel keeps
@@ -224,13 +232,10 @@ fn derive_parameters(
                 if parameters[*at].physical.is_none() {
                     parameters[*at].physical = physical_range(gdtf, channel, attribute, &by_name);
                 }
-                if channel.instance.is_some() {
-                    parameters[*at].per_cell = true;
-                }
                 continue;
             }
 
-            seen.insert(key, parameters.len());
+            seen.insert((key, per_cell), parameters.len());
             parameters.push(ParameterDefinition {
                 physical: physical_range(gdtf, channel, attribute, &by_name),
                 slots: slots_of(gdtf, channel),
@@ -238,7 +243,7 @@ fn derive_parameters(
                     .get(attribute)
                     .and_then(|a| a.feature.as_ref())
                     .and_then(|feature| feature.0.first().cloned()),
-                per_cell: channel.instance.is_some(),
+                per_cell,
                 ..ParameterDefinition::new(kind, resting_value_for(&kind_of(attribute)))
             });
         }
@@ -246,7 +251,7 @@ fn derive_parameters(
 
     // Every color channel is the one color parameter, so the emitter list belongs
     // to it and to nothing else.
-    if let Some(color) = parameters.iter_mut().find(|p| p.kind == ParameterKind::ColorRgb) {
+    for color in parameters.iter_mut().filter(|p| p.kind == ParameterKind::ColorRgb) {
         color.emitters = emitters.clone();
     }
 
@@ -255,6 +260,11 @@ fn derive_parameters(
     // that references its single emitter has a color, not a color in cell 1.
     if cells < 2 || !parameters.iter().any(|p| p.per_cell) {
         cells = 0;
+        // With no cells a per-cell definition and a whole one of the same kind are
+        // one parameter, and the whole one is it.
+        let whole: std::collections::BTreeSet<String> =
+            parameters.iter().filter(|p| !p.per_cell).map(|p| parameter_key(&p.kind)).collect();
+        parameters.retain(|p| !(p.per_cell && whole.contains(&parameter_key(&p.kind))));
         for parameter in &mut parameters {
             parameter.per_cell = false;
         }
@@ -392,13 +402,12 @@ fn layout_of(
 ) -> Option<DmxChannelLayout> {
     let attribute = channel.attribute?.last()?.to_string();
     let base = attributes::kind_for(&attribute)?;
-    // A cell's channel names its cell. A per-cell parameter reached by a mode that
-    // has no cells — a bar's one-color mode — drives cell 1: there is no whole-bar
-    // color for it to drive, and dropping the channel would make the mode do nothing.
+    // A cell's channel names its cell, and a channel on no reference is the whole
+    // fixture's: a bar's master, or the one color of a one-color mode. Both kinds are
+    // declared (see `derive_parameters`), so each channel reads the key it carries.
     let per_cell = parameters.iter().any(|p| p.per_cell && p.kind == base);
     let kind = match (channel.instance, per_cell) {
         (Some(cell), true) => base.in_cell(cell),
-        (None, true) => base.in_cell(1),
         _ => base,
     };
     if channel.break_number == 0 {

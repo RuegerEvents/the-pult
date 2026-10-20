@@ -14,7 +14,7 @@
 
 	import type { Fixture, ParameterKind, ParameterValue } from '$lib/generated/index.js';
 	import { commonValueOf, editableParameters, rowTargets, type Target } from '$lib/programmer.js';
-	import { formatValue, parameterKey } from '$lib/patch.js';
+	import { formatValue, modeHas, modeOf, parameterKey } from '$lib/patch.js';
 	import { collection } from '$lib/stores/show.js';
 	import { targetElements } from '$lib/stores/selection.js';
 	import { byKey, remove, setValueOn } from '$lib/stores/programmer.js';
@@ -33,7 +33,8 @@
 		const own = $targetElements.filter((e) => e.fixture === fixture.id);
 		return own.length ? own : [{ fixture: fixture.id, cell: null }];
 	});
-	const targetsOf = (kind: ParameterKind): Target[] => rowTargets(kind, mine, () => type);
+	const targetsOf = (kind: ParameterKind): Target[] =>
+		rowTargets(kind, mine, () => type, (_, key) => modeHas(modeOf(type, fixture.address), key));
 	const keyOf = (t: Target) => `${t.fixtureId}/${parameterKey(t.kind)}`;
 	const isHeld = (kind: ParameterKind) => targetsOf(kind).some((t) => $byKey.has(keyOf(t)));
 	const held = $derived(rows.filter((row) => isHeld(row.kind)));

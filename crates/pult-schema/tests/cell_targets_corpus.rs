@@ -14,6 +14,9 @@ use uuid::Uuid;
 struct Corpus {
     types: HashMap<String, TypeSpec>,
     fixtures: HashMap<String, String>,
+    /// The keys a fixture's patched mode carries; absent is every key.
+    #[serde(default)]
+    reaches: HashMap<String, Vec<String>>,
     cases: Vec<Case>,
 }
 
@@ -84,7 +87,10 @@ fn every_case_in_the_corpus() {
             .iter()
             .map(|e| Element { fixture: ids[&e.fixture], cell: e.cell })
             .collect();
-        let got: Vec<String> = targets(&case.kind, &elements, type_of)
+        let reaches = |id: &Uuid, key: &str| {
+            corpus.reaches.get(&names[id]).is_none_or(|keys| keys.iter().any(|k| k == key))
+        };
+        let got: Vec<String> = targets(&case.kind, &elements, type_of, reaches)
             .iter()
             .map(|t| format!("{}/{}", names[&t.fixture_id], parameter_key(&t.parameter_kind)))
             .collect();

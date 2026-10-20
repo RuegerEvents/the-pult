@@ -119,16 +119,26 @@ export function editableParameters(
 		const type = byType.get(fixture.fixture_type_id);
 		if (!type) continue;
 		const mode = modeOf(type, fixture.address);
+		// A kind declared twice — a bar's master and its per-cell dimmers — is one row,
+		// reachable if either way of setting it is.
+		const here = new Set<string>();
 		for (const parameter of type.parameters) {
 			if (parameter.direction !== 'Output') continue;
 			const key = parameterKey(parameter.kind);
+			if (here.has(key)) continue;
+			here.add(key);
 			// A parameter the fixture's chosen mode does not place is one the console
 			// cannot send. The row stays — it is still a thing the light can do, and an
 			// operator who cannot see it cannot work out why the light will not zoom —
 			// but it says so, and a selection where some fixtures can and some cannot
 			// says that too.
 			// A per-cell parameter is placed cell by cell; the first cell answers for it.
-			const reachable = modeHas(mode, parameter.per_cell && type.cells > 0 ? `${key}@1` : key);
+			const reachable = type.parameters.some(
+				(p) =>
+					p.direction === 'Output' &&
+					parameterKey(p.kind) === key &&
+					modeHas(mode, p.per_cell && type.cells > 0 ? `${key}@1` : key)
+			);
 			const existing = rows.get(key);
 			if (existing) {
 				existing.count += 1;
@@ -160,10 +170,14 @@ export type Target = { fixtureId: string; kind: ParameterKind };
  * Where setting one parameter of a selection lands: one target per element that has
  * it. A cell takes a per-cell parameter as itself; a fixture with cells selected whole
  * takes it on every cell; and a parameter that is the whole fixture's (a bar's master
- * dimmer) is set once per fixture however many of its cells are selected. Where a type
- * declares a kind both whole and per cell, a selected cell takes its own and a fixture
- * selected whole takes the master. A fixture whose type is not here takes the kind as
- * itself, the way the station's `__by` treats it.
+ * dimmer) is set once per fixture however many of its cells are selected. A fixture
+ * whose type is not here takes the kind as itself, the way the station's `__by` does.
+ *
+ * Where a type declares the kind both ways — a master beside a dimmer per cell, or a
+ * one-color mode beside a pixel mode — the patched mode decides (`reaches`): a fixture
+ * selected whole takes the whole one where its mode carries it and every cell
+ * otherwise; a cell takes its own where its mode carries it and the whole one
+ * otherwise, because in a one-color mode the bar's one color is all there is.
  *
  * The station's half is `pult_schema::types::group::targets`, which the command line
  * asks through `selection.targets`; `testdata/cell-targets.json` holds the two together.
@@ -171,7 +185,8 @@ export type Target = { fixtureId: string; kind: ParameterKind };
 export function rowTargets(
 	kind: ParameterKind,
 	elements: Element[],
-	typeOf: (fixtureId: string) => FixtureType | undefined
+	typeOf: (fixtureId: string) => FixtureType | undefined,
+	reaches: (fixtureId: string, key: string) => boolean = () => true
 ): Target[] {
 	const base = kindBase(kind);
 	const key = parameterKey(base);
@@ -183,10 +198,10 @@ export function rowTargets(
 		seen.add(id);
 		out.push({ fixtureId, kind: k });
 	};
-	for (const element of elements) {
-		const type = typeOf(element.fixture);
+	for (const { fixture, cell } of elements) {
+		const type = typeOf(fixture);
 		if (!type) {
-			add(element.fixture, base);
+			add(fixture, base);
 			continue;
 		}
 		let whole = false;
@@ -196,10 +211,15 @@ export function rowTargets(
 			if (p.per_cell && type.cells > 0) perCell = true;
 			else whole = true;
 		}
-		if (element.cell !== null && perCell) add(element.fixture, inCell(base, element.cell));
-		else if (whole) add(element.fixture, base);
-		else if (element.cell === null && perCell)
-			for (let cell = 1; cell <= type.cells; cell++) add(element.fixture, inCell(base, cell));
+		if (cell !== null && perCell && (!whole || reaches(fixture, `${key}@${cell}`))) {
+			add(fixture, inCell(base, cell));
+		} else if (cell === null && whole && (!perCell || reaches(fixture, key))) {
+			add(fixture, base);
+		} else if (cell === null && perCell) {
+			for (let c = 1; c <= type.cells; c++) add(fixture, inCell(base, c));
+		} else if (whole) {
+			add(fixture, base);
+		}
 	}
 	return out;
 }

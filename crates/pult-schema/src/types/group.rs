@@ -249,16 +249,24 @@ pub struct ParameterTarget {
 ///
 /// A cell takes a per-cell parameter as itself; a fixture with cells selected whole
 /// takes it on every cell; a parameter that is the whole fixture's (a bar's master
-/// dimmer) is set once per fixture however many of its cells are selected. Where a
-/// type declares the same kind twice, whole and per cell, a selected cell takes the
-/// per-cell one and a fixture selected whole takes the whole one. A fixture whose
-/// type has no such output parameter is skipped; one whose type is not here at all
-/// takes the kind as itself. `programmer.ts`'s `rowTargets` is
-/// the browser's half, held to this by `testdata/cell-targets.json`.
+/// dimmer) is set once per fixture however many of its cells are selected. A fixture
+/// whose type has no such output parameter is skipped; one whose type is not here at
+/// all takes the kind as itself, the way `__by` treats it.
+///
+/// Where a type declares the kind both ways — a master and a dimmer per cell, or a
+/// one-color mode beside a pixel mode — the mode the unit is patched in decides:
+/// `reaches(fixture, key)` says whether that mode carries a key. A fixture selected
+/// whole takes the whole one where its mode carries it, and every cell otherwise; a
+/// cell takes its own where its mode carries it, and the whole one otherwise, because
+/// in a one-color mode the bar has no cells to set and its one color is all there is.
+///
+/// `programmer.ts`'s `rowTargets` is the browser's half, held to this by
+/// `testdata/cell-targets.json`.
 pub fn targets<'t>(
     kind: &ParameterKind,
     elements: &[Element],
     type_of: impl Fn(&Uuid) -> Option<&'t FixtureType>,
+    reaches: impl Fn(&Uuid, &str) -> bool,
 ) -> Vec<ParameterTarget> {
     let base = kind.base();
     let key = parameter_key(base);
@@ -270,17 +278,17 @@ pub fn targets<'t>(
         }
     };
     for element in elements {
+        let fixture = element.fixture;
         // A fixture patched to a type this station has not received is still a
-        // fixture: the kind goes on it as itself, which is what `__by` does for it too.
-        let Some(fixture_type) = type_of(&element.fixture) else {
-            add(element.fixture, base.clone(), &mut out);
+        // fixture: the kind goes on it as itself.
+        let Some(fixture_type) = type_of(&fixture) else {
+            add(fixture, base.clone(), &mut out);
             continue;
         };
-        let outputs = fixture_type.parameters.iter().filter(|p| {
-            p.direction == ParameterDirection::Output && parameter_key(&p.kind) == key
-        });
         let (mut whole, mut per_cell) = (false, false);
-        for p in outputs {
+        for p in fixture_type.parameters.iter().filter(|p| {
+            p.direction == ParameterDirection::Output && parameter_key(&p.kind) == key
+        }) {
             if p.per_cell && fixture_type.cells > 0 {
                 per_cell = true;
             } else {
@@ -288,13 +296,16 @@ pub fn targets<'t>(
             }
         }
         match element.cell {
-            Some(cell) if per_cell => add(element.fixture, base.in_cell(cell), &mut out),
-            _ if whole => add(element.fixture, base.clone(), &mut out),
+            Some(cell) if per_cell && (!whole || reaches(&fixture, &parameter_key(&base.in_cell(cell)))) => {
+                add(fixture, base.in_cell(cell), &mut out)
+            }
+            None if whole && (!per_cell || reaches(&fixture, &key)) => add(fixture, base.clone(), &mut out),
             None if per_cell => {
                 for cell in 1..=fixture_type.cells {
-                    add(element.fixture, base.in_cell(cell), &mut out);
+                    add(fixture, base.in_cell(cell), &mut out);
                 }
             }
+            _ if whole => add(fixture, base.clone(), &mut out),
             _ => {}
         }
     }

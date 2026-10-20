@@ -1,5 +1,5 @@
 {
-  "$comment": "Where a value set on a selection lands: pult_schema::types::targets and programmer.ts's rowTargets both read this. A type is its cell count and its output parameters by key, each whole or per cell.",
+  "$comment": "Where a value set on a selection lands: pult_schema::types::targets and programmer.ts's rowTargets both read this. A type is its cell count and its output parameters by key, each whole or per cell. `reaches` lists the keys a fixture's patched mode carries; a fixture not listed reaches every key.",
   "types": {
     "strip": {
       "cells": 3,
@@ -48,6 +48,19 @@
           "perCell": true
         }
       ]
+    },
+    "twoMode": {
+      "cells": 2,
+      "parameters": [
+        {
+          "kind": "ColorRgb",
+          "perCell": false
+        },
+        {
+          "kind": "ColorRgb",
+          "perCell": true
+        }
+      ]
     }
   },
   "fixtures": {
@@ -55,7 +68,9 @@
     "p": "par",
     "b": "bar",
     "m": "mastered",
-    "x": "unknown"
+    "x": "unknown",
+    "pix": "twoMode",
+    "one": "twoMode"
   },
   "cases": [
     {
@@ -173,6 +188,72 @@
       "expected": [
         "x/Intensity"
       ]
+    },
+    {
+      "name": "a bar in its pixel mode selected whole takes every cell",
+      "kind": "ColorRgb",
+      "elements": [
+        {
+          "fixture": "pix",
+          "cell": null
+        }
+      ],
+      "expected": [
+        "pix/ColorRgb@1",
+        "pix/ColorRgb@2"
+      ]
+    },
+    {
+      "name": "a bar in its one-color mode selected whole takes its one color",
+      "kind": "ColorRgb",
+      "elements": [
+        {
+          "fixture": "one",
+          "cell": null
+        }
+      ],
+      "expected": [
+        "one/ColorRgb"
+      ]
+    },
+    {
+      "name": "a cell of a bar in its one-color mode is the bar",
+      "kind": "ColorRgb",
+      "elements": [
+        {
+          "fixture": "one",
+          "cell": 1
+        },
+        {
+          "fixture": "one",
+          "cell": 2
+        }
+      ],
+      "expected": [
+        "one/ColorRgb"
+      ]
+    },
+    {
+      "name": "a cell of a bar in its pixel mode is itself",
+      "kind": "ColorRgb",
+      "elements": [
+        {
+          "fixture": "pix",
+          "cell": 2
+        }
+      ],
+      "expected": [
+        "pix/ColorRgb@2"
+      ]
     }
-  ]
+  ],
+  "reaches": {
+    "pix": [
+      "ColorRgb@1",
+      "ColorRgb@2"
+    ],
+    "one": [
+      "ColorRgb"
+    ]
+  }
 }

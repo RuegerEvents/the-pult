@@ -15,7 +15,7 @@
 
 	import type { EffectSpec, ParameterKind, ParameterValue } from '$lib/generated/index.js';
 	import { commonValueOf, editableParameters, rowTargets, type Target } from '$lib/programmer.js';
-	import { formatValue, kindLabel, parameterKey } from '$lib/patch.js';
+	import { formatValue, kindLabel, modeHas, modeOf, parameterKey } from '$lib/patch.js';
 	import { cellSpansText, parseCellSpans } from '$lib/selection.js';
 	import { collection } from '$lib/stores/show.js';
 	import { elements, hasCellsSelected, query, selection, setCells, targetElements } from '$lib/stores/selection.js';
@@ -59,7 +59,24 @@
 	const fixtureTypeOf = $derived(new Map($fixtures.map((f) => [f.id, typeById.get(f.fixture_type_id)])));
 	/// Where each row lands: a fixture's own key, or each selected cell's.
 	const targetsOf = (kind: ParameterKind): Target[] =>
-		rowTargets(kind, $targetElements, (id) => fixtureTypeOf.get(id));
+		rowTargets(kind, $targetElements, (id) => fixtureTypeOf.get(id), reaches);
+	const fixtureById = $derived(new Map($fixtures.map((f) => [f.id, f])));
+	/// A cut selection whose value lands on a whole-fixture key the type also declares
+	/// per cell: a bar in its one-color mode, where the cells are one color.
+	const wholeForCells = (kind: ParameterKind) =>
+		targetsOf(kind).some(
+			(t) =>
+				parameterKey(t.kind) === parameterKey(kind) &&
+				(fixtureTypeOf.get(t.fixtureId)?.parameters ?? []).some(
+					(p) => p.per_cell && parameterKey(p.kind) === parameterKey(kind)
+				)
+		);
+	/// Whether the mode a fixture is patched in carries a key: what decides between a
+	/// bar's master and its cells, and between its one-color mode and its pixel mode.
+	const reaches = (id: string, key: string) => {
+		const fixture = fixtureById.get(id);
+		return !fixture || modeHas(modeOf(fixtureTypeOf.get(id), fixture.address), key);
+	};
 	const targetKey = (t: Target) => `${t.fixtureId}/${parameterKey(t.kind)}`;
 	const cellCount = $derived($elements.filter((e) => e.cell !== null).length);
 	let cellText = $state('');
@@ -206,6 +223,13 @@
 					<span class="label">
 						{row.label}
 						{#if row.mixed}<span class="mixed" title="Not every selected fixture has this">mixed</span>{/if}
+						{#if $hasCellsSelected && wholeForCells(row.kind)}
+							<!-- Cells are cut, but the mode has one of these for the whole
+							     fixture (a bar's one-color mode): the value goes there. -->
+							<span class="mixed" title="This fixture's mode has one of these for the whole fixture, not one per cell"
+								>whole fixture</span
+							>
+						{/if}
 						{#if row.unreachable > 0}
 							<!-- The light can do it; the mode it is patched in has nowhere to
 							     send it. Saying so beats a fader that silently does nothing. -->
