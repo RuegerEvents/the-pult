@@ -7115,6 +7115,17 @@ when `preferences.toml`'s modification time moves, so naming a channel reaches t
 stations without a restart. Setup → Audio's matrix gains a picker over the session's
 stations, and maps any of them with that station's names on the columns.
 
+*Trap: a station that joins late was never seen.* The screenshots for this found it, with
+the spare started some seconds before it was joined — which is how a spare is actually
+switched on. Joining replaces the joiner's state with the leader's, which never held the
+joiner's own SYNCED rows; `station_audio` and `station_networks` are written only when they
+change, so they were never said again, and the `stations` row, replaced every two seconds,
+failed on the leader every time ("failed to apply peer operation") because its create had
+gone nowhere. Two fixes, both general: a publisher now skips a write only when its row is
+unchanged *and still held*, and the engine takes a peer's whole SYNCED row for an id it has
+never seen as the create it stands for. `a_station_says_what_its_channels_are_called` joins
+after the spare has published.
+
 *Decided: names are read-only from a distance.* Renaming another machine's channels from
 here would mean one console rewriting another's settings file down the sync link, which is
 exactly what `LogRaise` refuses to do to a peer's log level; and the act that has to be done

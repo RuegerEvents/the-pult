@@ -213,6 +213,14 @@ async fn a_station_says_what_its_channels_are_called() {
 
     let leader = a_station("named-leader").await;
     let spare = a_station("named-spare").await;
+    // The spare has written its own rows before it joins — the ordinary case for a
+    // spare switched on before anybody sessions it — and they still have to arrive.
+    let spare_id = spare.node_id.0;
+    eventually("the spare has published its card to itself", Duration::from_secs(10), || async {
+        let rows: Vec<StationAudio> = read(&spare, "station_audio").await;
+        rows.iter().any(|row| row.id == spare_id)
+    })
+    .await;
     let at = format!("127.0.0.1:{}", leader.sync_addr.port());
     spare.call_rpc("session.joinAt", serde_json::json!({ "address": at })).await.expect("the spare joins");
     eventually("the spare is a follower", Duration::from_secs(10), || async {
@@ -220,7 +228,6 @@ async fn a_station_says_what_its_channels_are_called() {
     })
     .await;
 
-    let spare_id = spare.node_id.0;
     eventually("the leader reads the spare's card and its names", Duration::from_secs(15), || async {
         let rows: Vec<StationAudio> = read(&leader, "station_audio").await;
         rows.iter().any(|row| {

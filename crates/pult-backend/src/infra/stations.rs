@@ -475,7 +475,13 @@ impl StationReporter {
     async fn publish_network(&mut self, interfaces: Vec<NetInterface>) {
         let bindings = self.net.bindings();
         let now = (interfaces, bindings);
-        if self.network_said.as_ref() == Some(&now) {
+        // Unchanged and still held. Joining a session replaces this station's state with
+        // the leader's, which never held this row, so it has to be said again — and a
+        // row said once and lost is a stage rack whose cabling nobody can read.
+        let held = vec![PathSegment::Key("station_networks".into()), PathSegment::Id(self.node_id.0)];
+        if self.network_said.as_ref() == Some(&now)
+            && self.engine.get(held).await.is_ok_and(|row| !row.is_null())
+        {
             return;
         }
         let row = pult_schema::types::network::StationNetwork {

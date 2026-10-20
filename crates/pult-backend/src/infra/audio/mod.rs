@@ -1181,11 +1181,17 @@ impl AudioManager {
             channels,
             channel_names: named.channels,
         };
-        if self.station_said.as_ref() == Some(&row) {
-            return;
-        }
         let Ok(value) = serde_json::to_value(&row) else { return };
         let path = vec![PathSegment::Key("station_audio".into()), PathSegment::Id(row.id)];
+        // Unchanged *and still there*: joining a session replaces this station's state
+        // with the leader's, which has never held this row, so "what I last said" is not
+        // the same as "what the show holds" — and a row said once and lost is a spare
+        // nobody can map.
+        if self.station_said.as_ref() == Some(&row)
+            && self.engine.get(path.clone()).await.is_ok_and(|held| held == value)
+        {
+            return;
+        }
         if self.engine.set(path, Lifecycle::Synced, value.clone()).await.is_err() {
             let create = vec![PathSegment::Key("station_audio".into()), PathSegment::Key("__create".into())];
             if let Err(e) = self.engine.set(create, Lifecycle::Synced, value).await {
