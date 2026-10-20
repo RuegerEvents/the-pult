@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import type {
 	Cue,
@@ -5,6 +6,7 @@ import type {
 	Fixture,
 	FixtureType,
 	ParameterCapture,
+	ParameterKind,
 	ParameterValue,
 	Preset,
 	ProgrammerValue
@@ -29,6 +31,7 @@ import {
 	withFloat
 } from './programmer.js';
 import { parameterKey } from './patch.js';
+import type { Element } from './selection.js';
 import { readingOf } from './stores/output.js';
 import { aFixture, aFixtureType, aParameter } from './test-fixtures.js';
 
@@ -590,3 +593,39 @@ describe('setting a parameter on cells', () => {
 		]);
 	});
 });
+
+/**
+ * `testdata/cell-targets.json` is read here and by
+ * `crates/pult-schema/tests/cell_targets_corpus.rs`: the Programmer and the command
+ * line, which asks the station, have to put one value on the same keys.
+ */
+describe('the cell-targets corpus', () => {
+	type Spec = { cells: number; parameters: { kind: ParameterKind; perCell: boolean }[] };
+	const corpus = JSON.parse(
+		readFileSync(new URL('../../../testdata/cell-targets.json', import.meta.url), 'utf8')
+	) as {
+		types: Record<string, Spec>;
+		fixtures: Record<string, string>;
+		cases: { name: string; kind: ParameterKind; elements: Element[]; expected: string[] }[];
+	};
+	const types = Object.fromEntries(
+		Object.entries(corpus.types).map(([name, spec]) => [
+			name,
+			aFixtureType({
+				id: name,
+				cells: spec.cells,
+				parameters: spec.parameters.map((p) =>
+					aParameter({ kind: p.kind, default_value: { type: 'Float', value: 0 }, per_cell: p.perCell })
+				)
+			})
+		])
+	);
+	const typeOf = (id: string) => types[corpus.fixtures[id]];
+	for (const c of corpus.cases) {
+		it(c.name, () => {
+			const got = rowTargets(c.kind, c.elements, typeOf).map((t) => `${t.fixtureId}/${parameterKey(t.kind)}`);
+			expect(got).toEqual(c.expected);
+		});
+	}
+});
+

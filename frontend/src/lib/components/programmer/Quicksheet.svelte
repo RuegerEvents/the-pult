@@ -16,7 +16,7 @@
 	import { commonValueOf, editableParameters, rowTargets, type Target } from '$lib/programmer.js';
 	import { formatValue, parameterKey } from '$lib/patch.js';
 	import { collection } from '$lib/stores/show.js';
-	import { elements } from '$lib/stores/selection.js';
+	import { targetElements } from '$lib/stores/selection.js';
 	import { byKey, remove, setValueOn } from '$lib/stores/programmer.js';
 	import PanTiltPad from './controls/PanTiltPad.svelte';
 	import ValueControl from './controls/ValueControl.svelte';
@@ -28,9 +28,9 @@
 
 	const rows = $derived(editableParameters($types, [fixture]));
 	const type = $derived($types.find((t) => t.id === fixture.fixture_type_id));
-	/// The cells of this fixture the selection holds, or the whole of it.
+	/// The cells of this fixture the selection cuts it to, or the whole of it.
 	const mine = $derived.by(() => {
-		const own = $elements.filter((e) => e.fixture === fixture.id);
+		const own = $targetElements.filter((e) => e.fixture === fixture.id);
 		return own.length ? own : [{ fixture: fixture.id, cell: null }];
 	});
 	const targetsOf = (kind: ParameterKind): Target[] => rowTargets(kind, mine, () => type);

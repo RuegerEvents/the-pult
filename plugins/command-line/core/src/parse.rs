@@ -49,6 +49,13 @@ impl<'a> Parser<'a> {
     }
 
     fn command(&mut self) -> Result<Command, ParseError> {
+        // `. 1 thru 20` cuts what is already selected: no word, so no `first` to read.
+        if self.peek().is_some_and(|t| t.kind == TokenKind::Dot) {
+            let dot = self.next().expect("just peeked");
+            let cells = self.cells(dot.span)?;
+            let at = self.then()?;
+            return Ok(Command::Select { ops: Vec::new(), cells, at });
+        }
         let first = self.next().expect("parse() checked for emptiness");
         let word = first.text.to_lowercase();
         match word.as_str() {
@@ -313,9 +320,16 @@ impl<'a> Parser<'a> {
         // `fixture 1 3 5` reads aloud.
         let mut bare_op = SelOp::Replace;
         let mut mode = mode.to_string();
+        let mut cells = Vec::new();
         loop {
             match self.peek() {
                 None => break,
+                // The cells come last: after `.` a `+` adds a span, not a fixture.
+                Some(t) if t.kind == TokenKind::Dot => {
+                    let dot = self.next().expect("just peeked");
+                    cells = self.cells(dot.span)?;
+                    break;
+                }
                 Some(t) if t.kind == TokenKind::Plus => {
                     self.next();
                     self.selection_mode(&mut mode);
@@ -357,6 +371,7 @@ impl<'a> Parser<'a> {
                         "group".into(),
                         "+".into(),
                         "-".into(),
+                        ".".into(),
                         "at".into(),
                         "full".into(),
                         "out".into(),
@@ -374,7 +389,14 @@ impl<'a> Parser<'a> {
             return Err(ParseError::new(what, (word_span.1, word_span.1))
                 .expecting(vec!["a number".into(), example.into()]));
         }
-        let at = match self.peek() {
+        let at = self.then()?;
+        Ok(Command::Select { ops, cells, at })
+    }
+
+    /// What a selection line does to what it selected, if it says: `at 80`, `full`,
+    /// `out`, `home` or `preset 3`.
+    fn then(&mut self) -> Result<Option<Then>, ParseError> {
+        Ok(match self.peek() {
             Some(t) if t.text.eq_ignore_ascii_case("at") => {
                 self.next();
                 Some(Then::At(self.level()?))
@@ -396,8 +418,50 @@ impl<'a> Parser<'a> {
                 Some(Then::Preset(self.target()?))
             }
             _ => None,
+        })
+    }
+
+    /// The spans after a `.`: `1 thru 20`, `5`, `20 thru 1`, joined by `+`.
+    fn cells(&mut self, dot: Span) -> Result<Vec<Range>, ParseError> {
+        let mut spans = Vec::new();
+        loop {
+            match self.peek() {
+                Some(t) if t.kind == TokenKind::Number => spans.push(self.cell_span()?),
+                Some(t) => {
+                    return Err(ParseError::new("which cells? a number has to follow", t.span)
+                        .expecting(vec!["a number".into(), "1 thru 20".into()]))
+                }
+                None => {
+                    return Err(ParseError::new("which cells?", (dot.1, dot.1))
+                        .expecting(vec!["a number".into(), "1 thru 20".into()]))
+                }
+            }
+            if self.peek().is_some_and(|t| t.kind == TokenKind::Plus) {
+                self.next();
+                continue;
+            }
+            return Ok(spans);
+        }
+    }
+
+    /// One span of cells. Unlike a range of fixtures it may run downward.
+    fn cell_span(&mut self) -> Result<Range, ParseError> {
+        let whole = |t: &Token| -> Result<usize, ParseError> {
+            match t.text.parse::<usize>() {
+                Ok(0) => Err(ParseError::new("cells are counted from 1", t.span)),
+                Ok(n) if n <= u16::MAX as usize => Ok(n),
+                _ => Err(ParseError::new("cells are numbered with whole numbers", t.span)),
+            }
         };
-        Ok(Command::Select { ops, at })
+        let from = whole(self.next().expect("caller peeked a number"))?;
+        if matches!(self.peek(), Some(t) if t.text.eq_ignore_ascii_case("thru")) {
+            self.next();
+            let to_token =
+                self.next().ok_or_else(|| ParseError::new("thru needs a number after it", self.end_span()))?;
+            let to = whole(to_token)?;
+            return Ok(Range { from, to });
+        }
+        Ok(Range { from, to: from })
     }
 
     /// Is this word one that switches what a selection is counting?
@@ -575,7 +639,7 @@ mod tests {
     fn the_opening_example_of_every_console_manual() {
         assert_eq!(
             parse_ok("fixture 1 thru 5"),
-            Command::Select { ops: vec![(SelOp::Replace, fixtures(1, 5))], at: None }
+            Command::Select { cells: vec![], ops: vec![(SelOp::Replace, fixtures(1, 5))], at: None }
         );
         assert_eq!(parse_ok("at 80"), Command::Intensity { level: Level::To(80.0) });
         assert_eq!(parse_ok("@ 80"), Command::Intensity { level: Level::To(80.0) });
@@ -583,14 +647,14 @@ mod tests {
         // And the combined form, which is how the line is actually typed.
         assert_eq!(
             parse_ok("fixture 1 thru 3 @ 80"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![(SelOp::Replace, fixtures(1, 3))],
                 at: Some(Then::At(Level::To(80.0)))
             }
         );
         assert_eq!(
             parse_ok("fixture 2 full"),
-            Command::Select { ops: vec![(SelOp::Replace, fixtures(2, 2))], at: Some(Then::At(Level::To(100.0))) }
+            Command::Select { cells: vec![], ops: vec![(SelOp::Replace, fixtures(2, 2))], at: Some(Then::At(Level::To(100.0))) }
         );
     }
 
@@ -598,7 +662,7 @@ mod tests {
     fn a_selection_is_edited_with_plus_and_minus() {
         assert_eq!(
             parse_ok("fixture 1 thru 5 + 7 - 2"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![
                     (SelOp::Replace, fixtures(1, 5)),
                     (SelOp::Add, fixtures(7, 7)),
@@ -610,7 +674,7 @@ mod tests {
         // Starting with + keeps what is already selected.
         assert_eq!(
             parse_ok("fixture + 9"),
-            Command::Select { ops: vec![(SelOp::Add, fixtures(9, 9))], at: None }
+            Command::Select { cells: vec![], ops: vec![(SelOp::Add, fixtures(9, 9))], at: None }
         );
     }
 
@@ -632,7 +696,7 @@ mod tests {
     fn a_selection_can_be_nudged_in_the_same_line() {
         assert_eq!(
             parse_ok("fixture 1 thru 5 at +10"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![(SelOp::Replace, fixtures(1, 5))],
                 at: Some(Then::At(Level::By(10.0)))
             }
@@ -641,14 +705,14 @@ mod tests {
         // after `at` is a level.
         assert_eq!(
             parse_ok("fixture 1 thru 5 - 2 at -10"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![(SelOp::Replace, fixtures(1, 5)), (SelOp::Remove, fixtures(2, 2))],
                 at: Some(Then::At(Level::By(-10.0)))
             }
         );
         assert_eq!(
             parse_ok("group 2 at +5"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(2)))],
                 at: Some(Then::At(Level::By(5.0)))
             }
@@ -667,21 +731,21 @@ mod tests {
     fn a_group_is_a_selection_rather_than_a_row() {
         assert_eq!(
             parse_ok("group 3"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(3)))],
                 at: None
             }
         );
         assert_eq!(
             parse_ok("group \"movers\""),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Name("movers".into())))],
                 at: None
             }
         );
         assert_eq!(
             parse_ok("group 1 at 50"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(1)))],
                 at: Some(Then::At(Level::To(50.0)))
             }
@@ -694,7 +758,7 @@ mod tests {
     fn fixtures_and_groups_compose_in_one_line() {
         assert_eq!(
             parse_ok("fixture 1 thru 5 + group 2"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![
                     (SelOp::Replace, fixtures(1, 5)),
                     (SelOp::Add, SelectTarget::Group(Target::Index(2))),
@@ -704,7 +768,7 @@ mod tests {
         );
         assert_eq!(
             parse_ok("group 2 - fixture 3"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![
                     (SelOp::Replace, SelectTarget::Group(Target::Index(2))),
                     (SelOp::Remove, fixtures(3, 3)),
@@ -715,7 +779,7 @@ mod tests {
         // And without a `+`, the way `fixture 1 3 5` already reads aloud.
         assert_eq!(
             parse_ok("group 1 group 2"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![
                     (SelOp::Replace, SelectTarget::Group(Target::Index(1))),
                     (SelOp::Add, SelectTarget::Group(Target::Index(2))),
@@ -732,7 +796,7 @@ mod tests {
         // And `out` is a level, not a collection, even directly after `group`.
         assert_eq!(
             parse_ok("group 2 out"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(2)))],
                 at: Some(Then::At(Level::To(0.0)))
             }
@@ -781,7 +845,7 @@ mod tests {
         assert_eq!(parse_ok("HOME"), Command::Home, "case is not the point");
         assert_eq!(
             parse_ok("fixture 1 thru 5 home"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![(SelOp::Replace, fixtures(1, 5))],
                 at: Some(Then::Home),
             },
@@ -846,7 +910,7 @@ mod tests {
         );
         assert_eq!(
             parse_ok("fixture 1 thru 5 preset 3"),
-            Command::Select {
+            Command::Select { cells: vec![],
                 ops: vec![(SelOp::Replace, fixtures(1, 5))],
                 at: Some(Then::Preset(Target::Index(3)))
             }
@@ -914,5 +978,43 @@ mod tests {
             parse_ok("set cue 3 fadetime 4"),
             parse_ok("set cue 3 fade_time 4")
         );
+    }
+
+    #[test]
+    fn a_dot_cuts_a_selection_to_cells() {
+        assert_eq!(
+            parse_ok("fixture 3 . 1 thru 20 at 50"),
+            Command::Select {
+                ops: vec![(SelOp::Replace, fixtures(3, 3))],
+                cells: vec![Range { from: 1, to: 20 }],
+                at: Some(Then::At(Level::To(50.0)))
+            }
+        );
+        // Spans join with `+` after the dot, and may run downward.
+        assert_eq!(
+            parse_ok("group 2 . 20 thru 1 + 25"),
+            Command::Select {
+                ops: vec![(SelOp::Replace, SelectTarget::Group(Target::Index(2)))],
+                cells: vec![Range { from: 20, to: 1 }, Range { from: 25, to: 25 }],
+                at: None
+            }
+        );
+        // A line that begins with the dot cuts what is selected already.
+        assert_eq!(
+            parse_ok(". 5 full"),
+            Command::Select {
+                ops: vec![],
+                cells: vec![Range { from: 5, to: 5 }],
+                at: Some(Then::At(Level::To(100.0)))
+            }
+        );
+    }
+
+    #[test]
+    fn a_dot_needs_cells_after_it() {
+        let catalog = test_catalog();
+        assert!(parse(&catalog, "fixture 3 .").is_err());
+        assert!(parse(&catalog, ". 0").is_err());
+        assert!(parse(&catalog, "fixture 3 . group 2").is_err());
     }
 }

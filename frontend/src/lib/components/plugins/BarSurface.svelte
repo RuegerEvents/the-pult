@@ -14,7 +14,7 @@
 
 	import type { PluginStatus } from '$lib/generated/index.js';
 	import type { SelectionQuery } from '$lib/selection.js';
-	import { applySelectionEffect, selection } from '$lib/stores/selection.js';
+	import { applySelectionEffect, query, selection } from '$lib/stores/selection.js';
 	import { showClient } from '$lib/stores/show.js';
 	import { userId } from '$lib/stores/user.js';
 
@@ -78,7 +78,7 @@
 		try {
 			const result = (await showClient().call(`plugin.${pluginId}.surface.exec`, {
 				payload: { line: asked },
-				ctx: { selection: get(selection), userId: get(userId) }
+				ctx: { selection: get(selection), cells: get(query).cells ?? [], userId: get(userId) }
 			})) as {
 				lines?: Entry[];
 				error?: { message: string };

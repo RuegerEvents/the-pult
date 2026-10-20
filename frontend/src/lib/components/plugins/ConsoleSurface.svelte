@@ -28,7 +28,7 @@
 	import type { PluginStatus } from '$lib/generated/index.js';
 	import type { SelectionQuery } from '$lib/selection.js';
 	import { registerConsoleFocus } from '$lib/stores/plugins.js';
-	import { applySelectionEffect, selection } from '$lib/stores/selection.js';
+	import { applySelectionEffect, query, selection } from '$lib/stores/selection.js';
 	import { showClient } from '$lib/stores/show.js';
 	import { userId } from '$lib/stores/user.js';
 
@@ -69,7 +69,7 @@
 	const choosable = $derived(items.filter((i) => i.text !== ''));
 
 	function ctx() {
-		return { selection: get(selection), userId: get(userId) };
+		return { selection: get(selection), cells: get(query).cells ?? [], userId: get(userId) };
 	}
 
 	function call(method: string, payload: unknown): Promise<unknown> {

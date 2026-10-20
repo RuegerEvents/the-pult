@@ -35,7 +35,9 @@ use uuid::Uuid;
 
 use std::collections::HashMap;
 
-use super::fixture::{Fixture, Vec3};
+use super::fixture::{
+    parameter_key, Fixture, FixtureType, ParameterDirection, ParameterKind, Vec3,
+};
 use super::scene::{self, SceneObject};
 use crate::PultSchema;
 
@@ -229,6 +231,71 @@ pub fn elements(picked: &[Uuid], spans: &[CellSpan], cells_of: impl Fn(&Uuid) ->
                     push(cell, &mut out);
                 }
             }
+        }
+    }
+    out
+}
+
+/// One parameter of one fixture that a value set on a selection lands on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ParameterTarget {
+    pub fixture_id: Uuid,
+    pub parameter_kind: ParameterKind,
+}
+
+/// Where a value of `kind` set on these elements lands.
+///
+/// A cell takes a per-cell parameter as itself; a fixture with cells selected whole
+/// takes it on every cell; a parameter that is the whole fixture's (a bar's master
+/// dimmer) is set once per fixture however many of its cells are selected. Where a
+/// type declares the same kind twice, whole and per cell, a selected cell takes the
+/// per-cell one and a fixture selected whole takes the whole one. A fixture whose
+/// type has no such output parameter is skipped; one whose type is not here at all
+/// takes the kind as itself. `programmer.ts`'s `rowTargets` is
+/// the browser's half, held to this by `testdata/cell-targets.json`.
+pub fn targets<'t>(
+    kind: &ParameterKind,
+    elements: &[Element],
+    type_of: impl Fn(&Uuid) -> Option<&'t FixtureType>,
+) -> Vec<ParameterTarget> {
+    let base = kind.base();
+    let key = parameter_key(base);
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut add = |fixture: Uuid, kind: ParameterKind, out: &mut Vec<ParameterTarget>| {
+        if seen.insert((fixture, parameter_key(&kind))) {
+            out.push(ParameterTarget { fixture_id: fixture, parameter_kind: kind });
+        }
+    };
+    for element in elements {
+        // A fixture patched to a type this station has not received is still a
+        // fixture: the kind goes on it as itself, which is what `__by` does for it too.
+        let Some(fixture_type) = type_of(&element.fixture) else {
+            add(element.fixture, base.clone(), &mut out);
+            continue;
+        };
+        let outputs = fixture_type.parameters.iter().filter(|p| {
+            p.direction == ParameterDirection::Output && parameter_key(&p.kind) == key
+        });
+        let (mut whole, mut per_cell) = (false, false);
+        for p in outputs {
+            if p.per_cell && fixture_type.cells > 0 {
+                per_cell = true;
+            } else {
+                whole = true;
+            }
+        }
+        match element.cell {
+            Some(cell) if per_cell => add(element.fixture, base.in_cell(cell), &mut out),
+            _ if whole => add(element.fixture, base.clone(), &mut out),
+            None if per_cell => {
+                for cell in 1..=fixture_type.cells {
+                    add(element.fixture, base.in_cell(cell), &mut out);
+                }
+            }
+            _ => {}
         }
     }
     out

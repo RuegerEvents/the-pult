@@ -7021,8 +7021,8 @@ should be: the same number of `value_at` calls.
 
 **Not done.** A bar with both a master dimmer and per-cell dimmers on one attribute is
 read as all per-cell, so its master lands on cell 1. A one-color mode of a bar drives
-cell 1's color. The plan view draws a strip as its body only. The command line's grammar
-has no `.` yet. A cue captures cells key by key, so a 1024-pixel strip in a look is a
+cell 1's color. The plan view draws a strip as its body only. ~~The command line's grammar
+has no `.` yet.~~ It has, since task 83. A cue captures cells key by key, so a 1024-pixel strip in a look is a
 thousand captures. Nothing has run on a real strip or bar.
 
 ```
@@ -7030,6 +7030,47 @@ cargo test -p pult-schema --test cell_keys        # the spelling, both sides
 cargo test -p pult-schema --test selection_corpus # elements, both sides
 cargo test -p pult-backend --test gdtf_corpus -- --ignored   # real bars have cells
 cargo test --release -p pult-backend --lib pixel_frame_cost -- --ignored --nocapture
+```
+
+### 83. Five things the last five tasks left
+
+Collected from the *not done* lists of tasks 77 to 82, because each is small and none is
+worth a task of its own; each landed as its own commit.
+
+**Cells in the command line.** `fixture 3 . 1 thru 20 at 50`, `group 2 . 20 thru 1`, and
+a line that begins with the dot (`. 5 full`) cuts what is already selected. The dot is a
+token of its own (a lone `.`, the way a lone `-` is one), and after it `+` joins spans
+rather than adding fixtures, so the cells come last on a line. A span may run downward,
+which `SelectionQuery::cells` already allowed. The cut travels back to the browser as part
+of the selection's question — the group's own query with its cells replaced, or the ids
+with the cells beside them — and the browser hands it back in `ctx.cells`, so `at 80` on
+the next line lands on the same cells.
+
+*Where a level lands is asked, not worked out.* The command line has data access and
+could have read the types, but where a value set on a selection lands is a rule —
+per-cell parameters on each cut cell, a whole-fixture one once, every cell of a strip
+selected whole — that the Programmer already holds as `rowTargets`. A third copy is the one
+that drifts, so the rule moved into the schema as `group::targets`, the station answers it
+as the `selection.targets` RPC, and `testdata/cell-targets.json` holds `rowTargets` to it.
+`. 5` with no level answers `selection.targets` nothing; it only cuts.
+
+*Trap: a whole fixture is not its cells.* `elements` expands a multi-cell fixture with no
+cut into every cell, which is right for spreading an effect and wrong for setting a value:
+a bar selected whole and set to 80% has to take its master, not eight cells. So a value is
+aimed at `targetElements` — the cut cells where the query cuts, each fixture whole where it
+does not — on both sides, and `targets` sends a whole fixture to the whole parameter when
+the type has one and to every cell when it has only the per-cell one. A fixture whose type
+this station has not received takes the kind as itself, the way `__by` treats it; skipping
+it broke the group test the moment the rule moved.
+
+*Found on the way:* the plugin had not compiled since presets gained a color (task 79) —
+`cd plugins && cargo test` builds the grammar core only, and the component is built by
+`scripts/build-plugins.sh`, which nothing had run since.
+
+```
+cd plugins && cargo test -p command-line-core           # the grammar
+cargo test -p pult-schema --test cell_targets_corpus    # where a value lands, both sides
+scripts/build-plugins.sh --debug && cargo test -p pult-backend --test plugins
 ```
 
 ## What is next

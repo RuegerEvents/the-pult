@@ -18,7 +18,7 @@
 	import { formatValue, kindLabel, parameterKey } from '$lib/patch.js';
 	import { cellSpansText, parseCellSpans } from '$lib/selection.js';
 	import { collection } from '$lib/stores/show.js';
-	import { elements, hasCellsSelected, query, selection, setCells } from '$lib/stores/selection.js';
+	import { elements, hasCellsSelected, query, selection, setCells, targetElements } from '$lib/stores/selection.js';
 	import { revealPanel } from '$lib/stores/layout.js';
 	import { output, watching } from '$lib/stores/output.js';
 	import {
@@ -59,7 +59,7 @@
 	const fixtureTypeOf = $derived(new Map($fixtures.map((f) => [f.id, typeById.get(f.fixture_type_id)])));
 	/// Where each row lands: a fixture's own key, or each selected cell's.
 	const targetsOf = (kind: ParameterKind): Target[] =>
-		rowTargets(kind, $elements, (id) => fixtureTypeOf.get(id));
+		rowTargets(kind, $targetElements, (id) => fixtureTypeOf.get(id));
 	const targetKey = (t: Target) => `${t.fixtureId}/${parameterKey(t.kind)}`;
 	const cellCount = $derived($elements.filter((e) => e.cell !== null).length);
 	let cellText = $state('');

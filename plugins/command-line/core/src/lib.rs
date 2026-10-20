@@ -35,7 +35,14 @@ pub enum Command {
     /// change the selection. With `at`, the combined form every console manual
     /// opens with: `fixture 1 thru 5 @ 80` selects *and* sets intensity on what
     /// it selected, in one line.
-    Select { ops: Vec<(SelOp, SelectTarget)>, at: Option<Then> },
+    ///
+    /// `cells` is MA's `.`: `fixture 3 . 1 thru 20` cuts every multi-cell fixture the
+    /// line selects to those cells, the station's `SelectionQuery::cells` and nothing
+    /// else, so this grammar adds no third evaluation of a selection. With no `ops`
+    /// (a line that begins with `.`) it cuts what is already selected. Empty is the
+    /// whole fixture. A span may run downward, which is how a chase starts at the
+    /// far end of a strip.
+    Select { ops: Vec<(SelOp, SelectTarget)>, cells: Vec<Range>, at: Option<Then> },
     /// `clear` empties the programmer; `clear clear` also drops the selection.
     Clear { also_selection: bool },
     /// `at 80`, `at +10`, `full`, `out` — intensity on the current selection.
@@ -148,7 +155,8 @@ pub enum SelectTarget {
     Group(Target),
 }
 
-/// A 1-based inclusive range; a single number is `n thru n`.
+/// A 1-based inclusive range; a single number is `n thru n`. A range of fixtures runs
+/// upward; a range of cells may run either way.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Range {
     pub from: usize,

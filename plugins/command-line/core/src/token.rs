@@ -1,4 +1,4 @@
-//! Words, numbers, strings and the three symbols, with byte spans.
+//! Words, numbers, strings and the four symbols, with byte spans.
 
 use crate::Span;
 
@@ -18,11 +18,13 @@ pub enum TokenKind {
     Str,
     Plus,
     Minus,
+    /// A lone `.`: the cells of what is selected, MA's way of saying it.
+    Dot,
 }
 
 /// Split a line into tokens.
 ///
-/// A token is a maximal run of non-whitespace, except that a lone `+` or `-`
+/// A token is a maximal run of non-whitespace, except that a lone `+`, `-` or `.`
 /// is a symbol — so `1 - 2` subtracts while a uuid with hyphens stays one
 /// word. `@` is the classic console spelling of `at` and becomes exactly that,
 /// leading digits attached or not: `@80` is `at 80`.
@@ -58,6 +60,7 @@ pub fn tokenize(line: &str) -> Vec<Token> {
         match raw {
             "+" => tokens.push(Token { kind: TokenKind::Plus, text: "+".into(), span: (start, i) }),
             "-" => tokens.push(Token { kind: TokenKind::Minus, text: "-".into(), span: (start, i) }),
+            "." => tokens.push(Token { kind: TokenKind::Dot, text: ".".into(), span: (start, i) }),
             _ => {
                 if let Some(rest) = raw.strip_prefix('@') {
                     tokens.push(Token {

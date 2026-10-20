@@ -94,6 +94,14 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"groupId","type":"string","optional":false}]"#,
         doc: "The fixtures a saved group picks out of the rig right now, in its order.",
     },
+    // Where a value set on a selection lands, cut to cells or not: the schema's rule,
+    // asked rather than copied, so the command line puts `at 50` on exactly the keys
+    // the Programmer would. A read like the one above.
+    LocalRpcMeta {
+        method: "selection.targets",
+        args_schema: r#"[{"name":"fixtureIds","type":"array","optional":false},{"name":"cells","type":"array","optional":true},{"name":"parameterKind","type":"object","optional":false}]"#,
+        doc: "The parameters a value of one kind lands on, over these fixtures and these cells of them.",
+    },
     // The paperwork's arithmetic. A read like the two above, and on the station rather
     // than in the browser for one reason: the browser is the only thing that can *draw*
     // a sheet, and if the tables were drawn there too then what the rig weighs would be
@@ -723,6 +731,20 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                 .map_err(|e| format!("invalid groupId: {e}"))?;
             resolve_group(&deps.engine, group_id).await
         }
+        "selection.targets" => {
+            let ids: Vec<uuid::Uuid> = serde_json::from_value(args["fixtureIds"].clone())
+                .map_err(|e| format!("invalid fixtureIds: {e}"))?;
+            let cells: Vec<pult_schema::types::group::CellSpan> = match args.get("cells") {
+                Some(c) if !c.is_null() => {
+                    serde_json::from_value(c.clone()).map_err(|e| format!("invalid cells: {e}"))?
+                }
+                _ => Vec::new(),
+            };
+            let kind: pult_schema::types::fixture::ParameterKind =
+                serde_json::from_value(args["parameterKind"].clone())
+                    .map_err(|e| format!("invalid parameterKind: {e}"))?;
+            selection_targets(&deps.engine, &ids, &cells, &kind).await
+        }
         "session.join" => {
             let session_id: uuid::Uuid = serde_json::from_value(args["sessionId"].clone())
                 .map_err(|e| format!("invalid sessionId: {e}"))?;
@@ -1201,6 +1223,45 @@ async fn resolve_group(engine: &EngineHandle, group_id: uuid::Uuid) -> Result<Va
 
     let ids = evaluate(&group.query, &fixtures, None, &objects);
     serde_json::to_value(ids).map_err(|e| e.to_string())
+}
+
+/// Where a value of `kind` set on these fixtures, cut to these cells, lands: the
+/// selection's elements and then [`pult_schema::types::group::targets`].
+async fn selection_targets(
+    engine: &EngineHandle,
+    ids: &[uuid::Uuid],
+    cells: &[pult_schema::types::group::CellSpan],
+    kind: &pult_schema::types::fixture::ParameterKind,
+) -> Result<Value, String> {
+    use pult_schema::types::fixture::FixtureType;
+    use pult_schema::types::group::{elements, targets};
+    let read = |table: &'static str| async move {
+        engine
+            .get(vec![PathSegment::Key(table.into())])
+            .await
+            .map_err(|e| format!("cannot read the rig: {e}"))
+    };
+    let fixtures: Vec<Fixture> = serde_json::from_value(read("fixtures").await?).unwrap_or_default();
+    let types: Vec<FixtureType> =
+        serde_json::from_value(read("fixture_types").await?).unwrap_or_default();
+    let types: std::collections::HashMap<uuid::Uuid, FixtureType> =
+        types.into_iter().map(|t| (t.id, t)).collect();
+    let type_of_fixture: std::collections::HashMap<uuid::Uuid, &FixtureType> = fixtures
+        .iter()
+        .filter_map(|f| types.get(&f.fixture_type_id).map(|t| (f.id, t)))
+        .collect();
+    // Cut, the cells it picks; not cut, each fixture whole — so a bar selected whole
+    // takes its master and a strip selected whole every cell, as `targets` decides.
+    // The browser's `targetElements` is the same.
+    let picked = if cells.is_empty() {
+        ids.iter().map(|id| pult_schema::types::group::Element { fixture: *id, cell: None }).collect()
+    } else {
+        elements(ids, cells, |id| {
+            type_of_fixture.get(id).filter(|t| t.has_cells()).map_or(0, |t| t.cells)
+        })
+    };
+    let landed = targets(kind, &picked, |id| type_of_fixture.get(id).copied());
+    serde_json::to_value(landed).map_err(|e| e.to_string())
 }
 
 /// Build one paperwork table out of what the station holds.

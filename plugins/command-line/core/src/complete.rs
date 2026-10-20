@@ -267,6 +267,7 @@ fn selection_expectations(mode: &str, rest: &[Token]) -> Vec<Expectation> {
             next.extend([
                 keyword("+", "add more"),
                 keyword("-", "take some out"),
+                keyword(".", "…only some cells: . 1 thru 20"),
                 switch(&mode),
                 keyword("at", "…and to a level: at 80, or at +10"),
                 keyword("full", "…and to 100%"),
@@ -274,6 +275,9 @@ fn selection_expectations(mode: &str, rest: &[Token]) -> Vec<Expectation> {
                 keyword("home", "…and back to where they rest"),
             ]);
             next
+        }
+        Some(t) if t.kind == TokenKind::Dot => {
+            vec![Expectation::Value { hint: "which cells: 1 thru 20".into() }]
         }
         Some(t) if t.kind == TokenKind::Plus || t.kind == TokenKind::Minus => {
             vec![entry, switch(&mode)]

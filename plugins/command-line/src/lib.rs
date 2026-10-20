@@ -99,10 +99,10 @@ impl CommandLine {
                 let text = core::help(&self.catalog, topic.as_deref());
                 Ok(lines_response(vec![output_line("info", text)]))
             }
-            Command::Select { ops, at } => self.select(ops, at, ctx),
+            Command::Select { ops, cells, at } => self.select(ops, cells, at, ctx),
             Command::Clear { also_selection } => self.clear(also_selection),
             Command::Intensity { level } => self.intensity(level, ctx),
-            Command::Home => self.home(&selection_of(ctx)),
+            Command::Home => self.home(&selection_of(ctx), &cells_of(ctx)),
             Command::EntityCommand { table, target, command, args } => {
                 self.entity_command(&table, target, &command, args)
             }
@@ -139,9 +139,14 @@ impl CommandLine {
     fn select(
         &self,
         ops: Vec<(SelOp, SelectTarget)>,
+        cells: Vec<core::Range>,
         at: Option<Then>,
         ctx: &Value,
     ) -> Result<surface::ExecResponse, String> {
+        // `. 1 thru 20` with nothing before it cuts what is already selected.
+        let cut_only = ops.is_empty();
+        let spans: Vec<Value> =
+            cells.iter().map(|r| json!({ "from": r.from, "to": r.to })).collect();
         // `group 3` on its own hands the browser the group's *question*, so what it
         // leaves selected is what recalling the group in the panel leaves: a
         // selection that goes on following the rig. Anything mixed — a group plus a
@@ -157,7 +162,7 @@ impl CommandLine {
             _ => None,
         };
 
-        let fixtures = collection("fixtures")?;
+        let fixtures = if cut_only { Vec::new() } else { collection("fixtures")? };
         let mut selected: Vec<String> = selection_of(ctx);
         let mut only_group: Option<String> = None;
         for (op, target) in ops {
@@ -198,6 +203,7 @@ impl CommandLine {
             }
         }
         let count = selected.len();
+        let cut = said_cells(&cells);
         let mut text = match (count, live_query.is_some().then_some(only_group).flatten()) {
             (0, Some(name)) => format!("{name} is empty"),
             (0, None) => "nothing selected".to_string(),
@@ -206,6 +212,9 @@ impl CommandLine {
             (1, None) => "1 fixture selected".to_string(),
             (n, None) => format!("{n} fixtures selected"),
         };
+        if let Some(cut) = &cut {
+            text.push_str(&format!(", {cut}"));
+        }
         // The combined form: `fixture 1 thru 3 @ 80` sets the level on what it
         // just selected, not on whatever was selected before.
         match at {
@@ -213,11 +222,11 @@ impl CommandLine {
                 return Err("that selects nothing, so there is nothing to set".into());
             }
             Some(Then::At(level)) => {
-                self.apply_level(&selected, level)?;
+                self.apply_level(&selected, &spans, level)?;
                 text.push_str(&format!(", {}", said(level)));
             }
             Some(Then::Home) => {
-                self.send_home(&selected)?;
+                self.send_home(&selected, &spans)?;
                 text.push_str(", home");
             }
             Some(Then::Preset(target)) => {
@@ -227,9 +236,20 @@ impl CommandLine {
             None => {}
         }
         let mut response = lines_response(vec![output_line("result", text)]);
-        response.effects = Some(match live_query {
-            Some(query) => json!({ "selection": { "query": query } }),
-            None => json!({ "selection": { "fixtureIds": selected } }),
+        // A cut is part of the selection's question, so it travels as a query: the
+        // group's own with its cells replaced, or the ids with the cells beside them.
+        response.effects = Some(match (live_query, spans.is_empty()) {
+            (Some(query), true) => json!({ "selection": { "query": query } }),
+            (Some(mut query), false) => {
+                query["cells"] = Value::Array(spans);
+                json!({ "selection": { "query": query } })
+            }
+            (None, true) => json!({ "selection": { "fixtureIds": selected } }),
+            (None, false) => json!({ "selection": { "query": {
+                "clauses": [{ "combine": "Add", "term": { "kind": "Ids", "ids": selected } }],
+                "order": { "kind": "Manual", "order": [] },
+                "cells": spans,
+            } } }),
         });
         Ok(response)
     }
@@ -272,7 +292,7 @@ impl CommandLine {
         if selected.is_empty() {
             return Err("nothing is selected — `fixture 1 thru 5` first".into());
         }
-        self.apply_level(&selected, level)?;
+        self.apply_level(&selected, &cells_of(ctx), level)?;
         Ok(lines_response(vec![output_line(
             "result",
             format!(
@@ -290,11 +310,11 @@ impl CommandLine {
     /// a fixture has and where each of its parameters rests. This plugin is granted
     /// no access to fixture types and needs none: home is a destination it never has
     /// to know, which is the same trick `at +10` plays with a level.
-    fn home(&self, selected: &[String]) -> Result<surface::ExecResponse, String> {
+    fn home(&self, selected: &[String], cells: &[Value]) -> Result<surface::ExecResponse, String> {
         if selected.is_empty() {
             return Err("nothing is selected — `fixture 1 thru 5` first".into());
         }
-        self.send_home(selected)?;
+        self.send_home(selected, cells)?;
         Ok(lines_response(vec![output_line(
             "result",
             format!(
@@ -305,22 +325,40 @@ impl CommandLine {
         )]))
     }
 
-    fn send_home(&self, fixtures: &[String]) -> Result<(), String> {
-        for fixture_id in fixtures {
-            host::set(&["programmer_values", "__home"], &json!({ "fixtureId": fixture_id }))?;
+    /// Whole fixtures go home in one write each, and the station enumerates what they
+    /// have. Cut to cells, only those cells' own parameters go: a bar's master is the
+    /// whole bar's, and sending three of its cells home is not asking for it.
+    fn send_home(&self, fixtures: &[String], cells: &[Value]) -> Result<(), String> {
+        if cells.is_empty() {
+            for fixture_id in fixtures {
+                host::set(&["programmer_values", "__home"], &json!({ "fixtureId": fixture_id }))?;
+            }
+            return Ok(());
+        }
+        for kind in per_cell_kinds(fixtures)? {
+            for (fixture_id, kind) in targets(fixtures, cells, &kind)? {
+                if kind.get("Cell").is_none() {
+                    continue;
+                }
+                host::set(
+                    &["programmer_values", "__home"],
+                    &json!({ "fixtureId": fixture_id, "parameterKind": kind }),
+                )?;
+            }
         }
         Ok(())
     }
 
     /// Set the level, or move it — whichever the operator wrote.
-    fn apply_level(&self, fixtures: &[String], level: Level) -> Result<(), String> {
+    fn apply_level(&self, fixtures: &[String], cells: &[Value], level: Level) -> Result<(), String> {
+        let landed = targets(fixtures, cells, &json!("Intensity"))?;
         match level {
-            Level::To(percent) => self.hold_intensity(fixtures, percent),
-            Level::By(points) => self.nudge_intensity(fixtures, points),
+            Level::To(percent) => self.hold_intensity(&landed, percent),
+            Level::By(points) => self.nudge_intensity(&landed, points),
         }
     }
 
-    /// Move these fixtures' Intensity by so many percentage points.
+    /// Move these Intensities by so many percentage points.
     ///
     /// The station does the arithmetic, from what it is showing at the moment it
     /// applies the write. This plugin deliberately does not read a level and compute
@@ -328,13 +366,13 @@ impl CommandLine {
     /// number and write the same answer, and one of the two nudges would be lost.
     /// It also does not need the fixture to be in the programmer already — the
     /// station takes the key, starting from what playback has it at.
-    fn nudge_intensity(&self, fixtures: &[String], points: f64) -> Result<(), String> {
-        for fixture_id in fixtures {
+    fn nudge_intensity(&self, landed: &[(String, Value)], points: f64) -> Result<(), String> {
+        for (fixture_id, kind) in landed {
             host::set(
                 &["programmer_values", "__by"],
                 &json!({
                     "fixtureId": fixture_id,
-                    "parameterKind": "Intensity",
+                    "parameterKind": kind,
                     "by": points / 100.0,
                 }),
             )?;
@@ -342,25 +380,26 @@ impl CommandLine {
         Ok(())
     }
 
-    /// Put these fixtures' Intensity into the programmer at a percentage.
-    fn hold_intensity(&self, fixtures: &[String], percent: f64) -> Result<(), String> {
+    /// Put these Intensities into the programmer at a percentage.
+    fn hold_intensity(&self, landed: &[(String, Value)], percent: f64) -> Result<(), String> {
         let level = (percent / 100.0).clamp(0.0, 1.0);
         let value = json!({ "type": "Float", "value": level });
         let held: Vec<String> = collection("programmer_values")?
             .iter()
             .filter_map(|e| e.get("id").and_then(Value::as_str).map(String::from))
             .collect();
-        for fixture_id in fixtures {
+        for (fixture_id, kind) in landed {
+            let key = key_of(kind)?;
             // The id is derived, not minted — the same derivation the values
             // panel uses, so the two write the same row and converge.
-            let id = core::entry_id(fixture_id, "Intensity");
+            let id = core::entry_id(fixture_id, &key);
             if held.contains(&id) {
                 host::set(&["programmer_values", &id, "value"], &value)?;
             } else {
                 let entry = json!({
                     "id": id,
                     "fixture_id": fixture_id,
-                    "parameter_kind": "Intensity",
+                    "parameter_kind": kind,
                     "value": value,
                     "effect": null,
                     "locked": false,
@@ -470,7 +509,7 @@ impl CommandLine {
                     Target::Index(n) => format!("Preset {n}"),
                 };
                 let n = values.len();
-                data::presets().create(&Preset { id: uuid::Uuid::new_v4(), name: name.clone(), values })?;
+                data::presets().create(&Preset { id: uuid::Uuid::new_v4(), name: name.clone(), values, color: None })?;
                 Ok(lines_response(vec![output_line(
                     "result",
                     format!("stored \"{name}\" — {n} values"),
@@ -927,6 +966,80 @@ fn selection_of(ctx: &Value) -> Vec<String> {
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default()
+}
+
+/// The cells the browser's selection is cut to: `[{ from, to }]`, or none.
+fn cells_of(ctx: &Value) -> Vec<Value> {
+    ctx.get("cells").and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+/// Where a value of `kind` lands over these fixtures and cells, as `(fixture, kind)`.
+/// The station's rule (`selection.targets`), never worked out here: the Programmer
+/// asks the same rule in the browser, and a third copy would be the one that drifts.
+fn targets(fixtures: &[String], cells: &[Value], kind: &Value) -> Result<Vec<(String, Value)>, String> {
+    if fixtures.is_empty() {
+        return Ok(Vec::new());
+    }
+    let answer = host::call(
+        "selection.targets",
+        &json!({ "fixtureIds": fixtures, "cells": cells, "parameterKind": kind }),
+    )?;
+    let rows = answer.as_array().cloned().unwrap_or_default();
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let fixture = row.get("fixtureId")?.as_str()?.to_string();
+            let kind = row.get("parameterKind")?.clone();
+            Some((fixture, kind))
+        })
+        .collect())
+}
+
+/// Every per-cell output parameter the types of these fixtures declare, once each.
+fn per_cell_kinds(fixtures: &[String]) -> Result<Vec<Value>, String> {
+    let rig = collection("fixtures")?;
+    let types = collection("fixture_types")?;
+    let mut kinds: Vec<Value> = Vec::new();
+    for fixture in rig.iter().filter(|f| {
+        f.get("id").and_then(Value::as_str).is_some_and(|id| fixtures.iter().any(|s| s == id))
+    }) {
+        let Some(type_id) = fixture.get("fixture_type_id").and_then(Value::as_str) else { continue };
+        let Some(fixture_type) =
+            types.iter().find(|t| t.get("id").and_then(Value::as_str) == Some(type_id))
+        else {
+            continue;
+        };
+        for p in fixture_type.get("parameters").and_then(Value::as_array).into_iter().flatten() {
+            let per_cell = p.get("per_cell").and_then(Value::as_bool).unwrap_or(false);
+            let output = p.get("direction").and_then(Value::as_str).unwrap_or("Output") == "Output";
+            if let Some(kind) = p.get("kind").filter(|_| per_cell && output) {
+                if !kinds.contains(kind) {
+                    kinds.push(kind.clone());
+                }
+            }
+        }
+    }
+    Ok(kinds)
+}
+
+/// The key a kind is held under: `Intensity`, `ColorRgb@7`.
+fn key_of(kind: &Value) -> Result<String, String> {
+    let kind: sdk::schema::ParameterKind =
+        serde_json::from_value(kind.clone()).map_err(|e| format!("the station named a kind this cannot read: {e}"))?;
+    Ok(parameter_key(&kind))
+}
+
+/// How a cut is said back: `cells 1–20`, `cells 5, 9`, `cells 20–1`.
+fn said_cells(cells: &[core::Range]) -> Option<String> {
+    if cells.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = cells
+        .iter()
+        .map(|r| if r.from == r.to { r.from.to_string() } else { format!("{}–{}", r.from, r.to) })
+        .collect();
+    let word = if cells.len() == 1 && cells[0].from == cells[0].to { "cell" } else { "cells" };
+    Some(format!("{word} {}", parts.join(", ")))
 }
 
 fn singular(table: &str) -> &str {

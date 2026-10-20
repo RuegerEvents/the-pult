@@ -91,6 +91,18 @@ export const elements: Readable<Element[]> = derived(
 );
 
 /** Whether anything selected has cells, for the panels that offer a cell field. */
+/**
+ * What a value set on the selection is aimed at: the cut cells where the query cuts,
+ * and otherwise each fixture whole, so a bar selected whole takes its master and a
+ * strip selected whole takes every cell (`rowTargets` decides which). The station's
+ * `selection.targets` builds the same thing before it asks the same rule.
+ */
+export const targetElements: Readable<Element[]> = derived(
+	[elements, selection, query],
+	([$elements, $selection, $query]) =>
+		($query.cells ?? []).length ? $elements : $selection.map((fixture) => ({ fixture, cell: null }))
+);
+
 export const hasCellsSelected: Readable<boolean> = derived(elements, ($elements) =>
 	$elements.some((e) => e.cell !== null)
 );

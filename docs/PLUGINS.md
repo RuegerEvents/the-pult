@@ -399,9 +399,12 @@ with a transcript. Both drive your plugin over three methods arriving at
 - `surface.help` — `{ "topic"? }` → `{ "text" }`.
 
 `ctx` on these calls is the browser's context: `{ "selection": [fixture
-uuids], "userId": … }`. Selection lives in the browser, not the show — two
-operators hold different fixtures — so it comes to you per call and goes
-back as an effect.
+uuids], "cells": [{ "from", "to" }], "userId": … }`. Selection lives in the
+browser, not the show — two operators hold different fixtures — so it comes to
+you per call and goes back as an effect. `cells` is the cut the selection makes
+into multi-cell fixtures (empty is every cell); to know where a value set on it
+lands, ask `selection.targets` rather than working it out, so your plugin puts a
+value on the same keys the Programmer does.
 
 **A web-component panel** is JavaScript your plugin ships:
 

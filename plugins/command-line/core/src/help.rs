@@ -33,6 +33,9 @@ Selecting fixtures
   group 3                 select a saved group, by its place or its name
   group "movers"          — and it keeps following the rig, as the group does
   fixture 1 thru 5 + group 2   groups and ranges combine
+  fixture 3 . 1 thru 20   only cells 1 to 20 of a strip or a bar (MA's dot)
+  group 2 . 20 thru 1     a span may run backwards; + joins spans: . 1 + 5
+  . 1 thru 10             cut what is already selected to those cells
   @ 80  /  at 80          the selection to 80% intensity
   at +10  /  at -10       ten percent brighter or darker than it is now
   full  /  out            the selection to 100% / 0%

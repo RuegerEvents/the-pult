@@ -1,0 +1,178 @@
+{
+  "$comment": "Where a value set on a selection lands: pult_schema::types::targets and programmer.ts's rowTargets both read this. A type is its cell count and its output parameters by key, each whole or per cell.",
+  "types": {
+    "strip": {
+      "cells": 3,
+      "parameters": [
+        {
+          "kind": "ColorRgb",
+          "perCell": true
+        }
+      ]
+    },
+    "par": {
+      "cells": 0,
+      "parameters": [
+        {
+          "kind": "Intensity",
+          "perCell": false
+        },
+        {
+          "kind": "ColorRgb",
+          "perCell": false
+        }
+      ]
+    },
+    "bar": {
+      "cells": 4,
+      "parameters": [
+        {
+          "kind": "Intensity",
+          "perCell": false
+        },
+        {
+          "kind": "ColorRgb",
+          "perCell": true
+        }
+      ]
+    },
+    "mastered": {
+      "cells": 3,
+      "parameters": [
+        {
+          "kind": "Intensity",
+          "perCell": false
+        },
+        {
+          "kind": "Intensity",
+          "perCell": true
+        }
+      ]
+    }
+  },
+  "fixtures": {
+    "s": "strip",
+    "p": "par",
+    "b": "bar",
+    "m": "mastered",
+    "x": "unknown"
+  },
+  "cases": [
+    {
+      "name": "each selected cell, and a par beside them as itself",
+      "kind": "ColorRgb",
+      "elements": [
+        {
+          "fixture": "s",
+          "cell": 2
+        },
+        {
+          "fixture": "s",
+          "cell": 3
+        },
+        {
+          "fixture": "p",
+          "cell": null
+        }
+      ],
+      "expected": [
+        "s/ColorRgb@2",
+        "s/ColorRgb@3",
+        "p/ColorRgb"
+      ]
+    },
+    {
+      "name": "a bar's master once however many of its cells are selected",
+      "kind": "Intensity",
+      "elements": [
+        {
+          "fixture": "b",
+          "cell": 1
+        },
+        {
+          "fixture": "b",
+          "cell": 2
+        }
+      ],
+      "expected": [
+        "b/Intensity"
+      ]
+    },
+    {
+      "name": "a per-cell parameter on a strip selected whole is every cell",
+      "kind": "ColorRgb",
+      "elements": [
+        {
+          "fixture": "s",
+          "cell": null
+        }
+      ],
+      "expected": [
+        "s/ColorRgb@1",
+        "s/ColorRgb@2",
+        "s/ColorRgb@3"
+      ]
+    },
+    {
+      "name": "a fixture without the parameter is passed over",
+      "kind": "Intensity",
+      "elements": [
+        {
+          "fixture": "s",
+          "cell": 1
+        },
+        {
+          "fixture": "p",
+          "cell": null
+        }
+      ],
+      "expected": [
+        "p/Intensity"
+      ]
+    },
+    {
+      "name": "a kind declared whole and per cell: a cell takes its own",
+      "kind": "Intensity",
+      "elements": [
+        {
+          "fixture": "m",
+          "cell": 2
+        },
+        {
+          "fixture": "m",
+          "cell": 3
+        }
+      ],
+      "expected": [
+        "m/Intensity@2",
+        "m/Intensity@3"
+      ]
+    },
+    {
+      "name": "a kind declared whole and per cell: the fixture selected whole takes the master",
+      "kind": "Intensity",
+      "elements": [
+        {
+          "fixture": "m",
+          "cell": null
+        }
+      ],
+      "expected": [
+        "m/Intensity"
+      ]
+    },
+    {
+      "name": "a fixture whose type is not here takes the kind as itself",
+      "kind": "Intensity",
+      "elements": [
+        {
+          "fixture": "x",
+          "cell": null
+        }
+      ],
+      "expected": [
+        "x/Intensity"
+      ]
+    }
+  ]
+}

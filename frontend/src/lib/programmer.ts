@@ -160,7 +160,13 @@ export type Target = { fixtureId: string; kind: ParameterKind };
  * Where setting one parameter of a selection lands: one target per element that has
  * it. A cell takes a per-cell parameter as itself; a fixture with cells selected whole
  * takes it on every cell; and a parameter that is the whole fixture's (a bar's master
- * dimmer) is set once per fixture however many of its cells are selected.
+ * dimmer) is set once per fixture however many of its cells are selected. Where a type
+ * declares a kind both whole and per cell, a selected cell takes its own and a fixture
+ * selected whole takes the master. A fixture whose type is not here takes the kind as
+ * itself, the way the station's `__by` treats it.
+ *
+ * The station's half is `pult_schema::types::group::targets`, which the command line
+ * asks through `selection.targets`; `testdata/cell-targets.json` holds the two together.
  */
 export function rowTargets(
 	kind: ParameterKind,
@@ -179,14 +185,21 @@ export function rowTargets(
 	};
 	for (const element of elements) {
 		const type = typeOf(element.fixture);
-		const param = type?.parameters.find((p) => p.direction === 'Output' && parameterKey(p.kind) === key);
-		if (!type || !param) continue;
-		if (param.per_cell && type.cells > 0) {
-			if (element.cell !== null) add(element.fixture, inCell(base, element.cell));
-			else for (let cell = 1; cell <= type.cells; cell++) add(element.fixture, inCell(base, cell));
-		} else {
+		if (!type) {
 			add(element.fixture, base);
+			continue;
 		}
+		let whole = false;
+		let perCell = false;
+		for (const p of type.parameters) {
+			if (p.direction !== 'Output' || parameterKey(p.kind) !== key) continue;
+			if (p.per_cell && type.cells > 0) perCell = true;
+			else whole = true;
+		}
+		if (element.cell !== null && perCell) add(element.fixture, inCell(base, element.cell));
+		else if (whole) add(element.fixture, base);
+		else if (element.cell === null && perCell)
+			for (let cell = 1; cell <= type.cells; cell++) add(element.fixture, inCell(base, cell));
 	}
 	return out;
 }

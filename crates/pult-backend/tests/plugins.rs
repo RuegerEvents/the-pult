@@ -437,6 +437,105 @@ async fn a_station_runs_the_reference_plugins() {
     assert!(missing.is_err());
 
     running.serve.abort();
+    // ── Cells ─────────────────────────────────────────────────────────────────
+    //
+    // A bar with a master dimmer and a dimmer per cell. `.` cuts the selection to
+    // cells, hands the cut back as part of the query, and a level lands on exactly
+    // the keys the Programmer would put it on — the station's rule, asked.
+    let bar_type = uuid::Uuid::new_v4();
+    let float = json!({ "type": "Float", "value": 0.0 });
+    let create = |table: &str, value: Value| {
+        running.engine.set(
+            vec![
+                pult_schema::path::PathSegment::Key(table.into()),
+                pult_schema::path::PathSegment::Key("__create".into()),
+            ],
+            pult_schema::lifecycle::Lifecycle::Persisted,
+            value,
+        )
+    };
+    create(
+        "fixture_types",
+        json!({
+            "id": bar_type, "name": "Bar", "manufacturer": "Test", "channel_count": 4, "cells": 3,
+            "parameters": [
+                { "kind": "Intensity", "default_value": float },
+                { "kind": "Intensity", "default_value": float, "per_cell": true },
+            ],
+        }),
+    )
+    .await
+    .expect("a bar type");
+    let bar = uuid::Uuid::new_v4();
+    create(
+        "fixtures",
+        json!({
+            "id": bar, "name": "Bar 1", "fixture_type_id": bar_type,
+            "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 2, "address": 1 }] } },
+            "position": null, "sensed_values": {}
+        }),
+    )
+    .await
+    .expect("a bar");
+    let held_on_bar = || async {
+        let rows = running
+            .engine
+            .get(vec![pult_schema::path::PathSegment::Key("programmer_values".into())])
+            .await
+            .unwrap_or(Value::Null);
+        let mut keys: Vec<String> = rows
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["fixture_id"] == json!(bar))
+            .map(|r| {
+                let kind: pult_schema::types::fixture::ParameterKind =
+                    serde_json::from_value(r["parameter_kind"].clone()).expect("a kind");
+                format!(
+                    "{}={:.2}",
+                    pult_schema::types::fixture::parameter_key(&kind),
+                    r["value"]["value"].as_f64().unwrap_or(f64::NAN)
+                )
+            })
+            .collect();
+        keys.sort();
+        keys
+    };
+
+    // By its place in the patch, which is how the command line counts.
+    let rig = running
+        .engine
+        .get(vec![pult_schema::path::PathSegment::Key("fixtures".into())])
+        .await
+        .expect("the rig");
+    let place = rig
+        .as_array()
+        .and_then(|rows| rows.iter().position(|r| r["id"] == json!(bar)))
+        .expect("the bar is patched")
+        + 1;
+    let result = exec(&format!("fixture {place} . 2 thru 3 at 50")).await.expect("exec answers");
+    assert!(result["error"].is_null(), "the dot parses and runs: {result}");
+    assert_eq!(
+        result["effects"]["selection"]["query"]["cells"],
+        json!([{ "from": 2, "to": 3 }]),
+        "the cut travels as part of the selection's question: {result}"
+    );
+    assert_eq!(held_on_bar().await, vec!["Intensity@2=0.50", "Intensity@3=0.50"], "each cut cell, not the master: {result}");
+
+    // The bar selected whole takes the master, once.
+    let payload = json!({ "payload": { "line": "at 80" }, "ctx": { "selection": [bar], "cells": [] } });
+    let result = running
+        .plugins
+        .call("command-line".into(), "surface.exec".into(), payload)
+        .await
+        .expect("exec answers");
+    assert!(result["error"].is_null(), "`at 80` runs: {result}");
+    assert_eq!(
+        held_on_bar().await,
+        vec!["Intensity=0.80", "Intensity@2=0.50", "Intensity@3=0.50"],
+        "a fixture selected whole takes its master"
+    );
+
     let _ = std::fs::remove_dir_all(&show);
     let _ = std::fs::remove_file(&store);
 }
