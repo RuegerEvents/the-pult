@@ -68,8 +68,8 @@ pub fn derive_fixture_type_with_thumbnail(
     let gdtf = &file.description.fixture_type;
     let mut warnings = pult_gdtf::validate::check(gdtf);
 
-    let (parameters, emitters) = derive_parameters(gdtf, &mut warnings);
-    let modes = derive_modes(gdtf, &emitters, &mut warnings);
+    let (parameters, emitters, cells) = derive_parameters(gdtf, &mut warnings);
+    let modes = derive_modes(gdtf, &emitters, &parameters, &mut warnings);
     // Before the physical data, which measures the fixture across it.
     let geometry = derive_geometry(gdtf, file);
 
@@ -113,7 +113,7 @@ pub fn derive_fixture_type_with_thumbnail(
         // Filled in by the caller, which is the half of this that can store bytes.
         plan_symbol: PlanSymbol::Auto,
         thumbnail: None,
-        cells: 0,
+        cells,
     };
     (fixture_type, warnings, thumbnail(file))
 }
@@ -152,10 +152,16 @@ fn thumbnail(file: &GdtfFile) -> Option<(String, Vec<u8>)> {
 /// Across *every* mode on purpose: the parameter list is what the light can do, and a
 /// head that has a zoom in one mode still has a zoom. Which of them a given unit can
 /// reach is its mode's business, and the programmer grays out the rest.
+///
+/// **A channel on a referenced geometry is a cell's.** A bar that describes one pixel
+/// and points at it twelve times has twelve cells, and the attribute those channels
+/// carry is a per-cell parameter rather than one parameter twelve channels deep — which
+/// is what collapsing by kind used to make of it, a twelve-cell bar with one color.
+/// The cell count is the most references any mode expands.
 fn derive_parameters(
     gdtf: &GdtfType,
     warnings: &mut Vec<Warning>,
-) -> (Vec<ParameterDefinition>, Vec<Emitter>) {
+) -> (Vec<ParameterDefinition>, Vec<Emitter>, u16) {
     let by_name: BTreeMap<&str, &pult_gdtf::model::Attribute> = gdtf
         .attribute_definitions
         .attributes
@@ -167,10 +173,12 @@ fn derive_parameters(
     let mut parameters: Vec<ParameterDefinition> = Vec::new();
     let mut emitters: Vec<Emitter> = Vec::new();
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut cells: u16 = 0;
 
     for mode in &gdtf.dmx_modes.items {
         let (channels, mut mode_warnings) = resolve::expand_mode(gdtf, mode);
         warnings.append(&mut mode_warnings);
+        cells = cells.max(channels.iter().filter_map(|c| c.instance).max().unwrap_or(0));
 
         for channel in &channels {
             let Some(node) = channel.attribute else { continue };
@@ -208,6 +216,9 @@ fn derive_parameters(
                 if parameters[*at].physical.is_none() {
                     parameters[*at].physical = physical_range(gdtf, channel, attribute, &by_name);
                 }
+                if channel.instance.is_some() {
+                    parameters[*at].per_cell = true;
+                }
                 continue;
             }
 
@@ -219,6 +230,7 @@ fn derive_parameters(
                     .get(attribute)
                     .and_then(|a| a.feature.as_ref())
                     .and_then(|feature| feature.0.first().cloned()),
+                per_cell: channel.instance.is_some(),
                 ..ParameterDefinition::new(kind, resting_value_for(&kind_of(attribute)))
             });
         }
@@ -230,7 +242,16 @@ fn derive_parameters(
         color.emitters = emitters.clone();
     }
 
-    (parameters, emitters)
+    // A file with references but no channel on them has nothing per cell to set, and
+    // one reference is a fixture built out of a part, not a fixture of one cell: a par
+    // that references its single emitter has a color, not a color in cell 1.
+    if cells < 2 || !parameters.iter().any(|p| p.per_cell) {
+        cells = 0;
+        for parameter in &mut parameters {
+            parameter.per_cell = false;
+        }
+    }
+    (parameters, emitters, cells)
 }
 
 fn kind_of(attribute: &str) -> ParameterKind {
@@ -334,7 +355,12 @@ fn emitter_rgb(gdtf: &GdtfType, emitter: &str, attribute: &str) -> Option<Vec3> 
 
 // ── Modes ────────────────────────────────────────────────────────────
 
-fn derive_modes(gdtf: &GdtfType, emitters: &[Emitter], warnings: &mut Vec<Warning>) -> Vec<DmxMode> {
+fn derive_modes(
+    gdtf: &GdtfType,
+    emitters: &[Emitter],
+    parameters: &[ParameterDefinition],
+    warnings: &mut Vec<Warning>,
+) -> Vec<DmxMode> {
     gdtf.dmx_modes
         .items
         .iter()
@@ -343,7 +369,7 @@ fn derive_modes(gdtf: &GdtfType, emitters: &[Emitter], warnings: &mut Vec<Warnin
             let breaks = resolve::footprint(gdtf, mode);
             let layouts = channels
                 .iter()
-                .filter_map(|channel| layout_of(channel, emitters, warnings))
+                .filter_map(|channel| layout_of(channel, emitters, parameters, warnings))
                 .collect();
             DmxMode { name: mode.name.clone(), breaks, channels: layouts }
         })
@@ -353,10 +379,20 @@ fn derive_modes(gdtf: &GdtfType, emitters: &[Emitter], warnings: &mut Vec<Warnin
 fn layout_of(
     channel: &resolve::ResolvedChannel<'_>,
     emitters: &[Emitter],
+    parameters: &[ParameterDefinition],
     warnings: &mut Vec<Warning>,
 ) -> Option<DmxChannelLayout> {
     let attribute = channel.attribute?.last()?.to_string();
-    let kind = attributes::kind_for(&attribute)?;
+    let base = attributes::kind_for(&attribute)?;
+    // A cell's channel names its cell. A per-cell parameter reached by a mode that
+    // has no cells — a bar's one-color mode — drives cell 1: there is no whole-bar
+    // color for it to drive, and dropping the channel would make the mode do nothing.
+    let per_cell = parameters.iter().any(|p| p.per_cell && p.kind == base);
+    let kind = match (channel.instance, per_cell) {
+        (Some(cell), true) => base.in_cell(cell),
+        (None, true) => base.in_cell(1),
+        _ => base,
+    };
     if channel.break_number == 0 {
         warnings.push(Warning::new(&attribute, "is in break 0, which does not exist"));
         return None;

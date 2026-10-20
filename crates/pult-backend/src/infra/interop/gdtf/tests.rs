@@ -284,6 +284,22 @@ fn a_multi_cell_bar_is_patched_as_the_whole_bar_rather_than_one_cell() {
     assert_eq!(mode.channels.len(), 16);
 }
 
+/// And it is one fixture with four cells, not one with a single color sixteen channels
+/// deep: every referenced pixel is a cell, and each of its channels names its own.
+#[test]
+fn a_multi_cell_bar_has_a_cell_per_referenced_pixel() {
+    let (fixture_type, _) = derive("multicell-bar");
+    assert_eq!(fixture_type.cells, 4);
+    assert!(fixture_type.parameters.iter().any(|p| p.per_cell));
+    let mode = fixture_type.mode("Pixel");
+    let cells: std::collections::BTreeSet<&str> =
+        mode.channels.iter().filter_map(|c| c.parameter_key.split_once('@').map(|(_, n)| n)).collect();
+    assert_eq!(cells.into_iter().collect::<Vec<_>>(), ["1", "2", "3", "4"]);
+    for channel in &mode.channels {
+        assert!(fixture_type.parameter_for_key(&channel.parameter_key).is_some(), "{}", channel.parameter_key);
+    }
+}
+
 #[test]
 fn a_minimal_file_is_still_a_fixture_type() {
     let (fixture_type, warnings) = derive("minimal");
