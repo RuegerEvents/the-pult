@@ -414,7 +414,9 @@ pub fn say_if_multicast_is_refused() {
                 "[network] this process may not send multicast ({e}): no mDNS, so no peers or \
                  OpenHaunt nodes will be found, and multicast sACN will not leave. On macOS, \
                  allow Local Network access for the app that started the console \
-                 (System Settings → Privacy & Security → Local Network)"
+                 (System Settings → Privacy & Security → Local Network): the-pult \
+                 itself for the desktop app, and the terminal (Terminal, iTerm, an \
+                 editor) for a pult-backend started from a shell"
             );
         }
     });

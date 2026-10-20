@@ -1396,7 +1396,8 @@ fn advertise(config: &NodeConfig, http_addr: SocketAddr, stop: &Stopper) -> Resu
         if let Err(e) = socket.send_to(&[0u8; 12], ("224.0.0.251", 5353)) {
             warn!(
                 "[sim] this process may not send multicast ({e}), so nothing will discover {}: \
-                 on macOS, allow Local Network access for the app that started it",
+                 on macOS, allow Local Network access for the app that started it \
+                 (the terminal, for a sim started from a shell)",
                 config.serial
             );
         }

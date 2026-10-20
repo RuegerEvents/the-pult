@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged by Tauri into the bundle's own Info.plist. Without these macOS gives the app
+  no Local Network access and never asks: multicast is refused with "No route to host",
+  so mDNS finds no peer, no OpenHaunt node and no MVR-xchange group, and multicast sACN
+  never leaves. The service types are every one a station advertises or browses.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>the-pult finds the other consoles, OpenHaunt nodes and MVR-xchange stations on the show network, and sends DMX over sACN and Art-Net to the rig.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_pult._tcp</string>
+    <string>_openhaunt._tcp</string>
+    <string>_mvrxchange._tcp</string>
+  </array>
+</dict>
+</plist>

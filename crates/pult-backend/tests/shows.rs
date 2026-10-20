@@ -32,9 +32,26 @@ impl Drop for Dir {
     }
 }
 
+/// Preferences of this binary's own, and so a `recent.toml` of its own beside them.
+///
+/// A console records every show it opens in the list beside `preferences.toml`, and
+/// without this that was the operator's: their welcome screen came up offering ten
+/// temporary bundles these tests had already deleted. Once per process, because an
+/// env var is.
+fn own_preferences() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("pult-shows-prefs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("a preferences directory");
+        // SAFETY: inside `call_once`, before any station in this process has started.
+        unsafe { std::env::set_var("PULT_PREFERENCES", dir.join("preferences.toml")) };
+    });
+}
+
 /// A console with nowhere to keep shows but this test's own directory, and an
 /// identity that is not the operator's.
 fn a_config(dir: &Dir) -> Config {
+    own_preferences();
     Config {
         port: 0,
         sync_port: 0,
@@ -178,14 +195,22 @@ async fn the_list_is_what_a_welcome_screen_can_offer() {
     rpcs::open_a_show("show.new", &json!({ "name": "Listed" }), &shows).await.unwrap();
     config_when_settled(port, true).await;
 
-    let listed = rpcs::list_shows(&shows).await.expect("it lists");
+    // Read out of the `show` row, which the engine seeds from the bundle's name and
+    // this station's preferences. It used to be a button in the Show panel, so a
+    // console nobody had opened a browser onto had no show at all. Seeded once the
+    // station is answering rather than before, so a list read at once can be early.
+    let mut listed = Value::Null;
+    for _ in 0..200 {
+        listed = rpcs::list_shows(&shows).await.expect("it lists");
+        if listed["inDir"][0]["createdAt"].is_string() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     let in_dir = listed["inDir"].as_array().expect("an array");
     assert_eq!(in_dir.len(), 1, "{listed}");
     assert_eq!(in_dir[0]["name"], "Listed");
     assert_eq!(in_dir[0]["fixtures"], 0);
-    // Read out of the `show` row, which the engine seeded from the bundle's name and
-    // this station's preferences. It used to be a button in the Show panel, so a
-    // console nobody had opened a browser onto had no show at all.
     assert!(in_dir[0]["createdAt"].is_string(), "{listed}");
 }
 
@@ -410,9 +435,11 @@ async fn a_restored_show_is_the_show_as_it_was() {
     for _ in 0..200 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         if show_name(&show).await == "Act One" {
-            // And the point that was left behind is still reachable: the restore
-            // takes a version of what it is about to overwrite.
-            assert!(config_of(port).await["show"].is_object(), "and the console is up");
+            // The file is put back *before* the next station binds the port, so the
+            // console is asked only once it is answering again. Asking at once was
+            // the flake: on a loaded machine the gap between the two is long enough
+            // to land in.
+            config_when_settled(port, true).await;
             return;
         }
     }
@@ -695,8 +722,9 @@ async fn a_new_show_can_come_with_a_demo_in_it() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let listed = rpcs::list_shows(&shows).await.expect("it lists");
         if let Some(row) = listed["inDir"].as_array().and_then(|rows| rows.first()) {
-            if row["fixtures"].as_u64().unwrap_or(0) == 5 {
-                assert!(row["cues"].as_u64().unwrap_or(0) >= 3, "{listed}");
+            // Fixtures are seeded before cues, so a summary read in between has the
+            // rig and not yet the stack. Wait for both rather than asserting on one.
+            if row["fixtures"].as_u64().unwrap_or(0) == 5 && row["cues"].as_u64().unwrap_or(0) >= 3 {
                 assert_eq!(row["name"], "Haunt", "the demo names the show, not the folder");
                 return;
             }
