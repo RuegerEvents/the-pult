@@ -115,6 +115,21 @@ fn the_transport_is_the_three_numbers_that_move_a_playhead() {
     assert_ne!(transport_of(&timeline), (5, 7, 1.0));
 }
 
+const ZONE: Uuid = Uuid::from_u128(20);
+
+/// One mono zone, mapped on the stations named.
+fn a_zone(mapped: &[(NodeId, u16)]) -> SpeakerZone {
+    SpeakerZone {
+        id: ZONE,
+        name: "Area 2".into(),
+        color: None,
+        width: 1,
+        channels: mapped.iter().map(|(node, channel)| (*node, vec![*channel])).collect(),
+        nodes: Vec::new(),
+        notes: String::new(),
+    }
+}
+
 fn a_clip(start_ms: u64, offset_ms: u64, length_ms: Option<u64>) -> AudioClip {
     AudioClip {
         id: Uuid::from_u128(9),
@@ -128,7 +143,7 @@ fn a_clip(start_ms: u64, offset_ms: u64, length_ms: Option<u64>) -> AudioClip {
         fade_in_ms: 0,
         fade_out_ms: 0,
         looped: false,
-        destination: AudioDestination::Station { channels: vec![3] },
+        destination: pult_schema::types::timeline::AudioDestination::Zone { zone: ZONE },
     }
 }
 
@@ -171,10 +186,37 @@ fn a_clips_placement_is_what_the_mixer_is_handed() {
 }
 
 /// What decides whether the device has to be open: any clip this station mixes itself.
-#[test]
-fn a_timeline_with_clips_wants_the_output_and_one_without_does_not() {
+#[tokio::test]
+async fn a_timeline_with_clips_wants_the_output_and_one_without_does_not() {
+    let here = NodeId(Uuid::from_u128(1));
+    let mut manager = a_manager(here, true);
+    manager.zones = vec![a_zone(&[(here, 3)])];
     let mut timeline = a_timeline(None);
-    assert_eq!(station_clips(&timeline).count(), 0);
+    assert!(manager.station_clips(&timeline).is_empty());
     timeline.clips.push(a_clip(0, 0, None));
-    assert_eq!(station_clips(&timeline).count(), 1);
+    assert_eq!(manager.station_clips(&timeline).len(), 1);
+}
+
+/// The same clip on two stations is two sound cards' channels — and on a station the
+/// zone does not name, a fault by name rather than a fold onto channels it has.
+#[tokio::test]
+async fn each_station_resolves_a_clips_zone_through_its_own_map() {
+    let booth = NodeId(Uuid::from_u128(1));
+    let spare = NodeId(Uuid::from_u128(2));
+    let elsewhere = NodeId(Uuid::from_u128(3));
+    let zones = vec![a_zone(&[(booth, 4), (spare, 1)])];
+    let mut timeline = a_timeline(None);
+    timeline.clips.push(a_clip(0, 0, None));
+
+    for (node, wanted) in [(booth, vec![4]), (spare, vec![1])] {
+        let mut manager = a_manager(node, true);
+        manager.zones = zones.clone();
+        let clips = manager.station_clips(&timeline);
+        assert_eq!(clips[0].1, Ok(wanted));
+    }
+    let mut manager = a_manager(elsewhere, true);
+    manager.station_name = "stage-rack".into();
+    manager.zones = zones;
+    let clips = manager.station_clips(&timeline);
+    assert_eq!(clips[0].1, Err("Area 2 is not mapped on stage-rack".to_string()));
 }

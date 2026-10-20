@@ -149,7 +149,10 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 /// 7. American spelling, everywhere: `colour` became `color`, `centre` `center` and
 ///    `catalogue` `catalog`, in column names and in serialized enum values alike. A
 ///    generation-6 `SceneObject::catalogue` would read as a piece with no catalog entry.
-pub(super) const SCHEMA_GENERATION: i64 = 7;
+/// 8. A clip goes to a speaker zone rather than to channel numbers: the
+///    `AudioDestination::Station { channels }` variant is gone, so a generation-7 clip
+///    routed to channels is a variant nothing in this build can name.
+pub(super) const SCHEMA_GENERATION: i64 = 8;
 
 /// Say plainly that a showfile is from another build, instead of panicking somewhere
 /// deep in a generated `from_columns`.

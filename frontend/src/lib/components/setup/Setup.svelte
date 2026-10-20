@@ -27,7 +27,7 @@
 	 * then what it is plugged into, then who else is on it, then the show itself.
 	 */
 	const SECTIONS: PanelId[] = (
-		['patch', 'fixturetypes', 'devices', 'outputs', 'network', 'session', 'plugins', 'xchange', 'show', 'settings'] as PanelId[]
+		['patch', 'fixturetypes', 'devices', 'outputs', 'audio', 'network', 'session', 'plugins', 'xchange', 'show', 'settings'] as PanelId[]
 	).filter((id) => panelHome(PANELS[id]) !== 'workspace');
 
 	const current = $derived(

@@ -1,20 +1,20 @@
 /**
  * Where a clip's sound goes, as the timeline panel reads and writes it.
  *
- * `AudioDestination` is the station's own channels or an OpenHaunt node's
- * loudspeaker. The panel offers the second only for nodes that said they have one —
- * the `audio` object of their `/info`, which the station keeps on the device row — so
- * nothing here knows what a node is beyond what the node said.
+ * `AudioDestination` is a speaker zone — named for the room, mapped by each station to
+ * its own channels (`$lib/zones.ts`) — or one OpenHaunt node's loudspeaker. The panel
+ * offers the second only for nodes that said they have one — the `audio` object of
+ * their `/info`, which the station keeps on the device row — so nothing here knows what
+ * a node is beyond what the node said.
  */
-import type { AudioDestination, DevicesState, NodeAudioMode } from '$lib/generated/index.js';
-import { channelsText } from '$lib/waveform.js';
+import type { AudioDestination, DevicesState, NodeAudioMode, SpeakerZone } from '$lib/generated/index.js';
 
-/** The channels a station destination names, or `null` for a node. */
-export function stationChannels(destination: AudioDestination): number[] | null {
-	return 'Station' in destination ? destination.Station.channels : null;
+/** The zone a destination names, or `null` for a node. */
+export function zoneOf(destination: AudioDestination): string | null {
+	return 'Zone' in destination ? destination.Zone.zone : null;
 }
 
-/** The node a destination names, or `null` for the station's own channels. */
+/** The node a destination names, or `null` for a zone. */
 export function nodeOf(destination: AudioDestination): { serial: string; mode: NodeAudioMode } | null {
 	return 'Node' in destination ? destination.Node : null;
 }
@@ -43,10 +43,10 @@ export function audioNodes(devices: DevicesState | null): AudioNode[] {
 		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** A destination in a few words, for a clip's chip. */
-export function destinationText(destination: AudioDestination, nodes: AudioNode[]): string {
-	const channels = stationChannels(destination);
-	if (channels) return `ch ${channelsText(channels) || '—'}`;
+/** A destination in a few words, for a clip's chip and its lane. */
+export function destinationText(destination: AudioDestination, zones: SpeakerZone[], nodes: AudioNode[]): string {
+	const zone = zoneOf(destination);
+	if (zone !== null) return zones.find((z) => z.id === zone)?.name ?? 'a deleted zone';
 	const node = nodeOf(destination);
 	if (!node) return '—';
 	const name = nodes.find((n) => n.serial === node.serial)?.name ?? node.serial;

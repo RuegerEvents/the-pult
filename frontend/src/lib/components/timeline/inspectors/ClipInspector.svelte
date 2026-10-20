@@ -9,25 +9,35 @@
 	 * Edited in place: every field is one value and Ctrl-Z takes it back (task 79's rule).
 	 */
 
-	import type { AudioClip, AudioDestination } from '$lib/generated/index.js';
+	import type { AudioClip, AudioDestination, SpeakerZone } from '$lib/generated/index.js';
 	import type { ClipRow } from '$lib/kinds/timeline.kind.js';
-	import { audioNodes, bytesText, nodeOf, stationChannels } from '$lib/destination.js';
+	import { categoryColor } from '$lib/layout/categories.js';
+	import { audioNodes, bytesText, nodeOf, zoneOf } from '$lib/destination.js';
 	import { canEdit } from '$lib/stores/showLock.js';
+	import { openSetup } from '$lib/stores/setup.js';
 	import { audioOutput, audioStatus, current, devices, nodeAudio, writeColumns } from '$lib/stores/timelines.js';
-	import { channelsText, clock, parseChannels, parsePosition } from '$lib/waveform.js';
+	import { audioPrefs, loadAudioPrefs, namesFor, playerOf, stations, zones } from '$lib/stores/zones.js';
+	import { clock, parsePosition } from '$lib/waveform.js';
+	import { channelName, mappingOn, widthName, zoneProblem } from '$lib/zones.js';
+	import { getStationContext } from '$lib/ws/context.js';
 
 	let { rows }: { rows: ClipRow[] } = $props();
 
 	const nodes = $derived(audioNodes($devices));
 	const one = $derived(rows.length === 1 ? rows[0] : null);
-	let problem = $state<string | null>(null);
+	const station = getStationContext();
+	loadAudioPrefs();
 
 	/**
-	 * How many channels there are to offer: the device this station has open, or —
-	 * where it has none, or this browser is on a station that is not the one playing —
-	 * sixteen, which is a number to type past rather than a limit.
+	 * The station that plays these clips — the timeline's own, or the leader — since
+	 * that is the one whose map decides where a zone comes out. The first row's
+	 * timeline stands for all of them: several clips at once are nearly always one
+	 * scare's.
 	 */
-	const channelCount = $derived($audioOutput?.open && $audioOutput.channels > 0 ? $audioOutput.channels : 16);
+	const player = $derived(playerOf(rows[0] ? current(rows[0].timelineId) : undefined, $stations));
+	/** This browser's station plays them, so its own channel names apply. */
+	const playedHere = $derived(!!player && player.id === $station?.nodeId);
+	const names = $derived(playedHere ? namesFor($audioPrefs, $audioOutput?.device) : undefined);
 
 	/** One write per timeline touched, so editing five clips on one timeline is one row. */
 	async function change(edit: (clip: AudioClip) => Partial<AudioClip>) {
@@ -54,20 +64,23 @@
 		return rows.every((r) => JSON.stringify(r.clip.destination) === first) ? rows[0].clip.destination : null;
 	});
 
-	function toggleChannel(channel: number) {
-		void change((clip) => {
-			const now = stationChannels(clip.destination) ?? [];
-			const next = now.includes(channel) ? now.filter((c) => c !== channel) : [...now, channel].sort((a, b) => a - b);
-			return { destination: { Station: { channels: next } } };
-		});
+	/** Route every selected clip to a zone, or to one node (keeping how it reaches it). */
+	function pickZone(zone: SpeakerZone) {
+		void setAll({ destination: { Zone: { zone: zone.id } } });
+	}
+	function pickNode(serial: string) {
+		void change((clip) => ({ destination: { Node: { serial, mode: nodeOf(clip.destination)?.mode ?? 'Clip' } } }));
 	}
 
-	function pickTarget(serial: string) {
-		void change((clip) => ({
-			destination: serial
-				? { Node: { serial, mode: nodeOf(clip.destination)?.mode ?? 'Clip' } }
-				: { Station: { channels: stationChannels(clip.destination) ?? [1, 2] } }
-		}));
+	/** Where a zone comes out on the player, in its own channel names where they are known. */
+	function onPlayer(zone: SpeakerZone): string {
+		if (!player) return 'no station is playing this';
+		const problem = zoneProblem(zone, player.id, player.hostname);
+		if (problem) return problem;
+		const channels = mappingOn(zone, player.id);
+		const here = channels ? channels.map((c) => channelName(names, c)).join(', ') : '';
+		const speakers = zone.nodes.length ? `${zone.nodes.length} node speaker${zone.nodes.length === 1 ? '' : 's'}` : '';
+		return [here && `${here} on ${player.hostname}`, speakers].filter(Boolean).join(' + ');
 	}
 
 	const gainShared = $derived(rows.every((r) => r.clip.gain_db === rows[0].clip.gain_db) ? rows[0].clip.gain_db : null);
@@ -172,54 +185,53 @@
 	</div>
 
 	<span class="label">Goes to</span>
-	<select
-		class="select"
-		disabled={!$canEdit}
-		value={shared ? (nodeOf(shared)?.serial ?? '') : '?'}
-		onchange={(e) => pickTarget(e.currentTarget.value)}
-	>
-		{#if !shared}<option value="?" disabled>several places</option>{/if}
-		<option value="">this station's channels</option>
+	<div class="targets" role="group" aria-label="Where the clip's sound goes">
+		{#if !shared}<span class="note wide-note">several places — pick one for all of them</span>{/if}
+		{#each $zones as zone (zone.id)}
+			{@const chosen = shared !== null && zoneOf(shared) === zone.id}
+			{@const problem = player ? zoneProblem(zone, player.id, player.hostname) : null}
+			<button
+				class="target"
+				class:on={chosen}
+				class:warn={problem !== null}
+				disabled={!$canEdit}
+				style:--swatch={zone.color ?? categoryColor('playback')}
+				title={onPlayer(zone)}
+				onclick={() => pickZone(zone)}
+			>
+				<span class="swatch"></span>
+				<span class="target-name">{zone.name}</span>
+				<span class="target-note">{problem ?? widthName(zone.width)}</span>
+			</button>
+		{/each}
 		{#each nodes as node (node.serial)}
-			<option value={node.serial}>{node.name} — {node.outputs}{node.online ? '' : ' (offline)'}</option>
+			{@const chosen = shared !== null && nodeOf(shared)?.serial === node.serial}
+			<button class="target node" class:on={chosen} disabled={!$canEdit} onclick={() => pickNode(node.serial)}>
+				<span class="swatch"></span>
+				<span class="target-name">{node.name}</span>
+				<span class="target-note">{node.online ? node.outputs : 'offline'}</span>
+			</button>
 		{/each}
 		{#if shared && nodeOf(shared) && !nodes.some((n) => n.serial === nodeOf(shared)?.serial)}
-			<option value={nodeOf(shared)?.serial}>{nodeOf(shared)?.serial} (not found)</option>
+			<span class="says-bad">node {nodeOf(shared)?.serial} is not found</span>
 		{/if}
-	</select>
+		{#if shared && zoneOf(shared) && !$zones.some((z) => z.id === zoneOf(shared))}
+			<span class="says-bad">the zone this went to has been deleted</span>
+		{/if}
+	</div>
 
-	{#if shared && stationChannels(shared)}
-		{@const channels = stationChannels(shared) ?? []}
-		<span class="label">Channels</span>
-		<div class="inline">
-			<input
-				class="input narrow"
-				disabled={!$canEdit}
-				title="Output channels, counting from 1: 5, 6 or 1-4"
-				value={channelsText(channels)}
-				onchange={(e) => {
-					const parsed = parseChannels(e.currentTarget.value);
-					if (parsed) {
-						problem = null;
-						void setAll({ destination: { Station: { channels: parsed } } });
-					} else problem = 'Channels count from 1, written like 5, 6 or 1-4.';
-				}}
-			/>
-			<div class="channels">
-				{#each Array.from({ length: Math.min(64, channelCount) }, (_, i) => i + 1) as channel (channel)}
-					<button
-						class="channel"
-						class:on={channels.includes(channel)}
-						disabled={!$canEdit}
-						title="Channel {channel}"
-						onclick={() => toggleChannel(channel)}>{channel}</button
-					>
-				{/each}
+	{#if shared && zoneOf(shared)}
+		{@const zone = $zones.find((z) => z.id === zoneOf(shared))}
+		{#if zone}
+			<span class="label">Comes out of</span>
+			<div class="inline note">
+				<span class:says-bad={!!(player && zoneProblem(zone, player.id, player.hostname))}>{onPlayer(zone)}</span>
+				<button class="btn btn-ghost" onclick={() => openSetup('audio')}>Map zones…</button>
 			</div>
-		</div>
+		{/if}
 		<span class="label">Output</span>
 		{#if $audioOutput?.open}
-			<span class="note"><span class="says-good">{$audioOutput.device}</span> · {$audioOutput.channels} channels at {$audioOutput.sample_rate} Hz, on this station</span>
+			<span class="note"><span class="says-good">{names?.alias || $audioOutput.device}</span> · {$audioOutput.channels} channels at {$audioOutput.sample_rate} Hz, on this station</span>
 		{:else if $audioOutput?.fault}
 			<span class="says-bad">{$audioOutput.fault}</span>
 		{:else}
@@ -275,7 +287,6 @@
 		<span class="label">Not playing</span>
 		<span class="says-bad">{rows.length > 1 ? `${f.name}: ` : ''}{f.fault}</span>
 	{/each}
-	{#if problem}<p class="wide says-bad">{problem}</p>{/if}
 </div>
 
 <style>
@@ -293,26 +304,54 @@
 	.pairs .input {
 		width: 100%;
 	}
-	.channels {
+	.targets {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 2px;
+		gap: 4px;
+		min-width: 0;
 	}
-	.channel {
-		width: 28px;
-		height: 24px;
+	.wide-note {
+		flex-basis: 100%;
+	}
+	.target {
+		display: grid;
+		grid-template-columns: 10px auto;
+		grid-template-rows: auto auto;
+		column-gap: 6px;
+		align-items: center;
+		min-height: var(--control-h);
+		padding: 3px 8px;
 		background: var(--bg-sunken);
 		border: 1px solid var(--line-strong);
-		border-radius: 3px;
-		color: var(--text-dim);
+		border-radius: var(--radius);
+		color: var(--text);
 		font: inherit;
-		font-size: var(--font-xs);
-		padding: 0;
+		text-align: left;
 		cursor: pointer;
 	}
-	.channel.on {
-		background: var(--accent-solid);
+	.target .swatch {
+		grid-row: 1 / 3;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		background: var(--swatch, var(--cat-setup));
+	}
+	.target.node .swatch {
+		border-radius: 2px;
+		background: var(--text-dim);
+	}
+	.target-name {
+		font-size: var(--font-sm);
+	}
+	.target-note {
+		font-size: var(--font-xs);
+		color: var(--text-dim);
+	}
+	.target.warn .target-note {
+		color: var(--live);
+	}
+	.target.on {
 		border-color: var(--accent-solid);
-		color: var(--text-bright);
+		background: color-mix(in srgb, var(--accent-solid) 18%, var(--bg-sunken));
 	}
 </style>

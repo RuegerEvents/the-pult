@@ -45,6 +45,7 @@ import Share2 from '@lucide/svelte/icons/share-2';
 import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
 import Smartphone from '@lucide/svelte/icons/smartphone';
 import Sparkles from '@lucide/svelte/icons/sparkles';
+import Speaker from '@lucide/svelte/icons/speaker';
 import SquareMousePointer from '@lucide/svelte/icons/square-mouse-pointer';
 import Table2 from '@lucide/svelte/icons/table-2';
 import Undo2 from '@lucide/svelte/icons/undo-2';
@@ -91,6 +92,7 @@ import TimelinePanel from '$lib/components/timeline/TimelinePanel.svelte';
 import VariablesPanel from '$lib/components/VariablesPanel.svelte';
 import SurfacePanel from '$lib/components/surface/SurfacePanel.svelte';
 import InspectorPanel from '$lib/components/inspector/InspectorPanel.svelte';
+import AudioPanel from '$lib/components/audio/AudioPanel.svelte';
 
 export type PanelId = keyof typeof PANELS;
 
@@ -221,6 +223,10 @@ export const PANELS = {
 	// because a log wants every line it can get rather than a fixed block.
 	logs: { title: 'System log', component: SystemLogPanel, fills: true, category: 'system', icon: ScrollText },
 	settings: { title: 'Settings', component: SettingsPanel, fills: false, category: 'setup', icon: Settings, home: 'setup' },
+	// This station's sound card and its channel names, and the show's speaker zones
+	// mapped onto them. An errand: done once per machine at the venue, after which a
+	// clip goes to "Area 2" and never to a channel number.
+	audio: { title: 'Audio', component: AudioPanel, fills: false, category: 'setup', icon: Speaker, home: 'setup' },
 	// What is selected, whichever panel it lives in: a preset, a group, an effect, a
 	// surface. One editor for every object rather than a form under every list —
 	// each panel contributes its own kinds through `$lib/objects.ts`.

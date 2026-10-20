@@ -746,6 +746,8 @@ pub struct ShowEngine {
     edits_seen: u64,
     /// The version of the collections the timeline pass reads, when it last ran.
     timelines_seen: u64,
+    /// The speaker zones' version as the audio manager was last told it.
+    zones_seen: u64,
     /// When the next timeline event is due, as of the last pass.
     ///
     /// Cached rather than recomputed in `next_wake`, which runs once per command as
@@ -846,6 +848,11 @@ const PLAYBACK_COLLECTIONS: &[&str] = &[
 /// one, because a cue edit is not a reason to re-decide what a song has crossed.
 const TIMELINE_COLLECTIONS: &[&str] = &["timelines"];
 
+/// What the audio manager is told about besides the timelines: where each speaker zone
+/// is, on every station. Its own list, so a zone re-mapped while nothing else moves
+/// still reaches the station playing it.
+const ZONE_COLLECTIONS: &[&str] = &["speaker_zones"];
+
 /// How often a watched parameter is looked at.
 ///
 /// 40 Hz, which is what the engine used to run its whole tick at and is finer than an
@@ -934,6 +941,7 @@ impl ShowEngine {
             outputs_dirty: true,
             inputs_dirty: true,
             timelines_seen: 0,
+            zones_seen: u64::MAX,
             timelines_deadline: None,
             input_leading: None,
             input_timelines_seen: u64::MAX,
@@ -1039,6 +1047,9 @@ impl ShowEngine {
                     self.feed_take();
                     // Before playback, so a Go a timeline fires is a change playback
                     // sees on the very next pass rather than a tick later.
+                    // Zones before the timelines, so a clip routed to a zone created in
+                    // the same burst is never resolved against a list without it.
+                    self.tell_audio_zones();
                     self.timelines_pass().await;
                     let moved = self.playback_pass().await;
                     // The output side hears about the show whether or not playback had
@@ -1277,6 +1288,7 @@ impl ShowEngine {
             || self.inputs_dirty
             || self.version_of(PLAYBACK_COLLECTIONS) != self.playback_seen
             || self.version_of(OUTPUT_COLLECTIONS) != self.pushed_version
+            || (self.audio.is_some() && self.version_of(ZONE_COLLECTIONS) != self.zones_seen)
             || self.flows_dirty
             || !self.input_events.is_empty()
         {
@@ -1507,6 +1519,18 @@ impl ShowEngine {
         let timelines: Vec<pult_schema::types::timeline::Timeline> =
             if acted { self.read_collection("timelines") } else { timelines };
         self.timelines_deadline = self.timelines.next_deadline(wall_ms, &timelines);
+    }
+
+    /// Hand the speaker zones to the audio manager when they moved.
+    fn tell_audio_zones(&mut self) {
+        let Some(audio) = &self.audio else { return };
+        let version = self.version_of(ZONE_COLLECTIONS);
+        if version == self.zones_seen {
+            return;
+        }
+        self.zones_seen = version;
+        let zones: Vec<pult_schema::types::SpeakerZone> = self.read_collection("speaker_zones");
+        audio.zones(zones);
     }
 
     /// Tell the input manager what is armed, where each playhead is, and who leads —

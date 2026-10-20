@@ -85,20 +85,20 @@ pub struct AudioClip {
 
 /// Where a clip's sound comes out.
 ///
-/// Per clip, because one scare plays out of the zone speaker and a prop at once. An
-/// enum because the station is not the only thing with a loudspeaker: a clip routed to
-/// an OpenHaunt node is played by the node, from its own flash or from a stream, rather
-/// than mixed here. See `infra/audio/nodes.rs`.
+/// Per clip, because one scare plays out of the zone speaker and a prop at once. A zone
+/// rather than channel numbers, because a channel number names one machine's sound card
+/// and the station playing a timeline can change in the middle of it — see
+/// `types::zone`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AudioDestination {
-    /// Output channels of the playing station's device, counting from one the way a
-    /// patch bay and Dante Controller do. A mono file goes to each of them; a file with
-    /// as many channels, or a multiple, goes across them in order; anything else is
-    /// its downmix on each. A channel the device has not got is a fault on the
-    /// timeline's status row — never folded onto one it has.
-    Station { channels: Vec<u16> },
+    /// A speaker zone, by id: whichever channels the playing station maps it to, and
+    /// whichever node loudspeakers are in it. A mono file goes to each channel; a file
+    /// with as many channels, or a multiple, goes across them in order; anything else
+    /// is its downmix on each.
+    Zone { zone: Uuid },
     /// An OpenHaunt node's loudspeaker, by the node's serial: the key the device list,
-    /// the fixture's address and every MQTT topic already use.
+    /// the fixture's address and every MQTT topic already use. A clip played by the
+    /// node rather than mixed here — from its own flash, or a stream.
     ///
     /// Which of a node's outputs is not here, because it cannot be: a node has one I2S
     /// bus and every output plays the same mix. Enabling one is a fact about the node.
@@ -2358,6 +2358,27 @@ pub struct Slot {
     pub media: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SpeakerZone {
+    pub id: Uuid,
+    pub name: String,
+    /// A CSS color, or `None` for the category's own.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// How many channels the zone is: 1 mono, 2 stereo, more for a cluster. What a
+    /// station maps has to be exactly this many, so a stereo bed cannot quietly become
+    /// a downmix because somebody ticked one box of two.
+    pub width: u16,
+    /// Which of each station's output channels the zone is, counting from one.
+    #[serde(default)]
+    pub channels: BTreeMap<NodeId, Vec<u16>>,
+    /// Node loudspeakers that are in the zone as well.
+    #[serde(default)]
+    pub nodes: Vec<ZoneNode>,
+    #[serde(default)]
+    pub notes: String,
+}
+
 /// One tempo several effects can follow.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SpeedMaster {
@@ -3194,6 +3215,17 @@ pub struct XchangeSettings {
     /// The host to join in [`XchangeMode::WebSocket`]. Ignored in the other two.
     #[serde(default)]
     pub url: String,
+}
+
+/// A node's loudspeaker, as a member of a zone.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ZoneNode {
+    /// The node's serial: the key the device list and every MQTT topic use.
+    pub serial: String,
+    /// Stored on the node or streamed to it — chosen here rather than per clip,
+    /// because it is a fact about how that node is reached in this room.
+    #[serde(default)]
+    pub mode: NodeAudioMode,
 }
 
 /// The map key for a parameter, in `home_values`, `sensed_values`, `live_fades` and

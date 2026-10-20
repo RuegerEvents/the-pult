@@ -56,6 +56,8 @@ export type Lane = {
 	label: string;
 	/** A second line under the label: a take's source, a destination's fault. */
 	detail?: string;
+	/** A sound lane's zone color, drawn on its label and its clips' edges. */
+	color?: string;
 	/** Labels of the rows inside the lane, top to bottom — a take's keys. */
 	rows: string[];
 	top: number;
@@ -81,6 +83,8 @@ export type ClipInput = {
 	/** Which lane: everything going to the same place shares one. */
 	destination: string;
 	destinationLabel: string;
+	/** The zone's own color, where the destination is a zone that has one. */
+	color?: string | null;
 	fromMs: number;
 	toMs: number;
 };
@@ -159,6 +163,7 @@ export function layOut(input: LaneInput): Layout {
 			key,
 			kind: 'audio',
 			label: clips[0].destinationLabel,
+			color: clips[0].color ?? undefined,
 			rows: Array.from({ length: count }, () => ''),
 			height: count * CLIP_ROW_H,
 			rowHeight: CLIP_ROW_H,

@@ -606,7 +606,7 @@ and the MVR importer never guesses one: a drawing says what it is with its mesh,
 picking an `f34-2m` because the name said "truss" would put a measurement into
 somebody's rig that nobody measured.
 
-**A showfile is still not a migration target.** `SCHEMA_GENERATION` is 7 and refuses a
+**A showfile is still not a migration target.** `SCHEMA_GENERATION` is 8 and refuses a
 file from another generation by name. Opening also vacuums when more than a quarter of
 the file is free, which is the one moment nothing else is using it.
 
@@ -1162,7 +1162,7 @@ each is one Ctrl-Z. Two selections, deliberately separate: a `SelectionQuery` is
 question about the *rig* and `at 50` means the fixtures it answers, so `selectedObjects`
 is its own store and a truss is never in that scope.
 
-`SCHEMA_GENERATION` is 7.
+`SCHEMA_GENERATION` is 8.
 
 ```
 cargo test -p pult-schema                          # the corpora, the glb, the joints
@@ -1746,7 +1746,7 @@ else on the machine is listening to the same show LAN, so `SO_REUSEADDR` (and
 multicast group is joined *on* an interface as a separate act, and binding a receiver to
 a unicast address is what stops broadcast Art-Net arriving at all.
 
-`SCHEMA_GENERATION` is 7. `FollowMode::Timecode` is gone — a position written on a cue
+`SCHEMA_GENERATION` is 8. `FollowMode::Timecode` is gone — a position written on a cue
 is a clock the cue cannot see, and the same fact as a `timelines` event is a list an
 operator can read and drag.
 
@@ -1791,7 +1791,7 @@ and reports *nothing* rather than an empty status row.
 
 **A timeline's sound is clips, each going somewhere, and one stream carries all of
 them.** `Timeline::clips` is files at positions, trimmed, with their own gain, loop and
-`AudioDestination` — `Station { channels }` counting from one, and a node's port next.
+`AudioDestination` — a speaker zone, or one node's loudspeaker.
 Every running timeline a station plays is a *deck* in one mixer in one callback, at the
 device's full channel count (`pult_audio::mix`), so each timeline anchors itself off one
 sample clock and two cannot drift apart. The callback takes decks over a lock-free
@@ -1800,6 +1800,17 @@ allocates or frees.** A channel the device has not got refuses that clip by name
 the status row — never folded onto a channel that exists, which is somebody else's
 speaker. The device is open while anything here *has* a clip, running or not, because a
 scare a flow starts cannot wait for CoreAudio.
+
+**A clip goes to a zone, and each station says where the zone is.** `speaker_zones` is
+the show's ("Area 2", "IBC row"); `SpeakerZone::channels` maps it per station, on the
+row, the shape `OutputConfig::interfaces` has — because channel 4 names one machine's
+card, and a spare promoted mid-scare must play the zone on *its* channels.
+`types::zone::station_channels` is the one rule, resolved by the playing station before
+anything is decoded: a zone it has not mapped, or mapped to the wrong width, is a
+`clip_faults` entry naming the zone and the station, never a fold onto channels it has;
+`clip_channels` on the status row says where each clip comes out here. A zone may hold
+node speakers too, not keyed by station. Device aliases and channel names are the
+station's `[audio.names]`; Setup → Audio is the card, the names and the matrix. See task 81.
 
 **A node's loudspeaker is somewhere a clip can go.** `AudioDestination::Node` hands a
 clip to an OpenHaunt node, which plays it from its own flash at a show time or from an

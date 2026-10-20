@@ -49,6 +49,7 @@ use pult_schema::types::{
         TimelineEvent, TimelineSource, TimelineTrack,
     },
     variable::{Variable, VariableKind, VariableOp},
+    zone::{SpeakerZone, ZoneNode},
     CueShot, ParameterDefinition,
 };
 use uuid::Uuid;
@@ -62,6 +63,9 @@ use super::{
     },
     Seeder,
 };
+
+/// Each maze area's color, the same on its zone and wherever else the area is drawn.
+const AREA_COLORS: [&str; 4] = ["#ef4444", "#f97316", "#eab308", "#06b6d4"];
 
 /// What a V0 prototype publishes at `/api/v1/info`, both strips in `effect` mode: the
 /// module firmware 0.3 calls `0x0F01`. Only the parts the console reads.
@@ -535,12 +539,51 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     let bang = into.put("audio/wav", &wav(&a_bang(rate, 1.2), rate)).await;
     let laugh = into.put("audio/wav", &wav(&a_laugh(rate, 4.0), rate)).await;
 
+    // ── Where it comes out ───────────────────────────────────────────────────
+    //
+    // Speaker zones, named for the garden rather than the sound card, mapped for the
+    // station seeding the show: Dante channels 1–2 for the row of tanks, one channel
+    // per maze area after that, and the entrance on 7. A spare Mac maps the same zones
+    // to its own card. The two areas with a skeleton have its node's loudspeaker in the
+    // zone too, so its laugh comes from its own mouth as well as from the trees.
+    let station = into.station();
+    let zone = |name: &str, color: &str, channels: Vec<u16>, nodes: Vec<ZoneNode>| {
+        let mut map = std::collections::BTreeMap::new();
+        if let Some(station) = station {
+            map.insert(station, channels.clone());
+        }
+        SpeakerZone {
+            id: id(),
+            name: name.into(),
+            color: Some(color.into()),
+            width: channels.len() as u16,
+            channels: map,
+            nodes,
+            notes: String::new(),
+        }
+    };
+    let mut zones = vec![zone("IBC row", "#8b5cf6", vec![1, 2], Vec::new())];
+    for area in 0..4 {
+        let speaks = area == 1 || area == 3;
+        let nodes = if speaks {
+            let this = node(&format!("Area {}", area + 1));
+            vec![ZoneNode { serial: this.serial.to_string(), mode: NodeAudioMode::Clip }]
+        } else {
+            Vec::new()
+        };
+        zones.push(zone(&format!("Area {}", area + 1), AREA_COLORS[area], vec![3 + area as u16], nodes));
+    }
+    zones.push(zone("Entrance", "#22c55e", vec![7], Vec::new()));
+    for each in &zones {
+        into.create("speaker_zones", each).await?;
+    }
+    let zone_of = |name: &str| AudioDestination::Zone {
+        zone: zones.iter().find(|z| z.name == name).map(|z| z.id).unwrap_or_default(),
+    };
+
     let ambient = a_timeline("Ambience", Some(TimelineEnd { at_ms: 16_000, then: AtEnd::Loop }));
     let ambient = Timeline {
-        clips: wind
-            .iter()
-            .map(|sha| a_clip("Garden wind", sha, 0, AudioDestination::Station { channels: vec![1, 2] }))
-            .collect(),
+        clips: wind.iter().map(|sha| a_clip("Garden wind", sha, 0, zone_of("IBC row"))).collect(),
         ..ambient
     };
     into.create("timelines", &ambient).await?;
@@ -549,7 +592,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     for (area, (stack, rest, scare, prop)) in scares.iter().enumerate() {
         let speaks = area == 1 || area == 3;
         let length = if speaks { 8_000 } else { 6_000 };
-        let zone = AudioDestination::Station { channels: vec![3 + area as u16] };
+        let zone = zone_of(&format!("Area {}", area + 1));
         let this = node(&format!("Area {}", area + 1));
         let on_the_node = AudioDestination::Node { serial: this.serial.to_string(), mode: NodeAudioMode::Clip };
         let mut clips = Vec::new();

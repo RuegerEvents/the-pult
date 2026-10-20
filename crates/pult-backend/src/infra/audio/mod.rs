@@ -95,7 +95,8 @@ use uuid::Uuid;
 use crate::{engine::EngineHandle, infra::assets::AssetStore};
 use decode::AudioCache;
 use device::{AudioDevices, Listener, Output, MAX_DECKS};
-use pult_schema::types::timeline::{AtEnd, AudioClip, AudioDestination, AudioOutput};
+use pult_schema::types::timeline::{AtEnd, AudioClip, AudioOutput};
+use pult_schema::types::zone::{station_channels, SpeakerZone};
 
 /// How far the sound may be from the show's anchor before the anchor is rewritten.
 ///
@@ -124,11 +125,30 @@ pub struct AudioPrefs {
     /// buffers. 150 ms when unsaid, which rides out ordinary wifi and still feels
     /// immediate for a triggered scare.
     pub node_stream_delay_ms: Option<u32>,
+    /// What this station calls its sound cards and their channels, keyed by the
+    /// device's own name — the key `output` already matches by. Names only: nothing
+    /// plays differently for them, but a zone mapped to "FOH L, FOH R" is a mapping
+    /// somebody can check, and one mapped to "1, 2" on a 64-channel card is not.
+    /// A fact about the wiring of this machine, so never show data.
+    pub names: std::collections::BTreeMap<String, DeviceNames>,
+}
+
+/// One sound card's names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct DeviceNames {
+    /// What it is called here: "Garden Dante" rather than "Dante Virtual Soundcard".
+    pub alias: Option<String>,
+    /// Channel names, the first being channel 1. Empty is unnamed. A list rather than a
+    /// map because TOML keys are strings and a channel is a number.
+    pub channels: Vec<String>,
 }
 
 pub enum AudioCommand {
     /// The `timelines` collection changed. Reconcile against it.
     Timelines(Vec<Timeline>),
+    /// The `speaker_zones` collection changed: where each zone is, on every station.
+    Zones(Vec<SpeakerZone>),
     /// Timecode samples, from a device or from a test.
     ///
     /// **The test seam**, and it is the whole reason the decoder is fed by a channel
@@ -156,6 +176,11 @@ impl AudioHandle {
     /// [`crate::infra::connectors::input::InputHandle::timelines`] does not.
     pub fn timelines(&self, timelines: Vec<Timeline>) {
         let _ = self.0.try_send(AudioCommand::Timelines(timelines));
+    }
+
+    /// Hand over the speaker zones. Never blocks the engine either.
+    pub fn zones(&self, zones: Vec<SpeakerZone>) {
+        let _ = self.0.try_send(AudioCommand::Zones(zones));
     }
 
     /// Feed timecode straight in. See [`AudioCommand::Timecode`].
@@ -216,6 +241,9 @@ struct Chasing {
 /// Owns the devices, the decoded files and what is playing.
 pub struct AudioManager {
     node_id: NodeId,
+    /// What this machine is called, for a fault that has to say which station has not
+    /// mapped a zone — the status row of the one station the browser is on.
+    station_name: String,
     engine: EngineHandle,
     net: crate::infra::net::NetHandle,
     prefs: AudioPrefs,
@@ -228,6 +256,8 @@ pub struct AudioManager {
     samples: mpsc::Receiver<(Uuid, Vec<f32>, u32)>,
     cache: AudioCache,
     timelines: Vec<Timeline>,
+    /// Where each zone is, on every station. See `types::zone`.
+    zones: Vec<SpeakerZone>,
     /// The one stream every clip here is mixed into. `None` when nothing this station
     /// plays has a clip.
     output: Option<Output>,
@@ -250,6 +280,9 @@ pub struct AudioManager {
     /// Why a clip is not playing while the rest of its timeline is, keyed by timeline
     /// and then by clip.
     clip_faults: HashMap<Uuid, std::collections::BTreeMap<String, String>>,
+    /// Which of this station's channels each clip comes out of, keyed by timeline and
+    /// then by clip: its zone through this station's map.
+    clip_channels: HashMap<Uuid, std::collections::BTreeMap<String, Vec<u16>>>,
     /// What the OpenHaunt nodes' loudspeakers hold and are told. See [`nodes`].
     nodes: nodes::Nodes,
 }
@@ -270,6 +303,9 @@ impl AudioManager {
         (
             AudioManager {
                 node_id,
+                // The name every other panel already knows this machine by: the
+                // `stations` row's hostname. Cheap, and asked once.
+                station_name: sysinfo::System::host_name().unwrap_or_else(|| "this station".into()),
                 engine,
                 net,
                 prefs: prefs.clone(),
@@ -279,6 +315,7 @@ impl AudioManager {
                 samples,
                 cache: AudioCache::default(),
                 timelines: Vec::new(),
+                zones: Vec::new(),
                 output: None,
                 output_fault: None,
                 playing: HashMap::new(),
@@ -288,6 +325,7 @@ impl AudioManager {
                 refused: HashSet::new(),
                 faults: HashMap::new(),
                 clip_faults: HashMap::new(),
+                clip_channels: HashMap::new(),
                 nodes: nodes::Nodes::new(prefs.node_stream_delay_ms),
             },
             AudioHandle(tx),
@@ -325,6 +363,11 @@ impl AudioManager {
                         AudioCommand::Stop => break,
                         AudioCommand::Timelines(timelines) => {
                             self.timelines = timelines;
+                            self.nodes.saw_timelines();
+                            self.reconcile().await;
+                        }
+                        AudioCommand::Zones(zones) => {
+                            self.zones = zones;
                             self.nodes.saw_timelines();
                             self.reconcile().await;
                         }
@@ -377,6 +420,19 @@ impl AudioManager {
         }
     }
 
+    /// The clips of a timeline this station mixes itself, each with the channels its
+    /// zone is here — or why it has none. A clip only a node plays is not in it.
+    fn station_clips<'t>(&self, timeline: &'t Timeline) -> Vec<(&'t AudioClip, Result<Vec<u16>, String>)> {
+        timeline
+            .clips
+            .iter()
+            .filter_map(|clip| {
+                station_channels(&clip.destination, &self.zones, self.node_id, &self.station_name)
+                    .map(|channels| (clip, channels))
+            })
+            .collect()
+    }
+
     // ── Reconciling ───────────────────────────────────────────────────────────
 
     async fn reconcile(&mut self) {
@@ -393,6 +449,7 @@ impl AudioManager {
         self.chasing.retain(|id, _| ids.contains(id));
         self.faults.retain(|id, _| ids.contains(id));
         self.clip_faults.retain(|id, _| ids.contains(id));
+        self.clip_channels.retain(|id, _| ids.contains(id));
 
         self.reconcile_output(&mine).await;
         for timeline in mine {
@@ -412,7 +469,7 @@ impl AudioManager {
     /// Open while those timelines are *stopped* too: a scare is a timeline a flow
     /// starts, and opening CoreAudio takes longer than a scare may take to begin.
     async fn reconcile_output(&mut self, mine: &[&Timeline]) {
-        let wanted = mine.iter().any(|t| station_clips(t).next().is_some());
+        let wanted = mine.iter().any(|t| !self.station_clips(t).is_empty());
         if !wanted {
             if self.output.take().is_some() {
                 info!("[audio] nothing here has sound any more; the output is closed");
@@ -448,14 +505,26 @@ impl AudioManager {
 
     /// A timeline's deck: built from its clips while it runs, and gone when it stops.
     async fn reconcile_deck(&mut self, timeline: &Timeline) {
-        let clips: Vec<&AudioClip> = station_clips(timeline).collect();
+        let clips = self.station_clips(timeline);
         // Every file decoded as soon as it is on a timeline, so that pressing play — or a
         // flow pressing it — does not wait for an mp3.
         let mut voices = Vec::new();
         let mut faults = std::collections::BTreeMap::new();
+        let mut routed = std::collections::BTreeMap::new();
         let device_channels = self.output.as_ref().map(|o| o.channels as usize);
-        for clip in &clips {
-            match self.voice(clip, device_channels).await {
+        for (clip, channels) in &clips {
+            // A zone this station has not mapped is said by name before anything is
+            // decoded: there is nothing to play it through, and folding it onto channels
+            // this card has would be somebody else's speaker.
+            let channels = match channels {
+                Ok(channels) => channels,
+                Err(e) => {
+                    faults.insert(clip.id.to_string(), e.clone());
+                    continue;
+                }
+            };
+            routed.insert(clip.id.to_string(), channels.clone());
+            match self.voice(clip, channels, device_channels).await {
                 Ok(Some(voice)) => voices.push(voice),
                 // Decoded, with no device to route it to: the timeline's own fault says
                 // why, once, rather than every clip saying it again.
@@ -464,6 +533,11 @@ impl AudioManager {
                     faults.insert(clip.id.to_string(), e);
                 }
             }
+        }
+        if routed.is_empty() {
+            self.clip_channels.remove(&timeline.id);
+        } else {
+            self.clip_channels.insert(timeline.id, routed.clone());
         }
         if self.clip_faults.get(&timeline.id).map_or(!faults.is_empty(), |held| *held != faults) {
             for (clip, fault) in &faults {
@@ -492,7 +566,9 @@ impl AudioManager {
         };
         self.faults.remove(&timeline.id);
 
-        let built = serde_json::to_string(&(&timeline.clips, &timeline.end, voices.len()))
+        // The channels each clip resolved to are in it, so re-mapping a zone while it
+        // sounds rebuilds the deck rather than leaving it on the channels it had.
+        let built = serde_json::to_string(&(&timeline.clips, &timeline.end, voices.len(), &routed))
             .unwrap_or_default();
         let held = self.playing.get(&timeline.id);
         if held.is_some_and(|p| p.built == built) {
@@ -550,14 +626,14 @@ impl AudioManager {
         }
     }
 
-    /// One clip, decoded and routed against the open device. `Ok(None)` is decoded with
-    /// no device to route it to.
+    /// One clip, decoded and routed to its zone's channels on the open device.
+    /// `Ok(None)` is decoded with no device to route it to.
     async fn voice(
         &mut self,
         clip: &AudioClip,
+        channels: &[u16],
         device_channels: Option<usize>,
     ) -> Result<Option<pult_audio::Voice>, String> {
-        let AudioDestination::Station { channels } = &clip.destination else { return Ok(None) };
         let decoded = self.decoded(&clip.asset).await?;
         let Some(device_channels) = device_channels else { return Ok(None) };
         let routes = pult_audio::mix::route(decoded.channels as usize, channels, device_channels)
@@ -1032,6 +1108,7 @@ impl AudioManager {
                         drop_frame: c.drop_frame,
                     }),
                     clip_faults,
+                    clip_channels: self.clip_channels.get(&timeline.id).cloned().unwrap_or_default(),
                 },
             );
         }
@@ -1059,10 +1136,6 @@ fn transport_of(timeline: &Timeline) -> (u64, u64, f32) {
     (timeline.anchor_ms, timeline.position_at_anchor_ms, timeline.rate)
 }
 
-/// The clips of a timeline this station mixes itself, rather than handing to a node.
-fn station_clips(timeline: &Timeline) -> impl Iterator<Item = &AudioClip> {
-    timeline.clips.iter().filter(|clip| matches!(clip.destination, AudioDestination::Station { .. }))
-}
 
 /// A clip's place, as the mixer wants it.
 fn placement(clip: &AudioClip) -> pult_audio::Placement {

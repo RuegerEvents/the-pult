@@ -490,6 +490,7 @@ async fn dragging_a_clip_and_an_event_together_is_one_row() {
     let clip = Uuid::new_v4();
     let event = Uuid::new_v4();
     let sequence = Uuid::new_v4();
+    let zone = Uuid::new_v4();
 
     station
         .engine
@@ -514,7 +515,7 @@ async fn dragging_a_clip_and_an_event_together_is_one_row() {
             "id": clip, "name": "Skeleton laugh", "asset": "00", "peaks": null,
             "start_ms": 300 + step * 10, "offset_ms": 0, "length_ms": null, "gain_db": 0.0,
             "fade_in_ms": 0, "fade_out_ms": 0, "looped": false,
-            "destination": { "Station": { "channels": [4] } }
+            "destination": { "Zone": { "zone": zone } }
         }]);
         let events = serde_json::json!([{
             "id": event, "at_ms": step * 10, "action": { "GoNext": { "sequence_id": sequence } }

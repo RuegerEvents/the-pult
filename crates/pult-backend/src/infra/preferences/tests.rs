@@ -141,3 +141,21 @@ fn a_file_written_before_the_retention_existed_still_opens() {
         "and what it did not say is the default"
     );
 }
+
+/// A sound card's name has spaces in it and a channel is a number, and TOML keys are
+/// strings: the names a station gives its card have to survive the file anyway.
+#[test]
+fn a_cards_channel_names_survive_a_round_trip() {
+    let _own = own_file();
+    let mut prefs = Preferences::default();
+    prefs.audio.output = Some("Dante Virtual Soundcard".into());
+    prefs.audio.names.insert(
+        "Dante Virtual Soundcard".into(),
+        crate::infra::audio::DeviceNames {
+            alias: Some("Garden Dante".into()),
+            channels: vec!["FOH L".into(), "FOH R".into(), String::new(), "Area 2 top".into()],
+        },
+    );
+    save(&prefs).unwrap();
+    assert_eq!(load().audio, prefs.audio);
+}

@@ -3787,6 +3787,161 @@ impl ShowSingleton {
     }
 }
 
+// ── speaker_zones ───────────────────────────────────────────────────────
+
+///
+/// The `speaker_zones` collection.
+pub fn speaker_zones() -> SpeakerZoneCollection {
+    SpeakerZoneCollection { at: Collection::at("speaker_zones") }
+}
+
+/// The `speaker_zones` collection, reached by [`speaker_zones()`].
+pub struct SpeakerZoneCollection {
+    at: Collection,
+}
+
+impl SpeakerZoneCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<SpeakerZone>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> SpeakerZoneEntity {
+        SpeakerZoneEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> SpeakerZoneEntity {
+        SpeakerZoneEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &SpeakerZone) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `speaker_zones` row, reached by [`SpeakerZoneCollection::by_id`] or
+/// [`SpeakerZoneCollection::nth`].
+pub struct SpeakerZoneEntity {
+    at: Entity,
+}
+
+impl SpeakerZoneEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<SpeakerZone, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &SpeakerZone) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// A CSS color, or `None` for the category's own.
+    ///
+    /// PERSISTED.
+    pub fn color(&self) -> Field<Option<String>> {
+        self.at.field("color")
+    }
+
+    /// How many channels the zone is: 1 mono, 2 stereo, more for a cluster. What a
+    /// station maps has to be exactly this many, so a stereo bed cannot quietly become
+    /// a downmix because somebody ticked one box of two.
+    ///
+    /// PERSISTED.
+    pub fn width(&self) -> Field<u16> {
+        self.at.field("width")
+    }
+
+    /// Which of each station's output channels the zone is, counting from one.
+    ///
+    /// PERSISTED.
+    pub fn channels(&self) -> Field<BTreeMap<NodeId, Vec<u16>>> {
+        self.at.field("channels")
+    }
+
+    /// Node loudspeakers that are in the zone as well.
+    ///
+    /// PERSISTED.
+    pub fn nodes(&self) -> Field<Vec<ZoneNode>> {
+        self.at.field("nodes")
+    }
+
+    /// PERSISTED.
+    pub fn notes(&self) -> Field<String> {
+        self.at.field("notes")
+    }
+}
+
 // ── speed_masters ───────────────────────────────────────────────────────
 
 /// One tempo several effects can follow.

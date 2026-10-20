@@ -26,6 +26,7 @@ import type { SceneObject } from '../generated/SceneObject.js';
 import type { Sequence } from '../generated/Sequence.js';
 import type { Sheet } from '../generated/Sheet.js';
 import type { Show } from '../generated/Show.js';
+import type { SpeakerZone } from '../generated/SpeakerZone.js';
 import type { SpeedMaster } from '../generated/SpeedMaster.js';
 import type { StagePlan } from '../generated/StagePlan.js';
 import type { Station } from '../generated/Station.js';
@@ -124,6 +125,10 @@ export type SequenceEntity = PathProxy<Sequence> & {
 };
 
 export type SheetEntity = PathProxy<Sheet> & {
+  delete(): Promise<void>;
+};
+
+export type SpeakerZoneEntity = PathProxy<SpeakerZone> & {
   delete(): Promise<void>;
 };
 
@@ -467,6 +472,20 @@ export type SheetCollection = {
   [n: number]: SheetEntity;
 };
 
+export type SpeakerZoneCollection = {
+  get(): Promise<SpeakerZone[]>;
+  set(value: SpeakerZone[]): Promise<void>;
+  subscribe(cb: (value: SpeakerZone[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: SpeakerZone[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): SpeakerZoneEntity;
+  nth(n: number): SpeakerZoneEntity;
+  create(entity: SpeakerZone): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: SpeakerZoneEntity;
+};
+
 export type SpeedMasterCollection = {
   get(): Promise<SpeedMaster[]>;
   set(value: SpeedMaster[]): Promise<void>;
@@ -633,6 +652,7 @@ export type DataRoot = {
   sequences: SequenceCollection;
   sheets: SheetCollection;
   show: PathProxy<Show | null>;
+  speaker_zones: SpeakerZoneCollection;
   speed_masters: SpeedMasterCollection;
   stage_plans: StagePlanCollection;
   stations: StationCollection;

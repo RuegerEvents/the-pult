@@ -136,20 +136,22 @@ impl std::str::FromStr for Demo {
 /// every start: `--demo` on a console that has been programmed since must not add a
 /// second rig on top of somebody's work.
 pub async fn seed(engine: &EngineHandle, demo: Demo) -> Result<()> {
-    seed_with(engine, None, demo).await
+    seed_with(engine, None, None, demo).await
 }
 
-/// The same, with somewhere to put what a demo generates.
+/// The same, with somewhere to put what a demo generates, and the station doing it.
 ///
 /// Only the Garden makes anything — the sound its scares play and the take its
 /// skeleton runs — and a station with no store gets the Garden without them: every
-/// timeline, flow and surface is still there, and silent.
+/// timeline, flow and surface is still there, and silent. The station is who its
+/// speaker zones are mapped for; any other station has them to map.
 pub async fn seed_with(
     engine: &EngineHandle,
     assets: Option<crate::infra::assets::AssetStore>,
+    station: Option<pult_schema::events::operation::NodeId>,
     demo: Demo,
 ) -> Result<()> {
-    let seeder = Seeder { engine: engine.clone(), assets };
+    let seeder = Seeder { engine: engine.clone(), assets, station };
     if !seeder.rig_is_empty().await {
         info!("[demo] this show already has a rig; leaving it alone");
         return Ok(());
@@ -175,9 +177,17 @@ pub async fn seed_with(
 pub struct Seeder {
     engine: EngineHandle,
     assets: Option<crate::infra::assets::AssetStore>,
+    /// The station seeding, so a demo can map what is a fact about a machine — the
+    /// Garden's speaker zones — for the one it is being seeded on.
+    station: Option<pult_schema::events::operation::NodeId>,
 }
 
 impl Seeder {
+    /// The station seeding, where there is one.
+    pub fn station(&self) -> Option<pult_schema::events::operation::NodeId> {
+        self.station
+    }
+
     /// Store some bytes, answering their sha — or `None` where this station has no
     /// store, or will not take them, which a demo treats as "go without".
     pub async fn put(&self, mime: &str, bytes: &[u8]) -> Option<String> {

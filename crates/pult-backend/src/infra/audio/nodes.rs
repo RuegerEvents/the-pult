@@ -56,7 +56,8 @@ use pult_schema::{
     path::PathSegment,
     types::{
         devices::{NodeAudio, NodeAudioState, NodeAudioStates},
-        timeline::{AtEnd, AudioClip, AudioDestination, NodeAudioMode, Timeline},
+        timeline::{AtEnd, AudioClip, NodeAudioMode, Timeline},
+        zone::{node_targets, SpeakerZone},
     },
 };
 use tokio::sync::{mpsc, watch};
@@ -202,12 +203,19 @@ impl Nodes {
     }
 }
 
-/// Every clip on this timeline that a node plays.
-pub fn node_clips(timeline: &Timeline) -> impl Iterator<Item = (&AudioClip, &str, NodeAudioMode)> {
-    timeline.clips.iter().filter_map(|clip| match &clip.destination {
-        AudioDestination::Node { serial, mode } => Some((clip, serial.as_str(), *mode)),
-        AudioDestination::Station { .. } => None,
-    })
+/// Every clip on this timeline that a node plays, once per node: a clip sent to one
+/// node, and one sent to a zone with node loudspeakers in it.
+pub fn node_clips<'t>(
+    timeline: &'t Timeline,
+    zones: &[SpeakerZone],
+) -> Vec<(&'t AudioClip, String, NodeAudioMode)> {
+    timeline
+        .clips
+        .iter()
+        .flat_map(|clip| {
+            node_targets(&clip.destination, zones).into_iter().map(move |(serial, mode)| (clip, serial, mode))
+        })
+        .collect()
 }
 
 /// A voice's name on the node: stable for one clip on one timeline, and inside the
@@ -337,6 +345,7 @@ impl AudioManager {
         self.notice_nodes_coming_back(&directory);
 
         let timelines = self.timelines.clone();
+        let zones = self.zones.clone();
         let mut wanted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut faults: HashMap<Uuid, BTreeMap<String, String>> = HashMap::new();
         let mut streamed: BTreeMap<String, Vec<(Timeline, AudioClip)>> = BTreeMap::new();
@@ -350,7 +359,8 @@ impl AudioManager {
         }
 
         for timeline in &timelines {
-            for (clip, serial, mode) in node_clips(timeline) {
+            for (clip, serial, mode) in node_clips(timeline, &zones) {
+                let serial = serial.as_str();
                 let fault = |faults: &mut HashMap<Uuid, BTreeMap<String, String>>, why: String| {
                     faults.entry(timeline.id).or_default().insert(clip.id.to_string(), why);
                 };
@@ -556,7 +566,8 @@ impl AudioManager {
         }
         let mut wanted: HashMap<(String, String), Sent> = HashMap::new();
         for timeline in &self.timelines {
-            for (clip, serial, mode) in node_clips(timeline) {
+            for (clip, serial, mode) in node_clips(timeline, &self.zones) {
+                let serial = serial.as_str();
                 if mode != NodeAudioMode::Clip || !self.nodes.reachable.get(serial).copied().unwrap_or(false) {
                     continue;
                 }
@@ -608,7 +619,7 @@ impl AudioManager {
             let looped = self
                 .timelines
                 .iter()
-                .flat_map(|t| node_clips(t).map(move |(c, _, _)| (t.id, c)))
+                .flat_map(|t| node_clips(t, &self.zones).into_iter().map(move |(c, _, _)| (t.id, c)))
                 .find(|(t, c)| voice_name(*t, c.id) == key.1)
                 .is_some_and(|(_, c)| c.looped);
             devices.audio(

@@ -187,3 +187,59 @@ fn a_session_maps_frames_to_show_time() {
     assert_eq!(session.heard_at(48_000), 11_000.0);
     assert_eq!(session.heard_at(480), 10_010.0);
 }
+
+/// A scare routed to "Area 2" plays out of the skeleton's own speaker as well as the
+/// zone's channels: the zone's node members are clips a node plays, each reached the
+/// way the zone says. A clip sent to one node is that node's alone.
+#[test]
+fn a_zone_with_node_speakers_hands_its_clips_to_those_nodes() {
+    use pult_schema::types::{
+        timeline::AudioDestination,
+        zone::{SpeakerZone, ZoneNode},
+    };
+    let zone = SpeakerZone {
+        id: Uuid::from_u128(5),
+        name: "Area 2".into(),
+        color: None,
+        width: 1,
+        channels: Default::default(),
+        nodes: vec![
+            ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Clip },
+            ZoneNode { serial: "a2b".into(), mode: NodeAudioMode::Stream },
+        ],
+        notes: String::new(),
+    };
+    let clip = |id: u128, destination: AudioDestination| AudioClip {
+        id: Uuid::from_u128(id),
+        name: "Laugh".into(),
+        asset: "00".into(),
+        peaks: None,
+        start_ms: 0,
+        offset_ms: 0,
+        length_ms: None,
+        gain_db: 0.0,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        looped: false,
+        destination,
+    };
+    let mut timeline = running(0, 0);
+    timeline.clips = vec![
+        clip(1, AudioDestination::Zone { zone: zone.id }),
+        clip(2, AudioDestination::Node { serial: "gate".into(), mode: NodeAudioMode::Clip }),
+    ];
+    let found: Vec<(u128, String, NodeAudioMode)> = node_clips(&timeline, std::slice::from_ref(&zone))
+        .into_iter()
+        .map(|(c, serial, mode)| (c.id.as_u128(), serial, mode))
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            (1, "a2".to_string(), NodeAudioMode::Clip),
+            (1, "a2b".to_string(), NodeAudioMode::Stream),
+            (2, "gate".to_string(), NodeAudioMode::Clip),
+        ]
+    );
+    // A zone that has been deleted reaches no node at all.
+    assert_eq!(node_clips(&timeline, &[]).len(), 1);
+}

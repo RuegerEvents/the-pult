@@ -41,6 +41,7 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { outlines, wantOutline } from '$lib/stores/takeOutlines.js';
 	import { audioStatus, current, devices, locate, positionOf, writeColumns } from '$lib/stores/timelines.js';
+	import { zones } from '$lib/stores/zones.js';
 	import { describeAction } from '$lib/timeline/describe.js';
 	import {
 		CLIP_ROW_H,
@@ -140,8 +141,10 @@
 		return Math.max(10_000, Math.ceil(Math.max(sounding, written) * 1.15));
 	});
 
-	const destinationKey = (d: AudioDestination) =>
-		'Station' in d ? `station:${[...d.Station.channels].sort((a, b) => a - b).join(',')}` : `node:${d.Node.serial}`;
+	const destinationKey = (d: AudioDestination) => ('Zone' in d ? `zone:${d.Zone.zone}` : `node:${d.Node.serial}`);
+
+	/** A sound lane's color: its zone's, where it is a zone that has one. */
+	const laneColor = (d: AudioDestination) => ('Zone' in d ? ($zones.find((z) => z.id === d.Zone.zone)?.color ?? null) : null);
 
 	const fixtureName = (fixtureId: string) => $fixtures.find((f) => f.id === fixtureId)?.name ?? 'a gone fixture';
 
@@ -161,7 +164,7 @@
 		if ('Node' in destination && !nodes.some((n) => n.serial === destination.Node.serial)) {
 			return `Node ${destination.Node.serial}${destination.Node.mode === 'Stream' ? ' · stream' : ''}`;
 		}
-		return 'Station' in destination ? `Channels ${destinationText(destination, nodes).replace(/^ch /, '')}` : destinationText(destination, nodes);
+		return destinationText(destination, $zones, nodes);
 	}
 
 	$effect(() => {
@@ -180,6 +183,7 @@
 					id: clip.id,
 					destination: destinationKey(clip.destination),
 					destinationLabel: laneName(clip.destination),
+					color: laneColor(clip.destination),
 					fromMs: span.fromMs,
 					toMs: span.toMs
 				};
@@ -374,7 +378,8 @@
 				ctx.lineTo(r.right, r.bottom);
 			}
 			ctx.stroke();
-			ctx.strokeStyle = fault ? '#ef4444' : chosen ? '#cfe0ff' : '#2f6fd0';
+			const zoneColor = layout.lanes.find((l) => l.key === item.lane)?.color;
+			ctx.strokeStyle = fault ? '#ef4444' : chosen ? '#cfe0ff' : (zoneColor ?? '#2f6fd0');
 			ctx.lineWidth = chosen ? 2 : 1;
 			ctx.strokeRect(left + 0.5, r.top + 0.5, right - left - 1, r.bottom - r.top - 1);
 			ctx.lineWidth = 1;
@@ -878,7 +883,12 @@
 		<div class="inner" style:height="{canvasHeight}px">
 			<div class="labels" style:width="{LABELS}px">
 				{#each layout.lanes as lane (lane.key)}
-					<div class="lane-label {lane.kind}" style:top="{lane.top}px" style:height="{lane.height}px">
+					<div
+						class="lane-label {lane.kind}"
+						style:top="{lane.top}px"
+						style:height="{lane.height}px"
+						style:--zone={lane.color ?? null}
+					>
 						{#if lane.kind === 'take'}
 							<span class="name" title="{lane.label} — {lane.detail}">{lane.label}</span>
 							{#each lane.rows as row, i (i)}
@@ -948,6 +958,7 @@
 		flex-direction: column;
 		justify-content: center;
 		padding: 0 8px;
+		border-left: 3px solid var(--zone, transparent);
 		border-bottom: 1px solid #222;
 		overflow: hidden;
 		font-size: var(--font-xs);

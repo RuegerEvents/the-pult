@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type { DevicesState } from '$lib/generated/index.js';
-import { audioNodes, bytesText, destinationText, nodeOf, stationChannels } from './destination.js';
+import type { DevicesState, SpeakerZone } from '$lib/generated/index.js';
+import { audioNodes, bytesText, destinationText, nodeOf, zoneOf } from './destination.js';
+
+const ZONES = [{ id: 'z2', name: 'Area 2', color: null, width: 1, channels: {}, nodes: [], notes: '' } as SpeakerZone];
 
 function devices(): DevicesState {
 	const base = {
@@ -53,10 +55,10 @@ function devices(): DevicesState {
 
 describe('where a clip goes', () => {
 	it('reads either kind of destination', () => {
-		expect(stationChannels({ Station: { channels: [5, 6] } })).toEqual([5, 6]);
-		expect(stationChannels({ Node: { serial: 'a', mode: 'Clip' } })).toBeNull();
+		expect(zoneOf({ Zone: { zone: 'z2' } })).toBe('z2');
+		expect(zoneOf({ Node: { serial: 'a', mode: 'Clip' } })).toBeNull();
 		expect(nodeOf({ Node: { serial: 'a', mode: 'Stream' } })).toEqual({ serial: 'a', mode: 'Stream' });
-		expect(nodeOf({ Station: { channels: [1] } })).toBeNull();
+		expect(nodeOf({ Zone: { zone: 'z2' } })).toBeNull();
 	});
 
 	it('offers only adopted nodes that have a loudspeaker, by name', () => {
@@ -68,11 +70,12 @@ describe('where a clip goes', () => {
 
 	it('says where a clip goes in a few words', () => {
 		const nodes = audioNodes(devices());
-		expect(destinationText({ Station: { channels: [1, 2, 3, 4] } }, nodes)).toBe('ch 1-4');
-		expect(destinationText({ Node: { serial: 'b', mode: 'Clip' } }, nodes)).toBe('Gate');
-		expect(destinationText({ Node: { serial: 'b', mode: 'Stream' } }, nodes)).toBe('Gate · stream');
+		expect(destinationText({ Zone: { zone: 'z2' } }, ZONES, nodes)).toBe('Area 2');
+		expect(destinationText({ Zone: { zone: 'gone' } }, ZONES, nodes)).toBe('a deleted zone');
+		expect(destinationText({ Node: { serial: 'b', mode: 'Clip' } }, ZONES, nodes)).toBe('Gate');
+		expect(destinationText({ Node: { serial: 'b', mode: 'Stream' } }, ZONES, nodes)).toBe('Gate · stream');
 		// A node the show names and this station has not found still says which.
-		expect(destinationText({ Node: { serial: 'zz', mode: 'Clip' } }, nodes)).toBe('zz');
+		expect(destinationText({ Node: { serial: 'zz', mode: 'Clip' } }, ZONES, nodes)).toBe('zz');
 	});
 
 	it('reads a store size', () => {

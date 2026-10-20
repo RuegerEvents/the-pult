@@ -32,6 +32,7 @@ pub mod xchange;
 pub mod variable;
 pub mod surface;
 pub mod pixels;
+pub mod zone;
 
 pub use fixture::{home_value, home_value_by_key, output_parameters, parameter_key, Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
@@ -40,6 +41,7 @@ pub use effect::{
     Curve, Direction, Easing, EffectSpec, EffectSource, Rate, RunningEffect, RunningFade, Shape,
     Spread, Step,
 };
+pub use zone::{node_targets, station_channels, SpeakerZone, SpeakerZoneCreate, SpeakerZonePatch, ZoneNode};
 pub use variable::{Variable, VariableCreate, VariableKind, VariableOp, VariablePatch};
 pub use surface::{ColorStop, Surface, SurfaceCreate, SurfacePatch, SurfaceTile, TileSize, TileTarget};
 pub use speedmaster::{SpeedMaster, SpeedMasterCreate, SpeedMasterPatch};

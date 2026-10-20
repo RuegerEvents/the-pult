@@ -54,6 +54,12 @@ export type Preferences = {
 export type AudioPrefs = {
 	output?: string | null;
 	input?: string | null;
+	node_stream_delay_ms?: number | null;
+	/**
+	 * What this station calls its sound cards and their channels, by the device's own
+	 * name. The first channel name is channel 1; an empty one is unnamed.
+	 */
+	names?: Record<string, { alias?: string | null; channels?: string[] }>;
 };
 
 const url = () => `${backendOrigin(window.location)}/api/preferences`;

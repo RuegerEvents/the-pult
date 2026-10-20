@@ -565,21 +565,21 @@ impl AudioClip {
 
 /// Where a clip's sound comes out.
 ///
-/// Per clip, because one scare plays out of the zone speaker and a prop at once. An
-/// enum because the station is not the only thing with a loudspeaker: a clip routed to
-/// an OpenHaunt node is played by the node, from its own flash or from a stream, rather
-/// than mixed here. See `infra/audio/nodes.rs`.
+/// Per clip, because one scare plays out of the zone speaker and a prop at once. A zone
+/// rather than channel numbers, because a channel number names one machine's sound card
+/// and the station playing a timeline can change in the middle of it — see
+/// `types::zone`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum AudioDestination {
-    /// Output channels of the playing station's device, counting from one the way a
-    /// patch bay and Dante Controller do. A mono file goes to each of them; a file with
-    /// as many channels, or a multiple, goes across them in order; anything else is
-    /// its downmix on each. A channel the device has not got is a fault on the
-    /// timeline's status row — never folded onto one it has.
-    Station { channels: Vec<u16> },
+    /// A speaker zone, by id: whichever channels the playing station maps it to, and
+    /// whichever node loudspeakers are in it. A mono file goes to each channel; a file
+    /// with as many channels, or a multiple, goes across them in order; anything else
+    /// is its downmix on each.
+    Zone { zone: Uuid },
     /// An OpenHaunt node's loudspeaker, by the node's serial: the key the device list,
-    /// the fixture's address and every MQTT topic already use.
+    /// the fixture's address and every MQTT topic already use. A clip played by the
+    /// node rather than mixed here — from its own flash, or a stream.
     ///
     /// Which of a node's outputs is not here, because it cannot be: a node has one I2S
     /// bus and every output plays the same mix. Enabling one is a fact about the node.
@@ -605,12 +605,6 @@ pub enum NodeAudioMode {
     /// Sent as it plays, over RTP from the station driving the nodes, a playout delay
     /// ahead. No size limit, and it needs the network for as long as it sounds.
     Stream,
-}
-
-impl Default for AudioDestination {
-    fn default() -> Self {
-        AudioDestination::Station { channels: vec![1, 2] }
-    }
 }
 
 /// The `at` a transport command was given, or now.
@@ -660,11 +654,16 @@ pub struct AudioStatus {
     pub drift_ms: i32,
     /// Where timecode chasing has got to, where this timeline chases any.
     pub ltc: Option<LtcStatus>,
-    /// Clips that are not playing and why, keyed by clip id: a channel the device has
-    /// not got, a file that would not decode. Per clip because the rest of the
-    /// timeline goes on sounding.
+    /// Clips that are not playing and why, keyed by clip id: a zone this station has
+    /// not mapped, a channel the device has not got, a file that would not decode. Per
+    /// clip because the rest of the timeline goes on sounding.
     #[serde(default)]
     pub clip_faults: std::collections::BTreeMap<String, String>,
+    /// Which of this station's output channels each clip comes out of, keyed by clip id:
+    /// its zone, resolved through this station's own map. What a panel shows as "plays
+    /// on 3–4 here", and what a promoted spare's row changes to.
+    #[serde(default)]
+    pub clip_channels: std::collections::BTreeMap<String, Vec<u16>>,
 }
 
 /// What the timecode input is doing.

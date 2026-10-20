@@ -6815,6 +6815,102 @@ and reference-counted like the collections and asked again on every reconnect.
 outline is fetched per browser and kept for the page's life. The left list does not
 filter or group. Nothing here has been tried on a tablet.
 
+### 81. A clip goes to a zone, and each station says where the zone is
+
+U4 of the UI direction (see *What is next*), built 2026-10-20. A clip used to name output
+channels — `AudioDestination::Station { channels }` — and a channel number names one
+machine's sound card. The hot spare task 77 rehearsed would, promoted mid-scare, play
+"channel 4" of *its* card, which is somebody else's speaker or nothing. So a clip now
+goes to a **speaker zone**, named for the room, and each station says which of its own
+channels the zone is.
+
+**The answers to U4's questions.**
+
+- *Where a zone's map lives: on the zone, keyed by station.* `SpeakerZone::channels` is a
+  `BTreeMap<NodeId, Vec<u16>>`, the shape of `OutputConfig::interfaces` and for its reason:
+  the row replicates and channel 4 is a different speaker on every machine. Not in each
+  station's preferences, because a show that travels keeps its zones, their colors and
+  what plays where, and opened on two new Macs at the next venue it needs only re-mapping
+  — which every station can see is missing, by station, since the map is where everybody
+  reads it. Preferences would have hidden the spare's mapping from the desk somebody is
+  rehearsing the failover at.
+- *Mono and stereo, and a mapping of the wrong width.* `SpeakerZone::width` is how many
+  channels the zone is, and a station's mapping has to be exactly that many. A stereo bed
+  mapped to one channel is refused on the status row by name ("Area 2 is stereo and is
+  mapped to 1 channel on booth") rather than played as a downmix because somebody ticked
+  one box of two. The matrix cannot make one wider than the zone: a mono zone *moves* to
+  the channel clicked, a wider one drops its oldest channel on a click past its width.
+- *Unmapped is a fault by name.* `types::zone::station_channels` is the one rule —
+  deleted zone, unmapped here, wrong width, or the channels — called by the playing
+  station when it builds its deck. A clip the station cannot place is in `clip_faults`
+  ("Area 2 is not mapped on stage-rack", the station named by its hostname), and never
+  folded onto channels the card has. Resolved **before** a byte is decoded, so the answer
+  is there with no file and no device; `AudioStatus::clip_channels` says where each clip
+  comes out on this station, which is what a failover changes and what the test reads.
+- *A node's loudspeaker is in a zone too.* `SpeakerZone::nodes` lists node speakers with
+  how each is reached (stored or streamed), so "Area 2" is Dante channel 4 **and** the
+  skeleton's own speaker and one route plays both. Not keyed by station: a node is the
+  same node from every station, and the station driving the nodes plays them
+  (`types::zone::node_targets`, which `infra/audio/nodes.rs` now walks). A zone that is
+  only node speakers is no station's to mix and no station's fault. `AudioDestination::Node`
+  stays, for one prop's one bang.
+- *Device and channel names are the station's*: `[audio.names."<device>"]` in
+  `preferences.toml`, an alias and a list of channel names keyed by the device's own name —
+  the key `output` already matches by. A list rather than a map because TOML keys are
+  strings. Names change nothing that plays; they are what makes a mapping checkable
+  against the patch sheet.
+
+**Where it is edited.** Setup → **Audio** (a new errand panel, `components/audio/AudioPanel.svelte`)
+is this station's card — the two device pickers moved there from Settings — its alias
+and channel names, the show's zones as cards, and the matrix: zones down the side, this
+card's named channels across the top, a click mapping one on *this* station. A channel a
+zone is mapped to that the card has not got is drawn past the card's columns and marked,
+rather than left off where nobody could take it back. A zone is a kind
+(`kinds/zones.kind.ts`): the Inspector edits its width, its node speakers and its notes and
+**reads** its mapping on every station of the session — "not mapped" on the spare is the
+line a failover rehearsal is looking for. The clip's *Goes to* is now buttons rather than
+a select: each zone with its color, its width, and — in the warning color — the problem it
+has on the station that plays the timeline; then the node speakers. Lanes are named and
+edged in the zone's color.
+
+**The first clip of a show needs somewhere to go**, so dropping one on a timeline in a
+show with no zones makes a stereo "Main" on this station's channels 1–2, in the clip's
+own gesture: one Ctrl-Z takes both.
+
+**How the station hears about zones.** `ZONE_COLLECTIONS` beside `TIMELINE_COLLECTIONS`;
+the engine hands the zones to the audio manager when they move (`tell_audio_zones`) and
+`next_wake` counts a moved zone as work, or re-mapping a zone while nothing else happened
+would wait for the next unrelated write. The deck's `built` key carries the channels each
+clip resolved to, so a zone re-mapped while it sounds moves to its new channels.
+
+**The garden** maps its zones for the station that seeds it — `seed_with` takes the
+station now — with the IBC row on 1–2, one channel per area on 3–6 and the entrance on 7;
+the two skeleton areas carry their node's speaker as well.
+
+`SCHEMA_GENERATION` is 8: the `Station` variant is gone, and a generation-7 clip routed to
+it is a variant nothing in this build can name.
+
+**The traps.**
+
+- *A follower plays nothing, so it resolves nothing.* `tests/zones.rs` maps one zone to
+  channel 3 on the leader and 5 on the spare, kills the leader mid-clip, and asserts the
+  spare's `clip_channels` is absent before the kill and 5 after it — the absence is what
+  makes the after mean the spare resolved it rather than copied an answer. Its own binary:
+  beside the maze failover in `tests/failover.rs`, that test missed its 20 s wait for the
+  spare to hold the maze twice running, and it passes alone.
+- *The playing station is not necessarily the one the page is on.* The picker's warning is
+  computed against the timeline's player (its `node_id`, or the leader), not against this
+  browser's station, because the station that has to have mapped a zone is the one that
+  plays it. Channel *names* are only known for the page's own station, so the picker says
+  "ch 4" for another's.
+- *A `Vec<String>` of channel names round-trips TOML; a `BTreeMap<u16, String>` does not.*
+  A test writes a card name with spaces in it and an empty name in the middle.
+
+**Not done.** A zone's mapping for a station is made on that station's own page — a
+browser cannot name another machine's channels, since the names live in that machine's
+preferences. No per-zone level or EQ. A clip cannot go to two zones; a zone with two
+speakers' worth of channels can. Nothing has been played through Dante itself.
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -6892,16 +6988,14 @@ and made these calls. Each one is the user's, with the reason given at the time.
    menu; the Inspector panel; no edit mode, with the Show lock.
 3. **U3, the timeline.** Done as task 80 (2026-10-20): lanes, the timeline's things as
    object kinds, the Inspector docked when there is no Inspector panel.
-4. **U4, audio zones**, plus naming devices and channels per station.
+4. **U4, audio zones.** Done as task 81 (2026-10-20): `speaker_zones`, mapped per station
+   on the zone row, node speakers as zone members, and Setup → Audio for the card, its
+   channel names and the matrix.
 5. **U5, multi-cell fixtures**, with strips moved onto them.
 
-**Questions each step has to answer** (U2's are answered in task 79, U3's in task 80)
+**Questions each step has to answer** (U2's are answered in task 79, U3's in task 80,
+U4's in task 81)
 
-- *U4.* Where a zone's channel map lives (a per-station map on the zone, the shape of
-  `OutputConfig::interfaces`, is the precedent). Mono and stereo zones, and a zone a
-  station has not mapped (a fault by name, like an unmapped channel today). Whether a
-  node's loudspeaker is a zone too, so a clip has one kind of destination. Device and
-  channel names: preferences, keyed by the device's own name or id.
 - *U5.* The key: `(fixture, cell, parameter)` everywhere a `(fixture, parameter)` is
   today — `live_fades`, `live_effects`, `programmer_values`, captures, takes, the
   evaluator and `testdata/driven-values.json`, and the parameter key spelling. The

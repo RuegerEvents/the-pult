@@ -203,6 +203,16 @@ CREATE TABLE IF NOT EXISTS show (
     "mvr_xchange" TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS speaker_zones (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "color" TEXT,
+    "width" INTEGER NOT NULL,
+    "channels" TEXT NOT NULL,
+    "nodes" TEXT NOT NULL,
+    "notes" TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS speed_masters (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,

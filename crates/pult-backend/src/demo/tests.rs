@@ -434,16 +434,13 @@ fn the_garden_describes_a_v0_as_the_simulator_does() {
 /// A station with an empty show and somewhere to put what the Garden generates.
 async fn a_station_with_a_store() -> EngineHandle {
     let pool = std::sync::Arc::new(crate::infra::showfile::open_in_memory().await.unwrap());
-    let (engine, handle, _broadcast) = ShowEngine::new(
-        pult_schema::events::operation::NodeId::new(),
-        pool.clone(),
-        None,
-    );
+    let station = pult_schema::events::operation::NodeId::new();
+    let (engine, handle, _broadcast) = ShowEngine::new(station, pool.clone(), None);
     tokio::spawn(engine.run());
     let dir = std::env::temp_dir().join(format!("pult-garden-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let assets = crate::infra::assets::AssetStore::new(Some(dir), pool);
-    seed_with(&handle, Some(assets), Demo::Garden).await.expect("the garden seeds");
+    seed_with(&handle, Some(assets), Some(station), Demo::Garden).await.expect("the garden seeds");
     handle
 }
 

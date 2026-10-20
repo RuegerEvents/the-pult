@@ -37,8 +37,12 @@
 	import { selectSubject, subject, subjectRows } from '$lib/objects.js';
 	import { maximized, revealPanel, tree } from '$lib/stores/layout.js';
 	import { canEdit } from '$lib/stores/showLock.js';
+	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
+	import { firstDestination } from '$lib/stores/zones.js';
+	import { getStationContext } from '$lib/ws/context.js';
 	import { now, openTimeline, openTimelineId, positionOf, proposals, writeColumns, current } from '$lib/stores/timelines.js';
 
+	const station = getStationContext();
 	let width = $state(1200);
 	let root = $state<HTMLDivElement | null>(null);
 	let snapping = $state(true);
@@ -95,25 +99,33 @@
 			const live = current(timeline.id);
 			if (!live) return;
 			const id = crypto.randomUUID();
-			await writeColumns(live.id, {
-				clips: [
-					...live.clips,
-					{
-						id,
-						name: file.name.replace(/\.[^.]+$/, ''),
-						asset: sha256,
-						peaks: null,
-						start_ms: Math.round(positionOf(live, $now) ?? 0),
-						offset_ms: 0,
-						length_ms: null,
-						gain_db: 0,
-						fade_in_ms: 0,
-						fade_out_ms: 0,
-						looped: false,
-						destination: { Station: { channels: [1, 2] } }
-					}
-				]
-			});
+			// Somewhere to go: the show's first zone, or a "Main" made for it on this
+			// station's first two channels. One gesture with the clip, so one Ctrl-Z.
+			beginGesture();
+			try {
+				const destination = await firstDestination($station?.nodeId ?? null);
+				await writeColumns(live.id, {
+					clips: [
+						...live.clips,
+						{
+							id,
+							name: file.name.replace(/\.[^.]+$/, ''),
+							asset: sha256,
+							peaks: null,
+							start_ms: Math.round(positionOf(live, $now) ?? 0),
+							offset_ms: 0,
+							length_ms: null,
+							gain_db: 0,
+							fade_in_ms: 0,
+							fade_out_ms: 0,
+							looped: false,
+							destination
+						}
+					]
+				});
+			} finally {
+				endGesture();
+			}
 			selectSubject({ kind: 'timeline-clip', id });
 		} catch (e) {
 			problem = `That file could not be stored: ${e}`;
