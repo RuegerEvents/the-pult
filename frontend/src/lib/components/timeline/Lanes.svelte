@@ -78,6 +78,7 @@
 		type View
 	} from '$lib/waveform.js';
 	import { consoleNow } from '$lib/ws/clock.js';
+	import { pinchStart, pinchView, wheelZoomFactor, type PinchStart } from '$lib/timeline/pinch.js';
 
 	type Props = {
 		timeline: Timeline;
@@ -116,8 +117,11 @@
 				grabbed: Pick<AudioClip, 'start_ms' | 'offset_ms' | 'length_ms'>;
 		  }
 		| { mode: 'band'; x0: number; y0: number; x1: number; y1: number; additive: boolean; before: ObjectRef[] }
-		| { mode: 'scrub' };
+		| { mode: 'scrub' }
+		| { mode: 'pinch'; start: PinchStart };
 	let drag = $state<Drag | null>(null);
+	/** Fingers on the glass, by pointer id: two of them is a pinch. */
+	const touches = new Map<number, { x: number; y: number }>();
 	let longPress: ReturnType<typeof setTimeout> | null = null;
 
 	const viewKey = $derived(`pult.waveform.${timeline.id}`);
@@ -657,6 +661,20 @@
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0 && e.pointerType === 'mouse') return;
 		const { x, y } = pointerAt(e);
+		if (e.pointerType === 'touch') {
+			touches.set(e.pointerId, { x, y });
+			// A second finger before the first has started moving anything, or while it
+			// is only drawing a band, is a pinch: the band is dropped and the selection
+			// put back. A finger already dragging a clip keeps dragging it.
+			if (touches.size === 2 && (!drag || drag.mode === 'pending' || drag.mode === 'band')) {
+				cancelLongPress();
+				if (drag?.mode === 'band') subject.set(drag.before);
+				const [a, b] = [...touches.values()];
+				drag = { mode: 'pinch', start: pinchStart(view, width, a, b) };
+				(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+				return;
+			}
+		}
 		box?.focus();
 		const item = hit(layout, view, width, x, y);
 		const additive = e.shiftKey || e.metaKey || e.ctrlKey;
@@ -712,6 +730,15 @@
 
 	function onPointerMove(e: PointerEvent) {
 		const { x, y } = pointerAt(e);
+		if (touches.has(e.pointerId)) touches.set(e.pointerId, { x, y });
+		if (drag?.mode === 'pinch') {
+			if (touches.size >= 2) {
+				const [a, b] = [...touches.values()];
+				view = pinchView(drag.start, width, durationMs, a, b);
+				dirty = true;
+			}
+			return;
+		}
 		if (!drag) {
 			const item = hit(layout, view, width, x, y);
 			hovering = item?.ref.id ?? null;
@@ -750,6 +777,18 @@
 
 	function onPointerUp(e: PointerEvent) {
 		cancelLongPress();
+		touches.delete(e.pointerId);
+		if (drag?.mode === 'pinch') {
+			// One finger up ends the pinch; the other does nothing until it lifts too.
+			drag = null;
+			saveView();
+			try {
+				(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+			} catch {
+				// Already released.
+			}
+			return;
+		}
 		const was = drag;
 		drag = null;
 		dirty = true;
@@ -842,7 +881,10 @@
 			view = clampView({ startMs: view.startMs + (d / width) * view.spanMs, spanMs: view.spanMs }, durationMs);
 		} else if (zooming) {
 			e.preventDefault();
-			view = zoomAt(view, durationMs, msOf(x, view, width), e.deltaY > 0 ? 1.2 : 1 / 1.2);
+			// A trackpad pinch arrives as a wheel with Ctrl held and small deltas, many of
+			// them: the factor is continuous so it follows the fingers.
+			const factor = wheelZoomFactor(e.deltaY, e.deltaMode, e.ctrlKey && !e.metaKey);
+			view = zoomAt(view, durationMs, msOf(x, view, width), factor);
 		} else {
 			return;
 		}

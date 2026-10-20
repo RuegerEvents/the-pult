@@ -6811,7 +6811,7 @@ and reference-counted like the collections and asked again on every reconnect.
 - *A label column cannot hold "Skeleton 1 · Jaw" four times.* Hence the take's own name
   line and parameter-only rows.
 
-**Not done.** Lane order is not user-settable, by decision. No pinch zoom. A take's
+**Not done.** Lane order is not user-settable, by decision. ~~No pinch zoom.~~ Since task 83. A take's
 outline is fetched per browser and kept for the page's life. The left list does not
 filter or group. Nothing here has been tried on a tablet.
 
@@ -7121,12 +7121,22 @@ exactly what `LogRaise` refuses to do to a peer's log level; and the act that ha
 from the booth is the mapping, which is show data and already works. So the matrix says
 "its names are its own and are changed on its own page", and maps.
 
+**Pinching the timeline.** A trackpad pinch reaches a page as a wheel with Ctrl held and
+many small deltas, so the old fixed 1.2× per event made a pinch a lurch; the factor is now
+continuous (`exp` of the delta), the same total whether a pinch arrives in four events or
+forty, and capped at doubling per event for a wild device. Two fingers on glass zoom about
+the point between them and pan as that point moves — the time under the fingers stays
+under them. A second finger turns a pending touch or a band into a pinch (the band is
+dropped and the selection it was changing put back); a finger already dragging a clip
+keeps dragging it. `timeline/pinch.ts` is the arithmetic, tested; `Lanes.svelte` routes.
+
 ```
 cd plugins && cargo test -p command-line-core           # the grammar
 cargo test -p pult-schema --test cell_targets_corpus    # where a value lands, both sides
 cargo test -p pult-backend --lib interop::gdtf          # a master, cells, a one-color mode
 cargo test -p pult-schema --lib zone                    # silent, partial, fine
 cargo test -p pult-backend --test zones                 # another station's card, by name
+cd frontend && npx vitest run src/lib/timeline/pinch.test.ts   # a pinch, both kinds
 scripts/build-plugins.sh --debug && cargo test -p pult-backend --test plugins
 ```
 
