@@ -3090,7 +3090,7 @@ impl ShowEngine {
         // write: a delete names the version it removes, and once the write has landed
         // the row it named is gone.
         let touched_versions = self.version_touched_by(&op.path, &op.value);
-        let mut applied = self.apply_set(op.path.clone(), op.value.clone(), op.lifecycle).await.is_ok();
+        let mut refused = self.apply_set(op.path.clone(), op.value.clone(), op.lifecycle).await.err();
         // A peer's whole SYNCED row for an id this station has never held is the row it
         // created before the two of them were a session — its own `stations`,
         // `station_networks` or `station_audio` row, written at start and only replaced
@@ -3098,16 +3098,16 @@ impl ShowEngine {
         // nothing failed on every tick, so a station that joined late was never seen.
         // Taken as the create it stands for. SYNCED only: a show's PERSISTED rows arrive
         // with the snapshot or the oplog, and are never written without their create.
-        if !applied && op.lifecycle == Lifecycle::Synced {
+        if refused.is_some() && op.lifecycle == Lifecycle::Synced {
             if let [PathSegment::Key(table), PathSegment::Id(id)] = op.path.as_slice() {
                 let names_itself = op.value.get("id").and_then(|v| v.as_str()) == Some(&id.to_string());
                 if names_itself {
                     let create = vec![PathSegment::Key(table.clone()), PathSegment::Key("__create".into())];
-                    applied = self.apply_set(create, op.value.clone(), op.lifecycle).await.is_ok();
+                    refused = self.apply_set(create, op.value.clone(), op.lifecycle).await.err();
                 }
             }
         }
-        if applied {
+        if refused.is_none() {
             // Here rather than at the call site, because only here is the path known —
             // and a peer's own `stations` row is a write this station must not read as
             // its rig having moved.
@@ -3120,7 +3120,7 @@ impl ShowEngine {
             // point in the *show's* history rather than in one console's.
             self.checkpoint(touched_versions).await;
         } else {
-            warn!("failed to apply peer operation: {:?}", op.path);
+            warn!("failed to apply peer operation: {:?}: {}", op.path, refused.map(|e| e.to_string()).unwrap_or_default());
         }
     }
 

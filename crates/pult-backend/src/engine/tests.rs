@@ -4962,3 +4962,57 @@ async fn a_loop_goes_round_on_an_idle_station() {
     assert!(got.running);
     assert!(position < 200 + 50, "still going round rather than running on: at {position} ms");
 }
+
+/// A station already running when the session formed sends its row as a replace,
+/// never as the create it made before there was anybody to tell. The lifecycle is
+/// worked out from the path on arrival, as the sync layer does, and the row is taken.
+#[tokio::test]
+async fn a_peers_station_row_is_seen_without_its_create() {
+    use pult_schema::events::operation::{Operation, VectorClock};
+    use pult_schema::types::station::Station;
+
+    let h = harness().await;
+    let id = Uuid::new_v4();
+    let station = Station {
+        id,
+        hostname: "pi".into(),
+        is_leader: false,
+        sync_addr: "10.0.0.6:7701".into(),
+        http_addr: "10.0.0.6:7700".into(),
+        broker_addr: String::new(),
+        broker_doors: Vec::new(),
+        cpu_percent: 0.0,
+        mem_used: 0,
+        mem_total: 0,
+        uptime_s: 0,
+        output_plugins: Vec::new(),
+        computes_fixtures: 0,
+        total_fixtures: 0,
+        frame_costs: Vec::new(),
+        machine: Default::default(),
+        net_received: 0,
+        net_sent: 0,
+        net_window_ms: 0,
+        clock: Default::default(),
+        sacn_slot: None,
+        wing: None,
+        last_seen: Utc::now(),
+    };
+    let path = vec![PathSegment::Key("stations".into()), PathSegment::Id(id)];
+    let op = Operation {
+        id: Uuid::new_v4(),
+        node_id: NodeId(id),
+        seq: 1,
+        clock: VectorClock::default(),
+        lifecycle: pult_schema::registry::path_lifecycle(&path),
+        path: path.clone(),
+        value: json(&station),
+        timestamp: Utc::now(),
+        user_id: None,
+        previous: None,
+        undoes: None,
+        gesture: None,
+    };
+    h.engine.0.send(EngineCommand::ApplyPeerOperation(op)).await.unwrap();
+    assert_eq!(h.engine.get(path).await.unwrap()["hostname"], "pi");
+}

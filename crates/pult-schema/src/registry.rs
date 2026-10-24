@@ -95,7 +95,14 @@ inventory::collect!(EntityMeta);
 /// - `[collection, id, field]`               → look up field in EntityMeta registry
 ///   - known SYNCED/LOCAL/PERSISTED field    → that lifecycle
 ///   - unknown name (a registered command)   → Synced
+/// - `[collection, id]`                      → the row's: Persisted if any field is,
+///                                             Synced otherwise
 /// - anything else                           → Persisted
+///
+/// A whole row is how a station replaces its own `stations` row every two seconds,
+/// and that row has no persisted field. Read as Persisted, the receiving engine never
+/// took a row it had not seen as the create it stands for — that is SYNCED only — so a
+/// station already running when the session formed was never seen by the other.
 pub fn path_lifecycle(path: &Path) -> Lifecycle {
     match path.as_slice() {
         [PathSegment::Key(_), PathSegment::Key(a)] if a == "__create" => Lifecycle::Persisted,
@@ -109,6 +116,32 @@ pub fn path_lifecycle(path: &Path) -> Lifecycle {
                 None => Lifecycle::Persisted,
             }
         }
+        [PathSegment::Key(table), PathSegment::Id(_)] => match EntityMeta::by_table(table) {
+            Some(meta)
+                if !(meta.field_lifecycles)().iter().any(|(_, lc)| *lc == Lifecycle::Persisted) =>
+            {
+                Lifecycle::Synced
+            }
+            _ => Lifecycle::Persisted,
+        },
         _ => Lifecycle::Persisted,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(table: &str) -> Path {
+        vec![PathSegment::Key(table.into()), PathSegment::Id(uuid::Uuid::new_v4())]
+    }
+
+    /// A whole row is as replicated as its fields are: a station's own row is SYNCED
+    /// and a sequence is a show's.
+    #[test]
+    fn a_whole_row_takes_the_lifecycle_of_its_fields() {
+        assert_eq!(path_lifecycle(&row("stations")), Lifecycle::Synced);
+        assert_eq!(path_lifecycle(&row("sequences")), Lifecycle::Persisted);
+        assert_eq!(path_lifecycle(&row("no_such_table")), Lifecycle::Persisted);
     }
 }
