@@ -618,7 +618,7 @@
 	.block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
 	.list { list-style: none; display: flex; flex-direction: column; gap: 2px; }
-	.row { display: grid; grid-template-columns: 1fr auto; align-items: center; background: #202020; border: 1px solid #2e2e2e; border-radius: 4px; }
+	.row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; background: #202020; border: 1px solid #2e2e2e; border-radius: 4px; }
 	.disclosure { display: flex; align-items: center; gap: 8px; background: none; border: none; color: inherit; font: inherit; text-align: left; padding: 8px 10px; cursor: pointer; width: 100%; min-height: var(--hit); }
 	.caret { display: inline-block; transition: transform 0.12s; color: #777; }
 	.caret.open { transform: rotate(90deg); }
