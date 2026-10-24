@@ -23,7 +23,7 @@
 import { derived, readable, type Readable } from 'svelte/store';
 
 import { drivingTheRig } from '../driving.js';
-import { loadEvaluator, setDriving, unpack, watch } from '../evaluator.js';
+import { loadEvaluator, setDriving, STRIDE, TEXT, textOf, unpack, watch } from '../evaluator.js';
 import type { ParameterValue } from '../generated/index.js';
 import { FrameMeter } from '../stats.js';
 import { consoleNow } from '../ws/clock.js';
@@ -55,16 +55,43 @@ export function readingOf(values: Record<string, ParameterValue>, at = 0): Showi
 	return { at, value: (fixtureId, key) => values[`${fixtureId}/${key}`] ?? null };
 }
 
-/** Build a reading from a packed answer and the order it was asked in. */
-export function reading(at: number, order: string[], packed: Float32Array): Showing {
+/**
+ * Build a reading from a packed answer and the order it was asked in.
+ *
+ * A line of text does not fit in the packed frame, so it comes back marked as text and
+ * is asked for by name — once, and only when somebody reads it: a strip's Effect, which
+ * the stage views need to draw what the node is drawing, and which every panel showed
+ * as a gap before this asked.
+ */
+export function reading(
+	at: number,
+	order: string[],
+	packed: Float32Array,
+	text: (key: string, at: number) => string | undefined = () => undefined
+): Showing {
 	const values = new Map<string, ParameterValue>();
+	const texts = new Set<string>();
 	order.forEach((key, index) => {
+		if (packed[index * STRIDE] === TEXT) {
+			texts.add(key);
+			return;
+		}
 		const value = unpack(packed, index);
 		if (value !== undefined) values.set(key, value);
 	});
 	return {
 		at,
-		value: (fixtureId, key) => values.get(`${fixtureId}/${key}`) ?? null
+		value: (fixtureId, key) => {
+			const id = `${fixtureId}/${key}`;
+			const known = values.get(id);
+			if (known) return known;
+			if (!texts.has(id)) return null;
+			const said = text(id, at);
+			if (said === undefined) return null;
+			const value: ParameterValue = { type: 'Text', value: said };
+			values.set(id, value);
+			return value;
+		}
 	};
 }
 
@@ -193,7 +220,7 @@ export const output: Readable<Showing> = readable<Showing>(NOTHING_YET, (set) =>
 			}
 			const packed = instance.evaluate(at);
 			measure(performance.now() - startedAt, keys.length);
-			set(reading(at, keys, packed));
+			set(reading(at, keys, packed, textOf));
 		};
 		frame = requestAnimationFrame(draw);
 	});

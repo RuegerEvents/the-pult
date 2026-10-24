@@ -10,8 +10,10 @@
 		fixtureTint,
 		pixelToPlan,
 		planExtent,
-		planToPixel
+		planToPixel,
+		stripPixels
 	} from '$lib/stage.js';
+	import { pixelEffect } from '$lib/evaluator.js';
 	import { selected, select, toggle } from '$lib/stores/selection.js';
 	import {
 		fixtureIsVisible,
@@ -27,7 +29,7 @@
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
 	import { asOneGesture } from '$lib/stores/gesture.js';
 	import { output, watching } from '$lib/stores/output.js';
-	import { parameterKey } from '$lib/patch.js';
+	import { controls, parameterKey } from '$lib/patch.js';
 
 	type Mode = 'move' | 'program' | 'scale' | 'origin';
 
@@ -107,9 +109,12 @@
 	/// doing, so a panel that does not say what it is showing is a panel that shows
 	/// nothing — and one that says too much only pays for parameters nobody looks at.
 	$effect(() => {
-		const keys = placed.flatMap((fixture) =>
-			(typeOf(fixture)?.parameters ?? []).map((p) => `${fixture.id}/${parameterKey(p.kind)}`)
-		);
+		// Every control, not every definition: a strip in sacn mode is a cell per
+		// pixel, and its cells are what the plan draws.
+		const keys = placed.flatMap((fixture) => {
+			const type = typeOf(fixture);
+			return type ? controls(type).map((c) => `${fixture.id}/${parameterKey(c.kind)}`) : [];
+		});
 		const registered = watching(keys);
 		return () => registered.stop();
 	});
@@ -118,9 +123,23 @@
 		placed.map((fixture) => {
 			const at = fixturePoint(fixture, $objectsById)!;
 			const spot = beamSpot(fixture, typeOf(fixture), $output, { maxThrow }, $objectsById);
+			// A strip is as long as its pixels, so it is drawn as them, along the way
+			// it was hung — the console's cells, or the node's own effect, moving.
+			const strip = stripPixels(fixture, typeOf(fixture), $output, $objectsById, pixelEffect);
+			const pitch = strip && strip.at.length > 1
+				? Math.hypot(strip.at[1].x - strip.at[0].x, strip.at[1].z - strip.at[0].z)
+				: 0.05;
 			return {
 				fixture,
 				at,
+				pixels: strip
+					? strip.at.map((point, i) => {
+							const { r, g, b, level } = strip.out[i];
+							const byte = (v: number) => Math.round(Math.min(1, Math.max(0, v * level)) * 255);
+							return { dx: point.x - at.x, dz: point.z - at.z, fill: `rgb(${byte(r)}, ${byte(g)}, ${byte(b)})` };
+						})
+					: null,
+				pixelSize: Math.max(0.006, pitch * 0.9),
 				tint: fixtureTint(fixture, $output),
 				level: fixtureOutput(fixture, $output).level,
 				/// Where the beam lands, in this symbol's own coordinates.
@@ -469,6 +488,22 @@
 						fill={symbol.tint}
 					/>
 				{/if}
+				{#if symbol.pixels}
+					<!-- A strip: its pixels in a row, each what it is putting out, on a
+					     dark band so an unlit run still reads as the strip it is. -->
+					{@const last = symbol.pixels[symbol.pixels.length - 1]}
+					<line class="strip" x1="0" y1="0" x2={last.dx} y2={last.dz} stroke-width={symbol.pixelSize * 1.6} />
+					{#each symbol.pixels as pixel, i (i)}
+						<rect
+							class="pixel"
+							x={pixel.dx - symbol.pixelSize / 2}
+							y={pixel.dz - symbol.pixelSize / 2}
+							width={symbol.pixelSize}
+							height={symbol.pixelSize}
+							fill={pixel.fill}
+						/>
+					{/each}
+				{/if}
 				<!-- The body is the symbol and the fill is what it is doing, so a
 				     fixture that is off still reads as a fixture rather than a hole. -->
 				<circle class="body" r="0.35" fill={symbol.tint} />
@@ -659,6 +694,9 @@
 	.fixture.on text { fill: #4a9eff; }
 	/* A beam is a hint about where the light lands, not a render of it. */
 	.beam { opacity: 0.16; pointer-events: none; }
+	/* In meters, unlike every other stroke here: a strip's band is as wide as it is. */
+	.strip { stroke: #1c1c1c; stroke-linecap: round; vector-effect: none; }
+	.pixel { pointer-events: none; }
 	.mark { fill: #fbbf24; }
 
 	/* Handles are amber when the programmer holds the parameter they move, which is

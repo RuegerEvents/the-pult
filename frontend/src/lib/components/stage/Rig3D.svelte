@@ -56,8 +56,7 @@
 		aimAt,
 		beamDirection,
 		drawnLength,
-		cellOutputs,
-		cellPoints,
+		stripPixels,
 		fixtureOutput,
 		fixturePoint,
 		planExtent,
@@ -130,6 +129,7 @@
 		toggleObject
 	} from '$lib/stores/scene.js';
 	import { setValue } from '$lib/stores/programmer.js';
+	import { pixelEffect } from '$lib/evaluator.js';
 	import { output as showing, watching, type Showing } from '$lib/stores/output.js';
 	import { controls, parameterKey } from '$lib/patch.js';
 	import Quicksheet from '$lib/components/programmer/Quicksheet.svelte';
@@ -306,12 +306,9 @@
 			const length = throwDistance(at, direction);
 			const output = fixtureOutput(fixture, values);
 			const bearing = bearingOnFloor(fixture, type, values);
-			// A multi-cell fixture with no beam of its own — a strip — is drawn as its
-			// cells, each the light it is putting out.
-			const cellsAt = cellPoints(fixture, type, $objectsById);
-			const cells = cellsAt.length
-				? { at: cellsAt, out: cellOutputs(fixture, type, values) }
-				: null;
+			// A strip has no beam of its own: it is drawn as its pixels, each the light
+			// it is putting out — the console's cells, or the node's own effect.
+			const cells = stripPixels(fixture, type, values, $objectsById, pixelEffect);
 			// The beam angle the file measured, where there is one. `stage.ts` reads
 			// the type's own range; the constant is the fallback and says so.
 			const half = (type?.physical?.beam_angle_deg ?? 14) / 2;
@@ -595,7 +592,7 @@
 			/** And each cell, the same way. */
 			cellPrevious: new Float32Array(0),
 			/** Which fixture and cell each instance of `cellMesh` is, for picking one. */
-			cellIndex: [] as { fixture: string; cell: number }[],
+			cellIndex: [] as { fixture: string; cell: number | null }[],
 			/** Fixture bodies, kept between frames and keyed by fixture id. */
 			bodies: new Map<string, THREE.Mesh>(),
 			/** Drawn scene objects, keyed by object id. */
@@ -949,7 +946,8 @@
 		for (const beam of list) {
 			if (!beam.cells) continue;
 			beam.cells.at.forEach((point, n) => {
-				built.cellIndex.push({ fixture: beam.fixture.id, cell: n + 1 });
+				// A node-drawn pixel is not a cell: picking it picks the strip.
+				built.cellIndex.push({ fixture: beam.fixture.id, cell: beam.cells!.cells ? n + 1 : null });
 				const out = beam.cells!.out[n];
 				const glow = out.level * 2.5;
 				const chosen = picked.has(`${beam.fixture.id}@${n + 1}`) ? 1 : 0;
@@ -2174,7 +2172,16 @@
 			}
 			// A cell of a strip: that cell, and a drag along the strip takes the run of
 			// cells between where it started and where it is — MA's `.` by hand.
-			const onCell = cellAt(built, event);
+			const hit = cellAt(built, event);
+			// A pixel the node draws is the strip, not a cell of it.
+			if (hit && hit.cell === null) {
+				event.stopPropagation();
+				if (event.shiftKey) toggle(hit.fixture);
+				else select(hit.fixture);
+				clearObjects();
+				return;
+			}
+			const onCell = hit as { fixture: string; cell: number } | null;
 			if (onCell) {
 				event.stopPropagation();
 				const from =
@@ -2241,7 +2248,7 @@
 			if (grab) return;
 			if (cellDrag && cellAnchor) {
 				const over = cellAt(built, event);
-				if (over && over.fixture === cellAnchor.fixture) {
+				if (over && over.cell !== null && over.fixture === cellAnchor.fixture) {
 					selectCells(over.fixture, [{ from: cellAnchor.cell, to: over.cell }]);
 				}
 				return;
@@ -2291,7 +2298,7 @@
 	let cellDrag = false;
 
 	/** Which cell of which strip is under the pointer. */
-	function cellAt(built: Scene, event: PointerEvent): { fixture: string; cell: number } | null {
+	function cellAt(built: Scene, event: PointerEvent): { fixture: string; cell: number | null } | null {
 		if (built.cellMesh.count === 0) return null;
 		const ndc = pointerNdc(event);
 		if (!ndc) return null;

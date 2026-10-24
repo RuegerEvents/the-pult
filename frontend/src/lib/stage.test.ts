@@ -13,6 +13,8 @@ import {
 	fixtureOutput,
 	fixturePoint,
 	fixtureTint,
+	nodeEffectOf,
+	stripPixels,
 	originForPixel,
 	panAngle,
 	pixelToPlan,
@@ -540,5 +542,78 @@ describe('the cells of a strip', () => {
 
 	it('are none for a fixture with no cells', () => {
 		expect(cellPoints(placed, aFixtureType())).toEqual([]);
+	});
+});
+
+describe('a strip the node draws', () => {
+	const strip = (mode: 'effect' | 'sacn') =>
+		fixture({
+			address: {
+				OpenHaunt: {
+					serial: 'f674adc8',
+					head: 1,
+					universe: null,
+					strip: { mode, count: 4, order: 'GRB', output: 0, universe: 0, address: 1, hold_ms: 10000, pitch_m: 0.5 }
+				}
+			},
+			position: at({ x: 1, y: 2, z: 3 })
+		});
+	const type = aFixtureType({
+		id: 't',
+		parameters: [
+			aParameter({ kind: 'ColorRgb', default_value: { type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } } }),
+			aParameter({ kind: 'Intensity', default_value: { type: 'Float', value: 0 } }),
+			aParameter({ kind: { Named: 'Effect' }, default_value: { type: 'Text', value: 'solid' } }),
+			aParameter({
+				kind: { Named: 'Speed' },
+				default_value: { type: 'Float', value: 0.1 },
+				physical: { from: 0, to: 10, unit: 'Hertz' }
+			}),
+			aParameter({
+				kind: { Named: 'Segments' },
+				default_value: { type: 'Float', value: 0 },
+				physical: { from: 1, to: 16, unit: 'None' }
+			})
+		]
+	});
+
+	it('is told what the station tells the node: bytes, hertz, whole segments', () => {
+		const told = nodeEffectOf(
+			strip('effect'),
+			type,
+			showing({
+				ColorRgb: { type: 'Color', value: { r: 1, g: 0.5, b: 0, overrides: {} } },
+				Intensity: { type: 'Float', value: 0.15 },
+				'Named:Effect': { type: 'Text', value: 'comet' },
+				'Named:Speed': { type: 'Float', value: 0.25 }
+			})
+		);
+		expect(told).toMatchObject({
+			effect: 'comet',
+			color: [255, 128, 0],
+			brightness: 0.15,
+			speed: 2.5,
+			// Not driven, so its default: the bottom of 1..16.
+			segments: 1
+		});
+	});
+
+	it('is drawn as many pixels as it has, a pitch apart, in what the renderer says', () => {
+		const frame = new Uint8Array([255, 0, 0, 0, 255, 0, 0, 0, 255, 51, 51, 51]);
+		const drawn = stripPixels(strip('effect'), type, readingOf({}, 1000), undefined, () => frame);
+		expect(drawn?.cells).toBe(false);
+		expect(drawn?.at.map((p) => p.x)).toEqual([1, 1.5, 2, 2.5]);
+		expect(drawn?.out[1]).toEqual({ r: 0, g: 1, b: 0, level: 1 });
+		expect(drawn?.out[3].r).toBeCloseTo(0.2);
+	});
+
+	it('draws dark rather than a frame from the wrong moment, before the clock is known', () => {
+		const drawn = stripPixels(strip('effect'), type, NOTHING_YET, undefined, () => new Uint8Array(12).fill(255));
+		expect(drawn?.out.every((p) => p.level === 0)).toBe(true);
+	});
+
+	it('is nothing to draw when the console is the one drawing it, or it has no place', () => {
+		expect(nodeEffectOf(strip('sacn'), type, NOTHING_YET)).toBeNull();
+		expect(stripPixels(fixture(), type, NOTHING_YET)).toBeNull();
 	});
 });

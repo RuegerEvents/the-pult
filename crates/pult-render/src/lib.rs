@@ -16,6 +16,7 @@
 pub mod color;
 pub mod driving;
 pub mod effect;
+pub mod pixfx;
 pub mod track;
 pub mod value;
 

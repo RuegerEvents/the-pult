@@ -62,6 +62,19 @@ function agree(a: ParameterValue | null, b: ParameterValue | null): boolean {
 type Built = {
 	initSync: (opts: { module: BufferSource }) => unknown;
 	emitter_levels: (color: unknown, emitters: unknown) => [string, number][];
+	pixel_effect: (
+		effect: string,
+		color: Uint8Array,
+		color2: Uint8Array,
+		brightness: number,
+		speed: number,
+		size: number,
+		reverse: boolean,
+		mirror: boolean,
+		segments: number,
+		nowMs: number,
+		count: number
+	) => Uint8Array;
 	Evaluator: new () => {
 		set_driving(driving: unknown): void;
 		watch(keys: unknown): void;
@@ -367,3 +380,72 @@ function fadeTo(to: number, t0: number, durationMs: number) {
 		cue_id: '00000000-0000-0000-0000-000000000000'
 	};
 }
+
+/**
+ * The node's pixel effects, compiled for a browser, against the node's own bytes.
+ *
+ * `testdata/pixel-effects.json` comes out of the OpenHaunt firmware's C; the native
+ * build is held to it in `crates/pult-render-wasm/tests/pixfx_corpus.rs`, and this is
+ * the same arithmetic through the wasm a page draws a strip with — within a byte, for
+ * the reason given there.
+ */
+type PixelCase = {
+	name: string;
+	effect: string;
+	color: [number, number, number];
+	color2: [number, number, number];
+	brightness: number;
+	speed: number;
+	size: number;
+	reverse: boolean;
+	mirror: boolean;
+	segments: number;
+	now_ms: number;
+	count: number;
+	rgb: string;
+};
+
+const pixelCorpus: { cases: PixelCase[] } = JSON.parse(
+	readFileSync(new URL('../../../testdata/pixel-effects.json', import.meta.url), 'utf8')
+);
+
+describe("a strip's node effect, drawn in the page", () => {
+	it("draws every case within a byte of the node", () => {
+		if (!built) return;
+		expect(pixelCorpus.cases.length).toBeGreaterThanOrEqual(600);
+		const wrong: string[] = [];
+		let offByOne = 0;
+		let seen = 0;
+		for (const c of pixelCorpus.cases) {
+			const got = built.pixel_effect(
+				c.effect,
+				new Uint8Array(c.color),
+				new Uint8Array(c.color2),
+				c.brightness,
+				c.speed,
+				c.size,
+				c.reverse,
+				c.mirror,
+				c.segments,
+				c.now_ms,
+				c.count
+			);
+			const want = c.rgb.match(/../g)!.map((h) => parseInt(h, 16));
+			if (got.length !== want.length) {
+				wrong.push(`${c.name}: ${got.length} bytes, not ${want.length}`);
+				continue;
+			}
+			for (let i = 0; i < want.length; i++) {
+				seen += 1;
+				const d = Math.abs(got[i] - want[i]);
+				if (d === 1) offByOne += 1;
+				else if (d > 1) {
+					wrong.push(`${c.name}: byte ${i} is ${got[i]}, the node draws ${want[i]}`);
+					break;
+				}
+			}
+		}
+		expect(wrong, `${wrong.length} cases disagree`).toEqual([]);
+		expect(offByOne * 100).toBeLessThanOrEqual(seen);
+	});
+});

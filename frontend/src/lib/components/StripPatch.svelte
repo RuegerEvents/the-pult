@@ -115,11 +115,13 @@
 								<input type="number" min="1" max="512" value={draft.address}
 									oninput={(e) => edit(row.head, row.strip, { address: Number(e.currentTarget.value) })} />
 							</label>
-							<label>Per meter
-								<input type="number" min="1" max="200" value={Math.round(1 / draft.pitch_m)}
-									oninput={(e) => edit(row.head, row.strip, { pitch_m: 1 / Math.max(1, Number(e.currentTarget.value)) })} />
-							</label>
 						{/if}
+						<!-- In both modes: how long the strip is decides how it is drawn, and a
+						     node drawing its own effect is no shorter for it. -->
+						<label>Per meter
+							<input type="number" min="1" max="200" value={Math.round(1 / draft.pitch_m)}
+								oninput={(e) => edit(row.head, row.strip, { pitch_m: 1 / Math.max(1, Number(e.currentTarget.value)) })} />
+						</label>
 						<button class="chip-btn apply" disabled={!changed || busy === row.head} onclick={() => apply(row.head, row.strip)}>
 							{busy === row.head ? 'Patching…' : 'Apply'}
 						</button>

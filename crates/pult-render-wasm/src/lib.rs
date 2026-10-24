@@ -185,6 +185,42 @@ pub fn effect_values(effects: JsValue, now_ms: f64) -> Result<Vec<f32>, JsValue>
     Ok(out)
 }
 
+/// One frame of a strip the node draws itself, as the node draws it: three bytes a
+/// pixel, brightness applied. See `pult_render::pixfx` and its corpus.
+///
+/// Plain arguments rather than an object, because the rig view asks this per strip per
+/// animation frame and a deserialized struct would be the most expensive part of it.
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen]
+pub fn pixel_effect(
+    effect: &str,
+    color: &[u8],
+    color2: &[u8],
+    brightness: f32,
+    speed: f32,
+    size: f32,
+    reverse: bool,
+    mirror: bool,
+    segments: i32,
+    now_ms: f64,
+    count: u16,
+) -> Vec<u8> {
+    let rgb = |c: &[u8]| [c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0)];
+    let params = pult_render::pixfx::PixelParams {
+        effect: pult_render::pixfx::PixelEffect::parse(effect),
+        color: rgb(color),
+        color2: rgb(color2),
+        brightness,
+        speed,
+        size,
+        reverse,
+        mirror,
+        segments,
+    };
+    let now = now_ms as i64;
+    pult_render::pixfx::render(&params, pult_render::pixfx::phase_at(speed, now), now, count)
+}
+
 /// A shape's level after `traveled` cycles, 0..1, for drawing its waveform.
 ///
 /// Every shape, including the two that never repeat, which a drawing written in

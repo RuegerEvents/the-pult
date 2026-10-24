@@ -16,6 +16,7 @@
 
 import type { ParameterValue, RunningEffect, Shape } from './generated/index.js';
 import type { DrivenBy } from './driving.js';
+import type { NodeEffect } from './stage.js';
 
 /** How a packed answer says what kind of value it is. See `pult-render-wasm`. */
 const NONE = 0;
@@ -54,6 +55,19 @@ type Wasm = {
 	effect_values(effects: unknown, nowMs: number): Float32Array;
 	shape_level(shape: unknown, width: number, traveled: number, salt: number): number;
 	track_outline(bytes: Uint8Array, budget: number): KeyOutline[];
+	pixel_effect(
+		effect: string,
+		color: Uint8Array,
+		color2: Uint8Array,
+		brightness: number,
+		speed: number,
+		size: number,
+		reverse: boolean,
+		mirror: boolean,
+		segments: number,
+		nowMs: number,
+		count: number
+	): Uint8Array;
 };
 
 /** One key of a recording at a glance — `pult_render::KeyOutline`. */
@@ -113,6 +127,30 @@ export function effectValues(effects: RunningEffect[], nowMs: number): Float32Ar
 		console.warn('[pult] effect preview', e);
 		return null;
 	}
+}
+
+/**
+ * One frame of a strip a node draws itself, as the node draws it: three bytes a pixel.
+ *
+ * The node's own effect (OpenHaunt doc 14), not an approximation of it: the wasm copy
+ * of `oh_pixfx.c`, held to the C by `testdata/pixel-effects.json`. `null` while the
+ * evaluator is not loaded, and the strip draws dark.
+ */
+export function pixelEffect(effect: NodeEffect, nowMs: number, count: number): Uint8Array | null {
+	if (!module) return null;
+	return module.pixel_effect(
+		effect.effect,
+		new Uint8Array(effect.color),
+		new Uint8Array(effect.color2),
+		effect.brightness,
+		effect.speed,
+		effect.size,
+		effect.reverse,
+		effect.mirror,
+		effect.segments,
+		nowMs,
+		count
+	);
 }
 
 /**
@@ -237,3 +275,8 @@ export function unpack(packed: Float32Array, at: number): ParameterValue | undef
 }
 
 export { STRIDE, TEXT };
+
+/** A text parameter's value at a moment, which the packed frame has no room for. */
+export function textOf(key: string, nowMs: number): string | undefined {
+	return instance?.text(key, nowMs);
+}

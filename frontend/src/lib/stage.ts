@@ -210,17 +210,139 @@ export function cellPoints(
 	type: FixtureType | undefined,
 	objects?: Map<string, SceneObject>
 ): Vec3[] {
-	if (!type || !hasCells(type) || !fixture.position) return [];
+	if (!type || !hasCells(type)) return [];
+	return pointsAlong(fixture, type.cells, cellPitch(fixture, type), objects);
+}
+
+/** `count` points `pitch` apart along a placed fixture's own X axis, from its origin. */
+function pointsAlong(
+	fixture: Fixture,
+	count: number,
+	pitch: number,
+	objects?: Map<string, SceneObject>
+): Vec3[] {
+	if (!fixture.position || count <= 0) return [];
 	const placed = objects ? worldTransform(fixture.position, fixture.parent, objects) : fixture.position;
 	const basis = eulerToBasis(placed.rotation);
 	const axis = { x: basis[0][0], y: basis[1][0], z: basis[2][0] };
-	const pitch = cellPitch(fixture, type);
 	const from = placed.position;
-	return Array.from({ length: type.cells }, (_, i) => ({
+	return Array.from({ length: count }, (_, i) => ({
 		x: from.x + axis.x * pitch * i,
 		y: from.y + axis.y * pitch * i,
 		z: from.z + axis.z * pitch * i
 	}));
+}
+
+// ── A strip the node draws ────────────────────────────────────────────────────
+
+/**
+ * A strip in `effect` mode's nine parameters, in the node's own units — what the
+ * station's OpenHaunt connector sends, worked out the same way: a color as bytes, a
+ * number through its port's physical range (Speed in hertz, Segments 1..16).
+ */
+export type NodeEffect = {
+	effect: string;
+	color: [number, number, number];
+	color2: [number, number, number];
+	brightness: number;
+	speed: number;
+	size: number;
+	reverse: boolean;
+	mirror: boolean;
+	segments: number;
+};
+
+/** Draws one frame of a node effect: three bytes a pixel. The wasm `pixel_effect`. */
+export type PixelRenderer = (effect: NodeEffect, nowMs: number, count: number) => Uint8Array | null;
+
+/** The strip address of a node's pixel strip, if this fixture is one. */
+function nodeStrip(fixture: Fixture) {
+	return 'OpenHaunt' in fixture.address ? fixture.address.OpenHaunt.strip : null;
+}
+
+/**
+ * What a strip in effect mode is told, read off what its parameters are doing.
+ *
+ * By the names OpenHaunt doc 14 gives the nine ports — Color, Brightness, Color 2,
+ * Effect, Speed, Size, Reverse, Mirror, Segments — which the console's type carries as
+ * `ColorRgb`, `Intensity` and seven named parameters. `null` for anything else.
+ */
+export function nodeEffectOf(fixture: Fixture, type: FixtureType | undefined, showing: Showing): NodeEffect | null {
+	const strip = nodeStrip(fixture);
+	if (!type || !strip || strip.mode !== 'effect') return null;
+	const read = (key: string): ParameterValue | undefined => {
+		const value = showing.value(fixture.id, key);
+		if (value) return value;
+		return type.parameters.find((p) => parameterKey(p.kind) === key)?.default_value;
+	};
+	const physical = (key: string, fallback: number): number => {
+		const value = read(key);
+		const n = value?.type === 'Float' || value?.type === 'Int' ? value.value : undefined;
+		if (n === undefined) return fallback;
+		const range = type.parameters.find((p) => parameterKey(p.kind) === key)?.physical;
+		return range ? range.from + (range.to - range.from) * n : n;
+	};
+	const byte = (v: number) => Math.round(clamp(v) * 255);
+	const rgb = (key: string): [number, number, number] => {
+		const value = read(key);
+		return value?.type === 'Color' ? [byte(value.value.r), byte(value.value.g), byte(value.value.b)] : [0, 0, 0];
+	};
+	const flag = (key: string) => {
+		const value = read(key);
+		return value?.type === 'Bool' ? value.value : false;
+	};
+	const text = read('Named:Effect');
+	return {
+		effect: text?.type === 'Text' ? text.value : 'solid',
+		color: rgb('ColorRgb'),
+		color2: rgb('Named:Color 2'),
+		brightness: physical('Intensity', 0),
+		speed: physical('Named:Speed', 1),
+		size: physical('Named:Size', 0.25),
+		reverse: flag('Named:Reverse'),
+		mirror: flag('Named:Mirror'),
+		segments: Math.round(physical('Named:Segments', 1))
+	};
+}
+
+/** One pixel as drawn: a color and how lit it is. */
+export type PixelOut = { r: number; g: number; b: number; level: number };
+
+/**
+ * Every pixel of a strip, as both stage views draw it, or `null` for a fixture that
+ * is not one or is not placed.
+ *
+ * Two kinds, and the views do not need to know which. A strip in `sacn` mode is a
+ * fixture with a cell per pixel and the console works out each cell — `cellOutputs`.
+ * A strip in `effect` mode is the node's to draw, and the console draws what the node
+ * does: the same effect, from the same nine parameters, through `render` (the wasm
+ * copy of the node's `oh_pixfx.c`, held to it by `testdata/pixel-effects.json`). Its
+ * pixels are not cells — nothing can be set on one — so `cells` says which this is.
+ */
+export function stripPixels(
+	fixture: Fixture,
+	type: FixtureType | undefined,
+	showing: Showing,
+	objects?: Map<string, SceneObject>,
+	render?: PixelRenderer
+): { at: Vec3[]; out: PixelOut[]; cells: boolean } | null {
+	if (type && hasCells(type)) {
+		const at = cellPoints(fixture, type, objects);
+		return at.length ? { at, out: cellOutputs(fixture, type, showing), cells: true } : null;
+	}
+	const strip = nodeStrip(fixture);
+	const effect = nodeEffectOf(fixture, type, showing);
+	if (!strip || !effect) return null;
+	const at = pointsAlong(fixture, strip.count, strip.pitch_m || 1 / 60, objects);
+	if (at.length === 0) return null;
+	// No clock yet, no picture: a gap rather than a frame from the wrong moment.
+	const bytes = showing.at !== null && render ? render(effect, showing.at, strip.count) : null;
+	const out = at.map((_, i) =>
+		bytes
+			? { r: bytes[3 * i] / 255, g: bytes[3 * i + 1] / 255, b: bytes[3 * i + 2] / 255, level: 1 }
+			: { r: 0, g: 0, b: 0, level: 0 }
+	);
+	return { at, out, cells: false };
 }
 
 /**
