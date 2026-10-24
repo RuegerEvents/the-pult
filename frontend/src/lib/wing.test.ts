@@ -103,10 +103,10 @@ describe('the faders and their keys', () => {
 });
 
 describe('the encoders', () => {
-	it('reads which of the five an encoder is, outer coarse and inner fine', () => {
-		expect(encoderRole(MAP, 13)).toEqual({ slot: 0, fine: false });
-		expect(encoderRole(MAP, 12)).toEqual({ slot: 0, fine: true });
-		expect(encoderRole(MAP, 21)).toEqual({ slot: 4, fine: false });
+	it('reads which of the five an encoder is, inner coarse and outer fine as on MA', () => {
+		expect(encoderRole(MAP, 12)).toEqual({ slot: 0, fine: false });
+		expect(encoderRole(MAP, 13)).toEqual({ slot: 0, fine: true });
+		expect(encoderRole(MAP, 21)).toEqual({ slot: 4, fine: true });
 		expect(encoderRole(MAP, 6)).toBeUndefined();
 	});
 
@@ -134,9 +134,9 @@ describe('the encoders', () => {
 		expect(encoderPage(slots, 0).length).toBe(5);
 	});
 
-	it('turns a float by 2% a click coarse and a quarter of one fine, inside its travel', () => {
+	it('turns a float by 2% a click coarse and a tenth of that fine, inside its travel', () => {
 		expect(turned({ type: 'Float', value: 0.5 }, 3, false)).toEqual({ type: 'Float', value: 0.56 });
-		expect(turned({ type: 'Float', value: 0.5 }, 4, true)).toEqual({ type: 'Float', value: 0.51 });
+		expect(turned({ type: 'Float', value: 0.5 }, 5, true)).toEqual({ type: 'Float', value: 0.51 });
 		expect(turned({ type: 'Float', value: 0.99 }, 5, false)).toEqual({ type: 'Float', value: 1 });
 	});
 

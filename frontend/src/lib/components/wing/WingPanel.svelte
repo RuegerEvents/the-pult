@@ -254,7 +254,7 @@
 				{/each}
 			</div>
 			{#if $selection.length === 0}
-				<p class="dim">Select something and the encoders turn its attributes: outer ring coarse, inner knob fine.</p>
+				<p class="dim">Select something and the encoders turn its attributes: inner knob coarse, outer ring fine.</p>
 			{/if}
 		</section>
 

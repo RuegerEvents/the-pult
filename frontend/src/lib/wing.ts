@@ -239,14 +239,15 @@ export type EncoderRole = { slot: number; fine: boolean };
 
 /**
  * The five dual encoders under the screen: MA names them `Outside1`…`Inside5`. The
- * outer ring is coarse and the inner knob fine, for the same parameter — one knob per
- * attribute, which is the one model nobody has to be taught.
+ * inner knob is coarse and the outer ring fine, for the same parameter, as MA's own
+ * manual has it — an operator who has stood at an MA reaches for the inner knob to get
+ * somewhere and the ring to land.
  */
 export function encoderRole(map: WingMap | null, index: number): EncoderRole | undefined {
 	const type = map?.encoders[String(index)]?.Type;
 	const match = type?.match(/^(Inside|Outside)([1-5])$/);
 	if (!match) return undefined;
-	return { slot: Number(match[2]) - 1, fine: match[1] === 'Inside' };
+	return { slot: Number(match[2]) - 1, fine: match[1] === 'Outside' };
 }
 
 /** One position on the encoder bar: a parameter, or one channel of a color. */
@@ -294,9 +295,9 @@ export function encoderPage(slots: EncoderSlot[], page: number): (EncoderSlot | 
 
 export const pageCount = (slots: EncoderSlot[]): number => Math.max(1, Math.ceil(slots.length / ENCODERS));
 
-/** One click of the outer ring is 2% of the travel; of the inner knob, a quarter of one. */
+/** One click of the inner knob is 2% of the travel; of the outer ring a tenth of that, MA's ratio. */
 export const COARSE = 0.02;
-export const FINE = 0.0025;
+export const FINE = 0.002;
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
