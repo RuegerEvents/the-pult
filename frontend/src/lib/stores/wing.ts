@@ -46,7 +46,10 @@ import { editableParameters, entryId, rowTargets, type Target } from '../program
 import { pressTarget, targetLive, type SurfaceShow } from '../surface.js';
 import {
 	DIM,
+	calculatorTyped,
 	digitalEdges,
+	encoderPress,
+	typedValue,
 	LED_CHANNELS,
 	LIT,
 	encoderPage,
@@ -117,6 +120,13 @@ export const encoderPageIndex = writable(0);
 
 /** What the wing has typed, when no command line is open to type into. */
 export const wingLine = writable('');
+
+/**
+ * The calculator a large encoder's press opens: which of the five, and what has been
+ * typed. MA's own behavior — the keypad types a number into it, PLEASE sets it on the
+ * selection, ESC or a second press closes it. `null` while none is open.
+ */
+export const calculator = writable<{ slot: number; text: string } | null>(null);
 
 /** The keys held down right now, by index. For lighting them while they are. */
 const held = writable<Set<number>>(new Set());
@@ -373,6 +383,7 @@ function drive(): () => void {
 	return () => {
 		for (const stop of stops) stop();
 		held.set(new Set());
+		calculator.set(null);
 		touched.set(new Set());
 	};
 }
@@ -467,6 +478,15 @@ async function onKey(index: number, down: boolean, map: WingMap | null): Promise
 		return;
 	}
 
+	// A press belongs to the attribute under that encoder, which moves with the
+	// selection and the page — so it is never learned or bound, and does only this.
+	const pressed = encoderPress(code);
+	if (pressed !== undefined) {
+		if (down) openCalculator(pressed);
+		return;
+	}
+	if (get(calculator) && down && calculatorKey(code)) return;
+
 	if (keyVerb(code) === 'learn') {
 		if (down) learning.update((on) => !on);
 		return;
@@ -512,9 +532,12 @@ async function onKey(index: number, down: boolean, map: WingMap | null): Promise
 		case 'goBack':
 			return goOnFocusedSheet(true);
 		case 'pageUp':
+			// A page turn moves every encoder to another attribute, the open one included.
+			calculator.set(null);
 			encoderPageIndex.update((p) => Math.max(0, p - 1));
 			return;
 		case 'pageDown':
+			calculator.set(null);
 			encoderPageIndex.update((p) => Math.min(get(encoderBar).pages - 1, p + 1));
 			return;
 	}
@@ -738,6 +761,69 @@ function onEncoder(index: number, delta: number, map: WingMap | null): void {
 	const slot = get(encoderBar).slots[role.slot];
 	if (!slot) return;
 	turnTargets(selectionTargets(slot.kind), slot.defaultValue, delta, role.fine, slot.component);
+}
+
+// ── Typing a value ────────────────────────────────────────────────────────────
+
+/** Open the calculator on this encoder, or close it if it is the one open. */
+export function openCalculator(slot: number): void {
+	if (get(calculator)?.slot === slot) return calculator.set(null);
+	if (!get(encoderBar).slots[slot]) return calculator.set(null);
+	calculator.set({ slot, text: '' });
+}
+
+/**
+ * A keypad key while the calculator is open. Answers whether it was the calculator's:
+ * digits and the dot type, CLEAR empties, Oops takes one back, ESC closes and PLEASE
+ * sets. The keypad's other words are swallowed rather than typed into the command line
+ * behind it; every other key does what it always does.
+ */
+function calculatorKey(code: string | undefined): boolean {
+	const word = keypadWord(code);
+	if (word !== undefined) {
+		calculator.update((c) => (c ? { ...c, text: calculatorTyped(c.text, word) } : c));
+		return true;
+	}
+	switch (keyVerb(code)) {
+		case 'clear':
+			calculator.update((c) => (c ? { ...c, text: '' } : c));
+			return true;
+		case 'oops':
+			calculator.update((c) => (c ? { ...c, text: c.text.slice(0, -1) } : c));
+			return true;
+		case 'escape':
+			calculator.set(null);
+			return true;
+		case 'please':
+			setTyped();
+			return true;
+		default:
+			return false;
+	}
+}
+
+/**
+ * Set what the calculator holds on every element of the selection, as one gesture —
+ * the same value for each, since typing a number is saying where, not how far.
+ */
+export function setTyped(text: string | undefined = get(calculator)?.text): void {
+	const open = get(calculator);
+	if (!open || text === undefined) return;
+	const slot = get(encoderBar).slots[open.slot];
+	calculator.set(null);
+	if (!slot) return;
+	const targets = selectionTargets(slot.kind);
+	const values = targets.map((t) => typedValue(text, currentOf(t, slot.defaultValue), slot.component));
+	if (values.some((v) => v === null)) {
+		addToast(`${slot.label}: nothing to set from "${text}"`);
+		return;
+	}
+	beginGesture();
+	try {
+		targets.forEach((target, i) => fromWing(() => setValueOn([target], values[i]!)));
+	} finally {
+		endGesture();
+	}
 }
 
 /** What an encoder slot reads as, for the panel: the first target's value. */

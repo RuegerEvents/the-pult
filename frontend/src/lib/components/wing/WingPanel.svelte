@@ -17,6 +17,7 @@
 	import { openConsoleLine } from '$lib/stores/plugins.js';
 	import {
 		bind,
+		calculator,
 		controlKey,
 		controlName,
 		driving,
@@ -24,7 +25,9 @@
 		encoderBar,
 		learned,
 		learning,
+		openCalculator,
 		selectedParameter,
+		setTyped,
 		setDrivesHere,
 		setWingAt,
 		slotValue,
@@ -243,16 +246,47 @@
 			</h3>
 			<div class="encoders">
 				{#each $encoderBar.slots as slot, i (i)}
-					<div class="encoder" class:empty={!slot}>
+					<!-- Pressing the knob, or clicking its card, opens a calculator on it: MA's. -->
+					<div
+						class="encoder"
+						class:empty={!slot}
+						class:typing={$calculator?.slot === i}
+						role="button"
+						tabindex={slot ? 0 : -1}
+						onclick={() => slot && $calculator?.slot !== i && openCalculator(i)}
+						onkeydown={(e) => slot && e.key === 'Enter' && $calculator?.slot !== i && openCalculator(i)}
+					>
 						{#if slot}
 							<span class="name">{slot.label}</span>
-							<span class="value mono">{slotReading(slotValue(slot), slot.component)}</span>
+							{#if $calculator?.slot === i}
+								<!-- svelte-ignore a11y_autofocus -->
+								<input
+									class="calc mono"
+									inputmode="decimal"
+									autofocus
+									value={$calculator.text}
+									oninput={(e) => calculator.set({ slot: i, text: e.currentTarget.value })}
+									onkeydown={(e) => {
+										e.stopPropagation();
+										if (e.key === 'Enter') setTyped(e.currentTarget.value);
+										if (e.key === 'Escape') calculator.set(null);
+									}}
+								/>
+							{:else}
+								<span class="value mono">{slotReading(slotValue(slot), slot.component)}</span>
+							{/if}
 						{:else}
 							<span class="name dim">—</span>
 						{/if}
 					</div>
 				{/each}
 			</div>
+			{#if $calculator}
+				<p class="dim">
+					Typing {$encoderBar.slots[$calculator.slot]?.label ?? 'a value'}: the keypad types it, PLEASE sets
+					it on the selection, ESC or pressing the knob again closes it.
+				</p>
+			{/if}
 			{#if $selection.length === 0}
 				<p class="dim">Select something and the encoders turn its attributes: inner knob coarse, outer ring fine.</p>
 			{/if}
@@ -431,6 +465,18 @@
 		flex-direction: column;
 		gap: 2px;
 		min-height: 44px;
+	}
+	.encoder.typing {
+		border-color: var(--accent, #3b82f6);
+	}
+	.calc {
+		width: 100%;
+		font-size: 1rem;
+		background: transparent;
+		border: none;
+		border-bottom: 1px solid var(--accent, #3b82f6);
+		color: inherit;
+		padding: 0;
 	}
 	.encoder.empty {
 		opacity: 0.4;

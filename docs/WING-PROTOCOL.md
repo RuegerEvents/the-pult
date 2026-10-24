@@ -436,12 +436,10 @@ somebody turning and pushing things. What is left:
 - **The 16-byte software progress chunk** `0x0028` / `0x0003`, only the first four bytes
   of which are obviously an offset.
 - **Everything about `0x0029`**, deliberately.
-- **Encoder presses.** MA's table names a hardkey for every encoder's push
-  (`ENCODER_INSIDE1` … `ENCODER_OUTSIDE5`), and an older wing presses its top-left
-  encoder physically. **Observed** on 2026-10-24, booted with the 2.5.1 application: the
-  press changes no bit in any block — the key block, the encoder block, the fader block
-  and the digital byte all stay as they were, while turning the same encoder moves
-  encoder 67 and a keypad key moves key 163 as usual. So with this application the push
-  is not on the wire, and nothing here can read it. Whether an older application sent it
-  is untested. `RUST_LOG=pult_wing=debug` logs every real-time frame's blocks by tag,
-  length and set bytes, which is how this was read.
+- **The small encoders' presses.** The five large dual encoders press, and a press is an
+  ordinary key: observed on 2026-10-24 with the 2.5.1 application, encoders 1 to 5 press
+  as hardkeys 78, 73, 114, 66 and 111 — MA's `ENCODER_INSIDE1` … `ENCODER_INSIDE5`, down
+  and up like any key. None of MA's `ENCODER_OUTSIDE*` keys has been seen, so each knob
+  presses as one. The small encoders in the playback section do not: pressing the one that
+  turns as encoder 67 (executor 401's knob) changes no bit in any block. That one was the
+  reading an earlier version of this note took for every encoder.

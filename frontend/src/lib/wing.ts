@@ -334,6 +334,56 @@ export function turned(
 	}
 }
 
+// ── Typing a value: the press of a large encoder ──────────────────────────────
+
+/**
+ * Which of the five large encoders a key is the press of, or `undefined`. MA's table
+ * names an inner and an outer press for each; this wing reports only the inner one,
+ * but both are read so a wing that reports the other is not a key with no meaning.
+ */
+export function encoderPress(code: string | undefined): number | undefined {
+	const match = code?.match(/^ENCODER_(INSIDE|OUTSIDE)([1-5])$/);
+	return match ? Number(match[2]) - 1 : undefined;
+}
+
+/**
+ * The calculator's text after one keypad word: digits and one dot, as many as a
+ * value needs. Any other word types nothing — the calculator is a number, and `at`
+ * going into it would be a value nobody can read.
+ */
+export function calculatorTyped(text: string, word: string): string {
+	if (/^\d$/.test(word)) return text.length < 8 ? text + word : text;
+	if (word === '.') return text.includes('.') ? text : (text === '' ? '0' : text) + '.';
+	return text;
+}
+
+/**
+ * What the typed text sets an attribute to, read in the units its bar shows: a
+ * percentage for a level or one channel of a color, a step for a wheel, zero or not
+ * for a switch. `null` when there is nothing to set, or nothing the text could mean.
+ */
+export function typedValue(
+	text: string,
+	like: ParameterValue,
+	component?: 'r' | 'g' | 'b'
+): ParameterValue | null {
+	if (text === '' || text === '.') return null;
+	const n = Number(text);
+	if (!Number.isFinite(n)) return null;
+	switch (like.type) {
+		case 'Float':
+			return { type: 'Float', value: clamp01(n / 100) };
+		case 'Int':
+			return { type: 'Int', value: Math.max(0, Math.round(n)) };
+		case 'Bool':
+			return { type: 'Bool', value: n !== 0 };
+		case 'Color':
+			return component ? { type: 'Color', value: { ...like.value, [component]: clamp01(n / 100) } } : null;
+		default:
+			return null;
+	}
+}
+
 /** What an encoder slot reads as, for the bar: a percentage, a step, on or off. */
 export function slotReading(value: ParameterValue | null, component?: 'r' | 'g' | 'b'): string {
 	if (!value) return '—';

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { EditableParameter } from './programmer.js';
 import {
+	calculatorTyped,
 	digitalEdges,
+	encoderPress,
+	typedValue,
 	encoderPage,
 	encoderRole,
 	encoderSlots,
@@ -196,5 +199,32 @@ describe('the digital inputs', () => {
 		const go = { kind: 'Press' as const, target: { kind: 'SequenceGo' as const, sequence_id: 's' } };
 		expect(learnable({ kind: 'Digital', index: 3 }, go)).toEqual(go);
 		expect(learnable({ kind: 'Digital', index: 3 }, { kind: 'Master', sequence_id: 's' })).toBeNull();
+	});
+});
+
+describe('typing a value with an encoder press', () => {
+	it('knows the press of each large encoder, inner or outer', () => {
+		expect(encoderPress('ENCODER_INSIDE1')).toBe(0);
+		expect(encoderPress('ENCODER_OUTSIDE5')).toBe(4);
+		expect(encoderPress('STORE')).toBeUndefined();
+		expect(encoderPress(undefined)).toBeUndefined();
+	});
+
+	it('types digits and one dot, and nothing else', () => {
+		let text = '';
+		for (const word of ['4', 'at', '.', '5', '.', '0']) text = calculatorTyped(text, word);
+		expect(text).toBe('4.50');
+		expect(calculatorTyped('', '.')).toBe('0.');
+	});
+
+	it('reads the text in the units the bar shows', () => {
+		expect(typedValue('50', { type: 'Float', value: 0 })).toEqual({ type: 'Float', value: 0.5 });
+		expect(typedValue('150', { type: 'Float', value: 0 })).toEqual({ type: 'Float', value: 1 });
+		expect(typedValue('3', { type: 'Int', value: 0 })).toEqual({ type: 'Int', value: 3 });
+		expect(typedValue('0', { type: 'Bool', value: true })).toEqual({ type: 'Bool', value: false });
+		const color = { type: 'Color' as const, value: { r: 1, g: 1, b: 1, overrides: {} } };
+		expect(typedValue('25', color, 'g')).toEqual({ type: 'Color', value: { r: 1, g: 0.25, b: 1, overrides: {} } });
+		expect(typedValue('25', color)).toBeNull();
+		expect(typedValue('', { type: 'Float', value: 0 })).toBeNull();
 	});
 });

@@ -8146,7 +8146,11 @@ console, and it answers surface-layer's questions for this device rather than in
   touched last — and GOBACK is a new `go_back`. A fader bound to a master gives its exec
   keys Go and Off for that sequence.
 - **Encoders are a paged attribute bar** over the selection: five at a time, intensity
-  first, UP/DOWN to page, inner knob coarse and outer ring fine (MA's own way round), a color as R, G and B. The
+  first, UP/DOWN to page, inner knob coarse and outer ring fine (MA's own way round), a color as R, G and B.
+  **Pressing one types a value**, MA's calculator: the keypad types a number into that
+  encoder's card, PLEASE sets it on the selection as one gesture, ESC or a second press
+  closes it. A press is never learned or bound, since what is under the knob moves with
+  the selection and the page. The
   Wing panel draws the bar, since the wing has no display.
 - **LEDs carry state, not decoration**: the keypad dim and bright while held, a bound key
   lit while its target is live, LEARN blinking while armed.
