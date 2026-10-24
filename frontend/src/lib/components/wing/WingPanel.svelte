@@ -183,7 +183,9 @@
 <div class="wing">
 	<section class="status" class:fault={phase.kind === 'Fault'}>
 		<p>{phaseText}</p>
-		{#if phase.kind !== 'Off'}
+		<!-- Only a wing that is here can be driven: offering to drive an absent or faulty
+		     one would claim nothing and say it had. -->
+		{#if phase.kind !== 'Off' && phase.kind !== 'Absent' && phase.kind !== 'Fault'}
 			<label class="drive">
 				<input
 					type="checkbox"
