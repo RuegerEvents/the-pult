@@ -165,6 +165,23 @@ fn run(
                 };
                 tracing::debug!("rx {} bytes: {}", n, label(&msg));
                 if let Message::Io(c) = &msg {
+                    // What blocks a real-time frame carries, by tag and length: the
+                    // decoder ignores a block whose size it does not know, so a wing
+                    // that packs its input differently is only visible here.
+                    if tracing::enabled!(tracing::Level::DEBUG) {
+                        let blocks: Vec<String> = c
+                            .children()
+                            .map(|kids| {
+                                kids.iter()
+                                    .map(|k| match k.as_bytes() {
+                                        Ok(b) => format!("{:04x}:{}={}", k.tag(), b.len(), hex_of(b)),
+                                        Err(_) => format!("{:04x}:group", k.tag()),
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        tracing::debug!("blocks {}", blocks.join(" "));
+                    }
                     let events = input.absorb(c).unwrap_or_default();
                     for e in &events {
                         // Raw byte and bit beside the index, so a mis-derived index
@@ -411,5 +428,20 @@ mod tests {
         std::fs::write(&app, b"bootloader").unwrap();
         assert!(read_image(&app).is_err(), "nor the bootloader's bytes under the app's name");
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// The non-zero bytes of a block as `offset:value`, for reading a frame by eye.
+fn hex_of(bytes: &[u8]) -> String {
+    let set: Vec<String> = bytes
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| **b != 0)
+        .map(|(i, b)| format!("{i}:{b:02x}"))
+        .collect();
+    if set.is_empty() {
+        "0".into()
+    } else {
+        format!("[{}]", set.join(","))
     }
 }

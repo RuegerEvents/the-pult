@@ -427,3 +427,12 @@ somebody turning and pushing things. What is left:
 - **The 16-byte software progress chunk** `0x0028` / `0x0003`, only the first four bytes
   of which are obviously an offset.
 - **Everything about `0x0029`**, deliberately.
+- **Encoder presses.** MA's table names a hardkey for every encoder's push
+  (`ENCODER_INSIDE1` … `ENCODER_OUTSIDE5`), and an older wing presses its top-left
+  encoder physically. **Observed** on 2026-10-24, booted with the 2.5.1 application: the
+  press changes no bit in any block — the key block, the encoder block, the fader block
+  and the digital byte all stay as they were, while turning the same encoder moves
+  encoder 67 and a keypad key moves key 163 as usual. So with this application the push
+  is not on the wire, and nothing here can read it. Whether an older application sent it
+  is untested. `RUST_LOG=pult_wing=debug` logs every real-time frame's blocks by tag,
+  length and set bytes, which is how this was read.
