@@ -1,15 +1,48 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import type { NearbyStation, SessionState } from '$lib/generated/index.js';
+	import { collection } from '$lib/stores/show.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
+	import Dialog from './Dialog.svelte';
 
 	const client = getClientContext();
 	const data = getDataContext();
+	const stations = collection('stations');
 
-	type DiscoveredSession = { session_id: string; show_id: string; show_name: string; sync_addr: string };
-	type SessionInfo = { is_advertising: boolean; is_follower: boolean; session_id: string | null; discovered: DiscoveredSession[] };
+	let session = $state<SessionState>({
+		node_id: null,
+		is_advertising: false,
+		is_follower: false,
+		session_id: null,
+		discovered: [],
+		nearby: []
+	});
+	/**
+	 * Who could be invited: every station on the network that is not already in this
+	 * session. Read against the `stations` rows, which are exactly this session's
+	 * members — the session id a station advertises is its own name for the session
+	 * and need not match this one's.
+	 */
+	const invitable = $derived(session.nearby.filter((s) => !$stations.some((m) => m.id === s.node_id)));
+	/** The station an invitation is being confirmed for. */
+	let inviting = $state<NearbyStation | null>(null);
+	let sending = $state(false);
 
-	let session = $state<SessionInfo>({ is_advertising: false, is_follower: false, session_id: null, discovered: [] });
+	async function invite() {
+		const guest = inviting;
+		if (!guest) return;
+		sending = true;
+		try {
+			await client.call('session.invite', { nodeId: guest.node_id });
+			addToast(`${guest.hostname} joined`, 'success');
+			inviting = null;
+		} catch (e) {
+			addToast(`Invite failed: ${e}`);
+		} finally {
+			sending = false;
+		}
+	}
 	let joining = $state<string | null>(null);
 	let busy = $state(false);
 	// A station's sync address, typed in: the way in where mDNS does not reach — a
@@ -67,8 +100,8 @@
 
 	onMount(() => {
 		// session is LOCAL state not in ShowState — subscribe via client directly
-		const unsub = client.subscribe('session', v => { if (v && typeof v === 'object') session = v as SessionInfo; });
-		const doFetch = () => client.get(['session']).then(v => { if (v && typeof v === 'object') session = v as SessionInfo; });
+		const unsub = client.subscribe('session', v => { if (v && typeof v === 'object') session = { ...session, ...(v as SessionState) }; });
+		const doFetch = () => client.get(['session']).then(v => { if (v && typeof v === 'object') session = { ...session, ...(v as SessionState) }; });
 		doFetch();
 		const unsubConnect = client.addConnectListener(doFetch);
 		return () => { unsub(); unsubConnect(); };
@@ -165,7 +198,43 @@
 			{busy ? 'Advertising…' : 'Advertise this show'}
 		</button>
 	{/if}
+
+	{#if !session.is_follower && invitable.length > 0}
+		<p class="sub-label">Stations on the network</p>
+		<div class="session-list">
+			{#each invitable as s (s.node_id)}
+				<div class="session-row">
+					<div class="session-info">
+						<span class="session-name">{s.hostname}</span>
+						<span class="session-addr dim mono">
+							{s.http_addr} · {s.session_id ? 'in another session' : 'on its own'}{s.show_name ? ` · ${s.show_name}` : ''}
+						</span>
+					</div>
+					<button class="join-btn" onclick={() => (inviting = s)}>Invite</button>
+				</div>
+			{/each}
+		</div>
+	{/if}
 </div>
+
+{#if inviting}
+	<Dialog title="Invite a station" onclose={() => (inviting = null)}>
+		<p class="ask">
+			<b>{inviting.hostname}</b> joins this session and takes this show.
+			{#if inviting.show_name}
+				The show it has open, <b>{inviting.show_name}</b>, is replaced by this one, and nothing
+				can take that back.
+			{/if}
+			{#if inviting.session_id}
+				It is in another session now, and leaves it.
+			{/if}
+		</p>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (inviting = null)}>Cancel</button>
+			<button class="btn btn-danger" onclick={invite} disabled={sending}>{sending ? 'Inviting…' : 'Invite'}</button>
+		{/snippet}
+	</Dialog>
+{/if}
 
 <style>
 	.panel {
@@ -281,7 +350,6 @@
 	.join-btn:disabled { border-color: #444; color: #444; cursor: not-allowed; }
 
 	.action-btn {
-		width: 100%;
 		font-size: 0.72rem;
 		padding: 5px 8px;
 		border-radius: 3px;
@@ -304,6 +372,11 @@
 	}
 
 	.leave-btn:hover:not(:disabled) { border-color: #ef4444; color: #ef4444; }
+
+	.ask {
+		font-size: 0.85rem;
+		line-height: 1.5;
+	}
 
 	.join-at {
 		display: flex;

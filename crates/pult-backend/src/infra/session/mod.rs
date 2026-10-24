@@ -8,7 +8,7 @@ use pult_schema::{
     events::operation::NodeId,
     lifecycle::Lifecycle,
     path::PathSegment,
-    types::session::{DiscoveredSession, SessionState},
+    types::session::{DiscoveredSession, NearbyStation, SessionState},
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -73,6 +73,18 @@ impl SessionHandle {
 // ── SessionManager ────────────────────────────────────────────────────────────
 
 const SERVICE_TYPE: &str = "_pult._tcp.local.";
+/// Every station, in a session or not, at its HTTP port: what an invitation is sent to.
+/// A service type of its own rather than more fields on the session's, because that
+/// advert exists only while a station leads one, and everything that reads it takes
+/// an advert to be a session somebody can join.
+const STATION_SERVICE: &str = "_pult-station._tcp.local.";
+
+/// What an mDNS full name was discovered as.
+#[derive(Clone, Copy)]
+enum Advert {
+    Session(Uuid),
+    Station(NodeId),
+}
 
 pub struct SessionManager {
     node_id: NodeId,
@@ -92,6 +104,19 @@ pub struct SessionManager {
     discovered_leader_ids: HashMap<Uuid, NodeId>,
     discovered_show_ids: HashMap<Uuid, Uuid>,
     mdns: ServiceDaemon,
+    /// The discovered sessions and stations by mDNS full name, because a removal names
+    /// only that — and the session list used to match a removal against an instance
+    /// name built from the *session* id, when adverts are named by the node's, so a
+    /// session that went away was never taken out of the list.
+    advert_names: HashMap<String, Advert>,
+    /// Where this station's own API answers, and what it has open, for its station
+    /// advert.
+    http_port: u16,
+    show_name: String,
+    /// The session id the station advert last said, so it is announced again only when
+    /// that moves. Re-announcing on every state push would answer each discovery with
+    /// an announcement, which is a discovery on every other station.
+    announced: Option<Option<Uuid>>,
     /// The address this station advertises itself at, where the session was told a
     /// cable; `None` advertises each interface's own address on that interface.
     ///
@@ -112,6 +137,8 @@ impl SessionManager {
     pub fn new(
         node_id: NodeId,
         sync_port: u16,
+        http_port: u16,
+        show_name: String,
         engine: EngineHandle,
         sync: SyncHandle,
         net: crate::infra::net::NetHandle,
@@ -149,6 +176,10 @@ impl SessionManager {
                         discovered_leader_ids: HashMap::new(),
                         discovered_show_ids: HashMap::new(),
                         mdns,
+                        advert_names: HashMap::new(),
+                        http_port,
+                        show_name,
+                        announced: None,
                         advertise_at,
                         self_tx: tx.clone(),
                         net,
@@ -158,11 +189,22 @@ impl SessionManager {
             }
         };
 
+        let stations_tx = mdns_tx.clone();
         std::thread::spawn(move || {
             while let Ok(event) = browse_receiver.recv() {
                 if mdns_tx.blocking_send(event).is_err() { break; }
             }
         });
+        match mdns.browse(STATION_SERVICE) {
+            Ok(stations) => {
+                std::thread::spawn(move || {
+                    while let Ok(event) = stations.recv() {
+                        if stations_tx.blocking_send(event).is_err() { break; }
+                    }
+                });
+            }
+            Err(e) => warn!("[session] mDNS browse for stations failed: {e}"),
+        }
 
         (
             SessionManager {
@@ -172,6 +214,10 @@ impl SessionManager {
                 discovered_leader_ids: HashMap::new(),
                 discovered_show_ids: HashMap::new(),
                 mdns,
+                advert_names: HashMap::new(),
+                http_port,
+                show_name,
+                announced: None,
                 advertise_at,
                 self_tx: tx.clone(),
                 net,
@@ -196,6 +242,7 @@ impl SessionManager {
         // Say who this node is before anything happens to it. Nothing else will:
         // state is pushed on change, and this node's own id never changes.
         self.push_state().await;
+        self.announce_station();
 
         loop {
             tokio::select! {
@@ -208,7 +255,10 @@ impl SessionManager {
                             self.stop_advertising();
                             break;
                         }
-                        Some(cmd) => self.handle_command(cmd).await,
+                        Some(cmd) => {
+                            self.handle_command(cmd).await;
+                            self.announce_station();
+                        }
                     }
                 }
                 event = self.mdns_rx.recv() => {
@@ -220,6 +270,7 @@ impl SessionManager {
         // enough to stop it. A console that opens three shows in a row would
         // otherwise be three responders on the network, two of them answering for
         // ports nothing is listening on.
+        let _ = self.mdns.unregister(&self.station_fullname());
         if let Err(e) = self.mdns.shutdown() {
             debug!("[session] mDNS shutdown: {e}");
         }
@@ -358,6 +409,70 @@ impl SessionManager {
         }
     }
 
+    fn station_fullname(&self) -> String {
+        format!("pult-station-{}.{STATION_SERVICE}", &self.node_id.0.to_string()[..8])
+    }
+
+    /// Say this station is here, at its HTTP port, and which session it is in —
+    /// again whenever that moves, so a console listing who could be invited does not
+    /// offer the one that already came.
+    fn announce_station(&mut self) {
+        if self.announced == Some(self.state.session_id) {
+            return;
+        }
+        let instance_name = format!("pult-station-{}", &self.node_id.0.to_string()[..8]);
+        let hostname = format!("{}.local.", gethostname());
+        let mut props = HashMap::new();
+        props.insert("node_id".to_string(), self.node_id.0.to_string());
+        props.insert("hostname".to_string(), gethostname());
+        props.insert("show_name".to_string(), self.show_name.clone());
+        props.insert(
+            "session_id".to_string(),
+            self.state.session_id.map(|id| id.to_string()).unwrap_or_default(),
+        );
+        let info = match self.advertise_at {
+            Some(ip) => ServiceInfo::new(STATION_SERVICE, &instance_name, &hostname, IpAddr::V4(ip), self.http_port, props),
+            None => ServiceInfo::new(STATION_SERVICE, &instance_name, &hostname, (), self.http_port, props)
+                .map(ServiceInfo::enable_addr_auto),
+        };
+        match info.map(|info| self.mdns.register(info)) {
+            Ok(Ok(())) => self.announced = Some(self.state.session_id),
+            Ok(Err(e)) => warn!("[session] mDNS register of this station failed: {e}"),
+            Err(e) => warn!("[session] ServiceInfo::new for this station failed: {e}"),
+        }
+    }
+
+    /// A station advert, resolved: listed as nearby unless it is this one.
+    async fn station_resolved(&mut self, info: &ServiceInfo) {
+        let props = info.get_properties();
+        let Some(node_id) = props.get("node_id").and_then(|v| v.val_str().parse::<Uuid>().ok()).map(NodeId) else {
+            return;
+        };
+        if node_id == self.node_id {
+            return;
+        }
+        let Some(http_addr) = reachable_at(info.get_addresses().iter().copied(), info.get_port()).first().copied() else {
+            return;
+        };
+        let station = NearbyStation {
+            node_id,
+            hostname: props.get("hostname").map(|v| v.val_str().to_string()).unwrap_or_default(),
+            http_addr: http_addr.to_string(),
+            show_name: props.get("show_name").map(|v| v.val_str().to_string()).unwrap_or_default(),
+            session_id: props.get("session_id").and_then(|v| v.val_str().parse::<Uuid>().ok()),
+        };
+        self.advert_names.insert(info.get_fullname().to_string(), Advert::Station(node_id));
+        match self.state.nearby.iter_mut().find(|s| s.node_id == node_id) {
+            Some(known) if *known == station => return,
+            Some(known) => *known = station,
+            None => {
+                info!("[session] station {} on the network at {http_addr}", station.hostname);
+                self.state.nearby.push(station);
+            }
+        }
+        self.push_state().await;
+    }
+
     /// Take this node's service off the network.
     ///
     /// Both an operator leaving a session and the station shutting down have to do
@@ -408,6 +523,9 @@ impl SessionManager {
 
     async fn handle_mdns_event(&mut self, event: ServiceEvent) {
         match event {
+            ServiceEvent::ServiceResolved(info) if info.get_fullname().ends_with(STATION_SERVICE) => {
+                self.station_resolved(&info).await;
+            }
             ServiceEvent::ServiceResolved(info) => {
                 let props = info.get_properties();
                 let session_id = props.get("session_id").and_then(|v| v.val_str().parse::<Uuid>().ok());
@@ -445,6 +563,7 @@ impl SessionManager {
                         }
                     );
 
+                    self.advert_names.insert(info.get_fullname().to_string(), Advert::Session(session_id));
                     self.discovered_addrs.insert(session_id, reachable);
                     self.discovered_show_ids.insert(session_id, show_id);
                     self.discovered_leader_ids.insert(session_id, leader_node_id);
@@ -465,17 +584,20 @@ impl SessionManager {
                 }
             }
 
-            ServiceEvent::ServiceRemoved(_ty, fullname) => {
-                let before = self.state.discovered.len();
-                self.state.discovered.retain(|d| {
-                    let instance = format!("pult-{}", &d.session_id.to_string()[..8]);
-                    !fullname.contains(&instance)
-                });
-                if self.state.discovered.len() != before {
-                    debug!("[session] removed session from discovered list");
+            ServiceEvent::ServiceRemoved(_ty, fullname) => match self.advert_names.remove(&fullname) {
+                Some(Advert::Session(id)) => {
+                    self.state.discovered.retain(|d| d.session_id != id);
+                    self.discovered_addrs.remove(&id);
+                    debug!("[session] session {id} went away");
                     self.push_state().await;
                 }
-            }
+                Some(Advert::Station(node)) => {
+                    self.state.nearby.retain(|s| s.node_id != node);
+                    debug!("[session] station {} went away", node.0);
+                    self.push_state().await;
+                }
+                None => {}
+            },
 
             _ => {}
         }

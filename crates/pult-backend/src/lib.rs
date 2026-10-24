@@ -828,6 +828,8 @@ pub async fn start(config: Config) -> Result<Running> {
     let (session_mgr, session_handle) = SessionManager::new(
         node_id,
         config.sync_port,
+        http_addr.port(),
+        bundle.as_ref().map(|b| b.seed_name().to_string()).unwrap_or_default(),
         engine_handle.clone(),
         sync_handle.clone(),
         net.clone(),

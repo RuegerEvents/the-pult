@@ -77,6 +77,11 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         doc: "Join the station at a sync address (`host:port`) as a follower, without having discovered it — for a network where mDNS does not reach.",
     },
     LocalRpcMeta {
+        method: "session.invite",
+        args_schema: r#"[{"name":"nodeId","type":"string","optional":false}]"#,
+        doc: "Ask a station on the network to join this one's session, starting a session first if this station has none. The station invited takes this show: its own open show is replaced.",
+    },
+    LocalRpcMeta {
         method: "session.leave",
         args_schema: "[]",
         doc: "Leave the session this station is following.",
@@ -815,6 +820,12 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             deps.session.join_at(addr).await?;
             Ok(Value::Null)
         }
+        "session.invite" => {
+            let node_id: uuid::Uuid = serde_json::from_value(args["nodeId"].clone())
+                .map_err(|e| format!("invalid nodeId: {e}"))?;
+            invite(deps, node_id).await?;
+            Ok(Value::Null)
+        }
         "session.leave" => {
             let _ = deps
                 .session
@@ -834,6 +845,79 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
         }
         _ => Err(format!("unknown method: {method}")),
     }
+}
+
+/// Ask the station `node_id` to join this one, at this station's sync address.
+///
+/// The invited station does the joining, exactly as if somebody had pressed Join on
+/// it: this one connects to its socket and calls its own `session.joinAt`. So nothing
+/// about the sync handshake changes, and a station the operator cannot walk to — a Pi
+/// in a rack — is brought in from the desk. The ask is answered once the invited
+/// station has joined or failed to, and its reason comes back with it.
+async fn invite(deps: &LocalRpcDeps, node_id: uuid::Uuid) -> Result<(), String> {
+    use futures::{SinkExt, StreamExt};
+    use pult_schema::types::session::SessionState;
+    use tokio_tungstenite::tungstenite::Message as Frame;
+
+    let read = |path: Vec<PathSegment>| async {
+        deps.engine.get(path).await.map_err(|e| e.to_string())
+    };
+    let session: SessionState = serde_json::from_value(read(vec![PathSegment::Key("session".into())]).await?)
+        .map_err(|e| e.to_string())?;
+    if session.is_follower {
+        return Err("this station follows another; invite from the one it follows".into());
+    }
+    let guest = session
+        .nearby
+        .iter()
+        .find(|s| s.node_id.0 == node_id)
+        .ok_or("that station is not on the network as seen from here")?
+        .clone();
+
+    // A session to be invited into. A lone station leads one as soon as anybody joins
+    // it, but would say Idle about it; saying Advertising is the truth.
+    if !session.is_advertising {
+        let show = read(vec![PathSegment::Key("show".into())]).await?;
+        let show_id: uuid::Uuid = serde_json::from_value(show["id"].clone())
+            .map_err(|_| "no show is open here, so there is nothing to invite anybody into")?;
+        let show_name = show["name"].as_str().unwrap_or("Untitled Show").to_string();
+        deps.session.create_session(show_name, show_id).await.ok_or("could not start a session")?;
+    }
+
+    // Where the guest should dial: the address this station tells every peer, and the
+    // one its row already publishes for exactly that.
+    let me = read(vec![PathSegment::Key("stations".into()), PathSegment::Id(deps.node_id.0)]).await?;
+    let sync_addr = me["sync_addr"].as_str().filter(|a| !a.is_empty()).ok_or("this station has not said its sync address yet; try again in a moment")?.to_string();
+
+    let url = format!("ws://{}/ws", guest.http_addr);
+    let ask = async {
+        let (mut socket, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .map_err(|e| format!("could not reach {} at {}: {e}", guest.hostname, guest.http_addr))?;
+        let call = serde_json::json!({
+            "type": "Call",
+            "payload": { "request_id": "invite", "method": "session.joinAt", "args": { "address": sync_addr } }
+        });
+        socket.send(Frame::Text(call.to_string().into())).await.map_err(|e| e.to_string())?;
+        while let Some(frame) = socket.next().await {
+            let Ok(Frame::Text(text)) = frame else { continue };
+            let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
+            let payload = &message["payload"];
+            if payload["request_id"] != "invite" {
+                continue;
+            }
+            let _ = socket.close(None).await;
+            return match payload["error"].as_str() {
+                Some(why) => Err(format!("{} did not join: {why}", guest.hostname)),
+                None => Ok(()),
+            };
+        }
+        Err(format!("{} hung up before answering", guest.hostname))
+    };
+    // Joining is a handshake and a whole show's snapshot, which on a Pi is seconds.
+    tokio::time::timeout(std::time::Duration::from_secs(30), ask)
+        .await
+        .map_err(|_| format!("{} did not answer within 30 s", guest.hostname))?
 }
 
 /// `host:port`, where the host may be a name: a station somebody reads off another
