@@ -38,7 +38,7 @@
 	} from '$lib/stores/wing.js';
 	import { output } from '$lib/stores/output.js';
 	import { pressableTargets, type SurfaceShow } from '$lib/surface.js';
-	import { slotReading } from '$lib/wing.js';
+	import { DIGITAL_INPUTS, slotReading } from '$lib/wing.js';
 
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
@@ -107,7 +107,7 @@
 	// ── The editor for the control learning caught ──
 	type Choice = 'Press' | 'CommandLine' | 'Flash' | 'SelectGroup' | 'Parameter' | 'Master';
 	const choicesFor = (c: SurfaceControl): { kind: Choice; label: string }[] =>
-		c.kind === 'Key'
+		c.kind === 'Key' || c.kind === 'Digital'
 			? [
 					{ kind: 'Press', label: 'Press something' },
 					{ kind: 'CommandLine', label: 'Run a command line' },
@@ -222,6 +222,16 @@
 			{:else if !$driving && $wingState.claimed_by === null && phase.kind === 'Running'}
 				<p class="dim">No page is driving it, so it is dark and does nothing.</p>
 			{/if}
+		{/if}
+		{#if $wingState.digital !== null}
+			<!-- The rear panel's contacts, live, so where they rest can be read before
+			     any of them is bound to anything. -->
+			<p class="digital">
+				Digital in
+				{#each Array.from({ length: DIGITAL_INPUTS }, (_, i) => i) as i (i)}
+					<span class="contact" class:closed={(($wingState.digital ?? 0) >> i) & 1} title={`Digital in ${i + 1}`}>{i + 1}</span>
+				{/each}
+			</p>
 		{/if}
 	</section>
 
@@ -376,6 +386,26 @@
 	}
 	.status.fault p:first-child {
 		color: var(--danger, #ef4444);
+	}
+	.digital {
+		display: flex;
+		gap: 4px;
+		align-items: center;
+	}
+	.contact {
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		border: 1px solid var(--border, #333);
+		font-size: 0.65rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--text-dim, #888);
+	}
+	.contact.closed {
+		background: var(--accent, #3b82f6);
+		color: white;
 	}
 	.at {
 		display: flex;

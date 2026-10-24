@@ -56,6 +56,23 @@ export type WingEvent =
 	| { kind: 'encoder'; index: number; delta: number }
 	| { kind: 'digital'; bits: number };
 
+/** How many digital inputs the wing has, on its rear panel. */
+export const DIGITAL_INPUTS = 7;
+
+/**
+ * Which digital inputs went down or came up between two readings, lowest first. An
+ * input reads as pressed while its bit is set.
+ */
+export function digitalEdges(before: number, after: number): { index: number; down: boolean }[] {
+	const out: { index: number; down: boolean }[] = [];
+	for (let index = 0; index < DIGITAL_INPUTS; index++) {
+		const was = (before >> index) & 1;
+		const now = (after >> index) & 1;
+		if (was !== now) out.push({ index, down: now === 1 });
+	}
+	return out;
+}
+
 /** A fader's full scale: the wing's ADC is 12-bit, and the top is one past 4095. */
 export const FADER_FULL = 4096;
 /** The LED frame. */
@@ -457,6 +474,7 @@ export function learnable(control: SurfaceControl, action: BindingAction): Bindi
 		case 'Encoder':
 			return action.kind === 'Parameter' ? action : null;
 		case 'Key':
+		case 'Digital':
 			if (action.kind === 'Parameter') {
 				return { kind: 'Flash', fixture_id: action.fixture_id, parameter: action.parameter };
 			}

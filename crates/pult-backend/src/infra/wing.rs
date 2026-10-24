@@ -33,6 +33,9 @@ pub const EVENTS_PATH: &str = "wing_events";
 pub struct WingStation {
     wing: WingHandle,
     claimed: Arc<Mutex<Option<Uuid>>>,
+    /// The digital inputs as last reported, kept whether or not a page is driving, so
+    /// the page that starts to has a baseline.
+    digital: Arc<Mutex<Option<u8>>>,
     engine: EngineHandle,
 }
 
@@ -43,7 +46,7 @@ impl WingStation {
     /// and whatever the previous page was lighting meant the previous show.
     pub fn new(wing: WingHandle, engine: EngineHandle) -> Self {
         wing.go_dark();
-        Self { wing, claimed: Arc::new(Mutex::new(None)), engine }
+        Self { wing, claimed: Arc::new(Mutex::new(None)), digital: Arc::new(Mutex::new(None)), engine }
     }
 
     /// Follow the wing for as long as the station runs: its status into the `wing`
@@ -65,6 +68,16 @@ impl WingStation {
                 }
                 batch = events.recv() => match batch {
                     Ok(batch) => {
+                        let level = batch.iter().rev().find_map(|event| match event {
+                            pult_wing::Event::Digital { bits } => Some(*bits),
+                            _ => None,
+                        });
+                        if let Some(bits) = level {
+                            let moved = self.digital.lock().unwrap().replace(bits) != Some(bits);
+                            if moved {
+                                self.publish().await;
+                            }
+                        }
                         // Nobody claiming it is nobody to tell: a wing on a station whose
                         // pages have all gone does nothing, rather than acting for a page
                         // that has not asked.
@@ -163,6 +176,7 @@ impl WingStation {
             phase: report.phase,
             device: report.device,
             claimed_by: self.claimed.lock().unwrap().map(short_id),
+            digital: *self.digital.lock().unwrap(),
         }
     }
 
@@ -233,6 +247,17 @@ mod tests {
             .expect("relayed")
             .expect("a value");
         assert_eq!(got, serde_json::to_value(&press).unwrap());
+    }
+
+    /// The digital inputs are a level the row keeps whether or not anybody is driving,
+    /// so the page that starts to knows where they rest.
+    #[tokio::test]
+    async fn the_row_keeps_the_digital_inputs_with_nobody_driving() {
+        let (_station, engine, _, events) = a_station().await;
+        assert_eq!(row(&engine).await.digital, None, "nothing reported yet");
+        events.send(vec![Event::Digital { bits: 0b10 }]).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(row(&engine).await.digital, Some(0b10));
     }
 
     /// Only the page driving the wing paints it, and when it lets go the desk goes dark

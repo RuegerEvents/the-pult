@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { EditableParameter } from './programmer.js';
 import {
+	digitalEdges,
 	encoderPage,
 	encoderRole,
 	encoderSlots,
@@ -178,5 +179,22 @@ describe('learning from what the operator touches', () => {
 			parameter: 'Intensity'
 		});
 		expect(learnable({ kind: 'Key', index: 283 }, master)).toBeNull();
+	});
+});
+
+describe('the digital inputs', () => {
+	it('reports each input that moved, lowest first, pressed while its bit is set', () => {
+		expect(digitalEdges(0b000, 0b101)).toEqual([
+			{ index: 0, down: true },
+			{ index: 2, down: true }
+		]);
+		expect(digitalEdges(0b101, 0b100)).toEqual([{ index: 0, down: false }]);
+		expect(digitalEdges(0b1000_0000, 0)).toEqual([]);
+	});
+
+	it('learns like a key, a flash of the parameter it was shown included', () => {
+		const go = { kind: 'Press' as const, target: { kind: 'SequenceGo' as const, sequence_id: 's' } };
+		expect(learnable({ kind: 'Digital', index: 3 }, go)).toEqual(go);
+		expect(learnable({ kind: 'Digital', index: 3 }, { kind: 'Master', sequence_id: 's' })).toBeNull();
 	});
 });

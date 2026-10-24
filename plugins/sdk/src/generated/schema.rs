@@ -2765,6 +2765,9 @@ pub enum SurfaceControl {
     Key { index: u16 },
     Fader { index: u16 },
     Encoder { index: u16 },
+    /// One of the wing's seven digital inputs, 0 to 6, on its rear panel. Read as
+    /// pressed while its bit is set, which no closed contact has confirmed yet.
+    Digital { index: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -3327,6 +3330,11 @@ pub struct WingState {
     /// live in a page — so a page claims it, and with none claiming it the wing is
     /// dark and does nothing.
     pub claimed_by: Option<String>,
+    /// The seven digital inputs as the wing last reported them, one bit each, or
+    /// `None` before it has. A level rather than a press, so a page starting to drive
+    /// the wing takes this as the baseline its edges are measured from.
+    #[serde(default)]
+    pub digital: Option<u8>,
 }
 
 /// How this console reaches its group.

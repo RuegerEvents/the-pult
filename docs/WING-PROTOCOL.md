@@ -284,6 +284,10 @@ Both plausible alternatives are wrong, and both were tried on the desk:
 The wing's digital inputs. Its `HardwareIoConnectors` row says `DigitalIoPorts="7"`, and
 the wing reports `Digital in capabilities: 7` over USB, so the two agree.
 
+One bit per input, from bit 0. It is a level, not a press, so `pult-wing` reports the
+first reading as well as every change. Whether a closed contact sets its bit or clears it
+has not been seen yet.
+
 ### LED-Data — 253 bytes, outbound
 
 One brightness byte per LED channel, sent about every 16 ms whether or not anything
@@ -424,6 +428,11 @@ somebody turning and pushing things. What is left:
 - **The `Sync` byte** (`0x0027` / `0x0001`), which rises by one per frame and is probably
   exactly that.
 - **The `DC`, `Midi` and `RTC` blocks.** Named in the binary, never seen on this wing.
+- **The DMX ports and the timecode jacks.** `HardwareIoConnectors` gives the wing three
+  DMX ports (in or out), one LTC in and one LTC out. `0x000a` outbound has been seen but
+  its six-byte header has not been read; DMX in and LTC in either direction have not
+  been seen at all. Nor whether the wing drives its ports for a host that skipped
+  `0x0029`. A capture plan is section W2 of `docs/gigs/hhg-to-test.md`.
 - **The 16-byte software progress chunk** `0x0028` / `0x0003`, only the first four bytes
   of which are obviously an offset.
 - **Everything about `0x0029`**, deliberately.

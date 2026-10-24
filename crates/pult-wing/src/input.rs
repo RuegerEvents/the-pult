@@ -50,7 +50,7 @@ pub enum Event {
     /// An encoder turned. `delta` is how many clicks, signed; several at once when
     /// the spin is faster than the wing reports.
     Encoder { index: u8, delta: i32 },
-    /// A digital input changed. `bits` is the whole byte.
+    /// The digital inputs: the first reading, and every change. `bits` is the whole byte.
     Digital { bits: u8 },
 }
 
@@ -193,8 +193,11 @@ impl InputState {
             self.seen.encoders = true;
         }
 
+        // The digital inputs are levels, not presses: a contact closed at connect is a
+        // state somebody downstream needs as the baseline its edges are measured from,
+        // so the first reading is reported too. Reporting it fires nothing by itself.
         if let Ok(b) = io.child_block(tag::DIGITAL, 1) {
-            if self.seen.digital && self.digital != b[0] {
+            if !self.seen.digital || self.digital != b[0] {
                 out.push(Event::Digital { bits: b[0] });
             }
             self.digital = b[0];
@@ -243,6 +246,18 @@ mod tests {
             assert_eq!(index_of(byte, bit), index, "{what}");
             assert_eq!(key_bit(index), (byte, bit), "{what}");
         }
+    }
+
+    /// A level, not a press: the first reading is reported too, so whoever follows the
+    /// wing knows where the inputs rest before the first one moves — and a reading that
+    /// says the same again says nothing.
+    #[test]
+    fn the_digital_inputs_are_reported_from_the_first_reading() {
+        let frame = |bits: u8| Chunk::group(0x0027, vec![Chunk::bytes(tag::DIGITAL, vec![bits])]);
+        let mut state = InputState::default();
+        assert_eq!(state.absorb(&frame(0b0100_0000)).unwrap(), vec![Event::Digital { bits: 0b0100_0000 }]);
+        assert_eq!(state.absorb(&frame(0b0100_0000)).unwrap(), vec![]);
+        assert_eq!(state.absorb(&frame(0b0100_0001)).unwrap(), vec![Event::Digital { bits: 0b0100_0001 }]);
     }
 
     #[test]

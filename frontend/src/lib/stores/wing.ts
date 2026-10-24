@@ -46,6 +46,7 @@ import { editableParameters, entryId, rowTargets, type Target } from '../program
 import { pressTarget, targetLive, type SurfaceShow } from '../surface.js';
 import {
 	DIM,
+	digitalEdges,
 	LED_CHANNELS,
 	LIT,
 	encoderPage,
@@ -76,7 +77,7 @@ import {
 /** The surface kind this page binds under — `pult_schema::types::wing::COMMAND_WING`. */
 export const COMMAND_WING = 'ma3-command-wing';
 
-const EMPTY: WingState = { phase: { kind: 'Off' }, device: null, claimed_by: null };
+const EMPTY: WingState = { phase: { kind: 'Off' }, device: null, claimed_by: null, digital: null };
 const DRIVE_KEY = 'pult.wing.drive';
 const AT_KEY = 'pult.wing.at';
 /** How often the desk's lights and motors are brought up to date. */
@@ -329,6 +330,8 @@ export async function setDrivesHere(on: boolean): Promise<void> {
  */
 function drive(): () => void {
 	const client = wingClient();
+	// Where the inputs rest, from the row: the station keeps them while nobody drives.
+	digitalBits = get(wingState).digital ?? 0;
 	const stops: (() => void)[] = [];
 	// Held open for as long as this page drives, so the handlers can read them with
 	// `get` without each read opening and closing a deep watch.
@@ -391,8 +394,28 @@ async function handle(event: WingEvent): Promise<void> {
 			return onFader(event.index, event.value);
 		case 'encoder':
 			return onEncoder(event.index, event.delta, map);
+		case 'digital':
+			return onDigital(event.bits);
 		default:
 			return;
+	}
+}
+
+/** The digital inputs as this page last knew them, which is what an edge is against. */
+let digitalBits = 0;
+
+/**
+ * A contact on the rear panel: a key with no LED and no meaning of MA's, so it does
+ * only what it is learned or bound to.
+ */
+async function onDigital(bits: number): Promise<void> {
+	const before = digitalBits;
+	digitalBits = bits;
+	for (const { index, down } of digitalEdges(before, bits)) {
+		const control: SurfaceControl = { kind: 'Digital', index };
+		if (down && catchLearn(control)) continue;
+		const binding = get(wingBindings).get(controlKey(control));
+		if (binding) await run(binding.action, down);
 	}
 }
 
@@ -405,6 +428,7 @@ function catchLearn(control: SurfaceControl): boolean {
 
 /** What a control is called, by MA's table where the station could read it. */
 export function controlName(control: SurfaceControl, map: WingMap | null = get(wingMap)): string {
+	if (control.kind === 'Digital') return `Digital in ${control.index + 1}`;
 	const table = control.kind === 'Key' ? map?.hardkeys : control.kind === 'Fader' ? map?.faders : map?.encoders;
 	const label = table?.[String(control.index)]?.label;
 	return label ? `${control.kind} ${label}` : `${control.kind} ${control.index}`;

@@ -8124,7 +8124,10 @@ console, and it answers surface-layer's questions for this device rather than in
   nothing — pressing a tile's target is a page's act too, so there is nobody to do it. A station-held selection is the headless answer and waits
   for a surface that needs one.
 - **Whichever station it is plugged into runs it**, leader or follower. The claiming page
-  must be served by that station; a peer's wing is out of scope. MA's
+  may come from any station: it follows the wing over a socket of its own to the one the
+  wing is on, found through that station's `stations` row, and everything the wing *does*
+  still goes through the page's own station — the wing on a Pi under the desk, the screen
+  on a Mac. That socket keeps no clock: the page has one estimate. MA's
   `command_wing_app.bin` is found in a local grandMA3 install and never shipped; without
   it the wing is a fault on its status row.
 - **Bindings are the show's**: a PERSISTED `control_bindings` collection keyed by surface
@@ -8147,6 +8150,36 @@ console, and it answers surface-layer's questions for this device rather than in
   Wing panel draws the bar, since the wing has no display.
 - **LEDs carry state, not decoration**: the keypad dim and bright while held, a bound key
   lit while its target is live, LEARN blinking while armed.
+
+#### ma3-command-wing-io
+
+The rest of the wing's rear panel. MA's `HardwareIoConnectors` row for it:
+`DmxPortCount="3" DmxPortDefaultDirection="4" TimecodePortsIn="1" TimecodePortsOut="1"
+DigitalIoPorts="7" MidiCount="1"`. MIDI is not wanted.
+
+- **Digital inputs: built, 2026-10-24.** Block `0x000f`, one bit per input. A level
+  rather than a press, so the station keeps the byte on the `wing` row and the page takes
+  edges against it; a `Digital` control binds and learns like a key, with no LED. **Open:**
+  whether a closed contact sets its bit or clears it — read as set, unconfirmed, and the
+  Wing panel shows the seven live so the answer is one look.
+- **DMX A–C out.** `0x000a` going to a wing has been seen, 518 bytes full and 6 partial;
+  the six-byte header — which port, and what a partial frame is — has not been read. It
+  would be an `OutputKind` beside Art-Net and sACN, its row naming the station the wing is
+  on; nothing else in the output model changes. **Nothing is sent before a capture says
+  the shape**, which is the rule that keeps the wing from being bricked.
+- **DMX A–C in.** Never seen on the wire. An `inputs` row like Art-Net's, with the same
+  merge, grab and record behind it.
+- **LTC in and out.** Never seen; MA3 names inbound `RTC` and `DC` blocks no wing has sent
+  here. In feeds the existing chase (`pult_audio::lock`) as a position rather than samples,
+  if the wing decodes it itself; out is a timeline's position, if the wing encodes.
+- **The question that can end the item: does the wing drive its ports for a host that
+  skipped the certificate exchange?** `0x0029` is the onPC licence dongle and stays out of
+  scope. If MA's own DMX only starts after it, these ports are not reachable and this
+  stops there.
+
+The capture is grandMA3 onPC on a Mac with the wing on its USB and `-DEBUGUSBDATA`
+(`docs/WING-METHOD.md`, local), read through `tools/wing-probe/wingdiff.py --all`; the
+steps are section W2 of `docs/gigs/hhg-to-test.md`.
 
 #### sequence-master
 
