@@ -439,7 +439,7 @@ somebody turning and pushing things. What is left:
 - **The small encoders' presses.** The five large dual encoders press, and a press is an
   ordinary key: observed on 2026-10-24 with the 2.5.1 application, encoders 1 to 5 press
   as hardkeys 78, 73, 114, 66 and 111 — MA's `ENCODER_INSIDE1` … `ENCODER_INSIDE5`, down
-  and up like any key. None of MA's `ENCODER_OUTSIDE*` keys has been seen, so each knob
-  presses as one. The small encoders in the playback section do not: pressing the one that
+  and up like any key. Only the inner knob can be pressed at all; the outer ring
+  does not move that way, so MA's `ENCODER_OUTSIDE*` keys are never reported. The small encoders in the playback section do not: pressing the one that
   turns as encoder 67 (executor 401's knob) changes no bit in any block. That one was the
   reading an earlier version of this note took for every encoder.

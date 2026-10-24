@@ -338,8 +338,9 @@ export function turned(
 
 /**
  * Which of the five large encoders a key is the press of, or `undefined`. MA's table
- * names an inner and an outer press for each; this wing reports only the inner one,
- * but both are read so a wing that reports the other is not a key with no meaning.
+ * names an inner and an outer press for each; on this wing only the inner knob can be
+ * pressed, but both are read so a wing whose ring presses too is not left with a key
+ * that means nothing.
  */
 export function encoderPress(code: string | undefined): number | undefined {
 	const match = code?.match(/^ENCODER_(INSIDE|OUTSIDE)([1-5])$/);
