@@ -85,7 +85,7 @@ fn directory(entries: Vec<(&str, DeviceEntry)>) -> watch::Receiver<DeviceDirecto
 }
 
 fn an_entry(ip: &str, module_type: u16, universe: Option<u16>, online: bool) -> DeviceEntry {
-    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universes: universe.into_iter().collect(), online, effects: None, audio: None, on_broker: true }
+    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universes: universe.into_iter().collect(), online, effects: None, audio: None, on_broker: true, starts: 0 }
 }
 
 /// The same node, with one port that says what it can trace for itself.
@@ -893,6 +893,39 @@ async fn a_node_that_reboots_is_told_the_shape_again() {
         of_kind(&everything(&mut received), "effect", 1).len(),
         1,
         "and said again after the reboot",
+    );
+}
+
+/// A node can start over without ever going away: a reboot quicker than mDNS
+/// notices, or a strip re-patched, whose ports come back at their defaults. The
+/// directory counts those, and the console says everything again when the count
+/// moves — or a strip whose pixel count was changed sits black while the console
+/// believes it is lit.
+#[tokio::test]
+async fn a_node_that_starts_over_without_going_away_is_told_again() {
+    let (devices, mut received) = a_recording_device_handle();
+    let (tx, directory_rx) = watch::channel(DeviceDirectory {
+        entries: [("strip1".to_string(), a_capable_entry("127.0.0.1", WS2812, 1, &["sine"], false))]
+            .into_iter()
+            .collect(),
+    });
+    let mut output = OpenHauntOutput::new(directory_rx, devices, 5568, None).await.unwrap();
+
+    let ft = a_module(WS2812);
+    let mut fixture = a_node_fixture(&ft, "strip1", None);
+    fixture.live_effects.insert("Intensity".into(), a_running_sine(1_000));
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[], 0).await.unwrap();
+    assert_eq!(of_kind(&everything(&mut received), "effect", 1).len(), 1, "said once");
+
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[], 0).await.unwrap();
+    assert_eq!(of_kind(&everything(&mut received), "effect", 1).len(), 0, "and not again while nothing moved");
+
+    tx.send_modify(|d| d.entries.get_mut("strip1").unwrap().starts += 1);
+    output.send(&patch(vec![fixture.clone()], vec![ft.clone()]), &[], 0).await.unwrap();
+    assert_eq!(
+        of_kind(&everything(&mut received), "effect", 1).len(),
+        1,
+        "said again once the node started over, though it never went offline",
     );
 }
 

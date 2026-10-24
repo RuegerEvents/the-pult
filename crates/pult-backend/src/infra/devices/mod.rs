@@ -197,6 +197,15 @@ pub struct DeviceEntry {
     /// Connected to this station's broker, which is the only way a node hears an audio
     /// command. Online on mDNS and not yet on the broker is a node that would miss one.
     pub on_broker: bool,
+    /// How many times this station has seen the node start over without going away:
+    /// a reboot quick enough that mDNS never noticed (its uptime went backwards), or a
+    /// strip re-patched (the node rebuilds the strip's ports at their defaults).
+    ///
+    /// A connector remembering what it last sent a node has to forget it when this
+    /// moves, or the node sits at its defaults while the console believes it told it
+    /// otherwise — a strip left black after its pixel count changed. Going offline and
+    /// back is the other way of starting over, and `online` already says that one.
+    pub starts: u64,
 }
 
 // ── Manager ───────────────────────────────────────────────────────────────────
@@ -220,6 +229,8 @@ pub struct DeviceManager {
     /// way is driven over MQTT; one that has been adopted but has not connected yet
     /// still has to be reachable, and for that there is HTTP.
     on_broker: std::collections::BTreeSet<String>,
+    /// [`DeviceEntry::starts`], per serial.
+    starts: BTreeMap<String, u64>,
     /// Counts up with every clock publish, so a node can tell a fresh sample from a
     /// retained one replayed after the broker restarted.
     clock_seq: u64,
@@ -261,6 +272,7 @@ impl DeviceManager {
                 mqtt: None,
                 mqtt_tx,
                 on_broker: Default::default(),
+                starts: BTreeMap::new(),
                 clock_seq: 0,
                 door: None,
                 brokers: Vec::new(),
@@ -555,6 +567,11 @@ impl DeviceManager {
             }
             MqttEvent::Health { serial, health } => {
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
+                // Uptime going backwards is a reboot, however quickly it came back.
+                if device.health.as_ref().is_some_and(|before| health.uptime_s < before.uptime_s) {
+                    info!("[devices] {serial} restarted (uptime {} s)", health.uptime_s);
+                    *self.starts.entry(serial.clone()).or_default() += 1;
+                }
                 device.health = Some(health);
                 self.publish().await;
             }
@@ -1185,6 +1202,7 @@ impl DeviceManager {
                             effects: d.effects.clone(),
                             audio: d.audio.clone(),
                             on_broker: self.on_broker.contains(&d.serial),
+                            starts: self.starts.get(&d.serial).copied().unwrap_or(0),
                         },
                     )
                 })
@@ -1379,6 +1397,9 @@ impl DeviceManager {
             }
         }
         if changed {
+            // The node rebuilt the strip's ports at their defaults: what anything sent
+            // them before is gone, and the connectors have to be told so.
+            *self.starts.entry(serial.to_string()).or_default() += 1;
             // A strip that changed mode owns other ports now. The node says so in its
             // `desc` as well, but asking straight away is what puts the parameters in
             // front of the operator who just pressed the button.

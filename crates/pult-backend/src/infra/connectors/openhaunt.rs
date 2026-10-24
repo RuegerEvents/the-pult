@@ -60,6 +60,8 @@ pub struct OpenHauntOutput {
     /// rebooted and sits at its defaults, so what it was last sent no longer
     /// describes it and is forgotten, which makes every port get sent again.
     was_online: BTreeMap<String, bool>,
+    /// The directory's `starts` per node, as last seen.
+    starts: BTreeMap<String, u64>,
     /// The last shape handed to each port, so a description that has not changed is
     /// not sent again. This is what turns a chase into one message: the value it
     /// renders moves on every tick, but the description of it does not.
@@ -89,6 +91,7 @@ impl OpenHauntOutput {
             sequence: SequenceCounter::default(),
             last_sent: BTreeMap::new(),
             was_online: BTreeMap::new(),
+            starts: BTreeMap::new(),
             last_sent_effect: BTreeMap::new(),
             offloaded: Default::default(),
             said: MessageRing::default(),
@@ -282,16 +285,19 @@ impl OpenHauntOutput {
     /// A node that went offline and came back is at its defaults, whatever it was
     /// sent before: drop the memory of it so the next pass sends everything.
     fn forget_what_rebooted_nodes_were_sent(&mut self) {
-        let now: Vec<(String, bool)> = self
+        let now: Vec<(String, bool, u64)> = self
             .directory
             .borrow()
             .entries
             .iter()
-            .map(|(serial, entry)| (serial.clone(), entry.online))
+            .map(|(serial, entry)| (serial.clone(), entry.online, entry.starts))
             .collect();
-        for (serial, online) in now {
+        for (serial, online, starts) in now {
             let before = self.was_online.insert(serial.clone(), online).unwrap_or(false);
-            if online && !before {
+            // Starting over without going away — a quick reboot, or a strip re-patched
+            // into ports at their defaults — is the same as coming back.
+            let restarted = self.starts.insert(serial.clone(), starts).is_some_and(|seen| seen != starts);
+            if online && (!before || restarted) {
                 self.last_sent.retain(|(s, _), _| *s != serial);
                 // A rebooted node is not tracing anything either, whatever it was
                 // handed before it went. Forgetting is what makes the shape go out

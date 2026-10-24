@@ -921,6 +921,29 @@ async fn health_from_a_node_shows_up_against_it() {
     assert_eq!(state.discovered["health1"].health.as_ref().unwrap().temperature_c, Some(38.0));
 }
 
+/// A node whose uptime goes backwards rebooted, however quickly it came back: the
+/// directory counts it, so a connector knows to say everything again.
+#[tokio::test]
+async fn an_uptime_that_goes_backwards_is_a_restart() {
+    let h = harness().await;
+    h.resolve("health2", DIGITAL_IN, None).await;
+    h.devices.adopt("health2".into()).await.unwrap();
+    let node = a_node_on_the_broker(&h, "health2").await;
+    let health = |uptime: u64| format!(r#"{{"uptime_s": {uptime}, "errors": []}}"#);
+
+    for uptime in [120, 125] {
+        node.publish("openhaunt/health2/health", QoS::AtLeastOnce, false, health(uptime)).await.unwrap();
+        eventually("health to show up", || async {
+            h.state().await.discovered["health2"].health.as_ref().map(|hh| hh.uptime_s) == Some(uptime)
+        })
+        .await;
+    }
+    assert_eq!(h.directory.borrow().entries["health2"].starts, 0, "running on is not starting over");
+
+    node.publish("openhaunt/health2/health", QoS::AtLeastOnce, false, health(3)).await.unwrap();
+    eventually("the restart to be counted", || async { h.directory.borrow().entries["health2"].starts == 1 }).await;
+}
+
 #[tokio::test]
 async fn a_node_that_publishes_offline_is_marked_offline() {
     let h = harness().await;
