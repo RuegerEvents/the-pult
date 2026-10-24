@@ -18,6 +18,7 @@
 	import {
 		bind,
 		controlKey,
+		controlName,
 		driving,
 		drivesHere,
 		encoderBar,
@@ -74,13 +75,6 @@
 		}
 	});
 	const someoneElse = $derived($wingState.claimed_by !== null && !$driving);
-
-	/** What a control is called, by MA's table where the station could read one. */
-	function controlName(c: SurfaceControl): string {
-		const table = c.kind === 'Key' ? $wingMap?.hardkeys : c.kind === 'Fader' ? $wingMap?.faders : $wingMap?.encoders;
-		const label = table?.[String(c.index)]?.label;
-		return label ? `${c.kind} ${label}` : `${c.kind} ${c.index}`;
-	}
 
 	const fixtureName = (id: string) => $fixtures.find((f) => f.id === id)?.name ?? id.slice(0, 6);
 
@@ -237,60 +231,70 @@
 		{/if}
 
 		<section>
-			<h3>
-				Bindings
+			<div class="section-head">
+				<h3>Bindings</h3>
 				{#if $canEdit}
-					<button class:on={$learning} onclick={() => learning.update((on) => !on)}>
-						{$learning ? 'Touch a control…' : 'Learn'}
+					<button
+						class="btn {$learning ? 'btn-primary learning' : 'btn-ghost'}"
+						onclick={() => learning.update((on) => !on)}
+					>
+						{$learning ? 'Touch a control on the wing…' : 'Learn'}
 					</button>
 				{/if}
-			</h3>
+			</div>
 
 			{#if $learned}
 				<div class="editor">
-					<strong>{controlName($learned)}</strong>
-					<select bind:value={choice}>
+					<p class="how">
+						<strong>{controlName($learned)}</strong> is waiting. Move what it should
+						control — a parameter in the Programmer, a sequence's Level, Go or Off on a
+						sequence, a surface tile — and it is bound. Or choose here:
+					</p>
+					<select class="input" bind:value={choice}>
 						{#each choicesFor($learned) as c (c.kind)}
 							<option value={c.kind}>{c.label}</option>
 						{/each}
 					</select>
 					{#if choice === 'Press'}
-						<select bind:value={pressIndex}>
+						<select class="input" bind:value={pressIndex}>
 							{#each pressable as p, i (i)}<option value={i}>{p.label}</option>{/each}
 						</select>
 					{:else if choice === 'CommandLine'}
-						<input class="mono" placeholder="group 3 at 50" bind:value={line} />
+						<input class="input mono" placeholder="group 3 at 50" bind:value={line} />
 					{:else if choice === 'SelectGroup'}
-						<select bind:value={groupId}>
+						<select class="input" bind:value={groupId}>
 							<option value="">Which group?</option>
 							{#each $groups as g (g.id)}<option value={g.id}>{g.name}</option>{/each}
 						</select>
 					{:else if choice === 'Master'}
-						<select bind:value={sequenceId}>
+						<select class="input" bind:value={sequenceId}>
 							<option value="">Which sequence?</option>
 							{#each $sequences as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
 						</select>
 					{:else if selectedRows.length === 0}
 						<span class="dim">Select the fixture first: this binds to what is selected.</span>
 					{:else}
-						<select bind:value={parameterKeyChosen}>
+						<select class="input" bind:value={parameterKeyChosen}>
 							{#each selectedRows as r (r.key)}<option value={r.key}>{r.label}</option>{/each}
 						</select>
 						{#if formAction && (formAction.kind === 'Parameter' || formAction.kind === 'Flash')}
 							<span class="dim">{fixtureName(formAction.fixture_id)}</span>
 						{/if}
 					{/if}
-					<button class="primary" disabled={!formAction} onclick={() => void save()}>Bind</button>
-					{#if $wingBindings.has(controlKey($learned))}
-						<button onclick={() => { if ($learned) void unbind($learned); learned.set(null); }}>Unbind</button>
-					{/if}
-					<button onclick={() => learned.set(null)}>Cancel</button>
+					<div class="actions">
+						<button class="btn btn-primary" disabled={!formAction} onclick={() => void save()}>Bind</button>
+						{#if $wingBindings.has(controlKey($learned))}
+							<button class="btn btn-danger" onclick={() => { if ($learned) void unbind($learned); learned.set(null); }}>Unbind</button>
+						{/if}
+						<button class="btn btn-ghost" onclick={() => learned.set(null)}>Cancel</button>
+					</div>
 				</div>
 			{/if}
 
 			{#if $wingBindings.size === 0}
 				<p class="dim">
-					Nothing bound. Press LEARN on the wing (or Learn here), touch a key, fader or encoder, and choose what it does.
+					Nothing bound. Press LEARN on the wing (or Learn here), touch a key, fader or encoder, then
+					move what it should control.
 				</p>
 			{:else}
 				<ul class="bindings">
@@ -300,7 +304,7 @@
 							<span class="action">{b.label || describe(b.action)}</span>
 							{#if b.control.kind === 'Fader'}<span class="mono dim">{faderReading(b.action)}</span>{/if}
 							{#if $canEdit}
-								<button class="edit" onclick={() => learned.set(b.control)}>Edit</button>
+								<button class="btn btn-ghost" onclick={() => learned.set(b.control)}>Edit</button>
 							{/if}
 						</li>
 					{/each}
@@ -327,6 +331,15 @@
 		display: flex;
 		gap: 8px;
 		align-items: center;
+	}
+	.section-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 6px;
+	}
+	.section-head h3 {
+		margin: 0;
 	}
 	.dim {
 		color: var(--text-dim, #888);
@@ -376,7 +389,7 @@
 	.editor {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 6px;
+		gap: 8px;
 		align-items: center;
 		padding: 8px;
 		border: 1px solid var(--accent, #4a9eff);
@@ -403,8 +416,26 @@
 	.bindings .action {
 		flex: 1;
 	}
-	button.on {
-		background: var(--danger, #ef4444);
-		color: white;
+	.how {
+		flex-basis: 100%;
+		margin: 0;
+		color: var(--text-dim, #999);
+	}
+	.how strong {
+		color: var(--text, #e0e0e0);
+	}
+	.actions {
+		display: flex;
+		gap: 6px;
+		margin-left: auto;
+	}
+	/* Learning is a mode the desk is in, so it says so the way the wing's own key does. */
+	.learning {
+		animation: blink 0.6s steps(2, start) infinite;
+	}
+	@keyframes blink {
+		50% {
+			opacity: 0.55;
+		}
 	}
 </style>

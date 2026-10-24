@@ -5,6 +5,7 @@
 	import type { Sequence, Cue } from '$lib/generated/index.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { asOneGesture } from '$lib/stores/gesture.js';
+	import { offer } from '$lib/stores/learn.js';
 	import { collection } from '$lib/stores/show.js';
 
 	const data = getDataContext();
@@ -53,6 +54,7 @@
 	// so a Go that carries when it happened anchors the cue's fades and effects at one
 	// millisecond everywhere rather than at whenever each station got the message.
 	async function goNext(seqId: string) {
+		offer({ kind: 'Press', target: { kind: 'SequenceGo', sequence_id: seqId } });
 		await data.sequences.byId(seqId).goNext({ at: Date.now() });
 	}
 
@@ -60,12 +62,14 @@
 	// time the way Go does: every station releases what the sequence was driving from
 	// the same millisecond, and a rig with a home fade time fades home together.
 	async function takeOff(seqId: string) {
+		offer({ kind: 'Press', target: { kind: 'SequenceOff', sequence_id: seqId } });
 		await data.sequences.byId(seqId).off({ at: Date.now() });
 	}
 
 	// The sequence's fader. Full is written as no level at all, which is what a show
 	// opens at, so a fader pushed back to the top leaves the row as it found it.
 	function setMaster(seqId: string, level: number) {
+		offer({ kind: 'Master', sequence_id: seqId });
 		void data.sequences.byId(seqId).master.set(level >= 1 ? null : level);
 	}
 

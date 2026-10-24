@@ -20,6 +20,7 @@
 import { derived, get, writable, type Readable } from 'svelte/store';
 
 import { goOnFocusedSheet } from './cues.js';
+import { fromWing, onOffer } from './learn.js';
 import { beginGesture, endGesture, nudging } from './gesture.js';
 import { output, watching } from './output.js';
 import { consolePluginOf, openConsoleLine, pluginsState } from './plugins.js';
@@ -52,6 +53,8 @@ import {
 	faderLevel,
 	faderRaw,
 	fromFader,
+	hueOf,
+	learnable,
 	full,
 	keyVerb,
 	keypadWord,
@@ -306,6 +309,27 @@ function catchLearn(control: SurfaceControl): boolean {
 	return true;
 }
 
+/** What a control is called, by MA's table where the station could read it. */
+export function controlName(control: SurfaceControl, map: WingMap | null = get(wingMap)): string {
+	const table = control.kind === 'Key' ? map?.hardkeys : control.kind === 'Fader' ? map?.faders : map?.encoders;
+	const label = table?.[String(control.index)]?.label;
+	return label ? `${control.kind} ${label}` : `${control.kind} ${control.index}`;
+}
+
+// The third step of learning: a control caught, then whatever the operator touches next
+// that fits it is what it does. The panel's dropdowns stay for what has no place to be
+// touched — a group, a command line.
+onOffer(({ action }) => {
+	const control = get(learned);
+	if (!control) return;
+	const fits = learnable(control, action);
+	if (!fits) return;
+	learned.set(null);
+	void bind(control, fits)
+		.then(() => addToast(`${controlName(control)} learned`, 'success'))
+		.catch((e) => addToast(`${e instanceof Error ? e.message : e}`));
+});
+
 async function onKey(index: number, down: boolean, map: WingMap | null): Promise<void> {
 	const control = map?.hardkeys[String(index)];
 	const code = control?.Code;
@@ -469,7 +493,7 @@ async function run(action: BindingAction, down: boolean): Promise<void> {
 	try {
 		switch (action.kind) {
 			case 'Press':
-				if (down) await pressTarget(action.target, surfaceShow(), showData(), showClient(), consoleNow());
+				if (down) await fromWing(() => pressTarget(action.target, surfaceShow(), showData(), showClient(), consoleNow()));
 				return;
 			case 'CommandLine':
 				if (!down) return;
@@ -486,11 +510,11 @@ async function run(action: BindingAction, down: boolean): Promise<void> {
 				const target = [{ fixtureId: action.fixture_id, kind: action.parameter }];
 				if (down) {
 					flashed.set(key, get(byKey).get(key)?.value ?? null);
-					setValueOn(target, full(parameterDefault(action.fixture_id, action.parameter)));
+					fromWing(() => setValueOn(target, full(parameterDefault(action.fixture_id, action.parameter))));
 				} else {
 					const before = flashed.get(key);
 					flashed.delete(key);
-					if (before) setValueOn(target, before);
+					if (before) fromWing(() => setValueOn(target, before));
 					else await removeEntry(entryId(action.fixture_id, parameterKey(action.parameter)));
 				}
 				return;
@@ -522,12 +546,19 @@ function onFader(index: number, raw: number): void {
 	if (action.kind === 'Parameter') {
 		const key = `${action.fixture_id}/${parameterKey(action.parameter)}`;
 		const like = get(byKey).get(key)?.value ?? get(output).value(action.fixture_id, parameterKey(action.parameter)) ?? parameterDefault(action.fixture_id, action.parameter);
-		setValueOn([{ fixtureId: action.fixture_id, kind: action.parameter }], fromFader(like, level));
+		// A color keeps its hue through the bottom of the fader: remembered while it has
+		// one, used once it is black.
+		const hue = hueOf(like);
+		if (hue) hues.set(key, hue);
+		fromWing(() => setValueOn([{ fixtureId: action.fixture_id, kind: action.parameter }], fromFader(like, level, hues.get(key) ?? null)));
 	} else if (action.kind === 'Master') {
 		pendingMasters.set(action.sequence_id, level);
 		flushMasters();
 	}
 }
+
+/** The hue each color a fader moves had last time it was not black. */
+const hues = new Map<string, { r: number; g: number; b: number }>();
 
 /** A master is one write per frame however fast the fader reports. */
 const pendingMasters = new Map<string, number>();
@@ -571,7 +602,7 @@ function turnTargets(targets: Target[], fallback: ParameterValue, clicks: number
 		// every desk's encoder makes.
 		const next = turned(currentOf(target, fallback), clicks, fine, component);
 		recent.set(`${target.fixtureId}/${parameterKey(target.kind)}`, { value: next, at: Date.now() });
-		setValueOn([target], next);
+		fromWing(() => setValueOn([target], next));
 	}
 }
 

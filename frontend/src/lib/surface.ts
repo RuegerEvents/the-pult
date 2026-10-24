@@ -27,6 +27,7 @@ import { currentValue, variableLabel, variableOpLabel } from './flow.js';
 import { displayLabel, formatValue, parameterKey } from './patch.js';
 import { rgbToHex } from './programmer.js';
 import type { PultWsClient } from './ws/client.js';
+import { offer } from './stores/learn.js';
 import type { DataRoot } from './ws/data.js';
 
 /** What a surface's tiles can point at: the show, as far as a surface reads it. */
@@ -398,6 +399,8 @@ export async function pressTarget(
 		if (at === null) throw new Error('This page has not worked out the station clock yet.');
 		return at;
 	};
+	// A key being learned can take this press for its own.
+	offer({ kind: 'Press', target });
 	switch (target.kind) {
 		case 'FlowButton':
 			await data.flow_nodes.byId(target.node_id).press();

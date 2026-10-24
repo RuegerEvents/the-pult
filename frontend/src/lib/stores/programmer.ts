@@ -41,6 +41,7 @@ import {
 } from '$lib/programmer.js';
 import { drivingCues } from '$lib/cues.js';
 import { beginGesture, endGesture } from './gesture.js';
+import { offer } from './learn.js';
 import { collection, show, showData } from './show.js';
 
 // ── What is in the buffer ─────────────────────────────────────────────────────
@@ -104,6 +105,9 @@ export function setValue(fixtureIds: string[], kind: ParameterKind, value: Param
  * cells of a strip, each its own `ColorRgb@n`. See `rowTargets`.
  */
 export function setValueOn(targets: { fixtureId: string; kind: ParameterKind }[], value: ParameterValue): void {
+	// A control being learned can take this parameter for its own: the first of them,
+	// since a fader moves one parameter of one fixture.
+	if (targets[0]) offer({ kind: 'Parameter', fixture_id: targets[0].fixtureId, parameter: targets[0].kind });
 	for (const { fixtureId, kind } of targets) {
 		pending.set(entryId(fixtureId, parameterKey(kind)), { fixtureId, kind, value });
 	}

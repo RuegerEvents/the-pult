@@ -8,6 +8,8 @@ import {
 	faderKeys,
 	faderRaw,
 	fromFader,
+	hueOf,
+	learnable,
 	ledKeys,
 	oops,
 	pageCount,
@@ -80,6 +82,18 @@ describe('the faders and their keys', () => {
 		expect(fromFader({ type: 'Float', value: 0 }, 0.75)).toEqual({ type: 'Float', value: 0.75 });
 	});
 
+	it('keeps a color\'s hue through the bottom of the fader', () => {
+		const amber = { type: 'Color' as const, value: { r: 1, g: 0.5, b: 0, overrides: {} } };
+		const black = fromFader(amber, 0);
+		expect(black).toEqual({ type: 'Color', value: { r: 0, g: 0, b: 0, overrides: {} } });
+		// Black alone has no hue to bring back; the remembered one does.
+		expect(fromFader(black, 0.5, hueOf(amber))).toEqual({
+			type: 'Color',
+			value: { r: 0.5, g: 0.25, b: 0, overrides: {} }
+		});
+		expect(hueOf(black)).toBeNull();
+	});
+
 	it('moves a color by its brightness, keeping its hue', () => {
 		const amber = { type: 'Color' as const, value: { r: 1, g: 0.5, b: 0, overrides: {} } };
 		expect(fromFader(amber, 0.5)).toEqual({ type: 'Color', value: { r: 0.5, g: 0.25, b: 0, overrides: {} } });
@@ -141,5 +155,28 @@ describe('the lights', () => {
 		expect(of('exec 201')).toBe(283);
 		expect(of('exec 291')).toBeUndefined();
 		expect(of('')).toBeUndefined();
+	});
+});
+
+describe('learning from what the operator touches', () => {
+	const parameter = { kind: 'Parameter' as const, fixture_id: 'f', parameter: 'Intensity' as const };
+	const master = { kind: 'Master' as const, sequence_id: 's' };
+	const go = { kind: 'Press' as const, target: { kind: 'SequenceGo' as const, sequence_id: 's' } };
+
+	it('gives a fader a parameter or a level, and an encoder only a parameter', () => {
+		expect(learnable({ kind: 'Fader', index: 0 }, parameter)).toEqual(parameter);
+		expect(learnable({ kind: 'Fader', index: 0 }, master)).toEqual(master);
+		expect(learnable({ kind: 'Fader', index: 0 }, go)).toBeNull();
+		expect(learnable({ kind: 'Encoder', index: 13 }, master)).toBeNull();
+	});
+
+	it('gives a key a press, or a flash of the parameter it was shown', () => {
+		expect(learnable({ kind: 'Key', index: 283 }, go)).toEqual(go);
+		expect(learnable({ kind: 'Key', index: 283 }, parameter)).toEqual({
+			kind: 'Flash',
+			fixture_id: 'f',
+			parameter: 'Intensity'
+		});
+		expect(learnable({ kind: 'Key', index: 283 }, master)).toBeNull();
 	});
 });

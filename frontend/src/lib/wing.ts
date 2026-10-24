@@ -15,7 +15,7 @@
  */
 
 import { fadeGroup } from './fade.js';
-import type { FadeGroup, ParameterKind, ParameterValue } from './generated/index.js';
+import type { BindingAction, FadeGroup, ParameterKind, ParameterValue, SurfaceControl } from './generated/index.js';
 import { displayLabel, parameterKey } from './patch.js';
 import type { EditableParameter } from './programmer.js';
 
@@ -349,8 +349,27 @@ export function full(like: ParameterValue): ParameterValue {
 	}
 }
 
-/** A fader position as a value of the kind it moves. */
-export function fromFader(like: ParameterValue, level: number): ParameterValue {
+/** A color's hue: its channels with the brightest at 1. `null` for black, which has none. */
+export function hueOf(value: ParameterValue): { r: number; g: number; b: number } | null {
+	if (value.type !== 'Color') return null;
+	const { r, g, b } = value.value;
+	const top = Math.max(r, g, b);
+	return top > 0 ? { r: r / top, g: g / top, b: b / top } : null;
+}
+
+/**
+ * A fader position as a value of the kind it moves.
+ *
+ * A fader on a color is its brightness, and the hue it scales is `hue` — what the color
+ * was last time it was anything but black. Taken from the color itself it would be
+ * lost the moment the fader reached the bottom: black has no hue, so every position
+ * after that would scale black to black and the fader would be dead.
+ */
+export function fromFader(
+	like: ParameterValue,
+	level: number,
+	hue: { r: number; g: number; b: number } | null = null
+): ParameterValue {
 	switch (like.type) {
 		case 'Float':
 			return { type: 'Float', value: level };
@@ -359,10 +378,8 @@ export function fromFader(like: ParameterValue, level: number): ParameterValue {
 		case 'Bool':
 			return { type: 'Bool', value: level >= 0.5 };
 		case 'Color': {
-			// A fader on a color is its brightness: the hue it holds, scaled.
-			const { r, g, b, overrides } = like.value;
-			const top = Math.max(r, g, b) || 1;
-			return { type: 'Color', value: { r: (r / top) * level, g: (g / top) * level, b: (b / top) * level, overrides } };
+			const { r, g, b } = hue ?? hueOf(like) ?? { r: 1, g: 1, b: 1 };
+			return { type: 'Color', value: { r: r * level, g: g * level, b: b * level, overrides: like.value.overrides } };
 		}
 		default:
 			return like;
@@ -425,3 +442,25 @@ export function ledKeys(map: WingMap | null): Map<WingLed, number> {
 	}
 	return out;
 }
+
+// ── Learning ──────────────────────────────────────────────────────────────────
+
+/**
+ * What a control can be bound to from something the operator touched, or `null` when
+ * the two do not fit: a fader or an encoder moves a parameter and a fader may be a
+ * sequence's level; a key presses something, or flashes a parameter it was shown.
+ */
+export function learnable(control: SurfaceControl, action: BindingAction): BindingAction | null {
+	switch (control.kind) {
+		case 'Fader':
+			return action.kind === 'Parameter' || action.kind === 'Master' ? action : null;
+		case 'Encoder':
+			return action.kind === 'Parameter' ? action : null;
+		case 'Key':
+			if (action.kind === 'Parameter') {
+				return { kind: 'Flash', fixture_id: action.fixture_id, parameter: action.parameter };
+			}
+			return action.kind === 'Press' ? action : null;
+	}
+}
+
