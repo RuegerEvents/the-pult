@@ -69,6 +69,8 @@ pub struct StationReporter {
     /// in `preferences.toml`, so a console that reboots mid-show comes back at the
     /// priority the receivers last heard it at.
     sacn_slot: Option<u8>,
+    /// The wing plugged into this station, if `main` installed one.
+    wing: Option<crate::infra::wing::WingStation>,
     /// What this station last said about the show clock, so a change of state is a
     /// line in the log and a steady state is not.
     ///
@@ -291,6 +293,7 @@ impl StationReporter {
             sync_addr,
             http_addr,
             broker_port: None,
+            wing: None,
             samples: spawn_probe(absolute(showfile)),
             hostname: System::host_name().unwrap_or_else(|| "console".to_string()),
             started: std::time::Instant::now(),
@@ -304,6 +307,12 @@ impl StationReporter {
     /// for its nodes. A station that never says has no entry in that list.
     pub fn with_broker(mut self, port: u16) -> Self {
         self.broker_port = Some(port);
+        self
+    }
+
+    /// Say that a wing is plugged in here, so a page on another station can find it.
+    pub fn with_wing(mut self, wing: Option<crate::infra::wing::WingStation>) -> Self {
+        self.wing = wing;
         self
     }
 
@@ -419,6 +428,7 @@ impl StationReporter {
             net_window_ms: sample.net_window_ms,
             clock,
             sacn_slot,
+            wing: self.wing.as_ref().map(|wing| wing.state()),
             last_seen: Utc::now(),
         }
     }
@@ -758,6 +768,27 @@ mod tests {
             assert!(row.is_leader, "nobody else is here");
             assert_eq!(row.clock.state, ClockState::Reference);
             assert!(!row.clock.converging, "with nothing to converge on");
+        }
+
+        /// A wing is a LOCAL row on its own station, so the replicated row is the only
+        /// way a page on another station learns there is one to drive — and who has it.
+        #[tokio::test]
+        async fn the_row_says_a_wing_is_plugged_in_here() {
+            let (engine, mut reporter, _frames) = a_reporter().await;
+            reporter.publish().await;
+            assert_eq!(published_row(&engine).await.wing, None, "no wing, nothing said");
+
+            let (wing, _report, _events) =
+                crate::wing::WingHandle::detached(pult_schema::types::wing::WingPhase::Running);
+            let wing = crate::infra::wing::WingStation::new(wing, engine.clone());
+            let mut reporter = reporter.with_wing(Some(wing.clone()));
+            let page = Uuid::new_v4();
+            wing.claim(page).await;
+            reporter.publish().await;
+
+            let said = published_row(&engine).await.wing.expect("a wing is here");
+            assert_eq!(said.phase, pult_schema::types::wing::WingPhase::Running);
+            assert_eq!(said.claimed_by, Some(crate::infra::clients::short_id(page)));
         }
 
         /// The machine half, against the machine actually running the test.

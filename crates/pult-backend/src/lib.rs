@@ -792,7 +792,8 @@ pub async fn start(config: Config) -> Result<Running> {
     )
     // Every address this station's broker door is reachable at, so the broker list a
     // leader hands its nodes can name each station on the network the nodes are on.
-    .with_broker(config.openhaunt_broker_port);
+    .with_broker(config.openhaunt_broker_port)
+    .with_wing(wing.clone());
     tasks.push(tokio::spawn(reporter.run()));
 
     // Only the leader prunes: two nodes deleting each other's rows on different

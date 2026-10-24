@@ -1275,6 +1275,7 @@ fn a_station_at(id: Uuid, broker_addr: &str) -> pult_schema::types::station::Sta
         net_window_ms: 0,
         clock: Default::default(),
         sacn_slot: None,
+        wing: None,
         last_seen: Utc::now(),
     }
 }

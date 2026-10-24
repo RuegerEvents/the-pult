@@ -37,6 +37,15 @@ export class PultWsClient {
 		ask: (sentAt) => this.send({ type: 'ClockSync', payload: { sent_at: sentAt } }),
 	});
 
+	/**
+	 * Whether this socket is the one the page tells the time by. Exactly one may be:
+	 * the estimate is the page's, and a second socket to another station — the one a
+	 * page drives a wing on another station through — is a second clock.
+	 */
+	private readonly keepsTime: boolean;
+	/** Disconnected on purpose, so a close is not a reason to come back. */
+	private stopped = false;
+
 	onConnect: (() => void) | undefined = undefined;
 	onDisconnect: (() => void) | undefined = undefined;
 	/**
@@ -48,7 +57,12 @@ export class PultWsClient {
 	onClose: ((code: number, reason: string) => void) | undefined = undefined;
 	onError: ((message: string) => void) | undefined = undefined;
 
-	constructor(readonly url: string) {}
+	constructor(
+		readonly url: string,
+		{ keepsTime = true }: { keepsTime?: boolean } = {}
+	) {
+		this.keepsTime = keepsTime;
+	}
 
 	/**
 	 * The same backend, over HTTP.
@@ -65,6 +79,7 @@ export class PultWsClient {
 	}
 
 	connect(): void {
+		this.stopped = false;
 		if (this.socket?.readyState === WebSocket.OPEN) return;
 		try {
 			this.socket = new WebSocket(this.url);
@@ -94,7 +109,7 @@ export class PultWsClient {
 			}
 			// Ask what time it is before anything asks what a light is doing. The
 			// answer is what makes every evaluation on this page mean anything.
-			this.clock.start();
+			if (this.keepsTime) this.clock.start();
 			this.connectListeners.forEach((cb) => cb());
 			this.onConnect?.();
 		};
@@ -105,8 +120,10 @@ export class PultWsClient {
 			// The offset belonged to that connection. Keeping it across a reconnect
 			// would mean drawing the rig against a station this client is no longer
 			// talking to, which is exactly the silent wrongness this exists to avoid.
-			this.clock.stop();
-			forgetOffset();
+			if (this.keepsTime) {
+				this.clock.stop();
+				forgetOffset();
+			}
 			this.onDisconnect?.();
 			this.scheduleReconnect();
 		};
@@ -126,9 +143,13 @@ export class PultWsClient {
 	}
 
 	disconnect(): void {
+		this.stopped = true;
 		if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
-		this.clock.stop();
-		forgetOffset();
+		this.reconnectTimeout = null;
+		if (this.keepsTime) {
+			this.clock.stop();
+			forgetOffset();
+		}
 		this.socket?.close();
 		this.socket = null;
 	}
@@ -158,7 +179,7 @@ export class PultWsClient {
 	}
 
 	private scheduleReconnect(): void {
-		if (this.reconnectTimeout) return;
+		if (this.reconnectTimeout || this.stopped) return;
 		this.reconnectTimeout = setTimeout(() => {
 			this.reconnectTimeout = null;
 			this.reconnectDelay = Math.min(this.reconnectDelay * 2, 16000);
@@ -170,7 +191,7 @@ export class PultWsClient {
 		if (msg.type === 'Pong') return;
 
 		if (msg.type === 'ClockSync') {
-			this.clock.answered(msg.payload.sent_at, msg.payload.station_ms);
+			if (this.keepsTime) this.clock.answered(msg.payload.sent_at, msg.payload.station_ms);
 			return;
 		}
 

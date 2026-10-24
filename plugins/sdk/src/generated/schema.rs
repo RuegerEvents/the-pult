@@ -2650,6 +2650,16 @@ pub struct Station {
     /// Defaulted, so a peer on an older build still deserializes.
     #[serde(default)]
     pub sacn_slot: Option<u8>,
+    /// The command wing plugged into this station, if one is.
+    ///
+    /// The station's own `wing` row is LOCAL, so a page on another station could not
+    /// otherwise know there is a wing here to drive. A page drives a wing over a socket
+    /// to the station it is plugged into, wherever the page came from, and this is how
+    /// it finds one. `None` is a station started with no wing at all.
+    ///
+    /// Defaulted, so a peer on an older build still deserializes.
+    #[serde(default)]
+    pub wing: Option<WingState>,
     /// When this station last said any of the above.
     pub last_seen: Timestamp,
 }
@@ -3283,6 +3293,40 @@ pub struct ViewportBlock {
     /// Dimensions along each bar, where this viewport carries them. See [`Dimensions`].
     #[serde(default)]
     pub dimensions: Option<Dimensions>,
+}
+
+/// Where the wing on this station has got to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum WingPhase {
+    /// This station was started without a wing, which is what every test is.
+    #[default]
+    Off,
+    /// Looking, and nothing is plugged in.
+    Absent,
+    /// It is on the bus and the boot conversation is under way.
+    Booting,
+    /// Taking its application: `sent` of `total` bytes.
+    Loading { sent: u32, total: u32 },
+    /// Up, and reporting what is pressed.
+    Running,
+    /// It cannot be run here, and why — no grandMA3 install to find the image in, or
+    /// another program holding the interface.
+    Fault { reason: String },
+}
+
+/// The LOCAL `wing` row: what the wing on *this* station is doing, and who drives it.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingState {
+    pub phase: WingPhase,
+    /// What it said it is, once it has said.
+    pub device: Option<String>,
+    /// The short session id of the page driving it, or `None` when no page is.
+    ///
+    /// A wing acts on one operator's selection, command line and gestures, and those
+    /// live in a page — so a page claims it, and with none claiming it the wing is
+    /// dark and does nothing.
+    pub claimed_by: Option<String>,
 }
 
 /// How this console reaches its group.

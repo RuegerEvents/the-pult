@@ -4760,6 +4760,20 @@ impl StationEntity {
         self.at.field("sacn_slot")
     }
 
+    /// The command wing plugged into this station, if one is.
+    ///
+    /// The station's own `wing` row is LOCAL, so a page on another station could not
+    /// otherwise know there is a wing here to drive. A page drives a wing over a socket
+    /// to the station it is plugged into, wherever the page came from, and this is how
+    /// it finds one. `None` is a station started with no wing at all.
+    ///
+    /// Defaulted, so a peer on an older build still deserializes.
+    ///
+    /// SYNCED.
+    pub fn wing(&self) -> Field<Option<WingState>> {
+        self.at.field("wing")
+    }
+
     /// When this station last said any of the above.
     ///
     /// SYNCED.

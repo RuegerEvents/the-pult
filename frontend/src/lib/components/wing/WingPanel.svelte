@@ -26,11 +26,14 @@
 		learning,
 		selectedParameter,
 		setDrivesHere,
+		setWingAt,
 		slotValue,
 		unbind,
 		wingBindings,
 		wingLine,
 		wingMap,
+		wingAt,
+		wingStations,
 		wingState
 	} from '$lib/stores/wing.js';
 	import { output } from '$lib/stores/output.js';
@@ -58,12 +61,18 @@
 	const pressable = $derived(pressableTargets(show));
 
 	const phase = $derived($wingState.phase);
+	/** The station being followed, when it is not this page's own. */
+	const elsewhere = $derived($wingAt ? ($wingStations.find((s) => s.id === $wingAt)?.hostname ?? null) : null);
+	/** Only worth asking which wing when there is a wing somewhere other than here. */
+	const choosing = $derived($wingAt !== null || $wingStations.some((s) => !s.here));
 	const phaseText = $derived.by(() => {
 		switch (phase.kind) {
 			case 'Off':
-				return 'This station was started without a wing (--no-wing, or a test).';
+				return $wingAt
+					? `Waiting for ${elsewhere ?? 'that station'} to answer.`
+					: 'This station was started without a wing (--no-wing, or a test).';
 			case 'Absent':
-				return 'No command wing is plugged into this station.';
+				return `No command wing is plugged into ${$wingAt ? (elsewhere ?? 'that station') : 'this station'}.`;
 			case 'Booting':
 				return 'Starting the wing…';
 			case 'Loading':
@@ -182,6 +191,20 @@
 
 <div class="wing">
 	<section class="status" class:fault={phase.kind === 'Fault'}>
+		{#if choosing}
+			<label class="at">
+				Wing on
+				<select value={$wingAt ?? ''} onchange={(e) => setWingAt(e.currentTarget.value || null)}>
+					<option value="">this station</option>
+					{#each $wingStations.filter((s) => !s.here) as s (s.id)}
+						<option value={s.id}>{s.hostname} ({s.state.phase.kind.toLowerCase()})</option>
+					{/each}
+					{#if $wingAt && !elsewhere}
+						<option value={$wingAt}>a station that has gone</option>
+					{/if}
+				</select>
+			</label>
+		{/if}
 		<p>{phaseText}</p>
 		<!-- Only a wing that is here can be driven: offering to drive an absent or faulty
 		     one would claim nothing and say it had. -->
@@ -353,6 +376,12 @@
 	}
 	.status.fault p:first-child {
 		color: var(--danger, #ef4444);
+	}
+	.at {
+		display: flex;
+		gap: 6px;
+		align-items: center;
+		margin-bottom: 6px;
 	}
 	.drive {
 		display: flex;

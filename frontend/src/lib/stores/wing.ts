@@ -30,7 +30,9 @@ import { collection, showClient, showData } from './show.js';
 import { undo } from './undo.js';
 import { userId } from './user.js';
 import { addToast } from '../toasts.js';
+import { PultWsClient } from '../ws/client.js';
 import { consoleNow } from '../ws/clock.js';
+import { WS_PATH, wsUrlFrom } from '../ws/endpoint.js';
 import type {
 	BindingAction,
 	ControlBinding,
@@ -76,6 +78,7 @@ export const COMMAND_WING = 'ma3-command-wing';
 
 const EMPTY: WingState = { phase: { kind: 'Off' }, device: null, claimed_by: null };
 const DRIVE_KEY = 'pult.wing.drive';
+const AT_KEY = 'pult.wing.at';
 /** How often the desk's lights and motors are brought up to date. */
 const FEEDBACK_MS = 40;
 /** A second CLEAR this soon after the first clears the selection as well. */
@@ -170,6 +173,55 @@ export const encoderBar: Readable<{ slots: (EncoderSlot | null)[]; page: number;
 
 // ── Starting ──────────────────────────────────────────────────────────────────
 
+/**
+ * Which station's wing this page follows: its own (`null`), or another's by node id.
+ *
+ * A wing is plugged into one station and that station relays it, but the page driving
+ * it can have come from any of them — the operator's screen is on the desk and the wing
+ * is on a Pi under it. So the wing is followed over a socket of its own to the station
+ * it is plugged into, while everything it *does* goes through this page's own station
+ * as anything else this page does would.
+ */
+export const wingAt = writable<string | null>(
+	(typeof localStorage !== 'undefined' && localStorage.getItem(AT_KEY)) || null
+);
+
+/** This page's own station, by node id. */
+export const thisStation = writable<string | null>(null);
+
+const stations = collection('stations');
+
+/** A station a wing is plugged into, as the panel offers it. */
+export type WingStationRow = { id: string; hostname: string; state: WingState; here: boolean };
+
+/**
+ * Every station that was started with a wing, this page's own first. From the
+ * replicated `stations` rows, which is the only way a page can know about a wing on a
+ * station it did not come from.
+ */
+export const wingStations: Readable<WingStationRow[]> = derived(
+	[stations, thisStation],
+	([$stations, $here]) =>
+		$stations
+			.filter((s) => s.wing && s.wing.phase.kind !== 'Off')
+			.map((s) => ({ id: s.id, hostname: s.hostname, state: s.wing as WingState, here: s.id === $here }))
+			.sort((a, b) => Number(b.here) - Number(a.here) || a.hostname.localeCompare(b.hostname))
+);
+
+/** Follow the wing on this station from now on: `null` for this page's own. */
+export function setWingAt(id: string | null): void {
+	const own = id !== null && id === get(thisStation) ? null : id;
+	wingAt.set(own);
+	if (typeof localStorage !== 'undefined') {
+		if (own) localStorage.setItem(AT_KEY, own);
+		else localStorage.removeItem(AT_KEY);
+	}
+}
+
+/** The socket the wing is followed over: this page's own, or one to its station. */
+let current: PultWsClient | null = null;
+const wingClient = (): PultWsClient => current ?? showClient();
+
 let started = false;
 
 /**
@@ -179,24 +231,36 @@ let started = false;
 export function startWing(): void {
 	if (started || typeof window === 'undefined') return;
 	started = true;
-	const client = showClient();
+	const page = showClient();
+	page.subscribe('session', (v: unknown) => {
+		if (v && typeof v === 'object') thisStation.set((v as { node_id: string | null }).node_id);
+	});
 
-	const apply = (value: unknown) => {
-		if (value && typeof value === 'object') wingState.set({ ...EMPTY, ...(value as WingState) });
-	};
-	client.subscribe('wing', apply);
-	const refresh = () => {
-		void client.get(['wing']).then(apply).catch(() => {});
-		void client
-			.call('wing.map', {})
-			.then((map) => wingMap.set((map as WingMap | null) ?? null))
-			.catch(() => wingMap.set(null));
-		// A reconnect is a new session, and the claim died with the old one.
-		claimedAs.set(null);
-		if (get(drivesHere)) void claim();
-	};
-	refresh();
-	client.addConnectListener(refresh);
+	// Where the chosen station is, as `null` for this page's own. A station whose row is
+	// not here (yet, or any more) leaves the address as it was: on a page just loaded
+	// that is nothing followed until the rows arrive, and for a station that has gone
+	// it is a socket that goes on trying until it is back.
+	let address: string | null | undefined;
+	let stop: (() => void) | null = null;
+	derived([wingAt, stations, thisStation], ([$at, $stations, $here]) => {
+		if ($at === null || $at === $here) return null;
+		return $stations.find((s) => s.id === $at)?.http_addr || undefined;
+	}).subscribe((next) => {
+		if (next === undefined || next === address) return;
+		address = next;
+		stop?.();
+		const remote = next === null ? null : new PultWsClient(wsUrlFrom(`${location.protocol}//${next}`, WS_PATH), { keepsTime: false });
+		current = remote;
+		stop = follow(remote ?? page);
+		if (remote) {
+			remote.connect();
+			const inner = stop;
+			stop = () => {
+				inner();
+				remote.disconnect();
+			};
+		}
+	});
 
 	let session: (() => void) | null = null;
 	driving.subscribe(($driving) => {
@@ -208,9 +272,39 @@ export function startWing(): void {
 	});
 }
 
+/** Follow the wing on the station at the other end of this socket, until stopped. */
+function follow(client: PultWsClient): () => void {
+	const apply = (value: unknown) => {
+		if (value && typeof value === 'object') wingState.set({ ...EMPTY, ...(value as WingState) });
+	};
+	const refresh = () => {
+		void client.get(['wing']).then(apply).catch(() => {});
+		void client
+			.call('wing.map', {})
+			.then((map) => wingMap.set((map as WingMap | null) ?? null))
+			.catch(() => wingMap.set(null));
+		// A reconnect is a new session, and the claim died with the old one.
+		claimedAs.set(null);
+		if (get(drivesHere)) void claim();
+	};
+	const unsubscribe = client.subscribe('wing', apply);
+	const unlisten = client.addConnectListener(refresh);
+	refresh();
+	return () => {
+		unsubscribe();
+		unlisten();
+		// Letting go of the wing being left, so it goes dark at once rather than when
+		// this socket's session is noticed to have gone.
+		if (get(claimedAs) !== null) void client.call('wing.release', {}).catch(() => {});
+		claimedAs.set(null);
+		wingState.set(EMPTY);
+		wingMap.set(null);
+	};
+}
+
 async function claim(): Promise<void> {
 	try {
-		const state = (await showClient().call('wing.claim', {})) as WingState;
+		const state = (await wingClient().call('wing.claim', {})) as WingState;
 		claimedAs.set(state.claimed_by);
 		wingState.set(state);
 	} catch (e) {
@@ -225,7 +319,7 @@ export async function setDrivesHere(on: boolean): Promise<void> {
 	if (on) await claim();
 	else {
 		claimedAs.set(null);
-		await showClient().call('wing.release', {}).catch(() => {});
+		await wingClient().call('wing.release', {}).catch(() => {});
 	}
 }
 
@@ -234,7 +328,7 @@ export async function setDrivesHere(on: boolean): Promise<void> {
  * and the show subscriptions both need. Answers the function that stops it all.
  */
 function drive(): () => void {
-	const client = showClient();
+	const client = wingClient();
 	const stops: (() => void)[] = [];
 	// Held open for as long as this page drives, so the handlers can read them with
 	// `get` without each read opening and closing a deep watch.

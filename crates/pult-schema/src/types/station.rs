@@ -156,6 +156,17 @@ pub struct Station {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub sacn_slot: Option<u8>,
+    /// The command wing plugged into this station, if one is.
+    ///
+    /// The station's own `wing` row is LOCAL, so a page on another station could not
+    /// otherwise know there is a wing here to drive. A page drives a wing over a socket
+    /// to the station it is plugged into, wherever the page came from, and this is how
+    /// it finds one. `None` is a station started with no wing at all.
+    ///
+    /// Defaulted, so a peer on an older build still deserializes.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub wing: Option<super::wing::WingState>,
     /// When this station last said any of the above.
     #[pult(lifecycle = SYNCED)]
     pub last_seen: DateTime<Utc>,
@@ -495,6 +506,7 @@ mod tests {
             net_window_ms: 0,
             clock: ClockSync::default(),
             sacn_slot: None,
+            wing: None,
             last_seen,
         }
     }
