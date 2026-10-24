@@ -110,12 +110,19 @@ function currentOrder(): string[] {
 /**
  * What is driving the rig, pushed into the evaluator whenever the show changes.
  *
- * Derived from the three collections that decide it and nothing else, so a fade in
- * progress — which changes none of them — costs this nothing at all.
+ * Derived from the collections that decide it and nothing else, so a fade in
+ * progress — which changes none of them — costs this nothing at all. The sequences are
+ * one of them for their faders.
  */
 const driving = derived(
-	[collection('fixtures'), collection('fixture_types'), collection('programmer_values')],
-	([$fixtures, $types, $entries]) => drivingTheRig($fixtures, $types, $entries)
+	[
+		collection('fixtures'),
+		collection('fixture_types'),
+		collection('programmer_values'),
+		collection('sequences')
+	],
+	([$fixtures, $types, $entries, $sequences]) =>
+		drivingTheRig($fixtures, $types, $entries, $sequences)
 );
 
 /**

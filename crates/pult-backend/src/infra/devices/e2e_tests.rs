@@ -263,6 +263,7 @@ async fn a_button_on_a_node_advances_a_cue() {
         cue_ids: vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()],
         active_cue_index: None,
         went_at: None,
+        master: None,
     };
     let flow = Flow { id: uuid::Uuid::new_v4(), name: "Front door".into(), enabled: true };
     let node = |kind| FlowNode {

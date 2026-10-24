@@ -1128,21 +1128,29 @@ impl<'a> HeldByProgrammer<'a> {
 /// something a station worked out — and only where it holds a plain value: an entry
 /// carrying a shape has already been resolved against its speed master and published
 /// as the running effect, which is what keeps rate-following out of the evaluator.
+///
+/// `masters` is the sequences' playback faders: a separate argument rather than
+/// something read off the fixture, because a fader moving rewrites one sequence row
+/// and no fixture at all.
 pub fn driving<'a>(
     fixture: &'a Fixture,
     fixture_type: Option<&'a FixtureType>,
     held: Option<&'a ProgrammerValue>,
     key: &str,
+    masters: &crate::types::sequence::Masters,
 ) -> pult_render::Driving<'a> {
+    let effect = fixture.live_effects.get(key);
+    let fade = fixture.live_fades.get(key);
     pult_render::Driving {
         programmer: held.filter(|entry| entry.effect.is_none()).map(|entry| &entry.value),
         // A recording is a timeline's, and this function is handed a fixture. The
         // callers that hold the playing timelines — the DMX patch and the browser's
         // evaluator — fill it in over the top of what this answers.
         track: None,
-        effect: fixture.live_effects.get(key),
-        fade: fixture.live_fades.get(key),
+        effect,
+        fade,
         home: home_value_ref_by_key(fixture, fixture_type, key),
+        master: masters.over(key, effect, fade),
     }
 }
 
@@ -1155,9 +1163,10 @@ pub fn value_at(
     fixture_type: Option<&FixtureType>,
     held: Option<&ProgrammerValue>,
     key: &str,
+    masters: &crate::types::sequence::Masters,
     now_ms: u64,
 ) -> Option<ParameterValue> {
-    pult_render::value_at(&driving(fixture, fixture_type, held, key), now_ms)
+    pult_render::value_at(&driving(fixture, fixture_type, held, key, masters), now_ms)
 }
 
 /// The parameters of a type an operator can set, in the order it lists them.

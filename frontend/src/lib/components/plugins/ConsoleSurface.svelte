@@ -27,7 +27,7 @@
 
 	import type { PluginStatus } from '$lib/generated/index.js';
 	import type { SelectionQuery } from '$lib/selection.js';
-	import { registerConsoleFocus } from '$lib/stores/plugins.js';
+	import { registerConsoleFocus, registerConsoleLine } from '$lib/stores/plugins.js';
 	import { applySelectionEffect, query, selection } from '$lib/stores/selection.js';
 	import { showClient } from '$lib/stores/show.js';
 	import { userId } from '$lib/stores/user.js';
@@ -201,9 +201,19 @@
 		// glance at another tab.
 		entries = [...session.entries];
 		const unregister = registerConsoleFocus(() => input?.focus());
+		// The wing's keypad types here and presses Enter here.
+		const unregisterLine = registerConsoleLine({
+			read: () => line,
+			write: (text) => {
+				line = text;
+				items = [];
+			},
+			submit
+		});
 		return () => {
 			session.entries = $state.snapshot(entries) as Entry[];
 			unregister();
+			unregisterLine();
 		};
 	});
 </script>

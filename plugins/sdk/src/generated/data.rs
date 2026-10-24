@@ -24,6 +24,16 @@ use crate::schema::*;
 
 // ── What a command is given ──────────────────────────────────────────────────
 
+/// Arguments for `sequences.goBack`.
+///
+/// Every field is optional, so `&Default::default()` is a whole call.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SequenceGoBackArgs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<f64>,
+}
+
 /// Arguments for `sequences.goNext`.
 ///
 /// Every field is optional, so `&Default::default()` is a whole call.
@@ -96,6 +106,146 @@ pub struct TimelineRecordArgs {
 pub struct TimelineStopArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at: Option<f64>,
+}
+
+// ── control_bindings ────────────────────────────────────────────────────
+
+/// One control, bound.
+///
+/// The `control_bindings` collection.
+pub fn control_bindings() -> ControlBindingCollection {
+    ControlBindingCollection { at: Collection::at("control_bindings") }
+}
+
+/// The `control_bindings` collection, reached by [`control_bindings()`].
+pub struct ControlBindingCollection {
+    at: Collection,
+}
+
+impl ControlBindingCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<ControlBinding>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> ControlBindingEntity {
+        ControlBindingEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> ControlBindingEntity {
+        ControlBindingEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &ControlBinding) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `control_bindings` row, reached by [`ControlBindingCollection::by_id`] or
+/// [`ControlBindingCollection::nth`].
+pub struct ControlBindingEntity {
+    at: Entity,
+}
+
+impl ControlBindingEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<ControlBinding, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &ControlBinding) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// Which kind of surface: [`COMMAND_WING`].
+    ///
+    /// PERSISTED.
+    pub fn surface(&self) -> Field<String> {
+        self.at.field("surface")
+    }
+
+    /// PERSISTED.
+    pub fn control(&self) -> Field<SurfaceControl> {
+        self.at.field("control")
+    }
+
+    /// PERSISTED.
+    pub fn action(&self) -> Field<BindingAction> {
+        self.at.field("action")
+    }
+
+    /// What the panel calls it. Empty means the name of what it is bound to.
+    ///
+    /// PERSISTED.
+    pub fn label(&self) -> Field<String> {
+        self.at.field("label")
+    }
 }
 
 // ── cues ────────────────────────────────────────────────────────────────
@@ -3417,6 +3567,37 @@ impl SequenceEntity {
     /// SYNCED.
     pub fn went_at(&self) -> Field<Option<u64>> {
         self.at.field("went_at")
+    }
+
+    /// The sequence's level, 0 to 1, or `None` for full: its playback fader.
+    ///
+    /// It scales the **intensities** this sequence is driving and nothing else — a
+    /// color, a position and a relay go where the cue says however low the fader is,
+    /// and the programmer, a recording and a resting value are never dimmed by it
+    /// ([`Masters`] decides which). At zero the sequence is still on and still owns
+    /// what it owns; taking it off is [`Sequence::off`].
+    ///
+    /// SYNCED beside `active_cue_index` rather than PERSISTED: a fader is where the
+    /// operator has it now, every station and page has to agree on it, a failover
+    /// keeps it, and a show opens at full.
+    ///
+    /// SYNCED.
+    pub fn master(&self) -> Field<Option<f32>> {
+        self.at.field("master")
+    }
+
+    /// Step back one cue: the cue before the active one is taken, the way a Go takes
+    /// the next.
+    ///
+    /// Taking an earlier cue is already a thing playback knows how to do — jumping
+    /// back releases what only later cues capture — so this is that jump, one step at
+    /// a time. At the first cue it stays there rather than taking the sequence off,
+    /// for the reason Go at the last cue stays: "off" is its own act.
+    ///
+    /// The command `sequences.goBack`, which the station applies to the row and
+    /// replicates like any other write.
+    pub fn go_back(&self, args: &SequenceGoBackArgs) -> Result<(), String> {
+        self.at.command("goBack", args)
     }
 
     /// Advance to the next cue, staying on the last one when there is no next.

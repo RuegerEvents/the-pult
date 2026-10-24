@@ -33,6 +33,7 @@ pub mod variable;
 pub mod surface;
 pub mod pixels;
 pub mod zone;
+pub mod wing;
 
 pub use fixture::{home_value, home_value_by_key, output_parameters, parameter_key, Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};
@@ -45,6 +46,10 @@ pub use zone::{
     node_targets, station_channels, SpeakerZone, SpeakerZoneCreate, SpeakerZonePatch, StationAudio, ZoneNode,
 };
 pub use variable::{Variable, VariableCreate, VariableKind, VariableOp, VariablePatch};
+pub use wing::{
+    BindingAction, ControlBinding, ControlBindingCreate, ControlBindingPatch, SurfaceControl, WingPhase,
+    WingState, COMMAND_WING,
+};
 pub use surface::{ColorStop, Surface, SurfaceCreate, SurfacePatch, SurfaceTile, TileSize, TileTarget};
 pub use speedmaster::{SpeedMaster, SpeedMasterCreate, SpeedMasterPatch};
 pub use user::{color_for, User, UserCreate, UserPatch, USER_COLORS};

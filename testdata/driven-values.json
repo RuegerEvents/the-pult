@@ -2009,6 +2009,179 @@
         "type": "Float",
         "value": 0.9
       }
+    },
+    {
+      "name": "a master at half scales a fade halfway through",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "master": 0.5
+      },
+      "at": 3000,
+      "expect": {
+        "type": "Float",
+        "value": 0.25
+      }
+    },
+    {
+      "name": "a master scales an effect",
+      "driving": {
+        "effect": {
+          "effect_id": "00000000-0000-0000-0000-000000000000",
+          "curve": {
+            "Shape": "Sine"
+          },
+          "rate_hz": 1.0,
+          "low": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "high": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "width": 0.5,
+          "direction": "Forward",
+          "phase": 0.0,
+          "t0": 0,
+          "source": "Programmer"
+        },
+        "master": 0.5
+      },
+      "at": 0,
+      "expect": {
+        "type": "Float",
+        "value": 0.25
+      }
+    },
+    {
+      "name": "a master at zero is dark, not home",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "home": {
+          "type": "Float",
+          "value": 0.6
+        },
+        "master": 0.0
+      },
+      "at": 9000,
+      "expect": {
+        "type": "Float",
+        "value": 0.0
+      }
+    },
+    {
+      "name": "a master never dims the programmer",
+      "driving": {
+        "programmer": {
+          "type": "Float",
+          "value": 0.9
+        },
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 1000,
+          "duration_ms": 4000,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "master": 0.1
+      },
+      "at": 9000,
+      "expect": {
+        "type": "Float",
+        "value": 0.9
+      }
+    },
+    {
+      "name": "a master never dims home",
+      "driving": {
+        "home": {
+          "type": "Float",
+          "value": 0.6
+        },
+        "master": 0.1
+      },
+      "at": 9000,
+      "expect": {
+        "type": "Float",
+        "value": 0.6
+      }
+    },
+    {
+      "name": "a master scales every channel of a color, pinned emitters too",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Color",
+            "value": {
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "overrides": {}
+            }
+          },
+          "to": {
+            "type": "Color",
+            "value": {
+              "r": 1.0,
+              "g": 0.5,
+              "b": 0.0,
+              "overrides": {
+                "White": 1.0
+              }
+            }
+          },
+          "t0": 0,
+          "duration_ms": 0,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "master": 0.5
+      },
+      "at": 10,
+      "expect": {
+        "type": "Color",
+        "value": {
+          "r": 0.5,
+          "g": 0.25,
+          "b": 0.0,
+          "overrides": {
+            "White": 0.5
+          }
+        }
+      }
     }
   ]
 }

@@ -43,6 +43,24 @@ impl Sequence {
         Ok(())
     }
 
+    /// Step back one cue: the cue before the active one is taken, the way a Go takes
+    /// the next.
+    ///
+    /// Taking an earlier cue is already a thing playback knows how to do — jumping
+    /// back releases what only later cues capture — so this is that jump, one step at
+    /// a time. At the first cue it stays there rather than taking the sequence off,
+    /// for the reason Go at the last cue stays: "off" is its own act.
+    #[pult_command(args = "{ at?: number }")]
+    pub fn go_back(
+        &mut self,
+        args: serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(index) = self.active_cue_index.filter(|i| *i > 0) else { return Ok(()) };
+        self.active_cue_index = Some(index - 1);
+        self.went_at = Some(went_at(&args));
+        Ok(())
+    }
+
     /// Take the sequence off: no cue of it is active any more.
     ///
     /// The act this console did not have. Everything it was driving and nothing else
@@ -98,6 +116,79 @@ pub struct Sequence {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub went_at: Option<u64>,
+    /// The sequence's level, 0 to 1, or `None` for full: its playback fader.
+    ///
+    /// It scales the **intensities** this sequence is driving and nothing else — a
+    /// color, a position and a relay go where the cue says however low the fader is,
+    /// and the programmer, a recording and a resting value are never dimmed by it
+    /// ([`Masters`] decides which). At zero the sequence is still on and still owns
+    /// what it owns; taking it off is [`Sequence::off`].
+    ///
+    /// SYNCED beside `active_cue_index` rather than PERSISTED: a fader is where the
+    /// operator has it now, every station and page has to agree on it, a failover
+    /// keeps it, and a show opens at full.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub master: Option<f32>,
+}
+
+/// Which sequence's level dims a parameter, worked out from the cues the layers name.
+///
+/// A fade carries the cue that started it and an effect its source, so what a
+/// fixture is doing already says which sequence it is doing it for; this is the
+/// index from that cue to its sequence's level. Only levels below full are kept, so
+/// a show whose faders are all up — nearly every show, nearly all of the time —
+/// builds an empty map and every lookup is a miss.
+#[derive(Debug, Default, Clone)]
+pub struct Masters(std::collections::HashMap<Uuid, f32>);
+
+impl Masters {
+    pub fn of<'a>(sequences: impl IntoIterator<Item = &'a Sequence>) -> Self {
+        let mut by_cue = std::collections::HashMap::new();
+        for sequence in sequences {
+            let Some(level) = sequence.master.filter(|level| *level < 1.0) else { continue };
+            let level = level.clamp(0.0, 1.0);
+            for cue in &sequence.cue_ids {
+                by_cue.insert(*cue, level);
+            }
+        }
+        Masters(by_cue)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The level a cue's sequence is at, where that is below full.
+    pub fn of_cue(&self, cue_id: Uuid) -> Option<f32> {
+        self.0.get(&cue_id).copied()
+    }
+
+    /// The master over this parameter, if one dims it: an intensity, played by a
+    /// sequence below full.
+    ///
+    /// Asked of whichever playback layer wins — an effect over a fade, the order
+    /// [`pult_render::value_at`] takes them in. A programmer shape and a release name
+    /// no cue, so nothing dims them.
+    pub fn over(
+        &self,
+        key: &str,
+        effect: Option<&pult_render::RunningEffect>,
+        fade: Option<&pult_render::RunningFade>,
+    ) -> Option<f32> {
+        if self.0.is_empty() || crate::types::show::FadeGroup::of_key(key) != crate::types::show::FadeGroup::Intensity {
+            return None;
+        }
+        let cue = match (effect, fade) {
+            (Some(effect), _) => match effect.source {
+                pult_render::EffectSource::Cue(cue) => cue,
+                pult_render::EffectSource::Programmer => return None,
+            },
+            (None, Some(fade)) => fade.cue_id,
+            (None, None) => return None,
+        };
+        self.of_cue(cue)
+    }
 }
 
 /// The `at` a Go was given, or now.
@@ -130,6 +221,7 @@ mod tests {
             cue_ids,
             active_cue_index: None,
             went_at: None,
+            master: None,
         }
     }
 
@@ -211,5 +303,58 @@ mod tests {
 
         assert_eq!(seq.active_cue_index, None);
         assert_eq!(seq.went_at, Some(11), "carried, so every station releases from one instant");
+    }
+
+    /// Back one, and no further than the first: "off" is its own act.
+    #[test]
+    fn going_back_steps_one_cue_and_stops_at_the_first() {
+        let mut seq = a_sequence(vec![Uuid::new_v4(), Uuid::new_v4()]);
+        seq.active_cue_index = Some(1);
+
+        seq.go_back(serde_json::json!({ "at": 5u64 })).unwrap();
+        assert_eq!(seq.active_cue_index, Some(0));
+        assert_eq!(seq.went_at, Some(5));
+
+        seq.go_back(serde_json::json!({ "at": 6u64 })).unwrap();
+        assert_eq!(seq.active_cue_index, Some(0), "still on the first");
+        assert_eq!(seq.went_at, Some(5), "and not re-anchored");
+    }
+
+    fn an_intensity_fade(cue_id: Uuid) -> pult_render::RunningFade {
+        pult_render::RunningFade {
+            from: pult_render::ParameterValue::Float(0.0),
+            to: pult_render::ParameterValue::Float(1.0),
+            t0: 0,
+            duration_ms: 0,
+            easing: pult_render::Easing::Linear,
+            cue_id,
+        }
+    }
+
+    /// A master reaches the intensities its own cues are playing, and nothing else.
+    #[test]
+    fn a_master_is_found_through_the_cue_and_only_for_an_intensity() {
+        let cue = Uuid::new_v4();
+        let mut seq = a_sequence(vec![cue]);
+        seq.master = Some(0.4);
+        let masters = Masters::of([&seq]);
+        let fade = an_intensity_fade(cue);
+
+        assert_eq!(masters.over("Intensity", None, Some(&fade)), Some(0.4));
+        assert_eq!(masters.over("Intensity@3", None, Some(&fade)), Some(0.4), "a cell's too");
+        assert_eq!(masters.over("Pan", None, Some(&fade)), None, "a position goes where it is sent");
+        assert_eq!(masters.over("ColorRgb", None, Some(&fade)), None, "and so does a color");
+
+        let release = an_intensity_fade(Uuid::nil());
+        assert_eq!(masters.over("Intensity", None, Some(&release)), None, "a release is nobody's");
+    }
+
+    /// Full is the usual case, and it costs nothing: no entry at all.
+    #[test]
+    fn a_sequence_at_full_is_not_in_the_map() {
+        let mut seq = a_sequence(vec![Uuid::new_v4()]);
+        assert!(Masters::of([&seq]).is_empty());
+        seq.master = Some(1.0);
+        assert!(Masters::of([&seq]).is_empty());
     }
 }

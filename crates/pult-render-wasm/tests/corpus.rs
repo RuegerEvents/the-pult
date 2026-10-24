@@ -49,6 +49,8 @@ struct DrivenBy {
     fade: Option<RunningFade>,
     #[serde(default)]
     home: Option<ParameterValue>,
+    #[serde(default)]
+    master: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -118,6 +120,7 @@ fn every_case_in_the_corpus_evaluates_to_what_it_says() {
             effect: case.driving.effect.as_ref(),
             fade: case.driving.fade.as_ref(),
             home: case.driving.home.as_ref(),
+            master: case.driving.master,
         };
         let got = pult_render::value_at(&driving, case.at);
         let ok = match (&got, &case.expect) {

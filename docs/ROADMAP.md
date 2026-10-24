@@ -6564,7 +6564,7 @@ rule in Rust, and queues 32 inputs while it is on no broker, as the firmware doe
 cargo test -p pult-backend --test failover          # a node walks its list to the spare
 cargo test -p pult-backend --lib infra::devices     # the list, the door, the retained topic
 cargo test -p openhaunt-node-sim brokers            # the walk, as the firmware does it
-cmake -S test/host -B build/host && ctest --test-dir build/host   # in OpenHaunt/firmware
+cmake -S test/host -B build/host && ctest --test-dir build/host   # in OpenHaunt/node/firmware
 ```
 
 ### 79. One grammar for every object, and no edit mode
@@ -8113,3 +8113,46 @@ A grandMA3 command wing, over USB.
 - The keypad is the strongest argument in the section for routing keys through
   the command line, since the wing's key legends already are the grammar's
   words.
+
+**Decided 2026-10-24, before building it for the Heinz Horror Garten.** The protocol
+half is done (`crates/pult-wing`, `tools/wing-explorer`); this is the binding into the
+console, and it answers surface-layer's questions for this device rather than in general.
+
+- **A wing is bound to a browser.** One page claims it ("this page drives the wing"), and
+  keys, encoders and faders act on *that* page's selection, command line and gestures —
+  all of which already live there. With no page claiming it the wing is dark and does
+  nothing — pressing a tile's target is a page's act too, so there is nobody to do it. A station-held selection is the headless answer and waits
+  for a surface that needs one.
+- **Whichever station it is plugged into runs it**, leader or follower. The claiming page
+  must be served by that station; a peer's wing is out of scope. MA's
+  `command_wing_app.bin` is found in a local grandMA3 install and never shipped; without
+  it the wing is a fault on its status row.
+- **Bindings are the show's**: a PERSISTED `control_bindings` collection keyed by surface
+  kind and control, so a spare and the showfile carry them. Which wing is on which station
+  is LOCAL. Made with LEARN on the wing or in the Wing panel: touch a control, and its
+  editor opens; *bind to what is selected* fills in a fixture parameter.
+- **A fader binds to a programmer parameter or to a sequence's master.** The motor
+  follows the *evaluated output* while untouched; the touch contact releases the motor and
+  opens a gesture, and lifting off closes it. Motion while untouched is the motor's own and
+  is never written back.
+- **A key binds to** a surface tile's target (pressed exactly as a tile presses it), a
+  command line, a flashed parameter (full while held), or a saved group into the page's
+  selection. Unbound, the keypad types words into the page's command line and PLEASE runs
+  it; CLEAR, ESC and UNDO behave as on MA (empty the line, then `clear`, then
+  `clear clear`; Oops deletes a word before it is Ctrl-Z). GO is Space — Go on the cue sheet
+  touched last — and GOBACK is a new `go_back`. A fader bound to a master gives its exec
+  keys Go and Off for that sequence.
+- **Encoders are a paged attribute bar** over the selection: five at a time, intensity
+  first, UP/DOWN to page, outer ring coarse and inner fine, a color as R, G and B. The
+  Wing panel draws the bar, since the wing has no display.
+- **LEDs carry state, not decoration**: the keypad dim and bright while held, a bound key
+  lit while its target is live, LEARN blinking while armed.
+
+#### sequence-master
+
+Decided with the wing, 2026-10-24. **A sequence has a level, and it scales intensity
+only** — the parameters in the Intensity fade group — and **only while that sequence's
+fade or effect is the winning layer for the key**: the programmer, a take and home are
+never dimmed by a playback fader. SYNCED on the sequence beside `active_cue_index`, so
+every station and page agrees, a failover keeps it, and a show opens at full. Evaluated in
+`pult-render`, so both compilations need a corpus case.

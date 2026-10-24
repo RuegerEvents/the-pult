@@ -118,6 +118,9 @@ const LOCAL_STATE: &[(&str, fn() -> serde_json::Value)] = &[
     ("output_coverage", || serde_json::to_value(OutputCoverage::default()).unwrap_or_default()),
     ("peers", || serde_json::to_value(PeerLinks::default()).unwrap_or_default()),
     ("clients", || serde_json::to_value(ClientStatsMap::default()).unwrap_or_default()),
+    // The command wing on this machine, and which page is driving it. LOCAL because
+    // a wing is plugged into one station, and a page on another cannot drive it.
+    ("wing", || serde_json::to_value(pult_schema::types::wing::WingState::default()).unwrap_or_default()),
     ("plugins", || serde_json::to_value(PluginsState::default()).unwrap_or_default()),
     // What MVR-xchange is doing. LOCAL on every station and *pushed* here by whichever
     // one is holding the connections — see `infra/interop/xchange`. Not a SYNCED
@@ -822,7 +825,7 @@ const APPENDS_BETWEEN_PRUNES: u32 = 1_000;
 /// collection missing from the list is a rig that stops updating, so anything added
 /// to that read belongs here too.
 const OUTPUT_COLLECTIONS: &[&str] =
-    &["fixtures", "fixture_types", "programmer_values", "timelines"];
+    &["fixtures", "fixture_types", "programmer_values", "timelines", "sequences"];
 
 /// What `playback_pass` reads. `show` is in it for `home_fade_ms`, which decides how
 /// long a release takes.
@@ -1691,6 +1694,7 @@ impl ShowEngine {
         let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
             self.read_collection("programmer_values");
         let held = pult_schema::types::fixture::HeldByProgrammer::of(&programmer);
+        let masters = self.masters();
 
         let watching: Vec<(Uuid, String)> = self.watched.iter().cloned().collect();
         for at in watching {
@@ -1707,6 +1711,7 @@ impl ShowEngine {
                 fixture_type.as_ref(),
                 held.get(at.0, &at.1),
                 &at.1,
+                &masters,
             );
             // A parameter nothing is driving is one a device reports, and those queue
             // their own events as they arrive. Sampling home values would fire a graph
@@ -1940,7 +1945,7 @@ impl ShowEngine {
         // leaves this station, and a track pushed separately would be a second thing
         // to keep in step with it.
         let timelines = self.read_collection("timelines");
-        output.push(fixtures, fixture_types, programmer, timelines, moved);
+        output.push(fixtures, fixture_types, programmer, timelines, self.masters(), moved);
     }
 
     /// Merge one key into what a fixture's devices have reported, and replicate the
@@ -2149,6 +2154,12 @@ impl ShowEngine {
     }
 
     /// Read one collection out of the state as typed entities.
+    /// The sequences' playback faders, for anything evaluating a parameter.
+    fn masters(&self) -> pult_schema::types::sequence::Masters {
+        let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
+        pult_schema::types::sequence::Masters::of(&sequences)
+    }
+
     fn read_collection<T: serde::de::DeserializeOwned>(&self, table: &str) -> Vec<T> {
         self.state
             .get_by_path(&vec![PathSegment::Key(table.into())])
@@ -2400,6 +2411,7 @@ impl ShowEngine {
                     fixture_type.as_ref(),
                     None, // nothing is held: that is the branch above
                     &key,
+                    &self.masters(),
                 );
                 pult_render::value_at(&driving, pult_schema::types::sequence::now_ms())
             })
@@ -2677,6 +2689,7 @@ impl ShowEngine {
         let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
             self.read_collection("programmer_values");
         let held = pult_schema::types::fixture::HeldByProgrammer::of(&programmer);
+        let masters = self.masters();
 
         let mut home = fixture.home_values.clone();
         let mut took = false;
@@ -2687,6 +2700,7 @@ impl ShowEngine {
                 Some(&fixture_type),
                 held.get(fixture_uuid, &key),
                 &key,
+                &masters,
             );
             // Only where something is actually driving it. A parameter resting at its
             // home value has nothing to take: taking it would write back what is

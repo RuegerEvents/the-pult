@@ -13,12 +13,13 @@
 	 * press that went nowhere would read as one that worked.
 	 */
 
-	import type { Surface, SurfaceTile, TileTarget } from '$lib/generated/index.js';
+	import type { Surface, SurfaceTile } from '$lib/generated/index.js';
 	import { clock } from '$lib/waveform.js';
 	import {
 		inkOn,
 		isAction,
 		parameterReading,
+		pressTarget,
 		targetExists,
 		tileLabel,
 		timelinePosition,
@@ -77,13 +78,6 @@
 		return () => cancelAnimationFrame(frame);
 	});
 
-	/** The console millisecond, or a refusal: an act without one would be anchored wrong. */
-	function at(): number {
-		const stamp = consoleNow();
-		if (stamp === null) throw new Error('This page has not worked out the station clock yet.');
-		return stamp;
-	}
-
 	async function act(tile: SurfaceTile) {
 		if (!live || !isAction(tile.target) || !targetExists(tile.target, show)) return;
 		pressed = tile.id;
@@ -92,41 +86,9 @@
 		}, 180);
 		try {
 			problem = null;
-			await run(tile.target);
+			await pressTarget(tile.target, show, data, client, consoleNow());
 		} catch (e) {
 			problem = e instanceof Error ? e.message : String(e);
-		}
-	}
-
-	async function run(target: TileTarget) {
-		switch (target.kind) {
-			case 'FlowButton':
-				await data.flow_nodes.byId(target.node_id).press();
-				return;
-			case 'VariableSetter': {
-				const op = target.op;
-				const variableId = target.variable_id;
-				if (op === 'Toggle') await client.call('variable.toggle', { variableId });
-				else if (op === 'Reset') await client.call('variable.reset', { variableId });
-				else if ('Set' in op) await client.call('variable.set', { variableId, value: op.Set });
-				else await client.call('variable.add', { variableId, by: op.Add });
-				return;
-			}
-			case 'Timeline': {
-				const timeline = show.timelines.find((t) => t.id === target.timeline_id);
-				if (!timeline) return;
-				const stamp = at();
-				const proxy = data.timelines.byId(timeline.id);
-				if (timeline.running) await proxy.stop({ at: stamp });
-				else await proxy.play(target.from_start ? { at: stamp, fromMs: 0 } : { at: stamp });
-				return;
-			}
-			case 'SequenceGo':
-				await data.sequences.byId(target.sequence_id).goNext({ at: at() });
-				return;
-			case 'SequenceOff':
-				await data.sequences.byId(target.sequence_id).off({ at: at() });
-				return;
 		}
 	}
 

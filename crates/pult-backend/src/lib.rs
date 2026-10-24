@@ -16,6 +16,7 @@ pub mod infra;
 pub mod logging;
 pub mod model;
 pub mod state;
+pub mod wing;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -601,6 +602,12 @@ pub async fn start(config: Config) -> Result<Running> {
     // owned here rather than by the engine: a page's row is written by a report and
     // removed by a disconnect, neither of which is a change to the show.
     let clients = crate::infra::clients::ClientRegistry::new(engine_handle.clone());
+    // The process's wing, where `main` installed one: this station relays it to the
+    // page that claims it, and is dark until one does.
+    let wing = config
+        .wing
+        .clone()
+        .map(|handle| crate::infra::wing::WingStation::new(handle, engine_handle.clone()));
 
     let (mut sync_mgr, sync_handle, sync_addr) =
         SyncManager::bind(node_id, config.sync_port, peer_handle.clone(), config.log.clone())
@@ -806,6 +813,9 @@ pub async fn start(config: Config) -> Result<Running> {
     // up. Not the leader's job and it could not be: a browser is on one station's
     // socket and no other station has ever heard of it.
     tasks.push(tokio::spawn(crate::infra::clients::sweep(clients.clone(), REPORT_INTERVAL * 5)));
+    if let Some(wing) = wing.clone() {
+        tasks.push(tokio::spawn(wing.run(broadcast.clone())));
+    }
 
     // The route a hosted MVR-xchange group is served on exists for the life of the
     // process and *answers* only while a manager has claimed it. Built here so both
@@ -887,6 +897,8 @@ pub async fn start(config: Config) -> Result<Running> {
             // RPC — and, having no browser, writes as the default user, which is
             // what the missing `caller` above already says about it.
             xchange: Some(xchange_handle.clone()),
+            // The wing's map is readable from anywhere; claiming it needs a page.
+            wing: wing.clone(),
     };
     let (plugin_mgr, plugin_handle) = PluginManager::new(
         plugin_handle_engine.clone(),
@@ -928,6 +940,7 @@ pub async fn start(config: Config) -> Result<Running> {
         http_port: http_addr.port(),
         xchange: xchange_handle.clone(),
         xchange_hosting: xchange_registry.clone(),
+        wing: wing.clone(),
     };
 
     // The log to the browsers: gathered for a moment, then pushed as one `Update`.

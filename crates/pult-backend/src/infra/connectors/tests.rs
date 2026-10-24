@@ -181,6 +181,7 @@ async fn push_a_patch(handle: &OutputHandle, patch: Patch) {
         patch.programmer.clone(),
         // No timelines: every test here is about a frame, not about a recording.
         vec![],
+        Default::default(),
         vec![],
     );
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;

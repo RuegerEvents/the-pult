@@ -41,6 +41,8 @@ pub struct AppState {
     /// What the browsers this station is serving say they are costing themselves.
     /// LOCAL: a page belongs to the station holding its socket and to no other.
     pub clients: crate::infra::clients::ClientRegistry,
+    /// The command wing, where this process has one: who drives it, and the relay.
+    pub wing: Option<crate::infra::wing::WingStation>,
     pub config: Config,
     /// Where a show act goes, and what this station has open. The console does the
     /// opening; a station can only say it was asked.

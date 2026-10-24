@@ -14,6 +14,7 @@ use pult_schema::types::{
     },
     output::{UniverseFrame, UniverseSummary, UniverseTraffic},
     programmer::ProgrammerValue,
+    sequence::Masters,
 };
 use uuid::Uuid;
 
@@ -88,6 +89,9 @@ pub struct Patch {
     /// recording is not the show: a cue taken in the middle of a song must not cost a
     /// re-decode of the song.
     tracks: Vec<(std::sync::Arc<pult_render::Track>, pult_render::Transport)>,
+    /// The sequences' playback faders. Beside the patch rather than folded into the
+    /// fades, because a fader moving must not rewrite a fade a node is running.
+    masters: Masters,
     /// Where each driven parameter is in `tracks`, so a frame does not scan every key
     /// of every playing recording once per fixture.
     ///
@@ -161,6 +165,7 @@ impl Patch {
             universes: Vec::new(),
             tracks: Vec::new(),
             track_index: HashMap::new(),
+            masters: Masters::default(),
         };
         patch.settles_at = patch.work_out_when_it_settles();
         (patch.placed, patch.universes) = patch.place_channels();
@@ -192,6 +197,12 @@ impl Patch {
         }
         self.tracks = tracks;
         self.track_index = index;
+        self
+    }
+
+    /// The sequences' faders, taken after construction the way the playing tracks are.
+    pub fn mastered(mut self, masters: Masters) -> Self {
+        self.masters = masters;
         self
     }
 
@@ -316,7 +327,7 @@ impl Patch {
             .and_then(|at| self.programmer.get(*at));
         pult_render::Driving {
             track: self.track_at(fixture.id, key),
-            ..driving(fixture, self.fixture_type(fixture), held, key)
+            ..driving(fixture, self.fixture_type(fixture), held, key, &self.masters)
         }
     }
 
@@ -481,6 +492,7 @@ pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Univer
                 patch.fixture_type(fixture),
                 parameter.held.and_then(|at| patch.programmer.get(at)),
                 &parameter.key,
+                &patch.masters,
             )
         };
         let value = pult_render::value_at(&driving, now_ms);

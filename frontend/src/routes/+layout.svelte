@@ -27,7 +27,8 @@
 	import Setup from '$lib/components/setup/Setup.svelte';
 	import { closeSetup, setupSection, toggleSetup } from '$lib/stores/setup.js';
 	import Verbs from '$lib/components/programmer/Verbs.svelte';
-	import { focusedCueSheet } from '$lib/stores/cues.js';
+	import { goOnFocusedSheet } from '$lib/stores/cues.js';
+	import { startWing } from '$lib/stores/wing.js';
 	import { clear } from '$lib/stores/programmer.js';
 	import { clearSelection } from '$lib/stores/selection.js';
 	import UserBar from '$lib/components/UserBar.svelte';
@@ -83,6 +84,8 @@
 	// same fixtures on screen four times, and four deep subscriptions to them is
 	// four copies of every update forty times a second.
 	initShowStores(data, client);
+	// The command wing, if this station has one and this page drives it.
+	startWing();
 	// Which tiles this browser had up last time. The layouts themselves are the
 	// show's; which one is on screen is this operator's.
 	restoreLayout();
@@ -183,26 +186,6 @@
 		event.preventDefault();
 		if (action === 'undo') undo();
 		else redo();
-	}
-
-	/**
-	 * Space: Go on the cue sheet touched last.
-	 *
-	 * With none focused there is **no Go and a toast**, never a guess. A console with
-	 * three cue sheets open has to answer which one Space means, and answering it by
-	 * picking one is a look on stage nobody asked for.
-	 */
-	async function goOnFocusedSheet() {
-		const sequenceId = $focusedCueSheet;
-		if (!sequenceId) {
-			addToast('Space is Go on a cue sheet — click one first');
-			return;
-		}
-		try {
-			await data.sequences.byId(sequenceId).goNext({ at: Date.now() });
-		} catch (e) {
-			addToast(`${e}`);
-		}
 	}
 
 	/** Save: a checkpoint, with no name. The Show panel is where one is given a name. */

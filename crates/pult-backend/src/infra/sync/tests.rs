@@ -74,7 +74,7 @@ fn seq_path(id: Uuid, field: &str) -> Path {
 }
 
 fn a_sequence(name: &str) -> Sequence {
-    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None }
+    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None, master: None }
 }
 
 async fn create(node: &Node, seq: &Sequence) {
@@ -1418,6 +1418,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
         cue_ids: vec![cue.id],
         active_cue_index: None,
         went_at: None,
+        master: None,
     };
     put(&one, "sequences", serde_json::to_value(&sequence).unwrap()).await;
 
@@ -1483,6 +1484,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,
+            wing: None,
         };
         async move {
             crate::api::rpcs::dispatch(

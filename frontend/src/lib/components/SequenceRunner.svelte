@@ -4,6 +4,7 @@
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Sequence, Cue } from '$lib/generated/index.js';
 	import { canEdit } from '$lib/stores/showLock.js';
+	import { asOneGesture } from '$lib/stores/gesture.js';
 	import { collection } from '$lib/stores/show.js';
 
 	const data = getDataContext();
@@ -21,7 +22,7 @@
 
 	async function createSequence() {
 		if (!newSeqName.trim()) return;
-		await data.sequences.create({ id: crypto.randomUUID(), name: newSeqName.trim(), cue_ids: [], active_cue_index: null, went_at: null });
+		await data.sequences.create({ id: crypto.randomUUID(), name: newSeqName.trim(), cue_ids: [], active_cue_index: null, went_at: null, master: null });
 		newSeqName = '';
 		creatingSeq = false;
 	}
@@ -60,6 +61,12 @@
 	// the same millisecond, and a rig with a home fade time fades home together.
 	async function takeOff(seqId: string) {
 		await data.sequences.byId(seqId).off({ at: Date.now() });
+	}
+
+	// The sequence's fader. Full is written as no level at all, which is what a show
+	// opens at, so a fader pushed back to the top leaves the row as it found it.
+	function setMaster(seqId: string, level: number) {
+		void data.sequences.byId(seqId).master.set(level >= 1 ? null : level);
 	}
 
 	async function deleteSequence(seqId: string) {
@@ -224,6 +231,22 @@
 					     the count, so a card still says how long the sequence is. -->
 					<span class="cue-count">{seq.cue_ids.length} cues</span>
 				</div>
+
+				<!-- The sequence's fader: what it dims is the intensities it is playing,
+				     and nothing the programmer or a take is holding. -->
+				<label class="master" title="This sequence's level: it dims the intensities it plays">
+					<span class="master-label">Level</span>
+					<input
+						type="range"
+						min="0"
+						max="1"
+						step="0.005"
+						value={seq.master ?? 1}
+						use:asOneGesture
+						oninput={(e) => setMaster(seq.id, Number(e.currentTarget.value))}
+					/>
+					<span class="master-value mono">{Math.round((seq.master ?? 1) * 100)}%</span>
+				</label>
 
 			</div>
 		{/each}
@@ -435,6 +458,22 @@
 		margin-left: auto;
 		font-size: 0.72rem;
 		color: #555;
+	}
+
+	.master {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 8px;
+		font-size: 0.75rem;
+		color: #999;
+	}
+	.master input {
+		flex: 1;
+	}
+	.master-value {
+		min-width: 3.2em;
+		text-align: right;
 	}
 
 	.controls {

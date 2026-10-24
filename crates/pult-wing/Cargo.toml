@@ -21,3 +21,12 @@ quick-xml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The host's half, for a program that owns a wing rather than reads a capture: one
+# claimed interface, two pipes, and the loop that keeps it up. Off by default so the
+# protocol stays testable with nothing plugged in.
+rusb = { version = "0.9", optional = true }
+anyhow = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+
+[features]
+usb = ["dep:rusb", "dep:anyhow", "dep:tracing"]

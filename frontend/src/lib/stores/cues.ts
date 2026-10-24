@@ -13,6 +13,9 @@
 
 import { get, writable } from 'svelte/store';
 
+import { addToast } from '../toasts.js';
+import { showData } from './show.js';
+
 /** The cue whose contents the fixture sheet is showing, or `null` for the rig. */
 export const cueInView = writable<string | null>(null);
 
@@ -40,4 +43,26 @@ export function viewCue(cueId: string | null): void {
 export function viewPreset(presetId: string | null): void {
 	cueInView.set(null);
 	presetInView.set(presetId === get(presetInView) ? null : presetId);
+}
+
+/**
+ * Go on the cue sheet touched last — Space, and the wing's GO — or back one cue.
+ *
+ * With none focused there is **no Go and a toast**, never a guess. A console with
+ * three cue sheets open has to answer which one is meant, and answering it by
+ * picking one is a look on stage nobody asked for.
+ */
+export async function goOnFocusedSheet(back = false): Promise<void> {
+	const sequenceId = get(focusedCueSheet);
+	if (!sequenceId) {
+		addToast(`${back ? 'Go back' : 'Go'} is on a cue sheet — click one first`);
+		return;
+	}
+	const sequence = showData().sequences.byId(sequenceId);
+	try {
+		if (back) await sequence.goBack({ at: Date.now() });
+		else await sequence.goNext({ at: Date.now() });
+	} catch (e) {
+		addToast(`${e}`);
+	}
 }

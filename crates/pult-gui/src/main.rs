@@ -43,6 +43,9 @@ struct Args {
     /// Use this station id instead of the one this machine has recorded.
     #[arg(long, value_name = "UUID")]
     node_id: Option<uuid::Uuid>,
+    /// Leave a grandMA3 command wing alone, for another program to have it.
+    #[arg(long)]
+    no_wing: bool,
 }
 
 fn main() {
@@ -54,6 +57,9 @@ fn main() {
         .expect("the log could not be set up");
 
     let args = Args::parse();
+    // Once for the process, like the log: a show switch restarts the station and must
+    // not reboot the wing.
+    let wing = (!args.no_wing).then(pult_backend::wing::install);
 
     tauri::Builder::default()
         .setup(move |app| {
@@ -68,8 +74,9 @@ fn main() {
 
             let args = args.clone();
             let log = log.clone();
+            let wing = wing.clone();
             tauri::async_runtime::spawn(async move {
-                match start(&args, log).await {
+                match start(&args, log, wing).await {
                     Ok(url) => open(&window, &url),
                     Err(e) => fail(&window, &e.to_string()),
                 }
@@ -81,7 +88,11 @@ fn main() {
 }
 
 /// Bring a station up and say where it ended up listening.
-async fn start(args: &Args, log: LogHandle) -> anyhow::Result<String> {
+async fn start(
+    args: &Args,
+    log: LogHandle,
+    wing: Option<pult_backend::wing::WingHandle>,
+) -> anyhow::Result<String> {
     let console = pult_backend::Console::start(Config {
         // Nothing said, so the station's own `[network] http` preference decides and
         // then every interface — which is what the desktop app has always done, and
@@ -94,6 +105,7 @@ async fn start(args: &Args, log: LogHandle) -> anyhow::Result<String> {
         openhaunt_broker_port: args.openhaunt_broker_port,
         node_id: args.node_id,
         log: Some(log),
+        wing,
         ..Config::default()
     })
     .await?;

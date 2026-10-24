@@ -289,6 +289,26 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         doc: "Decode what is arriving on an input for these fixtures and put it in the programmer.",
     },
     LocalRpcMeta {
+        method: "wing.claim",
+        args_schema: "[]",
+        doc: "This page drives the command wing from now on: what is pressed is relayed to it, and it lights the desk.",
+    },
+    LocalRpcMeta {
+        method: "wing.release",
+        args_schema: "[]",
+        doc: "Stop driving the command wing; it goes dark.",
+    },
+    LocalRpcMeta {
+        method: "wing.feedback",
+        args_schema: r#"[{"name":"leds","type":"array","optional":true},{"name":"faders","type":"array","optional":true}]"#,
+        doc: "The frame the driving page wants on the wing: a level per LED channel, and per fader a position for its motor or null to leave it to the hand.",
+    },
+    LocalRpcMeta {
+        method: "wing.map",
+        args_schema: "[]",
+        doc: "MA's names for every key, fader, encoder and LED of the command wing, where this machine has a grandMA3 install to read them from.",
+    },
+    LocalRpcMeta {
         method: "client.report",
         args_schema: r#"[{"name":"stats","type":"object","optional":false}]"#,
         doc: "What a browser is costing itself: frame rate, evaluator time, memory, clock offset. Answers the key it landed under.",
@@ -318,6 +338,9 @@ pub struct LocalRpcDeps {
     /// its own dependencies, which is what makes the three calls say so rather than
     /// panic.
     pub xchange: Option<crate::infra::interop::xchange::XchangeHandle>,
+    /// The command wing, where this station has one. `None` in a test, which is what
+    /// makes the wing's calls say so rather than panic.
+    pub wing: Option<crate::infra::wing::WingStation>,
     /// For the calls that answer a question about the show. Reads only — anything
     /// here that wanted to write would be an entity command instead.
     pub engine: EngineHandle,
@@ -602,6 +625,41 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             log.emit(level, "browser", source, message);
             Ok(Value::Null)
         }
+        "wing.claim" | "wing.release" | "wing.feedback" | "wing.map" => {
+            let wing = deps
+                .wing
+                .as_ref()
+                .ok_or_else(|| "this station has no command wing".to_string())?;
+            if method == "wing.map" {
+                return Ok(wing.map());
+            }
+            // The other three are a page driving a desk, so they need a page.
+            let caller = deps
+                .caller
+                .ok_or_else(|| format!("{method} is a page driving the wing, so it needs one"))?;
+            match method {
+                "wing.claim" => serde_json::to_value(wing.claim(caller).await).map_err(|e| e.to_string()),
+                "wing.release" => {
+                    serde_json::to_value(wing.release(caller).await).map_err(|e| e.to_string())
+                }
+                _ => {
+                    let leds: Option<Vec<u8>> = match args.get("leds") {
+                        None | Some(Value::Null) => None,
+                        Some(v) => Some(
+                            serde_json::from_value(v.clone()).map_err(|e| format!("leds: {e}"))?,
+                        ),
+                    };
+                    let faders: Option<Vec<Option<u16>>> = match args.get("faders") {
+                        None | Some(Value::Null) => None,
+                        Some(v) => Some(
+                            serde_json::from_value(v.clone()).map_err(|e| format!("faders: {e}"))?,
+                        ),
+                    };
+                    wing.feedback(caller, leds, faders)?;
+                    Ok(Value::Null)
+                }
+            }
+        }
         "client.report" => {
             let caller = deps.caller.ok_or_else(|| {
                 "client.report is a browser describing itself, so it needs one".to_string()
@@ -808,6 +866,7 @@ pub fn is_local_rpc(method: &str) -> bool {
         || method.starts_with("variable.")
         || method.starts_with("client.")
         || method.starts_with("xchange.")
+        || method.starts_with("wing.")
 }
 
 /// The four acts that change which show this console has open.
@@ -1056,6 +1115,13 @@ async fn what_is_it_doing(
     let entries: Vec<pult_schema::types::programmer::ProgrammerValue> =
         serde_json::from_value(entries).unwrap_or_default();
     let held = HeldByProgrammer::of(&entries);
+    let sequences = engine
+        .get(vec![PathSegment::Key("sequences".into())])
+        .await
+        .map_err(|e| format!("cannot read the sequences: {e}"))?;
+    let sequences: Vec<pult_schema::types::sequence::Sequence> =
+        serde_json::from_value(sequences).unwrap_or_default();
+    let masters = pult_schema::types::sequence::Masters::of(&sequences);
 
     let keys: Vec<String> = match (&kind, fixture_type) {
         (Some(kind), _) => vec![parameter_key(kind)],
@@ -1071,7 +1137,7 @@ async fn what_is_it_doing(
     let values: std::collections::HashMap<String, pult_schema::types::fixture::ParameterValue> =
         keys.into_iter()
             .filter_map(|key| {
-                let driving = driving(&fixture, fixture_type, held.get(fixture_id, &key), &key);
+                let driving = driving(&fixture, fixture_type, held.get(fixture_id, &key), &key, &masters);
                 pult_render::value_at(&driving, now_ms).map(|value| (key, value))
             })
             .collect();
@@ -1472,6 +1538,7 @@ mod tests {
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,
+            wing: None,
         };
         for meta in LOCAL_RPCS {
             assert!(is_local_rpc(meta.method), "{} is not routed here", meta.method);
@@ -1573,6 +1640,7 @@ mod tests {
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,
+            wing: None,
         };
         let ask = || {
             dispatch("parameter.value", serde_json::json!({ "fixtureId": fixture_id }), &deps)

@@ -105,6 +105,25 @@ pub enum AudioDestination {
     Node { serial: String, #[serde(default)] mode: NodeAudioMode },
 }
 
+/// What a bound control does.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum BindingAction {
+    /// A key presses something the show already has, exactly as a phone surface's
+    /// tile presses it — so a binding adds no acts of its own.
+    Press { target: TileTarget },
+    /// A key types this line into the command line and runs it.
+    CommandLine { line: String },
+    /// A key puts one parameter at full while it is held, and lets go on release.
+    Flash { fixture_id: Uuid, parameter: ParameterKind },
+    /// A key recalls a saved group into the driving page's selection.
+    SelectGroup { group_id: Uuid },
+    /// A fader or an encoder moves one parameter of one fixture, in the programmer.
+    Parameter { fixture_id: Uuid, parameter: ParameterKind },
+    /// A fader is a sequence's level; its executor keys are that sequence's Go and Off.
+    Master { sequence_id: Uuid },
+}
+
 /// A run of cells, both ends included, counted from 1. `from` past `to` runs backwards,
 /// which is how a chase along a strip is made to start at its far end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -196,6 +215,19 @@ pub struct Connector {
     /// Which DMX break this one carries, for a data connector.
     #[serde(default)]
     pub dmx_break: Option<u16>,
+}
+
+/// One control, bound.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ControlBinding {
+    pub id: Uuid,
+    /// Which kind of surface: [`COMMAND_WING`].
+    pub surface: String,
+    pub control: SurfaceControl,
+    pub action: BindingAction,
+    /// What the panel calls it. Empty means the name of what it is bound to.
+    #[serde(default)]
+    pub label: String,
 }
 
 /// A single lighting state snapshot with timing information.
@@ -2225,6 +2257,19 @@ pub struct Sequence {
     /// agree on when it started, not merely that it did.
     #[serde(default)]
     pub went_at: Option<u64>,
+    /// The sequence's level, 0 to 1, or `None` for full: its playback fader.
+    ///
+    /// It scales the **intensities** this sequence is driving and nothing else — a
+    /// color, a position and a relay go where the cue says however low the fader is,
+    /// and the programmer, a recording and a resting value are never dimmed by it
+    /// ([`Masters`] decides which). At zero the sequence is still on and still owns
+    /// what it owns; taking it off is [`Sequence::off`].
+    ///
+    /// SYNCED beside `active_cue_index` rather than PERSISTED: a fader is where the
+    /// operator has it now, every station and page has to agree on it, a failover
+    /// keeps it, and a show opens at full.
+    #[serde(default)]
+    pub master: Option<f32>,
 }
 
 /// What one service was told, what it managed, and what went wrong.
@@ -2700,6 +2745,16 @@ pub struct Surface {
     /// the rig.
     #[serde(default)]
     pub color: Option<String>,
+}
+
+/// One physical control, as the surface numbers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum SurfaceControl {
+    /// A key, by the index the surface reports it under.
+    Key { index: u16 },
+    Fader { index: u16 },
+    Encoder { index: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

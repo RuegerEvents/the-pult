@@ -158,6 +158,7 @@ fn a_sequence(cues: &[&Cue], active: Option<usize>) -> Sequence {
         cue_ids: cues.iter().map(|c| c.id).collect(),
         active_cue_index: active,
         went_at: None,
+        master: None,
     }
 }
 
@@ -187,6 +188,7 @@ fn live_under(
         the_type().iter().find(|t| t.id == fixture.fixture_type_id),
         held.get(fixture_id, key),
         key,
+        &Default::default(),
         WALL + after_ms,
     )
 }
@@ -201,6 +203,7 @@ fn live_at(fixtures: &[Fixture], fixture_id: Uuid, key: &str, at_ms: u64) -> Opt
         the_type().iter().find(|t| t.id == fixture.fixture_type_id),
         None,
         key,
+        &Default::default(),
         at_ms,
     )
 }
@@ -220,6 +223,7 @@ fn live_at_under(
         the_type().iter().find(|t| t.id == fixture.fixture_type_id),
         held.get(fixture_id, key),
         key,
+        &Default::default(),
         at_ms,
     )
 }
@@ -2502,4 +2506,69 @@ mod editing_a_standing_cue {
         let fade = fixtures[0].live_fades.get("Intensity").expect("still driven by the cue");
         assert_eq!(fade.t0, WALL, "the fade was not restarted, because nothing changed");
     }
+}
+
+// ── A sequence's fader ────────────────────────────────────────────────────────
+
+/// What the rig shows with the sequences' faders where they are.
+fn live_mastered(
+    fixtures: &[Fixture],
+    sequences: &[Sequence],
+    fixture_id: Uuid,
+    key: &str,
+    after_ms: u64,
+) -> f32 {
+    let fixture = fixtures.iter().find(|f| f.id == fixture_id).unwrap();
+    as_float(pult_schema::types::fixture::value_at(
+        fixture,
+        the_type().iter().find(|t| t.id == fixture.fixture_type_id),
+        None,
+        key,
+        &Masters::of(sequences),
+        WALL + after_ms,
+    ))
+}
+
+/// A Go on a sequence whose fader is at half starts from what the audience can see.
+///
+/// The fade runs at the fader's level, so a fade starting from the *showing* value
+/// would start at half of it — every Go would dip and climb back. It starts from the
+/// showing value with the fader taken out, and the stage is continuous.
+#[test]
+fn a_go_under_a_lowered_master_starts_where_the_stage_is() {
+    let fixture = a_fixture();
+    let up = a_cue(0, vec![intensity(fixture.id, 1.0)]);
+    let down = a_cue(4000, vec![intensity(fixture.id, 0.0)]);
+    let mut fixtures = vec![fixture.clone()];
+    let cues = [up.clone(), down.clone()];
+    let mut sequences = [a_sequence(&[&up, &down], Some(0))];
+    sequences[0].master = Some(0.5);
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 10), 0.5);
+
+    sequences[0].active_cue_index = Some(1);
+    pass(&mut playback, 1000, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 1000), 0.5, "no dip at the Go");
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 3000), 0.25);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 5000), 0.0);
+}
+
+/// The fader dims intensity and nothing else: a cue's pan goes where it is sent.
+#[test]
+fn a_lowered_master_leaves_position_alone() {
+    let fixture = a_fixture();
+    let mut pan = intensity(fixture.id, 0.9);
+    pan.parameter_kind = ParameterKind::Pan;
+    let cue = a_cue(0, vec![intensity(fixture.id, 1.0), pan]);
+    let mut fixtures = vec![fixture.clone()];
+    let cues = [cue.clone()];
+    let mut sequences = [a_sequence(&[&cue], Some(0))];
+    sequences[0].master = Some(0.25);
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 10), 0.25);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Pan", 10), 0.9);
 }

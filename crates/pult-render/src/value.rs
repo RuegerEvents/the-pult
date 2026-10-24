@@ -73,6 +73,56 @@ impl ParameterValue {
     }
 }
 
+impl ParameterValue {
+    /// This value at `level` of itself — what a playback fader at 60% does to an
+    /// intensity its sequence is driving.
+    ///
+    /// Scaled towards zero rather than towards home, because that is what a master is
+    /// on every desk: the fader is the top of the level, and at zero the sequence
+    /// asserts darkness rather than letting go. A color scales on every channel, pinned
+    /// emitters included, for the reason [`ParameterValue::nudged`] moves them together.
+    /// A relay and a line of text have no level to take a fraction of and pass through.
+    pub fn scaled(&self, level: f32) -> ParameterValue {
+        let level = level.clamp(0.0, 1.0);
+        match self {
+            ParameterValue::Float(v) => ParameterValue::Float(v * level),
+            ParameterValue::Int(v) => ParameterValue::Int((*v as f32 * level).round() as i32),
+            ParameterValue::Color { r, g, b, overrides } => ParameterValue::Color {
+                r: r * level,
+                g: g * level,
+                b: b * level,
+                overrides: overrides.iter().map(|(name, l)| (name.clone(), l * level)).collect(),
+            },
+            ParameterValue::Bool(_) | ParameterValue::Text(_) => self.clone(),
+        }
+    }
+
+    /// The value that, at `level`, comes out as this one: what a fade a sequence is
+    /// about to start has to begin from, so that the stage does not jump when it does.
+    ///
+    /// Clamped to the parameter's own range, so a light brighter than the fader allows
+    /// starts from full rather than from above it. At a level of zero every value
+    /// scales to the same darkness, so there is nothing to undo and this answers the
+    /// value unchanged.
+    pub fn unscaled(&self, level: f32) -> ParameterValue {
+        if level <= 0.0 || level >= 1.0 {
+            return self.clone();
+        }
+        let up = |v: f32| (v / level).clamp(0.0, 1.0);
+        match self {
+            ParameterValue::Float(v) => ParameterValue::Float(up(*v)),
+            ParameterValue::Int(v) => ParameterValue::Int((*v as f32 / level).round() as i32),
+            ParameterValue::Color { r, g, b, overrides } => ParameterValue::Color {
+                r: up(*r),
+                g: up(*g),
+                b: up(*b),
+                overrides: overrides.iter().map(|(name, l)| (name.clone(), up(*l))).collect(),
+            },
+            ParameterValue::Bool(_) | ParameterValue::Text(_) => self.clone(),
+        }
+    }
+}
+
 /// One value on the way to another.
 ///
 /// A boolean has nothing between its two states, so it switches at the start of the

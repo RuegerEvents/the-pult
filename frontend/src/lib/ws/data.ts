@@ -4,6 +4,7 @@
 import type { PathProxy, SubscribeOptions } from './proxy.js';
 import type { PultWsClient } from './client.js';
 import { createDataProxy } from './proxy.js';
+import type { ControlBinding } from '../generated/ControlBinding.js';
 import type { Cue } from '../generated/Cue.js';
 import type { EffectTemplate } from '../generated/EffectTemplate.js';
 import type { Fixture } from '../generated/Fixture.js';
@@ -40,6 +41,10 @@ import type { Variable } from '../generated/Variable.js';
 import type { Version } from '../generated/Version.js';
 
 // ── Entity handles ───────────────────────────────────────────────────────────
+
+export type ControlBindingEntity = PathProxy<ControlBinding> & {
+  delete(): Promise<void>;
+};
 
 export type CueEntity = PathProxy<Cue> & {
   delete(): Promise<void>;
@@ -120,6 +125,7 @@ export type SceneObjectEntity = PathProxy<SceneObject> & {
 
 export type SequenceEntity = PathProxy<Sequence> & {
   delete(): Promise<void>;
+  goBack(args: { at?: number }): Promise<void>;
   goNext(args: { at?: number }): Promise<void>;
   goToCue(args: { cueId: string, at?: number }): Promise<void>;
   off(args: { at?: number }): Promise<void>;
@@ -182,6 +188,20 @@ export type VersionEntity = PathProxy<Version> & {
 };
 
 // ── Collection handles ──────────────────────────────────────────────────────
+
+export type ControlBindingCollection = {
+  get(): Promise<ControlBinding[]>;
+  set(value: ControlBinding[]): Promise<void>;
+  subscribe(cb: (value: ControlBinding[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: ControlBinding[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): ControlBindingEntity;
+  nth(n: number): ControlBindingEntity;
+  create(entity: ControlBinding): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: ControlBindingEntity;
+};
 
 export type CueCollection = {
   get(): Promise<Cue[]>;
@@ -649,6 +669,7 @@ export type VersionCollection = {
 
 /** Typed root for the pult:data context. Every field maps to a live path proxy. */
 export type DataRoot = {
+  control_bindings: ControlBindingCollection;
   cues: CueCollection;
   effect_templates: EffectTemplateCollection;
   fixtures: FixtureCollection;

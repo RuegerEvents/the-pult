@@ -26,6 +26,8 @@ import type {
 import { currentValue, variableLabel, variableOpLabel } from './flow.js';
 import { displayLabel, formatValue, parameterKey } from './patch.js';
 import { rgbToHex } from './programmer.js';
+import type { PultWsClient } from './ws/client.js';
+import type { DataRoot } from './ws/data.js';
 
 /** What a surface's tiles can point at: the show, as far as a surface reads it. */
 export type SurfaceShow = {
@@ -373,4 +375,102 @@ export function phoneLocation(
 ): { origin: string; search: string } {
 	if (!LOOPBACK.test(location.hostname) || !host || !port) return location;
 	return { origin: `http://${host}:${port}`, search: '' };
+}
+
+/**
+ * Press what a tile points at, the way the panel that owns it already does: a flow
+ * button's own `press`, a variable through the unattributed `variable.*` RPCs, a
+ * timeline or a sequence with the console millisecond it was taken at.
+ *
+ * One function for every surface that presses — a phone's tiles and a wing key bound
+ * to the same target — so there is no second way of doing any of them. `at` is the
+ * console millisecond, or `null` when this page cannot place itself on the station's
+ * clock, which refuses rather than anchoring an act wrong.
+ */
+export async function pressTarget(
+	target: TileTarget,
+	show: Pick<SurfaceShow, 'timelines'>,
+	data: DataRoot,
+	client: PultWsClient,
+	at: number | null
+): Promise<void> {
+	const stamp = (): number => {
+		if (at === null) throw new Error('This page has not worked out the station clock yet.');
+		return at;
+	};
+	switch (target.kind) {
+		case 'FlowButton':
+			await data.flow_nodes.byId(target.node_id).press();
+			return;
+		case 'VariableSetter': {
+			const op = target.op;
+			const variableId = target.variable_id;
+			if (op === 'Toggle') await client.call('variable.toggle', { variableId });
+			else if (op === 'Reset') await client.call('variable.reset', { variableId });
+			else if ('Set' in op) await client.call('variable.set', { variableId, value: op.Set });
+			else await client.call('variable.add', { variableId, by: op.Add });
+			return;
+		}
+		case 'Timeline': {
+			const timeline = show.timelines.find((t) => t.id === target.timeline_id);
+			if (!timeline) return;
+			const when = stamp();
+			const proxy = data.timelines.byId(timeline.id);
+			if (timeline.running) await proxy.stop({ at: when });
+			else await proxy.play(target.from_start ? { at: when, fromMs: 0 } : { at: when });
+			return;
+		}
+		case 'SequenceGo':
+			await data.sequences.byId(target.sequence_id).goNext({ at: stamp() });
+			return;
+		case 'SequenceOff':
+			await data.sequences.byId(target.sequence_id).off({ at: stamp() });
+			return;
+	}
+}
+
+/**
+ * Whether what a tile points at is live right now: a running timeline, a sequence
+ * with a cue up, a variable that holds something. What a wing key lights for.
+ */
+export function targetLive(target: TileTarget, show: SurfaceShow): boolean {
+	switch (target.kind) {
+		case 'Timeline':
+			return show.timelines.some((t) => t.id === target.timeline_id && t.running);
+		case 'SequenceGo':
+		case 'SequenceOff':
+			return show.sequences.some((s) => s.id === target.sequence_id && s.active_cue_index !== null);
+		case 'VariableSetter':
+		case 'VariableReadout': {
+			const variable = show.variables.find((v) => v.id === target.variable_id);
+			return variable !== undefined && currentValue(variable) !== 0;
+		}
+		default:
+			return false;
+	}
+}
+
+/**
+ * Everything a key could press, as one list with names: every sequence's Go and Off,
+ * every timeline from where it is and from the top, every flow button, every variable
+ * toggled or reset. What a wing key's binding is chosen from.
+ */
+export function pressableTargets(show: SurfaceShow): { label: string; target: TileTarget }[] {
+	const out: { label: string; target: TileTarget }[] = [];
+	for (const s of show.sequences) {
+		out.push({ label: `Go · ${s.name}`, target: { kind: 'SequenceGo', sequence_id: s.id } });
+		out.push({ label: `Off · ${s.name}`, target: { kind: 'SequenceOff', sequence_id: s.id } });
+	}
+	for (const t of show.timelines) {
+		out.push({ label: `Play/stop · ${t.name}`, target: { kind: 'Timeline', timeline_id: t.id, from_start: false } });
+		out.push({ label: `Play from the top · ${t.name}`, target: { kind: 'Timeline', timeline_id: t.id, from_start: true } });
+	}
+	for (const b of flowButtons(show)) {
+		out.push({ label: `Press · ${b.name}`, target: { kind: 'FlowButton', node_id: b.id } });
+	}
+	for (const v of show.variables) {
+		if (v.kind === 'Flag') out.push({ label: `Toggle · ${v.name}`, target: { kind: 'VariableSetter', variable_id: v.id, op: 'Toggle' } });
+		out.push({ label: `Reset · ${v.name}`, target: { kind: 'VariableSetter', variable_id: v.id, op: 'Reset' } });
+	}
+	return out;
 }

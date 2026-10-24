@@ -56,6 +56,10 @@ pub struct DrivenBy {
     pub fade: Option<RunningFade>,
     #[serde(default)]
     pub home: Option<ParameterValue>,
+    /// The playing sequence's level, where it dims this parameter. See
+    /// [`Driving::master`].
+    #[serde(default)]
+    pub master: Option<f32>,
 }
 
 /// One parameter's change points and where the playhead is, written out in full.
@@ -88,6 +92,7 @@ impl DrivenBy {
             effect: self.effect.as_ref(),
             fade: self.fade.as_ref(),
             home: self.home.as_ref(),
+            master: self.master,
         }
     }
 }

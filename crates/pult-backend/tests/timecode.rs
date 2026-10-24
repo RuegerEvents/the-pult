@@ -237,6 +237,7 @@ async fn a_timeline_event_goes_the_cue_it_names() {
         cue_ids: vec![cue.id],
         active_cue_index: None,
         went_at: None,
+        master: None,
     };
     create(&station, "cues", serde_json::to_value(&cue).unwrap()).await;
     create(&station, "sequences", serde_json::to_value(&sequence).unwrap()).await;

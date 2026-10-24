@@ -15,8 +15,10 @@ import type {
 	ParameterValue,
 	ProgrammerValue,
 	RunningEffect,
-	RunningFade
+	RunningFade,
+	Sequence
 } from './generated/index.js';
+import { fadeGroup } from './fade.js';
 import { parameterKey } from './patch.js';
 
 /** What the evaluator is given for one parameter. */
@@ -27,7 +29,45 @@ export type DrivenBy = {
 	effect?: RunningEffect;
 	fade?: RunningFade;
 	home?: ParameterValue;
+	/** The playing sequence's fader, where it dims this parameter. */
+	master?: number;
 };
+
+/**
+ * The sequences' playback faders, by the cues they hold — only those below full.
+ *
+ * `Masters` in `crates/pult-schema/src/types/sequence.rs` is the station's, and this
+ * is the page's copy of the same small rule; the arithmetic it feeds is the
+ * evaluator's and is not repeated anywhere.
+ */
+export type Masters = Map<string, number>;
+
+export function mastersOf(sequences: Sequence[]): Masters {
+	const out: Masters = new Map();
+	for (const sequence of sequences) {
+		const level = sequence.master;
+		if (level === null || level === undefined || level >= 1) continue;
+		for (const cue of sequence.cue_ids) out.set(cue, Math.min(1, Math.max(0, level)));
+	}
+	return out;
+}
+
+/**
+ * The fader over this parameter, if one dims it: an intensity, played by a sequence
+ * below full, through whichever playback layer wins — an effect over a fade.
+ */
+export function masterOver(
+	masters: Masters,
+	key: string,
+	effect: RunningEffect | undefined,
+	fade: RunningFade | undefined
+): number | undefined {
+	if (masters.size === 0 || fadeGroup(key) !== 'Intensity') return undefined;
+	let cue: string | undefined;
+	if (effect) cue = effect.source === 'Programmer' ? undefined : effect.source.Cue;
+	else if (fade) cue = fade.cue_id;
+	return cue === undefined ? undefined : masters.get(cue);
+}
 
 /** How a parameter is named everywhere the evaluator is concerned. */
 export const drivingKey = (fixtureId: string, key: string) => `${fixtureId}/${key}`;
@@ -60,7 +100,8 @@ export function homeValue(
 export function drivenBy(
 	fixture: Fixture,
 	type: FixtureType | undefined,
-	held: Map<string, ProgrammerValue>
+	held: Map<string, ProgrammerValue>,
+	masters: Masters = new Map()
 ): Map<string, DrivenBy> {
 	const rows = new Map<string, DrivenBy>();
 	const keys = new Set<string>([
@@ -82,6 +123,8 @@ export function drivenBy(
 		if (fade) row.fade = fade;
 		const home = homeValue(fixture, type, key);
 		if (home !== undefined) row.home = home;
+		const master = masterOver(masters, key, effect, fade);
+		if (master !== undefined) row.master = master;
 		if (Object.keys(row).length > 0) rows.set(key, row);
 	}
 	return rows;
@@ -91,8 +134,10 @@ export function drivenBy(
 export function drivingTheRig(
 	fixtures: Fixture[],
 	types: FixtureType[],
-	entries: ProgrammerValue[]
+	entries: ProgrammerValue[],
+	sequences: Sequence[] = []
 ): Record<string, DrivenBy> {
+	const masters = mastersOf(sequences);
 	const byId = new Map(types.map((t) => [t.id, t]));
 	const held = new Map<string, ProgrammerValue>();
 	for (const entry of entries) {
@@ -101,7 +146,7 @@ export function drivingTheRig(
 
 	const out: Record<string, DrivenBy> = {};
 	for (const fixture of fixtures) {
-		for (const [key, row] of drivenBy(fixture, byId.get(fixture.fixture_type_id), held)) {
+		for (const [key, row] of drivenBy(fixture, byId.get(fixture.fixture_type_id), held, masters)) {
 			out[drivingKey(fixture.id, key)] = row;
 		}
 	}

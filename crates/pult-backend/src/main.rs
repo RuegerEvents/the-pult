@@ -58,6 +58,17 @@ struct Args {
     /// the plugin while the console runs.
     #[arg(long = "plugins", value_name = "DIR")]
     plugin_dirs: Vec<std::path::PathBuf>,
+    /// Leave a grandMA3 command wing alone, for when another program (grandMA3, the
+    /// wing explorer, a second console on this machine) is to have it.
+    #[arg(long)]
+    no_wing: bool,
+    /// MA's `command_wing_app.bin`, for a machine with no grandMA3 install (a
+    /// Raspberry Pi at front of house). Copied there by the operator; never shipped.
+    #[arg(long, value_name = "FILE")]
+    wing_image: Option<std::path::PathBuf>,
+    /// MA's `hardware_configurations.xml`, likewise, so the panel can name controls.
+    #[arg(long, value_name = "FILE")]
+    wing_map: Option<std::path::PathBuf>,
 }
 
 /// Accept either `host:port` or a bare address, defaulting to the Art-Net port.
@@ -107,6 +118,14 @@ async fn main() -> Result<()> {
         node_id: args.node_id,
         plugin_dirs: args.plugin_dirs,
         log: Some(log),
+        // Once for the process, like the log: a show switch restarts the station and
+        // must not reboot the wing.
+        wing: (!args.no_wing).then(|| {
+            pult_backend::wing::install_from(pult_backend::wing::WingFiles {
+                image: args.wing_image,
+                map: args.wing_map,
+            })
+        }),
         ..Config::default()
     })
     .await?;

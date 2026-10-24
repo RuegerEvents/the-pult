@@ -266,6 +266,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // page, so a page that has gone leaves none — the sweep in `infra::clients` is
     // only for the other way of going quiet, which is not hanging up.
     state.clients.forget(session_id).await;
+    // And the wing, if this page was driving it: a wing acting for a page that has
+    // gone is a desk nobody is behind.
+    if let Some(wing) = &state.wing {
+        wing.forget(session_id).await;
+    }
     // And whatever it was watching leave the console. Same rule as the raised log:
     // recomputed from who is here, so a tab that closes stops a connector drawing
     // for it — here, or on the peer that was drawing on its behalf.
@@ -415,6 +420,7 @@ async fn handle_client_message(
                     ws_registry: Some(state.ws_registry.clone()),
                     shows: state.shows.clone(),
                     xchange: Some(state.xchange.clone()),
+                    wing: state.wing.clone(),
                 };
                 crate::api::rpcs::dispatch(&method, args, &deps).await
                     .map(|v| ServerMessage::CallResult { request_id: request_id.clone(), result: Some(v), error: None })

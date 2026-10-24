@@ -117,3 +117,39 @@ export function focusConsole(): boolean {
 	focusConsoleInput();
 	return true;
 }
+
+// ── The command line, from outside ────────────────────────────────────────────
+
+/**
+ * An open command line, as something else can type into it: the wing's keypad.
+ *
+ * The keypad types into the prompt an operator can see, and runs what it typed through
+ * the same submit the Enter key does — so what came from the wing lands in the same
+ * scrollback, with the same errors, as what was typed.
+ */
+export type ConsoleLine = {
+	read(): string;
+	write(line: string): void;
+	submit(): Promise<void>;
+};
+
+let consoleLines: ConsoleLine[] = [];
+
+export function registerConsoleLine(line: ConsoleLine): () => void {
+	consoleLines = [...consoleLines, line];
+	return () => {
+		consoleLines = consoleLines.filter((l) => l !== line);
+	};
+}
+
+/** The command line most recently opened, or `null` when none is. */
+export const openConsoleLine = (): ConsoleLine | null => consoleLines.at(-1) ?? null;
+
+/** A running plugin that offers a command line, for running a line when none is open. */
+export function consolePluginOf(state: PluginsState): string | null {
+	for (const plugin of state.plugins) {
+		if (plugin.status.state === 'Failed') continue;
+		if (plugin.surfaces.some((s) => s.kind !== 'bar')) return plugin.id;
+	}
+	return null;
+}

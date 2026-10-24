@@ -46,6 +46,7 @@ use crate::{
     infra::devices::{DeviceDirectory, DeviceHandle},
 };
 use dmx::Patch;
+use pult_schema::types::sequence::Masters;
 pub use viewers::{Ask, Viewers};
 
 /// How often a viewer is drawn while somebody is watching.
@@ -208,6 +209,8 @@ pub enum OutputCommand {
         /// layer like the rest: a connector holding a patch is holding everything
         /// that decides what leaves this station.
         timelines: Vec<Timeline>,
+        /// The sequences' playback faders, which dim what those sequences play.
+        masters: Masters,
         changed: Vec<Uuid>,
     },
     /// The `outputs` collection changed. Reconcile against it.
@@ -228,6 +231,7 @@ impl OutputHandle {
         fixture_types: Vec<FixtureType>,
         programmer: Vec<ProgrammerValue>,
         timelines: Vec<Timeline>,
+        masters: Masters,
         changed: Vec<Uuid>,
     ) {
         let _ = self.0.try_send(OutputCommand::Patch {
@@ -235,6 +239,7 @@ impl OutputHandle {
             fixture_types,
             programmer,
             timelines,
+            masters,
             changed,
         });
     }
@@ -565,9 +570,10 @@ impl OutputManager {
                             fixture_types,
                             programmer,
                             timelines,
+                            masters,
                             changed,
                         } => {
-                            self.take_patch(fixtures, fixture_types, programmer, timelines, changed)
+                            self.take_patch(fixtures, fixture_types, programmer, timelines, masters, changed)
                                 .await;
                         }
                     }
@@ -703,6 +709,7 @@ impl OutputManager {
         fixture_types: Vec<FixtureType>,
         programmer: Vec<ProgrammerValue>,
         timelines: Vec<Timeline>,
+        masters: Masters,
         changed: Vec<Uuid>,
     ) {
         let addressed: Vec<_> =
@@ -713,7 +720,7 @@ impl OutputManager {
         }
         let playing = playing_tracks(&self.tracks, &timelines).await;
         self.patch =
-            Some(Patch::new(fixtures, fixture_types, programmer).playing(playing));
+            Some(Patch::new(fixtures, fixture_types, programmer).playing(playing).mastered(masters));
         self.draw(changed).await;
     }
 

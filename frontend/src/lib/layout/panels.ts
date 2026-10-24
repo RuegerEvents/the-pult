@@ -25,6 +25,7 @@ import Drama from '@lucide/svelte/icons/drama';
 import FileText from '@lucide/svelte/icons/file-text';
 import Gauge from '@lucide/svelte/icons/gauge';
 import Info from '@lucide/svelte/icons/info';
+import Keyboard from '@lucide/svelte/icons/keyboard';
 import Layers from '@lucide/svelte/icons/layers';
 import LayoutGrid from '@lucide/svelte/icons/layout-grid';
 import Lightbulb from '@lucide/svelte/icons/lightbulb';
@@ -93,6 +94,7 @@ import VariablesPanel from '$lib/components/VariablesPanel.svelte';
 import SurfacePanel from '$lib/components/surface/SurfacePanel.svelte';
 import InspectorPanel from '$lib/components/inspector/InspectorPanel.svelte';
 import AudioPanel from '$lib/components/audio/AudioPanel.svelte';
+import WingPanel from '$lib/components/wing/WingPanel.svelte';
 
 export type PanelId = keyof typeof PANELS;
 
@@ -184,6 +186,10 @@ export const PANELS = {
 	// locked it *is* the surface — a desk can press the same tiles — and `/surface/<id>`
 	// is the same component with no workspace round it.
 	surface: { title: 'Surfaces', component: SurfacePanel, fills: false, category: 'playback', icon: Smartphone },
+	// The command wing. A panel and not a Setup errand: the encoder bar is what an
+	// operator reads while turning, the wing having no screen of its own, and a binding
+	// is made by touching the control in the middle of programming.
+	wing: { title: 'Command wing', component: WingPanel, fills: false, category: 'program', icon: Keyboard },
 	// Both directions in one panel: an input is an output read backwards and has the
 	// same fields, so learning a second vocabulary for the same cable would be the
 	// only thing separating them bought.

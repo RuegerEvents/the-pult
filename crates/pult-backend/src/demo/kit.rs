@@ -480,6 +480,7 @@ pub async fn a_stack(into: &Seeder, name: &str, cues: Vec<Cue>, start: bool) -> 
         cue_ids: cues.iter().map(|cue| cue.id).collect(),
         active_cue_index: None,
         went_at: None,
+        master: None,
     };
     into.create("sequences", &sequence).await?;
     if start {

@@ -42,6 +42,15 @@ pub struct Driving<'a> {
     pub effect: Option<&'a RunningEffect>,
     pub fade: Option<&'a RunningFade>,
     pub home: Option<&'a ParameterValue>,
+    /// The level of the sequence whose effect or fade this is, where it is below full
+    /// and the parameter is one a master scales.
+    ///
+    /// Applied only when that playback layer is the one that wins: a master is the
+    /// sequence's own fader, so it dims what the sequence is doing and never the
+    /// programmer, a recording or a resting value. Which sequence, and whether this key
+    /// is one a master reaches, is the caller's to say — this crate knows neither what
+    /// a sequence is nor which keys are intensities — and `None` is full.
+    pub master: Option<f32>,
 }
 
 impl<'a> Driving<'a> {
@@ -77,11 +86,16 @@ pub fn value_at(driving: &Driving<'_>, now_ms: u64) -> Option<ParameterValue> {
     if let Some(recorded) = driving.track.and_then(|track| track.value_at(now_ms)) {
         return Some(recorded.clone());
     }
-    if let Some(effect) = driving.effect {
-        return Some(effect_value_at(effect, now_ms));
-    }
-    if let Some(fade) = driving.fade {
-        return Some(fade_value_at(fade, now_ms));
+    let played = match (driving.effect, driving.fade) {
+        (Some(effect), _) => Some(effect_value_at(effect, now_ms)),
+        (None, Some(fade)) => Some(fade_value_at(fade, now_ms)),
+        (None, None) => None,
+    };
+    if let Some(value) = played {
+        return Some(match driving.master {
+            Some(level) => value.scaled(level),
+            None => value,
+        });
     }
     driving.home.cloned()
 }
@@ -244,6 +258,30 @@ mod tests {
         assert_eq!(value_at(&driving, 500), Some(ParameterValue::Float(0.25)));
         assert_eq!(value_at(&driving, 1_500), Some(ParameterValue::Float(1.0)));
         assert!(driving.is_driven(), "it is still a layer, even where it says nothing");
+    }
+
+    /// A master dims what its sequence is playing and nothing above or below it.
+    #[test]
+    fn a_master_scales_playback_and_only_playback() {
+        let fade = a_fade(0.0, 0.8, 0, 0);
+        let home = ParameterValue::Float(0.5);
+        let played = Driving { fade: Some(&fade), home: Some(&home), master: Some(0.5), ..Default::default() };
+        assert_eq!(value_at(&played, 10), Some(ParameterValue::Float(0.4)));
+
+        let effect = an_effect(0);
+        let over = Driving { effect: Some(&effect), ..played };
+        assert_eq!(value_at(&over, 250), Some(ParameterValue::Float(0.125)), "an effect too");
+
+        let held = ParameterValue::Float(0.9);
+        let programmed = Driving { programmer: Some(&held), ..played };
+        assert_eq!(value_at(&programmed, 10), Some(ParameterValue::Float(0.9)), "never the programmer");
+
+        let resting = Driving { home: Some(&home), master: Some(0.0), ..Default::default() };
+        assert_eq!(value_at(&resting, 10), Some(ParameterValue::Float(0.5)), "never home");
+
+        let (points, transport) = a_track(&[(0, 0.7)], rolling(0));
+        let recorded = Driving { track: Some(TrackAt { points: &points, transport }), ..played };
+        assert_eq!(value_at(&recorded, 10), Some(ParameterValue::Float(0.7)), "never a take");
     }
 
     /// A playing recording has no moment after which nothing more happens, so a

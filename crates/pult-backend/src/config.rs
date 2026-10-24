@@ -92,6 +92,13 @@ pub struct Config {
     /// must not come back from one.
     #[serde(skip)]
     pub log: Option<crate::logging::LogHandle>,
+    /// The process's command wing, from [`crate::wing::install`] — installed by `main`
+    /// for the reason the log is, and because a station is restarted on every show
+    /// switch and the wing takes seconds to boot. `None` is a station with no wing,
+    /// which is what every test wants: a test that claimed a real one would take it
+    /// off the operator's desk.
+    #[serde(skip)]
+    pub wing: Option<crate::wing::WingHandle>,
     /// Skew what this station *reports* its show clock to be, in milliseconds, and
     /// nothing that it applies.
     ///
@@ -125,6 +132,7 @@ impl Default for Config {
             plugin_dirs: Vec::new(),
             plugin_data: None,
             log: None,
+            wing: None,
             clock_skew_ms: 0,
         }
     }

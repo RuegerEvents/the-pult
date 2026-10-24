@@ -143,6 +143,7 @@ async fn a_sequence(station: &Running) -> uuid::Uuid {
         cue_ids: vec![first.id, second.id],
         active_cue_index: None,
         went_at: None,
+        master: None,
     };
     create(station, "sequences", serde_json::to_value(&sequence).unwrap()).await;
     sequence.id

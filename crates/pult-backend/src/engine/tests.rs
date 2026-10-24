@@ -100,7 +100,7 @@ fn a_show() -> Show {
 }
 
 fn a_sequence(name: &str, cue_ids: Vec<Uuid>) -> Sequence {
-    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None }
+    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None, master: None }
 }
 
 fn a_cue(name: &str, number: f64) -> Cue {
@@ -1449,6 +1449,7 @@ async fn value_of(h: &Harness, fixture_id: Uuid, parameter: &str) -> Option<Para
         types.iter().find(|t| t.id == fixture.fixture_type_id),
         held.get(fixture_id, parameter),
         parameter,
+        &Default::default(),
         pult_schema::types::sequence::now_ms(),
     )
 }
@@ -3252,6 +3253,7 @@ mod groups {
             ws_registry: None,
             shows: crate::ShowsHandle::detached(),
             xchange: None,
+            wing: None,
         }
     }
 

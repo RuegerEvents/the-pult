@@ -4395,6 +4395,7 @@ dependencies = [
  "pult-mvr-xchange",
  "pult-render",
  "pult-schema",
+ "pult-wing",
  "reqwest 0.12.28",
  "rumqttc",
  "rumqttd",
@@ -4543,10 +4544,13 @@ dependencies = [
 name = "pult-wing"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "quick-xml 0.42.0",
+ "rusb",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -8619,7 +8623,6 @@ dependencies = [
  "axum 0.8.9",
  "clap",
  "pult-wing",
- "rusb",
  "serde",
  "serde_json",
  "tokio",

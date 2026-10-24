@@ -26,8 +26,8 @@ use pult_schema::types::{
     fixture::{home_value_by_key, Fixture, FixtureType, ParameterValue},
     preset::{preset_index, Preset},
     programmer::ProgrammerValue,
-    sequence::Sequence,
-    show::FadeCurves,
+    sequence::{Masters, Sequence},
+    show::{FadeCurves, FadeGroup},
     speedmaster::SpeedMaster,
 };
 
@@ -100,6 +100,8 @@ pub struct ShowView<'a> {
     /// [`ParameterCapture::value_in`], and a pass that took resolved values would
     /// have decided the question somewhere else.
     pub presets: HashMap<Uuid, &'a Preset>,
+    /// The sequences' playback faders, by the cues those sequences hold.
+    pub masters: Masters,
 }
 
 impl<'a> ShowView<'a> {
@@ -125,6 +127,7 @@ impl<'a> ShowView<'a> {
             home_fade_ms,
             fade_curves,
             presets: preset_index(presets),
+            masters: Masters::of(sequences),
         }
     }
 
@@ -341,6 +344,13 @@ impl Playback {
                 .map(|f| &f.running)
                 .or_else(|| fixture.live_fades.get(&at.1)),
             home: None,
+            master: None,
+        };
+        // What is on stage, the sequence's fader included: a fade starting from
+        // here is starting from what the audience is looking at.
+        let driving = pult_render::Driving {
+            master: view.masters.over(&at.1, driving.effect, driving.fade),
+            ..driving
         };
         pult_render::value_at(&driving, wall_ms)
             .or_else(|| home_value_by_key(fixture, view.fixture_type(fixture), &at.1))
@@ -435,8 +445,10 @@ impl Playback {
                 continue;
             }
             let at: Key = (fade.fixture_id, fade.key.clone());
-            let from =
-                self.value_at(view, &at, wall_ms).unwrap_or_else(|| fade.running.from.clone());
+            let from = self
+                .value_at(view, &at, wall_ms)
+                .map(|showing| unmastered(view, &at.1, fade.running.cue_id, showing))
+                .unwrap_or_else(|| fade.running.from.clone());
             moves.push((at, fade.running.cue_id, from, to.clone()));
         }
 
@@ -848,7 +860,12 @@ impl Playback {
             //
             // Read before the key is cleared above? No: `from` is taken from `showing`,
             // which was evaluated for this key before either was removed.
+            //
+            // And from what is on stage *before this sequence's fader scales it*: the
+            // fade below runs at that fader's level, so starting it from the showing
+            // value would dim the start of every Go a sequence below full makes.
             let from = showing
+                .map(|showing| unmastered(view, &key, owner.id, showing))
                 // A fixture whose type has gone: nothing can say where it rests, so
                 // the cue lands rather than fading from a zero nobody vouched for.
                 .unwrap_or_else(|| to.clone());
@@ -1015,6 +1032,21 @@ impl Playback {
 }
 
 // ── Parameter helpers ─────────────────────────────────────────────────────────
+
+/// What a fade this cue starts has to begin from, for the stage not to jump.
+///
+/// The fade will run at its sequence's fader, so it starts from what is showing
+/// with that fader taken back out — `from × master` is then exactly where the light
+/// was. Only for the keys a master reaches; everything else starts where it is.
+fn unmastered(view: &ShowView<'_>, key: &str, cue_id: Uuid, showing: ParameterValue) -> ParameterValue {
+    if FadeGroup::of_key(key) != FadeGroup::Intensity {
+        return showing;
+    }
+    match view.masters.of_cue(cue_id) {
+        Some(level) => showing.unscaled(level),
+        None => showing,
+    }
+}
 
 /// Is this capture asking the parameter to come down rather than to go up?
 ///

@@ -74,6 +74,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # TypeScript gen
 pult-render = { path = "crates/pult-render" }
 pult-audio = { path = "crates/pult-audio" }
+pult-wing = { path = "crates/pult-wing" }
 pult-gdtf = { path = "crates/pult-gdtf" }
 pult-mvr = { path = "crates/pult-mvr" }
 pult-mvr-xchange = { path = "crates/pult-mvr-xchange" }

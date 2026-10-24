@@ -8,6 +8,7 @@ pub mod sync;
 pub mod session;
 pub mod stations;
 pub mod clients;
+pub mod wing;
 pub mod devices;
 pub mod connectors;
 pub mod net;

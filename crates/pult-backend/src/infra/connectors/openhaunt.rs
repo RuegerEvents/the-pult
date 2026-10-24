@@ -197,7 +197,11 @@ impl OpenHauntOutput {
                 let driving = patch.driving(fixture, &param_key);
 
                 // 1. A shape the port has said it can trace.
-                if let Some(effect) = driving.effect.filter(|_| driving.programmer.is_none()) {
+                // A port only runs what it was told to at full: a sequence's fader
+                // below full is a scale the node has never heard of, so a dimmed
+                // shape or fade is streamed as values like anything else.
+                let at_full = driving.master.is_none();
+                if let Some(effect) = driving.effect.filter(|_| driving.programmer.is_none() && at_full) {
                     if let Some(payload) = capable
                         .as_ref()
                         .filter(|c| supports(c, effect))
@@ -229,7 +233,7 @@ impl OpenHauntOutput {
                 // 3. A fade the port can run itself, described once.
                 if let Some(fade) = driving
                     .fade
-                    .filter(|_| driving.programmer.is_none() && driving.effect.is_none())
+                    .filter(|_| driving.programmer.is_none() && driving.effect.is_none() && at_full)
                 {
                     if capable.as_ref().is_some_and(|c| c.transitions) {
                         let payload = transition_payload(fade, parameter.physical);

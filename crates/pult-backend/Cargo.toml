@@ -16,6 +16,9 @@ path = "src/main.rs"
 pult-schema = { path = "../pult-schema" }
 pult-render = { workspace = true }
 pult-audio = { workspace = true }
+# The command wing. `usb` is the host's half: one claimed interface for the process,
+# installed from `main` (see `src/wing.rs`), and no test opens it.
+pult-wing = { workspace = true, features = ["usb"] }
 pult-gdtf = { workspace = true }
 pult-mvr = { workspace = true }
 pult-mvr-xchange = { workspace = true }

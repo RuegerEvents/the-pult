@@ -19,6 +19,8 @@ pub mod input;
 pub mod map;
 pub mod output;
 pub mod proto;
+#[cfg(feature = "usb")]
+pub mod usb;
 
 pub use chunk::{Chunk, ChunkError};
 pub use input::{Event, InputState};
