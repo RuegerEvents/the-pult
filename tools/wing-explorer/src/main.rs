@@ -99,8 +99,7 @@ async fn main() -> Result<()> {
             Some(p) => p,
             None => find("software/command_wing_app.bin", "command_wing_app.bin")?,
         };
-        let image = std::fs::read(&image_path)
-            .with_context(|| format!("reading {}", image_path.display()))?;
+        let image = pult_wing::usb::read_image(&image_path)?;
         tracing::info!(path = %image_path.display(), bytes = image.len(), "wing application");
 
         let w = wing::spawn(image)?;

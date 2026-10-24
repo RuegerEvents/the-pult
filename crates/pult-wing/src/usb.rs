@@ -199,6 +199,18 @@ fn run(
                         }
                         write(&handle, &reply)?;
                     }
+                    Step::Refused(asked) => {
+                        // Never answered. Said loudly, once per request, and the
+                        // connection is left as it is — see `proto::APP_IMAGE`.
+                        tracing::error!(%asked, "the wing asked for a file this host will not send");
+                        let _ = tx.send(Report::Status {
+                            state: "refused".into(),
+                            detail: format!(
+                                "the wing asked for {asked:?}, which is not its application; nothing was sent. \
+                                 Update it with grandMA3 if it needs one."
+                            ),
+                        });
+                    }
                     Step::Running => {
                         if !running {
                             running = true;
@@ -346,6 +358,29 @@ pub fn find_in_ma3(relative: &str) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
+/// Read the application image to serve, refusing anything that might not be it.
+///
+/// The name has to be exactly [`crate::proto::APP_IMAGE`], and the bytes must not be
+/// those of the bootloader beside it — so a mistyped `--wing-image` pointing at
+/// `command_wing_bootloader.bin`, or a copy of it renamed, is never sent. The two files
+/// are too close in size to tell apart by length.
+pub fn read_image(path: &std::path::Path) -> Result<Vec<u8>> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name != crate::proto::APP_IMAGE {
+        return Err(anyhow!(
+            "{} is not {}: the wing is only ever sent its application, by that name",
+            path.display(),
+            crate::proto::APP_IMAGE
+        ));
+    }
+    let image = std::fs::read(path).with_context(|| path.display().to_string())?;
+    let bootloader = path.with_file_name("command_wing_bootloader.bin");
+    if std::fs::read(&bootloader).is_ok_and(|b| b == image) {
+        return Err(anyhow!("{} has the bootloader's bytes; refusing to send it", path.display()));
+    }
+    Ok(image)
+}
+
 /// The application image, `command_wing_app.bin`.
 pub fn find_image() -> Option<PathBuf> {
     find_in_ma3("software/command_wing_app.bin")
@@ -354,4 +389,27 @@ pub fn find_image() -> Option<PathBuf> {
 /// MA's `hardware_configurations.xml`, which names every index.
 pub fn find_map() -> Option<PathBuf> {
     find_in_ma3("hardware_configurations.xml")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_file_named_as_the_application_is_read() {
+        let dir = std::env::temp_dir().join(format!("pult-wing-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = dir.join("command_wing_app.bin");
+        let boot = dir.join("command_wing_bootloader.bin");
+        std::fs::write(&app, b"application").unwrap();
+        std::fs::write(&boot, b"bootloader").unwrap();
+
+        assert_eq!(read_image(&app).unwrap(), b"application");
+        assert!(read_image(&boot).is_err(), "never the bootloader by name");
+
+        // Nor the bootloader renamed.
+        std::fs::write(&app, b"bootloader").unwrap();
+        assert!(read_image(&app).is_err(), "nor the bootloader's bytes under the app's name");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

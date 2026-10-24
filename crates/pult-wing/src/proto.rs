@@ -329,6 +329,17 @@ fn software(c: &Chunk) -> Message {
 /// rule, not a tuning constant somebody picked.
 pub const KEEPALIVE_MS: u64 = 500;
 
+/// The one file a host ever sends a wing: its application, which it takes into the
+/// running system at every connect.
+///
+/// **Anything else it asks for is refused, and nothing is sent.** The wing's flash
+/// holds a bootloader, and `command_wing_bootloader.bin` sits beside this file in every
+/// grandMA3 install; a bootloader write is the one operation that can leave the device
+/// unusable (WING-PROTOCOL, *The one way to brick it*). grandMA3 makes that a decision
+/// of its own. A host that served whatever it held to whatever was asked for would
+/// hand the wing its application *as* a bootloader the first time it asked for one.
+pub const APP_IMAGE: &str = "command_wing_app.bin";
+
 /// How the boot runs, as a host sees it. Feed it what arrives and do what it says.
 #[derive(Clone, Debug, Default)]
 pub struct Boot {
@@ -357,6 +368,9 @@ pub enum Step {
     Wait,
     /// The wing is up and sending input.
     Running,
+    /// The wing asked for a file that is not [`APP_IMAGE`]. Nothing was sent and nothing
+    /// will be; the transport says so where an operator can read it, and stays quiet.
+    Refused(String),
     /// The download finished and the wing is restarting into what it was given. The
     /// host must now say **nothing** and let go: it drops off the bus, comes back a
     /// few seconds later, and the boot runs again — that second round is the one that
@@ -394,9 +408,17 @@ impl Boot {
             Message::SoftwareRequest(name) => {
                 self.wanted = Some(name.clone());
                 self.sent = 0;
+                if name != APP_IMAGE {
+                    return Step::Refused(name.clone());
+                }
                 self.packet(image)
             }
-            Message::SoftwareProgress(_) => self.packet(image),
+            // Only ever the application's next packet, and only while the application
+            // is what was asked for.
+            Message::SoftwareProgress(_) if self.wanted.as_deref() == Some(APP_IMAGE) => {
+                self.packet(image)
+            }
+            Message::SoftwareProgress(_) => Step::Wait,
             // The wing restarts into what it was just given, and the boot runs a second
             // time — which is why grandMA3's capture carries two capabilities replies,
             // a short one from the bootloader and a longer one from the application.
@@ -466,7 +488,7 @@ mod tests {
 
         // 1200 bytes is three packets, and only the third says so.
         let mut offsets = Vec::new();
-        let mut step = b.on(&Message::SoftwareRequest("app.bin".into()), Some(&img));
+        let mut step = b.on(&Message::SoftwareRequest(APP_IMAGE.into()), Some(&img));
         while let Step::Send(Message::SoftwarePacket { offset, last, ref data }) = step {
             offsets.push((offset, last, data.len()));
             step = b.on(&Message::SoftwareProgress(vec![]), Some(&img));
@@ -498,6 +520,24 @@ mod tests {
     #[test]
     fn without_an_image_the_boot_simply_waits() {
         let mut b = Boot::default();
-        assert_eq!(b.on(&Message::SoftwareRequest("app.bin".into()), None), Step::Wait);
+        assert_eq!(b.on(&Message::SoftwareRequest(APP_IMAGE.into()), None), Step::Wait);
+    }
+
+    /// The one way to brick it, kept shut: a request for anything but the application —
+    /// the bootloader above all — gets nothing at all, then or after.
+    #[test]
+    fn a_request_for_anything_but_the_application_is_refused_and_nothing_is_sent() {
+        let img = image();
+        for asked in ["command_wing_bootloader.bin", "command_wing_app.bin.bak", ""] {
+            let mut b = Boot::default();
+            assert_eq!(
+                b.on(&Message::SoftwareRequest(asked.into()), Some(&img)),
+                Step::Refused(asked.into()),
+                "{asked:?}"
+            );
+            // And the progress chunks that would pull the next packet pull nothing.
+            assert_eq!(b.on(&Message::SoftwareProgress(vec![]), Some(&img)), Step::Wait, "{asked:?}");
+            assert_eq!(b.sent, 0, "{asked:?}: not one byte");
+        }
     }
 }

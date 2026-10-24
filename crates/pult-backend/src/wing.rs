@@ -128,11 +128,19 @@ pub fn install_from(files: WingFiles) -> WingHandle {
     });
 
     let named = files.image.clone();
-    let image = files.image.or_else(usb::find_image).and_then(|path| std::fs::read(path).ok());
+    let mut refused = None;
+    let image = files.image.or_else(usb::find_image).and_then(|path| match usb::read_image(&path) {
+        Ok(image) => Some(image),
+        Err(e) => {
+            refused = Some(format!("{e:#}"));
+            None
+        }
+    });
     let Some(image) = image else {
-        let reason = match named {
-            Some(path) => format!("cannot read the wing's application image at {}", path.display()),
-            None => "no grandMA3 install with command_wing_app.bin under ~/MALightingTechnology; \
+        let reason = match (refused, named) {
+            (Some(why), _) => why,
+            (None, Some(path)) => format!("cannot read the wing's application image at {}", path.display()),
+            (None, None) => "no grandMA3 install with command_wing_app.bin under ~/MALightingTechnology; \
                      the wing needs MA's application image and this console does not ship it — \
                      copy it here and pass --wing-image"
                 .into(),
