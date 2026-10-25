@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	/**
 	 * A timeline: its list on the left, its lanes in the middle, and what is picked up on
 	 * them in the Inspector on the right — option A of the UI direction (task 80).
@@ -71,16 +72,22 @@
 	/** The docked Inspector needs room; below this it hands over to the panel. */
 	const docked = $derived(!inspectorElsewhere && width >= 900);
 
-	// Picking up anything that belongs to a timeline opens that timeline.
+	// Picking up anything that belongs to a timeline opens that timeline — when the
+	// subject *changes*, and only then. Reading the open timeline in here made it a
+	// dependency, so opening another timeline from its card re-ran this, found a clip of
+	// the old one still the subject, and put the old one straight back: the card "did
+	// nothing" whenever something of another timeline was selected (seen at the gig).
 	$effect(() => {
 		const refs = $subject;
-		for (let i = refs.length - 1; i >= 0; i--) {
-			const id = timelineOfItem(refs[i]);
-			if (id) {
-				if (id !== $openTimelineId) openTimelineId.set(id);
-				return;
+		untrack(() => {
+			for (let i = refs.length - 1; i >= 0; i--) {
+				const id = timelineOfItem(refs[i]);
+				if (id) {
+					if (id !== $openTimelineId) openTimelineId.set(id);
+					return;
+				}
 			}
-		}
+		});
 	});
 
 	/**
