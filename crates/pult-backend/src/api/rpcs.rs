@@ -309,6 +309,19 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     // one machine's, and a cross-station grab would mean shipping a universe across
     // the link carrying the show for a button press. Refused by name instead, so the
     // page can say which console to open.
+    // A recording that stopped waits as the timeline's `pending` take until somebody
+    // answers. Either answer is the caller's, in one gesture, so one Ctrl-Z takes a
+    // Merge back and puts the take up for review again.
+    LocalRpcMeta {
+        method: "take.merge",
+        args_schema: r#"[{"name":"timelineId","type":"string","optional":false},{"name":"takes","type":"array","optional":true},{"name":"flashes","type":"array","optional":true}]"#,
+        doc: "Merge a timeline's pending take: the take of each [fixtureId, key] in takes and the flashes of each in flashes, or everything where a list is left out.",
+    },
+    LocalRpcMeta {
+        method: "take.discard",
+        args_schema: r#"[{"name":"timelineId","type":"string","optional":false}]"#,
+        doc: "Throw a timeline's pending take away without merging any of it.",
+    },
     LocalRpcMeta {
         method: "input.grab",
         args_schema: r#"[{"name":"fixtureIds","type":"array","optional":false},{"name":"inputId","type":"string","optional":true}]"#,
@@ -529,6 +542,23 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                 _ => None,
             };
             what_is_it_doing(&deps.engine, fixture_id, kind).await
+        }
+        "take.merge" | "take.discard" => {
+            let timeline_id: uuid::Uuid = serde_json::from_value(args["timelineId"].clone())
+                .map_err(|e| format!("invalid timelineId: {e}"))?;
+            let keys = |name: &str| -> Result<Option<Vec<(uuid::Uuid, String)>>, String> {
+                match args.get(name) {
+                    Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+                        .map(Some)
+                        .map_err(|e| format!("invalid {name}: {e}")),
+                    _ => Ok(None),
+                }
+            };
+            if method == "take.discard" {
+                answer_a_take(deps, timeline_id, Some(Vec::new()), Some(Vec::new())).await
+            } else {
+                answer_a_take(deps, timeline_id, keys("takes")?, keys("flashes")?).await
+            }
         }
         "input.grab" => {
             let fixture_ids: Vec<uuid::Uuid> =
@@ -1387,6 +1417,58 @@ async fn what_is_it_doing(
             })
             .collect();
     serde_json::to_value(values).map_err(|e| e.to_string())
+}
+
+/// Answer a timeline's pending take: merge what was chosen, drop the rest, and clear
+/// the review — `None` for a list means all of it, an empty list none.
+///
+/// Every write under the caller's name and one gesture, which is what makes the answer
+/// one Ctrl-Z: the rows, the flashes and the review come back together, so undoing a
+/// Merge puts the take up for review again rather than losing it.
+async fn answer_a_take(
+    deps: &LocalRpcDeps,
+    timeline_id: uuid::Uuid,
+    takes: Option<Vec<(uuid::Uuid, String)>>,
+    flashes: Option<Vec<(uuid::Uuid, String)>>,
+) -> Result<Value, String> {
+    use pult_schema::{lifecycle::Lifecycle, types::timeline::Timeline};
+
+    let path = vec![PathSegment::Key("timelines".into()), PathSegment::Id(timeline_id)];
+    let timeline: Timeline = deps
+        .engine
+        .get(path.clone())
+        .await
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .ok_or_else(|| "no such timeline".to_string())?;
+    let pending = timeline.pending.clone().ok_or_else(|| "nothing is waiting to be merged".to_string())?;
+    let chosen = |list: &Option<Vec<(uuid::Uuid, String)>>, fixture_id: uuid::Uuid, key: &str| {
+        list.as_ref().is_none_or(|keys| keys.iter().any(|(id, k)| *id == fixture_id && k == key))
+    };
+    let mut rows = timeline.tracks.clone();
+    let mut kept = timeline.all_flashes().to_vec();
+    pending.merge(&mut rows, &mut kept, |id, key| chosen(&takes, id, key), |id, key| chosen(&flashes, id, key));
+
+    let user_id = asking_user(deps);
+    let gesture = Some(uuid::Uuid::new_v4());
+    let field = |name: &str| {
+        let mut path = path.clone();
+        path.push(PathSegment::Key(name.into()));
+        path
+    };
+    if rows != timeline.tracks {
+        let value = serde_json::to_value(&rows).map_err(|e| e.to_string())?;
+        deps.engine.set_as(user_id, gesture, field("tracks"), Lifecycle::Persisted, value).await.map_err(|e| e.to_string())?;
+    }
+    if kept.len() != timeline.all_flashes().len() {
+        let value = serde_json::to_value(&kept).map_err(|e| e.to_string())?;
+        deps.engine.set_as(user_id, gesture, field("flashes"), Lifecycle::Persisted, value).await.map_err(|e| e.to_string())?;
+    }
+    deps.engine
+        .set_as(user_id, gesture, field("pending"), Lifecycle::Persisted, Value::Null)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "rows": rows.len(), "flashes": kept.len() }))
 }
 
 /// Read a wire and put what is on it into the programmer.

@@ -13,6 +13,14 @@
 //! how a part of a take is removed. Outside its window a row says nothing at all, and
 //! at the window's end whatever was there before it carries on.
 //!
+//! **A flash is laid over all of it.** A flash key pressed during a take is not a
+//! stretch of a recording but one act with a length — a value from one moment to
+//! another — so it is a [`Flash`] rather than a row. Flashes go on top of every row,
+//! whatever order anything was recorded in, and never cut one: over a flash the flash
+//! is what plays, and at its end whatever was there carries on, an earlier flash
+//! included. Pressing a button during a second pass adds to the first rather than
+//! erasing it, which is what a button on a desk means.
+//!
 //! Here, in the crate compiled twice, because the station puts the composition on a
 //! wire and the page draws it, and two compositions would disagree exactly at the edge
 //! of a slice somebody just made.
@@ -22,6 +30,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::track::{sample, Track, TrackKey, TrackPoint};
+use crate::ParameterValue;
 
 /// One row of a timeline's recordings, borrowed: which recording, which of its
 /// parameters, and over which stretch of the timeline.
@@ -46,8 +55,46 @@ impl Part<'_> {
     }
 }
 
+/// One flash, borrowed: a value held on one parameter over `[from_ms, to_ms)`.
+#[derive(Debug, Clone, Copy)]
+pub struct Flash<'a> {
+    pub fixture_id: Uuid,
+    pub key: &'a str,
+    pub value: &'a ParameterValue,
+    pub from_ms: u32,
+    pub to_ms: u32,
+}
+
 /// Every row, composed. Later rows win where windows overlap.
 pub fn compose(parts: &[Part<'_>]) -> Track {
+    compose_with(parts, &[])
+}
+
+/// Every row composed, and every flash over the result. Flashes are laid in order of
+/// where they start, so where two overlap the later one wins until it ends and the
+/// earlier one is back for whatever is left of it.
+pub fn compose_with(parts: &[Part<'_>], flashes: &[Flash<'_>]) -> Track {
+    let mut track = compose_rows(parts);
+    if flashes.is_empty() {
+        return track;
+    }
+    let mut ordered: Vec<&Flash<'_>> = flashes.iter().filter(|f| f.to_ms > f.from_ms).collect();
+    ordered.sort_by_key(|f| f.from_ms);
+    for flash in ordered {
+        let segment = [TrackPoint { release: false, ms: flash.from_ms, value: flash.value.clone() }];
+        match track.keys.iter_mut().find(|k| k.fixture_id == flash.fixture_id && k.key == flash.key) {
+            Some(key) => key.points = overlay(&key.points, &segment, flash.from_ms, Some(flash.to_ms)),
+            None => track.keys.push(TrackKey {
+                fixture_id: flash.fixture_id,
+                key: flash.key.to_string(),
+                points: overlay(&[], &segment, flash.from_ms, Some(flash.to_ms)),
+            }),
+        }
+    }
+    track
+}
+
+fn compose_rows(parts: &[Part<'_>]) -> Track {
     let mut keys: Vec<TrackKey> = Vec::new();
     let mut index: HashMap<(Uuid, String), usize> = HashMap::new();
     for part in parts {
@@ -213,5 +260,31 @@ mod tests {
         let played = compose(&[jaw]);
         assert_eq!(played.keys.len(), 1);
         assert_eq!(pairs(&played, "Jaw"), vec![(150, Some(0.5))]);
+    }
+
+    fn flash<'a>(value: &'a ParameterValue, from: u32, to: u32) -> Flash<'a> {
+        Flash { fixture_id: fixture(), key: "Jaw", value, from_ms: from, to_ms: to }
+    }
+
+    #[test]
+    fn a_flash_plays_over_a_take_and_the_take_carries_on_after_it() {
+        let jaw = take("Jaw", &[(0, Some(0.2)), (500, Some(0.4))]);
+        let full = ParameterValue::Float(1.0);
+        let played = compose_with(&[part(&jaw, None, None)], &[flash(&full, 200, 300)]);
+        assert_eq!(pairs(&played, "Jaw"), vec![(0, Some(0.2)), (200, Some(1.0)), (300, Some(0.2)), (500, Some(0.4))]);
+    }
+
+    #[test]
+    fn a_flash_over_nothing_lets_go_at_its_end() {
+        let full = ParameterValue::Float(1.0);
+        let played = compose_with(&[], &[flash(&full, 200, 300)]);
+        assert_eq!(pairs(&played, "Jaw"), vec![(200, Some(1.0)), (300, None)]);
+    }
+
+    #[test]
+    fn a_later_flash_inside_an_earlier_one_gives_it_back() {
+        let (a, b) = (ParameterValue::Float(0.5), ParameterValue::Float(1.0));
+        let played = compose_with(&[], &[flash(&b, 200, 300), flash(&a, 100, 400)]);
+        assert_eq!(pairs(&played, "Jaw"), vec![(100, Some(0.5)), (200, Some(1.0)), (300, Some(0.5)), (400, None)]);
     }
 }

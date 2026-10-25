@@ -611,8 +611,8 @@ impl InputManager {
         }
     }
 
-    /// Write the take out and disarm. Stored the way a programmer pass is — a row per
-    /// parameter over the stretch it was recorded across, replacing it.
+    /// Write the take out, put it up for review the way a programmer pass is, and
+    /// disarm.
     async fn finish_recording(&mut self) {
         let Some(recording) = self.recording.take() else { return };
         if self.assets.is_none() {
@@ -641,11 +641,22 @@ impl InputManager {
             .find(|t| t.id == recording.timeline_id)
             .map_or(0, |t| t.position_at(pult_schema::types::sequence::now_ms()))
             .min(u32::MAX as u64) as u32;
+        // Every key was listening from the start, so every key's stretch starts there:
+        // a take off a wire is a whole capture rather than a touch.
+        let keys = track
+            .keys
+            .iter()
+            .map(|k| pult_schema::types::timeline::PendingKey {
+                fixture_id: k.fixture_id,
+                key: k.key.clone(),
+                from_ms: recording.from_ms,
+            })
+            .collect();
         let stored = self
-            .store_recording(recording.timeline_id, &track, Some(recording.input_id), recording.from_ms, out)
+            .stage_recording(recording.timeline_id, &track, Some(recording.input_id), keys, Vec::new(), out)
             .await;
         if stored.is_some() {
-            info!("[input] take stored: {} parameter(s)", track.keys.len());
+            info!("[input] take staged for review: {} parameter(s)", track.keys.len());
         }
         self.disarm(recording.timeline_id).await;
     }

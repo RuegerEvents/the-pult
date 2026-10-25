@@ -265,6 +265,8 @@ CREATE TABLE IF NOT EXISTS timelines (
     "markers" TEXT NOT NULL,
     "events" TEXT NOT NULL,
     "tracks" TEXT NOT NULL,
+    "flashes" TEXT,
+    "pending" TEXT,
     "speed_master" TEXT,
     "node_id" TEXT,
     "end" TEXT

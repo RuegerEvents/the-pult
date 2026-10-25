@@ -467,6 +467,8 @@ fn a_timeline_with(clip: pult_schema::types::timeline::AudioClip, anchor_ms: u64
         markers: Vec::new(),
         events: Vec::new(),
         tracks: Vec::new(),
+        flashes: None,
+        pending: None,
         speed_master: None,
         node_id: None,
         end: None,
@@ -475,6 +477,7 @@ fn a_timeline_with(clip: pult_schema::types::timeline::AudioClip, anchor_ms: u64
         position_at_anchor_ms: 0,
         rate: 1.0,
         recording: None,
+        armed_by: None,
     }
 }
 

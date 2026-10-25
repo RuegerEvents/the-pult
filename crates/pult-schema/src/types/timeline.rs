@@ -301,6 +301,128 @@ pub fn split_row(row: &TimelineTrack, keys: &[(Uuid, String)]) -> Vec<TimelineTr
         .collect()
 }
 
+/// A flash key pressed while a take rolled: one value on one parameter, for a while.
+///
+/// Not a stretch of a recording. A press is one act with a length, so it is kept as
+/// one — an object an operator can move, stretch and delete — rather than as two change
+/// points in a file nobody can edit. It goes on top of every take and cuts none
+/// (`pult_render::compose_with`), so a button pressed during a second pass adds to the
+/// first instead of erasing it. Told apart from a fader by `model::takes::Pass`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TimelineFlash {
+    pub id: Uuid,
+    pub fixture_id: Uuid,
+    /// The parameter key, spelled the way a take's rows spell it.
+    pub key: String,
+    pub value: crate::types::fixture::ParameterValue,
+    pub at_ms: u32,
+    pub duration_ms: u32,
+}
+
+impl TimelineFlash {
+    /// This flash, for composing.
+    pub fn flash(&self) -> pult_render::Flash<'_> {
+        pult_render::Flash {
+            fixture_id: self.fixture_id,
+            key: &self.key,
+            value: &self.value,
+            from_ms: self.at_ms,
+            to_ms: self.at_ms.saturating_add(self.duration_ms.max(1)),
+        }
+    }
+}
+
+/// A recording that has stopped and is waiting to be looked at.
+///
+/// **Nothing a take records is merged until somebody says so.** A pass is stored as an
+/// asset at once — the bytes are safe the moment the timeline stops — and listed here;
+/// the page that armed the recording asks which of it to keep, and Merge writes the
+/// chosen keys into the rows in one gesture. PERSISTED, so a take nobody has answered
+/// for yet survives a failover and a restart alike, and so undoing a Merge puts the
+/// take back up for review rather than losing it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PendingTake {
+    /// The page that armed the recording (`Timeline::armed_by` at the time), which is
+    /// the one that opens the review by itself. Every other page offers it.
+    #[serde(default)]
+    pub armed_by: Option<String>,
+    /// One per pass, in the order they were recorded: a looping rehearsal is a pass per
+    /// lap, and a later lap is merged over an earlier one.
+    pub passes: Vec<PendingPass>,
+}
+
+/// One pass of a pending take.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PendingPass {
+    /// The recording's sha.
+    pub asset: String,
+    /// The input it came off, where it came off a wire.
+    #[serde(default)]
+    pub input_id: Option<Uuid>,
+    /// Each key the pass recorded and where its stretch starts. A key from the
+    /// programmer starts at its first touch; a take off a wire, where every key was
+    /// listening from the start, at the start.
+    pub keys: Vec<PendingKey>,
+    /// Where every key's stretch ends: where the pass stopped.
+    pub out_ms: u32,
+    /// The flash keys pressed during the pass, ready to be added.
+    #[serde(default)]
+    pub flashes: Vec<TimelineFlash>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PendingKey {
+    pub fixture_id: Uuid,
+    pub key: String,
+    pub from_ms: u32,
+}
+
+/// Write a pass into a timeline's rows: every row already playing one of its keys is
+/// cut out of `[from, out)` — each key's own `from`, its first touch — and each key
+/// gets a row of its own over exactly that stretch. The old take plays up to the touch
+/// and from the stop, and keys the pass never touched are left as they were.
+pub fn store_take(rows: &mut Vec<TimelineTrack>, pass: &PendingPass, keep: impl Fn(Uuid, &str) -> bool) {
+    for key in pass.keys.iter().filter(|k| keep(k.fixture_id, &k.key)) {
+        // A key touched where the pass ended still replaced the moment it was at.
+        let out = pass.out_ms.max(key.from_ms.saturating_add(1));
+        cut_rows(rows, key.fixture_id, &key.key, key.from_ms, out);
+        rows.push(TimelineTrack {
+            id: Uuid::new_v4(),
+            name: String::new(),
+            asset: pass.asset.clone(),
+            input_id: pass.input_id,
+            offset_ms: 0,
+            enabled: true,
+            fixture_id: Some(key.fixture_id),
+            key: Some(key.key.clone()),
+            from_ms: Some(key.from_ms),
+            to_ms: Some(out),
+        });
+    }
+}
+
+impl PendingTake {
+    /// Merge what was chosen: the take of each key `takes` keeps and the flashes of
+    /// each key `flashes` keeps, pass by pass in recording order. What was not chosen
+    /// is dropped with the rest of the review.
+    pub fn merge(
+        &self,
+        rows: &mut Vec<TimelineTrack>,
+        into: &mut Vec<TimelineFlash>,
+        takes: impl Fn(Uuid, &str) -> bool,
+        flashes: impl Fn(Uuid, &str) -> bool,
+    ) {
+        for pass in &self.passes {
+            store_take(rows, pass, &takes);
+            into.extend(pass.flashes.iter().filter(|f| flashes(f.fixture_id, &f.key)).cloned());
+        }
+    }
+}
+
 // Commands live beside the type for the orphan rule's sake, the way `Sequence`'s do.
 #[pult_commands]
 impl Timeline {
@@ -375,11 +497,17 @@ impl Timeline {
     /// `release` (default true) gives the keys a programmer pass recorded back to the
     /// take when it is stored. Without it the fader the operator is still holding beats
     /// the take it just made, for ever, because the programmer is above a track.
-    #[pult_command(args = "{ inputId?: string | null, programmer?: boolean, release?: boolean }")]
+    ///
+    /// `armedBy` is the arming page's own id, so that page is the one that opens the
+    /// review when the take stops (see [`PendingTake`]).
+    #[pult_command(args = "{ inputId?: string | null, programmer?: boolean, release?: boolean, armedBy?: string }")]
     pub fn record(
         &mut self,
         args: serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(by) = args.get("armedBy").and_then(|v| v.as_str()) {
+            self.armed_by = Some(by.to_string());
+        }
         if args.get("programmer").and_then(|v| v.as_bool()) == Some(true) {
             let release = args.get("release").and_then(|v| v.as_bool()).unwrap_or(true);
             self.recording = Some(RecordSource::Programmer { release });
@@ -481,6 +609,16 @@ pub struct Timeline {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub tracks: Vec<TimelineTrack>,
+    /// The flash keys recorded onto this timeline, over every take. An `Option` only
+    /// because a non-`Option` column added to a show that already exists is one the
+    /// show cannot be opened with; `None` is none. See [`TimelineFlash`].
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub flashes: Option<Vec<TimelineFlash>>,
+    /// A recording waiting to be reviewed. See [`PendingTake`].
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub pending: Option<PendingTake>,
     /// A speed master this timeline drives from its grid.
     ///
     /// While the timeline runs, the **leader** writes that master's `bpm` and `t0` at
@@ -534,6 +672,12 @@ pub struct Timeline {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub recording: Option<RecordSource>,
+    /// The page that armed the recording, by the id it gave itself — the one that
+    /// opens the review when the take stops. SYNCED with `recording`, for the same
+    /// reason: the station recording is usually not the one that page is on.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub armed_by: Option<String>,
 }
 
 fn one() -> f32 {
@@ -541,6 +685,11 @@ fn one() -> f32 {
 }
 
 impl Timeline {
+    /// The flashes, as a list however they are stored.
+    pub fn all_flashes(&self) -> &[TimelineFlash] {
+        self.flashes.as_deref().unwrap_or_default()
+    }
+
     /// Where the playhead is at a console millisecond.
     ///
     /// A stopped timeline sits at its anchor whatever the moment is, which is what
@@ -884,6 +1033,8 @@ mod tests {
             markers: Vec::new(),
             events: Vec::new(),
             tracks: Vec::new(),
+            flashes: None,
+            pending: None,
             speed_master: None,
             node_id: None,
             end: None,
@@ -892,6 +1043,7 @@ mod tests {
             position_at_anchor_ms: 0,
             rate: 1.0,
             recording: None,
+            armed_by: None,
         }
     }
 

@@ -171,7 +171,7 @@ export type TimelineEntity = PathProxy<Timeline> & {
   delete(): Promise<void>;
   locate(args: { positionMs: number, at?: number }): Promise<void>;
   play(args: { at?: number, fromMs?: number }): Promise<void>;
-  record(args: { inputId?: string | null, programmer?: boolean, release?: boolean }): Promise<void>;
+  record(args: { inputId?: string | null, programmer?: boolean, release?: boolean, armedBy?: string }): Promise<void>;
   stop(args: { at?: number }): Promise<void>;
 };
 

@@ -27,7 +27,7 @@ pub use effect::{
     fade_value_at, shape_level, step_value, traveled, Curve, Direction, Easing, EffectSource,
     RunningEffect, RunningFade, Shape, Step,
 };
-pub use compose::{compose, Part};
+pub use compose::{compose, compose_with, Flash, Part};
 pub use color::{level_from, level_of, mix, unmix, Color, EmitterSpec};
 pub use track::{
     decode, encode, outline, sample, KeyOutline, Track, TrackAt, TrackError, TrackKey, TrackPoint, Transport,

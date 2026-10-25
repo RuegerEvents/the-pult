@@ -115,6 +115,16 @@ struct PartSpec {
     offset_ms: i32,
 }
 
+/// A flash on a timeline, as the page names it: `TimelineFlash`'s own fields.
+#[derive(Deserialize)]
+struct FlashSpec {
+    fixture_id: uuid::Uuid,
+    key: String,
+    value: pult_render::ParameterValue,
+    at_ms: u32,
+    duration_ms: u32,
+}
+
 /// A decoded recording, with an index from the key a page names to the points.
 ///
 /// The index is built once at load: a page watching four hundred parameters would
@@ -261,6 +271,33 @@ pub fn track_outline(bytes: &[u8], budget: u32) -> Result<JsValue, JsValue> {
     Ok(pult_render::outline(&track, budget as usize).serialize(&plain_javascript())?)
 }
 
+/// One key of a recording, every change point of it, for editing: `[{ ms, value,
+/// release? }]`. Empty where the recording does not hold the key.
+#[wasm_bindgen]
+pub fn track_points(bytes: &[u8], fixture_id: &str, key: &str) -> Result<JsValue, JsValue> {
+    let track = pult_render::track::decode(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let fixture_id: uuid::Uuid = fixture_id.parse().map_err(|_| JsValue::from_str("not a fixture id"))?;
+    let points: &[pult_render::TrackPoint] = track
+        .keys
+        .iter()
+        .find(|k| k.fixture_id == fixture_id && k.key == key)
+        .map_or(&[], |k| &k.points);
+    Ok(points.serialize(&plain_javascript())?)
+}
+
+/// A recording of one key with these change points, as the bytes a take is stored in —
+/// the one encoder, so an edited take is read back by the station exactly as written.
+/// The points are sorted by position, since a handle can be dragged past its neighbor.
+#[wasm_bindgen]
+pub fn encode_key(fixture_id: &str, key: &str, points: JsValue) -> Result<Vec<u8>, JsValue> {
+    let fixture_id: uuid::Uuid = fixture_id.parse().map_err(|_| JsValue::from_str("not a fixture id"))?;
+    let mut points: Vec<pult_render::TrackPoint> = serde_wasm_bindgen::from_value(points)?;
+    points.sort_by_key(|p| p.ms);
+    points.dedup_by(|later, earlier| later.ms == earlier.ms);
+    let track = pult_render::Track { keys: vec![pult_render::TrackKey { fixture_id, key: key.to_string(), points }] };
+    Ok(pult_render::track::encode(&track))
+}
+
 /// A serializer that answers with plain objects and arrays.
 ///
 /// `serde_wasm_bindgen`'s default turns a map into a JS `Map`, which is right for a
@@ -356,10 +393,17 @@ impl Evaluator {
     /// window of its parameter of an already-loaded recording, with its nudge — which
     /// is then played with [`Evaluator::play_track`] like any other. The station's own
     /// composition, `pult_render::compose`, so the screen and the lamps agree at the
-    /// edge of a slice. Answers whether every recording the rows name was loaded; what
-    /// was is composed either way.
-    pub fn compose_track(&mut self, id: &str, parts: JsValue) -> Result<bool, JsValue> {
+    /// edge of a slice. `flashes` (the timeline's `TimelineFlash`es, or nothing) are laid
+    /// over the rows the way the station lays them, `pult_render::compose_with`.
+    /// Answers whether every recording the rows name was loaded; what was is composed
+    /// either way.
+    pub fn compose_track(&mut self, id: &str, parts: JsValue, flashes: JsValue) -> Result<bool, JsValue> {
         let specs: Vec<PartSpec> = serde_wasm_bindgen::from_value(parts)?;
+        let flashes: Vec<FlashSpec> = if flashes.is_undefined() || flashes.is_null() {
+            Vec::new()
+        } else {
+            serde_wasm_bindgen::from_value(flashes)?
+        };
         let mut complete = true;
         let parts: Vec<pult_render::Part<'_>> = specs
             .iter()
@@ -376,7 +420,17 @@ impl Evaluator {
                 })
             })
             .collect();
-        let track = pult_render::compose(&parts);
+        let flashes: Vec<pult_render::Flash<'_>> = flashes
+            .iter()
+            .map(|f| pult_render::Flash {
+                fixture_id: f.fixture_id,
+                key: &f.key,
+                value: &f.value,
+                from_ms: f.at_ms,
+                to_ms: f.at_ms.saturating_add(f.duration_ms.max(1)),
+            })
+            .collect();
+        let track = pult_render::compose_with(&parts, &flashes);
         let at = track
             .keys
             .iter()

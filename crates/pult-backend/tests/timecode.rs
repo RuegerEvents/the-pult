@@ -256,6 +256,8 @@ async fn a_timeline_event_goes_the_cue_it_names() {
             action: TimelineAction::GoToCue { sequence_id: sequence.id, cue_id: cue.id },
         }],
         tracks: Vec::new(),
+        flashes: None,
+        pending: None,
         speed_master: None,
         node_id: None,
         end: None,
@@ -264,6 +266,7 @@ async fn a_timeline_event_goes_the_cue_it_names() {
         position_at_anchor_ms: 0,
         rate: 1.0,
         recording: None,
+        armed_by: None,
     };
     create(&station, "timelines", serde_json::to_value(&timeline).unwrap()).await;
 

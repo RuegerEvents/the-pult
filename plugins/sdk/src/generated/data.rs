@@ -96,6 +96,8 @@ pub struct TimelineRecordArgs {
     pub programmer: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub armed_by: Option<String>,
 }
 
 /// Arguments for `timelines.stop`.
@@ -5530,6 +5532,22 @@ impl TimelineEntity {
         self.at.field("tracks")
     }
 
+    /// The flash keys recorded onto this timeline, over every take. An `Option` only
+    /// because a non-`Option` column added to a show that already exists is one the
+    /// show cannot be opened with; `None` is none. See [`TimelineFlash`].
+    ///
+    /// PERSISTED.
+    pub fn flashes(&self) -> Field<Option<Vec<TimelineFlash>>> {
+        self.at.field("flashes")
+    }
+
+    /// A recording waiting to be reviewed. See [`PendingTake`].
+    ///
+    /// PERSISTED.
+    pub fn pending(&self) -> Field<Option<PendingTake>> {
+        self.at.field("pending")
+    }
+
     /// A speed master this timeline drives from its grid.
     ///
     /// While the timeline runs, the **leader** writes that master's `bpm` and `t0` at
@@ -5603,6 +5621,15 @@ impl TimelineEntity {
         self.at.field("recording")
     }
 
+    /// The page that armed the recording, by the id it gave itself — the one that
+    /// opens the review when the take stops. SYNCED with `recording`, for the same
+    /// reason: the station recording is usually not the one that page is on.
+    ///
+    /// SYNCED.
+    pub fn armed_by(&self) -> Field<Option<String>> {
+        self.at.field("armed_by")
+    }
+
     /// Put the playhead somewhere, running or not.
     ///
     /// Args: `{ "positionMs": <timeline ms>, "at"?: <console unix ms> }`.
@@ -5639,6 +5666,9 @@ impl TimelineEntity {
     /// `release` (default true) gives the keys a programmer pass recorded back to the
     /// take when it is stored. Without it the fader the operator is still holding beats
     /// the take it just made, for ever, because the programmer is above a track.
+    ///
+    /// `armedBy` is the arming page's own id, so that page is the one that opens the
+    /// review when the take stops (see [`PendingTake`]).
     ///
     /// The command `timelines.record`, which the station applies to the row and
     /// replicates like any other write.

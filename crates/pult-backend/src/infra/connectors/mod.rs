@@ -1104,12 +1104,13 @@ async fn playing_tracks(
     let mut playing = Vec::new();
     let mut missing = false;
     for timeline in timelines.iter().filter(|timeline| timeline.running) {
-        if !timeline.tracks.iter().any(|track| track.enabled) {
+        if !timeline.tracks.iter().any(|track| track.enabled) && timeline.all_flashes().is_empty() {
             continue;
         }
         // Every row of the timeline, composed: each its window of its parameter, with
-        // its nudge applied, so the transport is the timeline's own.
-        let (mut composed, complete) = cache.compose(timeline.id, &timeline.tracks).await;
+        // its nudge applied, and the flashes over them, so the transport is the
+        // timeline's own.
+        let (mut composed, complete) = cache.compose(timeline.id, &timeline.tracks, timeline.all_flashes()).await;
         missing |= !complete;
         // A timeline recording a new pass leaves the sequences' levels to their
         // faders: the hand on the fader is what is being recorded, and the last
@@ -1144,10 +1145,10 @@ pub fn recorded_levels_at(
 ) -> HashMap<Uuid, f32> {
     let mut levels: HashMap<Uuid, (u64, f32)> = HashMap::new();
     for timeline in timelines.iter().filter(|t| t.running && !recording_from_programmer(t)) {
-        if !timeline.tracks.iter().any(|track| track.enabled) {
+        if !timeline.tracks.iter().any(|track| track.enabled) && timeline.all_flashes().is_empty() {
             continue;
         }
-        let composed = cache.compose_now(timeline.id, &timeline.tracks);
+        let composed = cache.compose_now(timeline.id, &timeline.tracks, timeline.all_flashes());
         let transport = timeline.transport();
         for key in composed.keys.iter().filter(|k| k.key == pult_schema::types::sequence::LEVEL_KEY) {
             let at = pult_render::TrackAt { points: &key.points, transport };

@@ -58,6 +58,8 @@ pub struct TimelineStopped {
     /// The rows that were playing, so the caller can compose them, sample what they
     /// were saying where it stopped, and let those keys go.
     pub tracks: Vec<pult_schema::types::timeline::TimelineTrack>,
+    /// And the flashes over them, which are let go of the same way.
+    pub flashes: Vec<pult_schema::types::timeline::TimelineFlash>,
 }
 
 /// A speed master a timeline wants set to a tempo.
@@ -164,6 +166,7 @@ impl Timelines {
                             .filter(|track| track.enabled)
                             .cloned()
                             .collect(),
+                        flashes: timeline.all_flashes().to_vec(),
                     });
                 }
                 // A stopped timeline keeps its place in the record rather than being
@@ -347,6 +350,8 @@ mod tests {
             markers: Vec::new(),
             events,
             tracks: Vec::new(),
+            flashes: None,
+            pending: None,
             speed_master: None,
             node_id: None,
             end: None,
@@ -355,6 +360,7 @@ mod tests {
             position_at_anchor_ms: 0,
             rate: 1.0,
             recording: None,
+            armed_by: None,
         }
     }
 

@@ -1684,6 +1684,52 @@ pub enum ParameterKind {
     Cell { cell: u16, of: Box<ParameterKind> },
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PendingKey {
+    pub fixture_id: Uuid,
+    pub key: String,
+    pub from_ms: u32,
+}
+
+/// One pass of a pending take.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PendingPass {
+    /// The recording's sha.
+    pub asset: String,
+    /// The input it came off, where it came off a wire.
+    #[serde(default)]
+    pub input_id: Option<Uuid>,
+    /// Each key the pass recorded and where its stretch starts. A key from the
+    /// programmer starts at its first touch; a take off a wire, where every key was
+    /// listening from the start, at the start.
+    pub keys: Vec<PendingKey>,
+    /// Where every key's stretch ends: where the pass stopped.
+    pub out_ms: u32,
+    /// The flash keys pressed during the pass, ready to be added.
+    #[serde(default)]
+    pub flashes: Vec<TimelineFlash>,
+}
+
+/// A recording that has stopped and is waiting to be looked at.
+///
+/// **Nothing a take records is merged until somebody says so.** A pass is stored as an
+/// asset at once — the bytes are safe the moment the timeline stops — and listed here;
+
+/// the page that armed the recording asks which of it to keep, and Merge writes the
+/// chosen keys into the rows in one gesture. PERSISTED, so a take nobody has answered
+/// for yet survives a failover and a restart alike, and so undoing a Merge puts the
+/// take back up for review rather than losing it.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct PendingTake {
+    /// The page that armed the recording (`Timeline::armed_by` at the time), which is
+    /// the one that opens the review by itself. Every other page offers it.
+    #[serde(default)]
+    pub armed_by: Option<String>,
+    /// One per pass, in the order they were recorded: a looping rehearsal is a pass per
+    /// lap, and a later lap is merged over an earlier one.
+    pub passes: Vec<PendingPass>,
+}
+
 /// What a parameter's 0..1 actually spans.
 ///
 /// A pan whose range is −270 to 270 reads and writes in degrees; one with no range
@@ -2934,6 +2980,14 @@ pub struct Timeline {
     pub events: Vec<TimelineEvent>,
     #[serde(default)]
     pub tracks: Vec<TimelineTrack>,
+    /// The flash keys recorded onto this timeline, over every take. An `Option` only
+    /// because a non-`Option` column added to a show that already exists is one the
+    /// show cannot be opened with; `None` is none. See [`TimelineFlash`].
+    #[serde(default)]
+    pub flashes: Option<Vec<TimelineFlash>>,
+    /// A recording waiting to be reviewed. See [`PendingTake`].
+    #[serde(default)]
+    pub pending: Option<PendingTake>,
     /// A speed master this timeline drives from its grid.
     ///
     /// While the timeline runs, the **leader** writes that master's `bpm` and `t0` at
@@ -2978,6 +3032,11 @@ pub struct Timeline {
     /// and the leader records it.
     #[serde(default)]
     pub recording: Option<RecordSource>,
+    /// The page that armed the recording, by the id it gave itself — the one that
+    /// opens the review when the take stops. SYNCED with `recording`, for the same
+    /// reason: the station recording is usually not the one that page is on.
+    #[serde(default)]
+    pub armed_by: Option<String>,
 }
 
 /// What a timeline does, and when: to a sequence, to another timeline, or to a variable.
@@ -3010,6 +3069,24 @@ pub struct TimelineEvent {
     pub id: Uuid,
     pub at_ms: u32,
     pub action: TimelineAction,
+}
+
+/// A flash key pressed while a take rolled: one value on one parameter, for a while.
+///
+/// Not a stretch of a recording. A press is one act with a length, so it is kept as
+/// one — an object an operator can move, stretch and delete — rather than as two change
+/// points in a file nobody can edit. It goes on top of every take and cuts none
+/// (`pult_render::compose_with`), so a button pressed during a second pass adds to the
+/// first instead of erasing it. Told apart from a fader by `model::takes::Pass`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TimelineFlash {
+    pub id: Uuid,
+    pub fixture_id: Uuid,
+    /// The parameter key, spelled the way a take's rows spell it.
+    pub key: String,
+    pub value: ParameterValue,
+    pub at_ms: u32,
+    pub duration_ms: u32,
 }
 
 /// Where a timeline's position comes from.

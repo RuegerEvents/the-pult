@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use pult_render::Track;
-use pult_schema::types::timeline::TimelineTrack;
+use pult_schema::types::timeline::{TimelineFlash, TimelineTrack};
 use uuid::Uuid;
 
 use super::assets::AssetStore;
@@ -47,13 +47,18 @@ impl TrackCache {
         }
     }
 
-    /// What a timeline's enabled rows play, composed (`pult_render::compose`), and
-    /// whether every recording they point at was here. An incomplete composition is
-    /// what is here, played rather than nothing, and not kept: the next look tries the
-    /// missing ones again.
-    pub async fn compose(&self, timeline_id: Uuid, rows: &[TimelineTrack]) -> (Arc<Track>, bool) {
+    /// What a timeline's enabled rows play, composed with its flashes over them
+    /// (`pult_render::compose_with`), and whether every recording they point at was
+    /// here. An incomplete composition is what is here, played rather than nothing, and
+    /// not kept: the next look tries the missing ones again.
+    pub async fn compose(
+        &self,
+        timeline_id: Uuid,
+        rows: &[TimelineTrack],
+        flashes: &[TimelineFlash],
+    ) -> (Arc<Track>, bool) {
         let enabled: Vec<&TimelineTrack> = rows.iter().filter(|row| row.enabled).collect();
-        let signature = serde_json::to_string(&enabled).unwrap_or_default();
+        let signature = signature(&enabled, flashes);
         if let Some(composed) = self.cached(timeline_id, &signature) {
             return (composed, true);
         }
@@ -65,7 +70,7 @@ impl TrackCache {
                 None => complete = false,
             }
         }
-        let composed = Arc::new(compose(&decoded));
+        let composed = Arc::new(compose(&decoded, flashes));
         if complete {
             self.keep(timeline_id, signature, composed.clone());
         }
@@ -74,9 +79,9 @@ impl TrackCache {
 
     /// [`TrackCache::compose`] from what is already decoded, for the evaluations that
     /// happen at one moment and must not wait on a disk.
-    pub fn compose_now(&self, timeline_id: Uuid, rows: &[TimelineTrack]) -> Arc<Track> {
+    pub fn compose_now(&self, timeline_id: Uuid, rows: &[TimelineTrack], flashes: &[TimelineFlash]) -> Arc<Track> {
         let enabled: Vec<&TimelineTrack> = rows.iter().filter(|row| row.enabled).collect();
-        let signature = serde_json::to_string(&enabled).unwrap_or_default();
+        let signature = signature(&enabled, flashes);
         if let Some(composed) = self.cached(timeline_id, &signature) {
             return composed;
         }
@@ -84,7 +89,7 @@ impl TrackCache {
             .iter()
             .filter_map(|row| Some((*row, self.peek(&row.asset)??)))
             .collect();
-        Arc::new(compose(&decoded))
+        Arc::new(compose(&decoded, flashes))
     }
 
     fn cached(&self, timeline_id: Uuid, signature: &str) -> Option<Arc<Track>> {
@@ -148,8 +153,14 @@ impl TrackCache {
     }
 }
 
-/// Rows over their recordings, composed, in list order.
-fn compose(rows: &[(&TimelineTrack, Arc<Track>)]) -> Track {
+/// Rows over their recordings, composed, in list order, and the flashes over them.
+fn compose(rows: &[(&TimelineTrack, Arc<Track>)], flashes: &[TimelineFlash]) -> Track {
     let parts: Vec<pult_render::Part<'_>> = rows.iter().map(|(row, track)| row.part(track)).collect();
-    pult_render::compose(&parts)
+    let flashes: Vec<pult_render::Flash<'_>> = flashes.iter().map(TimelineFlash::flash).collect();
+    pult_render::compose_with(&parts, &flashes)
+}
+
+/// What a composition was made from, to tell whether it still stands.
+fn signature(rows: &[&TimelineTrack], flashes: &[TimelineFlash]) -> String {
+    serde_json::to_string(&(rows, flashes)).unwrap_or_default()
 }

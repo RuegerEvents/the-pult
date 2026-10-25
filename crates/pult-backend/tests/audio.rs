@@ -109,6 +109,8 @@ fn a_timeline(source: TimelineSource, events: Vec<TimelineEvent>) -> Timeline {
         markers: Vec::new(),
         events,
         tracks: Vec::new(),
+        flashes: None,
+        pending: None,
         speed_master: None,
         node_id: None,
         end: None,
@@ -117,6 +119,7 @@ fn a_timeline(source: TimelineSource, events: Vec<TimelineEvent>) -> Timeline {
         position_at_anchor_ms: 0,
         rate: 1.0,
         recording: None,
+        armed_by: None,
     }
 }
 

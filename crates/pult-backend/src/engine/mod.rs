@@ -1631,7 +1631,7 @@ impl ShowEngine {
             HashMap::new();
         // The rows composed exactly as the output manager composed them, through the
         // same cache, so what is let go of is what the wire was showing.
-        let (track, _) = cache.compose(stopped.timeline_id, &stopped.tracks).await;
+        let (track, _) = cache.compose(stopped.timeline_id, &stopped.tracks, &stopped.flashes).await;
         for key in &track.keys {
             if let Some(value) = pult_render::sample(&key.points, stopped.position_ms) {
                 held.insert((key.fixture_id, key.key.clone()), value.clone());

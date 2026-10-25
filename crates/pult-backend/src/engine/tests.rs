@@ -4939,6 +4939,8 @@ async fn a_loop_goes_round_on_an_idle_station() {
         markers: Vec::new(),
         events: Vec::new(),
         tracks: Vec::new(),
+        flashes: None,
+        pending: None,
         speed_master: None,
         node_id: None,
         end: Some(TimelineEnd { at_ms: 200, then: AtEnd::Loop }),
@@ -4947,6 +4949,7 @@ async fn a_loop_goes_round_on_an_idle_station() {
         position_at_anchor_ms: 0,
         rate: 1.0,
         recording: None,
+        armed_by: None,
     };
     h.engine.set(create_path("timelines"), Lifecycle::Persisted, json(&ambience)).await.unwrap();
     h.engine
@@ -5034,6 +5037,8 @@ mod recording_sequence_acts {
             markers: Vec::new(),
             events: Vec::new(),
             tracks: Vec::new(),
+            flashes: None,
+            pending: None,
             speed_master: None,
             node_id: None,
             end: None,
@@ -5042,6 +5047,7 @@ mod recording_sequence_acts {
             position_at_anchor_ms: 5_000,
             rate: 1.0,
             recording,
+            armed_by: None,
         }
     }
 

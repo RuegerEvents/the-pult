@@ -22,6 +22,10 @@
 //! rehearsal in which every lap that was touched replaces the last. The programmer is
 //! released only at the final stop: releasing on a wrap would take the fader out of the
 //! operator's hand mid-rehearsal.
+//!
+//! **And nothing is merged by the station.** A pass ends as an asset and an entry in
+//! the timeline's `pending` take; the page that armed it asks which keys to keep and
+//! `take.merge` writes those into the rows under that operator's name, in one gesture.
 
 use std::collections::BTreeSet;
 
@@ -30,14 +34,17 @@ use pult_schema::{
     path::PathSegment,
     types::{
         programmer::{programmer_entry_id, ProgrammerValue},
-        timeline::{RecordSource, TakeStatus, TakeStatuses, Timeline, TimelineTrack},
+        timeline::{
+            PendingKey, PendingPass, PendingTake, RecordSource, TakeStatus, TakeStatuses, Timeline, TimelineFlash,
+            TimelineTrack,
+        },
     },
 };
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::InputManager;
-use crate::model::takes::{jumped, per_parameter, store, Pass};
+use crate::model::takes::{jumped, per_parameter, Pass};
 
 /// A programmer take in progress.
 pub(super) struct ProgrammerTake {
@@ -147,10 +154,10 @@ impl InputManager {
         self.publish_takes().await;
     }
 
-    /// Store one pass and write it into the timeline's rows, in one write of its
-    /// `tracks`: see `model::takes::store`.
+    /// Store one pass and put it up for review: see `PendingTake`.
     ///
-    /// Answers the keys it recorded, or `None` where there was nothing to store.
+    /// Answers the keys it recorded as a take, or `None` where there was nothing to
+    /// store. A flash is not among them: its key left the programmer by itself.
     async fn store_pass(
         &self,
         timeline_id: Uuid,
@@ -160,61 +167,64 @@ impl InputManager {
         if pass.is_empty() {
             return None;
         }
-        let from = pass.from_ms();
-        let recording = pass.into_track();
-        if recording.keys.is_empty() {
+        let recorded = pass.finish();
+        if recorded.is_empty() {
             return None;
         }
         let touched: Vec<(Uuid, String)> =
-            recording.keys.iter().map(|k| (k.fixture_id, k.key.clone())).collect();
+            recorded.track.keys.iter().map(|k| (k.fixture_id, k.key.clone())).collect();
         let out = punch_out_ms.min(u32::MAX as u64) as u32;
-        self.store_recording(timeline_id, &recording, None, from, out).await?;
-        info!("[take] pass stored: {} key(s) into timeline {timeline_id}", touched.len());
+        let flashes = recorded.flashes.len();
+        self.stage_recording(timeline_id, &recorded.track, None, recorded.keys, recorded.flashes, out).await?;
+        info!("[take] pass staged: {} key(s), {flashes} flash(es) on timeline {timeline_id}", touched.len());
         Some(touched)
     }
 
-    /// Put a recording in the asset store and into a timeline's rows over
-    /// `[from, out)`. Shared by a programmer pass and a take off a wire, which store
-    /// alike: each key a row of its own, replacing that stretch of it.
-    pub(super) async fn store_recording(
+    /// Put a recording in the asset store and onto a timeline's pending take, to be
+    /// merged when somebody says so. Shared by a programmer pass and a take off a
+    /// wire, which are reviewed alike.
+    pub(super) async fn stage_recording(
         &self,
         timeline_id: Uuid,
         recording: &pult_render::Track,
         input_id: Option<Uuid>,
-        from: u32,
+        keys: Vec<PendingKey>,
+        flashes: Vec<TimelineFlash>,
         out: u32,
     ) -> Option<()> {
         let assets = self.assets.clone()?;
-        let sha = match assets.put(crate::infra::assets::TRACK_MIME, &pult_render::encode(recording)).await {
-            Ok(sha) => sha,
-            Err(e) => {
-                warn!("[take] a recording could not be stored: {e}");
-                return None;
+        // A pass of nothing but flashes has no recording to point at.
+        let asset = if recording.keys.is_empty() {
+            String::new()
+        } else {
+            match assets.put(crate::infra::assets::TRACK_MIME, &pult_render::encode(recording)).await {
+                Ok(sha) => sha,
+                Err(e) => {
+                    warn!("[take] a recording could not be stored: {e}");
+                    return None;
+                }
             }
         };
-        // Read the row back rather than remembering it: somebody may have cut, moved
-        // or disabled a take while this one rolled.
-        let path = vec![
-            PathSegment::Key("timelines".into()),
-            PathSegment::Id(timeline_id),
-            PathSegment::Key("tracks".into()),
-        ];
-        let mut tracks: Vec<TimelineTrack> = self
-            .engine
-            .get(path.clone())
-            .await
-            .ok()
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default();
-        // An old take playing every parameter has to be a row per parameter before a
-        // stretch of one of them can be cut out of it.
-        let keys = self.keys_of_whole_takes(&tracks).await;
-        per_parameter(&mut tracks, &keys);
-        store(&mut tracks, recording, &sha, input_id, from, out);
-        match serde_json::to_value(&tracks) {
+        // Read the timeline back rather than remembering it: the take already waiting
+        // may have been answered, or a lap added to it, while this one rolled.
+        let path = vec![PathSegment::Key("timelines".into()), PathSegment::Id(timeline_id)];
+        let timeline: Option<Timeline> =
+            self.engine.get(path.clone()).await.ok().and_then(|value| serde_json::from_value(value).ok());
+        let Some(timeline) = timeline else {
+            warn!("[take] timeline {timeline_id} is gone; the recording is kept as {asset} and nothing else");
+            return None;
+        };
+        let mut pending = timeline.pending.unwrap_or_else(|| PendingTake { armed_by: timeline.armed_by.clone(), ..Default::default() });
+        if pending.armed_by.is_none() {
+            pending.armed_by = timeline.armed_by.clone();
+        }
+        pending.passes.push(PendingPass { asset, input_id, keys, out_ms: out, flashes });
+        let mut path = path;
+        path.push(PathSegment::Key("pending".into()));
+        match serde_json::to_value(&pending) {
             Ok(value) => {
                 if let Err(e) = self.engine.set(path, Lifecycle::Persisted, value).await {
-                    warn!("[take] a recording was stored but could not be added to the timeline: {e}");
+                    warn!("[take] a recording was stored but could not be put up for review: {e}");
                     return None;
                 }
             }

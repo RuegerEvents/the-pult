@@ -17,6 +17,8 @@ fn running(anchor_ms: u64, position_at_anchor_ms: u64) -> Timeline {
         markers: Vec::new(),
         events: Vec::new(),
         tracks: Vec::new(),
+        flashes: None,
+        pending: None,
         speed_master: None,
         node_id: None,
         end: None,
@@ -25,6 +27,7 @@ fn running(anchor_ms: u64, position_at_anchor_ms: u64) -> Timeline {
         position_at_anchor_ms,
         rate: 1.0,
         recording: None,
+        armed_by: None,
     }
 }
 

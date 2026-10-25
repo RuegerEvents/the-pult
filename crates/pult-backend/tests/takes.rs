@@ -111,7 +111,15 @@ async fn hold(station: &Running, fixture_id: Uuid, kind: ParameterKind, key: &st
     }
 }
 
+/// The rows a timeline plays, with whatever take is waiting merged first: the review
+/// is a person's, and here every take is kept the moment it is waiting.
 async fn tracks_of(station: &Running, id: Uuid) -> Vec<TimelineTrack> {
+    let timelines: Vec<Timeline> = read(station, "timelines").await;
+    if timelines.iter().any(|t| t.id == id && t.pending.is_some()) {
+        pult_backend::api::rpcs::dispatch("take.merge", serde_json::json!({ "timelineId": id }), &station.rpc)
+            .await
+            .expect("the take merges");
+    }
     let timelines: Vec<Timeline> = read(station, "timelines").await;
     timelines.into_iter().find(|t| t.id == id).map(|t| t.tracks).unwrap_or_default()
 }
@@ -206,6 +214,8 @@ async fn a_take_from_the_programmer_plays_back_and_overdubs() {
         markers: Vec::new(),
         events: Vec::new(),
         tracks: Vec::new(),
+        flashes: None,
+        pending: None,
         speed_master: None,
         node_id: None,
         end: None,
@@ -214,6 +224,7 @@ async fn a_take_from_the_programmer_plays_back_and_overdubs() {
         position_at_anchor_ms: 0,
         rate: 1.0,
         recording: None,
+        armed_by: None,
     };
     create(&station, "timelines", Lifecycle::Persisted, serde_json::to_value(&song).unwrap()).await;
 
@@ -337,6 +348,8 @@ async fn every_lap_of_a_looping_rehearsal_is_a_pass() {
         markers: Vec::new(),
         events: Vec::new(),
         tracks: Vec::new(),
+        flashes: None,
+        pending: None,
         speed_master: None,
         node_id: None,
         end: Some(pult_schema::types::timeline::TimelineEnd {
@@ -348,6 +361,7 @@ async fn every_lap_of_a_looping_rehearsal_is_a_pass() {
         position_at_anchor_ms: 0,
         rate: 1.0,
         recording: None,
+        armed_by: None,
     };
     create(&station, "timelines", Lifecycle::Persisted, serde_json::to_value(&scare).unwrap()).await;
 
