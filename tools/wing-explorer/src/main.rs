@@ -39,6 +39,10 @@ struct Args {
     /// Where the panel is served.
     #[arg(long, default_value_t = 7800)]
     port: u16,
+    /// Send the wing no fader block at all: a test of whether the motors are free when
+    /// the host says nothing about them.
+    #[arg(long)]
+    no_fader_frames: bool,
     /// Draw the panel without opening the wing, for working on the page.
     #[arg(long)]
     no_device: bool,
@@ -117,6 +121,10 @@ async fn main() -> Result<()> {
                 }
             })
             .context("report bridge")?;
+        if args.no_fader_frames {
+            w.out.lock().unwrap().silent_faders = true;
+            tracing::info!("sending the wing no fader frames at all");
+        }
         (w.out, w.input)
     };
 
