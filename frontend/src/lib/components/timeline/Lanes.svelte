@@ -31,7 +31,7 @@
 	 * taken away. Typing a time in the Inspector is still there for the exact number.
 	 */
 
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 
 	import ZoomIn from '@lucide/svelte/icons/zoom-in';
 	import ZoomOut from '@lucide/svelte/icons/zoom-out';
@@ -46,7 +46,9 @@
 	import { collection, showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { outlines, wantOutline } from '$lib/stores/takeOutlines.js';
-	import { audioStatus, current, devices, locate, positionOf, toggle, writeColumns } from '$lib/stores/timelines.js';
+	import { audioStatus, current, devices, locate, positionOf, takes, toggle, writeColumns } from '$lib/stores/timelines.js';
+	import { entries as programmerEntries } from '$lib/stores/programmer.js';
+	import { LivePass } from '$lib/timeline/liveTake.js';
 	import { zones } from '$lib/stores/zones.js';
 	import { describeAction } from '$lib/timeline/describe.js';
 	import {
@@ -239,6 +241,28 @@
 		return parameter ? displayLabel(parameter.kind) : key;
 	}
 
+	/** The take being recorded, as one more lane, while it has moved anything. */
+	function liveTakeInput() {
+		void liveVersion;
+		const pass = livePass;
+		if (!pass || pass.keys.size === 0) return [];
+		const now = positionOf(timeline, consoleNow()) ?? 0;
+		return [
+			{
+				id: 'live',
+				name: '● Recording',
+				subject: undefined,
+				source: 'as it is played',
+				offsetMs: 0,
+				keys: [...pass.keys.values()].map((k) => ({
+					label: keyLabel(k.fixtureId, k.key),
+					fromMs: k.points[0]?.[0] ?? 0,
+					toMs: Math.max(now, k.points[k.points.length - 1]?.[0] ?? 0)
+				}))
+			}
+		];
+	}
+
 	/** "Skeleton 1 · Jaw", where a take moved more than one fixture. */
 	const keyLabel = (fixtureId: string, key: string) => `${fixtureName(fixtureId)} · ${parameterLabel(fixtureId, key)}`;
 
@@ -287,11 +311,59 @@
 					offsetMs: track.offset_ms,
 					keys: keys ? keys.map((k) => ({ label: one ? parameterLabel(k.fixture_id, k.key) : keyLabel(k.fixture_id, k.key), fromMs: k.from_ms, toMs: k.to_ms })) : null
 				};
-			})
+			}).concat(liveTakeInput())
 		});
 	});
 
 	const canvasHeight = $derived(Math.max(layout.height, visibleHeight));
+
+	// ── A take being recorded, drawn as it goes ───────────────────────────────
+	//
+	// See `timeline/liveTake.ts`: a preview built here from the programmer this page
+	// already holds, by the station's rules, replaced by the stored take when it lands.
+	//
+	// Every programmer write is a point, but not a relayout: the canvas is drawn every
+	// frame while the timeline runs and `drawLiveTake` reads the points itself, so what
+	// the layout needs is a row for a new key and a lane that grows with the playhead.
+	// Relaid on every write it was sixty layouts a second per moving fader, which is
+	// what lagged the page the first time this lane was here.
+	let livePass = $state.raw<LivePass | null>(null);
+	let liveVersion = $state(0);
+	let liveKeys = 0;
+	let relaidAt = 0;
+	let relayLater: ReturnType<typeof setTimeout> | null = null;
+	const RELAY_MS = 250;
+	function relay() {
+		if (relayLater !== null) clearTimeout(relayLater);
+		relayLater = null;
+		relaidAt = performance.now();
+		liveVersion = untrack(() => liveVersion) + 1;
+	}
+	const recordingProgrammerNow = $derived(
+		!!$takes?.[timeline.id] && !!timeline.recording && 'Programmer' in timeline.recording && timeline.running
+	);
+	$effect(() => {
+		if (!recordingProgrammerNow) {
+			livePass = null;
+			liveKeys = 0;
+			return;
+		}
+		const entries = $programmerEntries;
+		const position = positionOf(timeline, consoleNow());
+		if (position === null) return;
+		const pass = untrack(() => livePass) ?? new LivePass();
+		pass.observe(position, entries);
+		livePass = pass;
+		if (pass.keys.size !== liveKeys || performance.now() - relaidAt >= RELAY_MS) {
+			liveKeys = pass.keys.size;
+			relay();
+		} else if (relayLater === null) {
+			relayLater = setTimeout(relay, RELAY_MS);
+		}
+	});
+	$effect(() => () => {
+		if (relayLater !== null) clearTimeout(relayLater);
+	});
 
 	/** What is picked up on this timeline. */
 	const picked = $derived(new Set($subject.filter((r) => r.kind.startsWith('timeline-') && layout.items.some((i) => refKey(i.ref) === refKey(r))).map(refKey)));
@@ -359,6 +431,33 @@
 		const rest = s - m * 60;
 		return `${m}:${rest < 10 ? '0' : ''}${rest.toFixed(ms % 1000 === 0 ? 0 : 1)}`;
 	};
+
+	/** The take being recorded: red, a row per key, stepwise, gaps where it let go. */
+	function drawLiveTake(ctx: CanvasRenderingContext2D, item: (typeof layout.items)[number]) {
+		const pass = livePass;
+		const lane = layout.lanes.find((l) => l.key === item.lane);
+		if (!pass || !lane) return;
+		const r = rectOf(item, layout, view, width);
+		ctx.fillStyle = 'rgba(239,68,68,0.10)';
+		ctx.fillRect(r.left, r.top, Math.max(2, r.right - r.left), r.bottom - r.top);
+		const end = positionOf(timeline, consoleNow()) ?? 0;
+		[...pass.keys.values()].forEach((key, row) => {
+			const top = lane.top + lane.headHeight + 2 + row * lane.rowHeight;
+			const bottom = top + lane.rowHeight - 3;
+			const y = (v: number) => bottom - Math.max(0, Math.min(1, v)) * (bottom - top);
+			ctx.strokeStyle = '#f87171';
+			ctx.beginPath();
+			key.points.forEach(([ms, level], i) => {
+				const x = xOf(ms, view, width);
+				const next = key.points[i + 1]?.[0] ?? end;
+				if (level === null) return;
+				// Stepwise to the next point, or on to the playhead while it holds.
+				ctx.moveTo(x, y(level));
+				ctx.lineTo(xOf(next, view, width), y(level));
+			});
+			ctx.stroke();
+		});
+	}
 
 	function draw() {
 		if (!canvas) return;
@@ -480,6 +579,10 @@
 		// Takes: a row per key, its movement as a filled line.
 		for (const item of layout.items) {
 			if (item.ref.kind !== 'timeline-take') continue;
+			if (item.ref.id === 'live') {
+				drawLiveTake(ctx, item);
+				continue;
+			}
 			const track = timeline.tracks.find((t) => t.id === item.ref.id);
 			const lane = layout.lanes.find((l) => l.key === item.lane);
 			if (!track || !lane) continue;
