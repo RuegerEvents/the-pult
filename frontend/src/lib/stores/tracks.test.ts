@@ -19,6 +19,10 @@ const aTrack = (over: Partial<TimelineTrack> = {}): TimelineTrack => ({
 	input_id: null,
 	offset_ms: 0,
 	enabled: true,
+	fixture_id: null,
+	key: null,
+	from_ms: null,
+	to_ms: null,
 	...over
 });
 
@@ -52,24 +56,18 @@ describe('which recordings are rolling', () => {
 		expect(rolling([aTimeline({ tracks: [aTrack({ enabled: false })] })])).toEqual([]);
 	});
 
-	it('carries the timeline’s own transport', () => {
-		expect(rolling([aTimeline({ rate: 2 })])).toEqual([
-			{ sha: 'abc', anchorMs: 1000, positionMs: 500, rate: 2, levels: true }
+	it('is one composition per timeline, on the timeline’s own transport', () => {
+		const [one] = rolling([aTimeline({ rate: 2, tracks: [aTrack(), aTrack({ id: 'b', asset: 'def', offset_ms: 40 })] })]);
+		expect(one).toMatchObject({ id: 'timeline:timeline', anchorMs: 1000, positionMs: 500, rate: 2, levels: true });
+		// The nudge is the composition's, row by row, not the transport's.
+		expect(one.parts.map((p) => [p.sha, p.offset_ms])).toEqual([
+			['abc', 0],
+			['def', 40]
 		]);
 	});
 
 	it('leaves the sequence levels to their faders while the timeline records a pass', () => {
 		const recording = aTimeline({ recording: { Programmer: { release: true } } });
 		expect(rolling([recording])[0].levels).toBe(false);
-	});
-
-	it('moves the playhead the other way from a take’s nudge', () => {
-		// A take that arrived 40 ms late is played 40 ms earlier.
-		expect(rolling([aTimeline({ tracks: [aTrack({ offset_ms: 40 })] })])[0].positionMs).toBe(460);
-		expect(rolling([aTimeline({ tracks: [aTrack({ offset_ms: -40 })] })])[0].positionMs).toBe(540);
-	});
-
-	it('never runs the playhead negative, which samples nothing at all', () => {
-		expect(rolling([aTimeline({ tracks: [aTrack({ offset_ms: 9999 })] })])[0].positionMs).toBe(0);
 	});
 });

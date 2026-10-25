@@ -21,19 +21,81 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use pult_render::Track;
+use pult_schema::types::timeline::TimelineTrack;
+use uuid::Uuid;
 
 use super::assets::AssetStore;
 
-/// The recordings this station has decoded, by sha.
+/// The recordings this station has decoded, by sha, and what each timeline's rows of
+/// them compose to.
 #[derive(Clone)]
 pub struct TrackCache {
     assets: AssetStore,
     loaded: Arc<Mutex<HashMap<String, Option<Arc<Track>>>>>,
+    /// Per timeline, the rows it was composed from and what they came to. One entry
+    /// per timeline rather than per set of rows, because dragging a crop rewrites the
+    /// rows every frame and every one of those would otherwise be kept.
+    composed: Arc<Mutex<HashMap<Uuid, (String, Arc<Track>)>>>,
 }
 
 impl TrackCache {
     pub fn new(assets: AssetStore) -> Self {
-        TrackCache { assets, loaded: Arc::new(Mutex::new(HashMap::new())) }
+        TrackCache {
+            assets,
+            loaded: Arc::new(Mutex::new(HashMap::new())),
+            composed: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// What a timeline's enabled rows play, composed (`pult_render::compose`), and
+    /// whether every recording they point at was here. An incomplete composition is
+    /// what is here, played rather than nothing, and not kept: the next look tries the
+    /// missing ones again.
+    pub async fn compose(&self, timeline_id: Uuid, rows: &[TimelineTrack]) -> (Arc<Track>, bool) {
+        let enabled: Vec<&TimelineTrack> = rows.iter().filter(|row| row.enabled).collect();
+        let signature = serde_json::to_string(&enabled).unwrap_or_default();
+        if let Some(composed) = self.cached(timeline_id, &signature) {
+            return (composed, true);
+        }
+        let mut decoded = Vec::with_capacity(enabled.len());
+        let mut complete = true;
+        for row in &enabled {
+            match self.get(&row.asset).await {
+                Some(track) => decoded.push((*row, track)),
+                None => complete = false,
+            }
+        }
+        let composed = Arc::new(compose(&decoded));
+        if complete {
+            self.keep(timeline_id, signature, composed.clone());
+        }
+        (composed, complete)
+    }
+
+    /// [`TrackCache::compose`] from what is already decoded, for the evaluations that
+    /// happen at one moment and must not wait on a disk.
+    pub fn compose_now(&self, timeline_id: Uuid, rows: &[TimelineTrack]) -> Arc<Track> {
+        let enabled: Vec<&TimelineTrack> = rows.iter().filter(|row| row.enabled).collect();
+        let signature = serde_json::to_string(&enabled).unwrap_or_default();
+        if let Some(composed) = self.cached(timeline_id, &signature) {
+            return composed;
+        }
+        let decoded: Vec<(&TimelineTrack, Arc<Track>)> = enabled
+            .iter()
+            .filter_map(|row| Some((*row, self.peek(&row.asset)??)))
+            .collect();
+        Arc::new(compose(&decoded))
+    }
+
+    fn cached(&self, timeline_id: Uuid, signature: &str) -> Option<Arc<Track>> {
+        let composed = self.composed.lock().ok()?;
+        composed.get(&timeline_id).filter(|(was, _)| was == signature).map(|(_, track)| track.clone())
+    }
+
+    fn keep(&self, timeline_id: Uuid, signature: String, track: Arc<Track>) {
+        if let Ok(mut composed) = self.composed.lock() {
+            composed.insert(timeline_id, (signature, track));
+        }
     }
 
     /// One recording, decoded.
@@ -84,4 +146,10 @@ impl TrackCache {
             loaded.remove(sha);
         }
     }
+}
+
+/// Rows over their recordings, composed, in list order.
+fn compose(rows: &[(&TimelineTrack, Arc<Track>)]) -> Track {
+    let parts: Vec<pult_render::Part<'_>> = rows.iter().map(|(row, track)| row.part(track)).collect();
+    pult_render::compose(&parts)
 }

@@ -49,6 +49,8 @@
 	import { audioStatus, current, devices, locate, positionOf, takes, toggle, writeColumns } from '$lib/stores/timelines.js';
 	import { entries as programmerEntries } from '$lib/stores/programmer.js';
 	import { LivePass } from '$lib/timeline/liveTake.js';
+	import { cropped, parameterRow, rowKeys, rowSpan, splitRows } from '$lib/takes.js';
+	import type { TimelineTrack } from '$lib/generated/index.js';
 	import { zones } from '$lib/stores/zones.js';
 	import { describeAction } from '$lib/timeline/describe.js';
 	import {
@@ -160,6 +162,7 @@
 				fromMs: number;
 				grabbed: Pick<AudioClip, 'start_ms' | 'offset_ms' | 'length_ms'>;
 		  }
+		| { mode: 'crop'; id: string; grip: 'front' | 'back'; fromMs: number; span: { fromMs: number; toMs: number } }
 		| { mode: 'band'; x0: number; y0: number; x1: number; y1: number; additive: boolean; before: ObjectRef[] }
 		| { mode: 'scrub' }
 		| { mode: 'end'; x: number; then: AtEnd; moved: boolean }
@@ -247,20 +250,18 @@
 		const pass = livePass;
 		if (!pass || pass.keys.size === 0) return [];
 		const now = positionOf(timeline, consoleNow()) ?? 0;
-		return [
-			{
-				id: 'live',
-				name: '● Recording',
-				subject: undefined,
-				source: 'as it is played',
-				offsetMs: 0,
-				keys: [...pass.keys.values()].map((k) => ({
+		// On each parameter's own row, beside the takes it is about to replace.
+		return [...pass.keys.values()].map((k) => ({
+			id: 'live',
+			keys: [
+				{
+					row: parameterRow(k.fixtureId, k.key),
 					label: keyLabel(k.fixtureId, k.key),
 					fromMs: k.points[0]?.[0] ?? 0,
 					toMs: Math.max(now, k.points[k.points.length - 1]?.[0] ?? 0)
-				}))
-			}
-		];
+				}
+			]
+		}));
 	}
 
 	/** "Skeleton 1 · Jaw", where a take moved more than one fixture. */
@@ -297,19 +298,19 @@
 			}),
 			takes: timeline.tracks.map((track) => {
 				const outline = $outlines[track.asset];
-				const keys = Array.isArray(outline) ? outline : null;
-				// One fixture is said once, on the take's own line, and each row is then
-				// just what moved — "Jaw", not "Skeleton 1 · Jaw" four times over.
-				const fixtures = new Set(keys?.map((k) => k.fixture_id) ?? []);
-				const one = fixtures.size === 1 ? [...fixtures][0] : null;
+				if (!Array.isArray(outline)) return { id: track.id, keys: null };
+				const keys = rowKeys(track, outline);
+				const span = rowSpan(track, keys);
 				return {
 					id: track.id,
-					name: track.name,
-					// …unless the take's own name already says it.
-					subject: one && !track.name.includes(fixtureName(one)) ? fixtureName(one) : undefined,
-					source: track.input_id === null ? 'from the programmer' : 'from an input',
-					offsetMs: track.offset_ms,
-					keys: keys ? keys.map((k) => ({ label: one ? parameterLabel(k.fixture_id, k.key) : keyLabel(k.fixture_id, k.key), fromMs: k.from_ms, toMs: k.to_ms })) : null
+					keys: span
+						? keys.map((k) => ({
+								row: parameterRow(k.fixture_id, k.key),
+								label: keyLabel(k.fixture_id, k.key),
+								fromMs: span.fromMs,
+								toMs: span.toMs
+							}))
+						: []
 				};
 			}).concat(liveTakeInput())
 		});
@@ -432,31 +433,30 @@
 		return `${m}:${rest < 10 ? '0' : ''}${rest.toFixed(ms % 1000 === 0 ? 0 : 1)}`;
 	};
 
-	/** The take being recorded: red, a row per key, stepwise, gaps where it let go. */
+	/** The take being recorded: red, on its parameter's row, stepwise, gaps where it let go. */
 	function drawLiveTake(ctx: CanvasRenderingContext2D, item: (typeof layout.items)[number]) {
 		const pass = livePass;
 		const lane = layout.lanes.find((l) => l.key === item.lane);
-		if (!pass || !lane) return;
+		const key = lane?.rowKeys?.[item.row];
+		const live = key ? pass?.keys.get(key) : undefined;
+		if (!lane || !live) return;
 		const r = rectOf(item, layout, view, width);
 		ctx.fillStyle = 'rgba(239,68,68,0.10)';
 		ctx.fillRect(r.left, r.top, Math.max(2, r.right - r.left), r.bottom - r.top);
 		const end = positionOf(timeline, consoleNow()) ?? 0;
-		[...pass.keys.values()].forEach((key, row) => {
-			const top = lane.top + lane.headHeight + 2 + row * lane.rowHeight;
-			const bottom = top + lane.rowHeight - 3;
-			const y = (v: number) => bottom - Math.max(0, Math.min(1, v)) * (bottom - top);
-			ctx.strokeStyle = '#f87171';
-			ctx.beginPath();
-			key.points.forEach(([ms, level], i) => {
-				const x = xOf(ms, view, width);
-				const next = key.points[i + 1]?.[0] ?? end;
-				if (level === null) return;
-				// Stepwise to the next point, or on to the playhead while it holds.
-				ctx.moveTo(x, y(level));
-				ctx.lineTo(xOf(next, view, width), y(level));
-			});
-			ctx.stroke();
+		const top = r.top + 1;
+		const bottom = r.bottom - 1;
+		const y = (v: number) => bottom - Math.max(0, Math.min(1, v)) * (bottom - top);
+		ctx.strokeStyle = '#f87171';
+		ctx.beginPath();
+		live.points.forEach(([ms, level], i) => {
+			if (level === null) return;
+			// Stepwise to the next point, or on to the playhead while it holds.
+			const next = live.points[i + 1]?.[0] ?? end;
+			ctx.moveTo(xOf(ms, view, width), y(level));
+			ctx.lineTo(xOf(next, view, width), y(level));
 		});
+		ctx.stroke();
 	}
 
 	function draw() {
@@ -576,7 +576,8 @@
 			ctx.fillText(`${clip.name || 'clip'}${clip.looped ? ' ⟲' : ''}${peaks ? '' : ' — reducing…'}`, left + 5, r.top + 13, Math.max(10, right - left - 10));
 		}
 
-		// Takes: a row per key, its movement as a filled line.
+		// Takes: each a segment on its parameter's row, its movement as a stepped line,
+		// cut to the window it plays.
 		for (const item of layout.items) {
 			if (item.ref.kind !== 'timeline-take') continue;
 			if (item.ref.id === 'live') {
@@ -589,39 +590,43 @@
 			const chosen = picked.has(refKey(item.ref));
 			const outline = $outlines[track.asset];
 			const r = rectOf(item, layout, view, width);
-			ctx.fillStyle = chosen ? 'rgba(74,222,128,0.16)' : track.enabled ? 'rgba(74,222,128,0.07)' : 'rgba(255,255,255,0.03)';
+			if (r.right < 0 || r.left > width) continue;
+			ctx.fillStyle = chosen ? 'rgba(74,222,128,0.18)' : track.enabled ? 'rgba(74,222,128,0.08)' : 'rgba(255,255,255,0.03)';
 			ctx.fillRect(r.left, r.top, Math.max(2, r.right - r.left), r.bottom - r.top);
-			if (Array.isArray(outline)) {
-				outline.forEach((key, row) => {
-					const top = lane.top + lane.headHeight + 2 + row * lane.rowHeight;
-					const bottom = top + lane.rowHeight - 3;
-					const values = key.levels.map(([, v]) => v);
-					const lo = Math.min(0, ...values);
-					const hi = Math.max(1, ...values);
-					ctx.strokeStyle = track.enabled ? '#4ade80' : '#3f5f48';
-					ctx.beginPath();
-					key.levels.forEach(([ms, v], i) => {
-						const x = xOf(ms + track.offset_ms, view, width);
-						const y = bottom - ((v - lo) / (hi - lo)) * (bottom - top);
-						// Stepwise, because replay is: a point holds until the next one.
-						if (i === 0) ctx.moveTo(x, y);
-						else {
-							const prev = key.levels[i - 1];
-							ctx.lineTo(x, bottom - ((prev[1] - lo) / (hi - lo)) * (bottom - top));
-							ctx.lineTo(x, y);
-						}
-					});
-					ctx.stroke();
+			const rowKey = lane.rowKeys?.[item.row];
+			const key = Array.isArray(outline) ? outline.find((k) => parameterRow(k.fixture_id, k.key) === rowKey) : undefined;
+			if (key && key.levels.length) {
+				const top = r.top + 1;
+				const bottom = r.bottom - 1;
+				const values = key.levels.map(([, v]) => v);
+				const lo = Math.min(0, ...values);
+				const hi = Math.max(1, ...values);
+				const y = (v: number) => bottom - ((v - lo) / (hi - lo)) * (bottom - top);
+				ctx.save();
+				ctx.beginPath();
+				ctx.rect(r.left, r.top, Math.max(2, r.right - r.left), r.bottom - r.top);
+				ctx.clip();
+				ctx.strokeStyle = track.enabled ? '#4ade80' : '#3f5f48';
+				ctx.beginPath();
+				key.levels.forEach(([ms, v], i) => {
+					const x = xOf(ms + track.offset_ms, view, width);
+					// Stepwise, because replay is: a point holds until the next one.
+					if (i === 0) ctx.moveTo(x, y(v));
+					else {
+						ctx.lineTo(x, y(key.levels[i - 1][1]));
+						ctx.lineTo(x, y(v));
+					}
 				});
-			} else {
+				ctx.lineTo(r.right, y(key.levels[key.levels.length - 1][1]));
+				ctx.stroke();
+				ctx.restore();
+			} else if (!Array.isArray(outline)) {
 				ctx.fillStyle = '#666';
 				ctx.font = '10px system-ui, sans-serif';
-				ctx.fillText(outline === 'failed' ? 'this station has not got the take yet' : 'reading…', 8, lane.top + lane.headHeight + 13);
+				ctx.fillText(outline === 'failed' ? 'this station has not got the take yet' : 'reading…', Math.max(4, r.left + 4), r.top + 12);
 			}
-			if (chosen) {
-				ctx.strokeStyle = '#bbf7d0';
-				ctx.strokeRect(r.left + 0.5, r.top + 0.5, Math.max(2, r.right - r.left) - 1, r.bottom - r.top - 1);
-			}
+			ctx.strokeStyle = chosen ? '#bbf7d0' : track.enabled ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.12)';
+			ctx.strokeRect(r.left + 0.5, r.top + 0.5, Math.max(2, r.right - r.left) - 1, r.bottom - r.top - 1);
 		}
 
 		// Markers and events.
@@ -841,6 +846,14 @@
 			await writeColumns(timeline.id, moved(live, drag.grabbed, delta, segmentIndex, takeStart));
 			return;
 		}
+		if (drag.mode === 'crop') {
+			const edge = drag.grip === 'front' ? drag.span.fromMs : drag.span.toMs;
+			const at = snapped(edge + rawMs - drag.fromMs);
+			await writeColumns(timeline.id, {
+				tracks: live.tracks.map((t) => (t.id === drag.id ? cropped(t, drag.grip, at, drag.span) : t))
+			});
+			return;
+		}
 		if (drag.mode === 'trim') {
 			const clip = live.clips.find((c) => c.id === drag.id);
 			if (!clip) return;
@@ -859,8 +872,43 @@
 	/** Where a take's first point is in its own time, so a move cannot start it before the top. */
 	function takeStart(id: string): number {
 		const track = timeline.tracks.find((t) => t.id === id);
-		const outline = track ? $outlines[track.asset] : null;
-		return Array.isArray(outline) && outline.length ? Math.min(...outline.map((k) => k.from_ms)) : 0;
+		const span = track ? spanOfTake(track) : null;
+		return track && span ? span.fromMs - track.offset_ms : 0;
+	}
+
+	/** Where a take's row is on the timeline, from its window or its recording. */
+	function spanOfTake(track: TimelineTrack): { fromMs: number; toMs: number } | null {
+		const outline = $outlines[track.asset];
+		return rowSpan(track, Array.isArray(outline) ? rowKeys(track, outline) : null);
+	}
+
+	/** Which end of a take's segment a press is on, if either. */
+	function takeGrip(item: Placed, x: number): 'front' | 'back' | null {
+		const r = rectOf(item, layout, view, width);
+		if (r.right - r.left < EDGE_PX * 3) return null;
+		if (x - r.left <= EDGE_PX) return 'front';
+		if (r.right - x <= EDGE_PX) return 'back';
+		return null;
+	}
+
+	/**
+	 * Slice every picked take at the playhead — or, with none picked, every take the
+	 * playhead is inside — into two rows on the same recording. One write, one Ctrl-Z.
+	 */
+	async function splitAtPlayhead() {
+		const live = current(timeline.id);
+		const at = playhead();
+		if (!live || at === null || !$canEdit) return;
+		const chosen = pickedRefs().filter((r) => r.kind === 'timeline-take').map((r) => r.id);
+		const ids = new Set(chosen.length ? chosen : live.tracks.map((t) => t.id));
+		const tracks = splitRows(live.tracks, ids, at, spanOfTake, uuid);
+		if (!tracks) return;
+		beginGesture();
+		try {
+			await writeColumns(timeline.id, { tracks });
+		} finally {
+			endGesture();
+		}
 	}
 
 	function cancelLongPress() {
@@ -938,6 +986,15 @@
 				return;
 			}
 		}
+		if (item.ref.kind === 'timeline-take' && refs.length === 1) {
+			const grip = takeGrip(item, pending.x);
+			const track = live.tracks.find((t) => t.id === item.ref.id);
+			const span = track ? spanOfTake(track) : null;
+			if (track && span && grip) {
+				drag = { mode: 'crop', id: track.id, grip, fromMs, span };
+				return;
+			}
+		}
 		const grabbed = grabbedFrom(live, refs, segmentIndex);
 		const anchorMs = item.fromMs;
 		drag = { mode: 'move', grabbed, fromMs, anchorMs };
@@ -964,7 +1021,8 @@
 					? y < RULER_H
 						? 'col-resize'
 						: 'crosshair'
-					: item.ref.kind === 'timeline-clip' && gripOf(item, x) !== 'body'
+					: (item.ref.kind === 'timeline-clip' && gripOf(item, x) !== 'body') ||
+						  (item.ref.kind === 'timeline-take' && item.ref.id !== 'live' && takeGrip(item, x))
 						? 'ew-resize'
 						: 'grab';
 			}
@@ -1039,7 +1097,7 @@
 			}
 			return;
 		}
-		if (was.mode === 'move' || was.mode === 'trim') endGesture();
+		if (was.mode === 'move' || was.mode === 'trim' || was.mode === 'crop') endGesture();
 	}
 
 	function clearTimelineItems() {
@@ -1116,6 +1174,9 @@
 		} else if ((e.key === 'm' || e.key === 'M') && !e.metaKey && !e.ctrlKey && !e.altKey) {
 			e.preventDefault();
 			void markerAtPlayhead();
+		} else if ((e.key === 's' || e.key === 'S') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+			e.preventDefault();
+			void splitAtPlayhead();
 		}
 	}
 
@@ -1198,7 +1259,6 @@
 						style:--zone={lane.color ?? null}
 					>
 						{#if lane.kind === 'take'}
-							<span class="name" title="{lane.label} — {lane.detail}">{lane.label}</span>
 							{#each lane.rows as row, i (i)}
 								{#if row}<span class="row" style:top="{lane.headHeight + 2 + i * lane.rowHeight}px" title={row}>{row}</span>{/if}
 							{/each}

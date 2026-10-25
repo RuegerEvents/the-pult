@@ -11,7 +11,6 @@ import {
 	FLAG_H,
 	KEY_ROW_H,
 	RULER_H,
-	TAKE_HEAD_H,
 	fitAll,
 	grabbedFrom,
 	hit,
@@ -47,17 +46,11 @@ function scare(): LaneInput {
 			{ id: 'bang', destination: 'node:4d5e6f', destinationLabel: 'Area 2 node', fromMs: 0, toMs: 1_500 }
 		],
 		takes: [
-			{
-				id: 'jaw',
-				name: 'Take 3',
-				source: 'programmer',
-				offsetMs: 100,
-				keys: [
-					{ label: 'Skeleton · Jaw', fromMs: 300, toMs: 3_800 },
-					{ label: 'Skeleton · Head', fromMs: 500, toMs: 3_000 }
-				]
-			},
-			{ id: 'waiting', name: 'Take 4', source: 'Guest', offsetMs: 0, keys: null }
+			// The jaw, sliced in two, and the head once.
+			{ id: 'jaw', keys: [{ row: 's/Jaw', label: 'Skeleton · Jaw', fromMs: 400, toMs: 2_000 }] },
+			{ id: 'jaw2', keys: [{ row: 's/Jaw', label: 'Skeleton · Jaw', fromMs: 2_500, toMs: 3_900 }] },
+			{ id: 'head', keys: [{ row: 's/Head', label: 'Skeleton · Head', fromMs: 500, toMs: 3_000 }] },
+			{ id: 'waiting', keys: null }
 		]
 	};
 }
@@ -70,8 +63,7 @@ describe('the lanes', () => {
 			'events',
 			'audio:node:4d5e6f',
 			'audio:station:4',
-			'take:jaw',
-			'take:waiting'
+			'takes'
 		]);
 		expect(lanes[0].top).toBe(RULER_H);
 		expect(lanes[1].top).toBe(RULER_H + FLAG_H);
@@ -86,15 +78,15 @@ describe('the lanes', () => {
 		expect([rowOf('laugh'), rowOf('bed')].sort()).toEqual([0, 1]);
 	});
 
-	it('give a take a row per key it recorded, and one row while its outline is on the way', () => {
+	it('put every take on one lane, a row per parameter, its slices side by side', () => {
 		const { lanes, items } = layOut(scare());
-		const jaw = lanes.find((l) => l.key === 'take:jaw')!;
-		expect(jaw.rows).toEqual(['Skeleton · Jaw', 'Skeleton · Head']);
-		expect(jaw.height).toBe(TAKE_HEAD_H + 2 * KEY_ROW_H + 4);
-		expect(lanes.find((l) => l.key === 'take:waiting')!.rows).toEqual(['']);
-		// Placed by its own span moved by its offset: a take that arrived late plays early.
-		const placed = items.find((i) => i.ref.id === 'jaw')!;
-		expect([placed.fromMs, placed.toMs]).toEqual([400, 3_900]);
+		const takes = lanes.find((l) => l.key === 'takes')!;
+		expect(takes.rows).toEqual(['Skeleton · Head', 'Skeleton · Jaw', 'reading…']);
+		expect(takes.height).toBe(3 * KEY_ROW_H + 4);
+		const rowOf = (id: string) => items.find((i) => i.ref.id === id)!.row;
+		expect([rowOf('jaw'), rowOf('jaw2'), rowOf('head'), rowOf('waiting')]).toEqual([1, 1, 0, 2]);
+		const placed = items.find((i) => i.ref.id === 'jaw2')!;
+		expect([placed.fromMs, placed.toMs]).toEqual([2_500, 3_900]);
 	});
 
 	it('answer which lane is at a height, and nothing over the ruler', () => {
@@ -125,10 +117,12 @@ describe('the pointer', () => {
 		expect(hit(layout, view, width, 2, 10)?.ref.kind).toBe('timeline-segment');
 	});
 
-	it('picks up a take by any of its rows', () => {
-		const lane = layout.lanes.find((l) => l.key === 'take:jaw')!;
-		const x = xOf(2_000, view, width);
-		expect(hit(layout, view, width, x, lane.top + lane.height - 4)?.ref.id).toBe('jaw');
+	it('picks up the slice of a take under the pointer, on its parameter’s row', () => {
+		const lane = layout.lanes.find((l) => l.key === 'takes')!;
+		const jawRow = lane.top + KEY_ROW_H + KEY_ROW_H / 2;
+		expect(hit(layout, view, width, xOf(1_000, view, width), jawRow)?.ref.id).toBe('jaw');
+		expect(hit(layout, view, width, xOf(3_000, view, width), jawRow)?.ref.id).toBe('jaw2');
+		expect(hit(layout, view, width, xOf(2_250, view, width), jawRow)).toBeNull();
 	});
 
 	it('turns an x into a position and never one before the top', () => {
@@ -166,7 +160,7 @@ describe('a drag of several things', () => {
 		],
 		markers: [{ id: 'm1', at_ms: 1_000 }],
 		grid: [{ at_ms: 0 }, { at_ms: 5_000 }],
-		tracks: [{ id: 'jaw', offset_ms: 100 }]
+		tracks: [{ id: 'jaw', offset_ms: 100, from_ms: 400, to_ms: 2_000 }]
 	};
 
 	it('moves each by the same amount and writes only the columns it touched', () => {
@@ -209,7 +203,7 @@ describe('a drag of several things', () => {
 		];
 		const out = moved(timeline, grabbedFrom(timeline, refs, segmentIndex), -50, segmentIndex);
 		expect(out.grid!.map((s) => s.at_ms)).toEqual([0, 4_950]);
-		expect(out.tracks![0].offset_ms).toBe(50);
+		expect(out.tracks![0]).toMatchObject({ offset_ms: 50, from_ms: 350, to_ms: 1_950 });
 	});
 
 	it('lets a take start early, but not before the top', () => {

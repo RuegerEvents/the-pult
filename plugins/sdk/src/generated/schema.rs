@@ -3041,6 +3041,21 @@ pub struct TimelineTrack {
     /// Nudge, in milliseconds. Signed: a take is as often early as late.
     pub offset_ms: i32,
     pub enabled: bool,
+    /// The parameter of the recording this row plays: a fixture (or, for a recorded
+    /// sequence level, the sequence) and a parameter key. A row per parameter, so each
+    /// is cropped, sliced and replaced on its own; `None` is a take stored before that,
+    /// playing every parameter in its recording until the station splits it.
+    #[serde(default)]
+    pub fixture_id: Option<Uuid>,
+    #[serde(default)]
+    pub key: Option<String>,
+    /// The stretch of the timeline this row plays, in timeline milliseconds, `None`
+    /// open on that side. Inside it the row is completely in charge of its parameter —
+    /// see `pult_render::compose`.
+    #[serde(default)]
+    pub from_ms: Option<u32>,
+    #[serde(default)]
+    pub to_ms: Option<u32>,
 }
 
 /// Where something is, what it is turned to, and how big it is.

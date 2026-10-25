@@ -1629,15 +1629,12 @@ impl ShowEngine {
         let Some(cache) = self.tracks.clone() else { return };
         let mut held: HashMap<(Uuid, String), pult_schema::types::fixture::ParameterValue> =
             HashMap::new();
-        for sha in &stopped.tracks {
-            let Some(track) = cache.get(sha).await else { continue };
-            for key in &track.keys {
-                if let Some(value) = pult_render::sample(&key.points, stopped.position_ms) {
-                    // A key in two takes takes the later one's word for it, which is
-                    // the same "latest anchor wins" the evaluator applies while they
-                    // are playing.
-                    held.insert((key.fixture_id, key.key.clone()), value.clone());
-                }
+        // The rows composed exactly as the output manager composed them, through the
+        // same cache, so what is let go of is what the wire was showing.
+        let (track, _) = cache.compose(stopped.timeline_id, &stopped.tracks).await;
+        for key in &track.keys {
+            if let Some(value) = pult_render::sample(&key.points, stopped.position_ms) {
+                held.insert((key.fixture_id, key.key.clone()), value.clone());
             }
         }
         if held.is_empty() {

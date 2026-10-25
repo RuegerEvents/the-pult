@@ -811,8 +811,8 @@ impl OutputManager {
             self.addressed = addressed;
             self.publish_coverage(&fixtures).await;
         }
-        let playing = playing_tracks(&self.tracks, &timelines).await;
-        self.tracks_missing = playing.len() < wanted_tracks(&timelines);
+        let (playing, missing) = playing_tracks(&self.tracks, &timelines).await;
+        self.tracks_missing = missing;
         self.timelines = timelines;
         self.patch =
             Some(Patch::new(fixtures, fixture_types, programmer).playing(playing).mastered(masters));
@@ -823,13 +823,14 @@ impl OutputManager {
     /// Read the playing takes again and, where one has arrived since, put it in the
     /// patch and draw — the same patch otherwise, so nothing else a connector holds moves.
     async fn retry_missing_tracks(&mut self) {
-        let playing = playing_tracks(&self.tracks, &self.timelines).await;
-        self.tracks_missing = playing.len() < wanted_tracks(&self.timelines);
+        let (playing, missing) = playing_tracks(&self.tracks, &self.timelines).await;
         let Some(patch) = self.patch.take() else { return };
-        let had = patch.tracks_len();
-        let found = playing.len();
         self.patch = Some(patch.playing(playing));
-        if found > had {
+        // Only ever retried while something was missing, so a composition that is
+        // complete now has something in it that it did not have before.
+        let found = !missing;
+        self.tracks_missing = missing;
+        if found {
             info!("[output] a take that was playing without its file here now has it");
             self.draw(Vec::new()).await;
         }
@@ -1098,37 +1099,32 @@ impl OutputManager {
 async fn playing_tracks(
     cache: &Option<crate::infra::tracks::TrackCache>,
     timelines: &[Timeline],
-) -> Vec<(std::sync::Arc<pult_render::Track>, pult_render::Transport)> {
-    let Some(cache) = cache else { return Vec::new() };
+) -> (Vec<(std::sync::Arc<pult_render::Track>, pult_render::Transport)>, bool) {
+    let Some(cache) = cache else { return (Vec::new(), false) };
     let mut playing = Vec::new();
+    let mut missing = false;
     for timeline in timelines.iter().filter(|timeline| timeline.running) {
-        let recording = recording_from_programmer(timeline);
-        for track in timeline.tracks.iter().filter(|track| track.enabled) {
-            let Some(mut decoded) = cache.get(&track.asset).await else { continue };
-            // A timeline recording a new pass leaves the sequences' levels to their
-            // faders: the hand on the fader is what is being recorded, and the last
-            // take's level playing over it would fight it. Fixture keys need no such
-            // care — the programmer already beats a track.
-            if recording && decoded.keys.iter().any(|k| k.key == pult_schema::types::sequence::LEVEL_KEY) {
-                let mut kept = (*decoded).clone();
-                kept.keys.retain(|k| k.key != pult_schema::types::sequence::LEVEL_KEY);
-                decoded = std::sync::Arc::new(kept);
-            }
-            // A take's own nudge moves the playhead the other way: a track that
-            // arrived 40 ms late is played 40 ms earlier.
-            let mut transport = timeline.transport();
-            transport.position_at_anchor_ms =
-                transport.position_at_anchor_ms.saturating_add_signed(-track.offset_ms as i64);
-            playing.push((decoded, transport));
+        if !timeline.tracks.iter().any(|track| track.enabled) {
+            continue;
         }
+        // Every row of the timeline, composed: each its window of its parameter, with
+        // its nudge applied, so the transport is the timeline's own.
+        let (mut composed, complete) = cache.compose(timeline.id, &timeline.tracks).await;
+        missing |= !complete;
+        // A timeline recording a new pass leaves the sequences' levels to their
+        // faders: the hand on the fader is what is being recorded, and the last
+        // take's level playing over it would fight it. Fixture keys need no such
+        // care — the programmer already beats a track.
+        if recording_from_programmer(timeline)
+            && composed.keys.iter().any(|k| k.key == pult_schema::types::sequence::LEVEL_KEY)
+        {
+            let mut kept = (*composed).clone();
+            kept.keys.retain(|k| k.key != pult_schema::types::sequence::LEVEL_KEY);
+            composed = std::sync::Arc::new(kept);
+        }
+        playing.push((composed, timeline.transport()));
     }
-    playing
-}
-
-/// How many takes the running timelines want playing, for telling whether every one of
-/// them was found.
-fn wanted_tracks(timelines: &[Timeline]) -> usize {
-    timelines.iter().filter(|t| t.running).map(|t| t.tracks.iter().filter(|k| k.enabled).count()).sum()
+    (playing, missing)
 }
 
 /// Whether a timeline is taking a pass from the programmer right now.
@@ -1148,19 +1144,18 @@ pub fn recorded_levels_at(
 ) -> HashMap<Uuid, f32> {
     let mut levels: HashMap<Uuid, (u64, f32)> = HashMap::new();
     for timeline in timelines.iter().filter(|t| t.running && !recording_from_programmer(t)) {
-        for track in timeline.tracks.iter().filter(|track| track.enabled) {
-            let Some(Some(decoded)) = cache.peek(&track.asset) else { continue };
-            let mut transport = timeline.transport();
-            transport.position_at_anchor_ms =
-                transport.position_at_anchor_ms.saturating_add_signed(-track.offset_ms as i64);
-            for key in decoded.keys.iter().filter(|k| k.key == pult_schema::types::sequence::LEVEL_KEY) {
-                let at = pult_render::TrackAt { points: &key.points, transport };
-                let Some(pult_render::ParameterValue::Float(level)) = at.value_at(now_ms) else { continue };
-                // The most recently started take wins, the rule `Patch::playing` keeps.
-                let newer = levels.get(&key.fixture_id).is_none_or(|(anchor, _)| transport.anchor_ms >= *anchor);
-                if newer {
-                    levels.insert(key.fixture_id, (transport.anchor_ms, *level));
-                }
+        if !timeline.tracks.iter().any(|track| track.enabled) {
+            continue;
+        }
+        let composed = cache.compose_now(timeline.id, &timeline.tracks);
+        let transport = timeline.transport();
+        for key in composed.keys.iter().filter(|k| k.key == pult_schema::types::sequence::LEVEL_KEY) {
+            let at = pult_render::TrackAt { points: &key.points, transport };
+            let Some(pult_render::ParameterValue::Float(level)) = at.value_at(now_ms) else { continue };
+            // The most recently started take wins, the rule `Patch::playing` keeps.
+            let newer = levels.get(&key.fixture_id).is_none_or(|(anchor, _)| transport.anchor_ms >= *anchor);
+            if newer {
+                levels.insert(key.fixture_id, (transport.anchor_ms, *level));
             }
         }
     }

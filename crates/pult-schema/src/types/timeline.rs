@@ -218,6 +218,87 @@ pub struct TimelineTrack {
     /// Nudge, in milliseconds. Signed: a take is as often early as late.
     pub offset_ms: i32,
     pub enabled: bool,
+    /// The parameter of the recording this row plays: a fixture (or, for a recorded
+    /// sequence level, the sequence) and a parameter key. A row per parameter, so each
+    /// is cropped, sliced and replaced on its own; `None` is a take stored before that,
+    /// playing every parameter in its recording until the station splits it.
+    #[serde(default)]
+    pub fixture_id: Option<Uuid>,
+    #[serde(default)]
+    pub key: Option<String>,
+    /// The stretch of the timeline this row plays, in timeline milliseconds, `None`
+    /// open on that side. Inside it the row is completely in charge of its parameter —
+    /// see `pult_render::compose`.
+    #[serde(default)]
+    pub from_ms: Option<u32>,
+    #[serde(default)]
+    pub to_ms: Option<u32>,
+}
+
+impl TimelineTrack {
+    /// This row over its decoded recording, for composing.
+    pub fn part<'a>(&'a self, track: &'a pult_render::Track) -> pult_render::Part<'a> {
+        pult_render::Part {
+            track,
+            fixture_id: self.fixture_id,
+            key: self.key.as_deref(),
+            from_ms: self.from_ms,
+            to_ms: self.to_ms,
+            offset_ms: self.offset_ms,
+        }
+    }
+
+    /// Whether this row plays a parameter. A row from before rows were per parameter
+    /// plays all of them, which only its recording can say.
+    pub fn plays(&self, fixture_id: Uuid, key: &str) -> bool {
+        self.fixture_id == Some(fixture_id) && self.key.as_deref() == Some(key)
+    }
+
+    /// Whether this row's window reaches anywhere into `[lo, hi)`.
+    fn overlaps(&self, lo: u32, hi: u32) -> bool {
+        self.from_ms.unwrap_or(0) < hi && self.to_ms.is_none_or(|to| to > lo)
+    }
+}
+
+/// Take `[lo, hi)` out of every row playing a parameter: a row inside it goes, a row
+/// across one edge is cropped back to it, and a row across both becomes two.
+///
+/// What re-recording a parameter does to the rows already playing it, and a slice
+/// deleted from the middle of one. `rows` have to be per parameter already; a row
+/// playing every parameter of its recording is left alone, since only the recording
+/// says whether it plays this one.
+pub fn cut_rows(rows: &mut Vec<TimelineTrack>, fixture_id: Uuid, key: &str, lo: u32, hi: u32) {
+    let mut out = Vec::with_capacity(rows.len() + 1);
+    for row in rows.drain(..) {
+        if !row.plays(fixture_id, key) || !row.overlaps(lo, hi) {
+            out.push(row);
+            continue;
+        }
+        let from = row.from_ms.unwrap_or(0);
+        if from < lo {
+            out.push(TimelineTrack { to_ms: Some(lo), ..row.clone() });
+        }
+        if row.to_ms.is_none_or(|to| to > hi) {
+            // The second half is a row of its own, so it needs a name of its own.
+            let id = if from < lo { Uuid::new_v4() } else { row.id };
+            out.push(TimelineTrack { id, from_ms: Some(hi), ..row });
+        }
+    }
+    *rows = out;
+}
+
+/// A row that plays every parameter of its recording, as a row per parameter: the same
+/// asset, offset and window, the first keeping the row's id.
+pub fn split_row(row: &TimelineTrack, keys: &[(Uuid, String)]) -> Vec<TimelineTrack> {
+    keys.iter()
+        .enumerate()
+        .map(|(at, (fixture_id, key))| TimelineTrack {
+            id: if at == 0 { row.id } else { Uuid::new_v4() },
+            fixture_id: Some(*fixture_id),
+            key: Some(key.clone()),
+            ..row.clone()
+        })
+        .collect()
 }
 
 // Commands live beside the type for the orphan rule's sake, the way `Sequence`'s do.
@@ -754,6 +835,43 @@ pub struct AudioOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn a_row(from: Option<u32>, to: Option<u32>) -> TimelineTrack {
+        TimelineTrack {
+            id: Uuid::from_u128(9),
+            name: "Take 1".into(),
+            asset: "abc".into(),
+            input_id: None,
+            offset_ms: 0,
+            enabled: true,
+            fixture_id: Some(Uuid::from_u128(2)),
+            key: Some("Jaw".into()),
+            from_ms: from,
+            to_ms: to,
+        }
+    }
+
+    fn windows(rows: &[TimelineTrack]) -> Vec<(Option<u32>, Option<u32>)> {
+        rows.iter().map(|r| (r.from_ms, r.to_ms)).collect()
+    }
+
+    #[test]
+    fn a_cut_crops_splits_and_removes_and_leaves_other_parameters_alone() {
+        let jaw = Uuid::from_u128(2);
+        let mut rows = vec![a_row(None, None)];
+        cut_rows(&mut rows, jaw, "Jaw", 100, 200);
+        assert_eq!(windows(&rows), vec![(None, Some(100)), (Some(200), None)]);
+        assert_ne!(rows[0].id, rows[1].id, "the second half is a row of its own");
+
+        cut_rows(&mut rows, jaw, "Jaw", 50, 300);
+        assert_eq!(windows(&rows), vec![(None, Some(50)), (Some(300), None)]);
+
+        cut_rows(&mut rows, jaw, "Jaw", 0, 50);
+        assert_eq!(windows(&rows), vec![(Some(300), None)], "a row inside the cut goes");
+
+        cut_rows(&mut rows, jaw, "Head", 0, 1_000);
+        assert_eq!(rows.len(), 1, "another parameter's cut does not touch it");
+    }
 
     fn a_timeline() -> Timeline {
         Timeline {

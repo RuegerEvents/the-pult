@@ -102,6 +102,19 @@ impl DrivenBy {
     }
 }
 
+/// One row of a timeline's recordings, as the page names it: the sha of a loaded
+/// recording and the row's own fields.
+#[derive(Deserialize)]
+struct PartSpec {
+    sha: String,
+    fixture_id: Option<uuid::Uuid>,
+    key: Option<String>,
+    from_ms: Option<u32>,
+    to_ms: Option<u32>,
+    #[serde(default)]
+    offset_ms: i32,
+}
+
 /// A decoded recording, with an index from the key a page names to the points.
 ///
 /// The index is built once at load: a page watching four hundred parameters would
@@ -337,6 +350,41 @@ impl Evaluator {
             .collect();
         self.tracks.insert(sha.to_string(), Loaded { track, at });
         Ok(())
+    }
+
+    /// A timeline's rows, composed into one recording under `id` — each row its
+    /// window of its parameter of an already-loaded recording, with its nudge — which
+    /// is then played with [`Evaluator::play_track`] like any other. The station's own
+    /// composition, `pult_render::compose`, so the screen and the lamps agree at the
+    /// edge of a slice. Answers whether every recording the rows name was loaded; what
+    /// was is composed either way.
+    pub fn compose_track(&mut self, id: &str, parts: JsValue) -> Result<bool, JsValue> {
+        let specs: Vec<PartSpec> = serde_wasm_bindgen::from_value(parts)?;
+        let mut complete = true;
+        let parts: Vec<pult_render::Part<'_>> = specs
+            .iter()
+            .filter_map(|spec| {
+                let loaded = self.tracks.get(&spec.sha);
+                complete &= loaded.is_some();
+                Some(pult_render::Part {
+                    track: &loaded?.track,
+                    fixture_id: spec.fixture_id,
+                    key: spec.key.as_deref(),
+                    from_ms: spec.from_ms,
+                    to_ms: spec.to_ms,
+                    offset_ms: spec.offset_ms,
+                })
+            })
+            .collect();
+        let track = pult_render::compose(&parts);
+        let at = track
+            .keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| (format!("{}/{}", key.fixture_id, key.key), index))
+            .collect();
+        self.tracks.insert(id.to_string(), Loaded { track, at });
+        Ok(complete)
     }
 
     /// This recording is running, anchored here.

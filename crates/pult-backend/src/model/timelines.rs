@@ -55,9 +55,9 @@ pub enum TimelineFire {
 pub struct TimelineStopped {
     pub timeline_id: Uuid,
     pub position_ms: u64,
-    /// The assets that were playing, so the caller can sample each one where it
-    /// stopped and let its keys go.
-    pub tracks: Vec<String>,
+    /// The rows that were playing, so the caller can compose them, sample what they
+    /// were saying where it stopped, and let those keys go.
+    pub tracks: Vec<pult_schema::types::timeline::TimelineTrack>,
 }
 
 /// A speed master a timeline wants set to a tempo.
@@ -162,7 +162,7 @@ impl Timelines {
                             .tracks
                             .iter()
                             .filter(|track| track.enabled)
-                            .map(|track| track.asset.clone())
+                            .cloned()
                             .collect(),
                     });
                 }
@@ -409,6 +409,9 @@ mod tests {
         scare.end = Some(pult_schema::types::timeline::TimelineEnd { at_ms: 2_000, then: AtEnd::Stop });
         let scare = playing(scare, 10_000, 0);
 
+        // Seen at Play first, as a real one always is: a first look already in the
+        // middle is a play from a position, which takes the tracked state instead.
+        timelines.pass(10_000, std::slice::from_ref(&scare));
         let pass = timelines.pass(12_500, std::slice::from_ref(&scare));
         assert_eq!(
             pass.fire,
@@ -527,6 +530,10 @@ mod tests {
                 input_id: None,
                 offset_ms: 0,
                 enabled: true,
+                fixture_id: None,
+                key: None,
+                from_ms: None,
+                to_ms: None,
             },
             pult_schema::types::timeline::TimelineTrack {
                 id: Uuid::from_u128(5),
@@ -535,6 +542,10 @@ mod tests {
                 input_id: None,
                 offset_ms: 0,
                 enabled: false,
+                fixture_id: None,
+                key: None,
+                from_ms: None,
+                to_ms: None,
             },
         ];
         timelines.pass(1_000, std::slice::from_ref(&timeline));
@@ -546,7 +557,11 @@ mod tests {
 
         assert_eq!(pass.stopped.len(), 1);
         assert_eq!(pass.stopped[0].position_ms, 2_000);
-        assert_eq!(pass.stopped[0].tracks, vec!["abc".to_string()], "only the enabled one");
+        assert_eq!(
+            pass.stopped[0].tracks.iter().map(|t| t.asset.as_str()).collect::<Vec<_>>(),
+            vec!["abc"],
+            "only the enabled one"
+        );
     }
 
     fn with_grid(mut timeline: Timeline, master: Uuid) -> Timeline {

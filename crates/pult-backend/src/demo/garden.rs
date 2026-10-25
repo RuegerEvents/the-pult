@@ -615,16 +615,25 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         let mut tracks = Vec::new();
         if speaks {
             let skeleton = if area == 1 { skeletons[0] } else { skeletons[1] };
-            let take = pult_render::track::encode(&skeleton_take(skeleton, 300));
+            let recording = skeleton_take(skeleton, 300);
+            let take = pult_render::track::encode(&recording);
             if let Some(sha) = into.put(crate::infra::assets::TRACK_MIME, &take).await {
-                tracks.push(TimelineTrack {
+                // A row per parameter, the way a recorded take is stored.
+                let whole = TimelineTrack {
                     id: id(),
                     name: format!("Skeleton {} take", if area == 1 { 1 } else { 2 }),
                     asset: sha,
                     input_id: None,
                     offset_ms: 0,
                     enabled: true,
-                });
+                    fixture_id: None,
+                    key: None,
+                    from_ms: None,
+                    to_ms: None,
+                };
+                let keys: Vec<(Uuid, String)> =
+                    recording.keys.iter().map(|k| (k.fixture_id, k.key.clone())).collect();
+                tracks.extend(pult_schema::types::timeline::split_row(&whole, &keys));
             }
         }
         let timeline = Timeline {

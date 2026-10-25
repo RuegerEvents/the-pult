@@ -49,7 +49,7 @@ use pult_schema::{
         programmer::ProgrammerValue,
         network::NetService,
         output::{OutputSection, OutputView, SectionBody, UniverseFrame, UniverseSummary, UniverseTraffic},
-        timeline::{Timeline, TimelineTrack},
+        timeline::Timeline,
     },
 };
 use tokio::sync::{mpsc, oneshot, watch};
@@ -246,6 +246,8 @@ struct Recording {
     /// The last value written per parameter, so a value that did not move writes
     /// nothing. This is the whole of why a track is small.
     last: HashMap<(Uuid, String), ParameterValue>,
+    /// Where on the timeline the take began: what it replaces begins there.
+    from_ms: u32,
 }
 
 /// What the manager needs in order to be looked at, the same pair the output side has.
@@ -364,6 +366,7 @@ impl InputManager {
                             self.timelines = timelines;
                             self.reconcile_recording().await;
                             self.reconcile_take().await;
+                            self.split_whole_takes().await;
                         }
                         InputCommand::Programmer { values, levels, at_ms } => {
                             self.observe_programmer(&values, &levels, at_ms);
@@ -547,12 +550,19 @@ impl InputManager {
             "[input] recording {} fixture(s) into timeline {timeline_id}",
             reachable.len()
         );
+        let from_ms = self
+            .timelines
+            .iter()
+            .find(|t| t.id == timeline_id)
+            .map_or(0, |t| t.position_at(pult_schema::types::sequence::now_ms()))
+            .min(u32::MAX as u64) as u32;
         self.recording = Some(Recording {
             timeline_id,
             input_id,
             patch: Patch::new(reachable, types, Vec::new()),
             points: BTreeMap::new(),
             last: HashMap::new(),
+            from_ms,
         });
         // Whatever is already on the wire is the value at the position the take
         // starts from, so a parameter that never moves again is still in the file.
@@ -597,11 +607,13 @@ impl InputManager {
         }
     }
 
-    /// Write the take out and disarm.
+    /// Write the take out and disarm. Stored the way a programmer pass is — a row per
+    /// parameter over the stretch it was recorded across, replacing it.
     async fn finish_recording(&mut self) {
         let Some(recording) = self.recording.take() else { return };
-        let Some(assets) = &self.assets else { return };
-
+        if self.assets.is_none() {
+            return;
+        }
         let track = pult_render::Track {
             keys: recording
                 .points
@@ -618,48 +630,18 @@ impl InputManager {
             self.disarm(recording.timeline_id).await;
             return;
         }
-        let bytes = pult_render::encode(&track);
-        let sha = match assets.put(crate::infra::assets::TRACK_MIME, &bytes).await {
-            Ok(sha) => sha,
-            Err(e) => {
-                warn!("[input] the take could not be stored: {e}");
-                self.disarm(recording.timeline_id).await;
-                return;
-            }
-        };
-        info!(
-            "[input] take stored: {} parameter(s), {} bytes",
-            track.keys.len(),
-            bytes.len()
-        );
-
-        // Read the row back rather than remembering it: a take runs for the length of
-        // a song, and a `tracks` list held from before it started would drop whatever
-        // somebody else added in the meantime.
-        let path = vec![
-            PathSegment::Key("timelines".into()),
-            PathSegment::Id(recording.timeline_id),
-            PathSegment::Key("tracks".into()),
-        ];
-        let mut tracks: Vec<TimelineTrack> = self
-            .engine
-            .get(path.clone())
-            .await
-            .ok()
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default();
-        tracks.push(TimelineTrack {
-            id: Uuid::new_v4(),
-            name: format!("Take {}", tracks.len() + 1),
-            asset: sha,
-            input_id: Some(recording.input_id),
-            offset_ms: 0,
-            enabled: true,
-        });
-        if let Ok(value) = serde_json::to_value(&tracks) {
-            if let Err(e) = self.engine.set(path, Lifecycle::Persisted, value).await {
-                warn!("[input] the take was stored but could not be added to the timeline: {e}");
-            }
+        // Where the playhead is now — the stop position, for a timeline that stopped.
+        let out = self
+            .timelines
+            .iter()
+            .find(|t| t.id == recording.timeline_id)
+            .map_or(0, |t| t.position_at(pult_schema::types::sequence::now_ms()))
+            .min(u32::MAX as u64) as u32;
+        let stored = self
+            .store_recording(recording.timeline_id, &track, Some(recording.input_id), recording.from_ms, out)
+            .await;
+        if stored.is_some() {
+            info!("[input] take stored: {} parameter(s)", track.keys.len());
         }
         self.disarm(recording.timeline_id).await;
     }

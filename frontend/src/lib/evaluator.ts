@@ -43,6 +43,7 @@ type Instance = {
 	evaluate(nowMs: number): Float32Array;
 	text(key: string, nowMs: number): string | undefined;
 	load_track(sha: string, bytes: Uint8Array): void;
+	compose_track(id: string, parts: unknown): boolean;
 	play_track(sha: string, anchorMs: number, positionAtAnchorMs: number, rate: number, levels: boolean): void;
 	stop_track(sha: string): void;
 	forget_track(sha: string): void;
@@ -198,6 +199,24 @@ export function setOneDriving(key: string, drivenBy: DrivenBy | null): void {
  */
 export function loadTrack(sha: string, bytes: Uint8Array): void {
 	instance?.load_track(sha, bytes);
+}
+
+/** One row of a timeline's recordings, for composing: a loaded sha and the row's fields. */
+export type TrackPart = {
+	sha: string;
+	fixture_id: string | null;
+	key: string | null;
+	from_ms: number | null;
+	to_ms: number | null;
+	offset_ms: number;
+};
+
+/**
+ * A timeline's rows composed into one recording under `id`, by the station's own
+ * `pult_render::compose`. Whether every sha the rows name was loaded.
+ */
+export function composeTrack(id: string, parts: TrackPart[]): boolean {
+	return instance?.compose_track(id, parts) ?? false;
 }
 
 /**

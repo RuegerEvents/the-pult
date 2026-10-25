@@ -10,20 +10,29 @@
 //! holding when the pass began and that nobody moves is not in it. That is what lets
 //! a second pass record the head without re-recording the jaw it is being played over.
 //!
-//! **A pass joins the track that is playing the key.** The evaluator takes one track
-//! per key — the latest in the list — and a track that has started never says nothing
-//! again. So a second track carrying a key the first already has would not *layer*
-//! over it: it would hide it from its own first point onwards and hold its last value
-//! for the rest of the song. A pass therefore splices each key it touched into the
-//! track already asserting that key, between the first touch and the moment the pass
-//! ended, and the old take resumes from there. A key no track has goes into a new one.
-//! That is punch-in on touch with latch to the end of the pass, which is how a
-//! skeleton is built: the jaw, then the head, then a better second half of the jaw.
+//! **A pass replaces what it recorded over, completely.** Each key it touched gets a
+//! row of its own (`TimelineTrack`, one per parameter) whose window is the whole pass —
+//! from where it started to where it stopped — and every row already playing that key
+//! is cut out of that stretch (`types::timeline::cut_rows`). Before the first touch the
+//! key holds what the programmer held when the pass began, or says nothing; a key let
+//! go during the pass says nothing from there. So what the operator saw while it rolled
+//! is what is stored, and a stretch is removed by recording over it with the key let
+//! go. Keys nobody touched are left as they were: the jaw, then the head, then the
+//! jaw again from the middle.
+//!
+//! The recording itself is one asset per pass and never changes; the rows point into
+//! it. What plays is the rows composed — `pult_render::compose`.
 
 use std::collections::{BTreeMap, HashMap};
 
-use pult_render::{sample, Track, TrackKey, TrackPoint};
-use pult_schema::types::{fixture::ParameterValue, parameter_key, programmer::ProgrammerValue, sequence::LEVEL_KEY};
+use pult_render::{Track, TrackKey, TrackPoint};
+use pult_schema::types::{
+    fixture::ParameterValue,
+    parameter_key,
+    programmer::ProgrammerValue,
+    sequence::LEVEL_KEY,
+    timeline::{cut_rows, split_row, TimelineTrack},
+};
 use uuid::Uuid;
 
 /// How far the playhead may move by itself before a pass counts it as a jump.
@@ -53,8 +62,12 @@ pub struct Pass {
     /// which records nothing: what was already held when the pass began is the
     /// baseline, not a move.
     seen: Option<HashMap<(Uuid, String), ParameterValue>>,
+    /// What the programmer held when the pass began: where a touched key starts from.
+    baseline: HashMap<(Uuid, String), ParameterValue>,
     /// The change points so far, from each key's first touch.
     points: BTreeMap<(Uuid, String), Vec<TrackPoint>>,
+    /// Where on the timeline the pass began, which is where what it replaces begins.
+    from_ms: u32,
 }
 
 impl Pass {
@@ -62,13 +75,29 @@ impl Pass {
         Self::default()
     }
 
-    /// The next pass after a jump, carrying on from what this one last saw.
+    /// A pass beginning at a position on the timeline.
+    pub fn starting_at(position_ms: u64) -> Self {
+        Pass { from_ms: position_ms.min(u32::MAX as u64) as u32, ..Self::default() }
+    }
+
+    /// The next pass after a jump, from the position the playhead jumped to, carrying
+    /// on from what this one last saw.
     ///
     /// A loop wrapping is a jump, and the operator's hand is still on the fader: the
     /// next lap's baseline is what the programmer holds now, not a fresh first look
     /// that would swallow the next move as "already held".
-    pub fn continuing(&self) -> Self {
-        Pass { seen: self.seen.clone(), points: BTreeMap::new() }
+    pub fn continuing(&self, position_ms: u64) -> Self {
+        Pass {
+            seen: self.seen.clone(),
+            baseline: self.seen.clone().unwrap_or_default(),
+            points: BTreeMap::new(),
+            from_ms: position_ms.min(u32::MAX as u64) as u32,
+        }
+    }
+
+    /// Where the pass began.
+    pub fn from_ms(&self) -> u32 {
+        self.from_ms
     }
 
     /// Look at the programmer as it is, at a position on the timeline.
@@ -102,7 +131,10 @@ impl Pass {
                     .map(|(sequence, level)| ((*sequence, LEVEL_KEY.to_string()), ParameterValue::Float(*level))),
             )
             .collect();
-        let Some(seen) = self.seen.replace(now.clone()) else { return };
+        let Some(seen) = self.seen.replace(now.clone()) else {
+            self.baseline = now;
+            return;
+        };
         let ms = position_ms.min(u32::MAX as u64) as u32;
         // A key that left the programmer is let go here: a flash key released, a key
         // cleared. Recorded as a release, so the take says nothing from this point and
@@ -147,113 +179,85 @@ impl Pass {
         self.points.values().map(Vec::len).sum()
     }
 
-    /// The pass as a track, in a stable key order.
+    /// The pass as a track, in a stable key order. A touched key starts from what it
+    /// held when the pass began, so the stretch before the first touch is what the
+    /// operator saw there rather than whatever an older take said.
     pub fn into_track(self) -> Track {
+        let (from, baseline) = (self.from_ms, self.baseline);
         Track {
             keys: self
                 .points
                 .into_iter()
-                .map(|((fixture_id, key), points)| TrackKey { fixture_id, key, points })
+                .map(|((fixture_id, key), mut points)| {
+                    if let Some(value) = baseline.get(&(fixture_id, key.clone())) {
+                        if points.first().is_some_and(|p| p.ms > from) {
+                            points.insert(0, TrackPoint { release: false, ms: from, value: value.clone() });
+                        }
+                    }
+                    TrackKey { fixture_id, key, points }
+                })
+                // A key that was only ever let go, from nothing, said nothing.
+                .filter(|key| key.points.iter().any(|p| !p.release))
                 .collect(),
         }
     }
 }
 
-/// What storing a pass comes to.
-#[derive(Debug, Default, PartialEq)]
-pub struct Merged {
-    /// Existing tracks rewritten, by track id, with the pass spliced in.
-    pub replaced: Vec<(Uuid, Track)>,
-    /// The keys no playing track had, as a new track.
-    pub fresh: Option<Track>,
+/// Store a recording into a timeline's rows: every row already playing one of its
+/// keys is cut out of `[from_ms, out_ms)`, and each key gets a row of its own over
+/// exactly that stretch. `asset` is the recording's sha; `input_id` where it came off
+/// a wire.
+pub fn store(
+    rows: &mut Vec<TimelineTrack>,
+    recording: &Track,
+    asset: &str,
+    input_id: Option<Uuid>,
+    from_ms: u32,
+    out_ms: u32,
+) {
+    // A pass that ended where it began still replaced the moment it was at.
+    let out = out_ms.max(from_ms.saturating_add(1));
+    for key in &recording.keys {
+        cut_rows(rows, key.fixture_id, &key.key, from_ms, out);
+        rows.push(TimelineTrack {
+            id: Uuid::new_v4(),
+            name: String::new(),
+            asset: asset.to_string(),
+            input_id,
+            offset_ms: 0,
+            enabled: true,
+            fixture_id: Some(key.fixture_id),
+            key: Some(key.key.clone()),
+            from_ms: Some(from_ms),
+            to_ms: Some(out),
+        });
+    }
 }
 
-/// Join a pass to the takes already on the timeline.
-///
-/// `existing` is the timeline's **enabled** tracks in list order — the ones that play,
-/// in the order the evaluator ranks them, so the track a key is spliced into is the
-/// one that was asserting it. `punch_out_ms` is where the pass ended.
-pub fn merge(pass: Track, punch_out_ms: u64, existing: &[(Uuid, Track)]) -> Merged {
-    let mut replaced: Vec<(Uuid, Track)> = Vec::new();
-    let mut fresh: Vec<TrackKey> = Vec::new();
-    let out = punch_out_ms.min(u32::MAX as u64) as u32;
-
-    for mut key in pass.keys {
-        // A key recorded only as let go is a key the pass never held: nothing to store.
-        if key.points.iter().all(|p| p.release) {
-            continue;
-        }
-        let owner_has_it = existing.iter().any(|(_, track)| {
-            track.keys.iter().any(|k| k.fixture_id == key.fixture_id && k.key == key.key)
-        });
-        // A key no take had ends where the pass ended: from the punch-out it says
-        // nothing, rather than holding its last value for the rest of the timeline.
-        if !owner_has_it && !key.points.last().is_some_and(|p| p.release) {
-            let at = key.points.last().map_or(out, |p| out.max(p.ms.saturating_add(1)));
-            key.points.push(TrackPoint::released(at));
-        }
-        let owner = existing.iter().rev().find(|(_, track)| {
-            track.keys.iter().any(|k| k.fixture_id == key.fixture_id && k.key == key.key)
-        });
-        let Some((owner_id, owner)) = owner else {
-            fresh.push(key);
-            continue;
-        };
-        // Splice into the copy already being rewritten if an earlier key of this pass
-        // went into the same track.
-        let at = match replaced.iter().position(|(id, _)| id == owner_id) {
-            Some(at) => at,
-            None => {
-                replaced.push((*owner_id, owner.clone()));
-                replaced.len() - 1
+/// Every row that plays all of its recording's parameters — a take stored before rows
+/// were per parameter — as a row per parameter. `keys_of` is what each such recording
+/// holds, by sha; a row whose recording is not known yet is left as it is. Answers
+/// whether anything changed.
+pub fn per_parameter(rows: &mut Vec<TimelineTrack>, keys_of: &HashMap<String, Vec<(Uuid, String)>>) -> bool {
+    let mut changed = false;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows.drain(..) {
+        match (row.key.is_none(), keys_of.get(&row.asset)) {
+            (true, Some(keys)) => {
+                out.extend(split_row(&row, keys));
+                changed = true;
             }
-        };
-        let target = &mut replaced[at].1;
-        if let Some(old) =
-            target.keys.iter_mut().find(|k| k.fixture_id == key.fixture_id && k.key == key.key)
-        {
-            old.points = splice(&old.points, &key.points, out);
+            _ => out.push(row),
         }
     }
-
-    Merged {
-        replaced,
-        fresh: (!fresh.is_empty()).then_some(Track { keys: fresh }),
-    }
-}
-
-/// One key's old points with a pass written over them.
-///
-/// The old take up to the first touch, the pass, and then the old take again from the
-/// punch-out — resuming at the value it had there, so it carries on exactly as though
-/// the pass had never been. The resume is put a millisecond after the pass's last
-/// point if the pass ran right up to the punch-out, because two points at one position
-/// are one point and the pass's would be lost.
-fn splice(old: &[TrackPoint], pass: &[TrackPoint], out: u32) -> Vec<TrackPoint> {
-    let Some(first) = pass.first() else { return old.to_vec() };
-    let last = pass.last().map_or(first.ms, |p| p.ms);
-    let mut points: Vec<TrackPoint> = old.iter().filter(|p| p.ms < first.ms).cloned().collect();
-    points.extend(pass.iter().cloned());
-    let resume_at = out.max(last.saturating_add(1));
-    // The old take carries on from the punch-out: its value there, or — where it said
-    // nothing there — a release, so the pass's last value is not held past its end.
-    points.push(match sample(old, resume_at as u64) {
-        Some(value) => TrackPoint { release: false, ms: resume_at, value: value.clone() },
-        None => TrackPoint::released(resume_at),
-    });
-    points.extend(old.iter().filter(|p| p.ms > resume_at).cloned());
-    // A value that did not move is not a change, which is what a track is made of.
-    points.dedup_by(|later, earlier| later.same_as(earlier));
-    // A release before anything was said is nothing at all.
-    while points.first().is_some_and(|p| p.release) {
-        points.remove(0);
-    }
-    points
+    *rows = out;
+    changed
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pult_render::sample;
     use pult_schema::types::{
         effect::{Curve, Direction, EffectSpec, Rate, Shape, Spread},
         fixture::ParameterKind,
@@ -312,11 +316,11 @@ mod tests {
         assert_eq!(track.keys.len(), 1, "{track:?}");
         assert_eq!(track.keys[0].fixture_id, moved);
         assert_eq!(track.keys[0].key, LEVEL_KEY);
-        assert_eq!(pairs(&track.keys[0].points), vec![(100, 0.7), (200, 0.4)]);
+        assert_eq!(pairs(&track.keys[0].points), vec![(0, 1.0), (100, 0.7), (200, 0.4)], "from where it was");
     }
 
     #[test]
-    fn what_was_held_when_the_pass_began_is_not_recorded() {
+    fn what_was_held_when_the_pass_began_is_only_where_it_starts() {
         let mut pass = Pass::new();
         pass.observe(0, &[held(0.5)]);
         pass.observe(100, &[held(0.5)]);
@@ -325,7 +329,7 @@ mod tests {
         pass.observe(300, &[held(0.7)]);
         pass.observe(400, &[held(0.2)]);
         let track = pass.into_track();
-        assert_eq!(pairs(&track.keys[0].points), vec![(200, 0.7), (400, 0.2)]);
+        assert_eq!(pairs(&track.keys[0].points), vec![(0, 0.5), (200, 0.7), (400, 0.2)], "from what it held");
     }
 
     #[test]
@@ -373,11 +377,11 @@ mod tests {
         let mut pass = Pass::new();
         pass.observe(0, &[held(0.1)]);
         pass.observe(500, &[held(0.4)]);
-        let mut lap = pass.continuing();
+        let mut lap = pass.continuing(0);
         lap.observe(100, &[held(0.4)]);
         assert!(lap.is_empty(), "the hand did not move across the wrap");
         lap.observe(200, &[held(0.9)]);
-        assert_eq!(pairs(&lap.into_track().keys[0].points), vec![(200, 0.9)]);
+        assert_eq!(pairs(&lap.into_track().keys[0].points), vec![(0, 0.4), (200, 0.9)]);
     }
 
     #[test]
@@ -388,56 +392,76 @@ mod tests {
         assert!(jumped(810, 5_000), "a locate forwards");
     }
 
-    #[test]
-    fn a_key_no_track_has_is_a_new_track() {
-        let merged = merge(a_track("Intensity", &[(0, 1.0)]), 1_000, &[]);
-        assert!(merged.replaced.is_empty());
-        assert_eq!(merged.fresh.unwrap().keys.len(), 1);
+    fn a_row(asset: &str, key: &str, from: Option<u32>, to: Option<u32>) -> TimelineTrack {
+        TimelineTrack {
+            id: Uuid::new_v4(),
+            name: String::new(),
+            asset: asset.into(),
+            input_id: None,
+            offset_ms: 0,
+            enabled: true,
+            fixture_id: Some(jaw()),
+            key: Some(key.into()),
+            from_ms: from,
+            to_ms: to,
+        }
     }
 
-    /// The jaw, then the head: the second pass touches only the head, and the jaw's
-    /// take is not rewritten at all.
-    #[test]
-    fn a_pass_leaves_the_keys_it_did_not_touch_alone() {
-        let jaw_take = (Uuid::from_u128(10), a_track("Intensity", &[(0, 0.0), (500, 1.0)]));
-        let merged = merge(a_track("Pan", &[(100, 0.5)]), 2_000, &[jaw_take]);
-        assert!(merged.replaced.is_empty(), "the jaw's take is untouched");
-        assert_eq!(merged.fresh.unwrap().keys[0].key, "Pan");
+    fn windows(rows: &[TimelineTrack], key: &str) -> Vec<(String, Option<u32>, Option<u32>)> {
+        rows.iter()
+            .filter(|r| r.key.as_deref() == Some(key))
+            .map(|r| (r.asset.clone(), r.from_ms, r.to_ms))
+            .collect()
     }
 
-    /// A better second half of the jaw: the old take up to the first touch, the pass,
-    /// and the old take again from where the pass stopped.
+    /// A better second half of the jaw: recorded from the middle, the old take keeps
+    /// the first half and the new pass has the rest, completely.
     #[test]
-    fn a_pass_is_spliced_into_the_take_playing_the_key() {
-        let take = Uuid::from_u128(10);
-        let old = a_track("Intensity", &[(0, 0.0), (1_000, 0.2), (2_000, 0.4), (3_000, 0.6), (4_000, 0.8)]);
-        let merged = merge(a_track("Intensity", &[(1_500, 0.9), (2_500, 0.1)]), 3_500, &[(take, old)]);
-        assert!(merged.fresh.is_none());
-        let (id, track) = &merged.replaced[0];
-        assert_eq!(*id, take);
+    fn a_pass_replaces_its_whole_stretch_of_the_keys_it_touched() {
+        let mut rows = vec![a_row("old", "Intensity", None, None), a_row("old", "Pan", None, None)];
+        let pass = a_track("Intensity", &[(1_500, 0.9), (2_500, 0.1)]);
+        store(&mut rows, &pass, "new", None, 1_000, 3_500);
         assert_eq!(
-            pairs(&track.keys[0].points),
-            vec![(0, 0.0), (1_000, 0.2), (1_500, 0.9), (2_500, 0.1), (3_500, 0.6), (4_000, 0.8)],
-            "the old take resumes at what it held at the punch-out"
+            windows(&rows, "Intensity"),
+            vec![
+                ("old".into(), None, Some(1_000)),
+                ("old".into(), Some(3_500), None),
+                ("new".into(), Some(1_000), Some(3_500)),
+            ]
         );
+        assert_eq!(windows(&rows, "Pan"), vec![("old".into(), None, None)], "the pan was not touched");
     }
 
     #[test]
-    fn the_later_of_two_takes_holding_a_key_is_the_one_rewritten() {
-        let first = (Uuid::from_u128(1), a_track("Intensity", &[(0, 0.1)]));
-        let second = (Uuid::from_u128(2), a_track("Intensity", &[(0, 0.2)]));
-        let merged = merge(a_track("Intensity", &[(100, 0.9)]), 200, &[first, second]);
-        assert_eq!(merged.replaced[0].0, Uuid::from_u128(2), "the one the evaluator plays");
+    fn a_touched_key_starts_from_what_was_held_when_the_pass_began() {
+        let mut pass = Pass::starting_at(1_000);
+        pass.observe(1_000, &[held(0.5)]);
+        pass.observe(1_400, &[held(0.8)]);
+        assert_eq!(pairs(&pass.into_track().keys[0].points), vec![(1_000, 0.5), (1_400, 0.8)]);
     }
 
     #[test]
-    fn a_pass_to_the_punch_out_resumes_a_millisecond_later() {
-        let old = (Uuid::from_u128(1), a_track("Intensity", &[(0, 0.3)]));
-        let merged = merge(a_track("Intensity", &[(100, 0.9), (200, 0.5)]), 200, &[old]);
-        assert_eq!(
-            pairs(&merged.replaced[0].1.keys[0].points),
-            vec![(0, 0.3), (100, 0.9), (200, 0.5), (201, 0.3)]
-        );
+    fn a_held_key_let_go_is_recorded_so_the_stretch_is_removed() {
+        let mut pass = Pass::starting_at(0);
+        pass.observe(0, &[held(0.5)]);
+        pass.observe(800, &[]);
+        let track = pass.into_track();
+        let points = &track.keys[0].points;
+        assert_eq!(sample(points, 100), Some(&ParameterValue::Float(0.5)));
+        assert_eq!(sample(points, 800), None);
+    }
+
+    #[test]
+    fn an_old_take_becomes_a_row_per_parameter_on_the_same_recording() {
+        let mut row = a_row("old", "x", None, Some(900));
+        row.fixture_id = None;
+        row.key = None;
+        let mut rows = vec![row];
+        let keys = HashMap::from([("old".to_string(), vec![(jaw(), "Intensity".into()), (jaw(), "Pan".into())])]);
+        assert!(per_parameter(&mut rows, &keys));
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.asset == "old" && r.to_ms == Some(900)));
+        assert!(!per_parameter(&mut rows, &keys), "already split");
     }
 
     #[test]
@@ -452,16 +476,5 @@ mod tests {
         assert_eq!(points.len(), 2);
         assert_eq!(sample(points, 1_200), Some(&ParameterValue::Float(1.0)));
         assert_eq!(sample(points, 1_400), None, "back to whatever is underneath");
-    }
-
-    #[test]
-    fn a_new_take_says_nothing_after_the_pass_ended() {
-        let mut pass = Pass::new();
-        pass.observe(0, &[]);
-        pass.observe(500, &[held(0.7)]);
-        let merged = merge(pass.into_track(), 2_000, &[]);
-        let points = &merged.fresh.expect("a new take").keys[0].points;
-        assert_eq!(sample(points, 1_999), Some(&ParameterValue::Float(0.7)));
-        assert_eq!(sample(points, 2_000), None, "the block ends at the punch-out");
     }
 }

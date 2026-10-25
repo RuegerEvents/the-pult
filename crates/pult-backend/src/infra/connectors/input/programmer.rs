@@ -37,7 +37,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::InputManager;
-use crate::model::takes::{jumped, merge, Pass};
+use crate::model::takes::{jumped, per_parameter, store, Pass};
 
 /// A programmer take in progress.
 pub(super) struct ProgrammerTake {
@@ -68,10 +68,15 @@ impl InputManager {
                     return;
                 }
                 info!("[take] recording the programmer into timeline {timeline_id}");
+                let from = self
+                    .timelines
+                    .iter()
+                    .find(|t| t.id == timeline_id)
+                    .map_or(0, |t| t.position_at(pult_schema::types::sequence::now_ms()));
                 self.take = Some(ProgrammerTake {
                     timeline_id,
                     release,
-                    pass: Pass::new(),
+                    pass: Pass::starting_at(from),
                     recorded: BTreeSet::new(),
                     passes: 0,
                 });
@@ -110,7 +115,7 @@ impl InputManager {
             return;
         }
         let Some(take) = &mut self.take else { return };
-        let next = take.pass.continuing();
+        let next = take.pass.continuing(is);
         let pass = std::mem::replace(&mut take.pass, next);
         if let Some(touched) = self.store_pass(id, pass, was).await {
             if let Some(take) = &mut self.take {
@@ -142,7 +147,8 @@ impl InputManager {
         self.publish_takes().await;
     }
 
-    /// Join one pass to the takes on the timeline, in one write of its `tracks`.
+    /// Store one pass and write it into the timeline's rows, in one write of its
+    /// `tracks`: see `model::takes::store`.
     ///
     /// Answers the keys it recorded, or `None` where there was nothing to store.
     async fn store_pass(
@@ -154,13 +160,40 @@ impl InputManager {
         if pass.is_empty() {
             return None;
         }
-        let assets = self.assets.clone()?;
-        let pass = pass.into_track();
+        let from = pass.from_ms();
+        let recording = pass.into_track();
+        if recording.keys.is_empty() {
+            return None;
+        }
         let touched: Vec<(Uuid, String)> =
-            pass.keys.iter().map(|k| (k.fixture_id, k.key.clone())).collect();
+            recording.keys.iter().map(|k| (k.fixture_id, k.key.clone())).collect();
+        let out = punch_out_ms.min(u32::MAX as u64) as u32;
+        self.store_recording(timeline_id, &recording, None, from, out).await?;
+        info!("[take] pass stored: {} key(s) into timeline {timeline_id}", touched.len());
+        Some(touched)
+    }
 
-        // Read the row back rather than remembering it, for the reason an input's take
-        // does: somebody may have added or disabled a take while this one rolled.
+    /// Put a recording in the asset store and into a timeline's rows over
+    /// `[from, out)`. Shared by a programmer pass and a take off a wire, which store
+    /// alike: each key a row of its own, replacing that stretch of it.
+    pub(super) async fn store_recording(
+        &self,
+        timeline_id: Uuid,
+        recording: &pult_render::Track,
+        input_id: Option<Uuid>,
+        from: u32,
+        out: u32,
+    ) -> Option<()> {
+        let assets = self.assets.clone()?;
+        let sha = match assets.put(crate::infra::assets::TRACK_MIME, &pult_render::encode(recording)).await {
+            Ok(sha) => sha,
+            Err(e) => {
+                warn!("[take] a recording could not be stored: {e}");
+                return None;
+            }
+        };
+        // Read the row back rather than remembering it: somebody may have cut, moved
+        // or disabled a take while this one rolled.
         let path = vec![
             PathSegment::Key("timelines".into()),
             PathSegment::Id(timeline_id),
@@ -173,55 +206,82 @@ impl InputManager {
             .ok()
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default();
-        let mut existing = Vec::new();
-        for track in tracks.iter().filter(|t| t.enabled) {
-            match assets.get(&track.asset).await {
-                Ok(Some(asset)) => match pult_render::decode(&asset.bytes) {
-                    Ok(decoded) => existing.push((track.id, decoded)),
-                    Err(e) => warn!("[take] {} is not a take this build can read: {e}", track.name),
-                },
-                // A take whose bytes a peer has not sent yet cannot be spliced into;
-                // the pass goes beside it rather than over it.
-                _ => {}
-            }
-        }
-
-        let merged = merge(pass, punch_out_ms, &existing);
-        for (track_id, track) in merged.replaced {
-            let bytes = pult_render::encode(&track);
-            match assets.put(crate::infra::assets::TRACK_MIME, &bytes).await {
-                Ok(sha) => {
-                    if let Some(row) = tracks.iter_mut().find(|t| t.id == track_id) {
-                        row.asset = sha;
-                    }
-                }
-                Err(e) => warn!("[take] a pass could not be stored: {e}"),
-            }
-        }
-        if let Some(track) = merged.fresh {
-            let bytes = pult_render::encode(&track);
-            match assets.put(crate::infra::assets::TRACK_MIME, &bytes).await {
-                Ok(sha) => tracks.push(TimelineTrack {
-                    id: Uuid::new_v4(),
-                    name: format!("Take {}", tracks.len() + 1),
-                    asset: sha,
-                    input_id: None,
-                    offset_ms: 0,
-                    enabled: true,
-                }),
-                Err(e) => warn!("[take] a pass could not be stored: {e}"),
-            }
-        }
+        // An old take playing every parameter has to be a row per parameter before a
+        // stretch of one of them can be cut out of it.
+        let keys = self.keys_of_whole_takes(&tracks).await;
+        per_parameter(&mut tracks, &keys);
+        store(&mut tracks, recording, &sha, input_id, from, out);
         match serde_json::to_value(&tracks) {
             Ok(value) => {
                 if let Err(e) = self.engine.set(path, Lifecycle::Persisted, value).await {
-                    warn!("[take] a pass was stored but could not be added to the timeline: {e}");
+                    warn!("[take] a recording was stored but could not be added to the timeline: {e}");
+                    return None;
                 }
             }
-            Err(e) => warn!("[take] {e}"),
+            Err(e) => {
+                warn!("[take] {e}");
+                return None;
+            }
         }
-        info!("[take] pass stored: {} key(s) into timeline {timeline_id}", touched.len());
-        Some(touched)
+        Some(())
+    }
+
+    /// What each recording a whole-take row points at holds, by sha.
+    pub(super) async fn keys_of_whole_takes(
+        &self,
+        rows: &[TimelineTrack],
+    ) -> std::collections::HashMap<String, Vec<(Uuid, String)>> {
+        let mut keys = std::collections::HashMap::new();
+        let Some(assets) = &self.assets else { return keys };
+        for row in rows.iter().filter(|row| row.key.is_none()) {
+            if keys.contains_key(&row.asset) {
+                continue;
+            }
+            match assets.get(&row.asset).await {
+                Ok(Some(asset)) => match pult_render::decode(&asset.bytes) {
+                    Ok(track) => {
+                        keys.insert(
+                            row.asset.clone(),
+                            track.keys.iter().map(|k| (k.fixture_id, k.key.clone())).collect(),
+                        );
+                    }
+                    Err(e) => warn!("[take] {} is not a take this build can read: {e}", row.name),
+                },
+                // Not here yet: split when it is.
+                _ => {}
+            }
+        }
+        keys
+    }
+
+    /// Split every take on the show's timelines that still plays all of its
+    /// parameters into a row per parameter. The leader's, once per take, so each
+    /// parameter of a take recorded before can be cropped and sliced on its own.
+    pub(super) async fn split_whole_takes(&self) {
+        if !self.leading || self.assets.is_none() {
+            return;
+        }
+        for timeline in &self.timelines {
+            if !timeline.tracks.iter().any(|row| row.key.is_none()) {
+                continue;
+            }
+            let mut rows = timeline.tracks.clone();
+            let keys = self.keys_of_whole_takes(&rows).await;
+            if !per_parameter(&mut rows, &keys) {
+                continue;
+            }
+            let path = vec![
+                PathSegment::Key("timelines".into()),
+                PathSegment::Id(timeline.id),
+                PathSegment::Key("tracks".into()),
+            ];
+            if let Ok(value) = serde_json::to_value(&rows) {
+                match self.engine.set(path, Lifecycle::Persisted, value).await {
+                    Ok(_) => info!("[take] {}: takes split into a row per parameter", timeline.name),
+                    Err(e) => warn!("[take] {}: takes could not be split: {e}", timeline.name),
+                }
+            }
+        }
     }
 
     /// Give the keys a take recorded back to it.

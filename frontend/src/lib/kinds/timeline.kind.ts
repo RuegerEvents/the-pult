@@ -23,7 +23,10 @@ import Activity from '@lucide/svelte/icons/activity';
 import type { AudioClip, GridSegment, Marker, Timeline, TimelineEvent, TimelineTrack } from '$lib/generated/index.js';
 import { copyName, registerKind, type ObjectRow } from '$lib/objects.js';
 import { collection } from '$lib/stores/show.js';
-import { current, locate, setClip, timelines, writeColumns } from '$lib/stores/timelines.js';
+import { current, locate, positionOf, setClip, timelines, writeColumns } from '$lib/stores/timelines.js';
+import { outlines } from '$lib/stores/takeOutlines.js';
+import { rowKeys, rowSpan, splitRows } from '$lib/takes.js';
+import { consoleNow } from '$lib/ws/clock.js';
 import { describeAction } from '$lib/timeline/describe.js';
 import { removed, segmentId, segmentIndex, type ItemRef } from '$lib/timeline/lanes.js';
 import { clock } from '$lib/waveform.js';
@@ -41,6 +44,7 @@ export type SegmentRow = ObjectRow & { timelineId: string; index: number; segmen
 export type TakeRow = ObjectRow & { timelineId: string; track: TimelineTrack };
 
 const sequences = collection('sequences');
+const fixtures = collection('fixtures');
 const cues = collection('cues');
 const variables = collection('variables');
 
@@ -73,9 +77,30 @@ const segmentRows: Readable<SegmentRow[]> = derived(all, ($t) =>
 		}))
 	)
 );
-const takeRows: Readable<TakeRow[]> = derived(all, ($t) =>
-	$t.flatMap((t) => t.tracks.map((track) => ({ id: track.id, name: track.name, timelineId: t.id, track })))
+/** A take by what it plays, "Skeleton 1 · Jaw", where nobody has named it. */
+const takeRows: Readable<TakeRow[]> = derived([all, fixtures], ([$t, $f]) =>
+	$t.flatMap((t) =>
+		t.tracks.map((track) => {
+			const fixture = $f.find((f) => f.id === track.fixture_id)?.name;
+			const name = track.name || (track.key ? `${fixture ?? 'Take'} · ${track.key}` : 'Take');
+			return { id: track.id, name, timelineId: t.id, track };
+		})
+	)
 );
+
+/** A take cut in two at the playhead, if the playhead is inside it. */
+async function splitTake(row: TakeRow) {
+	const timeline = current(row.timelineId);
+	const at = timeline ? positionOf(timeline, consoleNow()) : null;
+	if (!timeline || at === null) return;
+	const all = get(outlines);
+	const spanOf = (track: TimelineTrack) => {
+		const outline = all[track.asset];
+		return rowSpan(track, Array.isArray(outline) ? rowKeys(track, outline) : null);
+	};
+	const tracks = splitRows(timeline.tracks, new Set([row.id]), at, spanOf, uuid);
+	if (tracks) await writeColumns(row.timelineId, { tracks });
+}
 
 /** Take one item off its timeline. */
 async function drop(timelineId: string, ref: ItemRef) {
@@ -184,6 +209,7 @@ registerKind<TakeRow>({
 		if (timeline) await writeColumns(row.timelineId, { tracks: timeline.tracks.map((t) => (t.id === row.id ? { ...t, name } : t)) });
 	},
 	remove: (row) => drop(row.timelineId, { kind: 'timeline-take', id: row.id }),
+	verbs: (row) => [{ id: 'split', label: 'Split at playhead', structural: true, run: () => splitTake(row) }],
 	inspector: TakeInspector
 });
 

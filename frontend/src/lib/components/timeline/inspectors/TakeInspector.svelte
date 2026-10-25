@@ -1,8 +1,9 @@
 <script lang="ts">
 	/**
-	 * A take: whether it plays, how far it is moved against the timeline, and where it
-	 * came from. What it recorded is drawn on its lane, a row per key, from the same
-	 * parse of the same bytes the station plays.
+	 * A take — one parameter of one recording, over a stretch of the timeline: whether
+	 * it plays, the stretch, how far it is moved, and where it came from. Drawn on its
+	 * parameter's row of the Recordings lane, from the same parse of the same bytes the
+	 * station plays.
 	 */
 
 	import type { TimelineTrack } from '$lib/generated/index.js';
@@ -10,12 +11,20 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { collection } from '$lib/stores/show.js';
 	import { current, writeColumns } from '$lib/stores/timelines.js';
-	import { trackSource } from '$lib/takes.js';
+	import { outlines } from '$lib/stores/takeOutlines.js';
+	import { rowKeys, rowSpan, slid, trackSource } from '$lib/takes.js';
+	import { clock } from '$lib/waveform.js';
 	import Help from '../../Help.svelte';
 
 	let { rows }: { rows: TakeRow[] } = $props();
 
 	const inputs = collection('inputs');
+
+	function stretch(track: TimelineTrack): string {
+		const outline = $outlines[track.asset];
+		const span = rowSpan(track, Array.isArray(outline) ? rowKeys(track, outline) : null);
+		return span ? `${clock(span.fromMs)} – ${clock(span.toMs)}` : '…';
+	}
 
 	async function change(row: TakeRow, patch: Partial<TimelineTrack>) {
 		const timeline = current(row.timelineId);
@@ -28,9 +37,11 @@
 		{#if rows.length > 1}<span class="wide label">{row.name}</span>{/if}
 		<span class="label"
 			>Plays <Help label="What a take does"
-				>A take holds every key it recorded, over playback and under the programmer. Stopping the
-				timeline lets those keys go, over the show's home fade, into whatever playback holds beneath
-				them.</Help
+				>A take holds its parameter over its stretch of the timeline, over playback and under the
+				programmer. Drag either end to crop it, press S to slice the takes under the playhead, and
+				delete a slice to remove that part. Recording the parameter again replaces the stretch the
+				pass ran over. Stopping the timeline lets go, over the show's home fade, into whatever playback
+				holds beneath.</Help
 			></span
 		>
 		<label class="inline note">
@@ -42,6 +53,8 @@
 			/>
 			with the timeline
 		</label>
+		<span class="label">Plays</span>
+		<span class="note">{stretch(row.track)}</span>
 		<span class="label">Moved</span>
 		<div class="inline">
 			<input
@@ -53,7 +66,8 @@
 				value={row.track.offset_ms}
 				onchange={(e) => {
 					const ms = Number(e.currentTarget.value);
-					if (Number.isFinite(ms)) void change(row, { offset_ms: Math.round(ms) });
+					// The stretch moves with it, as it does when the take is dragged.
+					if (Number.isFinite(ms)) void change(row, slid(row.track, Math.round(ms)));
 				}}
 			/>
 			<span class="note">ms against the timeline</span>

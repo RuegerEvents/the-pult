@@ -17,11 +17,12 @@
  * destination that overlap in time — a scream over a bed — take extra rows inside that
  * lane (`clipLanes`), or one would be drawn under the other and could not be grabbed.
  *
- * **A take is a lane with a row per key it recorded**, labeled by fixture and
- * parameter — "Skeleton · Jaw" — because a take of a skeleton is four movements and a
- * lane has to show which of them moved when. Drawn from `pult_render::outline`, the
- * same parse of the same bytes the station plays, so a lane cannot show a take the
- * lamps would not do.
+ * **Recordings are one lane with a row per parameter**, labeled by fixture and
+ * parameter — "Skeleton · Jaw" — and each take is a segment on its parameter's row:
+ * a `TimelineTrack` per parameter, with a window. So a parameter recorded three times
+ * over, sliced and cropped, reads as one row with its pieces in it, the way it plays.
+ * Drawn from `pult_render::outline`, the same parse of the same bytes the station
+ * plays, so a lane cannot show a take the lamps would not do.
  */
 
 import { clipLanes, msOf, xOf, type View } from '$lib/waveform.js';
@@ -43,10 +44,8 @@ export const RULER_H = 24;
 export const FLAG_H = 22;
 export const CLIP_ROW_H = 40;
 export const KEY_ROW_H = 18;
-/** A take's own line above its keys, for its name. */
-export const TAKE_HEAD_H = 16;
-/** A take whose outline has not arrived is drawn one row high, not left out. */
-const EMPTY_TAKE_ROWS = 1;
+/** The row a take whose recording has not been read yet is drawn on. */
+const UNREAD_ROW = 'unread';
 
 export type LaneKind = 'markers' | 'events' | 'audio' | 'take';
 
@@ -58,8 +57,10 @@ export type Lane = {
 	detail?: string;
 	/** A sound lane's zone color, drawn on its label and its clips' edges. */
 	color?: string;
-	/** Labels of the rows inside the lane, top to bottom — a take's keys. */
+	/** Labels of the rows inside the lane, top to bottom — a parameter each, on the recordings lane. */
 	rows: string[];
+	/** What each row is, where that is more than its label: the recordings lane's `fixture/key`. */
+	rowKeys?: string[];
 	top: number;
 	height: number;
 	rowHeight: number;
@@ -89,17 +90,13 @@ export type ClipInput = {
 	toMs: number;
 };
 
-export type KeyInput = { label: string; fromMs: number; toMs: number };
+/** One parameter a take plays, over the stretch it plays it. */
+export type KeyInput = { row: string; label: string; fromMs: number; toMs: number };
 
 export type TakeInput = {
 	id: string;
-	name: string;
-	/** What the take's rows have in common, said once on its name line: "Skeleton 1". */
-	subject?: string;
-	source: string;
-	/** Where the take sits: its own position plus its offset. */
-	offsetMs: number;
-	/** `null` until its outline has been read. */
+	/** The parameters it plays — one, or every one for an old whole take — or `null`
+	 *  until its recording has been read. */
 	keys: KeyInput[] | null;
 };
 
@@ -174,29 +171,37 @@ export function layOut(input: LaneInput): Layout {
 		);
 	}
 
-	for (const take of input.takes) {
-		const keys = take.keys ?? [];
-		const count = keys.length || EMPTY_TAKE_ROWS;
-		const key = `take:${take.id}`;
+	// One lane for every recording, a row per parameter, in the order a person reads a
+	// rig: by fixture, then by parameter.
+	if (input.takes.length) {
+		const labels = new Map<string, string>();
+		for (const take of input.takes) {
+			for (const k of take.keys ?? [{ row: UNREAD_ROW, label: 'reading…', fromMs: 0, toMs: 0 }]) labels.set(k.row, k.label);
+		}
+		const rowKeys = [...labels.keys()].sort((a, b) =>
+			a === UNREAD_ROW ? 1 : b === UNREAD_ROW ? -1 : labels.get(a)!.localeCompare(labels.get(b)!)
+		);
 		push({
-			key,
+			key: 'takes',
 			kind: 'take',
-			label: take.subject ? `${take.name} · ${take.subject}` : take.name,
-			detail: take.source,
-			rows: keys.length ? keys.map((k) => k.label) : [''],
-			height: TAKE_HEAD_H + count * KEY_ROW_H + 4,
+			label: 'Recordings',
+			rows: rowKeys.map((k) => labels.get(k)!),
+			rowKeys,
+			height: rowKeys.length * KEY_ROW_H + 4,
 			rowHeight: KEY_ROW_H,
-			headHeight: TAKE_HEAD_H
+			headHeight: 0
 		});
-		const from = keys.length ? Math.min(...keys.map((k) => k.fromMs)) : 0;
-		const to = keys.length ? Math.max(...keys.map((k) => k.toMs)) : 0;
-		items.push({
-			ref: { kind: 'timeline-take', id: take.id },
-			lane: key,
-			row: 0,
-			fromMs: from + take.offsetMs,
-			toMs: Math.max(from, to) + take.offsetMs
-		});
+		for (const take of input.takes) {
+			for (const k of take.keys ?? [{ row: UNREAD_ROW, label: '', fromMs: 0, toMs: 0 }]) {
+				items.push({
+					ref: { kind: 'timeline-take', id: take.id },
+					lane: 'takes',
+					row: rowKeys.indexOf(k.row),
+					fromMs: k.fromMs,
+					toMs: Math.max(k.fromMs, k.toMs)
+				});
+			}
+		}
 	}
 
 	return { lanes, items, height: top + 6 };
@@ -218,10 +223,6 @@ export function rectOf(item: Placed, layout: Layout, view: View, width: number):
 	}
 	const lane = layout.lanes.find((l) => l.key === item.lane);
 	if (!lane) return { left: 0, right: 0, top: 0, bottom: 0 };
-	if (item.ref.kind === 'timeline-take') {
-		// The whole lane: a take is picked up by any of its rows.
-		return { left: x0, right: Math.max(x1, x0 + 4), top: lane.top + 2, bottom: lane.top + lane.height - 2 };
-	}
 	const top = lane.top + item.row * lane.rowHeight;
 	if (item.fromMs === item.toMs) {
 		return { left: x0 - POINT_PX, right: x0 + POINT_PX, top, bottom: top + lane.rowHeight };
@@ -283,7 +284,7 @@ export type Movable = {
 	events: { id: string; at_ms: number }[];
 	markers: { id: string; at_ms: number }[];
 	grid: { at_ms: number }[];
-	tracks: { id: string; offset_ms: number }[];
+	tracks: { id: string; offset_ms: number; from_ms: number | null; to_ms: number | null }[];
 };
 
 /** Where each grabbed item was when the drag began, which every frame is measured from. */
@@ -370,9 +371,13 @@ export function moved<T extends Movable>(
 		}) as T['grid'];
 	}
 	if (touched('timeline-take')) {
+		// A take moves with its window, so a slice takes what it plays with it.
 		out.tracks = timeline.tracks.map((t) => {
 			const from = has('timeline-take', t.id);
-			return from === undefined ? t : { ...t, offset_ms: from + delta };
+			if (from === undefined) return t;
+			const by = from + delta - t.offset_ms;
+			const shift = (ms: number | null) => (ms === null ? null : Math.max(0, ms + by));
+			return { ...t, offset_ms: from + delta, from_ms: shift(t.from_ms), to_ms: shift(t.to_ms) };
 		}) as T['tracks'];
 	}
 	return out;

@@ -25,40 +25,48 @@
 
 import { readable, type Readable } from 'svelte/store';
 
-import { forgetTrack, loadEvaluator, loadTrack, playTrack, stopTrack } from '../evaluator.js';
+import { composeTrack, forgetTrack, loadEvaluator, loadTrack, playTrack, stopTrack, type TrackPart } from '../evaluator.js';
 import type { Timeline } from '../generated/index.js';
 import { collection } from './show.js';
 
 /** Where the console serves an asset from. Same origin, like everything else. */
 const assetUrl = (sha: string) => `/assets/${sha}`;
 
-/** What one enabled track of one running timeline comes to. */
-type Rolling = { sha: string; anchorMs: number; positionMs: number; rate: number; levels: boolean };
+/** What one running timeline's recordings come to: its rows, composed under one id. */
+type Rolling = { id: string; parts: TrackPart[]; anchorMs: number; positionMs: number; rate: number; levels: boolean };
 
 /**
- * Which recordings a set of timelines is playing.
- *
- * A track's own `offset_ms` moves the playhead the *other* way: a take that arrived
- * 40 ms late is played 40 ms earlier. The same arithmetic the station does in
- * `playing_tracks`, and it has to be the same or the screen leads the lamps.
+ * Which recordings a set of timelines is playing: per running timeline, its enabled
+ * rows, composed in the wasm exactly as the station's `playing_tracks` composes them —
+ * each row its window of its parameter, nudged by its own offset — and played on the
+ * timeline's own transport.
  */
 export function rolling(timelines: Timeline[]): Rolling[] {
 	const out: Rolling[] = [];
 	for (const timeline of timelines) {
 		if (!timeline.running) continue;
+		const parts: TrackPart[] = timeline.tracks
+			.filter((track) => track.enabled)
+			.map((track) => ({
+				sha: track.asset,
+				fixture_id: track.fixture_id,
+				key: track.key,
+				from_ms: track.from_ms,
+				to_ms: track.to_ms,
+				offset_ms: track.offset_ms
+			}));
+		if (parts.length === 0) continue;
 		// A timeline recording a new pass leaves the sequences' levels to their faders,
 		// as the station's `playing_tracks` does: the fader is what is being recorded.
 		const recording = !!timeline.recording && 'Programmer' in timeline.recording;
-		for (const track of timeline.tracks) {
-			if (!track.enabled) continue;
-			out.push({
-				sha: track.asset,
-				anchorMs: timeline.anchor_ms,
-				positionMs: Math.max(0, timeline.position_at_anchor_ms - track.offset_ms),
-				rate: timeline.rate,
-				levels: !recording
-			});
-		}
+		out.push({
+			id: `timeline:${timeline.id}`,
+			parts,
+			anchorMs: timeline.anchor_ms,
+			positionMs: timeline.position_at_anchor_ms,
+			rate: timeline.rate,
+			levels: !recording
+		});
 	}
 	return out;
 }
@@ -77,79 +85,92 @@ export const tracks: Readable<number> = readable(0, (set) => {
 	let live = true;
 	/** Shas whose bytes are in the evaluator, or on their way there. */
 	const loaded = new Set<string>();
-	/** Shas the evaluator has been told are playing. */
-	const playing = new Set<string>();
+	/** Shas whose bytes have arrived. */
+	const ready = new Set<string>();
+	/** Composed ids the evaluator has been told are playing, with the rows each was composed from. */
+	const playing = new Map<string, string>();
 	/** Every sha the show has mentioned, so one that goes can be let go of. */
 	const known = new Set<string>();
 
 	let stop: (() => void) | undefined;
+	let latest: Timeline[] = [];
+
+	function apply() {
+		const timelines = latest;
+		const wanted = rolling(timelines);
+		const mentioned = new Set(timelines.flatMap((timeline) => timeline.tracks.map((track) => track.asset)));
+
+		for (const sha of known) {
+			if (mentioned.has(sha)) continue;
+			// Deleted from the show, or the whole timeline went. Forgotten rather than
+			// left behind, because a browser that stays open through an afternoon of
+			// takes would otherwise hold every one of them.
+			forgetTrack(sha);
+			loaded.delete(sha);
+			ready.delete(sha);
+			known.delete(sha);
+		}
+		for (const sha of mentioned) known.add(sha);
+
+		for (const id of playing.keys()) {
+			if (!wanted.some((track) => track.id === id)) {
+				stopTrack(id);
+				forgetTrack(id);
+				playing.delete(id);
+			}
+		}
+
+		for (const track of wanted) {
+			for (const part of track.parts) fetchOnce(part.sha);
+			// Composed again only when the rows or the bytes under them changed: a crop
+			// dragged is a new composition per frame, and a cue taken is none.
+			const signature = JSON.stringify([track.parts, track.parts.map((p) => ready.has(p.sha))]);
+			if (playing.get(track.id) !== signature) {
+				composeTrack(track.id, track.parts);
+				playing.set(track.id, signature);
+			}
+			playTrack(track.id, track.anchorMs, track.positionMs, track.rate, track.levels);
+		}
+		set(ready.size);
+	}
+
+	function fetchOnce(sha: string) {
+		if (loaded.has(sha)) return;
+		// Marked before the fetch, so a second update arriving mid-download does not
+		// start a second one for the same bytes.
+		loaded.add(sha);
+		void fetch(assetUrl(sha))
+			.then((response) => {
+				if (!response.ok) throw new Error(`${response.status}`);
+				return response.arrayBuffer();
+			})
+			.then((bytes) => {
+				if (!live) return;
+				loadTrack(sha, new Uint8Array(bytes));
+				ready.add(sha);
+				apply();
+			})
+			.catch((e) => {
+				// A station that has not got the file yet. Forgotten so the next change
+				// to the timelines tries again, rather than leaving the take silently
+				// absent for the rest of the show.
+				loaded.delete(sha);
+				console.warn(`[pult] the recording ${sha.slice(0, 8)} could not be read`, e);
+			});
+	}
 
 	loadEvaluator().then((instance) => {
 		if (!live || !instance) return;
-
 		stop = collection('timelines').subscribe(($timelines) => {
-			const timelines = $timelines as Timeline[];
-			const wanted = rolling(timelines);
-			const mentioned = new Set(
-				timelines.flatMap((timeline) => timeline.tracks.map((track) => track.asset))
-			);
-
-			for (const sha of known) {
-				if (mentioned.has(sha)) continue;
-				// Deleted from the show, or the whole timeline went. Forgotten rather
-				// than left behind, because a browser that stays open through an
-				// afternoon of takes would otherwise hold every one of them.
-				forgetTrack(sha);
-				loaded.delete(sha);
-				playing.delete(sha);
-				known.delete(sha);
-			}
-			for (const sha of mentioned) known.add(sha);
-
-			for (const sha of playing) {
-				if (!wanted.some((track) => track.sha === sha)) {
-					stopTrack(sha);
-					playing.delete(sha);
-				}
-			}
-
-			for (const track of wanted) {
-				if (loaded.has(track.sha)) {
-					playTrack(track.sha, track.anchorMs, track.positionMs, track.rate, track.levels);
-					playing.add(track.sha);
-					continue;
-				}
-				// Marked before the fetch, so a second update arriving mid-download does
-				// not start a second one for the same bytes.
-				loaded.add(track.sha);
-				void fetch(assetUrl(track.sha))
-					.then((response) => {
-						if (!response.ok) throw new Error(`${response.status}`);
-						return response.arrayBuffer();
-					})
-					.then((bytes) => {
-						if (!live) return;
-						loadTrack(track.sha, new Uint8Array(bytes));
-						playTrack(track.sha, track.anchorMs, track.positionMs, track.rate, track.levels);
-						playing.add(track.sha);
-						set(loaded.size);
-					})
-					.catch((e) => {
-						// A station that has not got the file yet. Forgotten so the next
-						// change to the timelines tries again, rather than leaving the
-						// take silently absent for the rest of the show.
-						loaded.delete(track.sha);
-						console.warn(`[pult] the recording ${track.sha.slice(0, 8)} could not be read`, e);
-					});
-			}
-			set(loaded.size);
+			latest = $timelines as Timeline[];
+			apply();
 		});
 	});
 
 	return () => {
 		live = false;
 		stop?.();
-		for (const sha of playing) stopTrack(sha);
+		for (const id of playing.keys()) stopTrack(id);
 		playing.clear();
 	};
 });
