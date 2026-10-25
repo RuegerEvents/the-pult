@@ -2,12 +2,11 @@
 	/**
 	 * Every timeline, as cards: what each is doing, and which one is open.
 	 *
-	 * **A tap runs it**, which is the console's grammar — a card acts — and is what a
-	 * haunt needs from this list on the night: twelve scares and a bed, each a thing to
-	 * fire. Opening one is the edit act, so it is *selecting* it: ⌘/Ctrl-click, or the
-	 * dot in its corner. Considered and turned down: making a tap open the timeline,
-	 * which reads naturally at a desk and leaves a tablet at the maze with a list that
-	 * does nothing when it is pressed.
+	 * **A tap opens it for editing**, and does not play or stop it. It used to run it —
+	 * the console's grammar, a card acts — and at the gig (2026-10-25) that was a timeline
+	 * started or stopped on stage every time somebody only meant to look at another one.
+	 * Playing is the transport's, above the lanes; firing a scare from a tablet is the
+	 * surface's, which has a timeline tile for exactly that.
 	 *
 	 * Narrower than a card, the list is a dropdown, which is all a phone-width tile has
 	 * room for.
@@ -18,7 +17,7 @@
 	import type { Timeline } from '$lib/generated/index.js';
 	import Card from '$lib/components/objects/Card.svelte';
 	import { canEdit } from '$lib/stores/showLock.js';
-	import { createTimeline, lapOf, now, openTimelineId, positionOf, timelines, toggle } from '$lib/stores/timelines.js';
+	import { createTimeline, lapOf, now, openTimelineId, positionOf, timelines } from '$lib/stores/timelines.js';
 	import { clock } from '$lib/waveform.js';
 	import NameDialog from '../NameDialog.svelte';
 
@@ -70,7 +69,7 @@
 				state={s.text}
 				progress={s.progress}
 				on={t.id === open?.id}
-				onact={() => toggle(t)}
+				onact={() => openTimelineId.set(t.id)}
 			/>
 		{:else}
 			<p class="note">
