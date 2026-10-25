@@ -115,8 +115,24 @@ export function setValueOn(targets: { fixtureId: string; kind: ParameterKind }[]
 	if (frame !== null) return;
 	frame = requestAnimationFrame(() => {
 		frame = null;
-		void flush();
+		void inOrder(flush);
 	});
+}
+
+/**
+ * Every programmer write, one after another.
+ *
+ * A wing flash key pressed and let go fast lost its release (found at the gig): the
+ * press's create was already on its way to the station when the release's delete was
+ * sent, the delete found nothing, and the create landed after it — a mouth left at
+ * full. Writes made from here now leave in the order they were asked for, so a
+ * release always lands after the press it undoes.
+ */
+let writes: Promise<void> = Promise.resolve();
+function inOrder(write: () => Promise<void>): Promise<void> {
+	const next = writes.then(write, write);
+	writes = next.catch(() => {});
+	return next;
 }
 
 async function flush(): Promise<void> {
@@ -252,8 +268,10 @@ export function effectsHeld(entries: ProgrammerValue[]): Map<string, ProgrammerV
 // ── Emptying it ───────────────────────────────────────────────────────────────
 
 export async function remove(id: string): Promise<void> {
+	// A value still waiting for its frame is dropped; one already sent is deleted after
+	// it has landed, not before.
 	pending.delete(id);
-	await showData().programmer_values.byId(id).delete();
+	await inOrder(() => showData().programmer_values.byId(id).delete());
 }
 
 /**

@@ -624,6 +624,8 @@ async function runLine(line: string): Promise<void> {
 
 /** What each flashed key put back when it was let go: the entry it displaced, or none. */
 const flashed = new Map<string, ParameterValue | null>();
+/** Keys whose programmer value a flash put there and has not yet taken away. */
+const flashOwned = new Set<string>();
 
 function surfaceShow(): SurfaceShow {
 	return {
@@ -663,13 +665,21 @@ async function run(action: BindingAction, down: boolean): Promise<void> {
 				const key = `${action.fixture_id}/${parameterKey(action.parameter)}`;
 				const target = [{ fixtureId: action.fixture_id, kind: action.parameter }];
 				if (down) {
-					flashed.set(key, get(byKey).get(key)?.value ?? null);
+					// What to put back on release — unless the value there is this key's own
+					// from a press whose release has not landed yet: tapped fast, that full
+					// was taken for the operator's value and put back, and the key stuck on.
+					flashed.set(key, flashOwned.has(key) ? null : (get(byKey).get(key)?.value ?? null));
+					if (!flashed.get(key)) flashOwned.add(key);
 					fromWing(() => setValueOn(target, full(parameterDefault(action.fixture_id, action.parameter))));
 				} else {
 					const before = flashed.get(key);
 					flashed.delete(key);
 					if (before) fromWing(() => setValueOn(target, before));
-					else await removeEntry(entryId(action.fixture_id, parameterKey(action.parameter)));
+					else {
+						await removeEntry(entryId(action.fixture_id, parameterKey(action.parameter)));
+						// Only once the release has landed is the value there no longer ours.
+						if (!flashed.has(key)) flashOwned.delete(key);
+					}
 				}
 				return;
 			}
