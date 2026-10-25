@@ -7265,6 +7265,14 @@ advert and joins it; if that join fails it takes the lead straight up again rath
 leave the rig with nobody driving. Measured at the gig: the Mini restarted for an install,
 the Pi took over and was its follower again 1.3 s later. The user's call, with the cost
 named: SYNCED values (a maze's counts) can jump to the returning leader's at that moment.
+**A follower that is left behind finds the session.** The audio MacBook joined the Mini
+only; when the Mini went, the election named the Pi, a station the MacBook had no link
+to, and it sat believing it followed the Pi. A follower with no peers at all now goes back
+to the leader it remembers, and if that one is down it joins whoever leads now as a
+*stand-in* nobody writes down, and goes home when its leader answers. Measured: Mini down,
+the MacBook on the Pi 8 s later; Mini up, back on the Mini 7 s after that. Going home must
+not drop the stand-in first — that read to the sync layer as the leader going, elected the
+MacBook, and set off a promotion and a handback inside half a second.
 Also found: **two joins in a row make a leader**. The second connection replaces the
 first, the first one's close reads as the leader going, and the station promotes itself
 — which a deploy script that joined after the station had already rejoined by itself did.
