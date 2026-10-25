@@ -113,6 +113,10 @@ pub struct SessionManager {
     /// The leader to hand the lead back to: set when this station was promoted out of
     /// a session it had joined, cleared once it is that leader's follower again.
     handback: Option<SocketAddr>,
+    /// The leader this station means to follow, while it is following a stand-in: set
+    /// when the remembered leader did not answer after a failover and the station
+    /// joined whoever leads now instead.
+    stand_in: Option<SocketAddr>,
     node_id: NodeId,
     sync_port: u16,
     engine: EngineHandle,
@@ -220,7 +224,7 @@ impl SessionManager {
                 warn!("[session] mDNS browse failed: {e}");
                 return (
                     SessionManager {
-                        remembers, rejoin, handback: None,
+                        remembers, rejoin, handback: None, stand_in: None,
                         node_id, sync_port, engine, sync, rx, mdns_rx,
                         state: SessionState { node_id: Some(node_id), ..Default::default() },
                         discovered_addrs: HashMap::new(),
@@ -257,7 +261,7 @@ impl SessionManager {
 
         (
             SessionManager {
-                remembers, rejoin, handback: None,
+                remembers, rejoin, handback: None, stand_in: None,
                 node_id, sync_port, engine, sync, rx, mdns_rx,
                 state: SessionState { node_id: Some(node_id), ..Default::default() },
                 discovered_addrs: HashMap::new(),
@@ -306,6 +310,7 @@ impl SessionManager {
         // as it is up, and then every REJOIN_EVERY until it is in a session again.
         let mut rejoin_tick = tokio::time::interval(REJOIN_EVERY);
         let mut handback_tick = tokio::time::interval(REJOIN_EVERY);
+        let mut orphan_tick = tokio::time::interval(REJOIN_EVERY);
         if let Some(addr) = self.rejoin {
             info!("[session] going back to the session last joined, at {addr}");
         }
@@ -313,6 +318,10 @@ impl SessionManager {
         loop {
             tokio::select! {
                 _ = rejoin_tick.tick(), if self.rejoin.is_some() => self.try_rejoin().await,
+                _ = orphan_tick.tick(), if self.remembers => {
+                    self.check_orphaned().await;
+                    self.try_going_home().await;
+                }
                 _ = handback_tick.tick(), if self.handback.is_some() => self.try_handback().await,
                 _ = reprobe.tick(), if self.browsing => {
                     for station in self.candidates.values() {
@@ -367,6 +376,115 @@ impl SessionManager {
             Ok(Ok(())) => self.rejoin = None,
             _ => debug!("[session] {addr} did not answer yet; trying again in {REJOIN_EVERY:?}"),
         }
+    }
+
+    /// Join the station at a sync address. `remember` writes it down as the leader to go
+    /// back to; a stand-in joined during a failover is not written down, so the station
+    /// still goes home to the leader it chose once that one answers.
+    async fn join_at(&mut self, addr: SocketAddr, remember: bool) -> Result<(), String> {
+        // No advert, so no session id and no show id to offer: a fresh id names this
+        // session from here on, and the show is whatever the handshake agrees. The node
+        // that answers is the one being joined, and so the leader.
+        let session_id = Uuid::new_v4();
+        match self.sync.dial_peer(vec![addr], session_id, Uuid::nil()).await {
+            Ok((addr, leader)) => {
+                self.sync.set_leader(leader).await;
+                self.state.is_advertising = false;
+                self.state.is_follower = true;
+                self.state.session_id = Some(session_id);
+                self.push_state().await;
+                if remember && self.remembers {
+                    remembered::remember(self.node_id, addr);
+                    self.stand_in = None;
+                }
+                info!("[session] joined the station at {addr} by its address");
+                Ok(())
+            }
+            Err(why) => {
+                warn!("[session] could not join the station at {addr}: {why}");
+                Err(why)
+            }
+        }
+    }
+
+    /// Where the station that leads now — by this station's own election — takes peers,
+    /// read off its row. `None` where that is this station or nobody it has a row for.
+    async fn current_leader_sync_addr(&self) -> Option<SocketAddr> {
+        let leader = self.sync.leader().await?;
+        if leader == self.node_id {
+            return None;
+        }
+        let row = self
+            .engine
+            .get(vec![PathSegment::Key("stations".into()), PathSegment::Id(leader.0)])
+            .await
+            .ok()?;
+        row["sync_addr"].as_str()?.parse().ok()
+    }
+
+    /// A follower that joined a stand-in during a failover goes home as soon as the
+    /// leader it chose answers again: a bare TCP connect first, then a clean join there.
+    async fn try_going_home(&mut self) {
+        let Some(home) = self.stand_in else { return };
+        if self.state.is_advertising {
+            self.stand_in = None;
+            return;
+        }
+        let reachable = matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), tokio::net::TcpStream::connect(home)).await,
+            Ok(Ok(_))
+        );
+        if !reachable {
+            return;
+        }
+        info!("[session] {home} is back; following it again");
+        // Joined without dropping the stand-in first: dropping it reads to the sync
+        // layer as the leader going, which elected this station and set off a promotion
+        // and a handback in the half second before the join landed (seen at the gig).
+        // The stand-in hands its own lead back to the same station a moment later.
+        if self.join_at(home, true).await.is_err() {
+            // Nobody followed for a moment; the orphan check picks this up again.
+            debug!("[session] going home to {home} failed; trying again");
+        }
+    }
+
+    /// A follower with nobody to follow goes back to the leader it remembers.
+    ///
+    /// Found at the gig: the audio MacBook was connected to the Mini only, the Mini
+    /// restarted for an install, and the election named the Pi — a station this one had
+    /// no link to. So it believed it followed the Pi, was connected to nothing, and did
+    /// nothing until somebody restarted it. A follower with no peers at all is in no
+    /// session that matters, whoever it thinks leads; it lets go of that and rejoins the
+    /// leader it last joined, every ten seconds, the way it would after a restart.
+    async fn check_orphaned(&mut self) {
+        if !self.state.is_follower || self.state.is_advertising || self.rejoin.is_some() {
+            return;
+        }
+        if self.sync.peer_count().await > 0 {
+            return;
+        }
+        let Some(addr) = remembered::load(self.node_id) else { return };
+        warn!("[session] following nobody: every peer is gone; going back to {addr}");
+        self.state = SessionState {
+            node_id: Some(self.node_id),
+            discovered: self.state.discovered.clone(),
+            ..Default::default()
+        };
+        self.push_state().await;
+        if self.join_at(addr, true).await.is_ok() {
+            return;
+        }
+        // The leader it remembers is down — the failover case. Whoever leads now is the
+        // session, so join that, and go home once the remembered one answers.
+        if let Some(standing_in) = self.current_leader_sync_addr().await {
+            if self.join_at(standing_in, false).await.is_ok() {
+                info!("[session] following {standing_in} until {addr} is back");
+                self.stand_in = Some(addr);
+                return;
+            }
+        }
+        // Nobody answered: keep trying the remembered one, as after a restart.
+        self.rejoin = Some(addr);
     }
 
     /// Give the lead back to the leader this station was promoted away from, if it is
@@ -487,29 +605,7 @@ impl SessionManager {
             }
 
             SessionCommand::JoinAt { addr, reply } => {
-                // No advert, so no session id and no show id to offer: a fresh id
-                // names this session from here on, and the show is whatever the
-                // handshake agrees. The node that answers is the one being joined,
-                // and so the leader.
-                let session_id = Uuid::new_v4();
-                match self.sync.dial_peer(vec![addr], session_id, Uuid::nil()).await {
-                    Ok((addr, leader)) => {
-                        self.sync.set_leader(leader).await;
-                        self.state.is_advertising = false;
-                        self.state.is_follower = true;
-                        self.state.session_id = Some(session_id);
-                        self.push_state().await;
-                        if self.remembers {
-                            remembered::remember(self.node_id, addr);
-                        }
-                        info!("[session] joined the station at {addr} by its address");
-                        let _ = reply.send(Ok(()));
-                    }
-                    Err(why) => {
-                        warn!("[session] could not join the station at {addr}: {why}");
-                        let _ = reply.send(Err(why));
-                    }
-                }
+                let _ = reply.send(self.join_at(addr, true).await);
             }
 
             SessionCommand::Leave => {

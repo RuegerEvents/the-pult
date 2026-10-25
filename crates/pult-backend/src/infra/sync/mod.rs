@@ -221,7 +221,6 @@ impl SyncHandle {
     }
 
     /// Who this node currently believes leads the session.
-    #[allow(dead_code, reason = "used by the tests")]
     pub async fn leader(&self) -> Option<NodeId> {
         let (tx, rx) = oneshot::channel();
         let _ = self.0.send(SyncCommand::Leader { reply: tx }).await;

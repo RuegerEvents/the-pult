@@ -105,8 +105,11 @@
 	<div class="panel-header">
 		<span class="panel-title">Devices</span>
 		{#if !devices.active}
-			<span class="badge badge--dim" title="Only the node leading the session drives devices">
-				○ Watching
+			<span
+				class="badge badge--dim"
+				title="The leading station drives the nodes; Adopt, Forget and strip changes made here are done by it"
+			>
+				○ The leader drives these
 			</span>
 		{:else}
 			<span class="badge badge--green">● Driving</span>
@@ -164,7 +167,7 @@
 							{#if $canEdit}
 								<button
 									class="chip-btn"
-									disabled={busy === device.serial || !devices.active}
+									disabled={busy === device.serial}
 									onclick={() => act('forget', device)}
 								>
 									Forget
@@ -173,7 +176,7 @@
 						{:else if $canEdit}
 							<button
 								class="chip-btn adopt"
-								disabled={busy === device.serial || !devices.active || !ports(device)}
+								disabled={busy === device.serial || !ports(device)}
 								title={ports(device) ? undefined : UNDESCRIBED}
 								onclick={() => act('adopt', device)}
 							>
@@ -191,7 +194,7 @@
 					</div>
 
 					{#if device.adopted_fixture_id}
-						<StripPatch {device} unlocked={$canEdit && devices.active} />
+						<StripPatch {device} unlocked={$canEdit} />
 					{/if}
 
 					{#if open.has(device.serial)}

@@ -469,6 +469,18 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             .ok_or_else(|| "missing serial".to_string())
     };
 
+    // Only the leader drives devices, so on a follower an act on one is the leader's to
+    // do: asked over its own page socket, and its answer — a fixture id, or why not — is
+    // this one's. Before, a page served by a follower (the Pi, the audio MacBook's own
+    // window) showed Adopt greyed out with a "Watching" badge as the only explanation.
+    if method.starts_with("device.") {
+        if let Some((hostname, http_addr)) = leader_to_relay_to(deps).await {
+            return call_station(&hostname, &http_addr, method, args.clone(), std::time::Duration::from_secs(20))
+                .await
+                .map_err(|why| format!("{hostname} (leading): {why}"));
+        }
+    }
+
     match method {
         "device.adopt" => {
             let id = deps.devices.adopt(serial()?).await?;
@@ -937,9 +949,7 @@ enum Invitee {
 }
 
 async fn invite(deps: &LocalRpcDeps, invitee: Invitee) -> Result<(), String> {
-    use futures::{SinkExt, StreamExt};
     use pult_schema::types::session::SessionState;
-    use tokio_tungstenite::tungstenite::Message as Frame;
 
     let read = |path: Vec<PathSegment>| async {
         deps.engine.get(path).await.map_err(|e| e.to_string())
@@ -977,6 +987,33 @@ async fn invite(deps: &LocalRpcDeps, invitee: Invitee) -> Result<(), String> {
     let me = read(vec![PathSegment::Key("stations".into()), PathSegment::Id(deps.node_id.0)]).await?;
     let sync_addr = me["sync_addr"].as_str().filter(|a| !a.is_empty()).ok_or("this station has not said its sync address yet; try again in a moment")?.to_string();
 
+    call_station(
+        &hostname,
+        &http_addr,
+        "session.joinAt",
+        serde_json::json!({ "address": sync_addr }),
+        // Joining is a handshake and a whole show's snapshot, which on a Pi is seconds.
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|why| format!("{hostname} did not join: {why}"))
+}
+
+/// Call one RPC on another station, over its own page socket, and answer what it said.
+///
+/// The same door a browser uses, so the station asked cannot tell this from a person
+/// at a tablet — and needs nothing added to the sync protocol to be asked.
+async fn call_station(
+    hostname: &str,
+    http_addr: &str,
+    method: &str,
+    args: Value,
+    within: std::time::Duration,
+) -> Result<Value, String> {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as Frame;
+
     let url = format!("ws://{http_addr}/ws");
     let ask = async {
         let (mut socket, _) = tokio_tungstenite::connect_async(&url)
@@ -984,28 +1021,50 @@ async fn invite(deps: &LocalRpcDeps, invitee: Invitee) -> Result<(), String> {
             .map_err(|e| format!("could not reach {hostname} at {http_addr}: {e}"))?;
         let call = serde_json::json!({
             "type": "Call",
-            "payload": { "request_id": "invite", "method": "session.joinAt", "args": { "address": sync_addr } }
+            "payload": { "request_id": "relay", "method": method, "args": args }
         });
         socket.send(Frame::Text(call.to_string().into())).await.map_err(|e| e.to_string())?;
         while let Some(frame) = socket.next().await {
             let Ok(Frame::Text(text)) = frame else { continue };
             let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
             let payload = &message["payload"];
-            if payload["request_id"] != "invite" {
+            if payload["request_id"] != "relay" {
                 continue;
             }
             let _ = socket.close(None).await;
             return match payload["error"].as_str() {
-                Some(why) => Err(format!("{hostname} did not join: {why}")),
-                None => Ok(()),
+                Some(why) => Err(why.to_string()),
+                None => Ok(payload["result"].clone()),
             };
         }
         Err(format!("{hostname} hung up before answering"))
     };
-    // Joining is a handshake and a whole show's snapshot, which on a Pi is seconds.
-    tokio::time::timeout(std::time::Duration::from_secs(30), ask)
+    tokio::time::timeout(within, ask)
         .await
-        .map_err(|_| format!("{hostname} did not answer within 30 s"))?
+        .map_err(|_| format!("{hostname} did not answer within {} s", within.as_secs()))?
+}
+
+/// The leader's name and page address, when this station is somebody's follower.
+///
+/// `None` on the leader itself and on a station in no session, which both act here.
+async fn leader_to_relay_to(deps: &LocalRpcDeps) -> Option<(String, String)> {
+    let session: pult_schema::types::session::SessionState =
+        serde_json::from_value(deps.engine.get(vec![PathSegment::Key("session".into())]).await.ok()?).ok()?;
+    if !session.is_follower {
+        return None;
+    }
+    let leader = deps.sync.as_ref()?.leader().await?;
+    if leader == deps.node_id {
+        return None;
+    }
+    let row = deps
+        .engine
+        .get(vec![PathSegment::Key("stations".into()), PathSegment::Id(leader.0)])
+        .await
+        .ok()?;
+    let http_addr = row["http_addr"].as_str().filter(|a| !a.is_empty())?.to_string();
+    let hostname = row["hostname"].as_str().unwrap_or("the leader").to_string();
+    Some((hostname, http_addr))
 }
 
 /// `host:port`, where the host may be a name: a station somebody reads off another
