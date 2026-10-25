@@ -340,6 +340,8 @@ impl DeviceManager {
         let mut strays = tokio::time::interval(STRAY_CHECK);
         strays.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut grace = tokio::time::interval(std::time::Duration::from_secs(2));
+        let mut undescribed = tokio::time::interval(Duration::from_secs(10));
+        undescribed.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -377,6 +379,7 @@ impl DeviceManager {
                 _ = clock.tick() => self.publish_clock().await,
                 _ = strips.tick() => self.reconcile_all_strips().await,
                 _ = strays.tick() => self.tell_strays().await,
+                _ = undescribed.tick() => self.describe_the_undescribed().await,
                 _ = grace.tick(), if self.grace_until.is_some() => {
                     if self.grace_until.is_some_and(|until| std::time::Instant::now() >= until) {
                         self.grace_until = None;
@@ -853,6 +856,38 @@ impl DeviceManager {
             device.effects = what.effects;
             device.audio = what.audio;
             device.pixels = what.pixels;
+        }
+    }
+
+    /// Ask again every node that is online and has not said what it is.
+    ///
+    /// A node is asked when mDNS resolves it, and only then; a question that went
+    /// nowhere was never asked again. Found at the gig: the audio MacBook resolved the
+    /// node in the seconds after a fresh build, while macOS still refused it the
+    /// network, and so never learned the node had a loudspeaker — its clip Inspector said
+    /// the node was "not found" while the Devices panel showed it online. Every station
+    /// asks, leader or not, because every page shows what its own station knows.
+    async fn describe_the_undescribed(&mut self) {
+        let waiting: Vec<String> = self
+            .state
+            .discovered
+            .values()
+            .filter(|d| d.online && d.description.is_none() && !d.ip.is_empty())
+            .map(|d| d.serial.clone())
+            .collect();
+        if waiting.is_empty() {
+            return;
+        }
+        for serial in &waiting {
+            self.refresh_description(serial).await;
+        }
+        if waiting.iter().any(|s| self.state.discovered.get(s).is_some_and(|d| d.description.is_some())) {
+            info!("[devices] described {} node(s) that had not answered before", waiting.len());
+            self.reconcile_adoptions().await;
+            for serial in &waiting {
+                self.retype(serial).await;
+            }
+            self.publish().await;
         }
     }
 
