@@ -384,6 +384,10 @@ impl InputManager {
                     self.measure_rates();
                     self.publish_status().await;
                     self.publish_takes().await;
+                    // Also here and not only when the timelines change: a station is
+                    // told it leads after the first look at them, and a take's file
+                    // can arrive from a peer later still.
+                    self.split_whole_takes().await;
                     // Where a cable coming or going is acted on, exactly as on the
                     // output side: neither changes the show, so nothing else in this
                     // loop would ever notice.
