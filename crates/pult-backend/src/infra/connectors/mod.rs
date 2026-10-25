@@ -468,6 +468,13 @@ pub struct OutputManager {
     /// connector draws its own frames out of this rather than waiting to be handed
     /// values, so the engine says nothing at all between one cue and the next.
     patch: Option<Patch>,
+    /// The timelines the last patch came with, and whether a recording one of them is
+    /// playing was not here yet. A follower gets a take's file from the leader a few
+    /// seconds after the take exists; until this, it never looked again, so it sent
+    /// that universe without the take while the leader sent it with — and a DMX box
+    /// that ignores sACN priority showed the take "sometimes" (found at the gig).
+    timelines: Vec<Timeline>,
+    tracks_missing: bool,
 }
 
 impl OutputManager {
@@ -491,6 +498,8 @@ impl OutputManager {
                 addressed: Vec::new(),
                 coverage: None,
                 patch: None,
+                timelines: Vec::new(),
+                tracks_missing: false,
                 tracks: None,
                 watching: None,
                 frame_costs,
@@ -595,6 +604,11 @@ impl OutputManager {
                 }
                 _ = report.tick() => {
                     self.measure_rates();
+                    // A take that should be playing and whose file had not arrived: look
+                    // again, once a second, until it has.
+                    if self.tracks_missing {
+                        self.retry_missing_tracks().await;
+                    }
                     self.publish_status().await;
                     // Where a cable coming or going is acted on, and where a
                     // failover reaches the outputs. Both change what should be
@@ -768,11 +782,28 @@ impl OutputManager {
             self.publish_coverage(&fixtures).await;
         }
         let playing = playing_tracks(&self.tracks, &timelines).await;
+        self.tracks_missing = playing.len() < wanted_tracks(&timelines);
+        self.timelines = timelines;
         self.patch =
             Some(Patch::new(fixtures, fixture_types, programmer).playing(playing).mastered(masters));
         self.draw(changed).await;
     }
 
+
+    /// Read the playing takes again and, where one has arrived since, put it in the
+    /// patch and draw — the same patch otherwise, so nothing else a connector holds moves.
+    async fn retry_missing_tracks(&mut self) {
+        let playing = playing_tracks(&self.tracks, &self.timelines).await;
+        self.tracks_missing = playing.len() < wanted_tracks(&self.timelines);
+        let Some(patch) = self.patch.take() else { return };
+        let had = patch.tracks_len();
+        let found = playing.len();
+        self.patch = Some(patch.playing(playing));
+        if found > had {
+            info!("[output] a take that was playing without its file here now has it");
+            self.draw(Vec::new()).await;
+        }
+    }
 
     /// Draw the connectors whose own frame has come due.
     async fn draw_due_frames(&mut self) {
@@ -1062,6 +1093,12 @@ async fn playing_tracks(
         }
     }
     playing
+}
+
+/// How many takes the running timelines want playing, for telling whether every one of
+/// them was found.
+fn wanted_tracks(timelines: &[Timeline]) -> usize {
+    timelines.iter().filter(|t| t.running).map(|t| t.tracks.iter().filter(|k| k.enabled).count()).sum()
 }
 
 /// Whether a timeline is taking a pass from the programmer right now.

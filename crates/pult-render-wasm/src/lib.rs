@@ -604,7 +604,7 @@ mod tests {
                 TrackKey {
                     fixture_id: Default::default(),
                     key: "Intensity".into(),
-                    points: vec![TrackPoint { ms: 2_000, value: ParameterValue::Float(0.6) }],
+                    points: vec![TrackPoint { release: false, ms: 2_000, value: ParameterValue::Float(0.6) }],
                 },
                 TrackKey { fixture_id: Default::default(), key: "Pan".into(), points: vec![] },
             ],
@@ -638,7 +638,7 @@ mod tests {
             keys: vec![TrackKey {
                 fixture_id: Default::default(),
                 key: pult_render::SEQUENCE_LEVEL_KEY.into(),
-                points: vec![TrackPoint { ms: 1_000, value: ParameterValue::Float(0.5) }],
+                points: vec![TrackPoint { release: false, ms: 1_000, value: ParameterValue::Float(0.5) }],
             }],
         };
         let sequence = track.keys[0].fixture_id.to_string();

@@ -50,6 +50,11 @@ pub struct OutputState {
     pub sync: Sync,
     /// A DMX frame, if this host is driving the wing's ports.
     pub dmx: Option<Vec<u8>>,
+    /// Send no fader block at all, rather than one with nothing asserted. A test
+    /// switch (wing-explorer `--no-fader-frames`): whether a motor is free when the
+    /// host says nothing about the faders, against when it says "not driving".
+    #[serde(default)]
+    pub silent_faders: bool,
 }
 
 impl Default for OutputState {
@@ -59,6 +64,7 @@ impl Default for OutputState {
             faders: vec![None; FADERS],
             sync: Sync::default(),
             dmx: None,
+            silent_faders: false,
         }
     }
 }
@@ -105,11 +111,12 @@ impl OutputState {
     /// resetting itself a few milliseconds after it starts.
     pub fn frames(&self) -> Vec<Chunk> {
         let io = crate::proto::tag::IO;
-        let mut out = vec![
-            Chunk::group(io, vec![Chunk::bytes(tag::FADERS, self.fader_bytes())]),
-            Chunk::group(io, vec![Chunk::bytes(tag::LEDS, self.leds.clone())]),
-            Chunk::group(io, vec![Chunk::bytes(tag::SYNC, vec![self.sync.0])]),
-        ];
+        let mut out = Vec::new();
+        if !self.silent_faders {
+            out.push(Chunk::group(io, vec![Chunk::bytes(tag::FADERS, self.fader_bytes())]));
+        }
+        out.push(Chunk::group(io, vec![Chunk::bytes(tag::LEDS, self.leds.clone())]));
+        out.push(Chunk::group(io, vec![Chunk::bytes(tag::SYNC, vec![self.sync.0])]));
         if let Some(dmx) = &self.dmx {
             out.push(Chunk::group(io, vec![Chunk::bytes(tag::DMX, dmx.clone())]));
         }

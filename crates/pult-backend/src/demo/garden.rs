@@ -1191,7 +1191,7 @@ const LAUGH_LENGTH: f32 = 3.0;
 /// laugh clip starts.
 pub fn skeleton_take(skeleton: Uuid, offset_ms: u32) -> pult_render::track::Track {
     use pult_render::track::{Track, TrackKey, TrackPoint};
-    let point = |ms: u32, v: f32| TrackPoint { ms: offset_ms + ms, value: ParameterValue::Float(v) };
+    let point = |ms: u32, v: f32| TrackPoint { release: false, ms: offset_ms + ms, value: ParameterValue::Float(v) };
     let syllables = (LAUGH_LENGTH * LAUGH_HZ) as u32;
     let start = (LAUGH_STARTS * 1000.0) as u32;
     let step = (1000.0 / LAUGH_HZ) as u32;

@@ -962,7 +962,7 @@ fn a_recorded_sequence_level_dims_its_cues_on_the_wire() {
             fixture_id: sequence.id,
             key: LEVEL_KEY.into(),
             // Half from the second second of the timeline on, nothing before.
-            points: vec![pult_render::TrackPoint { ms: 1_000, value: ParameterValue::Float(0.5) }],
+            points: vec![pult_render::TrackPoint { release: false, ms: 1_000, value: ParameterValue::Float(0.5) }],
         }],
     };
     let transport = pult_render::Transport { anchor_ms: 10_000, position_at_anchor_ms: 0, rate: 1.0 };

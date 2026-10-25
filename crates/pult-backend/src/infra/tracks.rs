@@ -55,10 +55,14 @@ impl TrackCache {
                     None
                 }
             },
-            Ok(None) => None,
+            // Not here *yet* is not remembered: a follower gets a take's file from the
+            // leader seconds after the take exists, and remembering the miss meant it
+            // never played it until it restarted (found at the gig). Only the output
+            // manager's patch build and its once-a-second retry read through here.
+            Ok(None) => return None,
             Err(e) => {
                 tracing::warn!("[tracks] {sha} could not be read: {e}");
-                None
+                return None;
             }
         };
         if let Ok(mut loaded) = self.loaded.lock() {

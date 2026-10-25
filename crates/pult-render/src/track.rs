@@ -49,6 +49,26 @@ pub struct TrackPoint {
     /// comfortably longer than any recording anybody makes of a show.
     pub ms: u32,
     pub value: ParameterValue,
+    /// From here on the recording says **nothing** about the parameter, the way it says
+    /// nothing before its first point, so the layer below shows through again. Where a
+    /// key left the programmer during the take (a flash key let go) and where a pass
+    /// ended. Without it a take held its last value for the rest of the song, and a
+    /// button press was one point at full that never came back down (found at the gig).
+    /// `value` is meaningless on a release and is written as nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub release: bool,
+}
+
+impl TrackPoint {
+    /// A release at `ms`. See [`TrackPoint::release`].
+    pub fn released(ms: u32) -> Self {
+        TrackPoint { release: true, ms, value: ParameterValue::Float(0.0) }
+    }
+
+    /// Two points that say the same thing, wherever they are.
+    pub fn same_as(&self, other: &TrackPoint) -> bool {
+        self.release == other.release && (self.release || self.value == other.value)
+    }
 }
 
 /// Everything one recording holds about one parameter of one fixture.
@@ -115,6 +135,9 @@ const TAG_INT: u8 = 1;
 const TAG_BOOL: u8 = 2;
 const TAG_COLOR: u8 = 3;
 const TAG_TEXT: u8 = 4;
+/// A [`TrackPoint::release`]: no payload. A new tag rather than a new version, so
+/// every take written before it still reads.
+const TAG_RELEASE: u8 = 5;
 
 /// Write a recording out.
 pub fn encode(track: &Track) -> Vec<u8> {
@@ -128,7 +151,11 @@ pub fn encode(track: &Track) -> Vec<u8> {
         out.extend_from_slice(&(key.points.len() as u32).to_le_bytes());
         for point in &key.points {
             out.extend_from_slice(&point.ms.to_le_bytes());
-            write_value(&mut out, &point.value);
+            if point.release {
+                out.push(TAG_RELEASE);
+            } else {
+                write_value(&mut out, &point.value);
+            }
         }
     }
     out
@@ -195,8 +222,10 @@ pub fn decode(bytes: &[u8]) -> Result<Track, TrackError> {
         let mut points = Vec::with_capacity(point_count.min(65_536));
         for _ in 0..point_count {
             let ms = cursor.u32()?;
-            let value = cursor.value()?;
-            points.push(TrackPoint { ms, value });
+            points.push(match cursor.value()? {
+                Some(value) => TrackPoint { release: false, ms, value },
+                None => TrackPoint::released(ms),
+            });
         }
         keys.push(TrackKey { fixture_id, key, points });
     }
@@ -245,10 +274,12 @@ impl<'a> Cursor<'a> {
         String::from_utf8(bytes.to_vec()).map_err(|_| TrackError::NotText { at })
     }
 
-    fn value(&mut self) -> Result<ParameterValue, TrackError> {
+    /// One point's value, or `None` for a release.
+    fn value(&mut self) -> Result<Option<ParameterValue>, TrackError> {
         let at = self.at;
         let tag = self.u8()?;
-        Ok(match tag {
+        Ok(Some(match tag {
+            TAG_RELEASE => return Ok(None),
             TAG_FLOAT => ParameterValue::Float(self.f32()?),
             TAG_INT => ParameterValue::Int(self.i32()?),
             TAG_BOOL => ParameterValue::Bool(self.u8()? != 0),
@@ -273,7 +304,7 @@ impl<'a> Cursor<'a> {
                 )
             }
             tag => return Err(TrackError::UnknownValue { at, tag }),
-        })
+        }))
     }
 }
 
@@ -346,6 +377,7 @@ pub fn sample(points: &[TrackPoint], position_ms: u64) -> Option<&ParameterValue
         .iter()
         .rev()
         .find(|point| point.ms as u64 <= position_ms)
+        .filter(|point| !point.release)
         .map(|point| &point.value)
 }
 
@@ -384,7 +416,7 @@ pub fn outline(track: &Track, budget: usize) -> Vec<KeyOutline> {
                     // and where nothing happened sparse — the shape a lane wants.
                     let at = if keep == 1 { 0 } else { i * (n - 1) / (keep - 1) };
                     let point = &key.points[at];
-                    (point.ms, level(&point.value))
+                    (point.ms, if point.release { 0.0 } else { level(&point.value) })
                 })
                 .collect();
             KeyOutline {
@@ -416,13 +448,39 @@ fn level(value: &ParameterValue) -> f32 {
 }
 
 #[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    #[test]
+    fn a_release_round_trips_and_says_nothing() {
+        let track = Track {
+            keys: vec![TrackKey {
+                fixture_id: Uuid::nil(),
+                key: "Intensity".into(),
+                points: vec![
+                    TrackPoint { release: false, ms: 100, value: ParameterValue::Float(1.0) },
+                    TrackPoint::released(400),
+                ],
+            }],
+        };
+        let back = decode(&encode(&track)).unwrap();
+        assert_eq!(back, track);
+        let points = &back.keys[0].points;
+        assert_eq!(sample(points, 50), None, "before the first point");
+        assert_eq!(sample(points, 200), Some(&ParameterValue::Float(1.0)));
+        assert_eq!(sample(points, 400), None, "let go");
+        assert_eq!(sample(points, 9_000), None, "and for good");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     fn points(pairs: &[(u32, f32)]) -> Vec<TrackPoint> {
         pairs
             .iter()
-            .map(|(ms, v)| TrackPoint { ms: *ms, value: ParameterValue::Float(*v) })
+            .map(|(ms, v)| TrackPoint { release: false, ms: *ms, value: ParameterValue::Float(*v) })
             .collect()
     }
 
@@ -441,13 +499,13 @@ mod tests {
                     fixture_id: Uuid::from_u128(9),
                     key: "ColorRgb".into(),
                     points: vec![
-                        TrackPoint {
+                        TrackPoint { release: false,
                             ms: 40,
                             value: ParameterValue::Color { r: 1.0, g: 0.5, b: 0.0, overrides },
                         },
-                        TrackPoint { ms: 80, value: ParameterValue::Int(3) },
-                        TrackPoint { ms: 120, value: ParameterValue::Bool(true) },
-                        TrackPoint { ms: 160, value: ParameterValue::Text("CUE 4".into()) },
+                        TrackPoint { release: false, ms: 80, value: ParameterValue::Int(3) },
+                        TrackPoint { release: false, ms: 120, value: ParameterValue::Bool(true) },
+                        TrackPoint { release: false, ms: 160, value: ParameterValue::Text("CUE 4".into()) },
                     ],
                 },
             ],
@@ -520,13 +578,13 @@ mod tests {
                 TrackKey {
                     fixture_id: Uuid::nil(),
                     key: "Intensity".into(),
-                    points: (0..100).map(|i| TrackPoint { ms: i * 10, value: ParameterValue::Float(i as f32 / 100.0) }).collect(),
+                    points: (0..100).map(|i| TrackPoint { release: false, ms: i * 10, value: ParameterValue::Float(i as f32 / 100.0) }).collect(),
                 },
                 TrackKey { fixture_id: Uuid::nil(), key: "Silent".into(), points: vec![] },
                 TrackKey {
                     fixture_id: Uuid::nil(),
                     key: "Relay".into(),
-                    points: vec![TrackPoint { ms: 40, value: ParameterValue::Bool(true) }],
+                    points: vec![TrackPoint { release: false, ms: 40, value: ParameterValue::Bool(true) }],
                 },
             ],
         };

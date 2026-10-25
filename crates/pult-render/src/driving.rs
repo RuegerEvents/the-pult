@@ -216,7 +216,7 @@ mod tests {
         (
             points
                 .iter()
-                .map(|(ms, v)| TrackPoint { ms: *ms, value: ParameterValue::Float(*v) })
+                .map(|(ms, v)| TrackPoint { release: false, ms: *ms, value: ParameterValue::Float(*v) })
                 .collect(),
             transport,
         )

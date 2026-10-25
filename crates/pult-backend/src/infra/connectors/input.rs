@@ -587,7 +587,7 @@ impl InputManager {
                 continue;
             }
             recording.last.insert(at.clone(), value.clone());
-            recording.points.entry(at).or_default().push(pult_render::TrackPoint {
+            recording.points.entry(at).or_default().push(pult_render::TrackPoint { release: false,
                 ms: at_ms,
                 value,
             });

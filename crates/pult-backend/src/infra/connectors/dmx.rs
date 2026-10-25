@@ -222,6 +222,11 @@ impl Patch {
     }
 
     /// The sequences' faders, taken after construction the way the playing tracks are.
+    /// How many recordings this patch is playing.
+    pub fn tracks_len(&self) -> usize {
+        self.tracks.len()
+    }
+
     pub fn mastered(mut self, masters: Masters) -> Self {
         self.masters = masters;
         self

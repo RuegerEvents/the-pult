@@ -104,6 +104,19 @@ impl Pass {
             .collect();
         let Some(seen) = self.seen.replace(now.clone()) else { return };
         let ms = position_ms.min(u32::MAX as u64) as u32;
+        // A key that left the programmer is let go here: a flash key released, a key
+        // cleared. Recorded as a release, so the take says nothing from this point and
+        // what is under it shows through — not the last value held for the rest of the
+        // song, which is what a button press came to before (found at the gig).
+        for at in seen.keys().filter(|at| !now.contains_key(*at)) {
+            let points = self.points.entry(at.clone()).or_default();
+            let ms = points.last().map_or(ms, |last| ms.max(last.ms));
+            match points.last_mut() {
+                Some(last) if last.ms == ms => *last = TrackPoint::released(ms),
+                Some(last) if last.release => {}
+                _ => points.push(TrackPoint::released(ms)),
+            }
+        }
         for (at, value) in now {
             if seen.get(&at) == Some(&value) {
                 continue;
@@ -114,8 +127,8 @@ impl Pass {
             // later position costs those few milliseconds and nothing else.
             let ms = points.last().map_or(ms, |last| ms.max(last.ms));
             match points.last_mut() {
-                Some(last) if last.ms == ms => last.value = value,
-                _ => points.push(TrackPoint { ms, value }),
+                Some(last) if last.ms == ms => *last = TrackPoint { release: false, ms, value },
+                _ => points.push(TrackPoint { release: false, ms, value }),
             }
         }
     }
@@ -165,9 +178,19 @@ pub fn merge(pass: Track, punch_out_ms: u64, existing: &[(Uuid, Track)]) -> Merg
     let mut fresh: Vec<TrackKey> = Vec::new();
     let out = punch_out_ms.min(u32::MAX as u64) as u32;
 
-    for key in pass.keys {
-        if key.points.is_empty() {
+    for mut key in pass.keys {
+        // A key recorded only as let go is a key the pass never held: nothing to store.
+        if key.points.iter().all(|p| p.release) {
             continue;
+        }
+        let owner_has_it = existing.iter().any(|(_, track)| {
+            track.keys.iter().any(|k| k.fixture_id == key.fixture_id && k.key == key.key)
+        });
+        // A key no take had ends where the pass ended: from the punch-out it says
+        // nothing, rather than holding its last value for the rest of the timeline.
+        if !owner_has_it && !key.points.last().is_some_and(|p| p.release) {
+            let at = key.points.last().map_or(out, |p| out.max(p.ms.saturating_add(1)));
+            key.points.push(TrackPoint::released(at));
         }
         let owner = existing.iter().rev().find(|(_, track)| {
             track.keys.iter().any(|k| k.fixture_id == key.fixture_id && k.key == key.key)
@@ -212,12 +235,19 @@ fn splice(old: &[TrackPoint], pass: &[TrackPoint], out: u32) -> Vec<TrackPoint> 
     let mut points: Vec<TrackPoint> = old.iter().filter(|p| p.ms < first.ms).cloned().collect();
     points.extend(pass.iter().cloned());
     let resume_at = out.max(last.saturating_add(1));
-    if let Some(value) = sample(old, resume_at as u64) {
-        points.push(TrackPoint { ms: resume_at, value: value.clone() });
-    }
+    // The old take carries on from the punch-out: its value there, or — where it said
+    // nothing there — a release, so the pass's last value is not held past its end.
+    points.push(match sample(old, resume_at as u64) {
+        Some(value) => TrackPoint { release: false, ms: resume_at, value: value.clone() },
+        None => TrackPoint::released(resume_at),
+    });
     points.extend(old.iter().filter(|p| p.ms > resume_at).cloned());
     // A value that did not move is not a change, which is what a track is made of.
-    points.dedup_by(|later, earlier| later.value == earlier.value);
+    points.dedup_by(|later, earlier| later.same_as(earlier));
+    // A release before anything was said is nothing at all.
+    while points.first().is_some_and(|p| p.release) {
+        points.remove(0);
+    }
     points
 }
 
@@ -250,7 +280,7 @@ mod tests {
     }
 
     fn points(pairs: &[(u32, f32)]) -> Vec<TrackPoint> {
-        pairs.iter().map(|(ms, v)| TrackPoint { ms: *ms, value: ParameterValue::Float(*v) }).collect()
+        pairs.iter().map(|(ms, v)| TrackPoint { release: false, ms: *ms, value: ParameterValue::Float(*v) }).collect()
     }
 
     fn pairs(points: &[TrackPoint]) -> Vec<(u32, f32)> {
@@ -408,5 +438,30 @@ mod tests {
             pairs(&merged.replaced[0].1.keys[0].points),
             vec![(0, 0.3), (100, 0.9), (200, 0.5), (201, 0.3)]
         );
+    }
+
+    #[test]
+    fn a_flash_key_let_go_is_recorded_as_let_go() {
+        // The wing's flash: full on press, the programmer entry gone on release.
+        let mut pass = Pass::new();
+        pass.observe(0, &[]);
+        pass.observe(1_000, &[held(1.0)]);
+        pass.observe(1_400, &[]);
+        let track = pass.into_track();
+        let points = &track.keys[0].points;
+        assert_eq!(points.len(), 2);
+        assert_eq!(sample(points, 1_200), Some(&ParameterValue::Float(1.0)));
+        assert_eq!(sample(points, 1_400), None, "back to whatever is underneath");
+    }
+
+    #[test]
+    fn a_new_take_says_nothing_after_the_pass_ended() {
+        let mut pass = Pass::new();
+        pass.observe(0, &[]);
+        pass.observe(500, &[held(0.7)]);
+        let merged = merge(pass.into_track(), 2_000, &[]);
+        let points = &merged.fresh.expect("a new take").keys[0].points;
+        assert_eq!(sample(points, 1_999), Some(&ParameterValue::Float(0.7)));
+        assert_eq!(sample(points, 2_000), None, "the block ends at the punch-out");
     }
 }
