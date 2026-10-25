@@ -223,6 +223,12 @@ pub enum OutputCommand {
     },
     /// The `outputs` collection changed. Reconcile against it.
     Configure(Vec<OutputConfig>),
+    /// What these parameters are doing now, from the patch the connectors draw from:
+    /// one number each, for a wing's motors. See [`dmx::Patch::value_of`].
+    Values {
+        asks: Vec<(Uuid, String)>,
+        reply: tokio::sync::oneshot::Sender<Vec<Option<pult_schema::types::fixture::ParameterValue>>>,
+    },
     Stop,
 }
 
@@ -230,6 +236,20 @@ pub enum OutputCommand {
 pub struct OutputHandle(pub mpsc::Sender<OutputCommand>);
 
 impl OutputHandle {
+    /// What these parameters are doing now, as the connectors would draw them. Empty
+    /// answers where the output side has gone.
+    pub async fn values(
+        &self,
+        asks: Vec<(Uuid, String)>,
+    ) -> Vec<Option<pult_schema::types::fixture::ParameterValue>> {
+        let n = asks.len();
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        if self.0.send(OutputCommand::Values { asks, reply }).await.is_err() {
+            return vec![None; n];
+        }
+        answer.await.unwrap_or_else(|_| vec![None; n])
+    }
+
     /// Hand the current patch to the output side. Never blocks the engine: if output
     /// is behind, the update is dropped, because a connector evaluating from the patch
     /// it already holds is not stalled by missing one.
@@ -588,6 +608,16 @@ impl OutputManager {
                     let Some(cmd) = cmd else { break };
                     match cmd {
                         OutputCommand::Stop => break,
+                        OutputCommand::Values { asks, reply } => {
+                            let now_ms = pult_schema::types::sequence::now_ms();
+                            let values = asks
+                                .iter()
+                                .map(|(fixture, key)| {
+                                    self.patch.as_ref().and_then(|p| p.value_of(*fixture, key, now_ms))
+                                })
+                                .collect();
+                            let _ = reply.send(values);
+                        }
                         OutputCommand::Configure(outputs) => self.reconcile(outputs).await,
                         OutputCommand::Patch {
                             fixtures,

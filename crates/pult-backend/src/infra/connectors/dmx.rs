@@ -222,6 +222,23 @@ impl Patch {
     }
 
     /// The sequences' faders, taken after construction the way the playing tracks are.
+    /// What one parameter of one fixture is doing at `now_ms`, by every layer a frame
+    /// uses — programmer, recording, effect, fade, home — and the masters over them.
+    ///
+    /// For something that needs one number rather than a wire: the motor of a wing fader
+    /// following the show, on the station the wing hangs off. `None` for a fixture this
+    /// patch has not got.
+    pub fn value_of(&self, fixture_id: Uuid, key: &str, now_ms: u64) -> Option<ParameterValue> {
+        let fixture = self.fixtures.iter().find(|f| f.id == fixture_id)?;
+        let masters = self.masters_at(now_ms);
+        let held = self.held.get(&(fixture_id, key.to_string())).and_then(|at| self.programmer.get(*at));
+        let driving = pult_render::Driving {
+            track: self.track_at(fixture_id, key),
+            ..driving(fixture, self.fixture_type(fixture), held, key, &masters)
+        };
+        pult_render::value_at(&driving, now_ms)
+    }
+
     /// How many recordings this patch is playing.
     pub fn tracks_len(&self) -> usize {
         self.tracks.len()

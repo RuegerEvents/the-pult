@@ -77,6 +77,11 @@ impl WingHandle {
         }
     }
 
+    /// Whether a hand is on this fader, as the wing's own touch contact says.
+    pub fn touched(&self, fader: usize) -> bool {
+        self.hands.lock().unwrap().contains(&fader)
+    }
+
     /// Every light off and every motor let go: what a wing nobody is driving looks
     /// like. A motor held where the last page left it is a fader that fights the hand.
     pub fn go_dark(&self) {

@@ -25,7 +25,7 @@ import { topDialog } from './dialogs.js';
 import { beginGesture, endGesture, nudging } from './gesture.js';
 import { output, watching } from './output.js';
 import { consolePluginOf, openConsoleLine, pluginsState } from './plugins.js';
-import { byKey, remove as removeEntry, setValueOn } from './programmer.js';
+import { byKey, setValueOn } from './programmer.js';
 import { clearStep } from './clear.js';
 import { applySelectionEffect, query, recall, selection, targetElements } from './selection.js';
 import { collection, showClient, showData } from './show.js';
@@ -44,7 +44,7 @@ import type {
 	WingState
 } from '../generated/index.js';
 import { modeHas, modeOf, parameterKey } from '../patch.js';
-import { editableParameters, entryId, rowTargets, type Target } from '../programmer.js';
+import { editableParameters, rowTargets, type Target } from '../programmer.js';
 import { pressTarget, targetLive, type SurfaceShow } from '../surface.js';
 import {
 	DIM,
@@ -58,12 +58,7 @@ import {
 	encoderRole,
 	encoderSlots,
 	faderKeys,
-	faderLevel,
-	faderRaw,
-	fromFader,
-	hueOf,
 	learnable,
-	full,
 	keyVerb,
 	keypadWord,
 	KEYPAD_CODES,
@@ -71,7 +66,6 @@ import {
 	ledKeys,
 	oops,
 	pageCount,
-	toFader,
 	turned,
 	typed,
 	type EncoderSlot,
@@ -514,20 +508,11 @@ async function onKey(index: number, down: boolean, map: WingMap | null): Promise
 	const binding = get(wingBindings).get(controlKey({ kind: 'Key', index }));
 	if (binding) return run(binding.action, down);
 
-	// The keys of a fader that is a sequence's master are that sequence's Go and Off.
-	if (faderKey && down) {
+	// The keys of a fader that is a sequence's master are that sequence's Go and Off,
+	// which the station holding the wing runs (`infra/wing_control.rs`).
+	if (faderKey) {
 		const master = get(wingBindings).get(controlKey({ kind: 'Fader', index: faderKey.fader }));
-		if (master?.action.kind === 'Master') {
-			const sequence = showData().sequences.byId(master.action.sequence_id);
-			const at = consoleNow() ?? Date.now();
-			try {
-				if (faderKey.role === 'go') await sequence.goNext({ at });
-				else await sequence.off({ at });
-			} catch (e) {
-				addToast(`${e}`);
-			}
-			return;
-		}
+		if (master?.action.kind === 'Master') return;
 	}
 
 	if (!down) return;
@@ -622,11 +607,6 @@ async function runLine(line: string): Promise<void> {
 
 // ── A binding, run ────────────────────────────────────────────────────────────
 
-/** What each flashed key put back when it was let go: the entry it displaced, or none. */
-const flashed = new Map<string, ParameterValue | null>();
-/** Keys whose programmer value a flash put there and has not yet taken away. */
-const flashOwned = new Set<string>();
-
 function surfaceShow(): SurfaceShow {
 	return {
 		variables: get(variables),
@@ -661,28 +641,10 @@ async function run(action: BindingAction, down: boolean): Promise<void> {
 				if (group) recall(group.query);
 				return;
 			}
-			case 'Flash': {
-				const key = `${action.fixture_id}/${parameterKey(action.parameter)}`;
-				const target = [{ fixtureId: action.fixture_id, kind: action.parameter }];
-				if (down) {
-					// What to put back on release — unless the value there is this key's own
-					// from a press whose release has not landed yet: tapped fast, that full
-					// was taken for the operator's value and put back, and the key stuck on.
-					flashed.set(key, flashOwned.has(key) ? null : (get(byKey).get(key)?.value ?? null));
-					if (!flashed.get(key)) flashOwned.add(key);
-					fromWing(() => setValueOn(target, full(parameterDefault(action.fixture_id, action.parameter))));
-				} else {
-					const before = flashed.get(key);
-					flashed.delete(key);
-					if (before) fromWing(() => setValueOn(target, before));
-					else {
-						await removeEntry(entryId(action.fixture_id, parameterKey(action.parameter)));
-						// Only once the release has landed is the value there no longer ours.
-						if (!flashed.has(key)) flashOwned.delete(key);
-					}
-				}
+			case 'Flash':
+				// Run by the station holding the wing, with no browser in the way of a
+				// key that has to land on time (`infra/wing_control.rs`).
 				return;
-			}
 			default:
 				return;
 		}
@@ -694,52 +656,13 @@ async function run(action: BindingAction, down: boolean): Promise<void> {
 // ── Faders ────────────────────────────────────────────────────────────────────
 
 /**
- * A fader moved.
- *
- * Only a fader a hand is on is listened to. These faders have motors, and while one
- * is following the show the motor's own travel arrives here exactly like a hand's —
- * written back, it would turn every cue into a programmer value.
+ * A fader moved. Learning one is this page's; what a bound fader does — a parameter, a
+ * sequence's master, and the motor following the show — is the station's that holds
+ * the wing (`infra/wing_control.rs`), because a fader is timing-critical and a page's
+ * main thread is not somewhere to put one.
  */
-function onFader(index: number, raw: number): void {
-	if (catchLearn({ kind: 'Fader', index })) return;
-	const binding = get(wingBindings).get(controlKey({ kind: 'Fader', index }));
-	if (!binding) return;
-	if (!get(touched).has(index)) return;
-	const level = faderLevel(raw);
-	const action = binding.action;
-	if (action.kind === 'Parameter') {
-		const key = `${action.fixture_id}/${parameterKey(action.parameter)}`;
-		const like = get(byKey).get(key)?.value ?? get(output).value(action.fixture_id, parameterKey(action.parameter)) ?? parameterDefault(action.fixture_id, action.parameter);
-		// A color keeps its hue through the bottom of the fader: remembered while it has
-		// one, used once it is black.
-		const hue = hueOf(like);
-		if (hue) hues.set(key, hue);
-		fromWing(() => setValueOn([{ fixtureId: action.fixture_id, kind: action.parameter }], fromFader(like, level, hues.get(key) ?? null)));
-	} else if (action.kind === 'Master') {
-		pendingMasters.set(action.sequence_id, level);
-		flushMasters();
-	}
-}
-
-/** The hue each color a fader moves had last time it was not black. */
-const hues = new Map<string, { r: number; g: number; b: number }>();
-
-/** A master is one write per frame however fast the fader reports. */
-const pendingMasters = new Map<string, number>();
-let mastersQueued = false;
-
-function flushMasters(): void {
-	if (mastersQueued) return;
-	mastersQueued = true;
-	setTimeout(() => {
-		mastersQueued = false;
-		const batch = [...pendingMasters];
-		pendingMasters.clear();
-		for (const [id, level] of batch) {
-			// Full is written as no level at all, which is what a show opens at.
-			void showData().sequences.byId(id).master.set(level >= 0.999 ? null : level);
-		}
-	}, FEEDBACK_MS);
+function onFader(index: number, _raw: number): void {
+	catchLearn({ kind: 'Fader', index });
 }
 
 // ── Encoders ──────────────────────────────────────────────────────────────────
@@ -861,22 +784,19 @@ function liveOf(action: BindingAction, show: SurfaceShow): boolean {
 	switch (action.kind) {
 		case 'Press':
 			return targetLive(action.target, show);
-		case 'Flash':
-			return flashed.has(`${action.fixture_id}/${parameterKey(action.parameter)}`);
 		default:
 			return false;
 	}
 }
 
 /**
- * The frame the desk should be showing: a level per LED channel, and per fader a
- * position for its motor to hold, or `null` to leave it to the hand.
+ * The lights the desk should be showing, a level per LED channel. The motors are the
+ * station's, which follows the show without a page in between.
  */
-function feedbackFrame(): { leds: number[]; faders: (number | null)[] } {
+function feedbackFrame(): { leds: number[] } {
 	const map = get(wingMap);
 	const leds = new Array<number>(LED_CHANNELS).fill(0);
-	const faders = new Array<number | null>(12).fill(null);
-	if (!map) return { leds, faders };
+	if (!map) return { leds };
 
 	const show = surfaceShow();
 	const down = get(held);
@@ -904,21 +824,7 @@ function feedbackFrame(): { leds: number[]; faders: (number | null)[] } {
 		for (const channel of ledChannels(led)) leds[channel] = level;
 	}
 
-	// A motor follows what the show is doing, and lets go while a hand is on it.
-	const hands = get(touched);
-	for (const binding of bound.values()) {
-		if (binding.control.kind !== 'Fader' || hands.has(binding.control.index)) continue;
-		const action = binding.action;
-		let level: number | null = null;
-		if (action.kind === 'Parameter') {
-			level = toFader(get(output).value(action.fixture_id, parameterKey(action.parameter)));
-		} else if (action.kind === 'Master') {
-			const sequence = show.sequences.find((s) => s.id === action.sequence_id);
-			level = sequence ? (sequence.master ?? 1) : null;
-		}
-		if (level !== null && binding.control.index < faders.length) faders[binding.control.index] = faderRaw(level);
-	}
-	return { leds, faders };
+	return { leds };
 }
 
 // ── Binding ───────────────────────────────────────────────────────────────────

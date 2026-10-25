@@ -665,6 +665,9 @@ pub async fn start(config: Config) -> Result<Running> {
         Some((device_directory.clone(), device_handle.clone())),
         net.clone(),
     );
+    // The wing's faders, flash keys and motors are run by this station rather than a
+    // page (`infra/wing_control.rs`), and the motors read the output's own patch.
+    let wing_output = output.clone();
     // The recordings this station has decoded, shared between the connectors and the
     // engine: one reads a track to put it on a wire, the other reads the same one to
     // work out what a stopping track was holding, and two caches would let them
@@ -845,6 +848,13 @@ pub async fn start(config: Config) -> Result<Running> {
     tasks.push(tokio::spawn(crate::infra::clients::sweep(clients.clone(), REPORT_INTERVAL * 5)));
     if let Some(wing) = wing.clone() {
         tasks.push(tokio::spawn(wing.run(broadcast.clone())));
+    }
+    if let Some(handle) = config.wing.clone() {
+        tasks.push(tokio::spawn(crate::infra::wing_control::run(
+            handle,
+            engine_handle.clone(),
+            wing_output.clone(),
+        )));
     }
 
     // The route a hosted MVR-xchange group is served on exists for the life of the
