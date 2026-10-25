@@ -27,7 +27,7 @@
 	import { selection } from '$lib/stores/selection.js';
 	import { collection, showClient, showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
-	import { lapOf, locate, now, play, positionOf, stop, takes } from '$lib/stores/timelines.js';
+	import { countingIn, countInSeconds, lapOf, locate, now, playCounted, positionOf, stop, takes } from '$lib/stores/timelines.js';
 	import { armArgs, armChoice, PROGRAMMER, releases, takeSummary } from '$lib/takes.js';
 	import { addToast } from '$lib/toasts.js';
 	import { clock, parsePosition } from '$lib/waveform.js';
@@ -39,6 +39,8 @@
 	const shown = $derived(position === null ? null : lapOf(timeline, position));
 	let typing = $state(false);
 	const take = $derived($takes?.[timeline.id] ?? null);
+	const counting = $derived($countingIn?.id === timeline.id ? $countingIn.left : null);
+	const COUNT_INS = [0, 2, 3, 5];
 	let recordMenu = $state(false);
 
 	const source = $derived(armChoice(timeline.recording));
@@ -71,11 +73,19 @@
 		{#if timeline.running}
 			<button class="btn btn-primary" onclick={() => stop(timeline.id)} title="Stop (Space)"><Square size={14} />Stop</button>
 		{:else}
-			<button class="btn btn-primary" onclick={() => play(timeline.id)} title="Play (Space)"><Play size={14} />Play</button>
+			<button
+				class="btn btn-primary"
+				class:counting={counting !== null}
+				onclick={() => playCounted(timeline)}
+				title={counting !== null ? 'Counting in — press again to cancel' : 'Play (Space)'}
+				><Play size={14} />{counting !== null ? 'Cancel' : 'Play'}</button
+			>
 		{/if}
 		<button class="btn btn-icon" title="Back to the top" aria-label="Back to the top" onclick={() => locate(timeline.id, 0)}><SkipBack size={14} /></button>
 
-		{#if typing}
+		{#if counting !== null}
+			<span class="countdown" title="Recording starts when this reaches zero">● {counting}</span>
+		{:else if typing}
 			<!-- svelte-ignore a11y_autofocus -->
 			<input
 				class="input readout-input"
@@ -143,6 +153,18 @@
 							{input.name}
 						</button>
 					{/each}
+					{#if source}
+						<span class="heading rule">Count in</span>
+						<div class="count-ins" role="group" aria-label="Count in before recording">
+							{#each COUNT_INS as n (n)}
+								<button
+									class:on={$countInSeconds === n}
+									aria-pressed={$countInSeconds === n}
+									onclick={() => countInSeconds.set(n)}>{n === 0 ? 'off' : `${n} s`}</button
+								>
+							{/each}
+						</div>
+					{/if}
 					{#if source === PROGRAMMER}
 						<label class="check" title="When the take is stored, give the keys it recorded back. Off, the faders stay held and beat the take until you clear them.">
 							<input
@@ -187,6 +209,20 @@
 </div>
 
 <style>
+	.countdown {
+		min-width: 5.5em;
+		font-size: 18px;
+		font-weight: 700;
+		color: #f87171;
+		font-variant-numeric: tabular-nums;
+		text-align: center;
+	}
+	.count-ins { display: flex; gap: 4px; padding: 2px 8px 6px; }
+	.count-ins button {
+		background: none; border: 1px solid var(--line-strong, #3a3a3a); border-radius: 3px;
+		color: inherit; font: inherit; font-size: 12px; padding: 2px 8px; cursor: pointer;
+	}
+	.count-ins button.on { border-color: #ef4444; color: #fecaca; }
 	.transport {
 		display: flex;
 		align-items: center;

@@ -148,6 +148,7 @@ export async function play(id: string) {
 }
 
 export async function stop(id: string) {
+	if (get(countingIn)?.id === id) stopCounting();
 	const at = stamp();
 	if (at !== null) await proxy(id).stop({ at });
 }
@@ -158,7 +159,63 @@ export async function locate(id: string, positionMs: number) {
 }
 
 export async function toggle(timeline: Timeline) {
-	await (timeline.running ? stop(timeline.id) : play(timeline.id));
+	await (timeline.running ? stop(timeline.id) : playCounted(timeline));
+}
+
+// ── Counting in before a recording ────────────────────────────────────────────
+
+const COUNT_IN_KEY = 'pult.timeline.countIn';
+
+/**
+ * Seconds counted down before a Play that will record, or 0 for none. This browser's,
+ * kept beside the open timeline: how long somebody wants to get their hand to the
+ * fader is theirs, not the show's.
+ */
+export const countInSeconds = writable<number>(
+	browser ? Number(localStorage.getItem(COUNT_IN_KEY) ?? 0) || 0 : 0
+);
+countInSeconds.subscribe((n) => {
+	if (browser) {
+		try {
+			localStorage.setItem(COUNT_IN_KEY, String(n));
+		} catch {
+			// a browser that will not store it counts in only until the page reloads
+		}
+	}
+});
+
+/** The count in progress: which timeline, and how many seconds are left. */
+export const countingIn = writable<{ id: string; left: number } | null>(null);
+let countTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopCounting() {
+	if (countTimer) clearInterval(countTimer);
+	countTimer = null;
+	countingIn.set(null);
+}
+
+/**
+ * Play — after the count-in, when the timeline is armed to record and one is set.
+ * Pressed again while counting, the count stops and nothing plays. The station is not
+ * told anything until the count ends, so a count somebody abandons costs nothing.
+ */
+export async function playCounted(timeline: Timeline) {
+	const counting = get(countingIn);
+	if (counting) {
+		stopCounting();
+		if (counting.id === timeline.id) return;
+	}
+	const seconds = get(countInSeconds);
+	if (!timeline.recording || seconds <= 0) return play(timeline.id);
+	countingIn.set({ id: timeline.id, left: seconds });
+	countTimer = setInterval(() => {
+		const now = get(countingIn);
+		if (!now) return stopCounting();
+		if (now.left <= 1) {
+			stopCounting();
+			void play(timeline.id);
+		} else countingIn.set({ ...now, left: now.left - 1 });
+	}, 1000);
 }
 
 /** The row as it is now, which a write is built from. */
