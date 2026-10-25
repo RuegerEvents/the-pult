@@ -599,10 +599,17 @@ impl AudioManager {
             }
         };
         let now = pult_schema::clock::now_ms();
+        let latency = output.latency_ms();
         // Started a latency ahead, so that what comes out of the loudspeaker is where
-        // the show is — see [`Output::position_ms`].
-        let from = folded(timeline, timeline.position_at(now)) + output.latency_ms();
+        // the show is — see [`Output::position_ms`]. A timeline played with its anchor
+        // still to come (a count-in) holds its position until then, so the deck waits
+        // in silence and starts a latency before the anchor, from where it will be.
+        let (from, wait_ms) = match timeline.anchor_ms.checked_sub(now + latency) {
+            Some(wait) if wait > 0 => (folded(timeline, timeline.position_at_anchor_ms), wait),
+            _ => (folded(timeline, timeline.position_at(now)) + latency, 0),
+        };
         let mut deck = pult_audio::Deck::new(timeline.id.as_u128(), from as f64, voices);
+        deck.wait_ms = wait_ms as f64;
         deck.tag = slot;
         deck.rate = timeline.rate.max(0.0) as f64;
         deck.end = deck_end(timeline);
@@ -727,6 +734,16 @@ impl AudioManager {
         }
         let id = timeline.id.as_u128();
         let transport = transport_of(timeline);
+        // Counting in: the deck is waiting for the anchor and there is no sound yet to
+        // steer by — measured against a held playhead, the wait would read as drift and
+        // be "corrected" by moving the anchor to now, which is the count-in gone. A
+        // transport moved meanwhile (played again, located) builds the deck afresh.
+        if now < timeline.anchor_ms + output.latency_ms() {
+            if transport != playing.seen {
+                self.stop_deck(timeline.id);
+            }
+            return;
+        }
         let target = folded(timeline, timeline.position_at(now));
         let measured = output.position_ms(playing.slot);
         let drift = measured as i64 - target as i64;

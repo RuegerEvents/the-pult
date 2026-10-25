@@ -148,7 +148,6 @@ export async function play(id: string) {
 }
 
 export async function stop(id: string) {
-	if (get(countingIn)?.id === id) stopCounting();
 	const at = stamp();
 	if (at !== null) await proxy(id).stop({ at });
 }
@@ -184,38 +183,28 @@ countInSeconds.subscribe((n) => {
 	}
 });
 
-/** The count in progress: which timeline, and how many seconds are left. */
-export const countingIn = writable<{ id: string; left: number } | null>(null);
-let countTimer: ReturnType<typeof setInterval> | null = null;
-
-function stopCounting() {
-	if (countTimer) clearInterval(countTimer);
-	countTimer = null;
-	countingIn.set(null);
+/**
+ * Whole seconds left before a timeline played with its anchor in the future gets
+ * there, or `null` when it is not counting in. Read off the anchor rather than kept by
+ * a timer here, so every browser and every station shows the same count.
+ */
+export function countdownOf(timeline: Timeline, nowMs: number | null): number | null {
+	if (!timeline.running || nowMs === null || nowMs >= timeline.anchor_ms) return null;
+	return Math.ceil((timeline.anchor_ms - nowMs) / 1000);
 }
 
 /**
- * Play — after the count-in, when the timeline is armed to record and one is set.
- * Pressed again while counting, the count stops and nothing plays. The station is not
- * told anything until the count ends, so a count somebody abandons costs nothing.
+ * Play — with a count-in when the timeline is armed to record and one is set. The
+ * count is the station's: Play goes out at once with its anchor that far ahead, so the
+ * timeline is running and holding its position, and the sound that has to be ready on
+ * the beat — a stream to a node, a deck on this station's card, a clip a node plays
+ * from flash — is started during the count and lands on the anchor. Stop cancels it.
  */
 export async function playCounted(timeline: Timeline) {
-	const counting = get(countingIn);
-	if (counting) {
-		stopCounting();
-		if (counting.id === timeline.id) return;
-	}
 	const seconds = get(countInSeconds);
 	if (!timeline.recording || seconds <= 0) return play(timeline.id);
-	countingIn.set({ id: timeline.id, left: seconds });
-	countTimer = setInterval(() => {
-		const now = get(countingIn);
-		if (!now) return stopCounting();
-		if (now.left <= 1) {
-			stopCounting();
-			void play(timeline.id);
-		} else countingIn.set({ ...now, left: now.left - 1 });
-	}, 1000);
+	const at = stamp();
+	if (at !== null) await proxy(timeline.id).play({ at: at + seconds * 1000 });
 }
 
 /** The row as it is now, which a write is built from. */

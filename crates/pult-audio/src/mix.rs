@@ -233,6 +233,11 @@ pub struct Deck {
     pub cursor_ms: f64,
     /// A multiple of real time. 1 is normal.
     pub rate: f64,
+    /// Silence before the cursor starts moving, in real milliseconds: a timeline
+    /// played with its anchor in the future, the way a count-in is. Rendered as
+    /// frames like any other, so the first sample lands on the anchor to the frame
+    /// rather than to whenever a manager pass happened to notice it.
+    pub wait_ms: f64,
     pub end: Option<End>,
     pub voices: Vec<Voice>,
     /// Whether anything was audible in the last buffer rendered.
@@ -241,7 +246,7 @@ pub struct Deck {
 
 impl Deck {
     pub fn new(id: u128, cursor_ms: f64, voices: Vec<Voice>) -> Deck {
-        Deck { id, tag: 0, cursor_ms, rate: 1.0, end: None, voices, sounding: false }
+        Deck { id, tag: 0, cursor_ms, rate: 1.0, wait_ms: 0.0, end: None, voices, sounding: false }
     }
 
     /// Whether any voice is audible at the cursor. What the station asks before it
@@ -305,6 +310,7 @@ impl Mixer {
             if keep_cursor {
                 deck.cursor_ms = held.cursor_ms;
                 deck.rate = held.rate;
+                deck.wait_ms = held.wait_ms;
             }
             return Ok(Some(std::mem::replace(held, deck)));
         }
@@ -323,6 +329,7 @@ impl Mixer {
     pub fn seek(&mut self, id: u128, timeline_ms: f64) {
         if let Some(deck) = self.decks.iter_mut().find(|d| d.id == id) {
             deck.cursor_ms = timeline_ms.max(0.0);
+            deck.wait_ms = 0.0;
         }
     }
 
@@ -347,6 +354,10 @@ impl Mixer {
             let step = frame_ms * deck.rate;
             let mut sounding = false;
             for frame in 0..frames {
+                if deck.wait_ms > 0.0 {
+                    deck.wait_ms -= frame_ms;
+                    continue;
+                }
                 if deck.held() {
                     break;
                 }
@@ -471,6 +482,18 @@ mod tests {
         assert_eq!(placement.at(1_000.0, 500.0), Some((0.0, 1.0)));
         assert_eq!(placement.at(1_250.0, 500.0), Some((250.0, 1.0)));
         assert_eq!(placement.at(1_500.0, 500.0), None, "a 500 ms file has played by then");
+    }
+
+    #[test]
+    fn a_deck_that_waits_is_silent_and_then_starts_from_its_cursor() {
+        // At 1 kHz a frame is a millisecond: three frames of wait, then frame 0 on.
+        let mut mixer = Mixer::new(1, RATE, 4);
+        let mut deck = Deck::new(0, 0.0, vec![voice(counting(1, 100), placed(0.0), &[1], 1)]);
+        deck.wait_ms = 3.0;
+        let _ = mixer.put(Box::new(deck), false);
+        let out = render(&mut mixer, 6);
+        assert_eq!(out, vec![0.0, 0.0, 0.0, 0.0, 0.001, 0.002]);
+        assert_eq!(mixer.decks()[0].cursor_ms, 3.0, "the cursor did not move while it waited");
     }
 
     #[test]

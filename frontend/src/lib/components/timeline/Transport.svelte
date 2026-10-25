@@ -27,7 +27,7 @@
 	import { selection } from '$lib/stores/selection.js';
 	import { collection, showClient, showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
-	import { countingIn, countInSeconds, lapOf, locate, now, playCounted, positionOf, stop, takes } from '$lib/stores/timelines.js';
+	import { countdownOf, countInSeconds, lapOf, locate, now, playCounted, positionOf, stop, takes } from '$lib/stores/timelines.js';
 	import { armArgs, armChoice, PROGRAMMER, releases, takeSummary } from '$lib/takes.js';
 	import { addToast } from '$lib/toasts.js';
 	import { clock, parsePosition } from '$lib/waveform.js';
@@ -39,7 +39,7 @@
 	const shown = $derived(position === null ? null : lapOf(timeline, position));
 	let typing = $state(false);
 	const take = $derived($takes?.[timeline.id] ?? null);
-	const counting = $derived($countingIn?.id === timeline.id ? $countingIn.left : null);
+	const counting = $derived(countdownOf(timeline, $now));
 	const COUNT_INS = [0, 2, 3, 5];
 	let recordMenu = $state(false);
 
@@ -70,16 +70,14 @@
 
 <div class="transport">
 	<div class="group">
-		{#if timeline.running}
+		{#if counting !== null}
+			<button class="btn btn-primary counting" onclick={() => stop(timeline.id)} title="Counting in — Stop cancels it (Space)"
+				><Square size={14} />Cancel</button
+			>
+		{:else if timeline.running}
 			<button class="btn btn-primary" onclick={() => stop(timeline.id)} title="Stop (Space)"><Square size={14} />Stop</button>
 		{:else}
-			<button
-				class="btn btn-primary"
-				class:counting={counting !== null}
-				onclick={() => playCounted(timeline)}
-				title={counting !== null ? 'Counting in — press again to cancel' : 'Play (Space)'}
-				><Play size={14} />{counting !== null ? 'Cancel' : 'Play'}</button
-			>
+			<button class="btn btn-primary" onclick={() => playCounted(timeline)} title="Play (Space)"><Play size={14} />Play</button>
 		{/if}
 		<button class="btn btn-icon" title="Back to the top" aria-label="Back to the top" onclick={() => locate(timeline.id, 0)}><SkipBack size={14} /></button>
 

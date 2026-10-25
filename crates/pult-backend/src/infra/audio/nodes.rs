@@ -257,8 +257,11 @@ pub fn occurrence(
         return None;
     }
     let rate = timeline.rate as f64;
-    let position = timeline.position_at(now) as f64;
-    let show = |at: f64| -> u64 { (now as f64 + (at - position) / rate).round().max(0.0) as u64 };
+    // Measured from the anchor where that is still to come (a count-in), because the
+    // playhead holds until then rather than moving from now.
+    let base = now.max(timeline.anchor_ms);
+    let position = timeline.position_at(base) as f64;
+    let show = |at: f64| -> u64 { (base as f64 + (at - position) / rate).round().max(0.0) as u64 };
     let start = start_ms as f64;
     let length = if looped { f64::INFINITY } else { region_ms as f64 };
 
@@ -1013,6 +1016,9 @@ fn stream(
                     deck_position(&deck.transport, deck.end, heard),
                     deck.voices.clone(),
                 );
+                // Played with the anchor still to come, as a count-in is: the stream
+                // is already running, and sends silence until the anchor is heard.
+                built.wait_ms = (deck.transport.anchor_ms as f64 - heard).max(0.0);
                 built.rate = deck.transport.rate.max(0.0) as f64;
                 built.end = deck.end;
                 let _ = mixer.put(Box::new(built), false);

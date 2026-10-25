@@ -587,10 +587,13 @@ impl InputManager {
                 continue;
             }
             recording.last.insert(at.clone(), value.clone());
-            recording.points.entry(at).or_default().push(pult_render::TrackPoint { release: false,
-                ms: at_ms,
-                value,
-            });
+            // Moves during a count-in all land on the position the take starts from,
+            // where only the last one means anything.
+            let points = recording.points.entry(at).or_default();
+            match points.last_mut() {
+                Some(last) if last.ms == at_ms => *last = pult_render::TrackPoint { release: false, ms: at_ms, value },
+                _ => points.push(pult_render::TrackPoint { release: false, ms: at_ms, value }),
+            }
         }
     }
 
