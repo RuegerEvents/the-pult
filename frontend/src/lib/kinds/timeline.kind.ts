@@ -42,17 +42,18 @@ export type TakeRow = ObjectRow & { timelineId: string; track: TimelineTrack };
 
 const sequences = collection('sequences');
 const cues = collection('cues');
+const variables = collection('variables');
 
 const all = timelines as Readable<Timeline[]>;
 
 const clipRows: Readable<ClipRow[]> = derived(all, ($t) =>
 	$t.flatMap((t) => t.clips.map((clip) => ({ id: clip.id, name: clip.name || 'Clip', timelineId: t.id, clip })))
 );
-const eventRows: Readable<EventRow[]> = derived([all, sequences, cues], ([$t, $s, $c]) =>
+const eventRows: Readable<EventRow[]> = derived([all, sequences, cues, variables], ([$t, $s, $c, $v]) =>
 	$t.flatMap((t) =>
 		t.events.map((event) => ({
 			id: event.id,
-			name: `${clock(event.at_ms)} · ${describeAction(event.action, $s, $c)}`,
+			name: `${clock(event.at_ms)} · ${describeAction(event.action, $s, $c, $t, $v)}`,
 			timelineId: t.id,
 			event
 		}))

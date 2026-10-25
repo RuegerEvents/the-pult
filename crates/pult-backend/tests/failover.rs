@@ -326,7 +326,7 @@ async fn the_spare_carries_on_when_the_leader_dies_mid_scare() {
     let fired_at_kill = before.position_at(pult_schema::clock::now_ms().saturating_sub(500));
     for event in &before.events {
         if u64::from(event.at_ms) + 50 < fired_at_kill {
-            let target = event.action.sequence_id();
+            let Some(target) = event.action.sequence_id() else { continue };
             let was = gone_before.iter().find(|(id, _)| *id == target).map(|(_, at)| *at);
             let is = gone_after.iter().find(|(id, _)| *id == target).map(|(_, at)| *at);
             assert_eq!(was, is, "an event crossed before the kill was not fired again");

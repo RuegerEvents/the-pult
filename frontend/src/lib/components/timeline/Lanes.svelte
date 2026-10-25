@@ -37,7 +37,7 @@
 	import ZoomOut from '@lucide/svelte/icons/zoom-out';
 	import Maximize from '@lucide/svelte/icons/maximize-2';
 
-	import type { AtEnd, AudioClip, AudioDestination, Detected, GridSegment, Marker, Timeline } from '$lib/generated/index.js';
+	import type { AtEnd, AudioClip, AudioDestination, Detected, GridSegment, Marker, Timeline, TimelineAction } from '$lib/generated/index.js';
 	import { audioNodes, destinationText } from '$lib/destination.js';
 	import { clearSubject, openMenu, selectSubject, subject, type ObjectRef } from '$lib/objects.js';
 	import { displayLabel, parameterKey } from '$lib/patch.js';
@@ -128,6 +128,10 @@
 
 	const sequences = collection('sequences');
 	const cues = collection('cues');
+	// For naming a timeline's events when they play another timeline or change a
+	// variable.
+	const allTimelines = collection('timelines');
+	const variables = collection('variables');
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
 
@@ -554,7 +558,7 @@
 			ctx.fill();
 			ctx.fillStyle = chosen ? '#fff' : '#a7f3d0';
 			ctx.font = '11px system-ui, sans-serif';
-			ctx.fillText(describeAction(event.action, $sequences, $cues), x + 9, mid + 4);
+			ctx.fillText(describeAction(event.action, $sequences, $cues, $allTimelines, $variables), x + 9, mid + 4);
 		}
 
 		// The ruler, over everything: time, the tempo segments, the detector's proposal.
@@ -962,9 +966,13 @@
 		const at = Math.round(snapped(msOf(x, view, width)));
 		const id = uuid();
 		if (lane.kind === 'events') {
+			// A Go into the first sequence where there is one; a show with none yet starts
+			// with a play, which the Inspector turns into whatever was meant.
 			const sequence = $sequences[0];
-			if (!sequence) return;
-			const events = [...live.events, { id, at_ms: at, action: { GoNext: { sequence_id: sequence.id } } }];
+			const action: TimelineAction = sequence
+				? { GoNext: { sequence_id: sequence.id } }
+				: { PlayTimeline: { timeline_id: timeline.id, if_running: 'Ignore' } };
+			const events = [...live.events, { id, at_ms: at, action }];
 			await writeColumns(timeline.id, { events: events.sort((a, b) => a.at_ms - b.at_ms) });
 			selectSubject({ kind: 'timeline-event', id });
 		} else if (lane.kind === 'markers') {

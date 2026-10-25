@@ -7304,6 +7304,32 @@ cargo test -p pult-backend --test wire               # forcing a peer's wire, an
 cd frontend && npx vitest run src/lib/dmxtest.test.ts
 ```
 
+### 85. A timeline hands over to the next one
+
+The use case, from the gig: an ambience timeline loops until a PIR or a phone says go,
+then a second timeline runs the scare, and afterwards the ambience comes back. The first
+two thirds already existed — `AtEnd::Loop`, a flow from the PIR or a *Button* node (pressed
+by a surface's flow-button tile) to *Stop timeline* and *Play timeline* — and the last third
+did not: nothing could react to a timeline ending. A *Delay* node as long as the scare would
+have done it with the scare's length written twice.
+
+**A timeline event can now do what a flow's action does to timelines and variables**:
+`TimelineAction::PlayTimeline { timeline_id, if_running }`, `StopTimeline`, `SetVariable`,
+beside the Go, the jump and the Off. So the scare's last event is *Play timeline:
+Ambience*, and a chain of scenes is a chain of events. They are run through the flow's own
+executor (`TimelineAction::as_flow_action` → `run_flow_action`), so a timeline and a flow
+cannot disagree about what *if running* means, and they fire on the leader only, like a Go.
+An event exactly at a timeline's end fires: the pass clamps to the end inclusively.
+
+**A locate never replays them.** Jumping the playhead re-applies the latest *sequence*
+event per sequence (`tracked_at`) and nothing else: jumping into the middle of a scare
+must not start the loop it ends with, and a variable written twice is a count gone wrong.
+`TimelineAction::sequence_id` is an `Option` for that reason.
+
+```
+cargo test -p pult-backend --lib model::timelines   # an event at the end plays the next one
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

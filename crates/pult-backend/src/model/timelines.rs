@@ -35,13 +35,19 @@ use uuid::Uuid;
 
 /// One thing a timeline wants done.
 #[derive(Debug, Clone, PartialEq)]
-pub struct TimelineFire {
-    pub sequence_id: Uuid,
-    /// The registered command's name, as the engine's command table spells it.
-    pub command: &'static str,
-    pub args: serde_json::Value,
-    /// The wall millisecond the event fell at, which is what a Go anchors on.
-    pub at: u64,
+pub enum TimelineFire {
+    /// A Go, a jump or an Off into a sequence.
+    Sequence {
+        sequence_id: Uuid,
+        /// The registered command's name, as the engine's command table spells it.
+        command: &'static str,
+        args: serde_json::Value,
+        /// The wall millisecond the event fell at, which is what a Go anchors on.
+        at: u64,
+    },
+    /// Something a flow could do too: play or stop a timeline, change a variable. Run
+    /// through the flow's own executor, so the two cannot mean different things.
+    Act(pult_schema::types::flow::TriggerAction),
 }
 
 /// A recording that has just stopped, and where its playhead was when it did.
@@ -312,11 +318,17 @@ fn tempo_of(
 }
 
 fn fire_at(event: &pult_schema::types::timeline::TimelineEvent, at: u64) -> TimelineFire {
-    let (command, mut args) = event.action.command();
-    if let Some(object) = args.as_object_mut() {
-        object.insert("at".into(), serde_json::json!(at));
+    match (event.action.sequence_id(), event.action.command()) {
+        (Some(sequence_id), Some((command, mut args))) => {
+            if let Some(object) = args.as_object_mut() {
+                object.insert("at".into(), serde_json::json!(at));
+            }
+            TimelineFire::Sequence { sequence_id, command, args, at }
+        }
+        _ => TimelineFire::Act(
+            event.action.as_flow_action().expect("an act that is not on a sequence is a flow's"),
+        ),
     }
-    TimelineFire { sequence_id: event.action.sequence_id(), command, args, at }
 }
 
 #[cfg(test)]
@@ -371,11 +383,41 @@ mod tests {
 
         let fired = timelines.pass(11_200, std::slice::from_ref(&timeline)).fire;
         assert_eq!(fired.len(), 1);
-        assert_eq!(fired[0].command, "goNext");
-        assert_eq!(fired[0].sequence_id, Uuid::from_u128(7));
-        assert_eq!(fired[0].at, 11_000, "anchored where the event fell, not where the pass ran");
+        let TimelineFire::Sequence { command, sequence_id, at, .. } = &fired[0] else {
+            panic!("a Go is a sequence command");
+        };
+        assert_eq!(*command, "goNext");
+        assert_eq!(*sequence_id, Uuid::from_u128(7));
+        assert_eq!(*at, 11_000, "anchored where the event fell, not where the pass ran");
 
         assert!(timelines.pass(20_000, &[timeline]).fire.is_empty(), "and not again");
+    }
+
+    #[test]
+    fn an_event_at_the_end_can_play_the_next_timeline() {
+        // The loop-and-scare pattern: a scare whose last event plays the loop again.
+        let mut timelines = Timelines::default();
+        let ambience = Uuid::from_u128(42);
+        let mut scare = a_timeline(vec![TimelineEvent {
+            id: Uuid::new_v4(),
+            at_ms: 2_000,
+            action: TimelineAction::PlayTimeline {
+                timeline_id: ambience,
+                if_running: pult_schema::types::flow::IfRunning::Ignore,
+            },
+        }]);
+        scare.end = Some(pult_schema::types::timeline::TimelineEnd { at_ms: 2_000, then: AtEnd::Stop });
+        let scare = playing(scare, 10_000, 0);
+
+        let pass = timelines.pass(12_500, std::slice::from_ref(&scare));
+        assert_eq!(
+            pass.fire,
+            vec![TimelineFire::Act(pult_schema::types::flow::TriggerAction::PlayTimeline {
+                timeline_id: ambience,
+                if_running: pult_schema::types::flow::IfRunning::Ignore,
+            })],
+            "an event exactly at the end is reached"
+        );
     }
 
     /// A jump takes the tracked state: one Go per sequence, and nothing that was
@@ -418,7 +460,10 @@ mod tests {
             vec![TimelineEnded { timeline_id: timeline.id, at: 12_000, then: AtEnd::Stop }],
         );
         assert!(
-            pass.fire.iter().all(|f| f.sequence_id != Uuid::from_u128(2)),
+            pass.fire.iter().all(|f| !matches!(
+                f,
+                TimelineFire::Sequence { sequence_id, .. } if *sequence_id == Uuid::from_u128(2)
+            )),
             "an event past the end is never reached",
         );
     }

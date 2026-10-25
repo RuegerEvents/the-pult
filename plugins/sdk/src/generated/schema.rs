@@ -2967,12 +2967,21 @@ pub struct Timeline {
     pub recording: Option<RecordSource>,
 }
 
-/// What a timeline does to a sequence, and when.
+/// What a timeline does, and when: to a sequence, to another timeline, or to a variable.
+///
+/// The timeline and variable acts are the flow's own (`flow::TriggerAction`), so a
+/// timeline can hand over to the next one — a loop that a PIR stops in favour of a
+/// scare, and a scare whose last event plays the loop again — without a flow having
+/// to know how long the scare is. Added at Heinz Horror Garten, 2026-10-25.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TimelineAction {
     GoToCue { sequence_id: Uuid, cue_id: Uuid },
     GoNext { sequence_id: Uuid },
     Off { sequence_id: Uuid },
+    /// Play a timeline from its start — this one too, which is a restart.
+    PlayTimeline { timeline_id: Uuid, #[serde(default)] if_running: IfRunning },
+    StopTimeline { timeline_id: Uuid },
+    SetVariable { variable_id: Uuid, op: VariableOp },
 }
 
 /// Where a timeline ends, and what it does when it gets there.

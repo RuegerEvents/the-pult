@@ -119,35 +119,72 @@ pub struct Marker {
     pub name: String,
 }
 
-/// What a timeline does to a sequence, and when.
+/// What a timeline does, and when: to a sequence, to another timeline, or to a variable.
+///
+/// The timeline and variable acts are the flow's own (`flow::TriggerAction`), so a
+/// timeline can hand over to the next one — a loop that a PIR stops in favour of a
+/// scare, and a scare whose last event plays the loop again — without a flow having
+/// to know how long the scare is. Added at Heinz Horror Garten, 2026-10-25.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum TimelineAction {
     GoToCue { sequence_id: Uuid, cue_id: Uuid },
     GoNext { sequence_id: Uuid },
     Off { sequence_id: Uuid },
+    /// Play a timeline from its start — this one too, which is a restart.
+    PlayTimeline {
+        timeline_id: Uuid,
+        #[serde(default)]
+        if_running: crate::types::flow::IfRunning,
+    },
+    StopTimeline { timeline_id: Uuid },
+    SetVariable { variable_id: Uuid, op: crate::types::variable::VariableOp },
 }
 
 impl TimelineAction {
     /// Which sequence this acts on, which is what makes taking the tracked state
     /// possible: a locate applies the latest event *per sequence* and fires nothing
-    /// else.
-    pub fn sequence_id(&self) -> Uuid {
+    /// else. `None` for the acts on timelines and variables, which a locate never
+    /// replays: jumping into the middle of a scare must not start the loop it ends with.
+    pub fn sequence_id(&self) -> Option<Uuid> {
         match self {
             TimelineAction::GoToCue { sequence_id, .. }
             | TimelineAction::GoNext { sequence_id }
-            | TimelineAction::Off { sequence_id } => *sequence_id,
+            | TimelineAction::Off { sequence_id } => Some(*sequence_id),
+            _ => None,
         }
     }
 
-    /// The registered command this becomes, and its arguments beside `at`.
-    pub fn command(&self) -> (&'static str, serde_json::Value) {
+    /// The registered sequence command this becomes, and its arguments beside `at`.
+    /// `None` for an act that is not on a sequence; see [`Self::as_flow_action`].
+    pub fn command(&self) -> Option<(&'static str, serde_json::Value)> {
         match self {
             TimelineAction::GoToCue { cue_id, .. } => {
-                ("goToCue", serde_json::json!({ "cueId": cue_id }))
+                Some(("goToCue", serde_json::json!({ "cueId": cue_id })))
             }
-            TimelineAction::GoNext { .. } => ("goNext", serde_json::json!({})),
-            TimelineAction::Off { .. } => ("off", serde_json::json!({})),
+            TimelineAction::GoNext { .. } => Some(("goNext", serde_json::json!({}))),
+            TimelineAction::Off { .. } => Some(("off", serde_json::json!({}))),
+            _ => None,
+        }
+    }
+
+    /// The same act as a flow would do it, for the ones a flow can do: one executor,
+    /// so a timeline playing a timeline and a flow playing one cannot disagree about
+    /// what "if running" means.
+    pub fn as_flow_action(&self) -> Option<crate::types::flow::TriggerAction> {
+        use crate::types::flow::TriggerAction;
+        match self {
+            TimelineAction::PlayTimeline { timeline_id, if_running } => Some(TriggerAction::PlayTimeline {
+                timeline_id: *timeline_id,
+                if_running: *if_running,
+            }),
+            TimelineAction::StopTimeline { timeline_id } => {
+                Some(TriggerAction::StopTimeline { timeline_id: *timeline_id })
+            }
+            TimelineAction::SetVariable { variable_id, op } => {
+                Some(TriggerAction::SetVariable { variable_id: *variable_id, op: *op })
+            }
+            _ => None,
         }
     }
 }
@@ -476,7 +513,9 @@ impl Timeline {
 
         let mut latest: std::collections::BTreeMap<Uuid, &TimelineEvent> = Default::default();
         for event in sorted {
-            latest.insert(event.action.sequence_id(), event);
+            if let Some(sequence) = event.action.sequence_id() {
+                latest.insert(sequence, event);
+            }
         }
         let mut tracked: Vec<&TimelineEvent> = latest.into_values().collect();
         tracked.sort_by_key(|event| event.at_ms);

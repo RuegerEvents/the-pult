@@ -1465,8 +1465,15 @@ impl ShowEngine {
         let acted = !self.state.is_follower() && !pass.ended.is_empty();
         if !self.state.is_follower() {
             for fire in pass.fire {
-                let path = entity_field_path("sequences", fire.sequence_id, fire.command);
-                self.run_synced_command(path, fire.args).await;
+                match fire {
+                    crate::model::timelines::TimelineFire::Sequence { sequence_id, command, args, .. } => {
+                        let path = entity_field_path("sequences", sequence_id, command);
+                        self.run_synced_command(path, args).await;
+                    }
+                    crate::model::timelines::TimelineFire::Act(action) => {
+                        self.run_flow_action(action).await;
+                    }
+                }
             }
             // A timeline driving a speed master, at a grid segment it has crossed. The
             // leader's alone, for the reason firing a Go is: the writes replicate, and
