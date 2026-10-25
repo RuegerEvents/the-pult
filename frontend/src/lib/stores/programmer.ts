@@ -115,9 +115,21 @@ export function setValueOn(targets: { fixtureId: string; kind: ParameterKind }[]
 	if (frame !== null) return;
 	frame = requestAnimationFrame(() => {
 		frame = null;
-		void inOrder(flush);
+		// At most one flush waits behind the one being sent. Queued once per frame
+		// instead, a moving fader queued sixty a second behind writes that each wait for
+		// the station's answer, and everything trailed further behind (found at the gig).
+		// The waiting flush takes whatever is pending when its turn comes, so it is
+		// always the newest value that goes.
+		if (flushWaiting) return;
+		flushWaiting = true;
+		void inOrder(async () => {
+			flushWaiting = false;
+			await flush();
+		});
 	});
 }
+
+let flushWaiting = false;
 
 /**
  * Every programmer write, one after another.
