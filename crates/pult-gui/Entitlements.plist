@@ -7,12 +7,19 @@
   the kernel killing the process (exit reason CODESIGNING) the moment a plugin loads. Found
   at Heinz Horror Garten, 2026-10-25, when installing the command line into a show put the
   Mac Mini into a crash loop with the whole rig dark.
+
+  disable-library-validation: on a Mac with Homebrew's libusb installed, the wing's USB
+  crate links that dylib, and the hardened runtime refuses a library signed by somebody
+  else ("different Team IDs") before main runs. Found on the MacBook running the audio
+  station, the same evening.
 -->
 <plist version="1.0">
 <dict>
   <key>com.apple.security.cs.allow-jit</key>
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
 </dict>
 </plist>
