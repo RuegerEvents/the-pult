@@ -30,10 +30,6 @@
 	import Flag from '@lucide/svelte/icons/flag';
 	import Help from '../Help.svelte';
 	import { addToast } from '$lib/toasts.js';
-	import { entries as programmerEntries } from '$lib/stores/programmer.js';
-	import { collection } from '$lib/stores/show.js';
-	import { displayLabel, formatValue } from '$lib/patch.js';
-	import { takes } from '$lib/stores/timelines.js';
 
 	import InspectorPanel from '$lib/components/inspector/InspectorPanel.svelte';
 	import TimelineInspector from './inspectors/TimelineInspector.svelte';
@@ -56,16 +52,9 @@
 	let root = $state<HTMLDivElement | null>(null);
 	let snapping = $state(true);
 	let lanes = $state<{ markerAtPlayhead: () => Promise<void> } | null>(null);
-	const fixtures = collection('fixtures');
-	const nameOf = (id: string) => $fixtures.find((f) => f.id === id)?.name ?? id.slice(0, 6);
 	let uploading = $state(false);
 
 	const timeline = $derived($openTimeline);
-	/** What a take from the programmer is recording right now: every key it holds. */
-	const take = $derived(timeline ? ($takes?.[timeline.id] ?? null) : null);
-	const recordingProgrammer = $derived(
-		!!take && !!timeline?.recording && 'Programmer' in timeline.recording
-	);
 	/** Narrower than this, the list is a dropdown. */
 	const narrow = $derived(width < 760);
 	const inspectorElsewhere = $derived(panelsIn($tree).includes('inspector') && $maximized !== 'timeline');
@@ -214,22 +203,6 @@
 					{/if}
 				</div>
 			</div>
-			{#if recordingProgrammer}
-				<!-- What the take is holding, live: the keys the programmer has and where
-				     each one is, so recording is watched rather than trusted. -->
-				<div class="recording-strip" aria-live="polite">
-					<span class="rec"><span class="dot"></span>Recording</span>
-					{#if $programmerEntries.length === 0}
-						<span class="dim">move something in the programmer</span>
-					{/if}
-					{#each $programmerEntries as entry (entry.id)}
-						<span class="param">
-							{nameOf(entry.fixture_id)} · {displayLabel(entry.parameter_kind)}
-							<b>{entry.effect ? 'effect' : formatValue(entry.value)}</b>
-						</span>
-					{/each}
-				</div>
-			{/if}
 			<Lanes
 				bind:this={lanes}
 				{timeline}
@@ -309,48 +282,6 @@
 		inset: 0;
 		opacity: 0;
 		cursor: pointer;
-	}
-	.recording-strip {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 8px;
-		border: 1px solid color-mix(in srgb, var(--bad) 50%, transparent);
-		border-radius: var(--radius);
-		background: color-mix(in srgb, var(--bad) 8%, transparent);
-		font-size: var(--font-xs);
-	}
-	.rec {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		color: var(--bad);
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-	}
-	.rec .dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--bad);
-	}
-	.param {
-		padding: 2px 8px;
-		border-radius: 999px;
-		border: 1px solid var(--line-strong);
-		color: var(--text-dim);
-		white-space: nowrap;
-	}
-	.param b {
-		color: var(--text);
-		font-weight: 500;
-		margin-left: 4px;
-		font-variant-numeric: tabular-nums;
-	}
-	.dim {
-		color: var(--text-faint);
 	}
 	.empty {
 		padding: 24px 0;
