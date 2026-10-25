@@ -851,6 +851,10 @@ const PLAYBACK_COLLECTIONS: &[&str] = &[
 /// one, because a cue edit is not a reason to re-decide what a song has crossed.
 const TIMELINE_COLLECTIONS: &[&str] = &["timelines"];
 
+/// What a take recorded from the programmer reads: the programmer, and the sequences
+/// whose levels it records beside it.
+const TAKE_COLLECTIONS: &[&str] = &["programmer_values", "sequences"];
+
 /// What the audio manager is told about besides the timelines: where each speaker zone
 /// is, on every station. Its own list, so a zone re-mapped while nothing else moves
 /// still reaches the station playing it.
@@ -1107,38 +1111,16 @@ impl ShowEngine {
                         _ => authorship,
                     };
                     let mut result = Ok(());
+                    let mut written = Vec::new();
                     for (path, value) in resolved {
-                        let mut authorship = authorship.clone();
-                        // Read before writing: the oplog is otherwise a list of
-                        // destinations with no record of where anything came from, and
-                        // replaying that forwards works while running it backwards
-                        // does not. Only for a write somebody asked for — the engine's
-                        // own, at 40 Hz, would pay for a read nobody will ever undo.
-                        authorship.previous =
-                            authorship.user_id.map(|_| self.value_before(&path)).unwrap_or(None);
-                        // Read before the write, because a delete says which version
-                        // it is deleting only by naming it — and by the time the write
-                        // has been applied, the row it named is gone.
-                        let touched_versions = self.version_touched_by(&path, &value);
-                        result = self.apply_set(path.clone(), value.clone(), lifecycle).await;
+                        result = self.write_through(path.clone(), value, lifecycle, authorship.clone()).await;
                         if result.is_err() {
                             break;
                         }
-                        self.touch(&path);
-                        self.record_write(&path, &value, lifecycle);
-                        // A version's row has landed in memory; the file follows it
-                        // once the row is on the disk. Here rather than in the verb
-                        // above, because a version arriving from a peer, or a delete
-                        // arriving from an undo, has to reach the same place.
-                        self.checkpoint(touched_versions).await;
-                        self.log_local_write(&path, &value, lifecycle, &authorship).await;
-                        self.broadcast_after_set(&path, value.clone());
-                        if lifecycle != Lifecycle::Local {
-                            if let Some(sync) = &self.sync {
-                                sync.broadcast_synced(path, value, self.clock.clone(), authorship)
-                                    .await;
-                            }
-                        }
+                        written.push(path);
+                    }
+                    for path in &written {
+                        self.record_sequence_act(path, &authorship).await;
                     }
                     // The caller waits for the disk; the actor does not. Everything
                     // this command enqueued is handed to a task that answers when it
@@ -1384,6 +1366,7 @@ impl ShowEngine {
         // fixtures on the same cue a fraction of a cycle apart.
         let wall_ms = pult_schema::types::sequence::now_ms();
 
+        let levels = self.masters();
         let effects = {
             let view = ShowView::new(
                 &sequences,
@@ -1395,7 +1378,8 @@ impl ShowEngine {
                 home_fade_ms,
                 fade_curves,
                 &presets,
-            );
+            )
+            .with_levels(levels);
             self.playback.pass_after_edits(wall_ms, &view, edited)
         };
 
@@ -1560,7 +1544,7 @@ impl ShowEngine {
         // A take that has just started is handed the programmer as it is, which is
         // the baseline its first look primes with rather than records.
         if armed && !self.programmer_armed {
-            self.programmer_fed = self.version_of(&["programmer_values"]).wrapping_sub(1);
+            self.programmer_fed = self.version_of(TAKE_COLLECTIONS).wrapping_sub(1);
         }
         self.programmer_armed = armed;
     }
@@ -1584,14 +1568,23 @@ impl ShowEngine {
         if !self.programmer_armed {
             return;
         }
-        let version = self.version_of(&["programmer_values"]);
+        let version = self.version_of(TAKE_COLLECTIONS);
         if version == self.programmer_fed {
             return;
         }
         self.programmer_fed = version;
         if let Some(input) = &self.input {
+            // Every sequence's level beside the programmer: the take writes only what
+            // moves, so a fader nobody touches costs nothing and one somebody does is
+            // recorded from that touch.
+            let levels = self
+                .read_collection::<pult_schema::types::sequence::Sequence>("sequences")
+                .into_iter()
+                .map(|sequence| (sequence.id, sequence.master.unwrap_or(1.0)))
+                .collect();
             input.programmer(
                 self.read_collection("programmer_values"),
+                levels,
                 pult_schema::types::sequence::now_ms(),
             );
         }
@@ -2157,7 +2150,22 @@ impl ShowEngine {
     /// The sequences' playback faders, for anything evaluating a parameter.
     fn masters(&self) -> pult_schema::types::sequence::Masters {
         let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
-        pult_schema::types::sequence::Masters::of(&sequences)
+        let faders = pult_schema::types::sequence::Masters::of(&sequences);
+        // With the levels a playing take records at this moment, where one does.
+        let Some(cache) = &self.tracks else { return faders };
+        let timelines: Vec<pult_schema::types::timeline::Timeline> = self.read_collection("timelines");
+        if !timelines.iter().any(|t| t.running && !t.tracks.is_empty()) {
+            return faders;
+        }
+        let recorded = crate::infra::connectors::recorded_levels_at(
+            cache,
+            &timelines,
+            pult_schema::types::sequence::now_ms(),
+        );
+        if recorded.is_empty() {
+            return faders;
+        }
+        faders.with_recorded(|sequence| recorded.get(&sequence).copied())
     }
 
     fn read_collection<T: serde::de::DeserializeOwned>(&self, table: &str) -> Vec<T> {
@@ -3070,10 +3078,112 @@ impl ShowEngine {
         ];
         self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await?;
         self.record_write(&path, &args, Lifecycle::Synced);
+        self.record_sequence_act(&path, &Authorship::none()).await;
         if let Some(sync) = &self.sync {
             sync.broadcast_synced(path, args, self.clock.clone(), Authorship::none()).await;
         }
         Ok(serde_json::Value::Null)
+    }
+
+    /// One write, all the way through: applied, logged, broadcast to the browsers and
+    /// sent to the peers. What a client's `Set` does for each of its writes, and what
+    /// the engine does for a write of its own that has to land the same way.
+    async fn write_through(
+        &mut self,
+        path: Path,
+        value: serde_json::Value,
+        lifecycle: Lifecycle,
+        mut authorship: Authorship,
+    ) -> Result<(), BackendError> {
+        // Read before writing: the oplog is otherwise a list of destinations with no
+        // record of where anything came from, and replaying that forwards works while
+        // running it backwards does not. Only for a write somebody asked for — the
+        // engine's own, at 40 Hz, would pay for a read nobody will ever undo.
+        authorship.previous = authorship.user_id.map(|_| self.value_before(&path)).unwrap_or(None);
+        // Read before the write, because a delete says which version it is deleting
+        // only by naming it — and by the time the write has been applied, the row it
+        // named is gone.
+        let touched_versions = self.version_touched_by(&path, &value);
+        self.apply_set(path.clone(), value.clone(), lifecycle).await?;
+        self.touch(&path);
+        self.record_write(&path, &value, lifecycle);
+        // A version's row has landed in memory; the file follows it once the row is on
+        // the disk. Here rather than in the verb above, because a version arriving from
+        // a peer, or a delete arriving from an undo, has to reach the same place.
+        self.checkpoint(touched_versions).await;
+        self.log_local_write(&path, &value, lifecycle, &authorship).await;
+        self.broadcast_after_set(&path, value.clone());
+        if lifecycle != Lifecycle::Local {
+            if let Some(sync) = &self.sync {
+                sync.broadcast_synced(path, value, self.clock.clone(), authorship).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// A sequence act taken while a timeline is recording from the programmer — a Go,
+    /// a Back, an Off, a jump to a cue — written onto that timeline as an event at its
+    /// playhead, so the take carries the cues as well as the faders.
+    ///
+    /// Recorded as the state the act left the sequence in rather than as the button:
+    /// a cue to go to, or Off. A recorded Go played back from somewhere else would go
+    /// to whatever came next *then*; this goes to the cue that came next when it was
+    /// played. The leader records, the way it records the programmer, and only an
+    /// operator's act reaches here — the timeline's own firing goes through
+    /// `run_synced_command`, or a recording timeline would record itself.
+    async fn record_sequence_act(&mut self, path: &Path, authorship: &Authorship) {
+        use pult_schema::types::timeline::{RecordSource, Timeline, TimelineAction, TimelineEvent};
+        if self.state.is_follower() {
+            return;
+        }
+        let [PathSegment::Key(table), PathSegment::Id(sequence_id), PathSegment::Key(act)] = path.as_slice()
+        else {
+            return;
+        };
+        if table != "sequences" || !matches!(act.as_str(), "goNext" | "goBack" | "off" | "goToCue") {
+            return;
+        }
+        let recording: Vec<Timeline> = self
+            .read_collection::<Timeline>("timelines")
+            .into_iter()
+            .filter(|t| t.running && matches!(t.recording, Some(RecordSource::Programmer { .. })))
+            .collect();
+        if recording.is_empty() {
+            return;
+        }
+        let Some(sequence) = self
+            .state
+            .entity("sequences", *sequence_id)
+            .and_then(|v| serde_json::from_value::<pult_schema::types::sequence::Sequence>(v.clone()).ok())
+        else {
+            return;
+        };
+        let action = match sequence.active_cue_index.and_then(|i| sequence.cue_ids.get(i)) {
+            Some(cue_id) => TimelineAction::GoToCue { sequence_id: *sequence_id, cue_id: *cue_id },
+            None => TimelineAction::Off { sequence_id: *sequence_id },
+        };
+        let now = pult_schema::types::sequence::now_ms();
+        for timeline in recording {
+            let mut events = timeline.events.clone();
+            events.push(TimelineEvent {
+                id: Uuid::new_v4(),
+                at_ms: u32::try_from(timeline.position_at(now)).unwrap_or(u32::MAX),
+                action: action.clone(),
+            });
+            events.sort_by_key(|e| e.at_ms);
+            let Ok(value) = serde_json::to_value(&events) else { continue };
+            let path = vec![
+                PathSegment::Key("timelines".into()),
+                PathSegment::Id(timeline.id),
+                PathSegment::Key("events".into()),
+            ];
+            if let Err(e) = self
+                .write_through(path, value, Lifecycle::Persisted, Authorship::by(authorship.user_id, None))
+                .await
+            {
+                warn!("[timelines] could not record a sequence act onto {}: {e}", timeline.name);
+            }
+        }
     }
 
     async fn apply_peer_operation(&mut self, op: Operation) {
@@ -3108,6 +3218,9 @@ impl ShowEngine {
             }
         }
         if refused.is_none() {
+            // A follower's operator pressing Go while the leader records is still an
+            // operator's act, and the leader is the one that records it.
+            self.record_sequence_act(&op.path, &Authorship::by(op.user_id, None)).await;
             // Here rather than at the call site, because only here is the path known —
             // and a peer's own `stations` row is a write this station must not read as
             // its rig having moved.
@@ -3263,6 +3376,12 @@ impl ShowEngine {
     /// Load the showfile into memory.
     /// Driven by the EntityMeta registry — no entity types enumerated here.
     async fn load_from_showfile(&mut self) {
+        // Counting goes on from where the log got to, before anything below writes:
+        // see `oplog::clock` for what starting from zero did.
+        match oplog::clock(&self.pool).await {
+            Ok(reached) => self.clock.merge(&reached),
+            Err(e) => warn!("[engine] could not read how far the oplog got: {e}"),
+        }
         let mut state_map = serde_json::Map::new();
         for meta in EntityMeta::all_with_tables() {
             let (Some(table), Some(load)) = (meta.table_name, meta.load_all) else { continue };

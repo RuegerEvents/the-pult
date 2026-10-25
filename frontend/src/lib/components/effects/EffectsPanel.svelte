@@ -58,6 +58,10 @@
 	import EffectPreview from './EffectPreview.svelte';
 	import EffectWave from './EffectWave.svelte';
 	import StepGrid from './StepGrid.svelte';
+	import PixelStrip from './PixelStrip.svelte';
+	import NameDialog from '../NameDialog.svelte';
+	import Help from '../Help.svelte';
+	import { nodeEffectOf } from '$lib/stage.js';
 
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
@@ -257,11 +261,8 @@
 		openTemplate.set(null);
 	});
 
-	async function store() {
-		const name = naming?.trim();
-		if (!name) return;
+	async function store(name: string) {
 		from = await storeTemplate(name, layers);
-		naming = null;
 		notice = `Stored as “${name}”`;
 	}
 
@@ -342,6 +343,20 @@
 		return held?.value ?? fallback;
 	}
 
+	/**
+	 * What the first selected strip would be told, for drawing the tiles: its held
+	 * values where the programmer holds them, its type's defaults otherwise.
+	 */
+	const nodePreview = $derived.by(() => {
+		const first = picked[0];
+		const type = first ? $types.find((t) => t.id === first.fixture_type_id) : undefined;
+		if (!first) return null;
+		return nodeEffectOf(first, type, {
+			at: null,
+			value: (_id, key) => $byKey.get(`${first.id}/${key}`)?.value ?? null
+		});
+	});
+
 	function nodeEffect(name: string) {
 		if (!effectParam) return;
 		beginGesture();
@@ -354,19 +369,7 @@
 	<section class="pool" aria-label="Effect pool">
 		<div class="pool-head">
 			<h3>Pool</h3>
-			{#if naming !== null}
-				<input
-					class="input"
-					placeholder="Name"
-					bind:value={naming}
-					onkeydown={(e) => {
-						if (e.key === 'Enter') void store();
-						if (e.key === 'Escape') naming = null;
-					}}
-				/>
-				<button class="btn btn-primary" onclick={store} disabled={!naming?.trim()}>Store</button>
-				<button class="btn btn-ghost" onclick={() => (naming = null)}>Cancel</button>
-			{:else if $canEdit}
+			{#if $canEdit}
 				<button class="btn" onclick={() => (naming = '')} disabled={layers.length === 0}>Store as new</button>
 				{#if from}
 					<button class="btn" onclick={update}>Update “{from.name}”</button>
@@ -399,19 +402,28 @@
 		<p class="empty">Select some fixtures. An effect is a shape applied across a selection.</p>
 	{:else if nodeStrips}
 		<section class="node" aria-label="The node's own effects">
-			<p class="note">
-				These strips draw their own pixels, so they run the node's effects. Pick one and set it
-				up; it runs on the node, in step with every other strip.
-			</p>
+			<h3 class="node-title">
+				The node's effects
+				<Help label="About the node's effects">
+					These strips draw their own pixels, so they run the node's effects: pick one and set
+					it up below, and it runs on the node, in step with every other strip. Each tile shows
+					the effect in the colors set now.
+				</Help>
+			</h3>
 			{#if effectParam}
+				<!-- One grid of tiles, each showing itself running: the node names its effects
+				     in its own order, and a wrapping row of words read as two lists. -->
 				<div class="node-effects">
 					{#each effectParam.choices as name (name)}
 						{@const current = heldOr(effectParam.key, effectParam.defaultValue)}
 						<button
-							class="btn"
+							class="effect-tile"
 							class:on={current.type === 'Text' && current.value === name}
 							onclick={() => nodeEffect(name)}
-						>{name}</button>
+						>
+							<span class="tile-name">{name}</span>
+							{#if nodePreview}<PixelStrip effect={{ ...nodePreview, effect: name }} />{/if}
+						</button>
 					{/each}
 				</div>
 			{/if}
@@ -480,6 +492,12 @@
 			</p>
 		{/if}
 
+		<!-- The preview draws the effect being edited, applied or not — so it says which:
+		     after Clear the editor still holds the draft and goes on animating it, and a
+		     moving preview read as the light still doing it. -->
+		<p class="preview-state" class:on-rig={running > 0}>
+			{running > 0 ? 'On the rig' : 'Preview — not on the rig until Apply'}
+		</p>
 		<EffectPreview
 			{order}
 			{applies}
@@ -688,6 +706,16 @@
 	{/if}
 </div>
 
+{#if naming !== null}
+	<NameDialog
+		title="Store the effect in the pool"
+		placeholder="Name"
+		confirm="Store"
+		onsubmit={store}
+		onclose={() => (naming = null)}
+	/>
+{/if}
+
 <style>
 	.effects {
 		padding: 14px 18px;
@@ -702,13 +730,6 @@
 		font-weight: 600;
 	}
 	.empty,
-	.note {
-		color: var(--text-dim);
-		font-size: var(--font-sm);
-		max-width: 52ch;
-		line-height: 1.5;
-		margin: 0;
-	}
 	.notice {
 		margin: 0;
 		font-size: var(--font-xs);
@@ -850,14 +871,46 @@
 		flex-direction: column;
 		gap: 10px;
 	}
-	.node-effects {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px;
+	.preview-state {
+		margin: 0 0 -4px;
+		font-size: var(--font-xs);
+		color: var(--text-faint);
 	}
-	.node-effects .btn {
-		min-height: 40px;
-		min-width: 80px;
+	.preview-state.on-rig {
+		color: var(--live);
+	}
+	.node-title {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.node-effects {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+		gap: 6px;
+	}
+	.effect-tile {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 8px;
+		border: 1px solid var(--line-strong);
+		border-radius: 6px;
+		background: var(--bg-raised);
+		color: var(--text);
+		font: inherit;
+		font-size: var(--font-sm);
+		text-align: left;
+		cursor: pointer;
+	}
+	.effect-tile:hover {
+		border-color: var(--line-input);
+	}
+	.effect-tile.on {
+		border-color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 14%, var(--bg-raised));
+	}
+	.tile-name {
 		text-transform: capitalize;
 	}
 	.node-params {

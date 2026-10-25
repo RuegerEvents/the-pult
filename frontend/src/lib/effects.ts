@@ -12,6 +12,7 @@
 
 import type { Curve, EffectSpec, ParameterKind, ParameterValue, Shape, Spread, Step } from './generated/index.js';
 import { shapeLevel } from './evaluator.js';
+import { uuid } from '$lib/uuid.js';
 
 // ── Spreads ───────────────────────────────────────────────────────────────────
 
@@ -140,18 +141,20 @@ export function curveLevel(shape: Shape, width: number, x: number): number {
 	}
 }
 
-/** Where in its cycle an effect is at `nowMs`, 0..1. */
+/** Where in its cycle an effect is at `nowMs`: 0..1, or 0..`span` across several. */
 export function cyclePosition(
 	rateHz: number,
 	backward: boolean,
 	phase: number,
 	t0: number,
-	nowMs: number
+	nowMs: number,
+	/** How many cycles the answer wraps at: 1 for where in a cycle, 2 for a drawing of two. */
+	span = 1
 ): number {
-	if (rateHz <= 0) return ((phase % 1) + 1) % 1;
+	if (rateHz <= 0) return ((phase % span) + span) % span;
 	const cycles = ((nowMs - t0) / 1000) * rateHz;
 	const traveled = backward ? -cycles : cycles;
-	return (((traveled + phase) % 1) + 1) % 1;
+	return (((traveled + phase) % span) + span) % span;
 }
 
 /** The value a step list is showing at a cycle position. */
@@ -252,7 +255,7 @@ export function specsFor(
 	base: Omit<EffectSpec, 'effect_id' | 'phase'>,
 	spread: Spread
 ): Record<string, EffectSpec> {
-	const effectId = crypto.randomUUID();
+	const effectId = uuid();
 	const offsets = phases(spread, fixtureIds.length);
 	const out: Record<string, EffectSpec> = {};
 	fixtureIds.forEach((id, i) => {
@@ -266,7 +269,7 @@ export function defaultSpec(kind: ParameterKind, fallback: ParameterValue): Effe
 	const numeric = fallback.type === 'Float' || fallback.type === 'Int';
 	const color = fallback.type === 'Color';
 	return {
-		effect_id: crypto.randomUUID(),
+		effect_id: uuid(),
 		// A boolean or a string has nothing between two values for a sine to trace, so
 		// it starts on the one shape that only ever asks for the ends.
 		curve: { Shape: numeric || color ? 'Sine' : 'Square' },

@@ -30,22 +30,31 @@
 	import { output, watching } from '$lib/stores/output.js';
 	import { consoleNow } from '$lib/ws/clock.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
+	import { addToast } from '$lib/toasts.js';
 
 	let {
 		surface,
 		show,
-		live = true
+		live = true,
+		selected = null,
+		onselect
 	}: {
 		surface: Surface;
 		show: SurfaceShow;
 		/** False while the console is not reachable: tiles show, and do nothing. */
 		live?: boolean;
+		/** The tile being edited, outlined. */
+		selected?: string | null;
+		/**
+		 * Given, a click picks the tile to edit instead of pressing it: the editor's
+		 * preview is where a surface is built, the way it will look.
+		 */
+		onselect?: (tileId: string) => void;
 	} = $props();
 
 	const data = getDataContext();
 	const client = getClientContext();
 
-	let problem = $state<string | null>(null);
 	let pressed = $state<string | null>(null);
 
 	// The parameters this page reads, so the output loop evaluates them and only them.
@@ -79,16 +88,16 @@
 	});
 
 	async function act(tile: SurfaceTile) {
+		if (onselect) return onselect(tile.id);
 		if (!live || !isAction(tile.target) || !targetExists(tile.target, show)) return;
 		pressed = tile.id;
 		setTimeout(() => {
 			if (pressed === tile.id) pressed = null;
 		}, 180);
 		try {
-			problem = null;
 			await pressTarget(tile.target, show, data, client, consoleNow());
 		} catch (e) {
-			problem = e instanceof Error ? e.message : String(e);
+			addToast(e instanceof Error ? e.message : String(e));
 		}
 	}
 
@@ -128,7 +137,11 @@
 		{@const target = tile.target}
 		{@const exists = targetExists(target, show)}
 		{#if target.kind === 'Heading'}
-			<h3 class="heading">{tile.label}</h3>
+			{#if onselect}
+				<button class="heading pick" class:selected={selected === tile.id} onclick={() => onselect(tile.id)}>{tile.label}</button>
+			{:else}
+				<h3 class="heading">{tile.label}</h3>
+			{/if}
 		{:else}
 			{@const state = exists ? stateOf(tile) : null}
 			{@const fill = target.kind === 'VariableReadout' || target.kind === 'Parameter' ? (state?.color ?? null) : tile.color}
@@ -139,9 +152,10 @@
 					class:full={tile.size === 'Full'}
 					class:pressed={pressed === tile.id}
 					class:missing={!exists}
+					class:selected={selected === tile.id}
 					style:background={fill}
 					style:color={ink}
-					disabled={!live || !exists}
+					disabled={!onselect && (!live || !exists)}
 					onclick={() => act(tile)}
 				>
 					<span class="label">{tileLabel(tile, show)}</span>
@@ -154,16 +168,31 @@
 					{/if}
 				</button>
 			{:else}
-				<div
-					class="tile readout"
-					class:full={tile.size === 'Full'}
-					class:missing={!exists}
-					style:background={fill}
-					style:color={ink}
-				>
-					<span class="label">{tileLabel(tile, show)}</span>
-					<span class="figure">{state?.text ?? '–'}</span>
-				</div>
+				{#if onselect}
+					<button
+						class="tile readout pick"
+						class:full={tile.size === 'Full'}
+						class:missing={!exists}
+						class:selected={selected === tile.id}
+						style:background={fill}
+						style:color={ink}
+						onclick={() => onselect(tile.id)}
+					>
+						<span class="label">{tileLabel(tile, show)}</span>
+						<span class="figure">{state?.text ?? '–'}</span>
+					</button>
+				{:else}
+					<div
+						class="tile readout"
+						class:full={tile.size === 'Full'}
+						class:missing={!exists}
+						style:background={fill}
+						style:color={ink}
+					>
+						<span class="label">{tileLabel(tile, show)}</span>
+						<span class="figure">{state?.text ?? '–'}</span>
+					</div>
+				{/if}
 			{/if}
 		{/if}
 	{/each}
@@ -172,9 +201,23 @@
 	{/if}
 </div>
 
-{#if problem}<p class="problem" role="alert">{problem}</p>{/if}
-
 <style>
+	/* Being edited: outlined, the way a selected object is everywhere else. */
+	.selected {
+		outline: 2px solid var(--accent, #4a9eff);
+		outline-offset: 2px;
+	}
+	.pick {
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+	.heading.pick {
+		background: none;
+		border: none;
+		border-bottom: 1px solid #333;
+		width: 100%;
+	}
 	.tiles {
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -269,11 +312,6 @@
 	.empty {
 		grid-column: 1 / -1;
 		color: #777;
-		font-size: 13px;
-	}
-	.problem {
-		margin-top: 10px;
-		color: #f87171;
 		font-size: 13px;
 	}
 </style>

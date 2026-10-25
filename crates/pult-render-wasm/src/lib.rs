@@ -60,6 +60,11 @@ pub struct DrivenBy {
     /// [`Driving::master`].
     #[serde(default)]
     pub master: Option<f32>,
+    /// The sequence whose cue is driving this intensity, where one is: so a level a
+    /// playing take recorded for it can be put over `master` frame by frame, the way
+    /// the station's connectors do.
+    #[serde(default)]
+    pub sequence: Option<String>,
 }
 
 /// One parameter's change points and where the playhead is, written out in full.
@@ -269,6 +274,9 @@ pub struct Evaluator {
     tracks: HashMap<String, Loaded>,
     /// Which of them are running, and where each playhead is.
     playing: HashMap<String, Transport>,
+    /// Running takes whose sequence levels do not play: their timeline is recording a
+    /// new pass, and the hand on the fader is what is being recorded.
+    levels_muted: std::collections::HashSet<String>,
     /// What the page is showing, in the order its answers come back.
     watching: Vec<String>,
     /// Reused between frames, so drawing does not allocate.
@@ -342,7 +350,13 @@ impl Evaluator {
         anchor_ms: f64,
         position_at_anchor_ms: f64,
         rate: f32,
+        levels: bool,
     ) {
+        if levels {
+            self.levels_muted.remove(sha);
+        } else {
+            self.levels_muted.insert(sha.to_string());
+        }
         self.playing.insert(
             sha.to_string(),
             Transport {
@@ -357,6 +371,7 @@ impl Evaluator {
     /// timeline and starting it again must not cost a download.
     pub fn stop_track(&mut self, sha: &str) {
         self.playing.remove(sha);
+        self.levels_muted.remove(sha);
     }
 
     /// Forget a recording entirely — the show no longer carries it.
@@ -375,22 +390,43 @@ impl Evaluator {
     /// A key can be in more than one playing recording — two takes of the same song,
     /// both armed — and the **latest anchor wins**, which is the take that was started
     /// most recently. Layering them would be a merge rule nothing has decided.
-    fn composed(&self, key: &str) -> Option<Driving<'_>> {
+    fn composed(&self, key: &str, now: u64) -> Option<Driving<'_>> {
         let driven = self.driving.get(key);
         let recorded = self.track_for(key);
-        match (driven, recorded) {
+        let mut composed = match (driven, recorded) {
             (None, None) => None,
             (Some(driven), None) => Some(driven.driving()),
             (driven, track) => Some(Driving {
                 track,
                 ..driven.map(DrivenBy::driving).unwrap_or_default()
             }),
+        }?;
+        // A level a playing take recorded for this parameter's sequence, over its fader.
+        if let Some(sequence) = driven.and_then(|d| d.sequence.as_deref()) {
+            let level = self.level_for(sequence).and_then(|at| at.value_at(now));
+            if let Some(ParameterValue::Float(level)) = level {
+                let level = level.clamp(0.0, 1.0);
+                composed.master = (level < 1.0).then_some(level);
+            }
         }
+        Some(composed)
+    }
+
+    /// A sequence's level as the playing takes record it, the latest started winning.
+    fn level_for(&self, sequence: &str) -> Option<TrackAt<'_>> {
+        self.track_among(&format!("{sequence}/{}", pult_render::SEQUENCE_LEVEL_KEY), true)
     }
 
     fn track_for(&self, key: &str) -> Option<TrackAt<'_>> {
+        self.track_among(key, false)
+    }
+
+    fn track_among(&self, key: &str, levels: bool) -> Option<TrackAt<'_>> {
         let mut best: Option<(u64, TrackAt<'_>)> = None;
         for (sha, transport) in &self.playing {
+            if levels && self.levels_muted.contains(sha) {
+                continue;
+            }
             let Some(loaded) = self.tracks.get(sha) else { continue };
             let Some(index) = loaded.at.get(key) else { continue };
             let at = TrackAt { points: &loaded.track.keys[*index].points, transport: *transport };
@@ -435,7 +471,7 @@ impl Evaluator {
             let slot = &mut packed[at * STRIDE..(at + 1) * STRIDE];
             slot.fill(0.0);
             let value =
-                self.composed(key).and_then(|driving| pult_render::value_at(&driving, now));
+                self.composed(key, now).and_then(|driving| pult_render::value_at(&driving, now));
             pack(value, slot);
         }
         self.packed = packed;
@@ -473,7 +509,7 @@ impl Evaluator {
     /// that is open on one screen. The color control asks for this; nothing else does.
     pub fn color_overrides(&self, key: &str, now_ms: f64) -> Result<JsValue, JsValue> {
         let now = now_ms.max(0.0) as u64;
-        let overrides = match self.composed(key).and_then(|d| pult_render::value_at(&d, now)) {
+        let overrides = match self.composed(key, now).and_then(|d| pult_render::value_at(&d, now)) {
             Some(ParameterValue::Color { overrides, .. }) => overrides,
             _ => Default::default(),
         };
@@ -487,7 +523,7 @@ impl Evaluator {
     /// happens on a handful of displays.
     pub fn text(&self, key: &str, now_ms: f64) -> Option<String> {
         let now = now_ms.max(0.0) as u64;
-        match self.composed(key).and_then(|d| pult_render::value_at(&d, now)) {
+        match self.composed(key, now).and_then(|d| pult_render::value_at(&d, now)) {
             Some(ParameterValue::Text(text)) => Some(text),
             _ => None,
         }
@@ -576,7 +612,7 @@ mod tests {
         let fixture = track.keys[0].fixture_id;
         let mut evaluator = Evaluator::default();
         evaluator.load_track("sha", &pult_render::track::encode(&track)).unwrap();
-        evaluator.play_track("sha", 10_000.0, 0.0, 1.0);
+        evaluator.play_track("sha", 10_000.0, 0.0, 1.0, true);
         evaluator.watching =
             vec![format!("{fixture}/Intensity"), format!("{fixture}/Pan"), "nobody/Tilt".into()];
 
@@ -589,5 +625,51 @@ mod tests {
             vec![format!("{fixture}/Intensity")],
             "and once past it, exactly the key it is asserting"
         );
+    }
+
+    /// A level a playing take recorded for a sequence dims the intensity that
+    /// sequence's cue is driving, frame by frame — and not while the timeline is
+    /// recording a new pass, when the fader is what is being recorded.
+    #[test]
+    fn a_recorded_sequence_level_dims_what_its_cue_is_driving() {
+        use pult_render::track::{Track, TrackKey, TrackPoint};
+
+        let track = Track {
+            keys: vec![TrackKey {
+                fixture_id: Default::default(),
+                key: pult_render::SEQUENCE_LEVEL_KEY.into(),
+                points: vec![TrackPoint { ms: 1_000, value: ParameterValue::Float(0.5) }],
+            }],
+        };
+        let sequence = track.keys[0].fixture_id.to_string();
+        let mut evaluator = Evaluator::default();
+        evaluator.load_track("sha", &pult_render::track::encode(&track)).unwrap();
+        evaluator.driving.insert(
+            "lamp/Intensity".into(),
+            DrivenBy {
+                home: Some(ParameterValue::Float(1.0)),
+                sequence: Some(sequence),
+                ..DrivenBy::default()
+            },
+        );
+        evaluator.watching = vec!["lamp/Intensity".into()];
+        evaluator.packed = vec![0.0; STRIDE];
+
+        evaluator.play_track("sha", 10_000.0, 0.0, 1.0, true);
+        assert_eq!(evaluator.evaluate(10_500.0)[1], 1.0, "before the take's first point, the fader");
+        assert_eq!(evaluator.evaluate(11_500.0)[1], 1.0, "home is not played by a sequence, so not dimmed");
+
+        evaluator.driving.get_mut("lamp/Intensity").unwrap().fade = Some(pult_render::RunningFade {
+            from: ParameterValue::Float(1.0),
+            to: ParameterValue::Float(1.0),
+            t0: 0,
+            duration_ms: 0,
+            easing: Default::default(),
+            cue_id: Default::default(),
+        });
+        assert_eq!(evaluator.evaluate(11_500.0)[1], 0.5, "a cue's fade, at the recorded level");
+
+        evaluator.play_track("sha", 10_000.0, 0.0, 1.0, false);
+        assert_eq!(evaluator.evaluate(11_500.0)[1], 1.0, "recording a new pass: the fader decides");
     }
 }

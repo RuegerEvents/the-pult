@@ -15,6 +15,7 @@
  */
 
 import { showClient } from './show.js';
+import { uuid } from '$lib/uuid.js';
 
 /**
  * How long a gesture stays open after the pointer comes up.
@@ -40,7 +41,7 @@ export function beginGesture(): void {
 	generation += 1;
 	if (closing) clearTimeout(closing);
 	closing = null;
-	current = crypto.randomUUID();
+	current = uuid();
 	showClient().duringGesture(current);
 }
 

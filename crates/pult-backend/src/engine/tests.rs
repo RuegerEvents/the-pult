@@ -5016,3 +5016,118 @@ async fn a_peers_station_row_is_seen_without_its_create() {
     h.engine.0.send(EngineCommand::ApplyPeerOperation(op)).await.unwrap();
     assert_eq!(h.engine.get(path).await.unwrap()["hostname"], "pi");
 }
+
+// ── Recording a sequence act onto a timeline ─────────────────────────────────
+
+mod recording_sequence_acts {
+    use super::*;
+    use pult_schema::types::timeline::{RecordSource, Timeline, TimelineAction, TimelineSource};
+
+    fn a_timeline(recording: Option<RecordSource>) -> Timeline {
+        Timeline {
+            id: Uuid::new_v4(),
+            name: "Song".into(),
+            clips: Vec::new(),
+            detected: None,
+            source: TimelineSource::Internal,
+            grid: Vec::new(),
+            markers: Vec::new(),
+            events: Vec::new(),
+            tracks: Vec::new(),
+            speed_master: None,
+            node_id: None,
+            end: None,
+            running: true,
+            anchor_ms: pult_schema::types::sequence::now_ms(),
+            position_at_anchor_ms: 5_000,
+            rate: 1.0,
+            recording,
+        }
+    }
+
+    async fn a_sequence_with_two_cues(h: &Harness) -> (Sequence, Cue, Cue) {
+        let (one, two) = (a_cue("One", 1.0), a_cue("Two", 2.0));
+        for cue in [&one, &two] {
+            h.engine.set(create_path("cues"), Lifecycle::Persisted, json(cue)).await.unwrap();
+        }
+        let sequence = a_sequence("Act", vec![one.id, two.id]);
+        h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
+        (sequence, one, two)
+    }
+
+    async fn events_of(h: &Harness, id: Uuid) -> Vec<pult_schema::types::timeline::TimelineEvent> {
+        serde_json::from_value(h.engine.get(field_path("timelines", id, "events")).await.unwrap()).unwrap()
+    }
+
+    /// A Go pressed while a timeline records from the programmer is an event on it, at
+    /// the playhead, naming the cue it went to — and an Off is an Off.
+    #[tokio::test]
+    async fn a_go_and_an_off_while_recording_land_on_the_timeline() {
+        let h = harness().await;
+        let (sequence, one, _) = a_sequence_with_two_cues(&h).await;
+        let timeline = a_timeline(Some(RecordSource::Programmer { release: true }));
+        h.engine.set(create_path("timelines"), Lifecycle::Persisted, json(&timeline)).await.unwrap();
+
+        let user = Uuid::new_v4();
+        let go = field_path("sequences", sequence.id, "goNext");
+        h.engine.set_as(user, None, go, Lifecycle::Synced, serde_json::json!({})).await.unwrap();
+        let off = field_path("sequences", sequence.id, "off");
+        h.engine.set_as(user, None, off, Lifecycle::Synced, serde_json::json!({})).await.unwrap();
+
+        let events = events_of(&h, timeline.id).await;
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].action, TimelineAction::GoToCue { sequence_id: sequence.id, cue_id: one.id });
+        assert_eq!(events[1].action, TimelineAction::Off { sequence_id: sequence.id });
+        assert!(events[0].at_ms >= 5_000, "at the playhead, which started at 5 s");
+    }
+
+    /// Not recording, or recording from an input, leaves the timeline alone.
+    #[tokio::test]
+    async fn a_go_with_nothing_recording_writes_nothing() {
+        let h = harness().await;
+        let (sequence, _, _) = a_sequence_with_two_cues(&h).await;
+        let idle = a_timeline(None);
+        let from_input = a_timeline(Some(RecordSource::Input(Uuid::new_v4())));
+        for t in [&idle, &from_input] {
+            h.engine.set(create_path("timelines"), Lifecycle::Persisted, json(t)).await.unwrap();
+        }
+        let go = field_path("sequences", sequence.id, "goNext");
+        h.engine.set_as(Uuid::new_v4(), None, go, Lifecycle::Synced, serde_json::json!({})).await.unwrap();
+        assert!(events_of(&h, idle.id).await.is_empty());
+        assert!(events_of(&h, from_input.id).await.is_empty());
+    }
+}
+
+/// A station restarted on its own showfile counts on from where its log got to. It
+/// used to start again from zero: the next write collided with a row from early in
+/// the show (`UNIQUE` on `(node_id, seq)`, toasted and lost), and a peer that had
+/// seen the higher numbers would take every new one as already seen.
+#[tokio::test]
+async fn a_restarted_station_counts_on_from_where_its_log_got_to() {
+    let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
+    let me = NodeId(Uuid::new_v4());
+    let start = || async {
+        let (engine, handle, _broadcast) = ShowEngine::new(me, pool.clone(), None);
+        tokio::spawn(engine.run());
+        let _ = handle.0.send(EngineCommand::LoadFromShowfile).await;
+        let _ = handle.get(key("show")).await;
+        handle
+    };
+    let first = start().await;
+    for n in 0..5 {
+        first
+            .set(field_path("users", User::DEFAULT_ID, "name"), Lifecycle::Persisted, serde_json::json!(format!("Sam {n}")))
+            .await
+            .unwrap();
+    }
+    let _ = first.0.send(EngineCommand::Stop).await;
+    let before = showfile::oplog::clock(&pool).await.unwrap().0[&me];
+
+    let second = start().await;
+    second
+        .set(field_path("users", User::DEFAULT_ID, "name"), Lifecycle::Persisted, serde_json::json!("Alex"))
+        .await
+        .expect("the write after a restart reaches the log");
+    let after = showfile::oplog::clock(&pool).await.unwrap().0[&me];
+    assert!(after > before, "numbered past {before}, not from zero: {after}");
+}

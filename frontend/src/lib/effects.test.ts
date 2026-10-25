@@ -128,6 +128,12 @@ describe('the numeric table, again', () => {
 		expect(cyclePosition(1, false, 0, 1000, 2000)).toBeCloseTo(0, 6);
 	});
 
+	it('runs across every cycle a drawing shows, not only the first', () => {
+		// Two cycles drawn: at 1.5 s into a one-hertz effect a dot is in the second.
+		expect(cyclePosition(1, false, 0, 1000, 2500, 2)).toBeCloseTo(1.5, 6);
+		expect(cyclePosition(1, false, 0, 1000, 3000, 2)).toBeCloseTo(0, 6);
+	});
+
 	it('wraps rather than going negative before the anchor', () => {
 		expect(cyclePosition(1, false, 0, 1000, 750)).toBeCloseTo(0.75, 6);
 	});

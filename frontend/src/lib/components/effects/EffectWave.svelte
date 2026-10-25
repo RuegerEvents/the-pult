@@ -94,7 +94,9 @@
 		const offsets = layerPhases(layer, Math.min(count, 64));
 		const backward = layer.direction === 'Backward';
 		return offsets.map((phase) => {
-			const x = cyclePosition(rateHz, backward, phase, t0, now);
+			// Across all the cycles drawn, not within one: wrapped at one, every dot
+			// ran over the first cycle and jumped back, and the second was never reached.
+			const x = cyclePosition(rateHz, backward, phase, t0, now, CYCLES);
 			return { x, y: level(x) };
 		});
 	});

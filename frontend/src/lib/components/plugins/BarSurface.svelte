@@ -138,7 +138,7 @@
 				</p>
 			{/if}
 			{#each transcript as entry, i (i)}
-				<pre class="entry {entry.kind}">{entry.text}</pre>
+				<pre class="entry kind-{entry.kind}">{entry.text}</pre>
 			{/each}
 		</div>
 	{/if}
@@ -211,16 +211,16 @@
 		white-space: pre-wrap;
 		word-break: break-word;
 	}
-	.entry.input {
+	.entry.kind-input {
 		color: var(--text-bright);
 	}
-	.entry.info {
+	.entry.kind-info {
 		color: var(--text-dim);
 	}
-	.entry.result {
+	.entry.kind-result {
 		color: var(--text);
 	}
-	.entry.error {
+	.entry.kind-error {
 		color: var(--bad);
 	}
 

@@ -329,7 +329,7 @@ export function addressLabel(fixture: Fixture): string {
 }
 
 /**
- * Where the implicit mode puts each parameter: one byte each, three for a color, in
+ * Where the implicit mode puts each parameter: one byte each, one per emitter for a color, in
  * the order the type lists them. `null` for anything that takes no DMX channel — an
  * input, or a parameter on a module port.
  *
@@ -346,14 +346,19 @@ export function implicitChannels(parameters: ParameterDefinition[]): (number | n
 	return parameters.map((parameter) => {
 		if (parameter.direction === 'Input' || parameter.binding !== null) return null;
 		const start = next;
-		next += isColorValue(parameter.default_value) ? 3 : 1;
+		next += implicitWidth(parameter);
 		return start;
 	});
 }
 
-/** Whether a parameter's resting value is a color, which is three bytes and not one. */
-function isColorValue(value: ParameterValue): boolean {
-	return value.type === 'Color';
+/**
+ * How many bytes a parameter takes in the implicit mode: one per emitter for a color,
+ * three where it names none, and one for anything else. `implicit_width` in the schema
+ * is the authority.
+ */
+export function implicitWidth(parameter: ParameterDefinition): number {
+	if (parameter.default_value.type !== 'Color') return 1;
+	return Math.max(1, parameter.emitters.length || 3);
 }
 
 // ── Modes ─────────────────────────────────────────────────────────────────────

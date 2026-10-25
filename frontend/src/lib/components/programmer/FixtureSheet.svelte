@@ -43,7 +43,43 @@
 	import { setPresetValue } from '$lib/stores/programmer.js';
 	import { output, watching } from '$lib/stores/output.js';
 	import { byKey, setValue } from '$lib/stores/programmer.js';
-	import { select, selected, selection } from '$lib/stores/selection.js';
+	import { select, selectIds, selected, selection, toggle } from '$lib/stores/selection.js';
+	import { rangeOf } from '$lib/selection.js';
+	import { lasso } from '$lib/lasso.js';
+	import { get } from 'svelte/store';
+
+	/**
+	 * Picking from the list the way a file list picks: a click is one, Ctrl or Cmd
+	 * adds or takes one out, Shift takes the range from the last click, and a lasso
+	 * dragged over the rows takes what it touches — added to what was picked with
+	 * Shift, Ctrl or Cmd held.
+	 */
+	let anchor = $state<string | null>(null);
+	const order = () => rows.map((f) => f.id);
+	/** The rows a lasso is over while it is dragged; selected when it is let go. */
+	let lassoed = $state<Set<string>>(new Set());
+	const lassoOptions = {
+		onpreview: (ids: string[]) => {
+			lassoed = new Set(ids);
+		},
+		onselect: (ids: string[], additive: boolean) => {
+			const base = additive ? get(selection) : [];
+			selectIds([...base, ...ids.filter((id) => !base.includes(id))]);
+		}
+	};
+	function pick(event: MouseEvent, id: string) {
+		if (event.metaKey || event.ctrlKey) {
+			toggle(id);
+			anchor = id;
+		} else if (event.shiftKey && anchor) {
+			const range = rangeOf(order(), anchor, id);
+			if (range) selectIds(range);
+		} else {
+			select(id);
+			anchor = id;
+		}
+	}
+
 	import { getDataContext } from '$lib/ws/context.js';
 
 	const data = getDataContext();
@@ -367,7 +403,7 @@
 	{:else if columns.length === 0}
 		<p class="empty">These fixtures have no parameters anybody can set.</p>
 	{:else}
-		<div class="scroll">
+		<div class="scroll" use:lasso={lassoOptions}>
 			<table>
 				<thead>
 					<tr>
@@ -379,9 +415,14 @@
 				</thead>
 				<tbody>
 					{#each rows as fixture (fixture.id)}
-						<tr class:picked={$selected.has(fixture.id)}>
+						<tr class:picked={$selected.has(fixture.id)} class:lassoed={lassoed.has(fixture.id)} data-lasso-id={fixture.id}>
 							<th class="name">
-								<button class="row-name" onclick={() => select(fixture.id)}>{fixture.name}</button>
+								<div class="name-cell">
+								<button
+									class="row-name"
+									onclick={(e) => pick(e, fixture.id)}
+									title="Click to select · Ctrl/Cmd-click to add or remove · Shift-click for a range · drag a lasso over rows"
+								>{fixture.name}</button>
 								{#if cellsOf(fixture) > 0}
 									<button
 										class="cells-toggle"
@@ -390,6 +431,7 @@
 										title="Show each of its {cellsOf(fixture)} cells"
 									>{expanded.has(fixture.id) ? '▾' : '▸'} {cellsOf(fixture)}</button>
 								{/if}
+								</div>
 							</th>
 							{#each columns as column (column.key)}
 								{@const c = perCell(fixture, column.key)
@@ -725,19 +767,31 @@
 		z-index: 2;
 		background: var(--bg-panel);
 		max-width: 14rem;
+		text-align: left;
 	}
 	tbody th.name {
 		position: sticky;
 		border-bottom: 1px solid #ffffff08;
 		font-weight: 400;
 	}
+	/* The whole cell picks, not only the name's letters: the button fills it. */
+	.name-cell {
+		display: flex;
+		align-items: center;
+	}
 	.row-name {
+		flex: 1;
+		min-width: 0;
+		align-self: stretch;
+		text-align: left;
+		user-select: none;
 		background: none;
 		border: none;
 		color: var(--text-dim);
 		font: inherit;
 		cursor: pointer;
-		padding: 0;
+		/* The same height as a value cell, so the whole row's name column picks. */
+		padding: 4px 8px 4px 6px;
 		max-width: 13rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -760,6 +814,11 @@
 	}
 	tr.picked .row-name {
 		color: var(--text-bright);
+	}
+	/* Under a lasso that has not been let go yet: about to be picked. */
+	tr.lassoed th,
+	tr.lassoed td {
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
 	}
 
 	td {

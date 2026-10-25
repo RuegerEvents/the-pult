@@ -16,6 +16,7 @@ import TimelineInspector from '$lib/components/timeline/inspectors/TimelineInspe
 import { collection, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';
 import { consoleNow } from '$lib/ws/clock.js';
+import { uuid } from '$lib/uuid.js';
 
 const sequences = collection('sequences');
 const cues = collection('cues');
@@ -80,12 +81,12 @@ registerKind<Timeline>({
 		// timeline recording into the first's takes, is not what "duplicate" means.
 		await showData().timelines.create({
 			...timeline,
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name: copyName(timeline.name, get(timelines).map((t) => t.name)),
-			clips: timeline.clips.map((c) => ({ ...c, id: crypto.randomUUID() })),
-			events: timeline.events.map((e) => ({ ...e, id: crypto.randomUUID() })),
-			markers: timeline.markers.map((m) => ({ ...m, id: crypto.randomUUID() })),
-			tracks: timeline.tracks.map((t) => ({ ...t, id: crypto.randomUUID() })),
+			clips: timeline.clips.map((c) => ({ ...c, id: uuid() })),
+			events: timeline.events.map((e) => ({ ...e, id: uuid() })),
+			markers: timeline.markers.map((m) => ({ ...m, id: uuid() })),
+			tracks: timeline.tracks.map((t) => ({ ...t, id: uuid() })),
 			running: false,
 			anchor_ms: 0,
 			position_at_anchor_ms: 0,

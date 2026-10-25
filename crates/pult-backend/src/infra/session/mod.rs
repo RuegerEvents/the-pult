@@ -36,6 +36,8 @@ pub enum SessionCommand {
         reply: oneshot::Sender<Result<(), String>>,
     },
     Leave,
+    /// A page has the stations on the network on screen, or no longer has.
+    WatchNearby { session: Uuid, on: bool },
     Stop,
 }
 
@@ -63,6 +65,12 @@ impl SessionHandle {
     /// Local Network permission was never given. Discovery is a convenience for finding
     /// a station; joining one is a TCP connection, and nothing about a hot spare should
     /// rest on the convenience.
+    /// This page is showing the stations on the network, or has stopped. Browsing for
+    /// them runs only while some page is.
+    pub async fn watch_nearby(&self, session: Uuid, on: bool) {
+        let _ = self.0.send(SessionCommand::WatchNearby { session, on }).await;
+    }
+
     pub async fn join_at(&self, addr: SocketAddr) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         let _ = self.0.send(SessionCommand::JoinAt { addr, reply: tx }).await;
@@ -78,6 +86,11 @@ const SERVICE_TYPE: &str = "_pult._tcp.local.";
 /// advert exists only while a station leads one, and everything that reads it takes
 /// an advert to be a session somebody can join.
 const STATION_SERVICE: &str = "_pult-station._tcp.local.";
+/// How often a station on the network is asked again whether it is still there.
+const PROBE_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long it has to answer. A station on the same LAN answers in a millisecond; one
+/// that takes a second is not one an invitation would reach either.
+const PROBE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What an mDNS full name was discovered as.
 #[derive(Clone, Copy)]
@@ -116,7 +129,23 @@ pub struct SessionManager {
     /// The session id the station advert last said, so it is announced again only when
     /// that moves. Re-announcing on every state push would answer each discovery with
     /// an announcement, which is a discovery on every other station.
-    announced: Option<Option<Uuid>>,
+    announced: Option<(Option<Uuid>, bool)>,
+    /// Every station advert resolved, whether or not it answers. `state.nearby` is the
+    /// ones that did at their last probe: an advert says a station was there, and one
+    /// that stopped without withdrawing it — a crash, a pulled cable, a test run —
+    /// goes on being advertised until its record expires, which is the best part of an
+    /// hour. Listing those offered an Invite to a dozen consoles that did not exist.
+    candidates: HashMap<NodeId, NearbyStation>,
+    /// The pages showing the stations on the network. Browsing for them runs while
+    /// there is one and not otherwise: a view is asked for, never published, and a
+    /// station browsing for ever answered every other station's announcements for
+    /// ever — a few dozen of them in one test run starved each other's runtimes.
+    watchers: std::collections::HashSet<Uuid>,
+    browsing: bool,
+    /// Where the station browse's events are fed, once it is started.
+    station_events: mpsc::Sender<ServiceEvent>,
+    probes_tx: mpsc::Sender<(NodeId, String, bool)>,
+    probes_rx: mpsc::Receiver<(NodeId, String, bool)>,
     /// The address this station advertises itself at, where the session was told a
     /// cable; `None` advertises each interface's own address on that interface.
     ///
@@ -131,6 +160,11 @@ pub struct SessionManager {
     /// Where "am I the leader" is read by everything that acts on it. Told the moment
     /// the session changes, not on the reporter's tick: see [`Self::push_state`].
     net: crate::infra::net::NetHandle,
+    /// Ticks when this machine's addresses move, which a daemon does not survive — see
+    /// [`Self::renew_mdns`].
+    moved: tokio::sync::watch::Receiver<u64>,
+    /// The session advert as last registered, so a renewed daemon can say it again.
+    session_advert: Option<ServiceInfo>,
 }
 
 impl SessionManager {
@@ -145,6 +179,7 @@ impl SessionManager {
     ) -> (Self, SessionHandle) {
         let (tx, rx) = mpsc::channel(16);
         let (mdns_tx, mdns_rx) = mpsc::channel(64);
+        let (probes_tx, probes_rx) = mpsc::channel(64);
 
         let mdns = match ServiceDaemon::new() {
             Ok(d) => d,
@@ -180,8 +215,16 @@ impl SessionManager {
                         http_port,
                         show_name,
                         announced: None,
+                        candidates: HashMap::new(),
+                        watchers: Default::default(),
+                        browsing: false,
+                        station_events: mdns_tx.clone(),
+                        probes_tx,
+                        probes_rx,
                         advertise_at,
                         self_tx: tx.clone(),
+                        moved: net.address_changes(),
+                        session_advert: None,
                         net,
                     },
                     SessionHandle(tx),
@@ -189,22 +232,12 @@ impl SessionManager {
             }
         };
 
-        let stations_tx = mdns_tx.clone();
+        let station_events = mdns_tx.clone();
         std::thread::spawn(move || {
             while let Ok(event) = browse_receiver.recv() {
                 if mdns_tx.blocking_send(event).is_err() { break; }
             }
         });
-        match mdns.browse(STATION_SERVICE) {
-            Ok(stations) => {
-                std::thread::spawn(move || {
-                    while let Ok(event) = stations.recv() {
-                        if stations_tx.blocking_send(event).is_err() { break; }
-                    }
-                });
-            }
-            Err(e) => warn!("[session] mDNS browse for stations failed: {e}"),
-        }
 
         (
             SessionManager {
@@ -218,8 +251,16 @@ impl SessionManager {
                 http_port,
                 show_name,
                 announced: None,
+                candidates: HashMap::new(),
+                watchers: Default::default(),
+                browsing: false,
+                station_events,
+                probes_tx,
+                probes_rx,
                 advertise_at,
                 self_tx: tx.clone(),
+                moved: net.address_changes(),
+                session_advert: None,
                 net,
             },
             SessionHandle(tx),
@@ -243,9 +284,18 @@ impl SessionManager {
         // state is pushed on change, and this node's own id never changes.
         self.push_state().await;
         self.announce_station();
+        let mut reprobe = tokio::time::interval(PROBE_EVERY);
 
         loop {
             tokio::select! {
+                _ = reprobe.tick(), if self.browsing => {
+                    for station in self.candidates.values() {
+                        self.probe(station);
+                    }
+                }
+                Some((node, http_addr, answered)) = self.probes_rx.recv() => {
+                    self.probed(node, http_addr, answered).await;
+                }
                 cmd = self.rx.recv() => {
                     match cmd {
                         // The channel closing and being told to stop are the same
@@ -264,6 +314,7 @@ impl SessionManager {
                 event = self.mdns_rx.recv() => {
                     if let Some(event) = event { self.handle_mdns_event(event).await; }
                 }
+                Ok(()) = self.moved.changed() => self.renew_mdns(),
             }
         }
         // The daemon runs on a thread of its own, so dropping the manager is not
@@ -404,6 +455,15 @@ impl SessionManager {
                 self.push_state().await;
             }
 
+            SessionCommand::WatchNearby { session, on } => {
+                if on {
+                    self.watchers.insert(session);
+                } else {
+                    self.watchers.remove(&session);
+                }
+                self.set_browsing(!self.watchers.is_empty()).await;
+            }
+
             // Handled in `run`, which is where breaking out of the loop is possible.
             SessionCommand::Stop => {}
         }
@@ -417,7 +477,8 @@ impl SessionManager {
     /// again whenever that moves, so a console listing who could be invited does not
     /// offer the one that already came.
     fn announce_station(&mut self) {
-        if self.announced == Some(self.state.session_id) {
+        let said = (self.state.session_id, self.state.is_follower);
+        if self.announced == Some(said) {
             return;
         }
         let instance_name = format!("pult-station-{}", &self.node_id.0.to_string()[..8]);
@@ -426,24 +487,130 @@ impl SessionManager {
         props.insert("node_id".to_string(), self.node_id.0.to_string());
         props.insert("hostname".to_string(), gethostname());
         props.insert("show_name".to_string(), self.show_name.clone());
+        props.insert("sync_port".to_string(), self.sync_port.to_string());
+        props.insert("follows".to_string(), if self.state.is_follower { "1" } else { "0" }.to_string());
         props.insert(
             "session_id".to_string(),
             self.state.session_id.map(|id| id.to_string()).unwrap_or_default(),
         );
-        let info = match self.advertise_at {
-            Some(ip) => ServiceInfo::new(STATION_SERVICE, &instance_name, &hostname, IpAddr::V4(ip), self.http_port, props),
-            None => ServiceInfo::new(STATION_SERVICE, &instance_name, &hostname, (), self.http_port, props)
-                .map(ServiceInfo::enable_addr_auto),
+        // The addresses a peer can actually reach, named — never `enable_addr_auto`,
+        // which announces on every interface the machine has: two dozen on a Mac,
+        // tunnels and AirDrop's among them. A station is announced for as long as it
+        // runs, unlike a session, and a room of them each announcing on every
+        // interface swamped a test machine running a few dozen until none could
+        // accept a connection.
+        let addresses: Vec<IpAddr> = match self.advertise_at {
+            Some(ip) => vec![IpAddr::V4(ip)],
+            None => crate::infra::net::reachable_for(&self.net, &pult_schema::types::network::NetService::Session)
+                .into_iter()
+                .map(IpAddr::V4)
+                .collect(),
         };
+        if addresses.is_empty() {
+            debug!("[session] nowhere to announce this station yet");
+            return;
+        }
+        let info = ServiceInfo::new(STATION_SERVICE, &instance_name, &hostname, &addresses[..], self.http_port, props);
         match info.map(|info| self.mdns.register(info)) {
-            Ok(Ok(())) => self.announced = Some(self.state.session_id),
+            Ok(Ok(())) => self.announced = Some(said),
             Ok(Err(e)) => warn!("[session] mDNS register of this station failed: {e}"),
             Err(e) => warn!("[session] ServiceInfo::new for this station failed: {e}"),
         }
     }
 
+    /// Start again with a new daemon, because this machine's addresses moved.
+    ///
+    /// `mdns-sd` 0.13 does not survive that: a daemon up while a Mac went from wifi to
+    /// ethernet went on reporting what it had found as removed and never found it
+    /// again, while a fresh one found it at once. And the station advert names its
+    /// addresses, so without this it went on announcing the wifi's for as long as the
+    /// station ran. Everything this manager has said or asked for is said and asked
+    /// for again on the new one; what it has found stays, to be found again.
+    fn renew_mdns(&mut self) {
+        let mdns = match ServiceDaemon::new() {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("[session] cannot renew the mDNS daemon: {e}");
+                return;
+            }
+        };
+        let address = self
+            .net
+            .bind(
+                pult_schema::types::network::NetService::Session,
+                "session discovery",
+                self.net.prefs().session.as_deref(),
+            )
+            .unwrap_or(None);
+        self.advertise_at = crate::infra::net::restrict_mdns(&mdns, address);
+        let old = std::mem::replace(&mut self.mdns, mdns);
+        let _ = old.shutdown();
+        info!("[session] this machine's addresses moved; announcing and looking again");
+
+        match self.mdns.browse(SERVICE_TYPE) {
+            Ok(events) => self.forward(events),
+            Err(e) => warn!("[session] mDNS browse failed: {e}"),
+        }
+        if self.browsing {
+            match self.mdns.browse(STATION_SERVICE) {
+                Ok(events) => self.forward(events),
+                Err(e) => warn!("[session] mDNS browse for stations failed: {e}"),
+            }
+        }
+        if let Some(info) = self.session_advert.clone() {
+            if let Err(e) = self.mdns.register(info) {
+                warn!("[session] mDNS register failed: {e}");
+            }
+        }
+        self.announced = None;
+        self.announce_station();
+    }
+
+    /// Feed a browse's events to the manager, until its daemon is shut down.
+    fn forward(&self, events: mdns_sd::Receiver<ServiceEvent>) {
+        let tx = self.station_events.clone();
+        std::thread::spawn(move || {
+            while let Ok(event) = events.recv() {
+                if tx.blocking_send(event).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Start or stop looking for the other stations on the network.
+    async fn set_browsing(&mut self, on: bool) {
+        if on == self.browsing {
+            return;
+        }
+        if on {
+            match self.mdns.browse(STATION_SERVICE) {
+                Ok(events) => {
+                    self.forward(events);
+                    self.browsing = true;
+                }
+                Err(e) => warn!("[session] mDNS browse for stations failed: {e}"),
+            }
+        } else {
+            let _ = self.mdns.stop_browse(STATION_SERVICE);
+            self.browsing = false;
+            // What it found is forgotten with it: a list nobody is keeping up to date
+            // is a list of stations that may have gone.
+            self.candidates.clear();
+            self.advert_names.retain(|_, advert| !matches!(advert, Advert::Station(_)));
+            if !self.state.nearby.is_empty() {
+                self.state.nearby.clear();
+                self.push_state().await;
+            }
+        }
+    }
+
     /// A station advert, resolved: listed as nearby unless it is this one.
     async fn station_resolved(&mut self, info: &ServiceInfo) {
+        // A late answer to a browse that has been stopped.
+        if !self.browsing {
+            return;
+        }
         let props = info.get_properties();
         let Some(node_id) = props.get("node_id").and_then(|v| v.val_str().parse::<Uuid>().ok()).map(NodeId) else {
             return;
@@ -454,21 +621,66 @@ impl SessionManager {
         let Some(http_addr) = reachable_at(info.get_addresses().iter().copied(), info.get_port()).first().copied() else {
             return;
         };
+        let sync_addr = props
+            .get("sync_port")
+            .and_then(|v| v.val_str().parse::<u16>().ok())
+            .map(|port| SocketAddr::new(http_addr.ip(), port).to_string())
+            .unwrap_or_default();
         let station = NearbyStation {
             node_id,
             hostname: props.get("hostname").map(|v| v.val_str().to_string()).unwrap_or_default(),
             http_addr: http_addr.to_string(),
+            sync_addr,
+            follows: props.get("follows").is_some_and(|v| v.val_str() == "1"),
             show_name: props.get("show_name").map(|v| v.val_str().to_string()).unwrap_or_default(),
             session_id: props.get("session_id").and_then(|v| v.val_str().parse::<Uuid>().ok()),
         };
         self.advert_names.insert(info.get_fullname().to_string(), Advert::Station(node_id));
-        match self.state.nearby.iter_mut().find(|s| s.node_id == node_id) {
-            Some(known) if *known == station => return,
-            Some(known) => *known = station,
-            None => {
+        // A station is resolved again every time any daemon on the network answers for
+        // it, which on a busy network is several times a second. Asked at once only
+        // when it is new or has moved; otherwise the next round of probes covers it,
+        // and a probe per answer was a connection storm with a few dozen stations.
+        let moved = self.candidates.get(&node_id) != Some(&station);
+        if moved {
+            self.probe(&station);
+        }
+        self.candidates.insert(node_id, station);
+    }
+
+    /// Ask whether a station answers at its HTTP port, off this actor: the answer comes
+    /// back on `probes_rx`.
+    fn probe(&self, station: &NearbyStation) {
+        let tx = self.probes_tx.clone();
+        let (node, http_addr) = (station.node_id, station.http_addr.clone());
+        tokio::spawn(async move {
+            let answered = matches!(
+                tokio::time::timeout(PROBE_WAIT, tokio::net::TcpStream::connect(&http_addr)).await,
+                Ok(Ok(_))
+            );
+            let _ = tx.send((node, http_addr, answered)).await;
+        });
+    }
+
+    /// A probe came back: list the station if it answered, and take it off if not.
+    async fn probed(&mut self, node: NodeId, http_addr: String, answered: bool) {
+        // An answer about an address the station has since moved from, or a station
+        // whose advert has since been withdrawn, says nothing about it now.
+        let Some(station) = self.candidates.get(&node).filter(|s| s.http_addr == http_addr).cloned() else {
+            return;
+        };
+        let listed = self.state.nearby.iter().position(|s| s.node_id == node);
+        match (answered, listed) {
+            (true, Some(i)) if self.state.nearby[i] == station => return,
+            (true, Some(i)) => self.state.nearby[i] = station,
+            (true, None) => {
                 info!("[session] station {} on the network at {http_addr}", station.hostname);
                 self.state.nearby.push(station);
             }
+            (false, Some(i)) => {
+                debug!("[session] station {} stopped answering at {http_addr}", station.hostname);
+                self.state.nearby.remove(i);
+            }
+            (false, None) => return,
         }
         self.push_state().await;
     }
@@ -487,6 +699,7 @@ impl SessionManager {
             if let Err(e) = self.mdns.unregister(&fullname) {
                 debug!("[session] mDNS unregister: {e}");
             }
+            self.session_advert = None;
             info!("[session] stopped advertising");
         }
     }
@@ -509,8 +722,9 @@ impl SessionManager {
                 .map(ServiceInfo::enable_addr_auto),
         };
         match info {
-            Ok(info) => match self.mdns.register(info) {
+            Ok(info) => match self.mdns.register(info.clone()) {
                 Ok(()) => {
+                    self.session_advert = Some(info);
                     info!("[session] advertising session {session_id}");
                     self.state.is_advertising = true;
                     self.state.session_id = Some(session_id);
@@ -592,6 +806,7 @@ impl SessionManager {
                     self.push_state().await;
                 }
                 Some(Advert::Station(node)) => {
+                    self.candidates.remove(&node);
                     self.state.nearby.retain(|s| s.node_id != node);
                     debug!("[session] station {} went away", node.0);
                     self.push_state().await;

@@ -27,6 +27,7 @@ import {
 } from '$lib/layout.js';
 import { DEFAULT_PRESET, presetByKey } from '$lib/layout/presets.js';
 import { collection, showData } from './show.js';
+import { uuid } from '$lib/uuid.js';
 
 export type Active = { kind: 'preset'; key: string } | { kind: 'show'; id: string };
 
@@ -117,7 +118,7 @@ export async function save(): Promise<void> {
 }
 
 export async function saveAs(name: string): Promise<void> {
-	const id = crypto.randomUUID();
+	const id = uuid();
 	await showData().layouts.create({ id, name, tree: get(tree) });
 	active.set({ kind: 'show', id });
 	dirty.set(false);

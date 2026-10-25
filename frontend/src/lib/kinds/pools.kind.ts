@@ -20,6 +20,7 @@ import { collection, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';
 import GroupInspector from '$lib/components/pools/GroupInspector.svelte';
 import PresetInspector from '$lib/components/pools/PresetInspector.svelte';
+import { uuid } from '$lib/uuid.js';
 
 const groups = collection('groups');
 const presets = collection('presets');
@@ -38,7 +39,7 @@ registerKind<Group>({
 	duplicate: async (group) => {
 		await showData().groups.create({
 			...group,
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name: copyName(group.name, get(groups).map((g) => g.name))
 		});
 	},
@@ -63,7 +64,7 @@ registerKind<Preset>({
 	duplicate: async (preset) => {
 		await showData().presets.create({
 			...preset,
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name: copyName(preset.name, get(presets).map((p) => p.name))
 		});
 	},

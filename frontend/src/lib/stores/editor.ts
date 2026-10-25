@@ -29,6 +29,7 @@ import { IDENTITY, localOf, parentWorld, worldTransform } from '$lib/scene.js';
 import { beginGesture, endGesture } from './gesture.js';
 import { collection, showData } from './show.js';
 import { layers, sceneObjects } from './scene.js';
+import { uuid } from '$lib/uuid.js';
 
 /** What a new layer is called when a show that has none gets its first piece. */
 export const DEFAULT_LAYER = 'Stage';
@@ -61,7 +62,7 @@ export async function stageLayer(): Promise<string> {
 	const existing = get(layers);
 	if (existing.length > 0) return existing[0].id;
 
-	const id = crypto.randomUUID();
+	const id = uuid();
 	await showData().layers.create({
 		id,
 		name: DEFAULT_LAYER,
@@ -82,7 +83,7 @@ export async function placePiece(
 
 	return asOneAct(async () => {
 		const layer = await stageLayer();
-		const id = crypto.randomUUID();
+		const id = uuid();
 		await showData().scene_objects.create({
 			id,
 			name: options.name ?? nextName(entry.title),
@@ -219,7 +220,7 @@ export async function duplicateObjects(ids: Set<string>, step: number): Promise<
 
 	// Fresh ids first, so a child's `parent` can point at its copy rather than at the
 	// original — which is what makes a copied run move as a run.
-	const fresh = new Map(copying.map((object) => [object.id, crypto.randomUUID()]));
+	const fresh = new Map(copying.map((object) => [object.id, uuid()]));
 	const over = step > 0 ? step : 0.5;
 
 	return asOneAct(async () => {
@@ -245,7 +246,7 @@ export async function duplicateObjects(ids: Set<string>, step: number): Promise<
 		for (const fixture of fixturesOn(wanted, fixtures)) {
 			const copy: Fixture = {
 				...fixture,
-				id: crypto.randomUUID(),
+				id: uuid(),
 				parent: fresh.get(fixture.parent!) ?? fixture.parent,
 				address: afterTheRest(fixture, patched, types),
 				fixture_number: null,

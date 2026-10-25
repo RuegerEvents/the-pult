@@ -16,8 +16,11 @@ import {
 	NO_ORDER,
 	normalize,
 	parseCellSpans,
+	rangeOf,
 	sortSelection,
-	type SelectionQuery
+	type SelectionQuery,
+	withId,
+	withoutId
 } from './selection.js';
 import { at as placedAt } from './scene.js';
 import { aFixture, aFixtureType } from './test-fixtures.js';
@@ -424,5 +427,44 @@ describe('typing a cell sub-selection', () => {
 	});
 	it('writes back what it reads', () => {
 		expect(cellSpansText([{ from: 1, to: 20 }, { from: 5, to: 5 }])).toBe('1-20, 5');
+	});
+});
+
+describe('picking by hand, and taking back', () => {
+	const picks = (q: SelectionQuery) => evaluate(q, rig);
+
+	it('takes a hand-picked light out of its list rather than dropping it', () => {
+		const one = idsQuery(['Front 1']);
+		expect(withoutId(one, 'Front 1', picks).clauses).toEqual([]);
+		const two = idsQuery(['Front 1', 'Front 2']);
+		expect(withoutId(two, 'Front 1', picks).clauses).toEqual([
+			{ combine: 'Add', term: { kind: 'Ids', ids: ['Front 2'] } }
+		]);
+	});
+
+	it('drops a light only when something else still picks it', () => {
+		const named = query({ clauses: [{ combine: 'Add', term: { kind: 'Named', text: 'front' } }] });
+		const less = withoutId(named, 'Front 1', picks);
+		expect(less.clauses[1]).toEqual({ combine: 'Drop', term: { kind: 'Ids', ids: ['Front 1'] } });
+		expect(picks(less)).not.toContain('Front 1');
+	});
+
+	it('puts a dropped light back by taking back the drop', () => {
+		const named = query({ clauses: [{ combine: 'Add', term: { kind: 'Named', text: 'front' } }] });
+		const back = withId(withoutId(named, 'Front 1', picks), 'Front 1', picks);
+		expect(back.clauses).toEqual(named.clauses);
+	});
+
+	it('adds onto the trailing hand-picked list', () => {
+		expect(withId(idsQuery(['Front 1']), 'Front 3', picks).clauses).toEqual([
+			{ combine: 'Add', term: { kind: 'Ids', ids: ['Front 1', 'Front 3'] } }
+		]);
+	});
+
+	it('picks a range in list order, either way', () => {
+		const order = ['a', 'b', 'c', 'd'];
+		expect(rangeOf(order, 'b', 'd')).toEqual(['b', 'c', 'd']);
+		expect(rangeOf(order, 'c', 'a')).toEqual(['c', 'b', 'a']);
+		expect(rangeOf(order, 'x', 'a')).toBeNull();
 	});
 });

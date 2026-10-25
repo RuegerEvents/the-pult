@@ -40,6 +40,7 @@
 	import { collection } from '$lib/stores/show.js';
 	import { fixtureTint } from '$lib/stage.js';
 	import { output } from '$lib/stores/output.js';
+	import { uuid } from '$lib/uuid.js';
 
 	const data = getDataContext();
 	const fixtures = collection('fixtures');
@@ -122,7 +123,7 @@
 	async function saveGroup() {
 		const name = groupName.trim();
 		if (!name) return;
-		await data.groups.create({ id: crypto.randomUUID(), name, query: asSavedQuery(), color: null });
+		await data.groups.create({ id: uuid(), name, query: asSavedQuery(), color: null });
 		groupName = '';
 		naming = false;
 	}

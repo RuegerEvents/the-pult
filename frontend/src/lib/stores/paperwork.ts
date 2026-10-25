@@ -36,6 +36,7 @@ import type {
 } from '../generated/index.js';
 import { beginGesture, endGesture } from './gesture.js';
 import { collection, showData } from './show.js';
+import { uuid } from '$lib/uuid.js';
 
 /** Every sheet, in the order the export writes them. */
 export const sheets: Readable<Sheet[]> = derived(collection('sheets'), ($sheets) =>
@@ -78,7 +79,7 @@ function sheetById(id: string): Sheet | undefined {
 /** A new, empty sheet at the end of the set. */
 export async function addSheet(name = 'New sheet'): Promise<string> {
 	const existing = get(sheets);
-	const id = crypto.randomUUID();
+	const id = uuid();
 	await asOneAct(async () => {
 		await showData().sheets.create({
 			id,
@@ -98,7 +99,7 @@ export async function addSheet(name = 'New sheet'): Promise<string> {
 export async function duplicateSheet(id: string): Promise<string | null> {
 	const sheet = sheetById(id);
 	if (!sheet) return null;
-	const copy = crypto.randomUUID();
+	const copy = uuid();
 	await asOneAct(async () => {
 		await showData().sheets.create({
 			...sheet,

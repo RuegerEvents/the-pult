@@ -12,19 +12,19 @@
 	 * same as a flow's own writes. See `types::variable`.
 	 */
 
-	import { focusOnMount } from '$lib/actions.js';
+	import NameDialog from './NameDialog.svelte';
 	import type { Variable, VariableKind } from '$lib/generated/index.js';
 	import { currentValue, variableLabel } from '$lib/flow.js';
 	import { collection } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
+	import { uuid } from '$lib/uuid.js';
 
 	const data = getDataContext();
 	const client = getClientContext();
 	const variables = collection('variables');
 
 	let creating = $state(false);
-	let newName = $state('');
 	let newKind = $state<VariableKind>('Number');
 	let problem = $state<string | null>(null);
 
@@ -42,11 +42,10 @@
 	const reset = (v: Variable) => ask('variable.reset', { variableId: v.id });
 	const setTo = (v: Variable, value: number) => ask('variable.set', { variableId: v.id, value });
 
-	async function createVariable() {
-		const name = newName.trim();
+	async function createVariable(name: string) {
 		if (!name) return;
 		await data.variables.create({
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name,
 			kind: newKind,
 			initial: 0,
@@ -55,8 +54,6 @@
 			max: null,
 			value: null
 		});
-		newName = '';
-		creating = false;
 	}
 
 	const bound = (text: string) => (text.trim() === '' ? null : Number(text));
@@ -66,21 +63,22 @@
 	<header class="head">
 		<h2>Variables</h2>
 		{#if $canEdit}
-			<button class="btn btn-ghost" onclick={() => (creating = !creating)}>
-				{creating ? 'Cancel' : '+ Variable'}
-			</button>
+			<button class="btn btn-ghost" onclick={() => (creating = true)}>+ Variable</button>
 		{/if}
 	</header>
 
-	{#if creating && $canEdit}
-		<form class="new" onsubmit={(e) => { e.preventDefault(); createVariable(); }}>
-			<input class="input" placeholder="Name, e.g. Area 2 inside" bind:value={newName} use:focusOnMount />
-			<select class="input" bind:value={newKind}>
+	{#if creating}
+		<NameDialog
+			title="New variable"
+			placeholder="Name, e.g. Area 2 inside"
+			onsubmit={createVariable}
+			onclose={() => (creating = false)}
+		>
+			<select class="input" bind:value={newKind} aria-label="What it holds">
 				<option value="Number">a number</option>
 				<option value="Flag">on or off</option>
 			</select>
-			<button class="btn btn-primary" type="submit">Create</button>
-		</form>
+		</NameDialog>
 	{/if}
 
 	{#if problem}<p class="problem">{problem}</p>{/if}
@@ -190,7 +188,6 @@
 	.variables { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
 	.head { display: flex; align-items: center; justify-content: space-between; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
-	.new { display: flex; gap: 6px; flex-wrap: wrap; }
 	.variable { border: 1px solid #2e2e2e; border-left: 3px solid #3a3a3a; border-radius: 4px; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
 	.variable.on { border-left-color: #22c55e; }
 	.top { display: flex; align-items: center; gap: 8px; }

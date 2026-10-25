@@ -1,0 +1,83 @@
+/*
+ * The top bar, in two shapes.
+ *
+ * It had grown eight: a bordered menu, a pill, a raised button, a ghost button, a
+ * bordered search field, a lock, a bordered user chip and a colored word. Every new
+ * thing in the bar copied whichever neighbor it was written beside, which is how
+ * that happens. So there are two, and anything new is one of them:
+ *
+ * `.tb-menu` is a word with a caret, and the caret always opens a menu. `.tb-icon` is
+ * an icon, its name in the tooltip, and it does one thing when pressed. A button that
+ * needs its word to be found (Setup) is a `.tb-icon` with a label beside the icon.
+ */
+
+.tb-menu,
+.tb-icon {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 30px;
+	border: none;
+	border-radius: 6px;
+	background: none;
+	font: inherit;
+	font-size: var(--font-sm);
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.tb-menu {
+	padding: 0 10px;
+	color: var(--text);
+	font-weight: 500;
+}
+
+.tb-icon {
+	justify-content: center;
+	min-width: 30px;
+	padding: 0 7px;
+	color: var(--text-dim);
+}
+
+.tb-menu:hover,
+.tb-menu[aria-expanded='true'],
+.tb-icon:hover,
+.tb-icon.on {
+	background: var(--bg-hover);
+	color: var(--text-bright);
+}
+
+.tb-icon:disabled {
+	opacity: 0.4;
+	cursor: default;
+	background: none;
+}
+
+.tb-caret {
+	color: var(--text-faint);
+	font-size: 9px;
+}
+
+/* What a menu's subject is doing, in a quieter voice beside its name. */
+.tb-sub {
+	color: var(--text-faint);
+	font-weight: 400;
+	font-size: var(--font-xs);
+}
+
+.tb-sep {
+	flex: none;
+	width: 1px;
+	height: 20px;
+	background: var(--line-strong);
+	margin: 0 4px;
+}
+
+.tb-icon kbd {
+	font: inherit;
+	font-size: 10px;
+	color: var(--text-faint);
+	border: 1px solid var(--line-strong);
+	border-radius: 3px;
+	padding: 0 4px;
+}

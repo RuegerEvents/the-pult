@@ -92,6 +92,8 @@ pub struct Patch {
     /// The sequences' playback faders. Beside the patch rather than folded into the
     /// fades, because a fader moving must not rewrite a fade a node is running.
     masters: Masters,
+    /// Whether a playing take records a sequence's level, so a frame has to sample it.
+    recorded_levels: bool,
     /// Where each driven parameter is in `tracks`, so a frame does not scan every key
     /// of every playing recording once per fixture.
     ///
@@ -166,6 +168,7 @@ impl Patch {
             tracks: Vec::new(),
             track_index: HashMap::new(),
             masters: Masters::default(),
+            recorded_levels: false,
         };
         patch.settles_at = patch.work_out_when_it_settles();
         (patch.placed, patch.universes) = patch.place_channels();
@@ -195,9 +198,27 @@ impl Patch {
                 }
             }
         }
+        self.recorded_levels = index
+            .values()
+            .any(|keys| keys.contains_key(pult_schema::types::sequence::LEVEL_KEY));
         self.tracks = tracks;
         self.track_index = index;
         self
+    }
+
+    /// The sequences' levels at `now_ms`: the faders, with whatever a playing take
+    /// recorded put over them. Sampled per frame, because a recorded fade moves between
+    /// the pushes that bring the faders.
+    pub fn masters_at(&self, now_ms: u64) -> std::borrow::Cow<'_, Masters> {
+        if !self.recorded_levels {
+            return std::borrow::Cow::Borrowed(&self.masters);
+        }
+        std::borrow::Cow::Owned(self.masters.with_recorded(|sequence| {
+            match self.track_at(sequence, pult_schema::types::sequence::LEVEL_KEY)?.value_at(now_ms)? {
+                ParameterValue::Float(level) => Some(*level),
+                _ => None,
+            }
+        }))
     }
 
     /// The sequences' faders, taken after construction the way the playing tracks are.
@@ -320,20 +341,20 @@ impl Patch {
     }
 
     /// What is acting on one parameter of one fixture, highest priority first.
-    pub fn driving<'a>(&'a self, fixture: &'a Fixture, key: &str) -> pult_render::Driving<'a> {
+    pub fn driving<'a>(&'a self, fixture: &'a Fixture, key: &str, now_ms: u64) -> pult_render::Driving<'a> {
         let held = self
             .held
             .get(&(fixture.id, key.to_string()))
             .and_then(|at| self.programmer.get(*at));
         pult_render::Driving {
             track: self.track_at(fixture.id, key),
-            ..driving(fixture, self.fixture_type(fixture), held, key, &self.masters)
+            ..driving(fixture, self.fixture_type(fixture), held, key, &self.masters_at(now_ms))
         }
     }
 
     /// What one parameter is putting out at `now_ms`.
     pub fn value_at(&self, fixture: &Fixture, key: &str, now_ms: u64) -> Option<ParameterValue> {
-        pult_render::value_at(&self.driving(fixture, key), now_ms)
+        pult_render::value_at(&self.driving(fixture, key, now_ms), now_ms)
     }
 
     /// Read a set of received universes back into parameter values.
@@ -474,6 +495,7 @@ pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Univer
         .map(|number| (*number, Universe::new(*number)))
         .collect();
 
+    let masters = patch.masters_at(now_ms);
     for parameter in &patch.placed {
         // Nowhere for any of this parameter's bytes to go, so it is never evaluated.
         // The map is the filter: every placed channel's universe came from a break
@@ -492,7 +514,7 @@ pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Univer
                 patch.fixture_type(fixture),
                 parameter.held.and_then(|at| patch.programmer.get(at)),
                 &parameter.key,
-                &patch.masters,
+                &masters,
             )
         };
         let value = pult_render::value_at(&driving, now_ms);

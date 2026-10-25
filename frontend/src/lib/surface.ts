@@ -29,6 +29,7 @@ import { rgbToHex } from './programmer.js';
 import type { PultWsClient } from './ws/client.js';
 import { offer } from './stores/learn.js';
 import type { DataRoot } from './ws/data.js';
+import { uuid } from '$lib/uuid.js';
 
 /** What a surface's tiles can point at: the show, as far as a surface reads it. */
 export type SurfaceShow = {
@@ -247,7 +248,7 @@ export function timelinePosition(timeline: Timeline, now: number | null): number
 // ── Editing a tile list ───────────────────────────────────────────────────────
 
 /** A tile pointing at the first thing of its kind the show has, or `null` if it has none. */
-export function newTile(kind: TileKind, show: SurfaceShow, id: string = crypto.randomUUID()): SurfaceTile | null {
+export function newTile(kind: TileKind, show: SurfaceShow, id: string = uuid()): SurfaceTile | null {
 	const target = defaultTarget(kind, show);
 	if (!target) return null;
 	return {

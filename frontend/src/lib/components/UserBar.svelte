@@ -11,6 +11,16 @@
 	import { addUser, beUser, currentUser, hasChosen, signOut, users, userId } from '$lib/stores/user.js';
 	import { redo, undo } from '$lib/stores/undo.js';
 	import { focusOnMount } from '$lib/actions.js';
+	import Undo2 from '@lucide/svelte/icons/undo-2';
+	import Redo2 from '@lucide/svelte/icons/redo-2';
+
+	/** One or two letters for the badge: the initials of a name, or its first two. */
+	function initials(name: string): string {
+		const words = name.trim().split(/\s+/).filter(Boolean);
+		if (words.length === 0) return '?';
+		if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+		return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+	}
 
 	let open = $state(false);
 	let adding = $state(false);
@@ -27,38 +37,30 @@
 <div class="userbar">
 	<!-- Never disabled: a show always has an operator, so there is always somebody
 	     whose last change this takes back. -->
-	<button
-		class="chip undo"
-		title="Take back your last change (Ctrl-Z)"
-		aria-label="Undo"
-		onclick={undo}
-	>↶</button>
-	<button
-		class="chip undo"
-		title="Put back your last undo (Ctrl-Shift-Z)"
-		aria-label="Redo"
-		onclick={redo}
-	>↷</button>
+	<button class="tb-icon" title="Take back your last change (Ctrl-Z)" aria-label="Undo" onclick={undo}>
+		<Undo2 size={16} />
+	</button>
+	<button class="tb-icon" title="Put back your last undo (Ctrl-Shift-Z)" aria-label="Redo" onclick={redo}>
+		<Redo2 size={16} />
+	</button>
 
 	<!-- Marked while nobody has said who they are. Not because anything is broken —
 	     changes are attributed and undoable either way — but because until somebody
 	     says, every unsaid console is sharing one operator's undo history, and that
 	     is worth finding out before two people discover it by pressing Ctrl-Z. -->
 	<button
-		class="chip who"
+		class="tb-icon who"
 		class:unsaid={!$hasChosen}
+		aria-label="Who is at this console"
+		aria-expanded={open}
 		title={$hasChosen
 			? 'Working as ' + (($currentUser && $currentUser.name) || 'somebody who is no longer in the show')
 			: 'Working as the shared operator — say who you are to get your own undo history'}
 		onclick={() => (open = !open)}
 	>
-		{#if $currentUser}
-			<span class="dot" style:background={$currentUser.color}></span>
-			{$currentUser.name}
-			{#if !$hasChosen}<span class="ask">— who are you?</span>{/if}
-		{:else}
-			Who are you?
-		{/if}
+		<span class="avatar" style:background={$currentUser?.color ?? undefined}>
+			{$currentUser ? initials($currentUser.name) : '?'}
+		</span>
 	</button>
 
 	{#if open}
@@ -97,46 +99,26 @@
 		gap: 4px;
 	}
 
-	.chip {
-		background: none;
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius);
-		color: var(--text-dim);
-		font: inherit;
-		font-size: var(--font-xs);
-		padding: 3px 8px;
-		cursor: pointer;
-	}
-	.chip:hover:not(:disabled) {
-		border-color: var(--line-input);
-		color: var(--text-bright);
-	}
-	.chip:disabled {
-		opacity: 0.4;
-		cursor: default;
-	}
-
-	.undo {
-		font-size: 13px;
-		line-height: 1;
-		padding: 2px 7px;
-	}
-
-	.who {
+	.avatar {
 		display: inline-flex;
 		align-items: center;
-		gap: 6px;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: var(--bg-raised);
+		color: #fff;
+		font-size: 10px;
+		font-weight: 700;
+		letter-spacing: 0.02em;
+		text-shadow: 0 1px 1px rgb(0 0 0 / 0.5);
 	}
 	/* Nobody having said is not an error — changes are attributed and undoable
 	   either way — but it does mean this console shares an undo history with every
 	   other one that has not said, which is worth noticing before two operators
-	   find out by pressing Ctrl-Z. */
-	.who.unsaid {
-		border-color: var(--live);
-		color: var(--live);
-	}
-	.ask {
-		opacity: 0.75;
+	   find out by pressing Ctrl-Z. So the badge wears a ring until somebody says. */
+	.who.unsaid .avatar {
+		box-shadow: 0 0 0 2px var(--live);
 	}
 
 	.dot {

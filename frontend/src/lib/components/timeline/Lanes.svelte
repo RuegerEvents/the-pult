@@ -23,6 +23,12 @@
 	 * the drag began — `stores/editor.ts`'s rule for dragging a truss. Several things
 	 * dragged together move by one amount and stop together at the top; a clip's edge
 	 * trims, and only when it is the one thing picked up.
+	 *
+	 * **The end is cropped where it is drawn.** A handle on the ruler: drag it, and
+	 * everything past it goes dark, so what is shaded is what does not play. A timeline
+	 * with no end has a faint one waiting where its content runs out; dragging that is
+	 * how an end gets made. A click on it asks whether the end stops, goes round, or is
+	 * taken away. Typing a time in the Inspector is still there for the exact number.
 	 */
 
 	import { onMount } from 'svelte';
@@ -31,16 +37,16 @@
 	import ZoomOut from '@lucide/svelte/icons/zoom-out';
 	import Maximize from '@lucide/svelte/icons/maximize-2';
 
-	import type { AudioClip, AudioDestination, Detected, GridSegment, Marker, Timeline } from '$lib/generated/index.js';
+	import type { AtEnd, AudioClip, AudioDestination, Detected, GridSegment, Marker, Timeline } from '$lib/generated/index.js';
 	import { audioNodes, destinationText } from '$lib/destination.js';
 	import { clearSubject, openMenu, selectSubject, subject, type ObjectRef } from '$lib/objects.js';
 	import { displayLabel, parameterKey } from '$lib/patch.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { peaksFor } from '$lib/stores/peaks.js';
-	import { collection } from '$lib/stores/show.js';
+	import { collection, showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { outlines, wantOutline } from '$lib/stores/takeOutlines.js';
-	import { audioStatus, current, devices, locate, positionOf, writeColumns } from '$lib/stores/timelines.js';
+	import { audioStatus, current, devices, locate, positionOf, toggle, writeColumns } from '$lib/stores/timelines.js';
 	import { zones } from '$lib/stores/zones.js';
 	import { describeAction } from '$lib/timeline/describe.js';
 	import {
@@ -79,14 +85,46 @@
 	} from '$lib/waveform.js';
 	import { consoleNow } from '$lib/ws/clock.js';
 	import { pinchStart, pinchView, wheelZoomFactor, type PinchStart } from '$lib/timeline/pinch.js';
+	import { uuid } from '$lib/uuid.js';
 
 	type Props = {
 		timeline: Timeline;
 		/** The detector's proposal, drawn over the grid while it is being considered. */
 		proposal: Detected | null;
 		snapping: boolean;
+		/** Sound files dragged in from the desktop, and where on the timeline they landed. */
+		ondropfiles?: (files: File[], atMs: number) => void;
 	};
-	let { timeline, proposal, snapping }: Props = $props();
+	let { timeline, proposal, snapping, ondropfiles }: Props = $props();
+
+	/** Files over the lanes: shown, so a drop is aimed rather than hoped for. */
+	let dropping = $state(false);
+	const carriesFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+	function onDragOver(e: DragEvent) {
+		if (!ondropfiles || !$canEdit || !carriesFiles(e)) return;
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+		dropping = true;
+	}
+	function onDrop(e: DragEvent) {
+		dropping = false;
+		if (!ondropfiles || !$canEdit || !carriesFiles(e)) return;
+		e.preventDefault();
+		const files = [...(e.dataTransfer?.files ?? [])];
+		if (files.length === 0) return;
+		const { x } = pointerAt(e);
+		ondropfiles(files, Math.max(0, Math.round(snapped(msOf(x, view, width)))));
+	}
+
+	/** A marker at the playhead, for M and the + Marker button. */
+	export async function markerAtPlayhead() {
+		const live = current(timeline.id);
+		if (!live || !$canEdit) return;
+		const id = uuid();
+		const at = Math.round(playhead() ?? 0);
+		await writeColumns(timeline.id, { markers: [...live.markers, { id, at_ms: at, name: `Marker ${live.markers.length + 1}` }] });
+		selectSubject({ kind: 'timeline-marker', id });
+	}
 
 	const sequences = collection('sequences');
 	const cues = collection('cues');
@@ -118,8 +156,11 @@
 		  }
 		| { mode: 'band'; x0: number; y0: number; x1: number; y1: number; additive: boolean; before: ObjectRef[] }
 		| { mode: 'scrub' }
+		| { mode: 'end'; x: number; then: AtEnd; moved: boolean }
 		| { mode: 'pinch'; start: PinchStart };
 	let drag = $state<Drag | null>(null);
+	/** The end's own menu, open under its handle. */
+	let endMenu = $state<{ x: number } | null>(null);
 	/** Fingers on the glass, by pointer id: two of them is a pinch. */
 	const touches = new Map<number, { x: number; y: number }>();
 	let longPress: ReturnType<typeof setTimeout> | null = null;
@@ -154,6 +195,30 @@
 		// past it; and never under ten seconds, so an empty timeline still has a ruler.
 		return Math.max(10_000, Math.ceil(Math.max(sounding, written) * 1.15));
 	});
+
+	/** Where the content runs out: the last sound, event or marker. Where a new end waits. */
+	const contentEndMs = $derived.by(() => {
+		const written = Math.max(0, ...timeline.events.map((e) => e.at_ms), ...timeline.markers.map((m) => m.at_ms));
+		const sounding = Math.max(0, ...timeline.clips.filter((c) => !c.looped).map((c) => clipSpan(c, fileMs(c), 0).toMs));
+		return Math.max(written, sounding) || 10_000;
+	});
+
+	/** Where the end handle is: the end, or where one would go. */
+	const endHandleMs = $derived(timeline.end?.at_ms ?? contentEndMs);
+
+	/** How near the handle, on the screen, a press on the ruler takes it: the tab, which
+	 * hangs to the left of the line, and a little either side. */
+	const END_GRIP_PX = 8;
+	const END_TAB_PX = 48;
+	function onEndHandle(x: number, y: number): boolean {
+		const at = xOf(endHandleMs, view, width);
+		return y < RULER_H && x >= at - END_TAB_PX && x <= at + END_GRIP_PX;
+	}
+
+	function setEnd(end: Timeline['end']) {
+		endMenu = null;
+		void showData().timelines.byId(timeline.id).end.set(end);
+	}
 
 	const destinationKey = (d: AudioDestination) => ('Zone' in d ? `zone:${d.Zone.zone}` : `node:${d.Node.serial}`);
 
@@ -313,18 +378,18 @@
 			ctx.fillRect(0, lane.top + lane.height - 1, width, 1);
 		});
 
-		// The end: a stop is a wall, a loop is where it goes round.
+		// Past the end is cropped: dark, so what is lit is what plays.
 		if (timeline.end) {
 			const x = Math.round(xOf(timeline.end.at_ms, view, width));
-			ctx.fillStyle = 'rgba(0,0,0,0.35)';
-			if (timeline.end.then === 'Stop') ctx.fillRect(x, RULER_H, Math.max(0, width - x), H - RULER_H);
-			ctx.strokeStyle = timeline.end.then === 'Loop' ? '#34d399' : '#888';
-			ctx.setLineDash([4, 3]);
+			ctx.fillStyle = 'rgba(0,0,0,0.55)';
+			ctx.fillRect(x, RULER_H, Math.max(0, width - x), H - RULER_H);
+			ctx.strokeStyle = timeline.end.then === 'Loop' ? '#34d399' : '#c8c8c8';
+			ctx.lineWidth = 2;
 			ctx.beginPath();
-			ctx.moveTo(x + 0.5, 0);
-			ctx.lineTo(x + 0.5, H);
+			ctx.moveTo(x, RULER_H);
+			ctx.lineTo(x, H);
 			ctx.stroke();
-			ctx.setLineDash([]);
+			ctx.lineWidth = 1;
 		}
 
 		// The grid over the lanes: a bar line per downbeat, a tick per beat where they fit.
@@ -521,6 +586,7 @@
 			ctx.fill();
 			ctx.fillText(`${Math.round(segment.bpm * 10) / 10}`, x + 6, RULER_H - 3);
 		});
+		drawEndHandle(ctx);
 		if (proposal) {
 			// In its own color and above the grid: the whole point of drawing it is to be
 			// compared with what is already there.
@@ -573,6 +639,38 @@
 		}
 	}
 
+	/**
+	 * The end's handle on the ruler: a tab hanging from the top, with how it ends on it.
+	 * Solid where there is an end, a faint outline where one would go.
+	 */
+	function drawEndHandle(ctx: CanvasRenderingContext2D) {
+		const x = Math.round(xOf(endHandleMs, view, width));
+		if (x < -40 || x > width + 40) return;
+		const end = timeline.end;
+		const loop = end?.then === 'Loop';
+		const color = !end ? 'rgba(200,200,200,0.45)' : loop ? '#34d399' : '#c8c8c8';
+		const text = !end ? 'end' : loop ? '↻ loop' : '■ stop';
+		ctx.font = '10px system-ui, sans-serif';
+		const w = Math.ceil(ctx.measureText(text).width) + 10;
+		const left = x - w;
+		const grabbed = drag?.mode === 'end';
+		ctx.fillStyle = end ? (grabbed ? '#fff' : color) : 'rgba(17,17,17,0.9)';
+		ctx.strokeStyle = color;
+		ctx.beginPath();
+		ctx.roundRect(left, 2, w, RULER_H - 4, [3, 0, 0, 3]);
+		if (end) ctx.fill();
+		else {
+			ctx.fill();
+			ctx.setLineDash([3, 2]);
+			ctx.stroke();
+			ctx.setLineDash([]);
+		}
+		ctx.fillStyle = end ? '#111' : color;
+		ctx.fillText(text, left + 5, RULER_H - 6);
+		ctx.fillStyle = color;
+		ctx.fillRect(x - 1, 0, 2, RULER_H);
+	}
+
 	// ── Pointers ──────────────────────────────────────────────────────────────
 
 	/** How near an edge, on the screen, a press has to be to trim rather than move. */
@@ -622,6 +720,11 @@
 		if (!live || !drag) return;
 		if (drag.mode === 'scrub') {
 			await locate(timeline.id, rawMs);
+			return;
+		}
+		if (drag.mode === 'end') {
+			const at = Math.max(1, Math.round(snapped(rawMs)));
+			await showData().timelines.byId(timeline.id).end.set({ at_ms: at, then: drag.then });
 			return;
 		}
 		if (drag.mode === 'move') {
@@ -679,6 +782,11 @@
 		const item = hit(layout, view, width, x, y);
 		const additive = e.shiftKey || e.metaKey || e.ctrlKey;
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		if (y < RULER_H && $canEdit && onEndHandle(x, y)) {
+			drag = { mode: 'end', x, then: timeline.end?.then ?? 'Stop', moved: false };
+			return;
+		}
+		endMenu = null;
 		if (!item && y < RULER_H) {
 			drag = { mode: 'scrub' };
 			void locate(timeline.id, positionAt(x, view, width));
@@ -743,7 +851,9 @@
 			const item = hit(layout, view, width, x, y);
 			hovering = item?.ref.id ?? null;
 			if (box) {
-				box.style.cursor = !item
+				box.style.cursor = $canEdit && onEndHandle(x, y)
+					? 'ew-resize'
+					: !item
 					? y < RULER_H
 						? 'col-resize'
 						: 'crosshair'
@@ -772,6 +882,15 @@
 			schedule(positionAt(x, view, width));
 			return;
 		}
+		if (drag.mode === 'end') {
+			if (!drag.moved) {
+				if (Math.abs(x - drag.x) < SLOP_PX) return;
+				drag = { ...drag, moved: true };
+				beginGesture();
+			}
+			schedule(msOf(x, view, width));
+			return;
+		}
 		schedule(msOf(x, view, width));
 	}
 
@@ -798,6 +917,11 @@
 			// Already released, by a cancel.
 		}
 		if (!was) return;
+		if (was.mode === 'end') {
+			if (was.moved) endGesture();
+			else endMenu = { x: xOf(endHandleMs, view, width) };
+			return;
+		}
 		if (was.mode === 'pending') {
 			// A click: on a thing, pick it up; on nothing, go there and give the Inspector
 			// back to the timeline.
@@ -836,7 +960,7 @@
 		const live = current(timeline.id);
 		if (!lane || !live) return;
 		const at = Math.round(snapped(msOf(x, view, width)));
-		const id = crypto.randomUUID();
+		const id = uuid();
 		if (lane.kind === 'events') {
 			const sequence = $sequences[0];
 			if (!sequence) return;
@@ -850,6 +974,10 @@
 	}
 
 	async function onKeyDown(e: KeyboardEvent) {
+		if (endMenu && e.key === 'Escape') {
+			endMenu = null;
+			return;
+		}
 		if ((e.key === 'Delete' || e.key === 'Backspace') && $canEdit) {
 			const refs = pickedRefs();
 			const live = current(timeline.id);
@@ -867,6 +995,16 @@
 		} else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
 			const at = playhead() ?? 0;
 			void locate(timeline.id, at + (e.key === 'ArrowLeft' ? -1_000 : 1_000));
+		} else if (e.key === ' ' && !e.repeat) {
+			// Play and stop while the timeline has the focus. Stopped here, so the
+			// console's own Space — Go on the cue sheet touched last — does not also fire.
+			e.preventDefault();
+			e.stopPropagation();
+			const live = current(timeline.id);
+			if (live) void toggle(live);
+		} else if ((e.key === 'm' || e.key === 'M') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+			e.preventDefault();
+			void markerAtPlayhead();
 		}
 	}
 
@@ -973,10 +1111,30 @@
 				oncontextmenu={onContextMenu}
 				ondblclick={onDoubleClick}
 				onkeydown={onKeyDown}
+				ondragover={onDragOver}
+				ondragleave={() => (dropping = false)}
+				ondrop={onDrop}
+				class:dropping
 				onwheel={onWheel}
 				title={hoverTitle}
 			>
 				<canvas bind:this={canvas} style:width="{width}px" style:height="{canvasHeight}px"></canvas>
+				{#if endMenu}
+					<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+					<div class="catch" onpointerdown={(e) => e.stopPropagation()} onclick={() => (endMenu = null)}></div>
+					<div
+						class="end-menu"
+						role="menu"
+						tabindex="-1"
+						style:left="{Math.min(Math.max(0, endMenu.x - 210), Math.max(0, width - 220))}px"
+						onpointerdown={(e) => e.stopPropagation()}
+					>
+						<span class="heading">At {label(endHandleMs)}</span>
+						<button role="menuitemradio" aria-checked={timeline.end?.then === 'Stop'} class:on={timeline.end?.then === 'Stop'} onclick={() => setEnd({ at_ms: Math.round(endHandleMs), then: 'Stop' })}>Stop here</button>
+						<button role="menuitemradio" aria-checked={timeline.end?.then === 'Loop'} class:on={timeline.end?.then === 'Loop'} onclick={() => setEnd({ at_ms: Math.round(endHandleMs), then: 'Loop' })}>Go round to the top</button>
+						<button role="menuitemradio" aria-checked={!timeline.end} class:on={!timeline.end} onclick={() => setEnd(null)}>Run until stopped</button>
+					</div>
+				{/if}
 			</div>
 		</div>
 	</div>
@@ -1068,11 +1226,61 @@
 		touch-action: none;
 		outline: none;
 	}
+	/* A sound file being dragged over: the lanes say they will take it. */
+	.surface.dropping {
+		box-shadow: inset 0 0 0 2px var(--accent);
+		background: color-mix(in srgb, var(--accent) 8%, transparent);
+	}
 	.surface:focus-visible {
 		box-shadow: inset 0 0 0 1px var(--accent);
 	}
 	canvas {
 		display: block;
+	}
+	.catch {
+		position: fixed;
+		inset: 0;
+		z-index: 19;
+	}
+	.end-menu {
+		position: absolute;
+		top: 24px;
+		z-index: 20;
+		width: 210px;
+		padding: 6px;
+		display: flex;
+		flex-direction: column;
+		background: var(--bg-panel);
+		border: 1px solid var(--line-strong);
+		border-radius: 6px;
+		box-shadow: 0 8px 24px rgb(0 0 0 / 0.45);
+	}
+	.end-menu .heading {
+		padding: 4px 8px;
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-faint);
+	}
+	.end-menu button {
+		text-align: left;
+		padding: 7px 8px;
+		border: none;
+		border-radius: 4px;
+		background: none;
+		color: var(--text);
+		font: inherit;
+		font-size: var(--font-sm);
+		cursor: pointer;
+	}
+	.end-menu button:hover {
+		background: var(--bg-hover);
+	}
+	.end-menu button.on {
+		color: var(--accent);
+	}
+	.end-menu button.on::before {
+		content: '● ';
 	}
 	.zoom {
 		position: absolute;

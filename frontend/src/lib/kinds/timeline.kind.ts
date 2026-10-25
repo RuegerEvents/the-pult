@@ -32,6 +32,7 @@ import EventInspector from '$lib/components/timeline/inspectors/EventInspector.s
 import MarkerInspector from '$lib/components/timeline/inspectors/MarkerInspector.svelte';
 import SegmentInspector from '$lib/components/timeline/inspectors/SegmentInspector.svelte';
 import TakeInspector from '$lib/components/timeline/inspectors/TakeInspector.svelte';
+import { uuid } from '$lib/uuid.js';
 
 export type ClipRow = ObjectRow & { timelineId: string; clip: AudioClip };
 export type EventRow = ObjectRow & { timelineId: string; event: TimelineEvent };
@@ -96,7 +97,7 @@ registerKind<ClipRow>({
 		if (!timeline) return;
 		const copy: AudioClip = {
 			...row.clip,
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name: copyName(row.clip.name, timeline.clips.map((c) => c.name)),
 			// Right after the original, where a second one of the same sound usually goes.
 			start_ms: row.clip.start_ms + 1_000
@@ -119,7 +120,7 @@ registerKind<EventRow>({
 	duplicate: async (row) => {
 		const timeline = current(row.timelineId);
 		if (!timeline) return;
-		const events = [...timeline.events, { ...row.event, id: crypto.randomUUID(), at_ms: row.event.at_ms + 1_000 }];
+		const events = [...timeline.events, { ...row.event, id: uuid(), at_ms: row.event.at_ms + 1_000 }];
 		await writeColumns(row.timelineId, { events: events.sort((a, b) => a.at_ms - b.at_ms) });
 	},
 	remove: (row) => drop(row.timelineId, { kind: 'timeline-event', id: row.id }),
@@ -142,7 +143,7 @@ registerKind<MarkerRow>({
 	duplicate: async (row) => {
 		const timeline = current(row.timelineId);
 		if (!timeline) return;
-		const copy = { ...row.marker, id: crypto.randomUUID(), at_ms: row.marker.at_ms + 1_000, name: copyName(row.marker.name, timeline.markers.map((m) => m.name)) };
+		const copy = { ...row.marker, id: uuid(), at_ms: row.marker.at_ms + 1_000, name: copyName(row.marker.name, timeline.markers.map((m) => m.name)) };
 		await writeColumns(row.timelineId, { markers: [...timeline.markers, copy] });
 	},
 	remove: (row) => drop(row.timelineId, { kind: 'timeline-marker', id: row.id }),

@@ -785,16 +785,20 @@ impl FixtureType {
 
     /// The one mode a type without modes has.
     ///
-    /// One byte per parameter in the order the type lists them, three for a color,
-    /// which is what the connector did before layouts existed and what a type derived
-    /// from an OpenHaunt node's ports still means.
+    /// One byte per parameter in the order the type lists them, one per emitter for a
+    /// color ([`implicit_width`]), which is what the connector did before layouts
+    /// existed and what a type derived from an OpenHaunt node's ports still means.
     fn implicit_mode(&self) -> DmxMode {
         let mut channels = Vec::new();
         let mut next = 1u16;
         for (kind, parameter) in self.controls() {
             let key = parameter_key(&kind);
             let is_color = matches!(parameter.default_value, ParameterValue::Color { .. });
-            let width = if is_color { 3 } else { 1 };
+            // A byte per emitter: three for a plain color, four for an RGBW one, and
+            // as many as a generic RGBWA+UV type names. It was three whatever the
+            // parameter said, so a hand-made RGBW head drove its white from nothing.
+            let emitters = if is_color { emitters_of(parameter) } else { Vec::new() };
+            let width = implicit_width(parameter);
 
             // A parameter on a *port* has no DMX channel at all, whatever the fixture
             // is addressed to. Giving it a slot in the sequential fallback would put a
@@ -811,7 +815,7 @@ impl FixtureType {
                 // Three channels rather than one three-byte channel: an emitter per
                 // byte is how every other mode says which die a byte drives, and one
                 // shape for both keeps the connector from having a color special case.
-                for (index, emitter) in rgb_emitters().into_iter().enumerate() {
+                for (index, emitter) in emitters.into_iter().enumerate() {
                     channels.push(DmxChannelLayout {
                         parameter_key: key.clone(),
                         break_index: 0,
@@ -856,6 +860,19 @@ pub fn rgb_emitters() -> Vec<Emitter> {
         Emitter { name: "Green".into(), rgb: Some(Vec3 { x: 0.0, y: 1.0, z: 0.0 }), subtractive: false },
         Emitter { name: "Blue".into(), rgb: Some(Vec3 { x: 0.0, y: 0.0, z: 1.0 }), subtractive: false },
     ]
+}
+
+/// How many bytes a parameter takes in a type's implicit mode: one per emitter for a
+/// color — three for a plain one — and one for anything else.
+///
+/// Mirrored by `implicitChannels` in `frontend/src/lib/patch.ts`, which the hand editor
+/// needs to say where a parameter landed; this is the authority.
+pub fn implicit_width(parameter: &ParameterDefinition) -> u16 {
+    if matches!(parameter.default_value, ParameterValue::Color { .. }) {
+        emitters_of(parameter).len().max(1) as u16
+    } else {
+        1
+    }
 }
 
 /// The emitters a parameter mixes across, filled in for a color that named none.

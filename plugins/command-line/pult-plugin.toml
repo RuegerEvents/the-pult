@@ -23,7 +23,7 @@ title = "Command Line"
 # custom element it defines into a tile.
 [[panels]]
 id = "monitor"
-title = "Programmer Monitor"
+title = "Plugin example: programmer"
 element = "pult-cli-monitor"
 script = "panel.js"
 fills = true

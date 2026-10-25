@@ -1,5 +1,6 @@
 pub mod dmx_mode;
 pub mod fixture;
+pub mod generic;
 pub mod scene;
 pub mod sequence;
 pub mod cue;

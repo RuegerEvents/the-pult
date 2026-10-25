@@ -24,6 +24,7 @@ import { derived, get, writable, type Readable } from 'svelte/store';
 import type { User } from '$lib/generated/index.js';
 import { colorFor, DEFAULT_USER_ID } from '$lib/users.js';
 import { collection, showClient, showData } from './show.js';
+import { uuid } from '$lib/uuid.js';
 
 const STORAGE_KEY = 'pult.user';
 
@@ -106,7 +107,7 @@ export function signOut(): void {
 export async function addUser(name: string): Promise<void> {
 	const trimmed = name.trim();
 	if (!trimmed) return;
-	const id = crypto.randomUUID();
+	const id = uuid();
 	await showData().users.create({
 		id,
 		name: trimmed,

@@ -11,6 +11,7 @@ import type { Surface } from '$lib/generated/index.js';
 import { copyName, registerKind } from '$lib/objects.js';
 import { collection, showData } from '$lib/stores/show.js';
 import { surfaceUrl } from '$lib/surface.js';
+import { copyText, uuid } from '$lib/uuid.js';
 
 const surfaces = collection('surfaces');
 
@@ -30,10 +31,10 @@ registerKind<Surface>({
 	duplicate: async (surface) => {
 		await showData().surfaces.create({
 			...surface,
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name: copyName(surface.name, get(surfaces).map((s) => s.name)),
 			// Fresh tile ids: two surfaces sharing a tile id would edit each other's.
-			tiles: surface.tiles.map((t) => ({ ...t, id: crypto.randomUUID() }))
+			tiles: surface.tiles.map((t) => ({ ...t, id: uuid() }))
 		});
 	},
 	remove: (surface) => showData().surfaces.byId(surface.id).delete(),
@@ -42,7 +43,7 @@ registerKind<Surface>({
 			id: 'copy-link',
 			label: 'Copy the phone link',
 			structural: false,
-			run: () => navigator.clipboard?.writeText(surfaceUrl(window.location, surface.id))
+			run: () => copyText(surfaceUrl(window.location, surface.id))
 		}
 	]
 });

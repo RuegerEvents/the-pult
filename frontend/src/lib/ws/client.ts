@@ -2,6 +2,7 @@ import type { ClientMessage, HistoryEntry, ServerMessage } from '$lib/generated/
 import type { JsonValue } from '$lib/generated/serde_json/JsonValue.js';
 import type { PathSegment } from '$lib/generated/index.js';
 import { ClockSync, forgetOffset } from './clock.js';
+import { uuid } from '$lib/uuid.js';
 
 /** Called with the new value and the exact path it was written to. */
 export type SubscriptionHandler = (value: unknown, path: PathSegment[]) => void;
@@ -238,7 +239,7 @@ export class PultWsClient {
 	}
 
 	private requestId(): string {
-		return crypto.randomUUID();
+		return uuid();
 	}
 
 	async get(path: (string | number)[]): Promise<unknown> {

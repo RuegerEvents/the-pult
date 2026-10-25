@@ -229,7 +229,10 @@
 				<p class="hello">Type <code>help</code> for how this works. Tab completes.</p>
 			{/if}
 			{#each entries as entry, i (i)}
-				<div class="entry {entry.kind}">
+				<!-- `kind-` because the bare kind names collide: `.input` is the shared
+				     text-field class, and an entry styled as one drew every typed line as
+				     an empty box. -->
+				<div class="entry kind-{entry.kind}">
 					{#if entry.kind === 'input'}<span class="prompt">›</span>{/if}
 					<pre>{entry.text}</pre>
 					{#if entry.caret}<pre class="caret">  {entry.caret}</pre>{/if}
@@ -312,23 +315,23 @@
 		word-break: break-word;
 		font: inherit;
 	}
-	.entry.input {
+	.entry.kind-input {
 		color: var(--text-bright);
 	}
-	.entry.result pre {
+	.entry.kind-result pre {
 		color: var(--text);
 	}
-	.entry.info pre {
+	.entry.kind-info pre {
 		color: var(--text-dim);
 	}
-	.entry.error {
+	.entry.kind-error {
 		flex-direction: column;
 		gap: 0;
 	}
-	.entry.error pre {
+	.entry.kind-error pre {
 		color: var(--bad);
 	}
-	.entry.error pre.caret {
+	.entry.kind-error pre.caret {
 		color: var(--accent-solid, var(--text-bright));
 	}
 

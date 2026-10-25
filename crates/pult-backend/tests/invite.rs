@@ -74,6 +74,8 @@ async fn an_invited_station_joins_and_takes_the_hosts_show() {
         node_id: guest.node_id,
         hostname: "guest".into(),
         http_addr: format!("127.0.0.1:{}", guest.http_addr.port()),
+        sync_addr: format!("127.0.0.1:{}", guest.sync_addr.port()),
+        follows: false,
         show_name: "Guest".into(),
         session_id: None,
     });

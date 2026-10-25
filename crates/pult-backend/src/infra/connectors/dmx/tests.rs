@@ -928,3 +928,48 @@ fn a_fixture_in_a_universe_that_did_not_arrive_is_not_decoded() {
     assert_eq!(read[0].0, ids.0);
     assert!(read.iter().all(|(id, _, _)| *id != ids.1));
 }
+
+/// A level a playing take recorded dims a cue's intensity on the wire, per frame, over
+/// a fader at the top — and stops when the take does not say one.
+#[test]
+fn a_recorded_sequence_level_dims_its_cues_on_the_wire() {
+    use pult_schema::types::sequence::{Masters, Sequence, LEVEL_KEY};
+    let ft = a_type(vec![dimmer()]);
+    let cue = Uuid::new_v4();
+    let mut fixture = a_fixture(&ft, 1, 1);
+    // A cue's intensity, landed at full.
+    fixture.live_fades.insert(
+        "Intensity".into(),
+        pult_render::RunningFade {
+            from: ParameterValue::Float(1.0),
+            to: ParameterValue::Float(1.0),
+            t0: 0,
+            duration_ms: 0,
+            easing: Default::default(),
+            cue_id: cue,
+        },
+    );
+    let sequence = Sequence {
+        id: Uuid::new_v4(),
+        name: "Act".into(),
+        cue_ids: vec![cue],
+        active_cue_index: Some(0),
+        went_at: None,
+        master: None,
+    };
+    let level = pult_render::Track {
+        keys: vec![pult_render::TrackKey {
+            fixture_id: sequence.id,
+            key: LEVEL_KEY.into(),
+            // Half from the second second of the timeline on, nothing before.
+            points: vec![pult_render::TrackPoint { ms: 1_000, value: ParameterValue::Float(0.5) }],
+        }],
+    };
+    let transport = pult_render::Transport { anchor_ms: 10_000, position_at_anchor_ms: 0, rate: 1.0 };
+    let patch = Patch::new(vec![fixture], vec![ft], vec![])
+        .playing(vec![(std::sync::Arc::new(level), transport)])
+        .mastered(Masters::of([&sequence]));
+
+    assert_eq!(render(&patch, 10_500)[0].channels[0], 255, "before the take's first point, the fader");
+    assert_eq!(render(&patch, 11_500)[0].channels[0], 128, "then the recorded level");
+}

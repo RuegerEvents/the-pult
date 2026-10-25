@@ -42,6 +42,7 @@
 	import { output } from '$lib/stores/output.js';
 	import { pressableTargets, type SurfaceShow } from '$lib/surface.js';
 	import { DIGITAL_INPUTS, slotReading } from '$lib/wing.js';
+	import ToggleControl from '$lib/components/programmer/controls/ToggleControl.svelte';
 
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
@@ -87,6 +88,25 @@
 		}
 	});
 	const someoneElse = $derived($wingState.claimed_by !== null && !$driving);
+
+	/** The phase as a badge: a word and a color, read at a glance. */
+	const badge = $derived.by((): { text: string; tone: 'good' | 'busy' | 'idle' | 'bad' } => {
+		switch (phase.kind) {
+			case 'Running':
+				return { text: 'Up', tone: 'good' };
+			case 'Booting':
+				return { text: 'Starting', tone: 'busy' };
+			case 'Loading':
+				return { text: `Loading ${Math.round((phase.sent / Math.max(1, phase.total)) * 100)}%`, tone: 'busy' };
+			case 'Absent':
+				return { text: 'Not plugged in', tone: 'idle' };
+			case 'Off':
+				return { text: $wingAt ? 'Not answering' : 'Off', tone: 'idle' };
+			case 'Fault':
+				return { text: 'Fault', tone: 'bad' };
+		}
+	});
+	const present = $derived(phase.kind !== 'Off' && phase.kind !== 'Absent' && phase.kind !== 'Fault');
 
 	const fixtureName = (id: string) => $fixtures.find((f) => f.id === id)?.name ?? id.slice(0, 6);
 
@@ -193,48 +213,55 @@
 </script>
 
 <div class="wing">
-	<section class="status" class:fault={phase.kind === 'Fault'}>
-		{#if choosing}
-			<label class="at">
-				Wing on
-				<select value={$wingAt ?? ''} onchange={(e) => setWingAt(e.currentTarget.value || null)}>
-					<option value="">this station</option>
-					{#each $wingStations.filter((s) => !s.here) as s (s.id)}
-						<option value={s.id}>{s.hostname} ({s.state.phase.kind.toLowerCase()})</option>
-					{/each}
-					{#if $wingAt && !elsewhere}
-						<option value={$wingAt}>a station that has gone</option>
-					{/if}
-				</select>
-			</label>
-		{/if}
-		<p>{phaseText}</p>
-		<!-- Only a wing that is here can be driven: offering to drive an absent or faulty
-		     one would claim nothing and say it had. -->
-		{#if phase.kind !== 'Off' && phase.kind !== 'Absent' && phase.kind !== 'Fault'}
-			<label class="drive">
-				<input
-					type="checkbox"
-					checked={$drivesHere}
-					onchange={(e) => void setDrivesHere(e.currentTarget.checked)}
-				/>
-				Drive the wing from this page
-			</label>
-			{#if someoneElse}
-				<p class="dim">Another page ({$wingState.claimed_by}) is driving it. Ticking the box takes it over.</p>
-			{:else if !$driving && $wingState.claimed_by === null && phase.kind === 'Running'}
-				<p class="dim">No page is driving it, so it is dark and does nothing.</p>
+	<!-- One line that says what the wing is doing and what this page is doing about
+	     it; the sentences only where there is something to explain. -->
+	<section class="status">
+		<div class="head">
+			<span class="badge {badge.tone}">{badge.text}</span>
+			<span class="device">{phase.kind === 'Running' ? ($wingState.device ?? 'Command wing') : 'Command wing'}</span>
+			{#if elsewhere}<span class="dim">on {elsewhere}</span>{/if}
+			<span class="spacer"></span>
+			{#if choosing}
+				<label class="at">
+					<span class="dim">Wing on</span>
+					<select value={$wingAt ?? ''} onchange={(e) => setWingAt(e.currentTarget.value || null)}>
+						<option value="">this station</option>
+						{#each $wingStations.filter((s) => !s.here) as s (s.id)}
+							<option value={s.id}>{s.hostname} ({s.state.phase.kind.toLowerCase()})</option>
+						{/each}
+						{#if $wingAt && !elsewhere}
+							<option value={$wingAt}>a station that has gone</option>
+						{/if}
+					</select>
+				</label>
 			{/if}
+			<!-- Only a wing that is here can be driven: offering to drive an absent or
+			     faulty one would claim nothing and say it had. -->
+			{#if present}
+				<span class="drive">
+					<span class="dim">Drive from this page</span>
+					<ToggleControl label="Drive the wing from this page" value={$drivesHere} oninput={(on) => void setDrivesHere(on)} />
+				</span>
+			{/if}
+		</div>
+		{#if phase.kind === 'Fault'}
+			<p class="fault">{phase.reason}</p>
+		{:else if phase.kind !== 'Running'}
+			<p class="dim">{phaseText}</p>
+		{:else if someoneElse}
+			<p class="dim">Another page ({$wingState.claimed_by}) is driving it. Switching Drive on takes it over.</p>
+		{:else if !$driving && $wingState.claimed_by === null}
+			<p class="dim">No page is driving it, so it is dark and does nothing.</p>
 		{/if}
 		{#if $wingState.digital !== null}
 			<!-- The rear panel's contacts, live, so where they rest can be read before
 			     any of them is bound to anything. -->
-			<p class="digital">
-				Digital in
+			<div class="digital">
+				<span class="dim">Rear contacts</span>
 				{#each Array.from({ length: DIGITAL_INPUTS }, (_, i) => i) as i (i)}
 					<span class="contact" class:closed={(($wingState.digital ?? 0) >> i) & 1} title={`Digital in ${i + 1}`}>{i + 1}</span>
 				{/each}
-			</p>
+			</div>
 		{/if}
 	</section>
 
@@ -366,18 +393,25 @@
 					move what it should control.
 				</p>
 			{:else}
-				<ul class="bindings">
-					{#each [...$wingBindings.values()] as b (b.id)}
-						<li>
-							<span class="control">{controlName(b.control)}</span>
-							<span class="action">{b.label || describe(b.action)}</span>
-							{#if b.control.kind === 'Fader'}<span class="mono dim">{faderReading(b.action)}</span>{/if}
-							{#if $canEdit}
-								<button class="btn btn-ghost" onclick={() => learned.set(b.control)}>Edit</button>
-							{/if}
-						</li>
-					{/each}
-				</ul>
+				<table class="bindings">
+					<thead>
+						<tr><th>Control</th><th>Does</th><th>Now</th><th></th></tr>
+					</thead>
+					<tbody>
+						{#each [...$wingBindings.values()] as b (b.id)}
+							<tr>
+								<td class="control">{controlName(b.control)}</td>
+								<td>{b.label || describe(b.action)}</td>
+								<td class="mono dim">{b.control.kind === 'Fader' ? faderReading(b.action) : ''}</td>
+								<td class="acts">
+									{#if $canEdit}
+										<button class="btn btn-ghost btn-small" onclick={() => learned.set(b.control)}>Edit</button>
+									{/if}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
 			{/if}
 		</section>
 	{/if}
@@ -415,16 +449,50 @@
 		text-transform: none;
 		letter-spacing: 0;
 	}
-	.status p {
-		margin: 0 0 6px;
+	.status {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
 	}
-	.status.fault p:first-child {
-		color: var(--danger, #ef4444);
+	.status p {
+		margin: 0;
+		font-size: 0.8rem;
+	}
+	.head {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 8px 10px;
+	}
+	.device {
+		font-weight: 500;
+	}
+	.spacer {
+		flex: 1;
+	}
+	.badge {
+		font-size: 0.7rem;
+		font-weight: 600;
+		padding: 2px 8px;
+		border-radius: 10px;
+		border: 1px solid;
+		white-space: nowrap;
+	}
+	.badge.good { color: #4ade80; border-color: #14532d; background: #14532d44; }
+	.badge.busy { color: #fbbf24; border-color: #78350f; background: #78350f44; }
+	.badge.idle { color: #9ca3af; border-color: #374151; background: #37415144; }
+	.badge.bad { color: #f87171; border-color: #7f1d1d; background: #7f1d1d44; }
+	.fault {
+		color: #f87171;
 	}
 	.digital {
 		display: flex;
 		gap: 4px;
 		align-items: center;
+	}
+	.digital .dim {
+		margin-right: 4px;
+		font-size: 0.75rem;
 	}
 	.contact {
 		width: 18px;
@@ -441,16 +509,12 @@
 		background: var(--accent, #3b82f6);
 		color: white;
 	}
-	.at {
-		display: flex;
-		gap: 6px;
-		align-items: center;
-		margin-bottom: 6px;
-	}
+	.at,
 	.drive {
-		display: flex;
-		gap: 6px;
+		display: inline-flex;
+		gap: 8px;
 		align-items: center;
+		font-size: 0.8rem;
 	}
 	.encoders {
 		display: grid;
@@ -504,24 +568,34 @@
 		margin-bottom: 8px;
 	}
 	.bindings {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.8rem;
 	}
-	.bindings li {
-		display: flex;
-		gap: 8px;
-		align-items: center;
+	.bindings th {
+		text-align: left;
+		font-weight: 500;
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-faint, #666);
+		padding: 0 10px 6px 0;
+	}
+	.bindings td {
+		padding: 5px 10px 5px 0;
+		border-top: 1px solid var(--line, #262626);
 	}
 	.bindings .control {
-		min-width: 9em;
 		color: var(--text-dim, #888);
+		white-space: nowrap;
 	}
-	.bindings .action {
-		flex: 1;
+	.bindings .acts {
+		text-align: right;
+	}
+	.btn-small {
+		min-height: 24px;
+		padding: 0 10px;
+		font-size: 12px;
 	}
 	.how {
 		flex-basis: 100%;

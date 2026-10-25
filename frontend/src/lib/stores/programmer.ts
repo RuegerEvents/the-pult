@@ -43,6 +43,7 @@ import { drivingCues } from '$lib/cues.js';
 import { beginGesture, endGesture } from './gesture.js';
 import { offer } from './learn.js';
 import { collection, show, showData } from './show.js';
+import { uuid } from '$lib/uuid.js';
 
 // ── What is in the buffer ─────────────────────────────────────────────────────
 
@@ -450,7 +451,7 @@ export async function recallPreset(preset: Preset, selection: string[]): Promise
 export async function storePreset(name: string, include?: Set<string>): Promise<Preset> {
 	const chosen = include ?? new Set(held.map((entry) => entry.id));
 	const preset: Preset = {
-		id: crypto.randomUUID(),
+		id: uuid(),
 		name,
 		color: null,
 		values: presetValues(held, chosen)

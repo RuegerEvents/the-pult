@@ -81,7 +81,7 @@ pub enum InputCommand {
     /// What the programmer holds, at the console millisecond the engine applied it.
     /// Sent by the leader's engine only while a timeline armed at the programmer is
     /// running, so an idle console sends nothing.
-    Programmer { values: Vec<ProgrammerValue>, at_ms: u64 },
+    Programmer { values: Vec<ProgrammerValue>, levels: Vec<(Uuid, f32)>, at_ms: u64 },
     /// Decode what is on the wire now for these fixtures.
     Grab {
         input_id: Option<Uuid>,
@@ -112,8 +112,8 @@ impl InputHandle {
     /// Dropped on a full queue like the two above, which costs a change point and
     /// nothing worse: the next snapshot is the whole programmer again, so the take
     /// still ends up holding where the fader went.
-    pub fn programmer(&self, values: Vec<ProgrammerValue>, at_ms: u64) {
-        let _ = self.0.try_send(InputCommand::Programmer { values, at_ms });
+    pub fn programmer(&self, values: Vec<ProgrammerValue>, levels: Vec<(Uuid, f32)>, at_ms: u64) {
+        let _ = self.0.try_send(InputCommand::Programmer { values, levels, at_ms });
     }
 
     /// What these fixtures are being told to do, right now, by whoever is on the wire.
@@ -365,8 +365,8 @@ impl InputManager {
                             self.reconcile_recording().await;
                             self.reconcile_take().await;
                         }
-                        InputCommand::Programmer { values, at_ms } => {
-                            self.observe_programmer(&values, at_ms);
+                        InputCommand::Programmer { values, levels, at_ms } => {
+                            self.observe_programmer(&values, &levels, at_ms);
                         }
                         InputCommand::Grab { input_id, fixture_ids, reply } => {
                             let _ = reply.send(self.grab(input_id, &fixture_ids).await);

@@ -16,6 +16,7 @@ import { copyName, registerKind, selectSubject } from '$lib/objects.js';
 import { showData } from '$lib/stores/show.js';
 import { zones } from '$lib/stores/zones.js';
 import ZoneInspector from '$lib/components/audio/ZoneInspector.svelte';
+import { uuid } from '$lib/uuid.js';
 
 registerKind<SpeakerZone>({
 	kind: 'speaker-zone',
@@ -31,7 +32,7 @@ registerKind<SpeakerZone>({
 	duplicate: async (zone) => {
 		await showData().speaker_zones.create({
 			...zone,
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name: copyName(zone.name, get(zones).map((z) => z.name))
 		});
 	},

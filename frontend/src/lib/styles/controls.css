@@ -115,6 +115,66 @@
 	width: 5.5rem;
 }
 
+/*
+ * Every select, including the ones nobody styled.
+ *
+ * Most panels predate `.select` and a few never styled theirs at all, which left the
+ * browser's own — a light-gray pill with a blue arrow on macOS — in the middle of a
+ * dark console. Two parts, deliberately different in weight:
+ *
+ * The look is a bare `select`, the lowest a selector can be and still count: a panel
+ * that styles its own select (`select.svelte-…`, `.select`) still decides its colors,
+ * size and padding, and the layout's `*` reset — which zeroes every padding and loads
+ * after this file — does not. `:where(select)` lost to that reset and drew the text
+ * against the left edge.
+ *
+ * The arrow is not optional. The native one goes (`appearance: none`) and this one is
+ * drawn instead, `!important` because seven panels set `background:` as a shorthand,
+ * which resets the image — and a select with no arrow is a text box that will not
+ * take typing. `color-scheme` makes the open list dark too.
+ */
+select {
+	min-height: 28px;
+	padding: 0 8px;
+	border: 1px solid var(--line-input);
+	border-radius: var(--radius);
+	background-color: var(--bg-sunken);
+	color: var(--text);
+	font-size: var(--font-sm);
+	font-family: inherit;
+}
+
+select {
+	appearance: none;
+	color-scheme: dark;
+	padding-right: 24px !important;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23999' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+	background-repeat: no-repeat !important;
+	background-position: right 8px center !important;
+	background-size: 10px 6px !important;
+	cursor: pointer;
+}
+
+select:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+select:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+/* The rectangle a lasso drag draws; see `lib/lasso.ts`. */
+.lasso-rect {
+	position: fixed;
+	z-index: 1000;
+	pointer-events: none;
+	border: 1px solid var(--accent);
+	background: color-mix(in srgb, var(--accent) 14%, transparent);
+	border-radius: 2px;
+}
+
 /* A row somebody has to hit accurately while standing up. */
 .row-touch {
 	display: flex;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { masterOver, mastersOf } from './driving.js';
+import { cueSequences, drivenBy, masterOver, mastersOf } from './driving.js';
+import type { Fixture } from './generated/index.js';
 import type { RunningEffect, RunningFade, Sequence } from './generated/index.js';
 
 const fade = (cue_id: string): RunningFade => ({
@@ -40,5 +41,23 @@ describe('a sequence fader', () => {
 
 	it('keeps nothing for a sequence at full', () => {
 		expect(mastersOf([sequence(['cue'], null), sequence(['c2'], 1)]).size).toBe(0);
+	});
+});
+
+/** Which sequence plays an intensity, so a recorded level can be put over its fader. */
+describe('a recorded level', () => {
+	const lamp = (fades: Record<string, RunningFade>): Fixture =>
+		({ id: 'lamp', live_fades: fades, live_effects: {}, home_values: {} }) as unknown as Fixture;
+
+	it('names the sequence playing an intensity, at full or not, and nothing else', () => {
+		const sequences = cueSequences([sequence(['c1'], null)]);
+		const rows = drivenBy(lamp({ Intensity: fade('c1'), Pan: fade('c1') }), undefined, new Map(), new Map(), sequences);
+		expect(rows.get('Intensity')?.sequence).toBe('seq');
+		expect(rows.get('Pan')?.sequence).toBeUndefined();
+	});
+
+	it('names nothing for a fade no sequence holds', () => {
+		const rows = drivenBy(lamp({ Intensity: fade('orphan') }), undefined, new Map(), new Map(), cueSequences([sequence(['c1'], null)]));
+		expect(rows.get('Intensity')?.sequence).toBeUndefined();
 	});
 });

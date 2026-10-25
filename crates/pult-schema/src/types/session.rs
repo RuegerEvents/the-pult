@@ -28,11 +28,16 @@ pub struct NearbyStation {
     pub hostname: String,
     /// Where its HTTP and WebSocket API answers, as `ip:port`, from here.
     pub http_addr: String,
+    /// Where its sync link answers, as `ip:port`, from here: what joining it dials.
+    pub sync_addr: String,
     /// The show it has open, by name, or empty with none open. Joining a session
     /// replaces it, which is why an invitation names it.
     pub show_name: String,
     /// The session it is in, or `None` on its own.
     pub session_id: Option<Uuid>,
+    /// Whether it follows another station. Joining one that does would make this a
+    /// follower of a follower, so it is that station's leader that has to be joined.
+    pub follows: bool,
 }
 
 /// The local node's session state — LOCAL lifecycle:

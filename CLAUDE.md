@@ -146,12 +146,20 @@ same universe.
 **A type with no modes still has one.** Everything the console made for itself — a type
 derived from an OpenHaunt node, the demo seed, the hand editor — names no mode at all,
 and `FixtureType::mode()` computes an implicit `"Default"`: one byte per output
-parameter in the order the type lists them, three for a color, and nothing at all for
+parameter in the order the type lists them, one per emitter for a color
+(`implicit_width` — three for a color that names none), and nothing at all for
 a parameter on a module port. Computed rather than stored, so there is one layout
 rather than a written one drifting from the parameters it was written from. The browser
 does not work that out for itself with one exception, `patch.ts`'s `implicitChannels`,
 which the hand editor needs in order to show an operator where the parameter they just
 added has landed — and it says so where it is defined.
+
+**So the emitter list is the layout.** A generic RGBWA+UV par is seven bytes because its
+color names six emitters; `types/generic.rs` holds those types and the emitter presets,
+each type with a fixed v5 id so the second one patched finds the first one's type, and
+the `fixtureTypes.library` RPC hands both to the patch dialog and the type editor. It
+used to be three bytes whatever the emitters said, so a hand-made RGBW head drove its
+white from nothing.
 
 **A showfile is not a migration target.** While the console is in development nobody is
 carrying a season's work in one, and a migration is a promise about every shape the data
@@ -1580,6 +1588,16 @@ its cable appears and a running one whose cable drops reports the fault without 
 torn down. Plugging the show network in never needs a restart. The output manager
 reconciles on its own one-second timer for the same reason: a cable coming or going, and
 a failover, change what should be running without anything writing to the show.
+
+**An mDNS daemon does not survive its machine's addresses moving**, so all three start
+again when they do. `mdns-sd` 0.13 adds a socket for a new interface, but a daemon up
+while a Mac went from wifi to ethernet reported the node it had found as removed several
+times a second and never resolved it again, while `dns-sd` and a fresh daemon found it at
+once. `Network::address_changes` ticks when a reachable address comes or goes; the
+OpenHaunt browser, the session (which also re-announces the station at its new address)
+and MVR-xchange's TCP mode each start a fresh daemon on it. And the broker list goes over
+HTTP to every adopted node at its last address, seen by mDNS or not — a node still dialing
+the old broker is exactly the one a browse has lost.
 
 **Restricting an mDNS daemon restricts discovery too, and that is the feature.** A daemon
 both advertises and browses, so a console kept on the lighting network will not *find* a

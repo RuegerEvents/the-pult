@@ -140,28 +140,60 @@ pub struct Sequence {
 /// a show whose faders are all up — nearly every show, nearly all of the time —
 /// builds an empty map and every lookup is a miss.
 #[derive(Debug, Default, Clone)]
-pub struct Masters(std::collections::HashMap<Uuid, f32>);
+pub struct Masters {
+    by_cue: std::collections::HashMap<Uuid, f32>,
+    /// Every sequence's cues, at full or not, so a level a take recorded can be put
+    /// over a sequence whose fader is at the top.
+    cues: std::collections::HashMap<Uuid, Vec<Uuid>>,
+}
+
+/// The key a sequence's level is recorded under in a take. See
+/// [`pult_render::SEQUENCE_LEVEL_KEY`], which is where it is spelled.
+pub const LEVEL_KEY: &str = pult_render::SEQUENCE_LEVEL_KEY;
 
 impl Masters {
     pub fn of<'a>(sequences: impl IntoIterator<Item = &'a Sequence>) -> Self {
         let mut by_cue = std::collections::HashMap::new();
+        let mut cues = std::collections::HashMap::new();
         for sequence in sequences {
+            cues.insert(sequence.id, sequence.cue_ids.clone());
             let Some(level) = sequence.master.filter(|level| *level < 1.0) else { continue };
             let level = level.clamp(0.0, 1.0);
             for cue in &sequence.cue_ids {
                 by_cue.insert(*cue, level);
             }
         }
-        Masters(by_cue)
+        Masters { by_cue, cues }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.by_cue.is_empty()
     }
 
     /// The level a cue's sequence is at, where that is below full.
     pub fn of_cue(&self, cue_id: Uuid) -> Option<f32> {
-        self.0.get(&cue_id).copied()
+        self.by_cue.get(&cue_id).copied()
+    }
+
+    /// These levels with the ones a playing take recorded put over the faders.
+    ///
+    /// `recorded` answers a sequence's level where a running timeline's take says one
+    /// at this moment — sampled per frame, since a recorded fade moves between pushes —
+    /// and `None` where it says nothing, which leaves that sequence's fader in charge.
+    pub fn with_recorded(&self, recorded: impl Fn(Uuid) -> Option<f32>) -> Masters {
+        let mut out = self.clone();
+        for (sequence, cues) in &self.cues {
+            let Some(level) = recorded(*sequence) else { continue };
+            let level = level.clamp(0.0, 1.0);
+            for cue in cues {
+                if level < 1.0 {
+                    out.by_cue.insert(*cue, level);
+                } else {
+                    out.by_cue.remove(cue);
+                }
+            }
+        }
+        out
     }
 
     /// The master over this parameter, if one dims it: an intensity, played by a
@@ -176,7 +208,7 @@ impl Masters {
         effect: Option<&pult_render::RunningEffect>,
         fade: Option<&pult_render::RunningFade>,
     ) -> Option<f32> {
-        if self.0.is_empty() || crate::types::show::FadeGroup::of_key(key) != crate::types::show::FadeGroup::Intensity {
+        if self.by_cue.is_empty() || crate::types::show::FadeGroup::of_key(key) != crate::types::show::FadeGroup::Intensity {
             return None;
         }
         let cue = match (effect, fade) {
@@ -347,6 +379,25 @@ mod tests {
 
         let release = an_intensity_fade(Uuid::nil());
         assert_eq!(masters.over("Intensity", None, Some(&release)), None, "a release is nobody's");
+    }
+
+    /// A level a playing take recorded beats the fader, either way: it dims a sequence
+    /// whose fader is at the top, and brings one up to full over a fader that is down.
+    /// A sequence the take says nothing about keeps its fader.
+    #[test]
+    fn a_recorded_level_is_put_over_the_fader() {
+        let (cue_a, cue_b) = (Uuid::new_v4(), Uuid::new_v4());
+        let a = a_sequence(vec![cue_a]);
+        let mut b = a_sequence(vec![cue_b]);
+        b.master = Some(0.3);
+        let masters = Masters::of([&a, &b]);
+
+        let recorded = masters.with_recorded(|seq| (seq == a.id).then_some(0.5));
+        assert_eq!(recorded.of_cue(cue_a), Some(0.5), "a full fader dimmed by the take");
+        assert_eq!(recorded.of_cue(cue_b), Some(0.3), "the take says nothing about b");
+
+        let up = masters.with_recorded(|seq| (seq == b.id).then_some(1.0));
+        assert_eq!(up.of_cue(cue_b), None, "a take at full lifts a lowered fader");
     }
 
     /// Full is the usual case, and it costs nothing: no entry at all.

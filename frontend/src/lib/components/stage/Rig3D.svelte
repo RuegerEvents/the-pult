@@ -213,11 +213,14 @@
 	/** The element three.js draws into. */
 	let host = $state<HTMLDivElement | null>(null);
 	/** Where the quicksheet has been projected to this frame, in panel pixels. */
-	let sheetAt = $state<{ x: number; y: number; visible: boolean }>({
+	let sheetAt = $state<{ x: number; y: number; visible: boolean; h: number }>({
 		x: 0,
 		y: 0,
-		visible: false
+		visible: false,
+		h: 0
 	});
+	/** How tall the sheet is drawn, for keeping it inside the panel. */
+	let sheetHeight = $state(0);
 
 	// ── What a frame of this view costs ─────────────────────────────────────────
 	//
@@ -2709,9 +2712,10 @@
 		if (
 			sheetAt.visible === behind ||
 			Math.abs(sheetAt.x - x) > 0.5 ||
-			Math.abs(sheetAt.y - y) > 0.5
+			Math.abs(sheetAt.y - y) > 0.5 ||
+			sheetAt.h !== rect.height
 		) {
-			sheetAt = { x, y, visible: !behind };
+			sheetAt = { x, y, visible: !behind, h: rect.height };
 		}
 	}
 </script>
@@ -2777,11 +2781,15 @@
 	     Pointer and wheel events stop here. The camera controls listen on the element
 	     this sits inside, so without it every drag of a fader would also swing the
 	     camera and every scroll would dolly it. -->
+	<!-- Centered on the fixture where it fits, and slid to stay inside the panel
+	     where it does not; never taller than the panel, scrolling instead. -->
 	<div
 		class="beside"
 		role="presentation"
+		bind:clientHeight={sheetHeight}
 		style:left="{sheetAt.x}px"
-		style:top="{sheetAt.y}px"
+		style:top="{Math.max(8, Math.min(sheetAt.y - sheetHeight / 2, sheetAt.h - sheetHeight - 8))}px"
+		style:max-height="{Math.max(120, sheetAt.h - 16)}px"
 		onpointerdown={(e) => e.stopPropagation()}
 		onpointermove={(e) => e.stopPropagation()}
 		onwheel={(e) => e.stopPropagation()}
@@ -2842,9 +2850,11 @@
 
 	.beside {
 		position: absolute;
-		/* Beside and vertically centered on the fixture, which is what the transform
-		   did when this was an `HTML` overlay. */
-		transform: translate(28px, -50%);
+		/* Beside the fixture; how high is worked out in the markup, so it can be kept
+		   inside the panel. */
+		transform: translateX(28px);
+		display: flex;
+		overflow: hidden;
 		pointer-events: auto;
 		/* Below the console's own chrome: this panel lives *inside* the scene and must
 		   not cover the store menu or any other modal. */

@@ -35,6 +35,7 @@
 	 */
 
 	import { onMount } from 'svelte';
+	import Help from './Help.svelte';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import type { ClientStats, FrameCost, PeerLink, Station } from '$lib/generated/index.js';
 	import { SLOW_FPS, STALL_MS, fpsOf, struggling, thisBrowser } from '$lib/stats.js';
@@ -289,8 +290,21 @@
 <div class="system">
 	<section class="block">
 		<header class="block-head">
-			<h2>Stations</h2>
-			<span class="count">what each machine is costing</span>
+			<h2>
+				Stations
+				<Help label="About these figures">
+					<p>
+						<b>Console</b> is what the pult process itself is costing; <b>Machine</b> is
+						everything on the box. Read them against each other, never summed: a console at 4%
+						on a machine at 96% is about to be starved by something else.
+					</p>
+					<p>
+						A process CPU figure is of <em>one core</em> — a busy console can pass 100% — and
+						the machine's is of all its cores together, so each says which.
+					</p>
+				</Help>
+			</h2>
+			<span class="count">{stations.length} {stations.length === 1 ? 'station' : 'stations'}</span>
 		</header>
 
 		{#if stations.length === 0}
@@ -309,82 +323,58 @@
 									machine under strain
 								</span>
 							{/if}
-							<span class="dim small">{ago(Date.parse(station.last_seen))}</span>
+							<span class="dim small" title="How long the console has been running, and the link to it from here">
+								up {uptime(station.uptime_s)}{isSelf(station) ? '' : ` · ${latency(station)}`}
+							</span>
+							<span class="dim small">· {ago(Date.parse(station.last_seen))}</span>
 						</header>
 
-						<h3 class="sub">
-							This console
-							<span class="dim small">what the pult process is costing</span>
-						</h3>
-						<dl class="figures">
-							<div>
-								<!-- Of *a core*, which is what a process CPU percentage means: a
-								     multi-threaded console can exceed 100%. The machine's figure
-								     below is of every core together, so the two are on different
-								     scales and both say which — an unlabeled 14.6% beside an
-								     unlabeled 5.9% reads as the console using more than the box. -->
-								<dt>CPU</dt>
-								<dd
-									class="num"
-									title="{station.machine.cores > 0
-										? (station.cpu_percent / station.machine.cores).toFixed(1)
-										: '?'}% of the whole machine"
-								>
-									{station.cpu_percent.toFixed(1)}%
-									<span class="dim">of a core</span>
-								</dd>
-							</div>
-							<div>
-								<dt>Memory</dt>
-								<dd class="num" title="{megabytes(station.mem_used)} of {megabytes(station.mem_total)}">
-									{megabytes(station.mem_used)}
-									<span class="dim">({memPercent(station).toFixed(0)}%)</span>
-								</dd>
-							</div>
-							<div><dt>Up</dt><dd class="num">{uptime(station.uptime_s)}</dd></div>
-							<div><dt>Latency</dt><dd class="num">{latency(station)}</dd></div>
-						</dl>
+						<!-- What the console costs beside what the machine is carrying, row by
+						     row: the comparison is the point, and two separate lists made it a
+						     reading exercise. -->
+						<table class="cmp">
+							<thead><tr><th></th><th>Console</th><th>Machine</th></tr></thead>
+							<tbody>
+								<tr>
+									<th>CPU</th>
+									<td
+										class="num"
+										title="{station.machine.cores > 0
+											? (station.cpu_percent / station.machine.cores).toFixed(1)
+											: '?'}% of the whole machine"
+									>
+										{station.cpu_percent.toFixed(1)}% <span class="dim">of a core</span>
+									</td>
+									<td class="num" class:bad={station.machine.cpu_percent > 90}>
+										{station.machine.cpu_percent.toFixed(1)}% <span class="dim">of {station.machine.cores} cores</span>
+									</td>
+								</tr>
+								<tr>
+									<th>Memory</th>
+									<td class="num" title="{megabytes(station.mem_used)} of {megabytes(station.mem_total)}">
+										{megabytes(station.mem_used)} <span class="dim">({memPercent(station).toFixed(0)}%)</span>
+									</td>
+									<td
+										class="num"
+										class:bad={percent(station.machine.mem_used, station.mem_total) > 90}
+										title="{size(station.machine.mem_used)} of {size(station.mem_total)}"
+									>
+										{percent(station.machine.mem_used, station.mem_total).toFixed(0)}% <span class="dim">of {size(station.mem_total)}</span>
+									</td>
+								</tr>
+							</tbody>
+						</table>
 
-						<h3 class="sub">
-							The machine
-							<span class="dim small">
-								everything on the box — this console is {consoleShareOfMachine(station).toFixed(1)}% of it
-							</span>
-						</h3>
-						<!-- Read against the figures above, never summed with them: those are
-						     what the console costs, these are what it is sharing. -->
-						<dl class="figures">
+						<!-- The rest of the box, small: these are looked up, not watched. -->
+						<dl class="kv">
 							<div>
-								<dt>CPU</dt>
-								<dd class="num" class:bad={station.machine.cpu_percent > 90}>
-									{station.machine.cpu_percent.toFixed(1)}%
-									<span class="dim">of {station.machine.cores} cores</span>
-								</dd>
-							</div>
-							<div>
-								<dt title="One minute, and per core: 1.0 is as much work queued as there are cores to do it. Windows has no load average and reports nothing.">
-									Load
-								</dt>
+								<dt title="One minute, and per core: 1.0 is as much work queued as there are cores to do it. Windows has no load average and reports nothing.">Load</dt>
 								<dd class="num">
 									{#if station.machine.load_1 === 0 && station.machine.load_5 === 0}
-										<span class="dim">not reported</span>
+										<span class="dim">—</span>
 									{:else}
-										{station.machine.load_1.toFixed(2)}
-										<span class="dim">
-											/ {station.machine.load_5.toFixed(2)} / {station.machine.load_15.toFixed(2)}
-										</span>
+										{station.machine.load_1.toFixed(2)}<span class="dim"> / {station.machine.load_5.toFixed(2)} / {station.machine.load_15.toFixed(2)}</span>
 									{/if}
-								</dd>
-							</div>
-							<div>
-								<dt>Memory</dt>
-								<dd
-									class="num"
-									class:bad={percent(station.machine.mem_used, station.mem_total) > 90}
-									title="{size(station.machine.mem_used)} of {size(station.mem_total)}"
-								>
-									{percent(station.machine.mem_used, station.mem_total).toFixed(0)}%
-									<span class="dim">of {size(station.mem_total)}</span>
 								</dd>
 							</div>
 							<div>
@@ -393,49 +383,53 @@
 									{#if station.machine.swap_total === 0}
 										<span class="dim">none</span>
 									{:else}
-										{size(station.machine.swap_used)}
-										<span class="dim">of {size(station.machine.swap_total)}</span>
+										{size(station.machine.swap_used)} <span class="dim">of {size(station.machine.swap_total)}</span>
 									{/if}
 								</dd>
 							</div>
 							<div>
-								<dt title="The volume the showfile is written to. A show that cannot be saved is what this is here to see coming.">
-									Disk
-								</dt>
+								<dt title="The volume the showfile is written to. A show that cannot be saved is what this is here to see coming.">Disk free</dt>
 								<dd class="num">
 									{#if station.machine.disk_total === 0}
 										<span class="dim">unknown</span>
 									{:else}
-										<span class:bad={station.machine.disk_free / station.machine.disk_total < 0.05}>
-											{size(station.machine.disk_free)} free
-										</span>
+										<span class:bad={station.machine.disk_free / station.machine.disk_total < 0.05}>{size(station.machine.disk_free)}</span>
 										<span class="dim">of {size(station.machine.disk_total)}</span>
 									{/if}
 								</dd>
 							</div>
 							<div>
-								<dt title="The warmest sensor the machine exposes. Most virtual machines expose none.">
-									Temperature
-								</dt>
+								<dt title="The warmest sensor the machine exposes. Most virtual machines expose none.">Temperature</dt>
 								<dd class="num">
 									{#if station.machine.cpu_temperature_c === null}
 										<span class="dim">no sensor</span>
 									{:else}
-										<span class:bad={station.machine.cpu_temperature_c > 85}>
-											{station.machine.cpu_temperature_c.toFixed(0)}°C
-										</span>
+										<span class:bad={station.machine.cpu_temperature_c > 85}>{station.machine.cpu_temperature_c.toFixed(0)}°C</span>
 									{/if}
 								</dd>
 							</div>
 							<div>
-								<dt title="How long the machine has been up. The console's own uptime is above; a console younger than its machine has been restarted.">
-									Booted
-								</dt>
+								<dt title="How long the machine has been up. A console younger than its machine has been restarted.">Booted</dt>
 								<dd class="num">{uptime(station.machine.uptime_s)} ago</dd>
 							</div>
 						</dl>
 
-						<h3 class="sub">Network</h3>
+						<h3 class="sub">
+							Network
+							<Help label="About the network figures">
+								<p>
+									The first three are what this console is responsible for; <b>The machine</b> is
+									what its interfaces carried, including everything else the box is doing. A
+									station whose own traffic is a fraction of its machine's has a network problem
+									that is not the console's.
+								</p>
+								<p>
+									Loopback is left out, or a demo talking to itself would count every byte twice.
+									Node commands over MQTT are not in the output figure — small by construction,
+									since a three-second fade is one message to a node that can run it.
+								</p>
+							</Help>
+						</h3>
 						<!-- Three of these are what the console is responsible for and the
 						     fourth is what the cable is carrying. They must not be read as one
 						     number: a machine whose interfaces are busy and whose console is
@@ -474,10 +468,7 @@
 							<!-- Absent rather than zero: a connector that emitted nothing in the
 							     window carries no entry at all, because zero would read as
 							     "instant" when the truth is that nothing happened. -->
-							<p class="quiet-note">
-								Nothing emitted a frame in the last window — no output configured, or
-								every protocol settled.
-							</p>
+							<p class="quiet-note">None in the last window: no output, or everything settled.</p>
 						{:else}
 							<table class="frames">
 								<thead>
@@ -525,20 +516,28 @@
 			</div>
 		{/if}
 
-		<p class="note">
-			The first three network figures are what this console is responsible for; the
-			fourth is what the machine's interfaces are actually carrying, which includes
-			everything else the box is doing. A station whose own traffic is a fraction of
-			its machine's has a network problem that is not the console's. Loopback is left
-			out, or a demo talking to itself would count every byte twice. Node commands
-			over MQTT are the device manager's and are not in the output figure — small by
-			construction, since a three-second fade is one message to a node that can run it.
-		</p>
+
 	</section>
 
 	<section class="block">
 		<header class="block-head">
-			<h2>Browsers</h2>
+			<h2>
+				Browsers
+				<Help label="About the browser figures">
+					<p>
+						These are the browsers connected to <em>this</em> station. What reaches the others is a
+						struggling browser's warning in the System Log rather than a figure every second.
+					</p>
+					<p>
+						<b>Received</b> is measured by the station rather than claimed by the page: no browser
+						can see how many bytes arrived on its own socket.
+					</p>
+					<p>
+						A trend is what this tile has watched since it was opened — nothing on the network
+						carries a history.
+					</p>
+				</Help>
+			</h2>
 			<span class="count">{browsers.length} on this station</span>
 		</header>
 
@@ -629,21 +628,6 @@
 					in a frame. It has said so in the log as well, which every console can read.
 				</p>
 			{/if}
-			<p class="note">
-				<em>Received</em> is measured by the station rather than claimed by the page:
-				no browser can see how many bytes arrived on its own socket. It is the cost of
-				watching — a panel open on a busy collection is traffic the station pays for.
-			</p>
-			<p class="note">
-				A trend is what <em>this tile</em> has watched since it was opened — nothing on
-				the network carries a history, so a line starts empty and covers only what was
-				seen here.
-			</p>
-			<p class="note">
-				These are the browsers connected to this station. A page belongs to the station
-				holding its socket, so a console shows its own; what reaches the others is a
-				struggling browser's warning in the System Log rather than a figure every second.
-			</p>
 		{/if}
 	</section>
 </div>
@@ -652,7 +636,16 @@
 	.system { padding: 16px 20px; }
 	.block { margin-bottom: 24px; }
 	.block-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
-	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
+	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; display: inline-flex; align-items: center; gap: 6px; }
+	/* Console beside machine: the comparison the panel is for. */
+	.cmp { width: 100%; border-collapse: collapse; font-size: 13px; margin: 4px 0 10px; }
+	.cmp thead th { text-align: left; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; color: #777; padding: 0 0 4px; }
+	.cmp tbody th { text-align: left; font-weight: 400; color: #888; padding: 3px 12px 3px 0; width: 5.5rem; }
+	.cmp td { padding: 3px 12px 3px 0; white-space: nowrap; }
+	.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 16px; margin: 0 0 12px; font-size: 12px; }
+	.kv div { display: flex; flex-direction: column; gap: 1px; }
+	.kv dt { color: #777; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+	.kv dd { margin: 0; white-space: nowrap; }
 	.count { color: #777; font-size: 12px; }
 
 	.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
@@ -669,8 +662,7 @@
 	dd { font-size: 13px; }
 
 	.badge-warn { background: #3a2a1a; border: 1px solid #5a3a1a; border-radius: 9px; color: #e0a055; font-size: 10px; padding: 1px 6px; }
-	.sub { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; color: #777; margin-bottom: 4px; margin-top: 4px; display: flex; gap: 8px; align-items: baseline; }
-	.sub .small { text-transform: none; letter-spacing: 0; font-weight: 400; font-style: italic; }
+	.sub { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; color: #777; margin-bottom: 4px; margin-top: 4px; display: flex; gap: 6px; align-items: center; }
 	.frames { width: 100%; border-collapse: collapse; font-size: 12px; }
 	.frames th { text-align: left; color: #666; font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; padding: 0 6px 3px 0; }
 	.frames td { padding: 3px 6px 3px 0; border-top: 1px solid #262626; }
@@ -696,5 +688,4 @@
 	.empty { color: #777; font-size: 13px; padding: 8px 0; }
 	.quiet-note { color: #666; font-size: 12px; font-style: italic; }
 	.warn { color: #e08a55; font-size: 12px; margin-top: 10px; }
-	.note { color: #666; font-size: 12px; margin-top: 8px; font-style: italic; }
 </style>

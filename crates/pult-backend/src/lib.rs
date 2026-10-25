@@ -113,7 +113,7 @@ pub struct Running {
     pools: Vec<Arc<sqlx::SqlitePool>>,
     /// This station's mDNS browse daemon, which runs on a thread of its own and so
     /// outlives every task unless it is told not to.
-    devices_mdns: Option<mdns_sd::ServiceDaemon>,
+    devices_mdns: infra::devices::DeviceBrowser,
     /// For telling the session layer to take its service off the network.
     session: crate::infra::session::SessionHandle,
     /// For telling every open WebSocket the same, and why — see `AppState::stopping`.
@@ -240,9 +240,7 @@ impl Running {
         }
         // A thread rather than a task, so it would otherwise go on advertising a
         // station that is no longer there.
-        if let Some(mdns) = &self.devices_mdns {
-            let _ = mdns.shutdown();
-        }
+        self.devices_mdns.shutdown();
     }
 
     /// Answer one station RPC, the way a browser's WebSocket does.
@@ -278,9 +276,7 @@ impl Running {
         })
         .await;
 
-        if let Some(mdns) = &self.devices_mdns {
-            let _ = mdns.shutdown();
-        }
+        self.devices_mdns.shutdown();
         self.serve.abort();
         for task in self.tasks.iter().chain(asked.iter()) {
             task.abort();

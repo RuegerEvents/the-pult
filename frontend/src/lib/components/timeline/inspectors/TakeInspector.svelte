@@ -11,6 +11,7 @@
 	import { collection } from '$lib/stores/show.js';
 	import { current, writeColumns } from '$lib/stores/timelines.js';
 	import { trackSource } from '$lib/takes.js';
+	import Help from '../../Help.svelte';
 
 	let { rows }: { rows: TakeRow[] } = $props();
 
@@ -25,7 +26,13 @@
 {#each rows as row (row.id)}
 	<div class="fields">
 		{#if rows.length > 1}<span class="wide label">{row.name}</span>{/if}
-		<span class="label">Plays</span>
+		<span class="label"
+			>Plays <Help label="What a take does"
+				>A take holds every key it recorded, over playback and under the programmer. Stopping the
+				timeline lets those keys go, over the show's home fade, into whatever playback holds beneath
+				them.</Help
+			></span
+		>
 		<label class="inline note">
 			<input
 				type="checkbox"
@@ -53,10 +60,5 @@
 		</div>
 		<span class="label">From</span>
 		<span class="note">{trackSource(row.track, $inputs)} · {row.track.asset.slice(0, 8)}…</span>
-		<p class="wide note">
-			A take holds every key it recorded, over playback and under the programmer. Stopping the
-			timeline lets those keys go, over the show's home fade, into whatever playback holds beneath
-			them.
-		</p>
 	</div>
 {/each}

@@ -41,10 +41,13 @@
 	import Lock from '@lucide/svelte/icons/lock';
 	import LockOpen from '@lucide/svelte/icons/lock-open';
 	import Search from '@lucide/svelte/icons/search';
+	import Settings from '@lucide/svelte/icons/settings';
 	// Every object kind registers itself when its module loads; see `$lib/kinds/`.
 	import '$lib/kinds/index.js';
 	import '$lib/styles/tokens.css';
 	import '$lib/styles/controls.css';
+	import '$lib/styles/topbar.css';
+	import { show as showRow } from '$lib/stores/show.js';
 
 	let { children } = $props();
 
@@ -267,19 +270,26 @@
 
 <svelte:window onkeydown={onKey} />
 
+<!-- The show's name in the tab and the dock, the way an editor names its window after
+     its file; a phone surface sets its own. -->
+<svelte:head>
+	{#if !chromeless}
+		<title>{($showRow?.name ?? $station?.show?.name) ? `${$showRow?.name ?? $station?.show?.name} | the-pult` : 'the-pult'}</title>
+	{/if}
+</svelte:head>
+
 <div class="shell">
 	{#if !chromeless}
 		<header class="topbar">
-			<span class="brand" title={$station ? `station ${$station.nodeId}` : address}>
-				the-pult{#if $station}<span class="version">{$station.version}</span>{/if}
-			</span>
+			<span
+				class="brand"
+				title={$station ? `the-pult ${$station.version} · station ${$station.nodeId}` : address}
+			>the-pult</span>
 			{#if $station?.show}
+				<span class="tb-sep"></span>
 				<ShowMenu show={$station.show} />
 				<LayoutBar />
-				<!-- Setup is a mode, not a tile. See `components/setup/Setup.svelte`. -->
-				<button class="setup-btn" class:on={$setupSection !== null} onclick={toggleSetup}>
-					Setup<span class="caret">▾</span>
-				</button>
+				<span class="tb-sep"></span>
 				<!-- The three verbs, in the chrome rather than in a panel: an operator
 				     programming in the rig, in the plan or from the command line means the
 				     same three things. -->
@@ -287,22 +297,31 @@
 			{/if}
 			<span class="spacer"></span>
 			{#if $station?.show}
-				<button class="find" title="Find anything (⌘K)" onclick={() => (palette = true)}>
-					<Search size={14} /><span>Find</span><kbd>⌘K</kbd>
+				<button class="tb-icon" title="Find anything (⌘K)" aria-label="Find" onclick={() => (palette = true)}>
+					<Search size={16} /><kbd>⌘K</kbd>
 				</button>
 				<!-- The one lock there is. Off, every edit handle is where its object is;
-				     on, the console still acts and changes nothing. See `stores/showLock.ts`. -->
+				     on, the console still acts and changes nothing — and says so in words,
+				     because a locked desk somebody does not know is locked looks broken.
+				     See `stores/showLock.ts`. -->
 				<button
-					class="lock"
+					class="tb-icon lock"
 					class:on={$showLocked}
 					aria-pressed={$showLocked}
+					aria-label={$showLocked ? 'Unlock the show' : 'Lock the show'}
 					title={$showLocked
 						? 'Show lock is on: acts work, nothing can be edited. Click to unlock.'
 						: 'Lock the show: hide every edit handle on this screen'}
 					onclick={toggleShowLock}
 				>
-					{#if $showLocked}<Lock size={14} /><span>Show locked</span>{:else}<LockOpen size={14} /><span>Lock</span>{/if}
+					{#if $showLocked}<Lock size={16} /><span>Show locked</span>{:else}<LockOpen size={16} />{/if}
 				</button>
+				<!-- Setup is a mode, not a tile, and not a menu either: it opens the
+				     full-screen dialog. See `components/setup/Setup.svelte`. -->
+				<button class="tb-icon" class:on={$setupSection !== null} title="Setup: patch, devices, I/O, network, stations…" onclick={toggleSetup}>
+					<Settings size={16} /><span>Setup</span>
+				</button>
+				<span class="tb-sep"></span>
 			{/if}
 			<UserBar />
 			<ConnectionStatus {connected} />
@@ -363,11 +382,21 @@
 		padding: 0;
 	}
 
+	/* A console is controls, not a document: a drag that misses a fader would
+	   otherwise paint every label it crossed. What somebody does copy — a field, a
+	   log line, a plugin's output — says so. */
 	:global(body) {
+		user-select: none;
+		-webkit-user-select: none;
 		background: var(--bg);
 		color: var(--text);
 		font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
 		font-size: 14px;
+	}
+
+	:global(input, textarea, [contenteditable], pre, .selectable) {
+		user-select: text;
+		-webkit-user-select: text;
 	}
 
 	.shell {
@@ -379,8 +408,8 @@
 	.topbar {
 		display: flex;
 		align-items: center;
-		gap: 16px;
-		padding: 0 16px;
+		gap: 4px;
+		padding: 0 12px;
 		height: 44px;
 		background: var(--bg-chrome);
 		border-bottom: 1px solid var(--line-strong);
@@ -391,74 +420,19 @@
 		flex: 1;
 	}
 
-	.find,
-	.lock {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		height: 28px;
-		padding: 0 10px;
-		background: var(--bg-raised);
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius);
-		color: var(--text-dim);
-		font: inherit;
-		font-size: var(--font-sm);
-		cursor: pointer;
-		white-space: nowrap;
-	}
-	.find:hover,
-	.lock:hover {
-		color: var(--text-bright);
-		border-color: var(--line-input);
-	}
-	.find kbd {
-		font: inherit;
-		font-size: 10px;
-		color: var(--text-faint);
-		border: 1px solid var(--line-strong);
-		border-radius: 3px;
-		padding: 0 4px;
-	}
-	.lock.on {
+	/* On is amber, the console's color for something holding. */
+	.lock.on,
+	.lock.on:hover {
 		color: var(--live);
-		border-color: var(--live);
 		background: color-mix(in srgb, var(--live) 12%, transparent);
 	}
 
-	.setup-btn {
-		background: none;
-		border: none;
-		color: var(--text-dim);
-		font: inherit;
-		font-size: var(--font-sm, 12px);
-		font-weight: 600;
-		cursor: pointer;
-		padding: 4px 2px;
-		white-space: nowrap;
-	}
-	.setup-btn:hover,
-	.setup-btn.on {
-		color: var(--text-bright);
-	}
-	.caret {
-		margin-left: 5px;
-		color: var(--text-faint);
-	}
-
 	.brand {
+		padding: 0 6px;
 		font-weight: 600;
 		letter-spacing: 0.05em;
 		color: var(--text-bright);
 		white-space: nowrap;
-	}
-
-	.version {
-		margin-left: 6px;
-		font-weight: 400;
-		font-size: 0.7rem;
-		letter-spacing: 0;
-		color: var(--text-faint);
 	}
 
 	main {

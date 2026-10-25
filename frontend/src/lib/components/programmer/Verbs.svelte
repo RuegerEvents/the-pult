@@ -76,31 +76,36 @@
 {/if}
 
 <style>
+	/* One control rather than three buttons: the three are one thought — what to do
+	   with what is in the programmer — and a group reads as that. */
 	.verbs {
-		display: flex;
-		gap: 4px;
+		display: inline-flex;
+		height: 30px;
+		border: 1px solid var(--line-strong, #3a3a3a);
+		border-radius: 6px;
+		overflow: hidden;
 	}
 	.verb {
-		background: var(--bg-raised, #252525);
-		border: 1px solid var(--line-strong, #3a3a3a);
-		border-radius: var(--radius, 4px);
-		color: var(--text-dim, #888);
+		background: none;
+		border: none;
+		border-right: 1px solid var(--line-strong, #3a3a3a);
+		color: var(--text, #ddd);
 		font: inherit;
 		font-size: var(--font-sm, 12px);
-		font-weight: 600;
-		padding: 4px 12px;
+		font-weight: 500;
+		padding: 0 14px;
 		cursor: pointer;
 		white-space: nowrap;
 	}
+	.verb:last-child {
+		border-right: none;
+	}
 	.verb:hover:not(:disabled) {
+		background: var(--bg-hover, #2a2a2a);
 		color: var(--text-bright, #fff);
-		border-color: var(--live, #f59e0b);
 	}
 	.verb:disabled {
 		color: var(--text-faint, #555);
-		cursor: not-allowed;
-	}
-	.quiet:hover:not(:disabled) {
-		border-color: var(--line-input, #555);
+		cursor: default;
 	}
 </style>

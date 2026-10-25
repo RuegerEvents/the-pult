@@ -54,8 +54,13 @@ describe('which recordings are rolling', () => {
 
 	it('carries the timeline’s own transport', () => {
 		expect(rolling([aTimeline({ rate: 2 })])).toEqual([
-			{ sha: 'abc', anchorMs: 1000, positionMs: 500, rate: 2 }
+			{ sha: 'abc', anchorMs: 1000, positionMs: 500, rate: 2, levels: true }
 		]);
+	});
+
+	it('leaves the sequence levels to their faders while the timeline records a pass', () => {
+		const recording = aTimeline({ recording: { Programmer: { release: true } } });
+		expect(rolling([recording])[0].levels).toBe(false);
 	});
 
 	it('moves the playhead the other way from a take’s nudge', () => {

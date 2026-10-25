@@ -33,7 +33,7 @@ import { collection } from './show.js';
 const assetUrl = (sha: string) => `/assets/${sha}`;
 
 /** What one enabled track of one running timeline comes to. */
-type Rolling = { sha: string; anchorMs: number; positionMs: number; rate: number };
+type Rolling = { sha: string; anchorMs: number; positionMs: number; rate: number; levels: boolean };
 
 /**
  * Which recordings a set of timelines is playing.
@@ -46,13 +46,17 @@ export function rolling(timelines: Timeline[]): Rolling[] {
 	const out: Rolling[] = [];
 	for (const timeline of timelines) {
 		if (!timeline.running) continue;
+		// A timeline recording a new pass leaves the sequences' levels to their faders,
+		// as the station's `playing_tracks` does: the fader is what is being recorded.
+		const recording = !!timeline.recording && 'Programmer' in timeline.recording;
 		for (const track of timeline.tracks) {
 			if (!track.enabled) continue;
 			out.push({
 				sha: track.asset,
 				anchorMs: timeline.anchor_ms,
 				positionMs: Math.max(0, timeline.position_at_anchor_ms - track.offset_ms),
-				rate: timeline.rate
+				rate: timeline.rate,
+				levels: !recording
 			});
 		}
 	}
@@ -111,7 +115,7 @@ export const tracks: Readable<number> = readable(0, (set) => {
 
 			for (const track of wanted) {
 				if (loaded.has(track.sha)) {
-					playTrack(track.sha, track.anchorMs, track.positionMs, track.rate);
+					playTrack(track.sha, track.anchorMs, track.positionMs, track.rate, track.levels);
 					playing.add(track.sha);
 					continue;
 				}
@@ -126,7 +130,7 @@ export const tracks: Readable<number> = readable(0, (set) => {
 					.then((bytes) => {
 						if (!live) return;
 						loadTrack(track.sha, new Uint8Array(bytes));
-						playTrack(track.sha, track.anchorMs, track.positionMs, track.rate);
+						playTrack(track.sha, track.anchorMs, track.positionMs, track.rate, track.levels);
 						playing.add(track.sha);
 						set(loaded.size);
 					})

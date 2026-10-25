@@ -40,6 +40,27 @@
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { Wire, wireKey } from '$lib/wire.js';
 	import { viewFor } from './views.js';
+	import Help from '../Help.svelte';
+	import { collection } from '$lib/stores/show.js';
+	import { openSetup } from '$lib/stores/setup.js';
+
+	const fixtures = collection('fixtures');
+	/**
+	 * DMX universes the rig is patched on that no enabled Art-Net or sACN output
+	 * carries. Nothing goes out for them, so there is no wire to show — and saying so
+	 * by name beats a picker that simply does not offer them.
+	 */
+	const uncarried = $derived.by(() => {
+		const patched = new Set<number>();
+		for (const f of $fixtures) {
+			if ('Dmx' in f.address) for (const b of f.address.Dmx.breaks) patched.add(b.universe);
+		}
+		const dmx = outputs.filter((o) => o.enabled && (o.kind === 'Artnet' || o.kind === 'Sacn'));
+		// An output naming no universes carries every universe in the patch.
+		if (dmx.some((o) => o.universes.length === 0)) return [];
+		const carried = new Set(dmx.flatMap((o) => o.universes));
+		return [...patched].filter((u) => !carried.has(u)).sort((a, b) => a - b);
+	});
 
 	const client = getClientContext();
 	const data = getDataContext();
@@ -201,13 +222,26 @@
 
 <div class="wire">
 	<header>
-		<h2>On the wire</h2>
+		<h2>
+			On the wire
+			<Help label="About this panel">
+				<p>
+					What each output put on its cable, and what each input received. Drawn ten times a
+					second while you are looking, and not sent again when nothing has changed — so a
+					settled rig holds still rather than going blank.
+				</p>
+				<p>
+					An input shows the <em>merged</em> image: highest priority present, and the highest of
+					each slot among equals.
+				</p>
+			</Help>
+		</h2>
 		<select
 			class="picker"
 			value={watching ?? ''}
 			onchange={(e) => watch(e.currentTarget.value || null, null)}
 		>
-			<option value="">nothing</option>
+			<option value="" disabled hidden>Choose a wire…</option>
 			{#each offered as each (each.key)}
 				<option value={each.key}>
 					{each.incoming ? '← ' : ''}{each.name}
@@ -218,6 +252,15 @@
 			{/each}
 		</select>
 	</header>
+
+	{#if uncarried.length > 0}
+		<p class="uncarried">
+			{uncarried.length === 1 ? 'Universe' : 'Universes'} {uncarried.join(', ')}
+			{uncarried.length === 1 ? 'is' : 'are'} patched, but no Art-Net or sACN output carries
+			{uncarried.length === 1 ? 'it' : 'them'}, so nothing goes out.
+			<button class="btn btn-ghost btn-small" onclick={() => openSetup('outputs')}>Add an output</button>
+		</p>
+	{/if}
 
 	{#if offered.length === 0}
 		<p class="empty">
@@ -232,8 +275,10 @@
 		{#each view.sections as section, at (at)}
 			{@const Section = viewFor(section.body.shape)}
 			<section class="block">
-				<h3>{section.title}</h3>
-				{#if section.note}<p class="note">{section.note}</p>{/if}
+				<h3>
+					{section.title}
+					{#if section.note}<Help label="About {section.title}">{section.note}</Help>{/if}
+				</h3>
 				<Section
 					shape={section.body.shape}
 					of={section.body.of}
@@ -242,12 +287,6 @@
 				/>
 			</section>
 		{/each}
-		<p class="foot">
-			Drawn ten times a second while you are looking, and not sent again when nothing has
-			changed — so a settled rig holds still rather than going blank. An input shows the
-			<em>merged</em> image: highest priority present, and the highest of each slot among
-			equals.
-		</p>
 	{/if}
 </div>
 
@@ -255,10 +294,11 @@
 	.wire { padding: 16px 20px; }
 	header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
+	h2, h3 { display: flex; align-items: center; gap: 6px; }
 	h3 { font-size: 12px; font-weight: 600; color: #ccc; margin: 0 0 6px; }
+	.uncarried { color: #e0a060; font-size: 12px; margin: 0 0 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+	.btn-small { min-height: 24px; padding: 0 10px; font-size: 12px; }
 	.picker { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 4px 6px; font: inherit; }
 	.block { margin-bottom: 20px; }
-	.note { color: #777; font-size: 12px; margin: 0 0 8px; }
 	.empty { color: #777; font-size: 13px; padding: 8px 0; }
-	.foot { color: #666; font-size: 12px; margin-top: 12px; font-style: italic; }
 </style>

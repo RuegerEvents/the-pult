@@ -100,6 +100,22 @@ fn a_cable_going_away_becomes_a_fault_on_the_row() {
     assert!(net.bindings()[0].fault.is_some());
 }
 
+/// Wifi to ethernet: the address moves, and what browses has to hear about it. The
+/// same reading twice, a reordering, or a change only on loopback is not a move.
+#[test]
+fn an_address_moving_ticks_and_a_reading_that_moves_nothing_does_not() {
+    let net = a_station(NetworkPrefs::default());
+    let changes = net.address_changes();
+    let seen = *changes.borrow();
+
+    net.observe(vec![iface("en5", "10.0.1.7"), iface("lo0", "127.0.0.1")]);
+    net.observe(vec![iface("lo0", "127.0.0.2"), iface("en5", "10.0.1.7")]);
+    assert_eq!(*changes.borrow(), seen, "nothing anybody could reach this machine at moved");
+
+    net.observe(vec![iface("lo0", "127.0.0.1"), iface("en7", "10.0.1.8")]);
+    assert_eq!(*changes.borrow(), seen + 1, "the wifi went and the ethernet came");
+}
+
 #[test]
 fn a_row_beats_the_preference_and_the_preference_beats_nothing() {
     let mine = NodeId::new();

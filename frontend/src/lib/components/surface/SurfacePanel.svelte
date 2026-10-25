@@ -12,7 +12,6 @@
 	 * one Ctrl-Z however many fields of a tile it touched.
 	 */
 
-	import { focusOnMount } from '$lib/actions.js';
 	import type {
 		ParameterKind,
 		Surface,
@@ -43,6 +42,10 @@
 	import SurfaceTiles from './SurfaceTiles.svelte';
 	import Card from '$lib/components/objects/Card.svelte';
 	import QrCode from './QrCode.svelte';
+	import Dialog from '$lib/components/Dialog.svelte';
+	import NameDialog from '$lib/components/NameDialog.svelte';
+	import { addToast } from '$lib/toasts.js';
+	import { copyText, uuid } from '$lib/uuid.js';
 
 	const data = getDataContext();
 	const station = getStationContext();
@@ -51,10 +54,11 @@
 
 	let chosen = $state<string | null>(null);
 	let creating = $state(false);
-	let newName = $state('');
-	let adding = $state<TileKind>('VariableReadout');
-	let problem = $state<string | null>(null);
 	let showLink = $state(false);
+	let addingMenu = $state(false);
+	let deleting = $state(false);
+	/** The tile being edited: picked by clicking it in the preview. */
+	let selectedTile = $state<string | null>(null);
 
 	const surface = $derived<Surface | null>(
 		$surfaces.find((s) => s.id === chosen) ?? $surfaces[0] ?? null
@@ -78,46 +82,56 @@
 
 	async function write(tiles: SurfaceTile[]) {
 		if (!surface) return;
-		problem = null;
 		beginGesture();
 		try {
 			await data.surfaces.byId(surface.id).tiles.set(tiles);
 		} catch (e) {
-			problem = e instanceof Error ? e.message : String(e);
+			addToast(e instanceof Error ? e.message : String(e));
 		} finally {
 			endGesture();
 		}
 	}
 
+	const tileBeingEdited = $derived(surface?.tiles.find((t) => t.id === selectedTile) ?? null);
+
+	/** Whether the show has anything a tile of this kind could point at yet. */
+	const available = (kind: TileKind) => kind === 'Heading' || defaultTarget(kind, $surfaceShow) !== null;
+
 	const patch = (tile: SurfaceTile, change: Partial<SurfaceTile>) =>
 		surface && write(patchTile(surface.tiles, tile.id, change));
 	const retarget = (tile: SurfaceTile, target: TileTarget) => patch(tile, { target });
 
-	async function createSurface() {
-		const name = newName.trim();
-		if (!name) return;
-		const id = crypto.randomUUID();
+	async function createSurface(name: string) {
+		const id = uuid();
 		await data.surfaces.create({ id, name, tiles: [], color: null });
 		chosen = id;
-		newName = '';
-		creating = false;
+		selectedTile = null;
 	}
 
-	async function addTile() {
+	/** A new tile goes at the end and is selected, so its settings are already open. */
+	async function addTile(kind: TileKind) {
+		addingMenu = false;
 		if (!surface) return;
-		const tile = newTile(adding, $surfaceShow);
-		if (!tile) {
-			problem = `The show has nothing a ${TILE_KINDS.find((k) => k.kind === adding)?.label.toLowerCase()} tile could point at yet.`;
-			return;
-		}
+		const tile = newTile(kind, $surfaceShow);
+		if (!tile) return;
 		await write([...surface.tiles, tile]);
+		selectedTile = tile.id;
+	}
+
+	async function deleteSurface() {
+		if (!surface) return;
+		const id = surface.id;
+		deleting = false;
+		chosen = null;
+		selectedTile = null;
+		await data.surfaces.byId(id).delete();
 	}
 
 	/** Changing a tile's kind starts it on the first thing of that kind. */
 	function changeKind(tile: SurfaceTile, kind: TileKind) {
 		const target = defaultTarget(kind, $surfaceShow);
 		if (!target) {
-			problem = 'The show has nothing that kind of tile could point at yet.';
+			addToast('The show has nothing that kind of tile could point at yet.');
 			return;
 		}
 		patch(tile, { target, label: kind === 'Heading' ? tile.label || 'Heading' : tile.label });
@@ -154,25 +168,12 @@
 		<h2>Surfaces</h2>
 		<span class="spacer"></span>
 		{#if surface}
-			<button class="btn btn-ghost" onclick={() => (showLink = !showLink)}>
-				{showLink ? 'Hide link' : 'Open on a phone'}
-			</button>
+			<button class="btn btn-ghost" onclick={() => (showLink = true)}>Open on a phone</button>
 		{/if}
 		{#if $canEdit}
-			<button class="btn btn-ghost" onclick={() => (creating = !creating)}>
-				{creating ? 'Cancel' : '+ Surface'}
-			</button>
+			<button class="btn btn-ghost" onclick={() => (creating = true)}>+ Surface</button>
 		{/if}
 	</header>
-
-	{#if creating && $canEdit}
-		<form class="row" onsubmit={(e) => { e.preventDefault(); createSurface(); }}>
-			<input class="input" placeholder="Name, e.g. Maze entrance" bind:value={newName} use:focusOnMount />
-			<button class="btn btn-primary" type="submit">Create</button>
-		</form>
-	{/if}
-
-	{#if problem}<p class="problem">{problem}</p>{/if}
 
 	{#if $surfaces.length > 0}
 		<!-- The surfaces as cards: a tap shows one here, and the shared menu opens it
@@ -185,7 +186,10 @@
 					color={s.color}
 					state="{s.tiles.length} tile{s.tiles.length === 1 ? '' : 's'}"
 					on={surface?.id === s.id}
-					onact={() => (chosen = s.id)}
+					onact={() => {
+						chosen = s.id;
+						selectedTile = null;
+					}}
 				/>
 			{/each}
 		</div>
@@ -198,254 +202,326 @@
 			show's variables, flow buttons, timelines and sequences.
 		</p>
 	{:else}
-		{#if showLink}
-			<section class="link">
-				<QrCode text={link} size={168} />
-				<div class="link-text">
-					<p>Scan it on a phone on the same network as this station, or type:</p>
-					<a class="url" href={link} target="_blank" rel="noopener">{link}</a>
-					{#if onLoopback && hosts.length > 1}
-						<label class="check">
-							over
-							<select class="input" value={chosenHost} onchange={(e) => (host = e.currentTarget.value)}>
-								{#each hosts as h (h.address)}<option value={h.address}>{h.name} — {h.address}</option>{/each}
-							</select>
-						</label>
-					{/if}
-					<p class="hint">It opens this surface full-screen, with nothing else of the console around it.</p>
-				</div>
-			</section>
-		{/if}
-
 		<div class="work">
-			{#if $canEdit}
-				<div class="build">
-					<div class="row">
-						<input
-							class="input grow"
-							value={surface.name}
-							aria-label="Surface name"
-							onchange={(e) => data.surfaces.byId(surface.id).name.set(e.currentTarget.value)}
-						/>
-						<button
-							class="btn btn-danger"
-							onclick={() => {
-								const id = surface.id;
-								chosen = null;
-								data.surfaces.byId(id).delete();
-							}}
-						>Delete surface</button>
+			<!-- The phone's page is where it is built: click a tile to edit it, + Tile adds
+			     one at the end. What is drawn here is exactly what the phone draws. -->
+			<div class="preview">
+				{#if $canEdit}
+					<div class="preview-head">
+						<span class="hint">{tileBeingEdited ? 'Editing the outlined tile' : 'Click a tile to edit it'}</span>
+						<span class="spacer"></span>
+						<span class="menu-anchor">
+							<button class="btn btn-primary btn-small" aria-haspopup="menu" aria-expanded={addingMenu} onclick={() => (addingMenu = !addingMenu)}>+ Tile</button>
+							{#if addingMenu}
+								<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+								<div class="catch" onclick={() => (addingMenu = false)}></div>
+								<div class="menu" role="menu">
+									{#each TILE_KINDS as k (k.kind)}
+										{@const ok = available(k.kind)}
+										<button
+											role="menuitem"
+											disabled={!ok}
+											title={ok ? undefined : 'The show has nothing this kind of tile could point at yet'}
+											onclick={() => addTile(k.kind)}
+										>{k.label}</button>
+									{/each}
+								</div>
+							{/if}
+						</span>
 					</div>
+				{/if}
+				<div class="phone">
+					<SurfaceTiles
+						{surface}
+						show={$surfaceShow}
+						selected={$canEdit ? selectedTile : null}
+						onselect={$canEdit ? (id) => (selectedTile = selectedTile === id ? null : id) : undefined}
+					/>
+				</div>
+			</div>
 
-					<ol class="editor">
-						{#each surface.tiles as tile, index (tile.id)}
-							{@const target = tile.target}
-							<li class="tile-row">
-								<div class="line">
+			{#if $canEdit}
+				<aside class="inspector">
+					{#if tileBeingEdited}
+						{@const tile = tileBeingEdited}
+						{@const target = tile.target}
+						{@const index = surface.tiles.indexOf(tile)}
+						<div class="inspector-head">
+							<h3>Tile</h3>
+							<span class="spacer"></span>
+							<button class="btn btn-icon" title="Earlier" disabled={index === 0} onclick={() => write(moveTile(surface.tiles, index, index - 1))}>↑</button>
+							<button class="btn btn-icon" title="Later" disabled={index === surface.tiles.length - 1} onclick={() => write(moveTile(surface.tiles, index, index + 1))}>↓</button>
+							<button
+								class="btn btn-danger btn-icon"
+								title="Remove this tile"
+								onclick={() => {
+									selectedTile = null;
+									write(removeTile(surface.tiles, tile.id));
+								}}>×</button
+							>
+							<button class="btn btn-ghost btn-small" onclick={() => (selectedTile = null)}>Done</button>
+						</div>
+						<div class="tile-fields">
+						<div class="line">
+							<select
+								class="input"
+								value={target.kind}
+								aria-label="Kind"
+								onchange={(e) => changeKind(tile, e.currentTarget.value as TileKind)}
+							>
+								{#each TILE_KINDS as k (k.kind)}<option value={k.kind}>{k.label}</option>{/each}
+							</select>
+							<input
+								class="input grow"
+								placeholder={tileLabel({ ...tile, label: '' }, $surfaceShow)}
+								value={tile.label}
+								aria-label="Label"
+								onchange={(e) => patch(tile, { label: e.currentTarget.value })}
+							/>
+						</div>
+
+						<div class="line">
+							{#if target.kind === 'FlowButton'}
+								<select class="input" value={target.node_id} onchange={(e) => retarget(tile, { kind: 'FlowButton', node_id: e.currentTarget.value })}>
+									{#each flowButtons($surfaceShow) as b (b.id)}<option value={b.id}>{b.name}</option>{/each}
+								</select>
+							{:else if target.kind === 'VariableReadout' || target.kind === 'VariableSetter'}
+								<select
+									class="input"
+									value={target.variable_id}
+									onchange={(e) => retarget(tile, { ...target, variable_id: e.currentTarget.value })}
+								>
+									{#each $surfaceShow.variables as v (v.id)}<option value={v.id}>{v.name}</option>{/each}
+								</select>
+								{#if target.kind === 'VariableSetter'}
 									<select
 										class="input"
-										value={target.kind}
-										aria-label="Kind"
-										onchange={(e) => changeKind(tile, e.currentTarget.value as TileKind)}
+										value={opTag(target.op)}
+										onchange={(e) => retarget(tile, { ...target, op: opFrom(e.currentTarget.value, opAmount(target.op)) })}
 									>
-										{#each TILE_KINDS as k (k.kind)}<option value={k.kind}>{k.label}</option>{/each}
+										<option value="Up">add</option>
+										<option value="Down">subtract</option>
+										<option value="Set">set to</option>
+										<option value="Toggle">toggle</option>
+										<option value="Reset">reset</option>
 									</select>
+									{#if opTag(target.op) === 'Up' || opTag(target.op) === 'Down' || opTag(target.op) === 'Set'}
+										<input
+											class="input narrow"
+											type="number"
+											value={opAmount(target.op)}
+											aria-label="Amount"
+											onchange={(e) => retarget(tile, { ...target, op: opFrom(opTag(target.op), e.currentTarget.valueAsNumber || 0) })}
+										/>
+									{/if}
+								{/if}
+							{:else if target.kind === 'Timeline'}
+								<select class="input" value={target.timeline_id} onchange={(e) => retarget(tile, { ...target, timeline_id: e.currentTarget.value })}>
+									{#each $surfaceShow.timelines as t (t.id)}<option value={t.id}>{t.name}</option>{/each}
+								</select>
+								<label class="check">
 									<input
-										class="input grow"
-										placeholder={tileLabel({ ...tile, label: '' }, $surfaceShow)}
-										value={tile.label}
-										aria-label="Label"
-										onchange={(e) => patch(tile, { label: e.currentTarget.value })}
+										type="checkbox"
+										checked={target.from_start}
+										onchange={(e) => retarget(tile, { ...target, from_start: e.currentTarget.checked })}
 									/>
-									<button class="btn btn-icon" title="Up" disabled={index === 0} onclick={() => write(moveTile(surface.tiles, index, index - 1))}>↑</button>
-									<button class="btn btn-icon" title="Down" disabled={index === surface.tiles.length - 1} onclick={() => write(moveTile(surface.tiles, index, index + 1))}>↓</button>
-									<button class="btn btn-danger btn-icon" title="Remove" onclick={() => write(removeTile(surface.tiles, tile.id))}>×</button>
-								</div>
+									play from the top
+								</label>
+							{:else if target.kind === 'SequenceGo' || target.kind === 'SequenceOff'}
+								<select class="input" value={target.sequence_id} onchange={(e) => retarget(tile, { ...target, sequence_id: e.currentTarget.value })}>
+									{#each $surfaceShow.sequences as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+								</select>
+							{:else if target.kind === 'Parameter'}
+								<select class="input" value={target.fixture_id} onchange={(e) => pickParameter(tile, e.currentTarget.value)}>
+									{#each $surfaceShow.fixtures as f (f.id)}<option value={f.id}>{f.name}</option>{/each}
+								</select>
+								<select
+									class="input"
+									value={parameterKey(target.parameter)}
+									onchange={(e) => pickParameter(tile, target.fixture_id, e.currentTarget.value)}
+								>
+									{#each parametersOf(target.fixture_id) as p (parameterKey(p.kind))}
+										<option value={parameterKey(p.kind)}>{displayLabel(p.kind)}</option>
+									{/each}
+								</select>
+							{/if}
 
-								<div class="line">
-									{#if target.kind === 'FlowButton'}
-										<select class="input" value={target.node_id} onchange={(e) => retarget(tile, { kind: 'FlowButton', node_id: e.currentTarget.value })}>
-											{#each flowButtons($surfaceShow) as b (b.id)}<option value={b.id}>{b.name}</option>{/each}
-										</select>
-									{:else if target.kind === 'VariableReadout' || target.kind === 'VariableSetter'}
-										<select
-											class="input"
-											value={target.variable_id}
-											onchange={(e) => retarget(tile, { ...target, variable_id: e.currentTarget.value })}
-										>
-											{#each $surfaceShow.variables as v (v.id)}<option value={v.id}>{v.name}</option>{/each}
-										</select>
-										{#if target.kind === 'VariableSetter'}
-											<select
-												class="input"
-												value={opTag(target.op)}
-												onchange={(e) => retarget(tile, { ...target, op: opFrom(e.currentTarget.value, opAmount(target.op)) })}
-											>
-												<option value="Up">add</option>
-												<option value="Down">subtract</option>
-												<option value="Set">set to</option>
-												<option value="Toggle">toggle</option>
-												<option value="Reset">reset</option>
-											</select>
-											{#if opTag(target.op) === 'Up' || opTag(target.op) === 'Down' || opTag(target.op) === 'Set'}
-												<input
-													class="input narrow"
-													type="number"
-													value={opAmount(target.op)}
-													aria-label="Amount"
-													onchange={(e) => retarget(tile, { ...target, op: opFrom(opTag(target.op), e.currentTarget.valueAsNumber || 0) })}
-												/>
-											{/if}
-										{/if}
-									{:else if target.kind === 'Timeline'}
-										<select class="input" value={target.timeline_id} onchange={(e) => retarget(tile, { ...target, timeline_id: e.currentTarget.value })}>
-											{#each $surfaceShow.timelines as t (t.id)}<option value={t.id}>{t.name}</option>{/each}
-										</select>
-										<label class="check">
-											<input
-												type="checkbox"
-												checked={target.from_start}
-												onchange={(e) => retarget(tile, { ...target, from_start: e.currentTarget.checked })}
-											/>
-											play from the top
-										</label>
-									{:else if target.kind === 'SequenceGo' || target.kind === 'SequenceOff'}
-										<select class="input" value={target.sequence_id} onchange={(e) => retarget(tile, { ...target, sequence_id: e.currentTarget.value })}>
-											{#each $surfaceShow.sequences as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
-										</select>
-									{:else if target.kind === 'Parameter'}
-										<select class="input" value={target.fixture_id} onchange={(e) => pickParameter(tile, e.currentTarget.value)}>
-											{#each $surfaceShow.fixtures as f (f.id)}<option value={f.id}>{f.name}</option>{/each}
-										</select>
-										<select
-											class="input"
-											value={parameterKey(target.parameter)}
-											onchange={(e) => pickParameter(tile, target.fixture_id, e.currentTarget.value)}
-										>
-											{#each parametersOf(target.fixture_id) as p (parameterKey(p.kind))}
-												<option value={parameterKey(p.kind)}>{displayLabel(p.kind)}</option>
-											{/each}
-										</select>
-									{/if}
+							{#if target.kind !== 'Heading'}
+								<select
+									class="input"
+									value={tile.size}
+									aria-label="Width"
+									onchange={(e) => patch(tile, { size: e.currentTarget.value as SurfaceTile['size'] })}
+								>
+									<option value="Half">half width</option>
+									<option value="Full">full width</option>
+								</select>
+								<label class="check" title="The tile's own color">
+									color
+									<input
+										type="color"
+										value={tile.color ?? '#2d3a4f'}
+										onchange={(e) => patch(tile, { color: e.currentTarget.value })}
+									/>
+								</label>
+								{#if tile.color}
+									<button class="btn btn-ghost" onclick={() => patch(tile, { color: null })}>no color</button>
+								{/if}
+							{/if}
+						</div>
 
-									{#if target.kind !== 'Heading'}
-										<select
-											class="input"
-											value={tile.size}
-											aria-label="Width"
-											onchange={(e) => patch(tile, { size: e.currentTarget.value as SurfaceTile['size'] })}
-										>
-											<option value="Half">half width</option>
-											<option value="Full">full width</option>
-										</select>
-										<label class="check" title="The tile's own color">
-											color
-											<input
-												type="color"
-												value={tile.color ?? '#2d3a4f'}
-												onchange={(e) => patch(tile, { color: e.currentTarget.value })}
-											/>
-										</label>
-										{#if tile.color}
-											<button class="btn btn-ghost" onclick={() => patch(tile, { color: null })}>no color</button>
-										{/if}
-									{/if}
-								</div>
-
-								{#if target.kind === 'VariableReadout'}
-									<div class="line stops">
-										<span class="hint">Color from a value up:</span>
-										{#each target.stops as stop, s (s)}
-											<span class="stop">
-												≥
-												<input
-													class="input narrow"
-													type="number"
-													value={stop.at}
-													aria-label="From"
-													onchange={(e) =>
-														retarget(tile, {
-															...target,
-															stops: target.stops.map((x, i) => (i === s ? { ...x, at: e.currentTarget.valueAsNumber || 0 } : x))
-														})}
-												/>
-												<input
-													type="color"
-													value={stop.color}
-													onchange={(e) =>
-														retarget(tile, {
-															...target,
-															stops: target.stops.map((x, i) => (i === s ? { ...x, color: e.currentTarget.value } : x))
-														})}
-												/>
-												<button
-													class="btn btn-icon"
-													title="Remove this color"
-													onclick={() => retarget(tile, { ...target, stops: target.stops.filter((_, i) => i !== s) })}
-												>×</button>
-											</span>
-										{/each}
-										<button
-											class="btn btn-ghost"
-											onclick={() =>
+						{#if target.kind === 'VariableReadout'}
+							<div class="line stops">
+								<span class="hint">Color from a value up:</span>
+								{#each target.stops as stop, s (s)}
+									<span class="stop">
+										≥
+										<input
+											class="input narrow"
+											type="number"
+											value={stop.at}
+											aria-label="From"
+											onchange={(e) =>
 												retarget(tile, {
 													...target,
-													stops: [
-														...target.stops,
-														target.stops.length === 0
-															? { at: 0, color: '#22c55e' }
-															: { at: Math.max(...target.stops.map((x) => x.at)) + 1, color: '#ef4444' }
-													]
+													stops: target.stops.map((x, i) => (i === s ? { ...x, at: e.currentTarget.valueAsNumber || 0 } : x))
 												})}
-										>+ color</button>
-									</div>
-								{/if}
-							</li>
-						{/each}
-					</ol>
-
-					<div class="row">
-						<select class="input" bind:value={adding} aria-label="Kind of tile to add">
-							{#each TILE_KINDS as k (k.kind)}<option value={k.kind}>{k.label}</option>{/each}
-						</select>
-						<button class="btn btn-primary" onclick={addTile}>+ Tile</button>
-					</div>
-				</div>
+										/>
+										<input
+											type="color"
+											value={stop.color}
+											onchange={(e) =>
+												retarget(tile, {
+													...target,
+													stops: target.stops.map((x, i) => (i === s ? { ...x, color: e.currentTarget.value } : x))
+												})}
+										/>
+										<button
+											class="btn btn-icon"
+											title="Remove this color"
+											onclick={() => retarget(tile, { ...target, stops: target.stops.filter((_, i) => i !== s) })}
+										>×</button>
+									</span>
+								{/each}
+								<button
+									class="btn btn-ghost"
+									onclick={() =>
+										retarget(tile, {
+											...target,
+											stops: [
+												...target.stops,
+												target.stops.length === 0
+													? { at: 0, color: '#22c55e' }
+													: { at: Math.max(...target.stops.map((x) => x.at)) + 1, color: '#ef4444' }
+											]
+										})}
+								>+ color</button>
+							</div>
+						{/if}
+						</div>
+					{:else}
+						<div class="inspector-head"><h3>Surface</h3></div>
+						<label class="field">
+							<span>Name</span>
+							<input
+								class="input"
+								value={surface.name}
+								aria-label="Surface name"
+								onchange={(e) => data.surfaces.byId(surface.id).name.set(e.currentTarget.value)}
+							/>
+						</label>
+						<p class="hint">{surface.tiles.length} tile{surface.tiles.length === 1 ? '' : 's'}. Click one in the preview to change it.</p>
+						<button class="btn btn-danger btn-small delete" onclick={() => (deleting = true)}>Delete surface</button>
+					{/if}
+				</aside>
 			{/if}
-
-			<div class="preview" class:framed={$canEdit}>
-				{#if $canEdit}<p class="hint">As a phone draws it:</p>{/if}
-				<SurfaceTiles {surface} show={$surfaceShow} />
-			</div>
 		</div>
 	{/if}
 </div>
 
+{#if creating}
+	<NameDialog
+		title="New surface"
+		placeholder="Name, e.g. Maze entrance"
+		onsubmit={createSurface}
+		onclose={() => (creating = false)}
+	/>
+{/if}
+
+{#if showLink && surface}
+	<Dialog title="Open “{surface.name}” on a phone" onclose={() => (showLink = false)}>
+		<section class="link">
+			<QrCode text={link} size={168} />
+			<div class="link-text">
+				<p>Scan it on a phone on the same network as this station, or type:</p>
+				<a class="url" href={link} target="_blank" rel="noopener">{link}</a>
+				{#if onLoopback && hosts.length > 1}
+					<label class="check">
+						over
+						<select class="input" value={chosenHost} onchange={(e) => (host = e.currentTarget.value)}>
+							{#each hosts as h (h.address)}<option value={h.address}>{h.name} — {h.address}</option>{/each}
+						</select>
+					</label>
+				{/if}
+				<p class="hint">It opens this surface full-screen, with nothing else of the console around it.</p>
+			</div>
+		</section>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => copyText(link).then(() => addToast('Link copied', 'success'), (e) => addToast(String(e)))}>Copy link</button>
+			<button class="btn btn-primary" onclick={() => (showLink = false)}>Done</button>
+		{/snippet}
+	</Dialog>
+{/if}
+
+{#if deleting && surface}
+	<Dialog title="Delete a surface" onclose={() => (deleting = false)}>
+		<p class="ask">
+			<b>{surface.name}</b> and its {surface.tiles.length} tile{surface.tiles.length === 1 ? '' : 's'} are deleted.
+			A phone showing it shows nothing. Ctrl-Z brings it back.
+		</p>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (deleting = false)}>Cancel</button>
+			<button class="btn btn-danger" onclick={deleteSurface}>Delete</button>
+		{/snippet}
+	</Dialog>
+{/if}
+
 <style>
 	.surface-panel { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-	.head, .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+	.head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 	.spacer { flex: 1; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
+	h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #888; }
 	.grow { flex: 1; min-width: 120px; }
 	.narrow { width: 72px; }
-	.editor { list-style: none; display: flex; flex-direction: column; gap: 8px; }
-	.tile-row { border: 1px solid #2e2e2e; border-radius: 4px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 	.line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 	.check { display: flex; align-items: center; gap: 5px; color: #999; font-size: 12px; }
 	.stop { display: inline-flex; align-items: center; gap: 4px; }
-	.link { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; background: #202020; border: 1px solid #333; border-radius: 6px; padding: 12px; }
+	.link { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 16px; }
 	.link-text { display: flex; flex-direction: column; gap: 6px; min-width: 200px; flex: 1; font-size: 13px; color: #bbb; }
 	.url { font-size: 18px; font-weight: 600; color: #8ab4ff; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-	/* The list and the preview side by side when the tile is wide enough, so an edit
-	   is seen landing; stacked when it is not. */
+	/* The phone's page and the one tile being edited, side by side when there is
+	   room, so an edit is seen landing; stacked when there is not. */
 	.work { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
-	.build { flex: 1 1 400px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 	/* The preview at a phone's width, so a tile that wraps here wraps there. */
-	.preview { flex: 0 1 380px; max-width: 420px; }
-	.preview.framed { border: 1px dashed #3a3a3a; border-radius: 8px; padding: 10px; position: sticky; top: 0; }
+	.preview { flex: 0 1 380px; max-width: 420px; display: flex; flex-direction: column; gap: 8px; }
+	.preview-head { display: flex; align-items: center; gap: 8px; }
+	.phone { border: 1px solid #333; border-radius: 14px; padding: 12px; background: #141414; }
+	.inspector { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 10px; border: 1px solid #2e2e2e; border-radius: 6px; padding: 12px; background: #1c1c1c; }
+	.inspector-head { display: flex; align-items: center; gap: 6px; }
+	.tile-fields { display: flex; flex-direction: column; gap: 8px; }
+	.field { display: grid; grid-template-columns: 60px minmax(0, 1fr); align-items: center; gap: 8px; color: #999; font-size: 12px; }
+	.delete { align-self: flex-start; }
+	.btn-small { min-height: 26px; padding: 0 10px; font-size: 12px; }
+	.menu-anchor { position: relative; }
+	.catch { position: fixed; inset: 0; z-index: 19; }
+	.menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; min-width: 190px; padding: 4px; background: #222; border: 1px solid #3a3a3a; border-radius: 6px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.4); display: flex; flex-direction: column; }
+	.menu button { text-align: left; padding: 7px 10px; border: none; border-radius: 4px; background: none; color: #ddd; font-size: 13px; cursor: pointer; }
+	.menu button:hover:not(:disabled) { background: #2e2e2e; }
+	.menu button:disabled { color: #555; cursor: default; }
 	.hint { color: #777; font-size: 12px; }
 	.empty { color: #777; font-size: 12px; line-height: 1.4; }
-	.problem { color: #e05555; font-size: 12px; }
+	.ask { margin: 0; padding: 14px; font-size: 0.85rem; line-height: 1.5; }
 	.boards {
 		display: flex;
 		flex-wrap: wrap;

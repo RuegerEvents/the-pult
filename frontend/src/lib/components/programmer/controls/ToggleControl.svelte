@@ -1,5 +1,10 @@
 <script lang="ts">
-	/** On or off: a relay, a dry contact the console closes. */
+	/**
+	 * On or off: a relay, a dry contact the console closes.
+	 *
+	 * A switch says which it is by where its knob is — right and lit is on — so it
+	 * carries no word beside it repeating that.
+	 */
 
 	let {
 		value,
@@ -10,51 +15,51 @@
 
 <button
 	type="button"
-	class="toggle"
+	class="toggle hit"
 	class:on={value}
 	role="switch"
 	aria-checked={value}
 	aria-label={label}
+	title={value ? 'On' : 'Off'}
 	onclick={() => oninput(!value)}
 >
 	<span class="knob"></span>
-	<span class="text">{value ? 'on' : 'off'}</span>
 </button>
 
 <style>
 	.toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 8px;
-		/* Pressed, not dragged, so the height is padding around a small knob rather
-		   than a 44px pill. */
-		min-height: var(--control-h);
-		padding: 2px 14px 2px 4px;
+		position: relative;
+		flex: none;
+		width: 40px;
+		height: 22px;
+		padding: 0;
 		border: 1px solid var(--line-strong);
-		border-radius: 12px;
+		border-radius: 11px;
 		background: var(--bg-sunken);
-		color: var(--text-dim);
-		font: inherit;
-		font-size: var(--font-sm);
 		cursor: pointer;
+		transition:
+			background 0.12s,
+			border-color 0.12s;
 	}
 	.toggle.on {
 		border-color: var(--live);
-		color: var(--live);
+		background: color-mix(in srgb, var(--live) 35%, var(--bg-sunken));
 	}
 
 	.knob {
-		width: 20px;
-		height: 20px;
+		position: absolute;
+		top: 2px;
+		left: 2px;
+		width: 16px;
+		height: 16px;
 		border-radius: 50%;
 		background: var(--line-input);
-		transition: background 0.12s;
+		transition:
+			transform 0.12s,
+			background 0.12s;
 	}
 	.toggle.on .knob {
+		transform: translateX(18px);
 		background: var(--live);
-	}
-
-	.text {
-		font-family: monospace;
 	}
 </style>

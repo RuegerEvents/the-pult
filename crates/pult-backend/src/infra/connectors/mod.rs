@@ -979,8 +979,18 @@ async fn playing_tracks(
     let Some(cache) = cache else { return Vec::new() };
     let mut playing = Vec::new();
     for timeline in timelines.iter().filter(|timeline| timeline.running) {
+        let recording = recording_from_programmer(timeline);
         for track in timeline.tracks.iter().filter(|track| track.enabled) {
-            let Some(decoded) = cache.get(&track.asset).await else { continue };
+            let Some(mut decoded) = cache.get(&track.asset).await else { continue };
+            // A timeline recording a new pass leaves the sequences' levels to their
+            // faders: the hand on the fader is what is being recorded, and the last
+            // take's level playing over it would fight it. Fixture keys need no such
+            // care — the programmer already beats a track.
+            if recording && decoded.keys.iter().any(|k| k.key == pult_schema::types::sequence::LEVEL_KEY) {
+                let mut kept = (*decoded).clone();
+                kept.keys.retain(|k| k.key != pult_schema::types::sequence::LEVEL_KEY);
+                decoded = std::sync::Arc::new(kept);
+            }
             // A take's own nudge moves the playhead the other way: a track that
             // arrived 40 ms late is played 40 ms earlier.
             let mut transport = timeline.transport();
@@ -990,6 +1000,42 @@ async fn playing_tracks(
         }
     }
     playing
+}
+
+/// Whether a timeline is taking a pass from the programmer right now.
+fn recording_from_programmer(timeline: &Timeline) -> bool {
+    matches!(timeline.recording, Some(pult_schema::types::timeline::RecordSource::Programmer { .. }))
+}
+
+/// The sequences' levels the running takes record at `now_ms`, for the evaluations
+/// that happen at one moment rather than per frame — a flow reading a parameter, a
+/// nudge, setting where a light rests. Read through the same cache the frames use,
+/// and only what it already holds: a take a frame has not decoded yet has not played
+/// yet either.
+pub fn recorded_levels_at(
+    cache: &crate::infra::tracks::TrackCache,
+    timelines: &[Timeline],
+    now_ms: u64,
+) -> HashMap<Uuid, f32> {
+    let mut levels: HashMap<Uuid, (u64, f32)> = HashMap::new();
+    for timeline in timelines.iter().filter(|t| t.running && !recording_from_programmer(t)) {
+        for track in timeline.tracks.iter().filter(|track| track.enabled) {
+            let Some(Some(decoded)) = cache.peek(&track.asset) else { continue };
+            let mut transport = timeline.transport();
+            transport.position_at_anchor_ms =
+                transport.position_at_anchor_ms.saturating_add_signed(-track.offset_ms as i64);
+            for key in decoded.keys.iter().filter(|k| k.key == pult_schema::types::sequence::LEVEL_KEY) {
+                let at = pult_render::TrackAt { points: &key.points, transport };
+                let Some(pult_render::ParameterValue::Float(level)) = at.value_at(now_ms) else { continue };
+                // The most recently started take wins, the rule `Patch::playing` keeps.
+                let newer = levels.get(&key.fixture_id).is_none_or(|(anchor, _)| transport.anchor_ms >= *anchor);
+                if newer {
+                    levels.insert(key.fixture_id, (transport.anchor_ms, *level));
+                }
+            }
+        }
+    }
+    levels.into_iter().map(|(sequence, (_, level))| (sequence, level)).collect()
 }
 
 /// Wait for the set of viewers to change, or for ever where nothing can watch.

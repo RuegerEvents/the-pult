@@ -25,7 +25,7 @@
 	import { createCue, orderedCues, reorderCueIds } from '$lib/cues.js';
 	import { CURVE_LABELS, CURVES } from '$lib/fade.js';
 	import { collection } from '$lib/stores/show.js';
-	import { cueInView, focusedCueSheet, viewCue } from '$lib/stores/cues.js';
+	import { cueInView, focusedCueSheet, sequenceInView, viewCue } from '$lib/stores/cues.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { beginEdit, editingCue } from '$lib/stores/programmer.js';
 	import { getDataContext } from '$lib/ws/context.js';
@@ -40,9 +40,8 @@
 	const referencing = (cue: Cue) => cue.captures.filter((c) => c.preset).length;
 
 	/** Which sequence's cues are on screen. Falls back to the first the show has. */
-	let chosen = $state<string | null>(null);
 	const sequence = $derived(
-		$sequences.find((s) => s.id === chosen) ?? ($sequences[0] as Sequence | undefined) ?? null
+		$sequences.find((s) => s.id === $sequenceInView) ?? ($sequences[0] as Sequence | undefined) ?? null
 	);
 	const rows = $derived(sequence ? orderedCues(sequence, $cues) : []);
 	const activeIndex = $derived(sequence?.active_cue_index ?? null);
@@ -174,7 +173,7 @@
 	<header>
 		<div class="tabs">
 			{#each $sequences as s (s.id)}
-				<button class="tab" class:on={s.id === sequence?.id} onclick={() => (chosen = s.id)}>
+				<button class="tab" class:on={s.id === sequence?.id} onclick={() => sequenceInView.set(s.id)}>
 					{s.name}
 					{#if s.active_cue_index !== null}<span class="dot">●</span>{/if}
 				</button>

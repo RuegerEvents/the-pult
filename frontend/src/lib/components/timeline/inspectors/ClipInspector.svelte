@@ -13,6 +13,7 @@
 	import type { ClipRow } from '$lib/kinds/timeline.kind.js';
 	import { categoryColor } from '$lib/layout/categories.js';
 	import { audioNodes, bytesText, nodeOf, zoneOf } from '$lib/destination.js';
+	import Dialog from '$lib/components/Dialog.svelte';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { openSetup } from '$lib/stores/setup.js';
 	import { audioOutput, audioStatus, current, devices, nodeAudio, writeColumns } from '$lib/stores/timelines.js';
@@ -68,8 +69,26 @@
 	function pickZone(zone: SpeakerZone) {
 		void setAll({ destination: { Zone: { zone: zone.id } } });
 	}
+	/**
+	 * Sending a clip to a node's flash is asked first: an upload is megabytes written
+	 * into the node's flash, which pauses its caches for every sector erased, and is
+	 * not something that should start because somebody clicked a node to look at it.
+	 * Streaming writes nothing and goes straight through.
+	 */
+	let confirmingUpload = $state<{ serial: string; name: string } | null>(null);
 	function pickNode(serial: string) {
+		const storing = rows.some((r) => (nodeOf(r.clip.destination)?.mode ?? 'Clip') === 'Clip');
+		if (storing) {
+			confirmingUpload = { serial, name: nodes.find((n) => n.serial === serial)?.name ?? serial };
+			return;
+		}
 		void change((clip) => ({ destination: { Node: { serial, mode: nodeOf(clip.destination)?.mode ?? 'Clip' } } }));
+	}
+	function confirmUpload() {
+		const ask = confirmingUpload;
+		confirmingUpload = null;
+		if (!ask) return;
+		void setAll({ destination: { Node: { serial: ask.serial, mode: 'Clip' } } });
 	}
 
 	/** Where a zone comes out on the player, in its own channel names where they are known. */
@@ -253,7 +272,10 @@
 				class:on={node.mode === 'Clip'}
 				disabled={!$canEdit}
 				title="Uploaded to the node's flash ahead of time, and started there. Immune to the network once it is there."
-				onclick={() => void setAll({ destination: { Node: { serial: node.serial, mode: 'Clip' } } })}>Stored on the node</button
+				onclick={() =>
+					node.mode === 'Clip' ||
+					(confirmingUpload = { serial: node.serial, name: nodes.find((n) => n.serial === node.serial)?.name ?? node.serial })}
+				>Stored on the node</button
 			>
 			<button
 				class:on={node.mode === 'Stream'}
@@ -299,7 +321,28 @@
 	{/each}
 </div>
 
+{#if confirmingUpload}
+	<Dialog title="Store on the node" onclose={() => (confirmingUpload = null)}>
+		<p class="ask">
+			{rows.length === 1 ? `“${rows[0].name}”` : `${rows.length} clips`} will be uploaded to
+			<b>{confirmingUpload.name}</b> and kept in its flash, so it plays there with no network.
+			An upload pauses the node's caches while it writes; changing a clip's trim later uploads it
+			again once the clip stands still.
+		</p>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (confirmingUpload = null)}>Cancel</button>
+			<button class="btn btn-primary" onclick={confirmUpload}>Upload</button>
+		{/snippet}
+	</Dialog>
+{/if}
+
 <style>
+	.ask {
+		margin: 0;
+		padding: 14px;
+		font-size: 0.85rem;
+		line-height: 1.5;
+	}
 	.pairs {
 		display: grid;
 		grid-template-columns: 1fr 1fr;

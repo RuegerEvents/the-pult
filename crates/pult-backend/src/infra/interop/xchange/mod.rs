@@ -91,6 +91,9 @@ pub struct Discovered {
 pub enum XchangeCommand {
     /// The show, its settings, or which station is leading may have changed.
     Reconsider,
+    /// This machine's addresses moved, which the TCP mode's mDNS daemon does not
+    /// survive — see [`crate::infra::net::Network::address_changes`].
+    AddressesMoved,
     Ask { ask: XchangeAsk, reply: Option<oneshot::Sender<Result<serde_json::Value, String>>> },
     Incoming { message: Message, from: Endpoint, reply: oneshot::Sender<Option<Reply>> },
     /// A file arrived on a connection. Only ever wanted when something is waiting.
@@ -293,12 +296,25 @@ impl XchangeManager {
             });
         }
 
+        {
+            let mut moved = self.net.address_changes();
+            let tx = self.self_tx.clone();
+            tokio::spawn(async move {
+                while moved.changed().await.is_ok() {
+                    if tx.send(XchangeCommand::AddressesMoved).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
         self.reconsider().await;
 
         while let Some(cmd) = self.rx.recv().await {
             match cmd {
                 XchangeCommand::Stop => break,
                 XchangeCommand::Reconsider => self.reconsider().await,
+                XchangeCommand::AddressesMoved => self.readvertise().await,
                 XchangeCommand::Ask { ask, reply } => self.handle_ask(ask, reply).await,
                 XchangeCommand::Incoming { message, from, reply } => {
                     let answer = self.handle_incoming(message, from).await;
@@ -401,6 +417,31 @@ impl XchangeManager {
             }
             Err(why) => {
                 warn!("[xchange] could not start: {why}");
+                self.idle = Some(XchangeIdle::Failed(why));
+            }
+        }
+        self.publish().await;
+    }
+
+    /// Start the TCP mode again on a fresh daemon, because the addresses it advertised
+    /// and browsed on have moved.
+    ///
+    /// Not a [`Self::reconsider`]: nothing about the group changed, so the stations it
+    /// knows and the commits they announced are still true. A station that moved too
+    /// is found again and replaces its row; the WebSocket modes ride a socket the
+    /// operating system re-routes and have nothing here to restart.
+    async fn readvertise(&mut self) {
+        if !matches!(self.transport, Some(Transport::Tcp(_))) {
+            return;
+        }
+        if let Some(Transport::Tcp(tcp)) = self.transport.take() {
+            tcp.stop();
+        }
+        info!("[xchange] this machine's addresses moved; advertising again");
+        match self.start_transport().await {
+            Ok(()) => self.idle = None,
+            Err(why) => {
+                warn!("[xchange] could not start again: {why}");
                 self.idle = Some(XchangeIdle::Failed(why));
             }
         }

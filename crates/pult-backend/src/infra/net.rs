@@ -125,6 +125,19 @@ pub fn read(networks: &Networks) -> Vec<NetInterface> {
     found
 }
 
+/// The addresses another machine could reach this one at, in a stable order: what
+/// [`Network::address_changes`] compares. Loopback and interfaces that are down are
+/// not places anything is found.
+fn addresses_of(interfaces: &[NetInterface]) -> Vec<&str> {
+    let mut addresses: Vec<&str> = interfaces
+        .iter()
+        .filter(|i| i.up && !i.loopback)
+        .flat_map(|i| i.addresses.iter().map(String::as_str))
+        .collect();
+    addresses.sort_unstable();
+    addresses
+}
+
 fn is_loopback(name: &str, addresses: &[sysinfo::IpNetwork]) -> bool {
     // By address rather than by name where there is one: `lo`, `lo0` and `Loopback
     // Pseudo-Interface 1` are three spellings of one thing, and the address is the
@@ -140,6 +153,9 @@ fn is_loopback(name: &str, addresses: &[sysinfo::IpNetwork]) -> bool {
 pub struct Network {
     prefs: NetworkPrefs,
     inner: RwLock<Inner>,
+    /// Counts the times this machine's addresses have changed, for what has to start
+    /// again when they do — see [`Network::address_changes`].
+    moved: tokio::sync::watch::Sender<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -186,6 +202,7 @@ impl Network {
                 bindings: BTreeMap::new(),
                 standing: Standing::default(),
             }),
+            moved: Default::default(),
         })
     }
 
@@ -206,9 +223,30 @@ impl Network {
     /// came up starts by itself when somebody plugs it in, and never needs a restart
     /// at twenty-five past seven.
     pub fn observe(&self, found: Vec<NetInterface>) {
-        if let Ok(mut inner) = self.inner.write() {
-            inner.interfaces = found;
+        let moved = match self.inner.write() {
+            Ok(mut inner) => {
+                let moved = addresses_of(&inner.interfaces) != addresses_of(&found);
+                inner.interfaces = found;
+                moved
+            }
+            Err(_) => false,
+        };
+        if moved {
+            self.moved.send_modify(|n| *n += 1);
         }
+    }
+
+    /// Ticks whenever an address this machine can be reached at comes or goes.
+    ///
+    /// For an mDNS daemon, which **does not survive it**: `mdns-sd` 0.13 adds a socket
+    /// for an interface that appears, but a daemon that was up when a Mac moved from
+    /// wifi to ethernet went on reporting the node it had found as removed, several
+    /// times a second, and never resolved it again — while `dns-sd` and a fresh daemon
+    /// on the same machine both found it at once. Every node then looked switched off
+    /// and was never told where the broker had moved to. So a browser starts again
+    /// when this ticks, rather than trusting the daemon to follow the cable.
+    pub fn address_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.moved.subscribe()
     }
 
     /// What the reporter last worked out about this station's place in the session.

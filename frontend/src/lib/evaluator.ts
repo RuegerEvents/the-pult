@@ -43,7 +43,7 @@ type Instance = {
 	evaluate(nowMs: number): Float32Array;
 	text(key: string, nowMs: number): string | undefined;
 	load_track(sha: string, bytes: Uint8Array): void;
-	play_track(sha: string, anchorMs: number, positionAtAnchorMs: number, rate: number): void;
+	play_track(sha: string, anchorMs: number, positionAtAnchorMs: number, rate: number, levels: boolean): void;
 	stop_track(sha: string): void;
 	forget_track(sha: string): void;
 	recording(nowMs: number): string[];
@@ -210,9 +210,11 @@ export function playTrack(
 	sha: string,
 	anchorMs: number,
 	positionAtAnchorMs: number,
-	rate: number
+	rate: number,
+	/** Whether the sequence levels it recorded play: not while its timeline records. */
+	levels = true
 ): void {
-	instance?.play_track(sha, anchorMs, positionAtAnchorMs, rate);
+	instance?.play_track(sha, anchorMs, positionAtAnchorMs, rate, levels);
 }
 
 /** This recording is no longer running. The bytes stay loaded. */

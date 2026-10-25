@@ -78,6 +78,69 @@ export function idsQuery(ids: string[], order: Order = NO_ORDER, cells: CellSpan
 	return { clauses: [{ combine: 'Add', term: { kind: 'Ids', ids } }], order, cells };
 }
 
+/**
+ * The query with one fixture taken out, undoing it where it was put rather than
+ * adding to the question.
+ *
+ * Taking out a light that was picked by hand removes it from the hand-picked list,
+ * and a list left empty goes. Only a light something else still picks — a group, a
+ * box, a type — needs a `Drop`, because there is nothing of it to remove. Appending a
+ * Drop every time made one click and its undo into "1 picked" and "1 dropped", which
+ * reads as two selections and is none.
+ *
+ * `picks` answers what a query selects, so the rule can ask whether the light is still
+ * in after the hand-picked lists have let go of it.
+ */
+export function withoutId(query: SelectionQuery, id: string, picks: (query: SelectionQuery) => string[]): SelectionQuery {
+	const clauses = query.clauses
+		.map((c) =>
+			c.combine === 'Add' && c.term.kind === 'Ids'
+				? { ...c, term: { ...c.term, ids: c.term.ids.filter((x) => x !== id) } }
+				: c
+		)
+		.filter((c) => !(c.combine === 'Add' && c.term.kind === 'Ids' && c.term.ids.length === 0));
+	const next = { ...query, clauses };
+	if (!picks(next).includes(id)) return next;
+	return { ...next, clauses: [...clauses, { combine: 'Drop', term: { kind: 'Ids', ids: [id] } }] };
+}
+
+/**
+ * The query with one fixture put in, taking back a `Drop` of it first: a light that
+ * was dropped and is clicked again was never meant to be both.
+ */
+export function withId(query: SelectionQuery, id: string, picks: (query: SelectionQuery) => string[]): SelectionQuery {
+	const clauses = query.clauses
+		.map((c) =>
+			c.combine === 'Drop' && c.term.kind === 'Ids'
+				? { ...c, term: { ...c.term, ids: c.term.ids.filter((x) => x !== id) } }
+				: c
+		)
+		.filter((c) => !(c.combine === 'Drop' && c.term.kind === 'Ids' && c.term.ids.length === 0));
+	const undropped = { ...query, clauses };
+	if (picks(undropped).includes(id)) return undropped;
+	// Onto the trailing hand-picked list where there is one, rather than growing a
+	// chain of one-light clauses as somebody clicks their way across a truss.
+	const last = clauses[clauses.length - 1];
+	if (last?.combine === 'Add' && last.term.kind === 'Ids') {
+		return {
+			...undropped,
+			clauses: [...clauses.slice(0, -1), { combine: 'Add', term: { kind: 'Ids', ids: [...last.term.ids, id] } }]
+		};
+	}
+	return { ...undropped, clauses: [...clauses, { combine: 'Add', term: { kind: 'Ids', ids: [id] } }] };
+}
+
+/**
+ * The fixtures from `anchor` to `to` in `order`, both included, for a shift-click or a
+ * drag down a list. `null` when either is not in the list.
+ */
+export function rangeOf(order: string[], anchor: string, to: string): string[] | null {
+	const a = order.indexOf(anchor);
+	const b = order.indexOf(to);
+	if (a < 0 || b < 0) return null;
+	return a <= b ? order.slice(a, b + 1) : order.slice(b, a + 1).reverse();
+}
+
 // ── Cells ─────────────────────────────────────────────────────────────────────
 
 export type { CellSpan, Element };

@@ -151,7 +151,7 @@
 
 			<table>
 				<thead>
-					<tr><th>Service</th><th>Cable</th><th>State</th></tr>
+					<tr><th>Service</th><th>Interface</th><th>State</th></tr>
 				</thead>
 				<tbody>
 					{#each NETWORK_SERVICES as service (service.key)}

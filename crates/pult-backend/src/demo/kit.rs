@@ -123,16 +123,13 @@ pub fn dmx(universe: u16, address: u16) -> FixtureAddress {
 }
 
 /// A fixture type with an implicit mode: a byte per output parameter in the order
-/// they are listed, and three for a color.
+/// they are listed, and one per emitter for a color.
 pub fn a_type(name: &str, parameters: Vec<ParameterDefinition>) -> FixtureType {
     FixtureType {
         id: id(),
         name: name.to_string(),
         manufacturer: "Generic".to_string(),
-        channel_count: parameters
-            .iter()
-            .map(|p| if matches!(p.kind, ParameterKind::ColorRgb) { 3 } else { 1 })
-            .sum::<u16>(),
+        channel_count: parameters.iter().map(pult_schema::types::fixture::implicit_width).sum::<u16>(),
         parameters,
         ..FixtureType::default()
     }

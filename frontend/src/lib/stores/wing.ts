@@ -21,6 +21,7 @@ import { derived, get, writable, type Readable } from 'svelte/store';
 
 import { goOnFocusedSheet } from './cues.js';
 import { fromWing, onOffer } from './learn.js';
+import { topDialog } from './dialogs.js';
 import { beginGesture, endGesture, nudging } from './gesture.js';
 import { output, watching } from './output.js';
 import { consolePluginOf, openConsoleLine, pluginsState } from './plugins.js';
@@ -76,6 +77,7 @@ import {
 	type WingEvent,
 	type WingMap
 } from '../wing.js';
+import { uuid } from '$lib/uuid.js';
 
 /** The surface kind this page binds under — `pult_schema::types::wing::COMMAND_WING`. */
 export const COMMAND_WING = 'ma3-command-wing';
@@ -243,9 +245,16 @@ export function startWing(): void {
 	if (started || typeof window === 'undefined') return;
 	started = true;
 	const page = showClient();
-	page.subscribe('session', (v: unknown) => {
+	// Read as well as followed: a subscription hears changes, and this page's own
+	// station is the one thing about the session that never changes — so without the
+	// read the page did not know which station was its own, and offered it as another.
+	const own = (v: unknown) => {
 		if (v && typeof v === 'object') thisStation.set((v as { node_id: string | null }).node_id);
-	});
+	};
+	page.subscribe('session', own);
+	const askOwn = () => void page.get(['session']).then(own).catch(() => {});
+	askOwn();
+	page.addConnectListener(askOwn);
 
 	// Where the chosen station is, as `null` for this page's own. A station whose row is
 	// not here (yet, or any more) leaves the address as it was: on a page just loaded
@@ -475,6 +484,16 @@ async function onKey(index: number, down: boolean, map: WingMap | null): Promise
 		});
 		if (down) beginGesture();
 		else endGesture();
+		return;
+	}
+
+	// An open dialog is what the operator is looking at, so ESC and PLEASE answer it
+	// rather than the command line behind it: ESC dismisses, PLEASE accepts.
+	const dialog = topDialog();
+	const verb = keyVerb(code);
+	if (dialog && down && (verb === 'escape' || verb === 'please')) {
+		if (verb === 'escape') dialog.close();
+		else dialog.accept?.();
 		return;
 	}
 
@@ -906,7 +925,7 @@ export async function bind(control: SurfaceControl, action: BindingAction, label
 	const existing = get(wingBindings).get(controlKey(control));
 	if (existing) await data.control_bindings.byId(existing.id).set({ ...existing, action, label });
 	else {
-		await data.control_bindings.create({ id: crypto.randomUUID(), surface: COMMAND_WING, control, action, label });
+		await data.control_bindings.create({ id: uuid(), surface: COMMAND_WING, control, action, label });
 	}
 }
 

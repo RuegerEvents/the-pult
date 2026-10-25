@@ -11,6 +11,7 @@
 		OutputKind,
 		OutputStatus
 	} from '$lib/generated/index.js';
+	import { uuid } from '$lib/uuid.js';
 
 	const client = getClientContext();
 	const data = getDataContext();
@@ -119,7 +120,7 @@
 		const name = newInputName.trim();
 		if (!name) return;
 		await data.inputs.create({
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name,
 			kind: newInputKind,
 			// This station, and there is no "every station" here: a socket is one
@@ -144,7 +145,7 @@
 		const name = newName.trim();
 		if (!name) return;
 		await data.outputs.create({
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name,
 			kind: newKind,
 			target: null,

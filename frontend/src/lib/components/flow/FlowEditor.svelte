@@ -1,4 +1,5 @@
 <script lang="ts">
+	import NameDialog from '../NameDialog.svelte';
 	import { onMount, untrack } from 'svelte';
 	import {
 		Background,
@@ -35,6 +36,7 @@
 	import DelayNode from './DelayNode.svelte';
 	import LogicNode from './LogicNode.svelte';
 	import SourceNode from './SourceNode.svelte';
+	import { uuid } from '$lib/uuid.js';
 
 	const data = getDataContext();
 
@@ -60,7 +62,6 @@
 		renaming = null;
 	}
 	let creating = $state(false);
-	let newName = $state('');
 
 	setFlowContext({
 		get fixtures() { return fixtures; },
@@ -143,7 +144,7 @@
 	async function connect(connection: Connection) {
 		if (!selectedId || !validConnection(connection)) return;
 		await data.flow_edges.create({
-			id: crypto.randomUUID(),
+			id: uuid(),
 			flow_id: selectedId,
 			from_node: connection.source,
 			from_port: handleIndex(connection.sourceHandle),
@@ -167,7 +168,7 @@
 		if (!selectedId) return;
 		const { x, y } = nextNodePosition(graph.nodes);
 		await data.flow_nodes.create({
-			id: crypto.randomUUID(),
+			id: uuid(),
 			flow_id: selectedId,
 			kind,
 			x,
@@ -177,14 +178,10 @@
 		});
 	}
 
-	async function createFlow() {
-		const name = newName.trim();
-		if (!name) return;
-		const id = crypto.randomUUID();
+	async function createFlow(name: string) {
+		const id = uuid();
 		await data.flows.create({ id, name, enabled: true });
 		selectedId = id;
-		newName = '';
-		creating = false;
 	}
 
 	async function deleteFlow(flow: Flow) {
@@ -258,15 +255,16 @@
 	<aside class="rail">
 		<header class="rail-head">
 			<h2>Flows</h2>
-			<button class="ghost" onclick={() => (creating = !creating)}>
-				{creating ? 'Cancel' : '+'}
-			</button>
+			<button class="ghost" title="New flow" onclick={() => (creating = true)}>+</button>
 		</header>
 
 		{#if creating}
-			<form onsubmit={(e) => { e.preventDefault(); createFlow(); }}>
-				<input class="text-input" placeholder="What does it do?" bind:value={newName} use:focusOnMount />
-			</form>
+			<NameDialog
+				title="New flow"
+				placeholder="What does it do?"
+				onsubmit={createFlow}
+				onclose={() => (creating = false)}
+			/>
 		{/if}
 
 		{#if flows.length === 0}
@@ -391,7 +389,6 @@
 	.empty { color: #777; font-size: 13px; padding: 8px 0; }
 	.centered { margin: auto; }
 	.note { color: #666; font-size: 11px; margin-top: auto; padding-top: 12px; font-style: italic; line-height: 1.4; }
-	.text-input { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 4px 6px; font: inherit; width: 100%; }
 	.ghost { background: none; border: 1px solid #3a3a3a; border-radius: 3px; color: #bbb; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
 	.ghost:hover:not(:disabled) { border-color: #555; color: #fff; }
 	.ghost:disabled { opacity: 0.4; cursor: not-allowed; }

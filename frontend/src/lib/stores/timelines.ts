@@ -29,6 +29,7 @@ import type {
 import { collection, localPath, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';
 import { consoleNow } from '$lib/ws/clock.js';
+import { uuid } from '$lib/uuid.js';
 
 export const timelines = collection('timelines');
 
@@ -183,7 +184,7 @@ export async function setClip(timelineId: string, clipId: string, change: Partia
 
 /** A new timeline, open at once. */
 export async function createTimeline(name: string): Promise<string> {
-	const id = crypto.randomUUID();
+	const id = uuid();
 	await showData().timelines.create({
 		id,
 		name,

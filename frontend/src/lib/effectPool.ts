@@ -20,6 +20,7 @@ import type {
 } from './generated/index.js';
 import { phases } from './effects.js';
 import { inCell, kindBase, parameterKey, splitCell } from './patch.js';
+import { uuid } from '$lib/uuid.js';
 
 /**
  * Something an effect is written onto: a fixture, or one cell of one, spelled
@@ -133,7 +134,7 @@ export function layerSpecs(
 	layer: EffectLayer,
 	ids: TargetId[],
 	template: string | null,
-	effectId: string = crypto.randomUUID(),
+	effectId: string = uuid(),
 	eachFixture = false
 ): Record<TargetId, EffectSpec> {
 	const offsets = targetPhases(layer, ids, eachFixture);

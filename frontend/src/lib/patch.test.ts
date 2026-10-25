@@ -25,6 +25,7 @@ import {
 	footprint,
 	formatValue,
 	hasCells,
+	implicitChannels,
 	inCell,
 	isDmx,
 	kindBase,
@@ -532,5 +533,21 @@ describe('a type with cells', () => {
 		expect(displayLabel(inCell('ColorRgb', 7))).toBe('Color 7');
 		expect(kindBase(inCell({ Gobo: 2 }, 3))).toEqual({ Gobo: 2 });
 		expect(kindCell(inCell('Pan', 3))).toBe(3);
+	});
+});
+
+describe('the implicit layout', () => {
+	const rgb = (emitters: string[]) =>
+		aParameter({
+			kind: 'ColorRgb',
+			default_value: { type: 'Color', value: { r: 1, g: 1, b: 1, overrides: {} } } as never,
+			emitters: emitters.map((name) => ({ name, rgb: null, subtractive: false }))
+		});
+	const dimmer = aParameter({ kind: 'Intensity', default_value: { type: 'Float', value: 0 } as never });
+
+	// The schema's `implicit_width` is the authority; this is the editor's copy of it.
+	it('gives a color a byte per emitter, and three where it names none', () => {
+		expect(implicitChannels([dimmer, rgb(['Red', 'Green', 'Blue', 'White']), dimmer])).toEqual([1, 2, 6]);
+		expect(implicitChannels([rgb([]), dimmer])).toEqual([1, 4]);
 	});
 });

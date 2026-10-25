@@ -15,6 +15,7 @@
 	 */
 
 	import type { Snippet } from 'svelte';
+	import { opened } from '$lib/stores/dialogs.js';
 
 	let {
 		title,
@@ -22,12 +23,13 @@
 		onclose,
 		children,
 		actions,
-		footer
+		footer,
+		onaccept
 	}: {
 		/** Named for the assistive tree, and printed in the header unless `bare`. */
 		title: string;
 		/** How much of the window it wants. `full` is the setup mode. */
-		size?: 'small' | 'wide' | 'full';
+		size?: 'small' | 'wide' | 'large' | 'full';
 		onclose: () => void;
 		children: Snippet;
 		/**
@@ -37,7 +39,28 @@
 		actions?: Snippet;
 		/** The row of answers, if there is one. */
 		footer?: Snippet;
+		/**
+		 * What the primary answer does, so something other than its button can give it:
+		 * PLEASE on the command wing, the way ESC there closes the dialog.
+		 */
+		onaccept?: () => void;
 	} = $props();
+
+	/**
+	 * PLEASE presses the primary answer: `onaccept` where the dialog says what that
+	 * is, and otherwise the footer's primary or danger button, exactly as a click
+	 * would — so a disabled one stays unpressable and no dialog needed telling.
+	 */
+	let footerEl = $state<HTMLElement | null>(null);
+	function accept() {
+		if (onaccept) return onaccept();
+		footerEl
+			?.querySelector<HTMLButtonElement>(
+				'button.btn-primary:not(:disabled), button.primary:not(:disabled), button.btn-danger:not(:disabled), button.danger:not(:disabled)'
+			)
+			?.click();
+	}
+	$effect(() => opened({ close: () => onclose(), accept }));
 
 	function onkey(event: KeyboardEvent) {
 		if (event.key !== 'Escape') return;
@@ -67,7 +90,7 @@
 			{@render children()}
 		</div>
 		{#if footer}
-			<footer>{@render footer()}</footer>
+			<footer bind:this={footerEl}>{@render footer()}</footer>
 		{/if}
 	</div>
 </div>
@@ -98,6 +121,9 @@
 	}
 	.wide {
 		width: min(860px, 100%);
+	}
+	.large {
+		width: min(1120px, 100%);
 	}
 	.full {
 		width: 100%;

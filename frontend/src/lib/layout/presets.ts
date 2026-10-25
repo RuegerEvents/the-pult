@@ -28,7 +28,10 @@ export const PRESETS: Preset[] = [
 			[
 				split(
 					'Row',
-					[tabs(['rig']), split('Column', [tabs(['values']), tabs(['selection'])], [0.62, 0.38])],
+					[
+						tabs(['rig']),
+						split('Column', [tabs(['values']), tabs(['held', 'selection'])], [0.62, 0.38])
+					],
 					[0.6, 0.4]
 				),
 				split('Row', [tabs(['sheet']), tabs(['cues', 'pools'])], [0.58, 0.42])
@@ -48,7 +51,7 @@ export const PRESETS: Preset[] = [
 		name: 'Plan & Rig',
 		tree: split(
 			'Column',
-			[split('Row', [tabs(['plan']), tabs(['rig'])], [0.5, 0.5]), tabs(['values', 'objects'])],
+			[split('Row', [tabs(['plan']), tabs(['rig'])], [0.5, 0.5]), tabs(['values', 'held', 'objects'])],
 			[0.68, 0.32]
 		)
 	},
@@ -82,11 +85,6 @@ export const PRESETS: Preset[] = [
 			[tabs(['paperwork']), split('Column', [tabs(['layers']), tabs(['objects'])], [0.5, 0.5])],
 			[0.78, 0.22]
 		)
-	},
-	{
-		key: 'patch',
-		name: 'Patch',
-		tree: split('Row', [tabs(['patch']), tabs(['devices', 'outputs'])], [0.66, 0.34])
 	},
 	{
 		key: 'effects',

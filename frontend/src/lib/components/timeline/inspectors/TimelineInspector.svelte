@@ -1,7 +1,7 @@
 <script lang="ts">
 	/**
 	 * A timeline's own settings: how it ends, who plays it, where its position comes
-	 * from, the tempo it drives, its beat grid and what it records.
+	 * from, the tempo it drives and its beat grid.
 	 *
 	 * Everything that used to be stacked under the waveform as sections, and none of it
 	 * about one thing on a lane — so it is what the Inspector shows when the timeline
@@ -12,23 +12,25 @@
 	 * lanes in its own color and changes nothing; *Use this grid* is the write. A console
 	 * that silently rewrote the grid of a show somebody had already programmed against
 	 * would be worse than one that could not detect anything.
+	 *
+	 * What it records is not here: that is the transport's *Recording* menu, where it is
+	 * shown while it happens, and so is a grab. And what a setting means is behind its
+	 * `?` rather than written under it, the rule every panel follows now.
 	 */
 
 	import type { AtEnd, LtcRate, Timeline } from '$lib/generated/index.js';
 	import { canEdit } from '$lib/stores/showLock.js';
-	import { selection } from '$lib/stores/selection.js';
 	import { collection, showClient, showData } from '$lib/stores/show.js';
-	import { audioStatus, now, positionOf, proposals, takes } from '$lib/stores/timelines.js';
+	import { audioStatus, now, positionOf, proposals } from '$lib/stores/timelines.js';
 	import { gridFrom } from '$lib/timeline/grid.js';
 	import { subject } from '$lib/objects.js';
-	import { armArgs, armChoice, PROGRAMMER, releases, takeSummary } from '$lib/takes.js';
 	import { clock, parsePosition } from '$lib/waveform.js';
+	import Help from '../../Help.svelte';
 
 	let { rows }: { rows: Timeline[] } = $props();
 
 	const stations = collection('stations');
 	const masters = collection('speed_masters');
-	const inputs = collection('inputs');
 
 	let problem = $state<string | null>(null);
 	let busy = $state<string | null>(null);
@@ -90,31 +92,11 @@
 			return next;
 		});
 	}
-
-	/**
-	 * Put what is on the wire into the programmer, for the selection. Here because the
-	 * input is a timeline's business: a grab and a recording are the same decoding,
-	 * taken once and taken continuously.
-	 */
-	async function grab() {
-		problem = null;
-		if ($selection.length === 0) {
-			problem = 'Nothing is selected.';
-			return;
-		}
-		try {
-			const answer = (await showClient().call('input.grab', { fixtureIds: $selection })) as { written: number };
-			problem = answer.written === 0 ? 'Nothing on the wire reaches those fixtures.' : null;
-		} catch (e) {
-			problem = String(e);
-		}
-	}
 </script>
 
 {#each rows as timeline (timeline.id)}
 	{@const sound = $audioStatus?.[timeline.id] ?? null}
 	{@const proposal = $proposals[timeline.id]}
-	{@const take = $takes?.[timeline.id]}
 	<div class="fields">
 		{#if rows.length > 1}<span class="wide label">{timeline.name}</span>{/if}
 
@@ -227,7 +209,7 @@
 			</div>
 		{/if}
 
-		<span class="label">Drives</span>
+		<span class="label">Drives <Help label="What a timeline drives">While it runs, the speed master is set to the tempo of each grid segment it crosses, with the downbeat put where the segment's "one" fell.</Help></span>
 		<div class="inline">
 			<select
 				class="select"
@@ -240,10 +222,19 @@
 					<option value={master.id}>{master.name}</option>
 				{/each}
 			</select>
-			<span class="note">set to the tempo at each grid segment while it runs</span>
 		</div>
 
-		<span class="label">Beat grid</span>
+		<span class="label"
+			>Beat grid <Help label="How beats are found">
+				<i>Detect beats</i> listens to the selected clip, or the first, and draws what it hears over the
+				lanes. Nothing changes until you press <i>Use this grid</i>.
+				{#if modelState?.present}It is using the full-accuracy model on this station.
+				{:else if modelState?.fetching}The full-accuracy model is downloading; until it lands, the small one is used.
+				{:else}It is using the small model this console ships with.
+					<button class="link" onclick={() => askAboutTheModel(true)}>Fetch the full one (83 MB)</button>
+				{/if}
+			</Help></span
+		>
 		<div class="inline">
 			{#if proposal}
 				<span class="note">{proposal.beats_ms.length} beats, {proposal.downbeats_ms.length} bars proposed</span>
@@ -265,55 +256,7 @@
 				{/if}
 			{/if}
 		</div>
-		<p class="wide note">
-			{#if busy}{busy}
-			{:else if modelState?.present}Detecting with the full-accuracy model on this station.
-			{:else if modelState?.fetching}The full-accuracy model is downloading; detection uses the small one until it lands.
-			{:else}Detecting with the small model this console ships with.
-				<button class="link" onclick={() => askAboutTheModel(true)}>Fetch the full one (83 MB)</button>
-			{/if}
-		</p>
-
-		<span class="label">Records</span>
-		<div class="inline">
-			<select
-				class="select"
-				disabled={!$canEdit}
-				value={armChoice(timeline.recording)}
-				onchange={(e) => void proxy(timeline.id).record(armArgs(e.currentTarget.value, releases(timeline.recording)))}
-			>
-				<option value="">nothing</option>
-				<option value={PROGRAMMER}>from the programmer</option>
-				{#each $inputs.filter((i) => i.enabled) as input (input.id)}
-					<option value={input.id}>from {input.name}</option>
-				{/each}
-			</select>
-			{#if armChoice(timeline.recording) === PROGRAMMER}
-				<label class="inline note" title="When the take is stored, give the keys it recorded back. Off, the faders stay held and beat the take until you clear them.">
-					<input
-						type="checkbox"
-						disabled={!$canEdit}
-						checked={releases(timeline.recording)}
-						onchange={(e) => void proxy(timeline.id).record(armArgs(PROGRAMMER, e.currentTarget.checked))}
-					/>
-					give the faders back
-				</label>
-			{/if}
-			<button class="btn btn-ghost" onclick={grab} title="Decode what is on the wire now into the programmer">Grab selection</button>
-		</div>
-		{#if take}
-			<p class="wide recording-now"><span class="dot"></span>{takeSummary(take)}</p>
-		{/if}
-		{#if timeline.recording && 'Programmer' in timeline.recording}
-			<p class="wide note">
-				Armed. From the next Play to the next Stop, every programmer key that moves is recorded from
-				the moment you first touch it. A key that already has a take is written into that take from
-				your first touch to the Stop; anything else goes into a new one. On a looping timeline every
-				lap you touch is a pass, so go round until the jaw is right.
-			</p>
-		{:else if timeline.recording}
-			<p class="wide note">Armed. The station holding that input records from the next Play to the next Stop.</p>
-		{/if}
+		{#if busy}<p class="wide note">{busy}</p>{/if}
 
 		{#if problem}<p class="wide says-bad">{problem}</p>{/if}
 	</div>
@@ -328,29 +271,5 @@
 		padding: 0;
 		cursor: pointer;
 		text-decoration: underline;
-	}
-	.recording-now {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		color: var(--bad);
-		font-size: var(--font-sm);
-	}
-	.dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--bad);
-		animation: blink 1s steps(2, start) infinite;
-	}
-	@keyframes blink {
-		to {
-			visibility: hidden;
-		}
-	}
-	@media (prefers-reduced-motion: reduce) {
-		.dot {
-			animation: none;
-		}
 	}
 </style>

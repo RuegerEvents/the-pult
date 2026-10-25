@@ -11,6 +11,7 @@ import type { LayerApply } from '$lib/effectPool.js';
 import { beginGesture, endGesture } from './gesture.js';
 import { setEffect } from './programmer.js';
 import { collection, showData } from './show.js';
+import { uuid } from '$lib/uuid.js';
 
 /** The pool, in the show's order. */
 export const templates = collection('effect_templates');
@@ -33,7 +34,7 @@ export async function applyLayers(applies: LayerApply[]): Promise<number> {
 
 /** Keep what is being built as a new pool entry. */
 export async function storeTemplate(name: string, layers: EffectLayer[]): Promise<EffectTemplate> {
-	const template: EffectTemplate = { id: crypto.randomUUID(), name, layers, color: null };
+	const template: EffectTemplate = { id: uuid(), name, layers, color: null };
 	await showData().effect_templates.create(template);
 	return template;
 }

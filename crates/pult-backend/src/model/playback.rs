@@ -131,6 +131,14 @@ impl<'a> ShowView<'a> {
         }
     }
 
+    /// The sequences' levels as they are this moment, where the caller knows more than
+    /// the faders: a playing take that records a level puts it over its fader, and a
+    /// fade a Go starts has to begin from what that level is showing.
+    pub fn with_levels(mut self, masters: Masters) -> Self {
+        self.masters = masters;
+        self
+    }
+
     /// One fixture, by id.
     pub(super) fn fixture(&self, id: Uuid) -> Option<&'a Fixture> {
         self.by_id.get(&id).copied()

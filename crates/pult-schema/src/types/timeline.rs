@@ -742,6 +742,31 @@ mod tests {
         }
     }
 
+    /// An opened show reads a timeline back from its columns, and the transport is not
+    /// among them. It has to come back at serde's rate of one, not `f32::default()`:
+    /// at zero a timeline plays, says it is running, and never moves.
+    #[test]
+    fn a_timeline_read_back_from_the_showfile_plays_at_rate_one() {
+        use crate::sql::{ColumnGetter, PultSqlRow, SqlLiteral};
+        struct Row(std::collections::HashMap<&'static str, SqlLiteral>);
+        impl ColumnGetter for Row {
+            fn get_text(&self, col: &str) -> Option<String> {
+                match self.0.get(col)? { SqlLiteral::Text(s) => Some(s.clone()), _ => None }
+            }
+            fn get_int(&self, col: &str) -> Option<i64> {
+                match self.0.get(col)? { SqlLiteral::Int(i) => Some(*i), _ => None }
+            }
+            fn get_real(&self, col: &str) -> Option<f64> {
+                match self.0.get(col)? { SqlLiteral::Real(r) => Some(*r), _ => None }
+            }
+        }
+        let timeline = a_timeline();
+        let row = Row(Timeline::column_names().iter().copied().zip(timeline.to_sql_values()).collect());
+        let read = Timeline::from_columns(&row).unwrap();
+        assert_eq!(read.rate, 1.0);
+        assert!(!read.running);
+    }
+
     #[test]
     fn a_stopped_timeline_sits_where_it_was_left() {
         let mut timeline = a_timeline();

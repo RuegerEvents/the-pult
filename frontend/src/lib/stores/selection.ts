@@ -31,7 +31,9 @@ import {
 	isManualList,
 	type Order,
 	type SelectionQuery,
-	type Term
+	type Term,
+	withId,
+	withoutId
 } from '$lib/selection.js';
 import { collection } from './show.js';
 
@@ -136,35 +138,21 @@ export function select(id: string) {
 }
 
 /**
- * Add or remove one, for a shift-click.
+ * Add or remove one, for a Ctrl/Cmd-click.
  *
- * Tacked onto a trailing hand-picked clause rather than rewriting the query, so a
- * geometric selection can be adjusted by hand without losing the geometry. Removing
- * a fixture the geometry picked adds a `Drop`, because there is no clause to take it
- * out of.
+ * Undone where it was done: a light picked by hand comes out of the hand-picked list,
+ * and only one something else still picks gets a `Drop` — see `withoutId`.
  */
 export function toggle(id: string) {
 	const current = get(query);
-	const present = get(selection).includes(id);
+	const picks = (q: SelectionQuery) => evaluate(q, get(fixtures), null, get(sceneObjects));
+	query.set(get(selection).includes(id) ? withoutId(current, id, picks) : withId(current, id, picks));
+}
 
-	if (present) {
-		query.set({ ...current, clauses: [...current.clauses, { combine: 'Drop', term: { kind: 'Ids', ids: [id] } }] });
-		return;
-	}
-
-	// Extend the trailing manual clause if there is one, rather than growing a chain
-	// of single-id clauses as somebody shift-clicks their way across a truss.
-	const last = current.clauses[current.clauses.length - 1];
-	if (last?.combine === 'Add' && last.term.kind === 'Ids') {
-		const clauses = [...current.clauses];
-		clauses[clauses.length - 1] = {
-			combine: 'Add',
-			term: { kind: 'Ids', ids: [...last.term.ids, id] }
-		};
-		query.set({ ...current, clauses });
-	} else {
-		query.set({ ...current, clauses: [...current.clauses, { combine: 'Add', term: { kind: 'Ids', ids: [id] } }] });
-	}
+/** Exactly these, in this order: a shift-click's range, or a drag down a list. */
+export function selectIds(ids: string[]) {
+	handOrder.set([]);
+	query.set(idsQuery(ids));
 }
 
 export const clearSelection = () => {

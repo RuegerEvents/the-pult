@@ -42,7 +42,7 @@
 	 * What is on the network, as the LOCAL `session` state reports it.
 	 *
 	 * Subscribed here rather than read from a store, because there is no store for
-	 * it — `SessionPanel` does the same, and this is the second reader rather than
+	 * it — `StationsPanel` does the same, and this is the second reader rather than
 	 * the reason to build one.
 	 */
 	type Discovered = { session_id: string; show_name: string; sync_addr: string };

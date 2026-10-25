@@ -20,19 +20,11 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { createTimeline, lapOf, now, openTimelineId, positionOf, timelines, toggle } from '$lib/stores/timelines.js';
 	import { clock } from '$lib/waveform.js';
+	import NameDialog from '../NameDialog.svelte';
 
 	let { open, narrow }: { open: Timeline | null; narrow: boolean } = $props();
 
 	let creating = $state(false);
-	let name = $state('');
-
-	async function create() {
-		const text = name.trim();
-		if (!text) return;
-		await createTimeline(text);
-		name = '';
-		creating = false;
-	}
 
 	function stateOf(timeline: Timeline, at: number | null): { text: string; progress: number | null } {
 		if (!timeline.running) {
@@ -58,21 +50,18 @@
 				<option value={t.id}>{t.running ? '▶ ' : ''}{t.name}</option>
 			{/each}
 		</select>
+		{#if $canEdit}
+			<button class="btn btn-icon" title="New timeline" aria-label="New timeline" onclick={() => (creating = true)}><Plus size={14} /></button>
+		{/if}
 	</div>
 {:else}
 	<div class="list">
 		<div class="head">
 			<span class="title">Timelines</span>
 			{#if $canEdit}
-				<button class="btn btn-icon" title="New timeline" aria-label="New timeline" onclick={() => (creating = !creating)}><Plus size={14} /></button>
+				<button class="btn btn-icon" title="New timeline" aria-label="New timeline" onclick={() => (creating = true)}><Plus size={14} /></button>
 			{/if}
 		</div>
-		{#if creating}
-			<form onsubmit={(e) => { e.preventDefault(); void create(); }}>
-				<!-- svelte-ignore a11y_autofocus -->
-				<input class="input" placeholder="What is it for?" bind:value={name} autofocus onkeydown={(e) => e.key === 'Escape' && (creating = false)} />
-			</form>
-		{/if}
 		{#each $timelines as t (t.id)}
 			{@const s = stateOf(t, $now)}
 			<Card
@@ -90,6 +79,15 @@
 			</p>
 		{/each}
 	</div>
+{/if}
+
+{#if creating}
+	<NameDialog
+		title="New timeline"
+		placeholder="What is it for?"
+		onsubmit={(name) => createTimeline(name)}
+		onclose={() => (creating = false)}
+	/>
 {/if}
 
 <style>
@@ -115,10 +113,12 @@
 	.head .btn {
 		min-height: 28px;
 	}
-	.narrow .select {
-		width: 100%;
+	.narrow {
+		display: flex;
+		align-items: center;
+		gap: 6px;
 	}
-	form .input {
+	.narrow .select {
 		width: 100%;
 	}
 </style>

@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { uuid } from '$lib/uuid.js';
 
 /**
  * How loud a toast is.
@@ -20,7 +21,7 @@ export const toasts = writable<Toast[]>([]);
 const DURATION_MS = 5000;
 
 export function addToast(message: string, level: ToastLevel = 'error'): void {
-	const id = crypto.randomUUID();
+	const id = uuid();
 	toasts.update((t) => [...t, { id, message, level }]);
 	setTimeout(() => dismissToast(id), DURATION_MS);
 }

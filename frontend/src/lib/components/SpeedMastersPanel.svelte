@@ -12,7 +12,6 @@
 	 * master, changing its multiplier, deleting one.
 	 */
 
-	import { focusOnMount } from '$lib/actions.js';
 	import type { Fixture, SpeedMaster } from '$lib/generated/index.js';
 	import {
 		beatPhase,
@@ -25,13 +24,14 @@
 	import { collection } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { getDataContext } from '$lib/ws/context.js';
+	import NameDialog from './NameDialog.svelte';
+	import { uuid } from '$lib/uuid.js';
 
 	const data = getDataContext();
 	const masters = collection('speed_masters');
 	const fixtures = collection('fixtures');
 
 	let creating = $state(false);
-	let newName = $state('');
 	/** Tap times per master, kept here because a half-finished tempo is not show data. */
 	let taps = $state<Record<string, number[]>>({});
 
@@ -53,19 +53,15 @@
 		return () => cancelAnimationFrame(frame);
 	});
 
-	async function createMaster() {
-		const name = newName.trim();
-		if (!name) return;
+	async function createMaster(name: string) {
 		await data.speed_masters.create({
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name,
 			bpm: 120,
 			multiplier: 1,
 			running: true,
 			t0: Date.now()
 		});
-		newName = '';
-		creating = false;
 	}
 
 	/**
@@ -132,17 +128,17 @@
 	<header class="head">
 		<h2>Speed masters</h2>
 		{#if $canEdit}
-			<button class="btn btn-ghost" onclick={() => (creating = !creating)}>
-				{creating ? 'Cancel' : '+ Master'}
-			</button>
+			<button class="btn btn-ghost" onclick={() => (creating = true)}>+ Master</button>
 		{/if}
 	</header>
 
-	{#if creating && $canEdit}
-		<form class="new" onsubmit={(e) => { e.preventDefault(); createMaster(); }}>
-			<input class="input" placeholder="Name, e.g. Chases" bind:value={newName} use:focusOnMount />
-			<button class="btn btn-primary" type="submit">Create</button>
-		</form>
+	{#if creating}
+		<NameDialog
+			title="New speed master"
+			placeholder="Name, e.g. Chases"
+			onsubmit={createMaster}
+			onclose={() => (creating = false)}
+		/>
 	{/if}
 
 	{#if $masters.length === 0}
@@ -152,88 +148,96 @@
 		</p>
 	{/if}
 
-	{#each $masters as master (master.id)}
-		{@const hz = effectiveHz(master)}
-		{@const phase = beatPhase(master, now)}
-		{@const on = master.running && phase < 0.5}
-		<section class="master" class:stopped={!master.running}>
-			<div class="top">
-				<!-- The dot is the beat, and it is the first thing to look at: an operator
-				     checking a tempo is checking whether this is flashing with the band. -->
-				<span class="beat" class:lit={on} aria-hidden="true"></span>
-				{#if $canEdit}
-					<input
-						class="input name"
-						value={master.name}
-						onchange={(e) => data.speed_masters.byId(master.id).name.set(e.currentTarget.value)}
-					/>
-				{:else}
-					<span class="name">{master.name}</span>
-				{/if}
-				<span class="hz">{hz.toFixed(2)} Hz</span>
-				{#if $canEdit}
-					<button
-						class="btn btn-danger btn-icon"
-						title="Delete {master.name}"
-						onclick={() => data.speed_masters.byId(master.id).delete()}
-					>×</button>
-				{/if}
-			</div>
-
-			<div class="controls">
-				<!-- Big, because it is tapped in time with music by somebody who is not
-				     looking at the screen. -->
-				<button class="tap" onclick={() => tap(master)}>
-					TAP
-					{#if sinceLastGap(taps[master.id] ?? []).length > 1}
-						<span class="count">{sinceLastGap(taps[master.id] ?? []).length}</span>
-					{/if}
-				</button>
-
-				<label class="bpm">
-					<!-- Rounded for display only. `bpm` is an f32 in the schema, so 56.1
-					     comes back as 56.099998474121094, and a number input shows every
-					     digit of it — which reads as a console that cannot count. -->
-					<input
-						class="input"
-						type="number"
-						min="1"
-						max="600"
-						step="0.1"
-						value={tidyBpm(master.bpm)}
-						onchange={(e) => setBpm(master, Number(e.currentTarget.value))}
-					/>
-					<span>bpm</span>
-				</label>
-
-				<div class="mult" role="group" aria-label="Multiplier">
-					{#each MULTIPLIERS as m (m)}
-						<button
-							class="btn"
-							class:on={master.multiplier === m}
-							disabled={!$canEdit}
-							onclick={() => data.speed_masters.byId(master.id).multiplier.set(m)}
-						>{m === 1 ? '×1' : `×${m}`}</button>
-					{/each}
-				</div>
-
-				<button
-					class="btn"
-					class:running={master.running}
-					onclick={() => setRunning(master, !master.running)}
-				>{master.running ? '■ Stop' : '▶ Run'}</button>
-			</div>
-
-			{#if following(master).length > 0}
-				<div class="riders">
-					<span class="riders-label">Moving with this:</span>
-					{#each following(master) as rider (rider.fixture.id + rider.key)}
-						<span class="rider">{rider.fixture.name} · {rider.key}</span>
-					{/each}
-				</div>
-			{/if}
-		</section>
-	{/each}
+	{#if $masters.length > 0}
+		<!-- A table, a master a row: the beat first, because an operator checking a
+		     tempo is checking whether this is flashing with the band. -->
+		<table class="rack">
+			<thead>
+				<tr>
+					<th></th><th>Master</th><th>BPM</th><th>Hz</th><th>Multiplier</th><th>Tap</th><th></th>
+					<th>Riders</th><th></th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each $masters as master (master.id)}
+					{@const hz = effectiveHz(master)}
+					{@const phase = beatPhase(master, now)}
+					{@const on = master.running && phase < 0.5}
+					{@const riders = following(master)}
+					<tr class:stopped={!master.running}>
+						<td><span class="beat" class:lit={on} aria-hidden="true"></span></td>
+						<td class="name-cell">
+							{#if $canEdit}
+								<input
+									class="input name"
+									value={master.name}
+									onchange={(e) => data.speed_masters.byId(master.id).name.set(e.currentTarget.value)}
+								/>
+							{:else}
+								<span class="name">{master.name}</span>
+							{/if}
+						</td>
+						<td>
+							<!-- Rounded for display only. `bpm` is an f32 in the schema, so 56.1
+							     comes back as 56.099998474121094, and a number input shows every
+							     digit of it — which reads as a console that cannot count. -->
+							<input
+								class="input bpm"
+								type="number"
+								min="1"
+								max="600"
+								step="0.1"
+								aria-label="{master.name} BPM"
+								value={tidyBpm(master.bpm)}
+								onchange={(e) => setBpm(master, Number(e.currentTarget.value))}
+							/>
+						</td>
+						<td class="hz">{hz.toFixed(2)}</td>
+						<td>
+							<div class="mult" role="group" aria-label="Multiplier">
+								{#each MULTIPLIERS as m (m)}
+									<button
+										class:on={master.multiplier === m}
+										disabled={!$canEdit}
+										onclick={() => data.speed_masters.byId(master.id).multiplier.set(m)}
+									>×{m}</button>
+								{/each}
+							</div>
+						</td>
+						<td>
+							<!-- Big enough to hit in time with music without looking. -->
+							<button class="tap" onclick={() => tap(master)}>
+								TAP
+								{#if sinceLastGap(taps[master.id] ?? []).length > 1}
+									<span class="count">{sinceLastGap(taps[master.id] ?? []).length}</span>
+								{/if}
+							</button>
+						</td>
+						<td>
+							<button
+								class="run"
+								class:running={master.running}
+								onclick={() => setRunning(master, !master.running)}
+							>{master.running ? '■ Stop' : '▶ Run'}</button>
+						</td>
+						<td class="riders" title={riders.map((r) => `${r.fixture.name} · ${r.key}`).join('\n')}>
+							{riders.length === 0 ? '—' : riders.length}
+						</td>
+						<td class="acts">
+							{#if $canEdit}
+								<button
+									class="delete"
+									title="Delete {master.name}"
+									aria-label="Delete {master.name}"
+									onclick={() => data.speed_masters.byId(master.id).delete()}
+								>✕</button>
+							{/if}
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	{/if}
 </div>
 
 <style>
@@ -258,10 +262,6 @@
 		color: var(--text-dim);
 	}
 
-	.new {
-		display: flex;
-		gap: 8px;
-	}
 
 	.empty {
 		color: var(--text-dim);
@@ -270,68 +270,89 @@
 		line-height: 1.5;
 	}
 
-	.master {
-		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		background: var(--bg-panel);
-		padding: var(--pad);
-		display: flex;
-		flex-direction: column;
-		gap: var(--pad);
+	.rack {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: var(--font-sm);
 	}
-
-	.master.stopped {
-		opacity: 0.7;
+	.rack th {
+		text-align: left;
+		font-weight: 500;
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-faint);
+		padding: 0 10px 6px 0;
 	}
-
-	.top {
-		display: flex;
-		align-items: center;
-		gap: var(--pad);
+	.rack td {
+		padding: 6px 10px 6px 0;
+		border-top: 1px solid var(--line);
+		vertical-align: middle;
+	}
+	.rack tr.stopped td {
+		color: var(--text-dim);
 	}
 
 	.beat {
+		display: block;
 		width: 14px;
 		height: 14px;
-		flex: none;
 		border-radius: 50%;
 		border: 1px solid var(--line-input);
-		background: transparent;
 	}
-
 	.beat.lit {
 		background: var(--live);
 		border-color: var(--live);
 	}
 
+	.name-cell {
+		min-width: 8rem;
+	}
 	.name {
 		font-weight: 500;
-		flex: 1;
-		min-width: 0;
 	}
-
 	input.name {
-		flex: 1;
-		min-width: 0;
+		width: 100%;
 	}
-
-	.hz {
+	.bpm {
+		width: 5.5rem;
+		font-variant-numeric: tabular-nums;
+	}
+	.hz,
+	.riders {
 		color: var(--text-dim);
 		font-variant-numeric: tabular-nums;
-		font-size: var(--font-sm);
 	}
 
-	.controls {
-		display: flex;
-		align-items: center;
-		gap: var(--pad);
-		flex-wrap: wrap;
+	/* Either of four, as one control. */
+	.mult {
+		display: inline-flex;
+		border: 1px solid var(--line-strong);
+		border-radius: 6px;
+		overflow: hidden;
+	}
+	.mult button {
+		padding: 4px 9px;
+		border: none;
+		border-right: 1px solid var(--line-strong);
+		background: none;
+		color: var(--text-dim);
+		font: inherit;
+		font-size: var(--font-xs);
+		cursor: pointer;
+	}
+	.mult button:last-child {
+		border-right: none;
+	}
+	.mult button.on {
+		background: color-mix(in srgb, var(--accent) 22%, transparent);
+		color: var(--text-bright);
 	}
 
 	/* Tapped in time with music, by somebody not looking at the screen. */
 	.tap {
-		min-width: 96px;
-		min-height: var(--hit);
+		min-width: 72px;
+		min-height: 32px;
 		border: 1px solid var(--live);
 		border-radius: var(--radius);
 		background: transparent;
@@ -351,53 +372,34 @@
 		opacity: 0.7;
 	}
 
-	.bpm {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		color: var(--text-dim);
-		font-size: var(--font-sm);
-	}
-	.bpm .input {
-		width: 6rem;
-		font-variant-numeric: tabular-nums;
-	}
-
-	.mult {
-		display: flex;
-		gap: 2px;
-	}
-	.mult .btn {
+	.run {
+		min-height: 28px;
 		padding: 0 10px;
-		min-width: 44px;
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius);
+		background: none;
+		color: var(--text-dim);
+		font: inherit;
+		font-size: var(--font-xs);
+		white-space: nowrap;
+		cursor: pointer;
 	}
-	.mult .btn.on {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-
-	.btn.running {
+	.run.running {
 		border-color: var(--good);
 		color: var(--good);
 	}
 
-	.riders {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 6px;
-		border-top: 1px solid var(--line);
-		padding-top: 8px;
+	.acts {
+		text-align: right;
 	}
-	.riders-label {
-		color: var(--text-dim);
+	.delete {
+		border: none;
+		background: none;
+		color: var(--text-faint);
+		cursor: pointer;
 		font-size: var(--font-xs);
 	}
-	.rider {
-		font-size: var(--font-xs);
-		padding: 2px 8px;
-		border-radius: 999px;
-		border: 1px solid var(--live);
-		color: var(--live);
+	.delete:hover {
+		color: var(--bad);
 	}
 </style>

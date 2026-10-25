@@ -10,6 +10,7 @@
 import type { Cue, Sequence } from './generated/index.js';
 import { parameterKey } from './patch.js';
 import type { DataRoot } from './ws/data.js';
+import { uuid } from '$lib/uuid.js';
 
 export type NewCue = {
 	name: string;
@@ -51,7 +52,7 @@ export async function createCue(
 	const at = after ? order.findIndex((c) => c.id === after) : -1;
 
 	const cue: Cue = {
-		id: crypto.randomUUID(),
+		id: uuid(),
 		name,
 		number: number ?? (at >= 0 ? insertNumber(order[at].number, order[at + 1]?.number) : order.length + 1),
 		captures,

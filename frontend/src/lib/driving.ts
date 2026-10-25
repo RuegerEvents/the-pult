@@ -31,7 +31,25 @@ export type DrivenBy = {
 	home?: ParameterValue;
 	/** The playing sequence's fader, where it dims this parameter. */
 	master?: number;
+	/** The sequence whose cue is driving this intensity, so a level a playing take
+	 *  recorded for it is put over `master` by the evaluator, frame by frame. */
+	sequence?: string;
 };
+
+/** Which sequence each cue belongs to, for every sequence at any level. */
+export type CueSequences = Map<string, string>;
+
+export function cueSequences(sequences: Sequence[]): CueSequences {
+	const out: CueSequences = new Map();
+	for (const sequence of sequences) for (const cue of sequence.cue_ids) out.set(cue, sequence.id);
+	return out;
+}
+
+/** The cue whose playback layer wins this parameter: an effect over a fade. */
+function winningCue(effect: RunningEffect | undefined, fade: RunningFade | undefined): string | undefined {
+	if (effect) return effect.source === 'Programmer' ? undefined : effect.source.Cue;
+	return fade?.cue_id;
+}
 
 /**
  * The sequences' playback faders, by the cues they hold — only those below full.
@@ -63,9 +81,7 @@ export function masterOver(
 	fade: RunningFade | undefined
 ): number | undefined {
 	if (masters.size === 0 || fadeGroup(key) !== 'Intensity') return undefined;
-	let cue: string | undefined;
-	if (effect) cue = effect.source === 'Programmer' ? undefined : effect.source.Cue;
-	else if (fade) cue = fade.cue_id;
+	const cue = winningCue(effect, fade);
 	return cue === undefined ? undefined : masters.get(cue);
 }
 
@@ -101,7 +117,8 @@ export function drivenBy(
 	fixture: Fixture,
 	type: FixtureType | undefined,
 	held: Map<string, ProgrammerValue>,
-	masters: Masters = new Map()
+	masters: Masters = new Map(),
+	sequenceOfCue: CueSequences = new Map()
 ): Map<string, DrivenBy> {
 	const rows = new Map<string, DrivenBy>();
 	const keys = new Set<string>([
@@ -125,6 +142,11 @@ export function drivenBy(
 		if (home !== undefined) row.home = home;
 		const master = masterOver(masters, key, effect, fade);
 		if (master !== undefined) row.master = master;
+		if (sequenceOfCue.size > 0 && fadeGroup(key) === 'Intensity') {
+			const cue = winningCue(effect, fade);
+			const sequence = cue === undefined ? undefined : sequenceOfCue.get(cue);
+			if (sequence !== undefined) row.sequence = sequence;
+		}
 		if (Object.keys(row).length > 0) rows.set(key, row);
 	}
 	return rows;
@@ -138,6 +160,7 @@ export function drivingTheRig(
 	sequences: Sequence[] = []
 ): Record<string, DrivenBy> {
 	const masters = mastersOf(sequences);
+	const sequenceOfCue = cueSequences(sequences);
 	const byId = new Map(types.map((t) => [t.id, t]));
 	const held = new Map<string, ProgrammerValue>();
 	for (const entry of entries) {
@@ -146,7 +169,7 @@ export function drivingTheRig(
 
 	const out: Record<string, DrivenBy> = {};
 	for (const fixture of fixtures) {
-		for (const [key, row] of drivenBy(fixture, byId.get(fixture.fixture_type_id), held, masters)) {
+		for (const [key, row] of drivenBy(fixture, byId.get(fixture.fixture_type_id), held, masters, sequenceOfCue)) {
 			out[drivingKey(fixture.id, key)] = row;
 		}
 	}

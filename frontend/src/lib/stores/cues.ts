@@ -23,6 +23,12 @@ export const cueInView = writable<string | null>(null);
 export const presetInView = writable<string | null>(null);
 
 /**
+ * Which sequence the Cues panel is showing. A store rather than the panel's own
+ * state, so an executor in Playback can open its sequence there with one click.
+ */
+export const sequenceInView = writable<string | null>(null);
+
+/**
  * The sequence whose cue sheet was touched last, which is what Space means.
  *
  * Space is Go on *a* cue sheet, and a console with three of them open has to answer

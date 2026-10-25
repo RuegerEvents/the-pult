@@ -18,6 +18,7 @@
 	import StagePlanView from './StagePlanView.svelte';
 	import { guessScale, uploadPlan } from './upload.js';
 	import MvrButtons from './MvrButtons.svelte';
+	import { uuid } from '$lib/uuid.js';
 
 	const data = getDataContext();
 	const client = getClientContext();
@@ -67,7 +68,7 @@
 				await data.stage_plans.byId(plan.id).name.set(file.name);
 			} else {
 				await data.stage_plans.create({
-					id: crypto.randomUUID(),
+					id: uuid(),
 					name: file.name,
 					asset: uploaded.sha256,
 					width_px: uploaded.width_px,

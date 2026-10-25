@@ -480,6 +480,25 @@ impl DeviceManager {
         for serial in self.adopted_and_online() {
             self.push_config(&serial).await;
         }
+        // And to every adopted node mDNS does not show right now, at the address it
+        // was last seen at, which doc 15 asks of a controller ("every node it can
+        // reach"). The case is this station's own address moving: the node goes on
+        // dialing the old one, its broker never answers, and a browse that has not
+        // found it again is no reason to leave it there. Off the actor, because a node
+        // that really has gone costs the whole HTTP timeout to find out about.
+        for serial in self.adopted_and_offline() {
+            let (Some(config), Some(base)) = (self.config_for(&serial).await, self.base_url(&serial)) else {
+                continue;
+            };
+            let http = self.http.clone();
+            tokio::spawn(async move {
+                match http.post(format!("{base}/config")).json(&config).send().await {
+                    Ok(r) if r.status().is_success() => info!("[devices] {serial} told the broker list while out of sight"),
+                    Ok(r) => debug!("[devices] {serial} refused the broker list: {}", r.status()),
+                    Err(e) => debug!("[devices] {serial} is not at its last address: {e}"),
+                }
+            });
+        }
     }
 
     /// Make sure the show has an output that reaches the nodes.
@@ -523,6 +542,15 @@ impl DeviceManager {
             }
             Err(e) => warn!("[devices] could not create the OpenHaunt output: {e}"),
         }
+    }
+
+    fn adopted_and_offline(&self) -> Vec<String> {
+        self.state
+            .discovered
+            .values()
+            .filter(|d| !d.online && d.adopted_fixture_id.is_some())
+            .map(|d| d.serial.clone())
+            .collect()
     }
 
     fn adopted_and_online(&self) -> Vec<String> {
@@ -1056,7 +1084,15 @@ impl DeviceManager {
 
     /// Tell a node where to publish, and what to do with the universe it gateways.
     async fn push_config(&self, serial: &str) {
-        let Some(broker) = &self.state.broker_addr else { return };
+        let Some(config) = self.config_for(serial).await else { return };
+        if let Err(e) = self.post(serial, "config", config).await {
+            debug!("[devices] could not configure {serial}: {e}");
+        }
+    }
+
+    /// What [`Self::push_config`] sends, or nothing before this station has a door.
+    async fn config_for(&self, serial: &str) -> Option<serde_json::Value> {
+        let broker = self.state.broker_addr.as_ref()?;
         // `broker` for a node from before lists, which reads nothing else; `brokers`
         // for one that can fail over on its own (doc 15). The first is always ours.
         let brokers = if self.brokers.is_empty() { vec![broker.clone()] } else { self.brokers.clone() };
@@ -1065,9 +1101,7 @@ impl DeviceManager {
         if let Some(universe) = self.gateway_universe(serial).await {
             config["dmx"] = serde_json::json!({ "protocol": "sacn", "universe": universe });
         }
-        if let Err(e) = self.post(serial, "config", config).await {
-            debug!("[devices] could not configure {serial}: {e}");
-        }
+        Some(config)
     }
 
     /// The universe an adopted gateway forwards, if this device is one.
@@ -1502,10 +1536,77 @@ pub fn broker_list(
 /// a session of more stations than that has a spare for every node anyway.
 pub const MAX_BROKERS: usize = 4;
 
-pub fn spawn_mdns_browser(
-    devices: DeviceHandle,
-    net: crate::infra::net::NetHandle,
-) -> Option<ServiceDaemon> {
+/// The OpenHaunt browser: an mDNS daemon looking for nodes, started again whenever
+/// this machine's addresses move ([`crate::infra::net::Network::address_changes`]).
+///
+/// Started again rather than left to follow the cable, because it does not: after a
+/// Mac moved from wifi to ethernet the daemon that had been up all along reported the
+/// node removed several times a second and never found it again, while a fresh one
+/// found it at once. Starting again also gives a browser that was refused its cable
+/// a second chance when the cable appears.
+pub struct DeviceBrowser {
+    current: std::sync::Arc<std::sync::Mutex<Option<ServiceDaemon>>>,
+    stop: watch::Sender<bool>,
+}
+
+impl DeviceBrowser {
+    /// Take the responder off the network. The daemon runs on a thread of its own, so
+    /// nothing about dropping a station reaches it — and a console that has opened
+    /// three shows would otherwise be three browsers on the same segment, two of them
+    /// nobody is reading.
+    pub fn shutdown(&self) {
+        let _ = self.stop.send(true);
+        if let Some(daemon) = self.current.lock().ok().and_then(|mut d| d.take()) {
+            let _ = daemon.shutdown();
+        }
+    }
+}
+
+pub fn spawn_mdns_browser(devices: DeviceHandle, net: crate::infra::net::NetHandle) -> DeviceBrowser {
+    let current = std::sync::Arc::new(std::sync::Mutex::new(None::<ServiceDaemon>));
+    let (stop, mut stopped) = watch::channel(false);
+    let (tx, mut rx) = mpsc::channel::<ServiceEvent>(64);
+
+    let slot = current.clone();
+    let mut moved = net.address_changes();
+    tokio::spawn(async move {
+        loop {
+            let daemon = start_browsing(&net, tx.clone());
+            let previous = match slot.lock() {
+                Ok(mut held) if !*stopped.borrow() => std::mem::replace(&mut *held, daemon),
+                _ => {
+                    if let Some(daemon) = daemon {
+                        let _ = daemon.shutdown();
+                    }
+                    break;
+                }
+            };
+            if let Some(previous) = previous {
+                info!("[devices] this machine's addresses moved; looking for nodes again");
+                let _ = previous.shutdown();
+            }
+            tokio::select! {
+                changed = moved.changed() => if changed.is_err() { break },
+                _ = stopped.changed() => break,
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if let Some(event) = device_event(event) {
+                if devices.0.send(DeviceCommand::Event(event)).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    DeviceBrowser { current, stop }
+}
+
+/// One daemon, browsing, its events fed to `tx` until it is shut down.
+fn start_browsing(net: &crate::infra::net::NetHandle, tx: mpsc::Sender<ServiceEvent>) -> Option<ServiceDaemon> {
     // Told a cable this machine has not got: this browser does not start. A node
     // adopted off the wrong network is a fixture patched onto a wire that cannot
     // carry it, which is worse than a node nobody found.
@@ -1528,37 +1629,19 @@ pub fn spawn_mdns_browser(
         Ok(r) => r,
         Err(e) => {
             warn!("[devices] mDNS browse failed: {e}");
+            let _ = daemon.shutdown();
             return None;
         }
     };
-    // Handed back so a station being stopped can take its responder off the network.
-    // The daemon runs on a thread of its own, so nothing about dropping this station
-    // reaches it — and a console that has opened three shows would otherwise be three
-    // browsers on the same segment, two of them nobody is reading.
-    let handle = daemon.clone();
-
-    let (tx, mut rx) = mpsc::channel::<ServiceEvent>(64);
+    // Ends when the daemon is shut down, which closes the receiver.
     std::thread::spawn(move || {
-        // Hold the daemon: dropping it stops the browse.
-        let _daemon = daemon;
         while let Ok(event) = receiver.recv() {
             if tx.blocking_send(event).is_err() {
                 break;
             }
         }
     });
-
-    tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            if let Some(event) = device_event(event) {
-                if devices.0.send(DeviceCommand::Event(event)).await.is_err() {
-                    break;
-                }
-            }
-        }
-    });
-
-    Some(handle)
+    Some(daemon)
 }
 
 fn device_event(event: ServiceEvent) -> Option<DeviceEvent> {

@@ -83,14 +83,14 @@ impl InputManager {
     }
 
     /// A snapshot of the programmer, at the moment the engine applied it.
-    pub(super) fn observe_programmer(&mut self, values: &[ProgrammerValue], at_ms: u64) {
+    pub(super) fn observe_programmer(&mut self, values: &[ProgrammerValue], levels: &[(Uuid, f32)], at_ms: u64) {
         let Some(take) = &mut self.take else { return };
         let Some(timeline) =
             self.timelines.iter().find(|t| t.id == take.timeline_id && t.running)
         else {
             return;
         };
-        take.pass.observe(timeline.position_at(at_ms), values);
+        take.pass.observe_with_levels(timeline.position_at(at_ms), values, levels);
     }
 
     /// Close the pass if the playhead jumped. Called with the new timelines before

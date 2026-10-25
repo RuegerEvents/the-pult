@@ -1,10 +1,12 @@
 <script lang="ts">
 	/**
-	 * A color, three ways at once.
+	 * A color: a swatch and its hex on one line, and the picker behind the swatch.
 	 *
-	 * The square is for finding a color, the faders for adjusting one, and the hex
-	 * field for entering the one somebody wrote down. They all edit the same value,
-	 * so which is the right one depends only on what the operator already knows.
+	 * One line, the height of a fader, because it sits in rows of them — the square,
+	 * three faders and a hex field stacked in place made every row with a color five
+	 * times the height of its neighbours. The picker opens over everything: the
+	 * square for finding a color, the faders for adjusting one, and the hex field for
+	 * the one somebody wrote down, all editing the same value.
 	 *
 	 * Hue and saturation only. How bright a lantern is belongs to Intensity, and a
 	 * color picker that dimmed the light as well would leave two controls fighting
@@ -21,6 +23,34 @@
 	let { value, oninput }: { value: Rgb; oninput: (value: Rgb) => void } = $props();
 
 	let square = $state<HTMLDivElement | null>(null);
+	let swatchButton = $state<HTMLButtonElement | null>(null);
+	let popover = $state<HTMLDivElement | null>(null);
+	/** Where the picker opens: fixed to the page, so no panel's overflow can clip it. */
+	let open = $state<{ left: number; top: number } | null>(null);
+
+	const PICKER_W = 260;
+	const PICKER_H = 230;
+	function toggle() {
+		if (open || !swatchButton) return (open = null);
+		const b = swatchButton.getBoundingClientRect();
+		const below = b.bottom + 6 + PICKER_H <= window.innerHeight;
+		open = {
+			left: Math.max(8, Math.min(b.left, window.innerWidth - PICKER_W - 8)),
+			top: below ? b.bottom + 6 : Math.max(8, b.top - 6 - PICKER_H)
+		};
+	}
+	function away(event: PointerEvent) {
+		if (!open) return;
+		const target = event.target as Node;
+		if (popover?.contains(target) || swatchButton?.contains(target)) return;
+		open = null;
+	}
+	function escape(event: KeyboardEvent) {
+		if (open && event.key === 'Escape') {
+			event.stopPropagation();
+			open = null;
+		}
+	}
 	let dragging = $state(false);
 	let hexDraft = $state<string | null>(null);
 
@@ -78,66 +108,122 @@
 	}
 </script>
 
-<div class="color">
-	<div
-		class="square"
-		bind:this={square}
-		use:asOneGesture
-		role="application"
-		aria-label="Hue and saturation"
-		onpointerdown={(e) => {
-			square?.setPointerCapture(e.pointerId);
-			dragging = true;
-			pick(e);
-		}}
-		onpointermove={(e) => dragging && pick(e)}
-		onpointerup={(e) => {
-			dragging = false;
-			square?.releasePointerCapture?.(e.pointerId);
-		}}
-		onpointercancel={() => (dragging = false)}
-	>
-		<div
-			class="dot"
-			style:left="{(hsv.h / 360) * 100}%"
-			style:top="{(1 - hsv.s) * 100}%"
-			style:background={hex}
-		></div>
-	</div>
+<svelte:window onpointerdown={away} onkeydown={escape} />
 
-	<div class="channels">
-		<label><span>R</span><Fader label="Red" value={value.r} tint="#ef4444" oninput={(r) => oninput({ ...value, r })} /></label>
-		<label><span>G</span><Fader label="Green" value={value.g} tint="#22c55e" oninput={(g) => oninput({ ...value, g })} /></label>
-		<label><span>B</span><Fader label="Blue" value={value.b} tint="#4a9eff" oninput={(b) => oninput({ ...value, b })} /></label>
-		<label class="hex">
-			<span>#</span>
-			<input
-				value={hexDraft ?? hex.slice(1)}
-				spellcheck="false"
-				oninput={(e) => (hexDraft = e.currentTarget.value)}
-				onblur={commitHex}
-				onkeydown={(e) => {
-					if (e.key === 'Enter') commitHex();
-					if (e.key === 'Escape') hexDraft = null;
-				}}
-			/>
-			<span class="swatch" style:background={hex}></span>
-		</label>
-	</div>
+<div class="color">
+	<button
+		class="swatch-button"
+		bind:this={swatchButton}
+		style:background={hex}
+		aria-label="Pick a color"
+		aria-expanded={!!open}
+		onclick={toggle}
+	></button>
+	<input
+		class="hex mono"
+		value={hexDraft ?? hex.slice(1).toUpperCase()}
+		spellcheck="false"
+		aria-label="Hex color"
+		oninput={(e) => (hexDraft = e.currentTarget.value)}
+		onblur={commitHex}
+		onkeydown={(e) => {
+			if (e.key === 'Enter') commitHex();
+			if (e.key === 'Escape') hexDraft = null;
+		}}
+	/>
 </div>
+
+{#if open}
+	<div class="picker" bind:this={popover} style:left="{open.left}px" style:top="{open.top}px">
+		<div
+			class="square"
+			bind:this={square}
+			use:asOneGesture
+			role="application"
+			aria-label="Hue and saturation"
+			onpointerdown={(e) => {
+				square?.setPointerCapture(e.pointerId);
+				dragging = true;
+				pick(e);
+			}}
+			onpointermove={(e) => dragging && pick(e)}
+			onpointerup={(e) => {
+				dragging = false;
+				square?.releasePointerCapture?.(e.pointerId);
+			}}
+			onpointercancel={() => (dragging = false)}
+		>
+			<div
+				class="dot"
+				style:left="{(hsv.h / 360) * 100}%"
+				style:top="{(1 - hsv.s) * 100}%"
+				style:background={hex}
+			></div>
+		</div>
+		<div class="channels">
+			<label><span>R</span><Fader label="Red" value={value.r} tint="#ef4444" oninput={(r) => oninput({ ...value, r })} /></label>
+			<label><span>G</span><Fader label="Green" value={value.g} tint="#22c55e" oninput={(g) => oninput({ ...value, g })} /></label>
+			<label><span>B</span><Fader label="Blue" value={value.b} tint="#4a9eff" oninput={(b) => oninput({ ...value, b })} /></label>
+		</div>
+	</div>
+{/if}
 
 <style>
 	.color {
 		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-height: 28px;
+	}
+	.swatch-button {
+		flex: none;
+		width: 44px;
+		height: 26px;
+		border: 1px solid #ffffff30;
+		border-radius: var(--radius);
+		cursor: pointer;
+	}
+	.swatch-button:hover,
+	.swatch-button[aria-expanded='true'] {
+		border-color: var(--text-dim);
+	}
+	.hex {
+		width: 6.5em;
+		min-height: 26px;
+		background: var(--bg-sunken);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius);
+		color: var(--text);
+		font: inherit;
+		font-family: monospace;
+		font-size: var(--font-xs);
+		padding: 0 6px;
+	}
+	.hex:focus {
+		outline: none;
+		border-color: var(--accent);
+	}
+	.mono {
+		font-family: monospace;
+	}
+
+	.picker {
+		position: fixed;
+		z-index: 60;
+		width: 260px;
+		display: flex;
+		flex-direction: column;
 		gap: 10px;
-		align-items: flex-start;
+		padding: 10px;
+		background: var(--bg-panel);
+		border: 1px solid var(--line-strong);
+		border-radius: 6px;
+		box-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
 	}
 
 	.square {
 		position: relative;
-		width: 108px;
-		height: 78px;
-		flex: none;
+		height: 120px;
 		border: 1px solid var(--line-strong);
 		border-radius: var(--radius);
 		cursor: crosshair;
@@ -171,10 +257,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
-		flex: 1;
-		min-width: 0;
 	}
-
 	label {
 		display: flex;
 		align-items: center;
@@ -185,30 +268,5 @@
 		color: var(--text-dim);
 		font-size: var(--font-xs);
 		font-family: monospace;
-	}
-
-	.hex input {
-		flex: 1;
-		min-width: 0;
-		background: var(--bg-sunken);
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius);
-		color: var(--text);
-		font: inherit;
-		font-family: monospace;
-		font-size: var(--font-xs);
-		padding: 3px 6px;
-	}
-	.hex input:focus {
-		outline: none;
-		border-color: var(--accent);
-	}
-
-	.swatch {
-		width: 18px;
-		height: 18px;
-		flex: none;
-		border: 1px solid var(--line-strong);
-		border-radius: 3px;
 	}
 </style>

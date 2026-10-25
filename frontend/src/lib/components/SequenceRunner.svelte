@@ -1,50 +1,71 @@
 <script lang="ts">
-	import { focusOnMount } from '$lib/actions.js';
+	/**
+	 * Playback: a row of executors, one per sequence — the cue that is up, GO, BACK and
+	 * OFF, and the sequence's level on a vertical fader.
+	 *
+	 * Nothing about fixtures. What a sequence's cues *say* is the Cues panel, and
+	 * clicking an executor's name opens it there; what the rig is *doing* is the
+	 * Fixtures sheet. An executor that listed every fixture its cue was moving was a
+	 * third, worse copy of both, and grew taller with the rig.
+	 */
+
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Sequence, Cue } from '$lib/generated/index.js';
 	import { canEdit } from '$lib/stores/showLock.js';
-	import { asOneGesture } from '$lib/stores/gesture.js';
+	import { asOneGesture, beginGesture, endGesture } from '$lib/stores/gesture.js';
+	import { sequenceInView } from '$lib/stores/cues.js';
+	import { revealPanel } from '$lib/stores/layout.js';
+	import Dialog from './Dialog.svelte';
+	import NameDialog from './NameDialog.svelte';
 	import { offer } from '$lib/stores/learn.js';
 	import { collection } from '$lib/stores/show.js';
+	import X from '@lucide/svelte/icons/x';
+	import { uuid } from '$lib/uuid.js';
 
 	const data = getDataContext();
-	// GO and reset stay live: they are what a show is run with. What the lock covers
-	// is rewriting the cue list while it is being run from.
-	/** For the running strip: what each station is actually rendering. */
+	// GO and OFF stay live under the Show lock: they are what a show is run with. What
+	// the lock covers is rewriting the cue list while it is being run from.
 	const fixtures = collection('fixtures');
 
 	let sequences = $state<Sequence[]>([]);
 	let cues = $state<Record<string, Cue>>({});
-	let newSeqName = $state('');
-	let creatingSeq = $state(false);
-	let editingSeqId = $state<string | null>(null);
-	let editingSeqName = $state('');
+	/** Naming a new sequence, or renaming one. */
+	let naming = $state<{ sequence: Sequence | null } | null>(null);
 
-	async function createSequence() {
-		if (!newSeqName.trim()) return;
-		await data.sequences.create({ id: crypto.randomUUID(), name: newSeqName.trim(), cue_ids: [], active_cue_index: null, went_at: null, master: null });
-		newSeqName = '';
-		creatingSeq = false;
+	async function createSequence(name: string) {
+		await data.sequences.create({
+			id: uuid(),
+			name,
+			cue_ids: [],
+			active_cue_index: null,
+			went_at: null,
+			master: null
+		});
 	}
 
-	/** What is moving on the cue that is up, for the strip under it. */
-	function runningOn(seq: Sequence): { label: string; kind: 'effect' | 'fade' }[] {
+	async function rename(seq: Sequence, name: string) {
+		await data.sequences.byId(seq.id).name.set(name);
+	}
+
+	/**
+	 * How many parameters the cue that is up is moving, for one quiet line on the
+	 * executor — with the list in its tooltip for whoever wants it.
+	 */
+	function runningOn(seq: Sequence): string[] {
 		const cueId = seq.active_cue_index !== null ? seq.cue_ids[seq.active_cue_index] : null;
 		if (!cueId) return [];
-		const out: { label: string; kind: 'effect' | 'fade' }[] = [];
+		const out: string[] = [];
 		for (const fixture of $fixtures) {
 			for (const [key, effect] of Object.entries(fixture.live_effects ?? {})) {
 				// Only what this cue put there. A programmer effect over the top is the
 				// operator's, not the cue's, and saying otherwise would be a lie.
 				if (effect && typeof effect.source === 'object' && effect.source.Cue === cueId) {
-					out.push({ label: `${fixture.name} · ${key}`, kind: 'effect' });
+					out.push(`∿ ${fixture.name} · ${key}`);
 				}
 			}
 			for (const [key, fade] of Object.entries(fixture.live_fades ?? {})) {
-				if (fade && fade.cue_id === cueId) {
-					out.push({ label: `${fixture.name} · ${key}`, kind: 'fade' });
-				}
+				if (fade && fade.cue_id === cueId) out.push(`→ ${fixture.name} · ${key}`);
 			}
 		}
 		return out;
@@ -56,6 +77,10 @@
 	async function goNext(seqId: string) {
 		offer({ kind: 'Press', target: { kind: 'SequenceGo', sequence_id: seqId } });
 		await data.sequences.byId(seqId).goNext({ at: Date.now() });
+	}
+
+	async function goBack(seqId: string) {
+		await data.sequences.byId(seqId).goBack({ at: Date.now() });
 	}
 
 	// Off is a command rather than a write of `active_cue_index`, so it carries its
@@ -73,480 +98,357 @@
 		void data.sequences.byId(seqId).master.set(level >= 1 ? null : level);
 	}
 
-	async function deleteSequence(seqId: string) {
-		const seq = sequences.find((s) => s.id === seqId);
-		if (!seq) return;
-		for (const cueId of seq.cue_ids) {
-			await data.cues.byId(cueId).delete();
-		}
-		await data.sequences.byId(seqId).delete();
+	/** Its cues, in the Cues panel: what an executor's cues say is that panel's. */
+	function openCues(seqId: string) {
+		sequenceInView.set(seqId);
+		revealPanel('cues');
 	}
 
-	async function saveSeqName(seqId: string) {
-		const trimmed = editingSeqName.trim();
-		if (trimmed) await data.sequences.byId(seqId).name.set(trimmed);
-		editingSeqId = null;
+	/**
+	 * Deleting a sequence takes its cues with it, so it asks first — and does it as
+	 * one gesture, so the one Ctrl-Z the question promises is true.
+	 */
+	let deleting = $state<Sequence | null>(null);
+	async function deleteSequence(seqId: string) {
+		const seq = sequences.find((s) => s.id === seqId);
+		deleting = null;
+		if (!seq) return;
+		beginGesture();
+		try {
+			for (const cueId of seq.cue_ids) {
+				await data.cues.byId(cueId).delete();
+			}
+			await data.sequences.byId(seqId).delete();
+		} finally {
+			endGesture();
+		}
 	}
 
 	onMount(() => {
 		// subscribeDeep auto-fetches initial value, re-fetches full collection on any change,
 		// and handles reconnects — no manual fetchAll or addConnectListener needed
-		const unsubSeqs = data.sequences.subscribeDeep(seqs => { sequences = seqs; });
-		const unsubCues = data.cues.subscribeDeep(cueList => {
+		const unsubSeqs = data.sequences.subscribeDeep((seqs) => {
+			sequences = seqs;
+		});
+		const unsubCues = data.cues.subscribeDeep((cueList) => {
 			const map: Record<string, Cue> = {};
 			for (const c of cueList) map[c.id] = c;
 			cues = map;
 		});
-		return () => { unsubSeqs(); unsubCues(); };
+		return () => {
+			unsubSeqs();
+			unsubCues();
+		};
 	});
 </script>
 
 <div class="runner">
-	<div class="runner-header">
-		<h2 class="section-title">Sequences</h2>
-		{#if !creatingSeq && $canEdit}
-			<button class="new-btn" onclick={() => (creatingSeq = true)}>+ New</button>
+	<header>
+		<h2>Playback</h2>
+		<span class="spacer"></span>
+		{#if $canEdit}
+			<button class="btn btn-ghost btn-small" onclick={() => (naming = { sequence: null })}>+ Sequence</button>
 		{/if}
-	</div>
+	</header>
 
-	{#if creatingSeq && $canEdit}
-		<form
-			class="new-seq-form"
-			onsubmit={(e) => {
-				e.preventDefault();
-				createSequence();
-			}}
-		>
-			<input
-				class="text-input"
-				placeholder="Sequence name…"
-				bind:value={newSeqName}
-				use:focusOnMount
-				onkeydown={(e) => {
-					if (e.key === 'Escape') {
-						creatingSeq = false;
-						newSeqName = '';
-					}
-				}}
-			/>
-			<button class="confirm-btn" type="submit">Create</button>
-			<button
-				class="cancel-btn"
-				type="button"
-				onclick={() => {
-					creatingSeq = false;
-					newSeqName = '';
-				}}>Cancel</button
-			>
-		</form>
+	{#if sequences.length === 0}
+		<p class="empty">No sequences yet. <b>+ Sequence</b> makes one, and so does storing a cue.</p>
 	{/if}
 
-	{#if sequences.length === 0 && !creatingSeq}
-		<p class="empty-hint">No sequences yet — create one above.</p>
-	{/if}
-
-	<div class="seq-grid">
+	<div class="executors">
 		{#each sequences as seq (seq.id)}
-			{@const activeCue =
-				seq.active_cue_index !== null ? cues[seq.cue_ids[seq.active_cue_index]] : null}
-			<div class="seq-card" class:has-active={seq.active_cue_index !== null}>
-				<!-- Header row -->
-				<div class="seq-header">
-					{#if editingSeqId === seq.id}
-						<form
-							class="inline-edit"
-							onsubmit={(e) => { e.preventDefault(); saveSeqName(seq.id); }}
-						>
-							<input
-								class="text-input inline-name-input"
-								bind:value={editingSeqName}
-								use:focusOnMount
-								onblur={() => saveSeqName(seq.id)}
-								onkeydown={(e) => { if (e.key === 'Escape') editingSeqId = null; }}
-							/>
-						</form>
-					{:else if $canEdit}
-						<span
-							class="seq-name"
-							title="Click to rename"
-							role="button"
-							tabindex="0"
-							onclick={() => { editingSeqId = seq.id; editingSeqName = seq.name; }}
-							onkeydown={(e) => { if (e.key === 'Enter') { editingSeqId = seq.id; editingSeqName = seq.name; } }}
-						>{seq.name}</span>
-					{:else}
-						<span class="seq-name">{seq.name}</span>
+			{@const activeCue = seq.active_cue_index !== null ? cues[seq.cue_ids[seq.active_cue_index]] : null}
+			{@const running = runningOn(seq)}
+			{@const level = seq.master ?? 1}
+			<div class="exec" class:live={seq.active_cue_index !== null}>
+				<div class="top">
+					<button
+						class="name"
+						title="Open its cues in the Cues panel"
+						onclick={() => openCues(seq.id)}
+						ondblclick={() => $canEdit && (naming = { sequence: seq })}>{seq.name}</button
+					>
+					{#if $canEdit}
+						<button class="delete" title="Delete {seq.name}" aria-label="Delete {seq.name}" onclick={() => (deleting = seq)}>
+							<X size={12} />
+						</button>
 					{/if}
-					<div class="seq-header-right">
-						<span class="seq-id dim mono">{seq.id.slice(0, 6)}</span>
-						{#if $canEdit}
-							<button
-								class="icon-btn delete-btn"
-								title="Delete sequence"
-								onclick={() => deleteSequence(seq.id)}
-							>✕</button>
-						{/if}
-					</div>
 				</div>
 
-				<!-- Active cue indicator -->
-				<div class="active-cue-bar">
+				<div class="cue" title={activeCue ? `${activeCue.number.toFixed(1)} · ${activeCue.name}` : 'Off'}>
 					{#if activeCue}
-						<span class="cue-number">CUE {activeCue.number.toFixed(0)}</span>
+						<span class="num">{activeCue.number.toFixed(1)}</span>
 						<span class="cue-name">{activeCue.name}</span>
 					{:else}
-						<span class="cue-idle">— no active cue —</span>
+						<span class="off">Off</span>
 					{/if}
 				</div>
-
-				<!-- What the cue that is up is actually doing. A cue list says what was
-				     asked for; this says what is happening, which during a three second
-				     fade or a running chase is a different thing. -->
-				{#if runningOn(seq).length > 0}
-					<div class="running">
-						{#each runningOn(seq) as item (item.label + item.kind)}
-							<span class="run-chip" class:fade={item.kind === 'fade'}>
-								{item.kind === 'effect' ? '∿' : '→'} {item.label}
-							</span>
-						{/each}
-					</div>
-				{/if}
-
-				<!-- Controls -->
-				<div class="controls">
-					<button
-						class="go-btn"
-						onclick={() => goNext(seq.id)}
-						disabled={seq.cue_ids.length === 0}
-						title={seq.cue_ids.length === 0 ? 'No cues in sequence' : 'Advance to next cue'}
-					>
-						GO
-					</button>
-					<button
-						class="reset-btn"
-						onclick={() => takeOff(seq.id)}
-						disabled={seq.active_cue_index === null}
-						title="Take it off: what it was driving goes back to where it rests"
-					>
-						OFF
-					</button>
-					<!-- The cue list itself is the `cues` panel now: this is the runner, and
-					     an expander inside it was a second, worse cue sheet. What is left is
-					     the count, so a card still says how long the sequence is. -->
-					<span class="cue-count">{seq.cue_ids.length} cues</span>
+				<div class="meta" title={running.join('\n')}>
+					{seq.cue_ids.length} {seq.cue_ids.length === 1 ? 'cue' : 'cues'}{running.length > 0 ? ` · ${running.length} running` : ''}
 				</div>
 
-				<!-- The sequence's fader: what it dims is the intensities it is playing,
-				     and nothing the programmer or a take is holding. -->
-				<label class="master" title="This sequence's level: it dims the intensities it plays">
-					<span class="master-label">Level</span>
+				<!-- The sequence's level, upright like a playback fader: what it dims is
+				     the intensities it is playing, and nothing the programmer or a take
+				     is holding. -->
+				<div class="fader" title="This sequence's level: it dims the intensities it plays">
 					<input
 						type="range"
 						min="0"
 						max="1"
 						step="0.005"
-						value={seq.master ?? 1}
+						value={level}
+						aria-label="{seq.name} level"
 						use:asOneGesture
 						oninput={(e) => setMaster(seq.id, Number(e.currentTarget.value))}
 					/>
-					<span class="master-value mono">{Math.round((seq.master ?? 1) * 100)}%</span>
-				</label>
+					<span class="level mono">{Math.round(level * 100)}%</span>
+				</div>
 
+				<div class="keys">
+					<button
+						class="go"
+						onclick={() => goNext(seq.id)}
+						disabled={seq.cue_ids.length === 0}
+						title={seq.cue_ids.length === 0 ? 'No cues in this sequence' : 'Go to the next cue'}
+					>GO</button>
+					<div class="pair">
+						<button
+							onclick={() => goBack(seq.id)}
+							disabled={seq.active_cue_index === null || seq.active_cue_index === 0}
+							title="Back one cue"
+						>BACK</button>
+						<button
+							onclick={() => takeOff(seq.id)}
+							disabled={seq.active_cue_index === null}
+							title="Take it off: what it was driving goes back to where it rests"
+						>OFF</button>
+					</div>
+				</div>
 			</div>
 		{/each}
 	</div>
 </div>
 
+{#if naming}
+	<NameDialog
+		title={naming.sequence ? 'Rename a sequence' : 'New sequence'}
+		placeholder="Sequence name…"
+		initial={naming.sequence?.name ?? `Sequence ${sequences.length + 1}`}
+		confirm={naming.sequence ? 'Rename' : 'Create'}
+		onsubmit={(name) => (naming?.sequence ? rename(naming.sequence, name) : createSequence(name))}
+		onclose={() => (naming = null)}
+	/>
+{/if}
+
+{#if deleting}
+	<Dialog title="Delete a sequence" onclose={() => (deleting = null)}>
+		<p class="ask">
+			<b>{deleting.name}</b>
+			{deleting.cue_ids.length === 0
+				? 'is deleted. It has no cues.'
+				: `and its ${deleting.cue_ids.length} ${deleting.cue_ids.length === 1 ? 'cue are' : 'cues are'} deleted.`}
+			Ctrl-Z brings {deleting.cue_ids.length === 0 ? 'it' : 'them'} back.
+		</p>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (deleting = null)}>Cancel</button>
+			<button class="btn btn-danger" onclick={() => deleting && deleteSequence(deleting.id)}>Delete</button>
+		{/snippet}
+	</Dialog>
+{/if}
+
 <style>
 	.runner {
-		padding: 16px;
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+		padding: 10px 12px;
+		gap: 10px;
 	}
-
-	.runner-header {
+	header {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		margin-bottom: 14px;
+		gap: 8px;
 	}
-
-	.section-title {
-		font-size: 0.68rem;
+	h2 {
+		font-size: var(--font-xs);
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
-		color: #777;
+		color: var(--text-dim);
 	}
-
-	.new-btn {
-		font-size: 0.78rem;
-		padding: 4px 12px;
-		border-radius: 4px;
-		border: 1px solid #4a9eff;
-		background: transparent;
-		color: #4a9eff;
-		cursor: pointer;
-		transition: background 0.15s;
-	}
-	.new-btn:hover {
-		background: #4a9eff22;
-	}
-
-	.new-seq-form {
-		display: flex;
-		gap: 6px;
-		align-items: center;
-		margin-bottom: 12px;
-	}
-
-	.text-input {
-		background: #1a1a1a;
-		border: 1px solid #555;
-		border-radius: 4px;
-		color: #e0e0e0;
-		font-size: 0.85rem;
-		padding: 4px 8px;
+	.spacer {
 		flex: 1;
-		min-width: 0;
 	}
-	.text-input:focus {
-		outline: none;
-		border-color: #4a9eff;
+	.btn-small {
+		min-height: 26px;
+		padding: 0 10px;
+		font-size: 12px;
 	}
-
-	.confirm-btn {
-		font-size: 0.78rem;
-		padding: 4px 10px;
-		border-radius: 4px;
-		border: 1px solid #22c55e;
-		background: transparent;
-		color: #22c55e;
-		cursor: pointer;
-	}
-	.confirm-btn:hover {
-		background: #22c55e22;
+	.empty {
+		color: var(--text-faint);
+		font-size: var(--font-sm);
 	}
 
-	.cancel-btn {
-		font-size: 0.78rem;
-		padding: 4px 10px;
-		border-radius: 4px;
-		border: 1px solid #555;
-		background: transparent;
-		color: #888;
-		cursor: pointer;
+	/* A row of executors that scrolls sideways, the way a desk's executors run left to
+	   right, rather than a grid of cards that reflows when the panel is resized. */
+	.executors {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		gap: 8px;
+		overflow-x: auto;
+		overflow-y: hidden;
+		padding-bottom: 4px;
 	}
-	.cancel-btn:hover {
-		border-color: #ef4444;
-		color: #ef4444;
-	}
-
-	.empty-hint {
-		font-size: 0.82rem;
-		color: #555;
-		font-style: italic;
-	}
-
-	.seq-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-		gap: 12px;
-	}
-
-	.seq-card {
-		background: #222;
-		border: 1px solid #333;
+	.exec {
+		flex: none;
+		width: 128px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 8px;
+		border: 1px solid var(--line-strong);
 		border-radius: 6px;
-		overflow: hidden;
-		transition: border-color 0.2s;
+		background: var(--bg-panel);
+		min-height: 0;
 	}
-	.seq-card.has-active {
-		border-color: #f59e0b55;
-	}
-
-	.seq-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 10px 12px 6px;
-		gap: 6px;
+	/* A sequence with a cue up is lit, in the amber of everything reaching the rig. */
+	.exec.live {
+		border-color: color-mix(in srgb, var(--live) 60%, var(--line-strong));
+		box-shadow: inset 0 2px 0 var(--live);
 	}
 
-	.seq-header-right {
+	.top {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		flex-shrink: 0;
+		gap: 4px;
 	}
-
-	.seq-name {
-		font-size: 0.9rem;
-		font-weight: 500;
-		color: #e0e0e0;
-		cursor: pointer;
+	.name {
 		flex: 1;
 		min-width: 0;
-		white-space: nowrap;
+		padding: 0;
+		border: none;
+		background: none;
+		color: var(--text-bright);
+		font: inherit;
+		font-size: var(--font-sm);
+		font-weight: 600;
+		text-align: left;
 		overflow: hidden;
 		text-overflow: ellipsis;
-	}
-	.seq-name:hover {
-		color: #fff;
-	}
-
-	.inline-edit {
-		flex: 1;
-		min-width: 0;
-	}
-
-	.inline-name-input {
-		width: 100%;
-		font-size: inherit;
-		font-weight: inherit;
-	}
-
-	.icon-btn {
-		font-size: 0.65rem;
-		padding: 2px 5px;
-		border-radius: 3px;
-		border: 1px solid transparent;
-		background: transparent;
-		color: #555;
+		white-space: nowrap;
 		cursor: pointer;
-		line-height: 1;
-		flex-shrink: 0;
 	}
-	.delete-btn:hover {
-		border-color: #ef4444;
-		color: #ef4444;
+	.name:hover {
+		color: var(--accent);
 	}
-
-	.dim {
-		color: #555;
+	.delete {
+		display: inline-flex;
+		padding: 2px;
+		border: none;
+		background: none;
+		color: var(--text-faint);
+		cursor: pointer;
 	}
-	.mono {
-		font-family: monospace;
-	}
-	.seq-id {
-		font-size: 0.7rem;
+	.delete:hover {
+		color: var(--bad);
 	}
 
-	.active-cue-bar {
+	.cue {
 		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 6px 12px;
-		background: #1a1a1a;
-		min-height: 32px;
-	}
-
-	.cue-number {
-		font-family: monospace;
-		font-size: 0.72rem;
-		font-weight: 700;
-		color: #f59e0b;
-		letter-spacing: 0.05em;
-	}
-
-	.cue-name {
-		font-size: 0.82rem;
-		color: #d0d0d0;
-	}
-
-	.cue-idle {
-		font-size: 0.78rem;
-		color: #444;
-		font-style: italic;
-	}
-
-	.cue-count {
-		margin-left: auto;
-		font-size: 0.72rem;
-		color: #555;
-	}
-
-	.master {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin-top: 8px;
-		font-size: 0.75rem;
-		color: #999;
-	}
-	.master input {
-		flex: 1;
-	}
-	.master-value {
-		min-width: 3.2em;
-		text-align: right;
-	}
-
-	.controls {
-		display: flex;
+		align-items: baseline;
 		gap: 6px;
-		padding: 8px 12px;
-		align-items: center;
+		min-width: 0;
+		font-size: var(--font-sm);
 	}
-
-	.go-btn {
-		font-size: 0.85rem;
-		font-weight: 700;
-		letter-spacing: 0.1em;
-		padding: 6px 20px;
-		border-radius: 4px;
-		border: 2px solid #f59e0b;
-		background: transparent;
-		color: #f59e0b;
-		cursor: pointer;
-		transition: all 0.1s;
-	}
-	.go-btn:hover:not(:disabled) {
-		background: #f59e0b22;
-	}
-	.go-btn:active:not(:disabled) {
-		background: #f59e0b44;
-		transform: scale(0.97);
-	}
-	.go-btn:disabled {
-		border-color: #444;
-		color: #444;
-		cursor: not-allowed;
-	}
-
-	.reset-btn {
-		font-size: 0.9rem;
-		padding: 5px 8px;
-		border-radius: 4px;
-		border: 1px solid #444;
-		background: transparent;
-		color: #888;
-		cursor: pointer;
-	}
-	.reset-btn:hover:not(:disabled) {
-		border-color: #888;
-		color: #ccc;
-	}
-	.reset-btn:disabled {
-		color: #444;
-		cursor: not-allowed;
-	}
-	/* What the cue that is up is actually doing, as opposed to what it asked for. */
-	.running {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px;
-		padding: 6px 10px 0;
-	}
-	.run-chip {
-		font-size: 10px;
-		padding: 1px 7px;
-		border-radius: 999px;
-		border: 1px solid var(--live);
+	.num {
 		color: var(--live);
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+	}
+	.cue-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* A fade is on its way somewhere and will stop; an effect will not. Worth
-	   telling apart at a glance when a cue is half in. */
-	.run-chip.fade {
-		border-color: var(--accent);
-		color: var(--accent);
-	}</style>
+	.off {
+		color: var(--text-faint);
+	}
+	.meta {
+		color: var(--text-faint);
+		font-size: var(--font-xs);
+	}
+
+	.fader {
+		flex: 1;
+		min-height: 90px;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 4px;
+	}
+	.fader input {
+		flex: 1;
+		min-height: 0;
+		writing-mode: vertical-lr;
+		direction: rtl;
+		width: 28px;
+		accent-color: var(--live);
+		cursor: pointer;
+	}
+	.level {
+		color: var(--text-dim);
+		font-size: var(--font-xs);
+	}
+	.mono {
+		font-variant-numeric: tabular-nums;
+	}
+
+	.keys {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.keys button {
+		min-height: 30px;
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius);
+		background: var(--bg-raised);
+		color: var(--text);
+		font: inherit;
+		font-size: var(--font-xs);
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		cursor: pointer;
+	}
+	.keys button:hover:not(:disabled) {
+		border-color: var(--line-input);
+		color: var(--text-bright);
+	}
+	.keys button:disabled {
+		color: var(--text-faint);
+		cursor: default;
+	}
+	.keys .go {
+		min-height: 40px;
+		border-color: color-mix(in srgb, var(--good) 60%, transparent);
+		color: var(--good);
+		font-size: var(--font-sm);
+	}
+	.keys .go:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--good) 15%, transparent);
+	}
+	.pair {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 4px;
+	}
+
+	.ask {
+		margin: 0;
+		padding: 14px;
+		font-size: 0.85rem;
+		line-height: 1.5;
+	}
+</style>

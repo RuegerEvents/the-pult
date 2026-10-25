@@ -36,6 +36,12 @@ use uuid::Uuid;
 
 use crate::value::ParameterValue;
 
+/// The key a sequence's level is recorded under, beside fixture parameters: the
+/// track's fixture id is the sequence's. Here, in the crate compiled twice, so the
+/// station and the page cannot spell it differently. No parameter key can be spelled
+/// this way, so a take never confuses the two.
+pub const SEQUENCE_LEVEL_KEY: &str = "Sequence:Level";
+
 /// One change: a position on the timeline, and what the parameter became there.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackPoint {

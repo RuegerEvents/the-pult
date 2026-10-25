@@ -50,7 +50,6 @@ import Speaker from '@lucide/svelte/icons/speaker';
 import SquareMousePointer from '@lucide/svelte/icons/square-mouse-pointer';
 import Table2 from '@lucide/svelte/icons/table-2';
 import Undo2 from '@lucide/svelte/icons/undo-2';
-import Users from '@lucide/svelte/icons/users';
 import Variable from '@lucide/svelte/icons/variable';
 import Workflow from '@lucide/svelte/icons/workflow';
 import Wrench from '@lucide/svelte/icons/wrench';
@@ -70,7 +69,6 @@ import SelectionPanel from '$lib/components/SelectionPanel.svelte';
 import PoolsPanel from '$lib/components/pools/PoolsPanel.svelte';
 import SequenceRunner from '$lib/components/SequenceRunner.svelte';
 import CueSheet from '$lib/components/cues/CueSheet.svelte';
-import SessionPanel from '$lib/components/SessionPanel.svelte';
 import SettingsPanel from '$lib/components/SettingsPanel.svelte';
 import SpeedMastersPanel from '$lib/components/SpeedMastersPanel.svelte';
 import ShowPanel from '$lib/components/ShowPanel.svelte';
@@ -79,6 +77,8 @@ import StationsPanel from '$lib/components/StationsPanel.svelte';
 import SystemPanel from '$lib/components/SystemPanel.svelte';
 import ValuesPanel from '$lib/components/programmer/ValuesPanel.svelte';
 import FixtureSheet from '$lib/components/programmer/FixtureSheet.svelte';
+import HeldPanel from '$lib/components/programmer/HeldPanel.svelte';
+import ListChecks from '@lucide/svelte/icons/list-checks';
 import WirePanel from '$lib/components/wire/WirePanel.svelte';
 import XchangePanel from '$lib/components/XchangePanel.svelte';
 import PlanPanel from '$lib/components/stage/PlanPanel.svelte';
@@ -143,13 +143,16 @@ export type PanelMeta = {
 };
 
 export const PANELS = {
-	playback: { title: 'Playback', component: SequenceRunner, fills: false, category: 'playback', icon: Play },
+	playback: { title: 'Playback', component: SequenceRunner, fills: true, category: 'playback', icon: Play },
 	// The other half of the pair, and the reason the runner lost its cue expander: this
 	// is the *editor* of one sequence — numbers, both fade times, the curve, the follow —
 	// where the runner is every sequence at once with a Go under each thumb. A click on
 	// a row *shows* the cue in the fixture sheet; a double-click or the Go column takes.
 	cues: { title: 'Cues', component: CueSheet, fills: true, category: 'playback', icon: ListOrdered },
 	values: { title: 'Programmer', component: ValuesPanel, fills: true, category: 'program', icon: SlidersHorizontal },
+	// What the programmer is holding, apart from the controls that put it there: the
+	// selection changes under the controls all the time, and what is held does not.
+	held: { title: 'In programmer', component: HeldPanel, fills: true, category: 'program', icon: ListChecks },
 	// The rig as a table, and the one panel that says *where* a value came from. It
 	// fills, because a sheet handed half its tile is a sheet with three rows in it.
 	sheet: { title: 'Fixtures', component: FixtureSheet, fills: true, category: 'program', icon: Table2 },
@@ -173,7 +176,9 @@ export const PANELS = {
 	pieces: { title: 'Pieces', component: PiecesPanel, fills: false, category: 'stage', icon: Shapes },
 	tools: { title: 'Rig tools', component: ToolsPanel, fills: false, category: 'stage', icon: Wrench },
 	object: { title: 'Object', component: ObjectPanel, fills: false, category: 'stage', icon: Info },
-	patch: { title: 'Patch', component: PatchPanel, fills: false, category: 'setup', icon: Cable, home: 'both' },
+	// Setup only: the universe map and the list need the whole width of a dialog, and
+	// patching is an errand done once, not a picture somebody programs against.
+	patch: { title: 'Patch', component: PatchPanel, fills: false, category: 'setup', icon: Cable, home: 'setup' },
 	// The fixture types themselves, which the Patch panel used to carry above the
 	// rig. Setup only: a type is made once and patched from all season, and it took
 	// the top third of the one panel somebody actually patches in.
@@ -205,7 +210,10 @@ export const PANELS = {
 	// panel rather than a section of Rig tools: that is a strip of buttons, and this is
 	// a live list of who is there and what they have.
 	xchange: { title: 'MVR-xchange', component: XchangePanel, fills: false, category: 'setup', icon: Share2, home: 'both' },
-	stations: { title: 'Stations', component: StationsPanel, fills: false, category: 'system', icon: RadioTower },
+	// Who is in the session and who could be: joining, advertising and inviting above
+	// the table of who is here. In Setup as well, because bringing a station in is
+	// done once; on the workspace, because who is here is watched all show.
+	stations: { title: 'Stations', component: StationsPanel, fills: false, category: 'system', icon: RadioTower, home: 'both' },
 	// The other half of the pair: Stations is who is here, this is what it costs —
 	// per station, per output connector, and per browser, which is the figure that
 	// exists nowhere else because a console is a browser evaluating a rig.
@@ -217,14 +225,13 @@ export const PANELS = {
 	network: { title: 'Network', component: NetworkPanel, fills: false, category: 'setup', icon: Network, home: 'both' },
 	plugins: { title: 'Plugins', component: PluginsPanel, fills: false, category: 'setup', icon: Puzzle, home: 'setup' },
 	show: { title: 'Show', component: ShowPanel, fills: false, category: 'setup', icon: Drama, home: 'setup' },
-	session: { title: 'Session', component: SessionPanel, fills: false, category: 'setup', icon: Users, home: 'setup' },
 	devices: { title: 'Devices', component: DevicesPanel, fills: false, category: 'setup', icon: Router, home: 'both' },
 	speedmasters: { title: 'Speed masters', component: SpeedMastersPanel, fills: false, category: 'program', icon: Gauge },
 	effects: { title: 'Effects', component: EffectsPanel, fills: false, category: 'program', icon: Sparkles },
 	// The sheets, and the one button that writes them. `fills`, because a sheet is a
 	// piece of A3 and a tile that hands it half its height is a preview nobody can read.
 	paperwork: { title: 'Paperwork', component: PaperworkPanel, fills: true, category: 'stage', icon: FileText },
-	history: { title: 'History', component: HistoryPanel, fills: false, category: 'system', icon: Undo2 },
+	history: { title: 'History', component: HistoryPanel, fills: true, category: 'system', icon: Undo2 },
 	// Not the History panel: that is the oplog, this is diagnostics. `fills`,
 	// because a log wants every line it can get rather than a fixed block.
 	logs: { title: 'System log', component: SystemLogPanel, fills: true, category: 'system', icon: ScrollText },

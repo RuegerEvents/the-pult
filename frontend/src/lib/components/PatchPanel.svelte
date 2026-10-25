@@ -1,213 +1,217 @@
 <script lang="ts">
-	import { focusOnMount } from '$lib/actions.js';
-	import { canEdit } from '$lib/stores/showLock.js';
-	import PositionEditor from './PositionEditor.svelte';
+	/**
+	 * The patch: which lights the show has, and where their bytes go.
+	 *
+ * Two columns, one selection. On the left the **universe map** — 512 tiles, what is
+	 * where and what clashes, dragged to re-address — with the **detail** of what is
+	 * picked under it, which is where anything is changed (`patch/PatchDetail.svelte`),
+	 * one fixture or forty. On the right the **fixtures**, grouped by universe, reading
+	 * as a patch rather than a wall of number fields: nothing in a row is a control, so a
+	 * row is something to pick. A Setup section only — it wants a dialog's whole width.
+	 *
+	 * *Live* and *Home* are columns somebody switches on, kept per browser: what a light
+	 * is doing is the sheet's question and where it rests is the detail's, so by default
+	 * they are not in the way of reading the patch.
+	 *
+	 * A type or a mode is not changed in place. It moves every channel a fixture has and
+	 * can drop parameters this show's cues capture, so it is asked as a dialog that says
+	 * what it will cost, and nothing is written until Save.
+	 */
+
 	import { onMount } from 'svelte';
-	import { getDataContext } from '$lib/ws/context.js';
-	import { select, selected, toggle } from '$lib/stores/selection.js';
+	import Columns3 from '@lucide/svelte/icons/columns-3';
+	import Plus from '@lucide/svelte/icons/plus';
+	import Search from '@lucide/svelte/icons/search';
+
+	import type { Cue, Fixture, FixtureType } from '$lib/generated/index.js';
+	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { output, watching } from '$lib/stores/output.js';
-	import type { Cue, Fixture, FixtureType, ParameterValue } from '$lib/generated/index.js';
-	import HomeValue from './HomeValue.svelte';
-	import Dialog from './Dialog.svelte';
+	import { select, selectIds, selected, selection, toggle } from '$lib/stores/selection.js';
+	import { canEdit } from '$lib/stores/showLock.js';
+	import { rangeOf } from '$lib/selection.js';
 	import {
 		addressLabel,
-		channelRange,
 		clashingFixtures,
 		DEFAULT_MODE,
 		dmxAddress,
-		droppedByMode,
 		dmxBreaks,
+		droppedByMode,
 		fixtureMode,
 		footprint,
 		formatValue,
-		kindLabel,
-		nextFreeAddress,
 		parameterKey
 	} from '$lib/patch.js';
+	import { CHANNELS, patchOrder } from '$lib/patching.js';
+	import { getDataContext } from '$lib/ws/context.js';
+	import Dialog from './Dialog.svelte';
+	import Help from './Help.svelte';
+	import AddFixtures from './patch/AddFixtures.svelte';
+	import PatchDetail from './patch/PatchDetail.svelte';
+	import UniverseMap from './patch/UniverseMap.svelte';
 
 	const data = getDataContext();
-	// Selecting is always live; changing the rig is not. See `stores/editing.ts`.
 
 	let fixtures = $state<Fixture[]>([]);
 	let types = $state<FixtureType[]>([]);
-	let creating = $state(false);
 	// Only to say what a mode change would cost; nothing here writes a cue.
 	let cues = $state<Cue[]>([]);
-	let newName = $state('');
-	let newTypeId = $state('');
+	let adding = $state(false);
+	let search = $state('');
+
+	const COLUMNS_KEY = 'pult.patch.columns';
+	let columns = $state<{ live: boolean; home: boolean }>(loadColumns());
+	let columnsMenu = $state(false);
+	function loadColumns() {
+		try {
+			return { live: false, home: false, ...JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? '{}') };
+		} catch {
+			return { live: false, home: false };
+		}
+	}
+	function setColumn(which: 'live' | 'home', on: boolean) {
+		columns = { ...columns, [which]: on };
+		try {
+			localStorage.setItem(COLUMNS_KEY, JSON.stringify(columns));
+		} catch {
+			// A browser with storage off still shows them, until it reloads.
+		}
+	}
 
 	const typeOf = (fixture: Fixture) => types.find((t) => t.id === fixture.fixture_type_id);
-	// The span a fixture occupies is its mode's first break, and `channel_count`
-	// only for a type that names no modes — which is what `footprint` answers.
+	// The span a fixture occupies is its mode's first break, and `channel_count` only for
+	// a type that names no modes — which is what `footprint` answers.
 	const spanOf = (fixture: Fixture) => footprint(typeOf(fixture), fixture.address)[0] || 1;
 
 	const clashes = $derived(clashingFixtures(fixtures, spanOf));
+	const ordered = $derived(patchOrder(fixtures));
+	const shown = $derived.by(() => {
+		const q = search.trim().toLowerCase();
+		if (!q) return ordered;
+		return ordered.filter((f) => `${f.name} ${typeOf(f)?.name ?? ''} ${addressLabel(f)}`.toLowerCase().includes(q));
+	});
+	const chosen = $derived(fixtures.filter((f) => $selected.has(f.id)));
 
-	/// The whole table's live column, evaluated every frame while the panel is up. The
-	/// patch is what this panel is *about*, so its own list is exactly the superset.
+	/** The list, in groups: a heading per universe, then whatever is not on DMX. */
+	const groups = $derived.by(() => {
+		const out: { key: string; title: string; used: number | null; rows: Fixture[] }[] = [];
+		for (const fixture of shown) {
+			const dmx = dmxAddress(fixture.address);
+			const key = dmx ? `u${dmx.universe}` : 'other';
+			let group = out.find((g) => g.key === key);
+			if (!group) {
+				group = { key, title: dmx ? `Universe ${dmx.universe}` : 'Not on DMX', used: dmx ? 0 : null, rows: [] };
+				out.push(group);
+			}
+			group.rows.push(fixture);
+		}
+		for (const group of out) {
+			if (group.used === null) continue;
+			group.used = group.rows.reduce((sum, f) => sum + spanOf(f), 0);
+		}
+		return out;
+	});
+
+	/// The live column's values, evaluated every frame while it is shown — and only then,
+	/// because a patch of five hundred lights is a lot of numbers nobody asked for.
 	$effect(() => {
-		const keys = fixtures.flatMap((fixture) =>
-			(typeOf(fixture)?.parameters ?? []).map((p) => `${fixture.id}/${parameterKey(p.kind)}`)
-		);
+		if (!columns.live) return;
+		const keys = fixtures.flatMap((fixture) => (typeOf(fixture)?.parameters ?? []).map((p) => `${fixture.id}/${parameterKey(p.kind)}`));
 		const registered = watching(keys);
 		return () => registered.stop();
 	});
 
-	async function createFixture() {
-		const name = newName.trim();
-		if (!name || !newTypeId) return;
-		await data.fixtures.create({
-			id: crypto.randomUUID(),
-			name,
-			fixture_type_id: newTypeId,
-			address: {
-				Dmx: {
-					mode: DEFAULT_MODE,
-					breaks: [{ universe: 1, address: nextFreeAddress(fixtures, 1, spanOf) }]
-				}
-			},
-			// Nowhere in particular, on no truss, clamped to nothing, in no layer: a
-			// fixture typed into the patch is not part of anybody's drawing until
-			// somebody places it.
-			position: null,
-			parent: null,
-			mount: null,
-			layer: null,
-			class: null,
-			focus: null,
-			fixture_number: null,
-			unit_number: null,
-			// Nothing has been reported about it and nothing is driving it yet. Both
-			// are the station's to fill in; a client creating a fixture has nothing to
-			// say about either.
-			sensed_values: {},
-			live_effects: {},
-			live_fades: {},
-			// Nothing to say: it rests where its type says it does, until somebody
-			// decides this particular unit is different.
-			home_values: {}
-		});
-		newName = '';
-		creating = false;
-	}
+	// ── Picking ───────────────────────────────────────────────────────────────
 
-	/// Click selects this fixture alone; shift-click adds it to (or removes it from)
-	/// the selection, the same gesture the plan and the rig use.
-	function pick(event: MouseEvent, id: string) {
-		if (event.shiftKey) toggle(id);
-		else select(id);
-	}
-
-	/// Re-address a DMX fixture. Universe and address travel together in the schema,
-	/// so changing one has to carry the other along.
-	/// Set or clear one parameter's home value on one fixture.
-	///
-	/// The whole map is written rather than the one key, because that is the shape of
-	/// the field: a map is one JSON column and one undoable change. `null` clears the
-	/// override, which is not the same as an override of zero — one says "whatever the
-	/// type says" and the other says "dark".
-	async function setHome(fixture: Fixture, key: string, next: ParameterValue | null) {
-		const home = { ...fixture.home_values };
-		if (next === null) {
-			delete home[key];
+	let anchor = $state<string | null>(null);
+	/** Click picks one; Ctrl or Cmd adds or takes away; Shift picks the run from the last one. */
+	function pick(event: MouseEvent | PointerEvent, id: string) {
+		if (event.metaKey || event.ctrlKey) {
+			toggle(id);
+			anchor = id;
+		} else if (event.shiftKey && anchor) {
+			const range = rangeOf(
+				shown.map((f) => f.id),
+				anchor,
+				id
+			);
+			if (range) selectIds(range);
 		} else {
-			home[key] = next;
+			select(id);
+			anchor = id;
 		}
-		await data.fixtures.byId(fixture.id).home_values.set(home);
 	}
 
-	/// Move a fixture's *first* break. The others follow their own editor.
-	async function setDmx(fixture: Fixture, next: { universe?: number; address?: number }) {
-		const breaks = dmxBreaks(fixture.address);
-		if (breaks.length === 0) return;
-		const mode = fixtureMode(fixture.address) ?? DEFAULT_MODE;
-		await data.fixtures.byId(fixture.id).address.set({
-			Dmx: { mode, breaks: [{ ...breaks[0], ...next }, ...breaks.slice(1)] }
-		});
-	}
-
-	/// Move one of a fixture's later breaks, for a mode that has more than one.
-	async function setBreak(
-		fixture: Fixture,
-		index: number,
-		next: { universe?: number; address?: number }
-	) {
-		const breaks = dmxBreaks(fixture.address);
-		if (!breaks[index]) return;
-		const mode = fixtureMode(fixture.address) ?? DEFAULT_MODE;
-		await data.fixtures.byId(fixture.id).address.set({
-			Dmx: {
-				mode,
-				breaks: breaks.map((b, i) => (i === index ? { ...b, ...next } : b))
+	async function moveTo(moves: { id: string; universe: number; address: number }[]) {
+		beginGesture();
+		try {
+			for (const move of moves) {
+				const fixture = fixtures.find((f) => f.id === move.id);
+				if (!fixture) continue;
+				const breaks = dmxBreaks(fixture.address);
+				if (breaks.length === 0) continue;
+				const mode = fixtureMode(fixture.address) ?? DEFAULT_MODE;
+				await data.fixtures.byId(fixture.id).address.set({
+					Dmx: { mode, breaks: [{ ...breaks[0], universe: move.universe, address: move.address }, ...breaks.slice(1)] }
+				});
 			}
-		});
+		} finally {
+			endGesture();
+		}
 	}
 
-	/// Put a fixture into another of its type's modes.
-	///
-	/// A mode with more breaks than the fixture has addresses gets the missing ones at
-	/// the universe of the first, one after the other: a starting point somebody can
-	/// correct, rather than a break with nowhere to go, which sends nothing.
-	/**
-	 * A change to *where the bytes go*, waiting for Save.
-	 *
-	 * Most of the patch is edited in place — a name, an address, a home value — because
-	 * each is one value and one Ctrl-Z. A mode or a type is not: it moves every channel
-	 * the fixture has, can drop parameters this show's cues capture, and on a DMX line
-	 * means the light does something else the moment it lands. So it is asked as a
-	 * dialog that says what it will cost, and nothing is written until Save.
-	 */
-	/** The one row's position or home values opened for editing, in place. */
-	let opened = $state<{ id: string; what: 'position' | 'home' } | null>(null);
+	// ── A type or a mode, asked ───────────────────────────────────────────────
 
-	let pending = $state<{
-		fixture: Fixture;
-		what: 'mode' | 'type';
-		value: string;
-		dropped: string[];
-	} | null>(null);
+	let pending = $state<{ fixtures: Fixture[]; what: 'mode' | 'type'; value: string; dropped: string[] } | null>(null);
 
-	/** What this show's cues capture on one fixture, by parameter key. */
-	function capturedOn(fixture: Fixture): string[] {
+	/** What this show's cues capture on these fixtures, by parameter key. */
+	function capturedOn(on: Fixture[]): string[] {
+		const ids = new Set(on.map((f) => f.id));
 		return [
 			...new Set(
 				cues
 					.flatMap((cue) => cue.captures)
-					.filter((capture) => capture.fixture_id === fixture.id)
+					.filter((capture) => ids.has(capture.fixture_id))
 					.map((capture) => parameterKey(capture.parameter_kind))
 			)
 		];
 	}
 
-	function askMode(fixture: Fixture, mode: string) {
-		const wanted = typeOf(fixture)?.dmx_modes.find((m) => m.name === mode);
-		if (!wanted) return;
-		pending = { fixture, what: 'mode', value: mode, dropped: droppedByMode(wanted, capturedOn(fixture)) };
-	}
-
-	function askType(fixture: Fixture, typeId: string) {
-		const next = types.find((t) => t.id === typeId);
-		if (!next) return;
-		const keeps = new Set(next.parameters.map((p) => parameterKey(p.kind)));
-		pending = {
-			fixture,
-			what: 'type',
-			value: typeId,
-			dropped: capturedOn(fixture).filter((key) => !keeps.has(key))
-		};
+	function ask(on: Fixture[], what: 'mode' | 'type', value: string) {
+		if (what === 'mode') {
+			const wanted = typeOf(on[0])?.dmx_modes.find((m) => m.name === value);
+			if (!wanted) return;
+			pending = { fixtures: on, what, value, dropped: droppedByMode(wanted, capturedOn(on)) };
+		} else {
+			const next = types.find((t) => t.id === value);
+			if (!next) return;
+			const keeps = new Set(next.parameters.map((p) => parameterKey(p.kind)));
+			pending = { fixtures: on, what, value, dropped: capturedOn(on).filter((key) => !keeps.has(key)) };
+		}
 	}
 
 	async function savePending() {
 		const change = pending;
 		pending = null;
 		if (!change) return;
-		if (change.what === 'mode') await setMode(change.fixture, change.value);
-		else await data.fixtures.byId(change.fixture.id).fixture_type_id.set(change.value);
+		beginGesture();
+		try {
+			for (const fixture of change.fixtures) {
+				if (change.what === 'mode') await setMode(fixture, change.value);
+				else await data.fixtures.byId(fixture.id).fixture_type_id.set(change.value);
+			}
+		} finally {
+			endGesture();
+		}
 	}
 
+	/**
+	 * Put a fixture into another of its type's modes. A mode with more breaks than the
+	 * fixture has addresses gets the missing ones at the universe of the first, one after
+	 * the other: a starting point somebody can correct, rather than a break with nowhere
+	 * to go, which sends nothing.
+	 */
 	async function setMode(fixture: Fixture, mode: string) {
-		const type = typeOf(fixture);
-		const wanted = type?.dmx_modes.find((m) => m.name === mode);
+		const wanted = typeOf(fixture)?.dmx_modes.find((m) => m.name === mode);
 		if (!wanted) return;
 		const breaks = dmxBreaks(fixture.address);
 		const first = breaks[0] ?? { universe: 1, address: 1 };
@@ -222,418 +226,377 @@
 	}
 
 	onMount(() => {
-		const stopCues = data.cues.subscribeDeep((v) => { cues = v; });
-		const stopFixtures = data.fixtures.subscribeDeep((v) => { fixtures = v; });
-		const stopTypes = data.fixture_types.subscribeDeep((v) => {
-			types = v;
-			if (!newTypeId && v.length) newTypeId = v[0].id;
-		});
-		return () => { stopFixtures(); stopTypes(); stopCues(); };
+		const stopCues = data.cues.subscribeDeep((v) => (cues = v));
+		const stopFixtures = data.fixtures.subscribeDeep((v) => (fixtures = v));
+		const stopTypes = data.fixture_types.subscribeDeep((v) => (types = v));
+		return () => {
+			stopFixtures();
+			stopTypes();
+			stopCues();
+		};
 	});
+
+	const modeText = (fixture: Fixture) => {
+		const type = typeOf(fixture);
+		if (!dmxAddress(fixture.address)) return addressLabel(fixture);
+		const span = footprint(type, fixture.address);
+		const name = type && type.dmx_modes.length > 0 ? `${fixtureMode(fixture.address) ?? DEFAULT_MODE} · ` : '';
+		return `${name}${span.join('+')} ch`;
+	};
+	const addressText = (fixture: Fixture) => {
+		const dmx = dmxAddress(fixture.address);
+		if (!dmx) return '—';
+		const end = dmx.address + Math.max(1, spanOf(fixture)) - 1;
+		return `${dmx.universe}.${String(dmx.address).padStart(3, '0')}–${String(end).padStart(3, '0')}`;
+	};
 </script>
 
 <div class="patch">
-	<!-- The fixture type editor used to sit here, above the rig. It is a Setup
-	     section now: a type is made once and patched from all season, and it was
-	     taking the top third of the one panel somebody actually patches in. -->
-	<section class="block">
-		<header class="block-head">
-			<h2>Fixtures</h2>
-			<!-- Removed from the DOM rather than disabled or dimmed. A control that is
-			     visible but inert invites a second, harder press; one that is not there
-			     says what it means. -->
-			{#if $canEdit}
-				<button class="btn btn-ghost" disabled={types.length === 0} onclick={() => (creating = !creating)}>
-					{creating ? 'Cancel' : '+ Fixture'}
-				</button>
-			{/if}
-		</header>
-
-		{#if creating && $canEdit}
-			<!-- Patching a light is a dialog: it takes a type and lands on the next free
-			     address, and a half-filled row left in the table would be a fixture
-			     nobody meant to patch yet. -->
-			<Dialog title="Patch a fixture" onclose={() => (creating = false)}>
-				<form class="dialog-form" id="patch-new" onsubmit={(e) => { e.preventDefault(); createFixture(); }}>
-					<label>
-						<span>Name</span>
-						<input class="input" placeholder="e.g. Gate par 1" bind:value={newName} use:focusOnMount />
-					</label>
-					<label>
-						<span>Type</span>
-						<select class="select" bind:value={newTypeId}>
-							{#each types as type (type.id)}
-								<option value={type.id}>{type.name}</option>
-							{/each}
-						</select>
-					</label>
-					<p class="hint">It goes in universe 1 at the next free address; change either in the table.</p>
-				</form>
-				{#snippet footer()}
-					<button class="btn btn-ghost" onclick={() => (creating = false)}>Cancel</button>
-					<button class="btn btn-primary" type="submit" form="patch-new" disabled={!newName.trim()}>Patch</button>
-				{/snippet}
-			</Dialog>
-		{/if}
-
-		{#if pending}
-			{@const type = typeOf(pending.fixture)}
-			<Dialog
-				title={pending.what === 'mode' ? 'Change the mode' : 'Change the fixture type'}
-				onclose={() => (pending = null)}
+	<header class="bar">
+		<span class="title">Patch <span class="count">{fixtures.length} fixture{fixtures.length === 1 ? '' : 's'}</span></span>
+		<Help label="How the patch works"
+			>Pick lights in the list or on the map — Ctrl or Cmd adds one, Shift a run — and change them in the column beside it, one or many at once. Drag a block on the map to re-address it; dragging a picked one takes every picked light in that universe with it. Each change is one Ctrl-Z.</Help
+		>
+		<label class="search">
+			<Search size={13} />
+			<input placeholder="Search…" bind:value={search} />
+		</label>
+		<span class="menu-anchor">
+			<button class="btn btn-ghost" aria-haspopup="menu" aria-expanded={columnsMenu} onclick={() => (columnsMenu = !columnsMenu)}
+				><Columns3 size={14} />Columns</button
 			>
-				<div class="dialog-form">
-					<p>
-						<b>{pending.fixture.name}</b>:
-						{#if pending.what === 'mode'}
-							{fixtureMode(pending.fixture.address) ?? DEFAULT_MODE} → <b>{pending.value}</b>
-							{@const wanted = type?.dmx_modes.find((m) => m.name === pending?.value)}
-							{#if wanted}<span class="hint">({wanted.breaks.join('+')} channels)</span>{/if}
-						{:else}
-							{type?.name ?? '—'} → <b>{types.find((t) => t.id === pending?.value)?.name}</b>
-						{/if}
-					</p>
-					<p class="hint">Every channel this fixture sends moves, the moment it is saved.</p>
-					{#if pending.dropped.length > 0}
-						<p class="warn">
-							The new {pending.what} does not carry {pending.dropped.join(', ')}.
-							{pending.dropped.length === 1 ? 'That parameter is' : 'Those are'} captured in this
-							show's cues and will stop being sent.
-						</p>
-					{/if}
+			{#if columnsMenu}
+				<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+				<div class="catch" onclick={() => (columnsMenu = false)}></div>
+				<div class="menu" role="menu">
+					<label><input type="checkbox" checked={columns.live} onchange={(e) => setColumn('live', e.currentTarget.checked)} /> Live — what it is putting out</label>
+					<label><input type="checkbox" checked={columns.home} onchange={(e) => setColumn('home', e.currentTarget.checked)} /> Home — where it rests</label>
 				</div>
-				{#snippet footer()}
-					<button class="btn btn-ghost" onclick={() => (pending = null)}>Cancel</button>
-					<button class="btn btn-primary" onclick={savePending}>Save</button>
-				{/snippet}
-			</Dialog>
-		{/if}
-
-		{#if types.length === 0}
-			<p class="empty">Add a fixture type first. A fixture is an instance of one.</p>
-		{:else if fixtures.length === 0}
-			<p class="empty">Nothing patched yet.</p>
-		{:else}
-			<table class="rig">
-				<thead>
-					<tr>
-						<th></th><th>Name</th><th>Type</th><th>Mode</th><th>Uni</th><th>Address</th><th>Position</th><th>Live</th><th>Home</th><th></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each fixtures as fixture (fixture.id)}
-						{@const type = typeOf(fixture)}
-						{@const dmx = dmxAddress(fixture.address)}
-						<tr class:clash={clashes.has(fixture.id)} class:selected={$selected.has(fixture.id)}>
-							<td>
-								<button
-									class="pick hit"
-									class:on={$selected.has(fixture.id)}
-									title="Select — shift-click to add to the selection"
-									aria-label="Select {fixture.name}"
-									aria-pressed={$selected.has(fixture.id)}
-									onclick={(e) => pick(e, fixture.id)}
-								></button>
-							</td>
-							<td>
-								{#if $canEdit}
-									<input
-										class="input"
-										value={fixture.name}
-										onchange={(e) => data.fixtures.byId(fixture.id).name.set(e.currentTarget.value)}
-									/>
-								{:else}
-									{fixture.name}
-								{/if}
-							</td>
-							<td>
-								{#if $canEdit}
-									<select
-										class="select"
-										value={fixture.fixture_type_id}
-										onchange={(e) => {
-											askType(fixture, e.currentTarget.value);
-											// The select goes back until Save says otherwise.
-											e.currentTarget.value = fixture.fixture_type_id;
-										}}
-									>
-										{#each types as t (t.id)}
-											<option value={t.id}>{t.name}</option>
-										{/each}
-									</select>
-								{:else}
-									{type?.name ?? '—'}
-								{/if}
-							</td>
-							<td class="mode-cell">
-								{#if !type || type.dmx_modes.length === 0}
-									<!-- A type that names no modes has one all the same, computed
-									     by the station from its parameters. There is nothing to
-									     pick between, so there is nothing to show. -->
-									<span class="hint">—</span>
-								{:else if $canEdit}
-									<select
-										class="select"
-										value={fixtureMode(fixture.address) ?? DEFAULT_MODE}
-										onchange={(e) => {
-											askMode(fixture, e.currentTarget.value);
-											e.currentTarget.value = fixtureMode(fixture.address) ?? DEFAULT_MODE;
-										}}
-									>
-										{#each type.dmx_modes as mode (mode.name)}
-											<option value={mode.name}>
-												{mode.name} · {mode.breaks.join('+')} ch
-											</option>
-										{/each}
-									</select>
-								{:else}
-									{fixtureMode(fixture.address) ?? DEFAULT_MODE}
-								{/if}
-							</td>
-							{#if dmx}
-								<td>
-									{#if $canEdit}
-										<input
-											class="input narrow"
-											type="number"
-											min="0"
-											value={dmx.universe}
-											onchange={(e) => setDmx(fixture, { universe: Number(e.currentTarget.value) })}
-										/>
-									{:else}
-										{dmx.universe}
-									{/if}
-								</td>
-								<td>
-									{#if $canEdit}
-										<input
-											class="input narrow"
-											type="number"
-											min="1"
-											max="512"
-											value={dmx.address}
-											onchange={(e) => setDmx(fixture, { address: Number(e.currentTarget.value) })}
-										/>
-									{:else}
-										{dmx.address}
-									{/if}
-									<span class="hint">{channelRange(fixture, spanOf(fixture))}</span>
-									{#each dmxBreaks(fixture.address).slice(1) as entry, i}
-										<!-- A mode with more than one break sits in more than one
-										     place, and they need not be in the same universe. -->
-										<span class="brk">
-											break {i + 2}:
-											{#if $canEdit}
-												<input
-													class="input tiny"
-													type="number"
-													min="0"
-													value={entry.universe}
-													onchange={(e) => setBreak(fixture, i + 1, { universe: Number(e.currentTarget.value) })}
-												/>/<input
-													class="input tiny"
-													type="number"
-													min="1"
-													max="512"
-													value={entry.address}
-													onchange={(e) => setBreak(fixture, i + 1, { address: Number(e.currentTarget.value) })}
-												/>
-											{:else}
-												{entry.universe} / {entry.address}
-											{/if}
-										</span>
-									{/each}
-								</td>
-							{:else}
-								<!-- A node fixture is addressed by the device it was adopted from,
-								     so there is nothing here to type into. -->
-								<td colspan="2" class="node-address">{addressLabel(fixture)}</td>
-							{/if}
-
-							<td class="position-cell" class:open={opened?.id === fixture.id && opened.what === 'position'}>
-								{#if $canEdit && opened?.id === fixture.id && opened.what === 'position'}
-									<!-- Dragging in the plan is right for a whole rig at once and
-									     useless for the one light that has to be at exactly 4.2
-									     meters because the drawing says so. -->
-									<PositionEditor
-										position={fixture.position}
-										onchange={(next) => data.fixtures.byId(fixture.id).position.set(next)}
-									/>
-									<button class="btn btn-ghost done" onclick={() => (opened = null)}>Done</button>
-								{:else}
-									<!-- The value is the button: in place, opened by touching it, so the
-									     table reads as a patch and not as a wall of number fields. -->
-									<button
-										class="value"
-										disabled={!$canEdit}
-										title={$canEdit ? 'Edit the position' : undefined}
-										onclick={() => (opened = { id: fixture.id, what: 'position' })}
-									>
-										{#if fixture.position}
-											{@const p = fixture.position.position}
-											<span class="coords">{p.x.toFixed(1)}, {p.y.toFixed(1)}, {p.z.toFixed(1)}</span>
-										{:else}
-											<span class="hint">not placed</span>
-										{/if}
-									</button>
-								{/if}
-							</td>
-							<td class="live">
-								{#if type}
-									{#each type.parameters as param (parameterKey(param.kind))}
-										<span class="chip"
-											>{formatValue(
-												$output.value(fixture.id, parameterKey(param.kind)) ?? undefined
-											)}</span
-										>
-									{/each}
-								{/if}
-							</td>
-							<td class="home">
-								<!-- Where each parameter rests when nothing is driving it. The
-								     type's answer is what the node said about its own port; an
-								     override is this unit's, and is the only place a house light
-								     can say that it comes up rather than going dark. -->
-								{#if type && $canEdit && opened?.id === fixture.id && opened.what === 'home'}
-									<!-- How an operator actually sets a house light's: aim it, look
-									     at it, keep it. The station reads its own output, so nothing
-									     here has to know what is on stage. -->
-									<button
-										class="take-home"
-										title="Keep what {fixture.name} is putting out now"
-										aria-label="Take {fixture.name}'s home values from its output"
-										onclick={() => data.fixtures.takeHome({ fixtureId: fixture.id })}
-									>take</button>
-									{#each type.parameters as param (parameterKey(param.kind))}
-										{@const key = parameterKey(param.kind)}
-										{@const overridden = fixture.home_values[key]}
-										<span class="home-cell" class:overridden={overridden !== undefined}>
-											<HomeValue
-												label={kindLabel(param.kind)}
-												value={overridden ?? param.default_value}
-												onchange={(next) => setHome(fixture, key, next)}
-											/>
-											{#if overridden !== undefined}
-												<button
-													class="clear-home"
-													title="Back to what the type says"
-													aria-label="Clear the home value for {kindLabel(param.kind)}"
-													onclick={() => setHome(fixture, key, null)}
-												>×</button>
-											{/if}
-										</span>
-									{/each}
-									<button class="btn btn-ghost done" onclick={() => (opened = null)}>Done</button>
-								{:else if type}
-									<button
-										class="value"
-										disabled={!$canEdit}
-										title={$canEdit ? 'Edit where it rests' : undefined}
-										onclick={() => (opened = { id: fixture.id, what: 'home' })}
-									>
-										{#each type.parameters as param (parameterKey(param.kind))}
-											{@const overridden = fixture.home_values[parameterKey(param.kind)]}
-											<span class="chip" class:overridden={overridden !== undefined}>
-												{formatValue(overridden ?? param.default_value)}
-											</span>
-										{/each}
-									</button>
-								{/if}
-							</td>
-							<td>
-								{#if $canEdit}
-									<button
-										class="btn btn-danger btn-icon"
-										title="Unpatch {fixture.name}"
-										onclick={() => data.fixtures.byId(fixture.id).delete()}
-									>×</button>
-								{/if}
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-			{#if clashes.size > 0}
-				<p class="warn">Highlighted fixtures share channels with another fixture in the same universe.</p>
 			{/if}
+		</span>
+		{#if $canEdit}
+			<button class="btn btn-primary" onclick={() => (adding = true)}><Plus size={14} />Add fixtures</button>
 		{/if}
-	</section>
+	</header>
+
+	<div class="body">
+		<div class="universes">
+			<UniverseMap {fixtures} {spanOf} selected={$selected} canEdit={$canEdit} onpick={(id, e) => pick(e, id)} onmove={moveTo} />
+			<PatchDetail {chosen} {types} canEdit={$canEdit} {spanOf} onask={ask} />
+		</div>
+		<div class="list">
+			{#if fixtures.length === 0}
+				<div class="empty">
+					<p>Nothing patched yet.</p>
+					{#if $canEdit}<button class="btn btn-primary" onclick={() => (adding = true)}><Plus size={14} />Add fixtures</button>{/if}
+				</div>
+			{:else if shown.length === 0}
+				<p class="none">Nothing matches “{search}”.</p>
+			{:else}
+				<table class="rig">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Type</th>
+							<th>Mode</th>
+							<th>Address</th>
+							<th>Placed</th>
+							{#if columns.live}<th>Live</th>{/if}
+							{#if columns.home}<th>Home</th>{/if}
+						</tr>
+					</thead>
+					<tbody>
+						{#each groups as group (group.key)}
+							<tr class="group">
+								<td colspan={5 + (columns.live ? 1 : 0) + (columns.home ? 1 : 0)}>
+									{group.title}{#if group.used !== null}<span> · {group.used} / {CHANNELS}</span>{/if}
+								</td>
+							</tr>
+							{#each group.rows as fixture (fixture.id)}
+								{@const type = typeOf(fixture)}
+								<tr
+									class:clash={clashes.has(fixture.id)}
+									class:selected={$selected.has(fixture.id)}
+									onclick={(e) => pick(e, fixture.id)}
+									aria-selected={$selected.has(fixture.id)}
+								>
+									<td class="name">{fixture.name}</td>
+									<td class="dim">{type?.name ?? '—'}</td>
+									<td><span class="chip">{modeText(fixture)}</span></td>
+									<td class="mono" class:bad={clashes.has(fixture.id)}>{addressText(fixture)}</td>
+									<td class="dim">{fixture.position ? '✓' : '—'}</td>
+									{#if columns.live}
+										<td class="values">
+											{#each type?.parameters ?? [] as param (parameterKey(param.kind))}
+												<span class="chip">{formatValue($output.value(fixture.id, parameterKey(param.kind)) ?? undefined)}</span>
+											{/each}
+										</td>
+									{/if}
+									{#if columns.home}
+										<td class="values">
+											{#each type?.parameters ?? [] as param (parameterKey(param.kind))}
+												{@const overridden = fixture.home_values[parameterKey(param.kind)]}
+												<span class="chip" class:overridden={overridden !== undefined}>{formatValue(overridden ?? param.default_value)}</span>
+											{/each}
+										</td>
+									{/if}
+								</tr>
+							{/each}
+						{/each}
+					</tbody>
+				</table>
+				{#if clashes.size > 0}
+					<p class="warn">Red fixtures share channels with another in the same universe.</p>
+				{/if}
+			{/if}
+		</div>
+	</div>
 </div>
 
+{#if adding}
+	<AddFixtures {fixtures} {types} {spanOf} onclose={() => (adding = false)} />
+{/if}
+
+{#if pending}
+	{@const change = pending}
+	{@const type = typeOf(change.fixtures[0])}
+	<Dialog title={change.what === 'mode' ? 'Change the mode' : 'Change the fixture type'} onclose={() => (pending = null)}>
+		<div class="ask">
+			<p>
+				<b>{change.fixtures.length === 1 ? change.fixtures[0].name : `${change.fixtures.length} fixtures`}</b>:
+				{#if change.what === 'mode'}
+					→ <b>{change.value}</b>
+					{@const wanted = type?.dmx_modes.find((m) => m.name === change.value)}
+					{#if wanted}<span class="dim">({wanted.breaks.join('+')} channels)</span>{/if}
+				{:else}
+					→ <b>{types.find((t) => t.id === change.value)?.name}</b>
+				{/if}
+			</p>
+			<p class="dim">Every channel {change.fixtures.length === 1 ? 'this fixture sends' : 'these fixtures send'} moves, the moment it is saved.</p>
+			{#if change.dropped.length > 0}
+				<p class="warn">
+					The new {change.what} does not carry {change.dropped.join(', ')}.
+					{change.dropped.length === 1 ? 'That parameter is' : 'Those are'} captured in this show's cues and will stop being sent.
+				</p>
+			{/if}
+		</div>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (pending = null)}>Cancel</button>
+			<button class="btn btn-primary" onclick={savePending}>Save</button>
+		{/snippet}
+	</Dialog>
+{/if}
+
 <style>
-	.dialog-form {
+	.patch {
+		container-type: inline-size;
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
+		padding: 14px 16px;
+	}
+	.bar {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	.title {
+		font-weight: 600;
+		margin-right: 2px;
+	}
+	.count {
+		color: var(--text-faint);
+		font-weight: 400;
+		font-size: var(--font-xs);
+		margin-left: 6px;
+	}
+	.search {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-left: auto;
+		padding: 0 8px;
+		min-height: 30px;
+		border: 1px solid var(--line-input);
+		border-radius: var(--radius);
+		color: var(--text-faint);
+	}
+	.search input {
+		width: 140px;
+		border: none;
+		background: none;
+		color: var(--text);
+		font: inherit;
+		outline: none;
+	}
+	.menu-anchor {
+		position: relative;
+	}
+	.catch {
+		position: fixed;
+		inset: 0;
+		z-index: 19;
+	}
+	.menu {
+		position: absolute;
+		top: calc(100% + 4px);
+		right: 0;
+		z-index: 20;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: 6px;
+		min-width: 240px;
+		background: var(--bg-panel);
+		border: 1px solid var(--line-strong);
+		border-radius: 6px;
+		box-shadow: 0 8px 24px rgb(0 0 0 / 0.45);
+	}
+	.menu label {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 8px;
+		border-radius: 4px;
+		font-size: var(--font-sm);
+		cursor: pointer;
+	}
+	.menu label:hover {
+		background: var(--bg-hover);
+	}
+	/* Universes on the left, fixtures on the right when there is room; stacked, with
+	   the fixtures first, when not. */
+	.body {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 16px;
+		align-items: start;
+	}
+	.universes {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		min-width: 0;
+		order: 2;
+	}
+	@container (min-width: 760px) {
+		.body {
+			grid-template-columns: minmax(340px, 0.9fr) minmax(0, 1.1fr);
+		}
+		.universes {
+			order: 0;
+			position: sticky;
+			top: 0;
+		}
+	}
+	.list {
+		min-width: 0;
+		overflow-x: auto;
+	}
+	.rig {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: var(--font-sm);
+	}
+	.rig th {
+		text-align: left;
+		color: var(--text-dim);
+		font-weight: 500;
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		padding: 4px 8px 6px;
+		border-bottom: 1px solid var(--line);
+	}
+	.rig td {
+		padding: 7px 8px;
+		border-bottom: 1px solid var(--line);
+		vertical-align: middle;
+	}
+	.rig tbody tr:not(.group) {
+		cursor: pointer;
+	}
+	.rig tbody tr:not(.group):hover td {
+		background: var(--bg-hover);
+	}
+	.rig tr.group td {
+		padding: 10px 8px 4px;
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--text-dim);
+		border-bottom: none;
+	}
+	.rig tr.group span {
+		color: var(--text-faint);
+	}
+	.rig tr.selected td {
+		background: color-mix(in srgb, var(--accent) 16%, transparent);
+	}
+	.rig tr.clash td {
+		background: color-mix(in srgb, var(--bad) 18%, transparent);
+	}
+	.name {
+		font-weight: 500;
+	}
+	.dim {
+		color: var(--text-dim);
+	}
+	.mono {
+		font-variant-numeric: tabular-nums;
+		font-family: var(--font-mono, monospace);
+		font-size: var(--font-xs);
+	}
+	.mono.bad {
+		color: var(--bad);
+	}
+	.values {
+		display: flex;
+		gap: 3px;
+		flex-wrap: wrap;
+	}
+	.chip {
+		display: inline-block;
+		background: var(--bg-raised);
+		border: 1px solid var(--line);
+		border-radius: 9px;
+		padding: 0 7px;
+		font-size: 10px;
+		color: var(--text-dim);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	.chip.overridden {
+		border-color: var(--accent);
+	}
+	.empty {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 10px;
+		padding: 32px 0;
+		color: var(--text-faint);
+	}
+	.empty p,
+	.none {
+		margin: 0;
+		color: var(--text-faint);
+		font-size: var(--font-sm);
+	}
+	.warn {
+		color: var(--live);
+		font-size: var(--font-xs);
+		margin: 8px 0 0;
+	}
+	.ask {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
 		padding: 14px;
 		font-size: var(--font-sm);
 	}
-	.dialog-form label {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
+	.ask p {
+		margin: 0;
 	}
-	.dialog-form label span {
-		color: var(--text-dim);
-		font-size: var(--font-xs);
-	}
-	/* Two numbers side by side for a break, in a cell already holding an address. */
-	.brk { display: block; color: #999; font-size: 11px; }
-	.input.tiny { width: 46px; }
-	.mode-cell .select { max-width: 170px; }
-
-	.patch { padding: 16px 20px; }
-	/* An overridden home value is this rig's answer rather than the type's, and it
-	   should be possible to see which is which at a glance down the column. */
-	.home-cell { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
-	.home-cell.overridden, .chip.overridden { outline: 1px solid var(--accent, #c90); border-radius: 3px; }
-	.clear-home { background: none; border: 0; color: inherit; cursor: pointer; opacity: 0.6; padding: 0 2px; }
-	.clear-home:hover { opacity: 1; }
-	/* Before the values rather than beside one of them: it takes the whole fixture,
-	   and a button sitting next to Intensity would read as Intensity's. */
-	.take-home {
-		font: inherit;
-		font-size: 11px;
-		margin-right: 6px;
-		padding: 1px 6px;
-		border: 1px solid var(--border, #444);
-		border-radius: 3px;
-		background: transparent;
-		color: #999;
-		cursor: pointer;
-	}
-	.take-home:hover { color: inherit; border-color: #666; }
-	.block { margin-bottom: 24px; }
-	.block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
-	.rig { width: 100%; border-collapse: collapse; font-size: 13px; }
-	.rig th { text-align: left; color: #777; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 6px 6px 0; }
-	/* Rows tall enough to hit standing up. Reading is the common case, so the height
-	   comes from padding rather than from every cell holding a 44px control. */
-	.rig td { padding: 8px 6px; vertical-align: middle; height: var(--hit); }
-	.rig tr.clash td { background: #3a1f1f; }
-	.rig tr.selected td { background: #1a2a40; }
-	/* Drawn small so a row of them is still a table; `.hit` puts a finger-sized
-	   target around each one, because selecting is what an operator does most and
-	   the one thing that stays live when the panel is locked. */
-	.pick { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line-input); background: none; padding: 0; cursor: pointer; display: block; }
-	.pick:hover { border-color: var(--accent); }
-	.pick.on { background: var(--accent); border-color: var(--accent); }
-	.coords { color: var(--text-dim); font-variant-numeric: tabular-nums; }
-	.node-address { color: var(--text-dim); font-family: monospace; font-size: 12px; }
-	.live { display: flex; gap: 3px; flex-wrap: wrap; padding-top: 6px; }
-	.chip { background: #262626; border: 1px solid #333; border-radius: 3px; padding: 1px 6px; font-size: 11px; color: #bbb; font-variant-numeric: tabular-nums; }
-	.hint { color: var(--text-faint); font-size: var(--font-xs); margin-left: 6px; }
-	.empty { color: var(--text-faint); font-size: var(--font-sm); padding: 8px 0; }
-	.warn { color: var(--live); font-size: var(--font-sm); margin-top: 8px; }
-	/* Buttons and inputs come from `styles/controls.css` now; `.narrow` is the one
-	   size this table needs that the shared sheet has no opinion about. */
-	.input.narrow { width: 5rem; }
-	.position-cell { min-width: 9rem; }
-	.position-cell.open { min-width: 20rem; }
-	/* A value that opens its own editor: reads as the value, answers a touch. */
-	.value { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; background: none; border: 1px solid transparent; border-radius: var(--radius); padding: 4px 6px; color: inherit; font: inherit; text-align: left; cursor: pointer; min-height: 32px; }
-	.value:hover:not(:disabled) { border-color: var(--line-strong); background: var(--bg-hover); }
-	.value:disabled { cursor: default; }
-	.done { margin-top: 6px; }
 </style>

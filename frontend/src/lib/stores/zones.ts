@@ -14,6 +14,7 @@ import type { AudioDestination, SpeakerZone, Station, Timeline } from '$lib/gene
 import { readPreferences, writePreferences, type AudioPrefs } from '$lib/preferences.js';
 import { collection, showData } from '$lib/stores/show.js';
 import type { DeviceNames } from '$lib/zones.js';
+import { uuid } from '$lib/uuid.js';
 
 export const zones = collection('speaker_zones');
 export const stations = collection('stations');
@@ -72,7 +73,7 @@ export async function createZone(
 	station?: string | null,
 	channels?: number[]
 ): Promise<string> {
-	const id = crypto.randomUUID();
+	const id = uuid();
 	await showData().speaker_zones.create({
 		id,
 		name,

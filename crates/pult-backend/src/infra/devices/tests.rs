@@ -1406,3 +1406,39 @@ async fn a_station_that_stops_driving_closes_its_door() {
     })
     .await;
 }
+
+/// This station's address moved — wifi to ethernet — and mDNS has lost sight of the
+/// node, which goes on dialing the old broker. It is still told the new list, at the
+/// address it was last seen at: a browse that has not found it again is no reason to
+/// leave it dialing a door that is not there.
+#[tokio::test]
+async fn a_node_out_of_sight_is_still_told_where_the_broker_went() {
+    let (addr, log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
+    let h = harness().await;
+    h.resolve("quiet", MAINS_RELAY, Some(addr)).await;
+    h.devices.adopt("quiet".into()).await.unwrap();
+    h.event(DeviceEvent::Removed { serial: "quiet".into() }).await;
+    let told = log.lock().unwrap().configs.len();
+
+    let spare = a_station_at(Uuid::from_u128(99), "10.9.9.9:1883");
+    h.engine
+        .set(
+            vec![PathSegment::Key("stations".into()), PathSegment::Key("__create".into())],
+            Lifecycle::Synced,
+            serde_json::to_value(&spare).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let configs = log.lock().unwrap().configs.clone();
+        if let Some(last) = configs.get(told..).and_then(|new| new.last()) {
+            let brokers = last["mqtt"]["brokers"].as_array().unwrap();
+            assert!(brokers.iter().any(|b| b == "10.9.9.9:1883"), "the new list, spare and all: {last}");
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "a node out of sight was never told");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}

@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use pult_render::{sample, Track, TrackKey, TrackPoint};
-use pult_schema::types::{fixture::ParameterValue, parameter_key, programmer::ProgrammerValue};
+use pult_schema::types::{fixture::ParameterValue, parameter_key, programmer::ProgrammerValue, sequence::LEVEL_KEY};
 use uuid::Uuid;
 
 /// How far the playhead may move by itself before a pass counts it as a jump.
@@ -73,6 +73,21 @@ impl Pass {
 
     /// Look at the programmer as it is, at a position on the timeline.
     pub fn observe(&mut self, position_ms: u64, programmer: &[ProgrammerValue]) {
+        self.observe_with_levels(position_ms, programmer, &[]);
+    }
+
+    /// The programmer and the sequences' levels as they are, at a position.
+    ///
+    /// A level is kept under [`LEVEL_KEY`] with the sequence's id where a fixture's
+    /// would be, so a fader moved during a take is recorded from the first touch the
+    /// way a programmer fader is — and one nobody touched, which says the same thing
+    /// every time it is looked at, writes nothing.
+    pub fn observe_with_levels(
+        &mut self,
+        position_ms: u64,
+        programmer: &[ProgrammerValue],
+        levels: &[(Uuid, f32)],
+    ) {
         let now: HashMap<(Uuid, String), ParameterValue> = programmer
             .iter()
             // An effect held in the programmer is a shape, not a value, and a shape
@@ -81,6 +96,11 @@ impl Pass {
             .map(|entry| {
                 ((entry.fixture_id, parameter_key(&entry.parameter_kind)), entry.value.clone())
             })
+            .chain(
+                levels
+                    .iter()
+                    .map(|(sequence, level)| ((*sequence, LEVEL_KEY.to_string()), ParameterValue::Float(*level))),
+            )
             .collect();
         let Some(seen) = self.seen.replace(now.clone()) else { return };
         let ms = position_ms.min(u32::MAX as u64) as u32;
@@ -247,6 +267,22 @@ mod tests {
         Track {
             keys: vec![TrackKey { fixture_id: jaw(), key: key.into(), points: points(pairs) }],
         }
+    }
+
+    /// A sequence's level is recorded beside the programmer, under its own key, and
+    /// only the one that moved.
+    #[test]
+    fn a_moved_sequence_level_is_recorded_and_a_still_one_is_not() {
+        let (moved, still) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut pass = Pass::new();
+        pass.observe_with_levels(0, &[], &[(moved, 1.0), (still, 0.6)]);
+        pass.observe_with_levels(100, &[], &[(moved, 0.7), (still, 0.6)]);
+        pass.observe_with_levels(200, &[], &[(moved, 0.4), (still, 0.6)]);
+        let track = pass.into_track();
+        assert_eq!(track.keys.len(), 1, "{track:?}");
+        assert_eq!(track.keys[0].fixture_id, moved);
+        assert_eq!(track.keys[0].key, LEVEL_KEY);
+        assert_eq!(pairs(&track.keys[0].points), vec![(100, 0.7), (200, 0.4)]);
     }
 
     #[test]

@@ -21,6 +21,7 @@ import { elements } from '$lib/stores/selection.js';
 import { collection, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';
 import TemplateInspector from '$lib/components/effects/TemplateInspector.svelte';
+import { uuid } from '$lib/uuid.js';
 
 const fixtures = collection('fixtures');
 const types = collection('fixture_types');
@@ -55,7 +56,7 @@ registerKind<EffectTemplate>({
 	duplicate: async (template) => {
 		await showData().effect_templates.create({
 			...template,
-			id: crypto.randomUUID(),
+			id: uuid(),
 			name: copyName(template.name, get(templates).map((t) => t.name))
 		});
 	},

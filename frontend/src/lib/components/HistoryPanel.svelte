@@ -134,7 +134,10 @@
 		margin: 2px 0 0;
 	}
 
+	/* The header stays put and the list scrolls under it. */
 	.history {
+		height: 100%;
+		min-height: 0;
 		padding: 12px 14px;
 		display: flex;
 		flex-direction: column;
@@ -163,6 +166,9 @@
 	}
 
 	ul {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
 		list-style: none;
 		display: flex;
 		flex-direction: column;

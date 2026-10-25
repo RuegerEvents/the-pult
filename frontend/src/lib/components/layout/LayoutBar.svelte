@@ -21,7 +21,8 @@
 		save,
 		saveAs
 	} from '$lib/stores/layout.js';
-	import { focusOnMount, selectOnMount } from '$lib/actions.js';
+	import NameDialog from '$lib/components/NameDialog.svelte';
+	import LayoutGrid from '@lucide/svelte/icons/layout-grid';
 
 	let open = $state(false);
 	let naming = $state<'new' | 'rename' | null>(null);
@@ -40,45 +41,21 @@
 		open = false;
 	}
 
-	async function commit() {
-		const name = draft.trim();
-		if (!name) return (naming = null);
+	async function commit(name: string) {
 		if (naming === 'new') await saveAs(name);
 		else if (savedHere) await rename(savedHere, name);
-		naming = null;
 	}
 </script>
 
 <div class="bar">
-	{#if naming}
-		<form
-			class="naming"
-			onsubmit={(e) => {
-				e.preventDefault();
-				commit();
-			}}
-		>
-			<input
-				bind:value={draft}
-				placeholder="Layout name…"
-				use:focusOnMount
-				use:selectOnMount
-				onkeydown={(e) => e.key === 'Escape' && (naming = null)}
-			/>
-			<button class="chip" type="submit">{naming === 'new' ? 'Save' : 'Rename'}</button>
-			<button class="chip" type="button" onclick={() => (naming = null)}>Cancel</button>
-		</form>
-	{:else}
-		<button class="name" onclick={() => (open = !open)}>
-			{current}{#if $dirty}<span class="dot" title="Unsaved changes">●</span>{/if}
-			<span class="caret">▾</span>
-		</button>
 
-		{#if savedHere}
-			<button class="chip" disabled={!$dirty} onclick={save}>Save</button>
-		{/if}
-		<button class="chip" onclick={() => start('new')}>Save as…</button>
-	{/if}
+		<!-- Saving is in the menu: rearranging is constant and writing it down is rare,
+		     and two permanent chips for the rare half crowded the bar. The dot still
+		     says that something has not been written down. -->
+		<button class="tb-menu" aria-expanded={open} onclick={() => (open = !open)}>
+			<LayoutGrid size={16} />{current}{#if $dirty}<span class="dot" title="Changed since it was saved">●</span>{/if}
+			<span class="tb-caret">▾</span>
+		</button>
 
 	{#if open}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -121,6 +98,16 @@
 			<span class="rule"></span>
 			{#if savedHere}
 				<button
+					disabled={!$dirty}
+					onclick={() => {
+						save();
+						open = false;
+					}}
+				>Save</button>
+			{/if}
+			<button onclick={() => start('new')}>Save as new…</button>
+			{#if savedHere}
+				<button
 					onclick={() => {
 						start('rename');
 					}}
@@ -137,6 +124,17 @@
 	{/if}
 </div>
 
+{#if naming}
+	<NameDialog
+		title={naming === 'new' ? 'Save the layout as new' : 'Rename the layout'}
+		placeholder="Layout name…"
+		initial={draft}
+		confirm={naming === 'new' ? 'Save' : 'Rename'}
+		onsubmit={commit}
+		onclose={() => (naming = null)}
+	/>
+{/if}
+
 <style>
 	.bar {
 		position: relative;
@@ -145,66 +143,12 @@
 		gap: 6px;
 	}
 
-	.name {
-		display: flex;
-		align-items: center;
-		gap: 5px;
-		background: none;
-		border: none;
-		color: var(--text);
-		font: inherit;
-		font-size: var(--font-sm);
-		cursor: pointer;
-	}
-	.name:hover {
-		color: var(--text-bright);
-	}
 	.dot {
 		color: var(--live);
 		font-size: 8px;
 	}
-	.caret {
-		color: var(--text-faint);
-		font-size: 9px;
-	}
 
-	.chip {
-		background: none;
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius);
-		color: var(--text-dim);
-		font: inherit;
-		font-size: var(--font-xs);
-		padding: 3px 9px;
-		cursor: pointer;
-	}
-	.chip:hover:not(:disabled) {
-		border-color: var(--line-input);
-		color: var(--text-bright);
-	}
-	.chip:disabled {
-		color: var(--text-faint);
-		cursor: not-allowed;
-	}
 
-	.naming {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-	.naming input {
-		background: var(--bg-sunken);
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius);
-		color: var(--text);
-		font: inherit;
-		font-size: var(--font-sm);
-		padding: 3px 7px;
-	}
-	.naming input:focus {
-		outline: none;
-		border-color: var(--accent);
-	}
 
 	.menu {
 		position: absolute;

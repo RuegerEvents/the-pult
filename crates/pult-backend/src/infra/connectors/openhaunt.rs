@@ -197,7 +197,7 @@ impl OpenHauntOutput {
                 let param_key = parameter_key(&parameter.kind);
                 let key = (serial.to_string(), port);
                 let capable = self.capability(serial, port);
-                let driving = patch.driving(fixture, &param_key);
+                let driving = patch.driving(fixture, &param_key, now_ms);
 
                 // 1. A shape the port has said it can trace.
                 // A port only runs what it was told to at full: a sequence's fader

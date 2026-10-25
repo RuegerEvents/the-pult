@@ -198,8 +198,8 @@
 	{/if}
 
 	<button
-		class="action-btn"
-		class:leave-btn={xchange.settings.enabled}
+		class="btn switch"
+		class:btn-primary={!xchange.settings.enabled}
 		disabled={busy}
 		onclick={() => settings({ enabled: !xchange.settings.enabled })}
 	>
@@ -426,8 +426,11 @@
 		opacity: 0.5;
 	}
 
+	.switch {
+		align-self: flex-start;
+	}
+
 	.action-btn {
-		width: 100%;
 		background: #2f6b3f;
 		border: 1px solid #3d8a52;
 		border-radius: 4px;

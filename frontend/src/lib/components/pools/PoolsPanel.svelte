@@ -28,11 +28,13 @@
 	import { collection } from '$lib/stores/show.js';
 	import { entries, storePreset } from '$lib/stores/programmer.js';
 	import { presetInView } from '$lib/stores/cues.js';
-	import { selection } from '$lib/stores/selection.js';
+	import { asSavedQuery, selection } from '$lib/stores/selection.js';
+	import { showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { addToast } from '$lib/toasts.js';
-	import { focusOnMount } from '$lib/actions.js';
+	import NameDialog from '$lib/components/NameDialog.svelte';
 	import Card from '$lib/components/objects/Card.svelte';
+	import { uuid } from '$lib/uuid.js';
 
 	const groups = collection('groups');
 	const presets = collection('presets');
@@ -40,7 +42,6 @@
 	const GROUP_ORDER: FadeGroup[] = ['Intensity', 'Position', 'Color', 'Beam', 'Other'];
 	let filter = $state<FadeGroup | null>(null);
 	let naming = $state(false);
-	let draft = $state('');
 
 	const shown = $derived(
 		filter === null
@@ -48,11 +49,19 @@
 			: ($presets as Preset[]).filter((p) => presetGroups(p).includes(filter as FadeGroup))
 	);
 
-	async function makePreset() {
-		const name = draft.trim();
-		if (!name) return;
-		naming = false;
-		draft = '';
+	/** A group from what is selected: the question, not the list, so a light patched
+	 *  later that answers it joins it. */
+	let namingGroup = $state(false);
+	async function makeGroup(name: string) {
+		try {
+			await showData().groups.create({ id: uuid(), name, query: asSavedQuery(), color: null });
+			addToast(`Group “${name}” saved`, 'success');
+		} catch (e) {
+			addToast(`${e}`);
+		}
+	}
+
+	async function makePreset(name: string) {
 		try {
 			await storePreset(name);
 			addToast(`Preset “${name}” stored`, 'success');
@@ -64,9 +73,21 @@
 
 <div class="pools">
 	<section>
-		<h2>Groups</h2>
+		<header>
+			<h2>Groups</h2>
+			{#if $canEdit}
+				<button
+					class="chip"
+					disabled={$selection.length === 0}
+					title={$selection.length === 0 ? 'Select some fixtures first' : `Save the ${$selection.length} selected as a group`}
+					onclick={() => (namingGroup = true)}
+				>
+					+ From selection
+				</button>
+			{/if}
+		</header>
 		{#if $groups.length === 0}
-			<p class="empty">No saved groups. The Selection panel is where one is made.</p>
+			<p class="empty">No saved groups. Select some fixtures and press <b>+ From selection</b>.</p>
 		{:else}
 			<div class="row">
 				{#each $groups as group (group.id)}
@@ -92,24 +113,15 @@
 					</button>
 				{/each}
 			</div>
-			{#if naming}
-				<form
-					onsubmit={(e) => {
-						e.preventDefault();
-						makePreset();
-					}}
+			{#if $canEdit}
+				<button
+					class="chip"
+					disabled={$entries.length === 0}
+					title={$entries.length === 0
+						? 'Set something in the programmer first'
+						: 'Store what the programmer holds as a preset'}
+					onclick={() => (naming = true)}
 				>
-					<input
-						class="text"
-						placeholder="Preset name…"
-						bind:value={draft}
-						use:focusOnMount
-						onkeydown={(e) => e.key === 'Escape' && (naming = false)}
-					/>
-					<button class="chip" type="submit">Store</button>
-				</form>
-			{:else if $canEdit}
-				<button class="chip" disabled={$entries.length === 0} onclick={() => (naming = true)}>
 					+ From programmer
 				</button>
 			{/if}
@@ -117,8 +129,8 @@
 
 		{#if $presets.length === 0}
 			<p class="empty">
-				No presets yet. Build a look in the programmer and store it here; a cue that
-				references one changes when the preset does.
+				No presets yet. Set a look in the programmer, then <b>+ From programmer</b>. A cue
+				that uses a preset changes when the preset does.
 			</p>
 		{:else if shown.length === 0}
 			<p class="empty">No preset holds anything in that group.</p>
@@ -150,6 +162,26 @@
 	</section>
 </div>
 
+{#if namingGroup}
+	<NameDialog
+		title="Save the selection as a group"
+		placeholder="Group name…"
+		confirm="Save"
+		hint="The group keeps the question, not the list: a light patched later that answers it joins it."
+		onsubmit={makeGroup}
+		onclose={() => (namingGroup = false)}
+	/>
+{/if}
+{#if naming}
+	<NameDialog
+		title="Store the programmer as a preset"
+		placeholder="Preset name…"
+		confirm="Store"
+		onsubmit={makePreset}
+		onclose={() => (naming = false)}
+	/>
+{/if}
+
 <style>
 	.pools {
 		display: flex;
@@ -169,11 +201,6 @@
 		align-items: center;
 		gap: 10px;
 		flex-wrap: wrap;
-	}
-	header form {
-		display: flex;
-		gap: 6px;
-		align-items: center;
 	}
 
 	h2 {
@@ -243,14 +270,4 @@
 		cursor: not-allowed;
 	}
 
-	.text {
-		background: var(--bg-sunken);
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius);
-		color: var(--text);
-		font: inherit;
-		font-size: var(--font-sm);
-		padding: 3px 6px;
-		max-width: 10rem;
-	}
 </style>

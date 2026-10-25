@@ -267,6 +267,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // page, so a page that has gone leaves none — the sweep in `infra::clients` is
     // only for the other way of going quiet, which is not hanging up.
     state.clients.forget(session_id).await;
+    // And the stations on the network, if this page was the one looking: nobody left
+    // looking is nobody to browse for.
+    state.session.watch_nearby(session_id, false).await;
     // And the wing, if this page was driving it: a wing acting for a page that has
     // gone is a desk nobody is behind.
     if let Some(wing) = &state.wing {

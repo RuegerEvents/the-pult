@@ -154,6 +154,32 @@ pub async fn len(pool: &SqlitePool) -> Result<u64> {
 // Never replicated. Two stations in one session legitimately hold different amounts
 // of history, and each serves catch-up from what it has.
 
+/// The vector clock this log has reached: per node, the highest sequence number it
+/// holds, or the floor it was pruned through where that is higher.
+///
+/// What an engine opening a show starts counting from. It used to start from zero, so
+/// a station restarted after 71,892 writes numbered its next one 1 — which collides
+/// with any row from early in the show that survived pruning (`UNIQUE` on
+/// `(node_id, seq)`, and the write is lost), and which every peer that had seen 71,892
+/// takes for one it already has and never asks for.
+pub async fn clock(pool: &SqlitePool) -> Result<VectorClock> {
+    let mut clock = VectorClock::default();
+    let rows = sqlx::query("SELECT node_id, MAX(seq) AS high FROM oplog GROUP BY node_id")
+        .fetch_all(pool)
+        .await?;
+    for row in rows {
+        let id: String = row.try_get("node_id")?;
+        let high: i64 = row.try_get("high")?;
+        let Ok(id) = Uuid::parse_str(&id) else { continue };
+        clock.0.insert(NodeId(id), high.max(0) as u64);
+    }
+    for (node, through) in floor(pool).await? {
+        let entry = clock.0.entry(node).or_insert(0);
+        *entry = (*entry).max(through);
+    }
+    Ok(clock)
+}
+
 /// How far each node's operations have been pruned on this station.
 pub async fn floor(pool: &SqlitePool) -> Result<Vec<(NodeId, u64)>> {
     let rows = sqlx::query("SELECT node_id, pruned_through_seq FROM oplog_floor")

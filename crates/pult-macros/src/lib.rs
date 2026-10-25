@@ -63,6 +63,11 @@ struct FieldMeta {
     /// order is not persisted, so nothing consumes it.
     #[allow(dead_code)]
     is_ordered: bool,
+    /// From `#[serde(default = "path")]`: what a field the database does not hold is
+    /// read back as. Without it a SYNCED `rate` that serde defaults to 1 came back
+    /// from an opened show as `Default::default()`, which is 0 — a timeline that
+    /// played and never moved.
+    serde_default: Option<syn::Path>,
 }
 
 struct StructMeta {
@@ -122,8 +127,13 @@ fn parse_field_meta(field: &Field) -> syn::Result<FieldMeta> {
     let mut is_primary_key = false;
     let mut collection_of = None;
     let mut is_ordered = false;
+    let mut serde_default = None;
 
     for attr in &field.attrs {
+        if attr.path().is_ident("serde") {
+            serde_default = serde_default.or(serde_default_of(attr)?);
+            continue;
+        }
         if !attr.path().is_ident("pult") {
             continue;
         }
@@ -158,7 +168,25 @@ fn parse_field_meta(field: &Field) -> syn::Result<FieldMeta> {
     let lifecycle =
         lifecycle.ok_or_else(|| syn::Error::new(field.span(), "field missing #[pult(lifecycle = ...)]"))?;
 
-    Ok(FieldMeta { ident, ty, lifecycle, is_primary_key, collection_of, is_ordered })
+    Ok(FieldMeta { ident, ty, lifecycle, is_primary_key, collection_of, is_ordered, serde_default })
+}
+
+/// The function a `#[serde(default = "path")]` names, if this attribute names one.
+fn serde_default_of(attr: &syn::Attribute) -> syn::Result<Option<syn::Path>> {
+    let syn::Meta::List(list) = &attr.meta else { return Ok(None) };
+    let items = list.parse_args_with(
+        syn::punctuated::Punctuated::<syn::Meta, Token![,]>::parse_terminated,
+    )?;
+    for item in items {
+        if let syn::Meta::NameValue(nv) = item {
+            if nv.path.is_ident("default") {
+                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value {
+                    return Ok(Some(s.parse()?));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 // ── Code generation ───────────────────────────────────────────────────────────
@@ -573,6 +601,8 @@ fn gen_pult_sql_row(meta: &StructMeta) -> syn::Result<TokenStream2> {
             bind_exprs.push(info.bind_expr);
             let read = info.read_expr;
             read_field_inits.push(quote! { #fi: #read });
+        } else if let Some(default) = &field.serde_default {
+            read_field_inits.push(quote! { #fi: #default() });
         } else {
             read_field_inits.push(quote! { #fi: ::std::default::Default::default() });
         }
