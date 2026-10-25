@@ -16,6 +16,11 @@ use uuid::Uuid;
 
 use crate::{engine::EngineHandle, infra::sync::SyncHandle};
 
+pub mod remembered;
+
+/// How often a station that came up remembering a session tries to get back into it.
+const REJOIN_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
 // ── SessionCommand ────────────────────────────────────────────────────────────
 
 pub enum SessionCommand {
@@ -100,6 +105,14 @@ enum Advert {
 }
 
 pub struct SessionManager {
+    /// Whether joins are written down and gone back to after a restart
+    /// (`Config::rejoin`). Off in tests, which start stations by the dozen.
+    remembers: bool,
+    /// The leader to get back to, while this station is not yet in a session.
+    rejoin: Option<SocketAddr>,
+    /// The leader to hand the lead back to: set when this station was promoted out of
+    /// a session it had joined, cleared once it is that leader's follower again.
+    handback: Option<SocketAddr>,
     node_id: NodeId,
     sync_port: u16,
     engine: EngineHandle,
@@ -176,7 +189,9 @@ impl SessionManager {
         engine: EngineHandle,
         sync: SyncHandle,
         net: crate::infra::net::NetHandle,
+        remembers: bool,
     ) -> (Self, SessionHandle) {
+        let rejoin = if remembers { remembered::load(node_id) } else { None };
         let (tx, rx) = mpsc::channel(16);
         let (mdns_tx, mdns_rx) = mpsc::channel(64);
         let (probes_tx, probes_rx) = mpsc::channel(64);
@@ -205,6 +220,7 @@ impl SessionManager {
                 warn!("[session] mDNS browse failed: {e}");
                 return (
                     SessionManager {
+                        remembers, rejoin, handback: None,
                         node_id, sync_port, engine, sync, rx, mdns_rx,
                         state: SessionState { node_id: Some(node_id), ..Default::default() },
                         discovered_addrs: HashMap::new(),
@@ -241,6 +257,7 @@ impl SessionManager {
 
         (
             SessionManager {
+                remembers, rejoin, handback: None,
                 node_id, sync_port, engine, sync, rx, mdns_rx,
                 state: SessionState { node_id: Some(node_id), ..Default::default() },
                 discovered_addrs: HashMap::new(),
@@ -285,9 +302,18 @@ impl SessionManager {
         self.push_state().await;
         self.announce_station();
         let mut reprobe = tokio::time::interval(PROBE_EVERY);
+        // The first tick is at once: a station that remembers a leader tries it as soon
+        // as it is up, and then every REJOIN_EVERY until it is in a session again.
+        let mut rejoin_tick = tokio::time::interval(REJOIN_EVERY);
+        let mut handback_tick = tokio::time::interval(REJOIN_EVERY);
+        if let Some(addr) = self.rejoin {
+            info!("[session] going back to the session last joined, at {addr}");
+        }
 
         loop {
             tokio::select! {
+                _ = rejoin_tick.tick(), if self.rejoin.is_some() => self.try_rejoin().await,
+                _ = handback_tick.tick(), if self.handback.is_some() => self.try_handback().await,
                 _ = reprobe.tick(), if self.browsing => {
                     for station in self.candidates.values() {
                         self.probe(station);
@@ -327,6 +353,62 @@ impl SessionManager {
         }
     }
 
+    /// One attempt at the remembered leader. Stops trying once this station is in a
+    /// session by any route, so a join somebody made by hand in the meantime wins.
+    async fn try_rejoin(&mut self) {
+        if self.state.is_follower || self.state.is_advertising {
+            self.rejoin = None;
+            return;
+        }
+        let Some(addr) = self.rejoin else { return };
+        let (reply, answer) = oneshot::channel();
+        self.handle_command(SessionCommand::JoinAt { addr, reply }).await;
+        match answer.await {
+            Ok(Ok(())) => self.rejoin = None,
+            _ => debug!("[session] {addr} did not answer yet; trying again in {REJOIN_EVERY:?}"),
+        }
+    }
+
+    /// Give the lead back to the leader this station was promoted away from, if it is
+    /// answering again.
+    ///
+    /// A plain TCP connect first, so the ten-second tick costs a refused connection and
+    /// nothing else while that machine is still down. Then the advert goes, and this
+    /// station joins it the way `session.joinAt` would; if the join fails after all, it
+    /// takes the lead up again at once rather than leaving the rig with nobody driving.
+    async fn try_handback(&mut self) {
+        let Some(addr) = self.handback else { return };
+        if !self.state.is_advertising {
+            // No longer leading, by whatever route: nothing to hand back.
+            self.handback = None;
+            return;
+        }
+        let reachable = matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                tokio::net::TcpStream::connect(addr)
+            )
+            .await,
+            Ok(Ok(_))
+        );
+        if !reachable {
+            return;
+        }
+        info!("[session] {addr} is back; handing the lead back to it");
+        self.stop_advertising();
+        self.state.is_advertising = false;
+        let (reply, answer) = oneshot::channel();
+        self.handle_command(SessionCommand::JoinAt { addr, reply }).await;
+        match answer.await {
+            Ok(Ok(())) => self.handback = None,
+            _ => {
+                warn!("[session] could not hand the lead back to {addr}; leading on");
+                self.state.is_follower = true;
+                self.handle_command(SessionCommand::Promote).await;
+            }
+        }
+    }
+
     /// Push current session state to the engine so all connected frontends see it.
     ///
     /// And tell the station's standing at once. The reporter works it out too, but on
@@ -344,6 +426,12 @@ impl SessionManager {
     async fn handle_command(&mut self, cmd: SessionCommand) {
         match cmd {
             SessionCommand::Create { show_name, show_id, reply } => {
+                // A station starting its own session is nobody's follower any more.
+                self.rejoin = None;
+                self.handback = None;
+                if self.remembers {
+                    remembered::forget(self.node_id);
+                }
                 let session_id = Uuid::new_v4();
                 self.advertise(session_id, show_id, show_name).await;
                 if self.state.is_advertising {
@@ -391,6 +479,9 @@ impl SessionManager {
                 self.state.is_follower = true;
                 self.state.session_id = Some(session_id);
                 self.push_state().await;
+                if self.remembers {
+                    remembered::remember(self.node_id, addr);
+                }
                 info!("[session] joined session {session_id} at {addr}");
                 let _ = reply.send(Ok(()));
             }
@@ -408,6 +499,9 @@ impl SessionManager {
                         self.state.is_follower = true;
                         self.state.session_id = Some(session_id);
                         self.push_state().await;
+                        if self.remembers {
+                            remembered::remember(self.node_id, addr);
+                        }
                         info!("[session] joined the station at {addr} by its address");
                         let _ = reply.send(Ok(()));
                     }
@@ -419,6 +513,12 @@ impl SessionManager {
             }
 
             SessionCommand::Leave => {
+                // Deliberate, so not gone back to after a restart either.
+                self.rejoin = None;
+                self.handback = None;
+                if self.remembers {
+                    remembered::forget(self.node_id);
+                }
                 if self.state.is_advertising {
                     self.stop_advertising();
                 } else if self.state.is_follower {
@@ -453,6 +553,15 @@ impl SessionManager {
                 self.advertise(session_id, show_id, show_name).await;
                 self.state.is_follower = false;
                 self.push_state().await;
+                // A spare that took over keeps looking for the leader it was following,
+                // and gives the lead back when it answers (decided at the gig,
+                // 2026-10-25: the Mini leads whenever it is up).
+                if self.remembers {
+                    self.handback = remembered::load(self.node_id);
+                    if let Some(addr) = self.handback {
+                        info!("[session] will hand the lead back to {addr} when it answers");
+                    }
+                }
             }
 
             SessionCommand::WatchNearby { session, on } => {

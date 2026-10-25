@@ -40,6 +40,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
+pub mod builtin;
 pub mod bundle;
 pub mod cache;
 pub mod manifest;

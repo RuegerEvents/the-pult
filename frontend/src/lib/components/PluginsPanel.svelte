@@ -28,6 +28,12 @@
 	let installing = $state(false);
 	let installError = $state<string | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
+	/**
+	 * What the station carries inside itself, installable with one press rather than a
+	 * file picker on whichever tablet pressed Install — where the bundle never is.
+	 */
+	let builtin = $state<{ id: string; name: string; version: string }[]>([]);
+	const offered = $derived(builtin.filter((b) => !packages.some((pkg) => pkg.plugin_id === b.id)));
 
 	const runtime = $derived($pluginsState.plugins);
 
@@ -149,12 +155,33 @@
 		}
 	}
 
+	async function installBuiltin(id: string) {
+		installError = null;
+		installing = true;
+		try {
+			const response = await fetch(`/api/plugins/builtin/${encodeURIComponent(id)}`, { method: 'POST' });
+			if (!response.ok) {
+				installError = (await response.text()) || `the station refused it (${response.status})`;
+			}
+		} catch (e) {
+			installError = e instanceof Error ? e.message : String(e);
+		} finally {
+			installing = false;
+		}
+	}
+
 	function onPick(event: Event) {
 		const file = (event.target as HTMLInputElement).files?.[0];
 		if (file) void install(file);
 	}
 
 	onMount(() => data.plugin_packages.subscribeDeep((v) => { packages = v; }));
+	onMount(() => {
+		fetch('/api/plugins/builtin')
+			.then((r) => (r.ok ? r.json() : []))
+			.then((list) => (builtin = list))
+			.catch(() => {});
+	});
 	onMount(() => data.plugin_data.subscribeDeep((v) => { stored = v; }));
 </script>
 
@@ -178,6 +205,17 @@
 
 		{#if installError}
 			<p class="error">{installError}</p>
+		{/if}
+
+		{#if $canEdit && offered.length > 0}
+			<div class="builtin">
+				<span class="hint">Built into this station:</span>
+				{#each offered as plugin (plugin.id)}
+					<button class="ghost" disabled={installing} onclick={() => installBuiltin(plugin.id)}>
+						+ {plugin.name} <span class="hint">{plugin.version}</span>
+					</button>
+				{/each}
+			</div>
 		{/if}
 
 		{#if packages.length === 0}
@@ -370,6 +408,7 @@
 		color: var(--danger, #d66);
 		margin: 0.4rem 0;
 	}
+	.builtin { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; }
 	.hidden-file {
 		display: none;
 	}

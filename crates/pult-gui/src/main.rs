@@ -34,6 +34,11 @@ struct Args {
     /// meaningful working directory to find a show in.
     #[arg(long, value_name = "BUNDLE")]
     show: Option<std::path::PathBuf>,
+    /// With no `--show`: open the show this console had open last, if it still exists,
+    /// and the welcome screen otherwise. For a console started at login, which should
+    /// come back on what it was running rather than on a path fixed at install time.
+    #[arg(long)]
+    last_show: bool,
     /// Put one of the demo shows in, if the show has no rig yet: haunt, theater,
     /// club or festival.
     #[arg(long, value_name = "ID")]
@@ -100,10 +105,14 @@ async fn start(
         bind: None,
         port: free_or_any(args.port).await,
         sync_port: free_or_any(args.sync_port).await,
-        show: args.show.clone(),
+        show: args.show.clone().or_else(|| {
+            args.last_show.then(pult_backend::infra::showfile::recent::last_existing).flatten()
+        }),
         demo: args.demo,
         openhaunt_broker_port: args.openhaunt_broker_port,
         node_id: args.node_id,
+        // Back into the session this station last joined, after a restart.
+        rejoin: true,
         log: Some(log),
         wing,
         ..Config::default()

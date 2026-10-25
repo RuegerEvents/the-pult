@@ -7168,6 +7168,142 @@ cd frontend && npx vitest run src/lib/timeline/pinch.test.ts   # a pinch, both k
 scripts/build-plugins.sh --debug && cargo test -p pult-backend --test plugins
 ```
 
+### 84. A hand on the wire, for checking a cable
+
+A channel tester, on the *On the wire* panel's universe sheet. **Test** turns a click
+into a selection (shift for a range, ⌘ to add) and the level controls — a slider, a
+number, Full, 50%, Dark — force the selection onto the output's wire. **Release**
+gives the selection back to the show, *Solo this universe* drops every channel not
+forced to zero, and the two arrows are the channel-check walk: the forcing moves one
+channel along. The sheet draws the byte that actually went out, so what is on screen is
+the proof and not the request. Asked for at the gig, with no fixtures patched yet and
+a rig to check cable on.
+
+**What it is.** A `ChannelTest` (`pult_schema::types::output`): per universe a `solo` flag
+and a map of channel (1 to 512) to level. Not show data, in no oplog and not in History,
+and not replicated. `output.test` is an RPC beside `output.watch`, and the same rule
+governs both: **nothing expires; it is recomputed from who is here.** The station keeps one
+test *per session* and lets go when the socket closes, so a tablet that loses its signal
+cannot leave a light at full — which matters more here than for a viewer, since this is
+the one diagnostic that *drives* the rig.
+
+**Where it lands.** After `render_carried` and before the dedup (`dmx::force`), in all three
+DMX-family connectors: the forced byte is what the cache compares and what the viewer
+reads back. Several sessions on one output merge highest-takes-precedence, solo if any
+asks for it. **A universe nothing is patched on is made**, because checking a line before
+anything is patched on it is the first use rather than an edge case; but only if the
+output *carries* it, since `OutputConfig::universes` is a filter and a test is not a way
+round it. A station that has been handed no patch yet draws an empty one for a test, and
+for nothing else.
+
+**Drawn at once.** A settled line waits 800 ms between keep-alives, and a channel that
+took most of a second to come on under a finger reads as a fault in the cable being
+tested. `apply_tests` sets the connector's next frame to *now*, on a change and on a let-go.
+
+**Reaching a peer.** `SyncMessage::OutputTest`, protocol version 9: the shape of
+`OutputWatch`, the receiving station registering the test under its own node id with the
+peer standing in for a session. It lives on the connection, so a link that drops takes the
+test with it, and the page repeats a held test every three seconds so that a link that
+*returns* gets it back. `output.test` always sends down the link for a peer's output,
+changed or not, for that reason. **Both stations have to run the same build** — a peer on
+an older protocol refuses the link, which is the cost of the message at all.
+
+**Said on the row.** `OutputStatus::testing` lists the universes being forced; the Outputs
+panel shows an amber *TEST u3* beside the output, and the wire panel a banner with
+*Release all*. A channel stuck at full always has a reason on screen.
+
+**Traps.**
+- *The connector answers a universe it never carried with another one it has.* Right for
+  reading, wrong for a hand: while testing, the sheet is of the universe **asked for**
+  (`showing`), drawn as zeros until the first forced frame lands, or the level would go on
+  a line the operator is not looking at.
+- *Releasing on the way out.* The panel lets go when it moves to another wire and when it
+  unmounts, as well as the station letting go on disconnect: a diagnostic that outlived a
+  dropdown change would be the same defect from the other side.
+- *A reconnect is a new session.* The station forgot everything the old socket held, so
+  the page says its test again — and only if it has one.
+- *The release must not wait for an animation frame*: a hidden tab is served none. An
+  empty test goes at once, and a timer stands behind the queued frame.
+- *A rebuilt connector starts with nothing forced.* Widening an output's universe list
+  rebuilds the plugin; the reconcile ends with an `apply_tests` pass, compared against
+  what each connector was last given.
+
+**And a patching bug the same afternoon.** Five dimmers patched at 1.1 came out as Dimmer 1, 2,
+4, 8 and 9. `AddFixtures.svelte` read `names[i]` after each awaited `create`, and `names` is
+derived from the fixtures already patched ("the first number after the highest"), so every
+fixture the loop made moved the next name. The names and the places are now snapshotted
+before the first write. Anything derived from the show that a loop of writes reads again
+after one of its own writes has this shape.
+
+**And Clear in MA's order.** The top-bar Clear, Esc and the wing's CLEAR each cleared the
+programmer first and the selection on a quick second press. At the gig the operator's MA
+habit wanted it the other way round: the first Clear after setting a look drops the
+selection and the look stays up. One rule now, in `stores/clear.ts`: the selection, then
+the programmer, decided by what is there rather than by a timer, so the three keys agree
+at any speed and the button's tooltip says which step is next. MA's third step (clear
+active, then clear all) has no counterpart here, because a programmer value *is* output
+on this console; a locked value stays parked, as before.
+
+**And a spare goes back to its session by itself.** At the gig the Pi lost power three
+times in an afternoon, and each time came back on its own show, out of the session, until
+somebody joined it again by hand. A station now writes the leader it joined into
+`sessions.toml` beside `preferences.toml` (`infra/session/remembered.rs`), keyed by its
+own id because two stations on one machine share that directory, and at start-up goes
+back to it every ten seconds until it is in a session by any route. Leaving the session or
+starting one of its own forgets it; a failover does not, since the spare that took over
+still means to follow the old leader once it is back. Opt-in through `Config::rejoin`,
+which both binaries set and every test leaves off, so a test station never goes looking
+for a leader from an earlier run. `pult-backend --join host:port` is the same thing told
+rather than remembered.
+
+**And the lead goes back.** With a spare that rejoins, a restarted Mini still came back
+as a lone station while the promoted Pi went on leading a session of its own — two
+leaders, and the Art-Net going out of the wrong one. Now a station promoted out of a
+session it had *joined* keeps trying that leader every ten seconds, a bare TCP connect
+first so a machine still down costs a refused connection, and when it answers drops its
+advert and joins it; if that join fails it takes the lead straight up again rather than
+leave the rig with nobody driving. Measured at the gig: the Mini restarted for an install,
+the Pi took over and was its follower again 1.3 s later. The user's call, with the cost
+named: SYNCED values (a maze's counts) can jump to the returning leader's at that moment.
+Also found: **two joins in a row make a leader**. The second connection replaces the
+first, the first one's close reads as the leader going, and the station promotes itself
+— which a deploy script that joined after the station had already rejoined by itself did.
+
+**Three more from the same evening, one of them a dark rig.**
+- *A plugin killed the desktop app.* `pult-gui` is signed with the hardened runtime, and
+  wasmtime compiles a plugin to machine code at load: without
+  `com.apple.security.cs.allow-jit` the kernel kills the process the moment a plugin
+  loads (exit reason `CODESIGNING`, no error, no log line), and launchd starts it again
+  every five seconds. Installing the command line into a show did that to the Mac Mini,
+  and the spare's handback made it worse: the Pi took over and handed back on every
+  restart, so neither drove the rig. `crates/pult-gui/Entitlements.plist` carries
+  `allow-jit` and `allow-unsigned-executable-memory`. Nothing had caught it because no
+  show the desktop app had opened before carried a plugin.
+- *The command line is carried, not fetched.* The wing types into the command-line
+  plugin, and a show made at the venue had none and an Install button that opened a file
+  picker on whatever tablet pressed it. The station now embeds the bundle
+  (`crates/pult-backend/bundled/`, refreshed by copying `plugins/dist/` after
+  `scripts/build-plugins.sh --bundle`), installs it into a show whose roster is empty when
+  the show opens (`infra/plugins/builtin.rs`), and the Plugins panel offers it with one
+  press (`POST /api/plugins/builtin/{id}`). Not native, deliberately: a port would be
+  the grammar, the catalog, the help and the panel again.
+- *A console kept to one cable answered nobody on its own machine.* `[network] http =
+  "en0"` bound the page to the LAN address, the desktop window opens `localhost`, and the
+  window was blank over a working station. A listener bound to one interface now also
+  listens on loopback, which reaches no network.
+
+**What is not done.** A test through a *fixture* — pick a lamp, drive its parameter —
+which is just the programmer. Forcing on an OpenHaunt node's own ports, which have no
+channels. A fade on the forced level, deliberately: a test snaps, so what it shows is
+what the cable does and not what an easing says.
+
+```
+cargo test -p pult-schema --lib channel_test         # a test, checked and merged
+cargo test -p pult-backend --lib connectors          # the table, the overlay, the manager
+cargo test -p pult-backend --test wire               # forcing a peer's wire, and the link going
+cd frontend && npx vitest run src/lib/dmxtest.test.ts
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

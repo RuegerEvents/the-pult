@@ -104,6 +104,8 @@ where
         // bytes in a body, too large for the WebSocket, and the answer is what
         // the show now says about it.
         .route("/api/plugins", post(install_plugin))
+        .route("/api/plugins/builtin", get(builtin_plugins))
+        .route("/api/plugins/builtin/{id}", post(install_builtin_plugin))
         // A fixture definition, in and out. The same shape as a plugin bundle: bytes
         // in a body, too large for the WebSocket, and the answer is what the show now
         // says about it.
@@ -142,63 +144,29 @@ async fn install_plugin(
     State(state): State<AssetState>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, Response> {
-    use pult_schema::{lifecycle::Lifecycle, path::PathSegment, types::plugin::PluginPackage};
-
-    // Validated against where it *would* be unpacked, so the relative paths in
-    // it are checked the same way they will be when it is.
-    let would_be = infra::plugins::cache::root()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(assets::digest(&body));
-    let info = infra::plugins::bundle::read_manifest(&body, &would_be)
-        .map_err(|e| bad_request(&format!("{e:#}")))?;
-    let manifest = info.manifest;
-
-    let sha256 = state
-        .assets
-        .put(assets::BUNDLE_MIME, &body)
+    let (value, replaced) = infra::plugins::builtin::install(&state.engine, &state.assets, &body)
         .await
-        .map_err(|e| bad_request(&e.to_string()))?;
+        .map_err(|e| bad_request(&e))?;
+    Ok(Json(json!({ "installed": value, "replaced": replaced })))
+}
 
-    // One row per plugin id. Replacing rather than adding is what makes
-    // installing a new build of something an upgrade instead of a conflict.
-    let roster: Vec<PluginPackage> = state
-        .engine
-        .get(vec![PathSegment::Key("plugin_packages".into())])
+/// The plugins this station carries inside itself, for the Plugins panel to offer
+/// without a file picker.
+async fn builtin_plugins() -> Json<serde_json::Value> {
+    Json(serde_json::Value::Array(infra::plugins::builtin::listed()))
+}
+
+/// Install one of them into the show.
+async fn install_builtin_plugin(
+    State(state): State<AssetState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let bytes = infra::plugins::builtin::bundle(&id)
+        .ok_or_else(|| bad_request(&format!("this station carries no plugin called {id}")))?;
+    let (value, replaced) = infra::plugins::builtin::install(&state.engine, &state.assets, bytes)
         .await
-        .ok()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
-    let existing = roster.iter().find(|p| p.plugin_id == manifest.plugin.id);
-
-    let package = PluginPackage {
-        id: existing.map(|p| p.id).unwrap_or_else(uuid::Uuid::new_v4),
-        plugin_id: manifest.plugin.id.clone(),
-        name: manifest.plugin.name.clone(),
-        version: manifest.plugin.version.clone(),
-        api: manifest.plugin.api.clone(),
-        sha256: sha256.clone(),
-        // An upgrade keeps whatever the operator had chosen: switching a plugin
-        // off and installing a new build of it should not switch it back on.
-        enabled: existing.map(|p| p.enabled).unwrap_or(true),
-        stage: existing.map(|p| p.stage).unwrap_or_default(),
-        config: existing.map(|p| p.config.clone()).unwrap_or(serde_json::Value::Null),
-    };
-    let value = serde_json::to_value(&package).map_err(|e| bad_request(&e.to_string()))?;
-
-    let path = match existing {
-        Some(p) => vec![PathSegment::Key("plugin_packages".into()), PathSegment::Id(p.id)],
-        None => vec![
-            PathSegment::Key("plugin_packages".into()),
-            PathSegment::Key("__create".into()),
-        ],
-    };
-    state
-        .engine
-        .set(path, Lifecycle::Persisted, value.clone())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?;
-
-    Ok(Json(json!({ "installed": value, "replaced": existing.is_some() })))
+        .map_err(|e| bad_request(&e))?;
+    Ok(Json(json!({ "installed": value, "replaced": replaced })))
 }
 
 /// Whether this console can talk to the Share, and how fresh its list is.

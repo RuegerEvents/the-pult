@@ -345,6 +345,13 @@ impl Console {
         self.running.as_ref().map(|running| running.engine.clone())
     }
 
+    /// Join the station at a sync address, as `session.joinAt` does, for a binary told
+    /// to at start-up. Answers what the session manager said.
+    pub async fn join_at(&self, addr: SocketAddr) -> Result<(), String> {
+        let Some(running) = self.running.as_ref() else { return Err("no station".into()) };
+        running.session.join_at(addr).await
+    }
+
     /// The link to this console's peers, for the same kind of caller.
     pub fn sync(&self) -> Option<crate::infra::sync::SyncHandle> {
         self.running.as_ref().map(|running| running.sync.clone())
@@ -551,6 +558,22 @@ pub async fn start(config: Config) -> Result<Running> {
     });
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, config.port)).await?;
     let http_addr = listener.local_addr()?;
+    // And on loopback, when that is one cable rather than all of them: the desktop
+    // window opens `http://localhost`, and a console kept to `en0` answered nobody on
+    // this machine — the Mac Mini at the gig showed a blank window over a working
+    // station. Loopback reaches no network, so this offers nothing the setting meant to
+    // keep off a cable. Best effort: something else on that port is a warning.
+    let loopback = if bind.is_unspecified() || bind.is_loopback() {
+        None
+    } else {
+        match tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], http_addr.port()))).await {
+            Ok(listener) => Some(listener),
+            Err(e) => {
+                warn!("[http] could not also listen on localhost:{}: {e}", http_addr.port());
+                None
+            }
+        }
+    };
 
     // Every task this station starts, so it can be stopped again. Opening a show is
     // this station stopping and another one taking its place, and a `tokio::spawn`
@@ -731,6 +754,16 @@ pub async fn start(config: Config) -> Result<Running> {
         }));
     }
 
+    // The command line into a show that has no plugins at all, so the wing has
+    // something to type into in a show made at the venue. See `plugins::builtin`.
+    if bundle.is_some() {
+        let engine = engine_handle.clone();
+        let assets = assets.clone();
+        tasks.push(tokio::spawn(async move {
+            crate::infra::plugins::builtin::equip(&engine, &assets).await;
+        }));
+    }
+
     // Every asset any peer holds, held here too: a spare that has to fetch a scare's
     // sound from the leader the moment the leader dies has nothing to fetch it from.
     if bundle.is_some() {
@@ -829,6 +862,7 @@ pub async fn start(config: Config) -> Result<Running> {
         engine_handle.clone(),
         sync_handle.clone(),
         net.clone(),
+        config.rejoin,
     );
     // MVR-xchange. Built here and not later because the sync manager has to be handed
     // its handle *before* it runs — a peer can arrive with a relayed ask on it at once.
@@ -1001,7 +1035,16 @@ pub async fn start(config: Config) -> Result<Running> {
     }
     info!("pult-backend listening on {http_addr}");
     let serve = tokio::spawn(async move {
-        axum::serve(listener, app).await?;
+        match loopback {
+            Some(loopback) => {
+                let local = app.clone();
+                tokio::try_join!(
+                    async { axum::serve(listener, app).await },
+                    async { axum::serve(loopback, local).await },
+                )?;
+            }
+            None => axum::serve(listener, app).await?,
+        }
         Ok(())
     });
 

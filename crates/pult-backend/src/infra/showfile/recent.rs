@@ -45,6 +45,17 @@ pub fn load() -> Recent {
     })
 }
 
+/// The show opened most recently that is still there, for a console that should come
+/// back up on whatever it was running rather than on a path fixed when it was installed.
+///
+/// What a headless station started at login wants: an operator who made a new show
+/// and switched to it must find that show after a restart, not the one the service was
+/// set up with. A missing path is skipped here, unlike in the list, because opening it
+/// would make a fresh empty show where the stick used to be.
+pub fn last_existing() -> Option<PathBuf> {
+    load().shows.into_iter().map(|entry| entry.path).find(|path| path.exists())
+}
+
 /// Put this show at the top, keeping the list at [`KEEP`].
 ///
 /// Never fails loudly. A console that cannot write down what it opened has still

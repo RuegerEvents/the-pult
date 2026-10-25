@@ -79,6 +79,12 @@ pub struct Config {
     /// — cannot each have their own that way.
     #[serde(default)]
     pub plugin_data: Option<std::path::PathBuf>,
+    /// Write down the session this station joins, and go back to it after a restart
+    /// (`infra/session/remembered.rs`). Both binaries turn it on; it is off by default
+    /// because a test starts stations by the dozen and none of them should go looking
+    /// for a leader from a run before.
+    #[serde(default)]
+    pub rejoin: bool,
     /// The console's own log, if this process installed one.
     ///
     /// Filled in by whoever called [`crate::logging::install`], which is `main` in
@@ -131,6 +137,7 @@ impl Default for Config {
             node_id: None,
             plugin_dirs: Vec::new(),
             plugin_data: None,
+            rejoin: false,
             log: None,
             wing: None,
             clock_skew_ms: 0,
