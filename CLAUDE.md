@@ -1533,6 +1533,15 @@ cargo test -p pult-backend --test wire        # two stations, and a console watc
 cd frontend && npm test                       # what a browser makes of the batches
 ```
 
+**A hand on the wire, and it lets go when the hand does.** The wire panel's *Test* forces
+channels onto an output by number — `output.test`, a `ChannelTest` per session — laid
+over the render in `dmx::force`, after `render_carried` and before the dedup so the sheet
+reads back what really left. It works on a universe nothing is patched on (the first use),
+only on one the output carries, and it **expires with the session that asked**: a closed
+tab or a dropped sync link releases it, because this is the one diagnostic that drives the
+rig. A peer's output is reached with `SyncMessage::OutputTest` (protocol 9), and the page
+repeats a held test every three seconds so a returning link gets it back. See task 84.
+
 ## Which cable it goes out on
 
 A console at a venue has a house LAN, an isolated lighting network with no route to

@@ -163,10 +163,111 @@ pub struct OutputStatus {
     pub error_count: u64,
     /// What went wrong most recently, if anything has.
     pub last_error: Option<String>,
+    /// The universes somebody is forcing channels on right now, ascending. Said on the
+    /// row so a channel stuck at full has a reason that can be read by whoever finds
+    /// it — the person who forced it may be a tablet at the back of the room.
+    #[serde(default)]
+    pub testing: Vec<u16>,
 }
 
 /// Every output's status, keyed by config id: the LOCAL `output_status` path.
 pub type OutputStatuses = BTreeMap<String, OutputStatus>;
+
+/// The most universes one test may name. A test is somebody's hand on a few channels,
+/// and a request for thousands of universes is a mistake that would otherwise become
+/// thousands of packets forty times a second.
+pub const TEST_MAX_UNIVERSES: usize = 16;
+
+/// The highest universe a DMX output addresses: sACN's 63999. Art-Net's own 15 bits
+/// are lower, and an output simply carries what its protocol can.
+pub const TEST_MAX_UNIVERSE: u16 = 63999;
+
+/// Channels forced onto an output's wire, by hand, for checking that a cable, an
+/// address or a lamp does what it is said to.
+///
+/// **A test is not show data.** It is not in the patch, the oplog or History, and it
+/// is not replicated: it lives as long as the browser (or the peer's connection) that
+/// asked for it, and a tab that closes lets go. What it forces is a *level on the
+/// wire* — channel 5 of universe 3 at 255 — and nothing here knows what fixture, if
+/// any, is patched there, which is what makes it usable before anything is patched.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ChannelTest {
+    /// Empty is no test. At most [`TEST_MAX_UNIVERSES`], ascending, one per number.
+    pub universes: Vec<TestUniverse>,
+}
+
+/// What is forced on one universe.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TestUniverse {
+    pub universe: u16,
+    /// Every channel of this universe *not* named in `levels` goes to zero, so the
+    /// forced ones are the only light on the line. Off, the show keeps running on
+    /// the rest of the universe and only the named channels are taken from it.
+    pub solo: bool,
+    /// Channel (1 to 512) to level (0 to 255). A channel at 0 is forced to dark,
+    /// which is not the same as not named.
+    pub levels: BTreeMap<u16, u8>,
+}
+
+impl ChannelTest {
+    pub fn is_empty(&self) -> bool {
+        self.universes.is_empty()
+    }
+
+    /// The universes, ascending. What a status row says.
+    pub fn universe_numbers(&self) -> Vec<u16> {
+        self.universes.iter().map(|u| u.universe).collect()
+    }
+
+    /// Say whether this is a test a station should act on, and put it in the form
+    /// the connectors rely on: ascending, one entry per universe, every channel in
+    /// range. Refuses rather than clamping — a level for channel 513 is a caller that
+    /// believes in a universe this protocol does not have, and quietly forcing a
+    /// different channel than the one named is the worst possible answer.
+    pub fn checked(mut self) -> Result<Self, String> {
+        if self.universes.len() > TEST_MAX_UNIVERSES {
+            return Err(format!("a test names at most {TEST_MAX_UNIVERSES} universes"));
+        }
+        self.universes.sort_by_key(|u| u.universe);
+        for pair in self.universes.windows(2) {
+            if pair[0].universe == pair[1].universe {
+                return Err(format!("universe {} is named twice", pair[0].universe));
+            }
+        }
+        for each in &self.universes {
+            if each.universe == 0 || each.universe > TEST_MAX_UNIVERSE {
+                return Err(format!("universe {} is not 1 to {TEST_MAX_UNIVERSE}", each.universe));
+            }
+            if let Some(channel) = each.levels.keys().find(|c| !(1..=512).contains(*c)) {
+                return Err(format!("channel {channel} is not 1 to 512"));
+            }
+        }
+        Ok(self)
+    }
+
+    /// Two people testing one output at once: solo if either asks for it, and the
+    /// higher level on a channel both name — highest takes precedence, the merge the
+    /// rest of the wire follows, and the one that cannot take a light away from the
+    /// person who is looking at it.
+    pub fn merged(tests: impl IntoIterator<Item = ChannelTest>) -> ChannelTest {
+        let mut by_universe: BTreeMap<u16, TestUniverse> = BTreeMap::new();
+        for test in tests {
+            for each in test.universes {
+                let into = by_universe
+                    .entry(each.universe)
+                    .or_insert_with(|| TestUniverse { universe: each.universe, ..Default::default() });
+                into.solo |= each.solo;
+                for (channel, level) in each.levels {
+                    let at = into.levels.entry(channel).or_insert(level);
+                    *at = (*at).max(level);
+                }
+            }
+        }
+        ChannelTest { universes: by_universe.into_values().collect() }
+    }
+}
 
 /// Fixtures that no configured output reaches, and the output that would.
 ///
@@ -706,4 +807,77 @@ pub fn contentions(outputs: &[OutputConfig], universes: &[u16]) -> Vec<OutputCon
         }
     }
     found
+}
+
+#[cfg(test)]
+mod channel_test_tests {
+    use super::*;
+
+    fn universe(number: u16, solo: bool, levels: &[(u16, u8)]) -> TestUniverse {
+        TestUniverse { universe: number, solo, levels: levels.iter().copied().collect() }
+    }
+
+    #[test]
+    fn a_test_is_put_in_order_and_one_universe_is_named_once() {
+        let test = ChannelTest { universes: vec![universe(9, false, &[]), universe(2, false, &[])] };
+        let checked = test.checked().unwrap();
+        assert_eq!(checked.universe_numbers(), vec![2, 9]);
+
+        let twice = ChannelTest { universes: vec![universe(2, false, &[]), universe(2, true, &[])] };
+        assert!(twice.checked().unwrap_err().contains("twice"));
+    }
+
+    #[test]
+    fn a_channel_outside_the_universe_is_refused_rather_than_moved() {
+        for channel in [0u16, 513] {
+            let test = ChannelTest { universes: vec![universe(1, false, &[(channel, 255)])] };
+            assert!(test.checked().is_err(), "channel {channel}");
+        }
+        let edge = ChannelTest { universes: vec![universe(1, false, &[(1, 255), (512, 255)])] };
+        assert!(edge.checked().is_ok(), "1 and 512 are both channels");
+    }
+
+    #[test]
+    fn a_universe_the_protocols_do_not_have_is_refused() {
+        for number in [0u16, TEST_MAX_UNIVERSE + 1] {
+            let test = ChannelTest { universes: vec![universe(number, false, &[])] };
+            assert!(test.checked().is_err(), "universe {number}");
+        }
+    }
+
+    #[test]
+    fn a_test_cannot_name_a_thousand_universes() {
+        let test = ChannelTest {
+            universes: (1..=TEST_MAX_UNIVERSES as u16 + 1).map(|n| universe(n, false, &[])).collect(),
+        };
+        assert!(test.checked().is_err());
+    }
+
+    #[test]
+    fn merging_takes_the_higher_level_and_solo_from_either() {
+        let merged = ChannelTest::merged([
+            ChannelTest { universes: vec![universe(1, false, &[(1, 200), (2, 5)])] },
+            ChannelTest { universes: vec![universe(1, true, &[(1, 50)]), universe(2, false, &[(7, 9)])] },
+        ]);
+        assert_eq!(merged.universe_numbers(), vec![1, 2]);
+        assert!(merged.universes[0].solo);
+        assert!(!merged.universes[1].solo);
+        assert_eq!(merged.universes[0].levels[&1], 200, "highest takes precedence");
+        assert_eq!(merged.universes[0].levels[&2], 5);
+    }
+
+    #[test]
+    fn nothing_merges_to_nothing() {
+        assert!(ChannelTest::merged([]).is_empty());
+        assert!(ChannelTest::merged([ChannelTest::default()]).is_empty());
+    }
+
+    #[test]
+    fn a_test_survives_the_wire_as_json() {
+        // Channel keys are numbers in Rust and strings in JSON, which is the one place
+        // a map of them can quietly stop round-tripping.
+        let test = ChannelTest { universes: vec![universe(3, true, &[(1, 10), (512, 255)])] };
+        let json = serde_json::to_string(&test).unwrap();
+        assert_eq!(serde_json::from_str::<ChannelTest>(&json).unwrap(), test);
+    }
 }

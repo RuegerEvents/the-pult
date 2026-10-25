@@ -261,6 +261,15 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"outputId","type":"string","optional":false},{"name":"nodeId","type":"string","optional":true}]"#,
         doc: "Stop watching an output; the connector stops drawing when nobody is.",
     },
+    // Forcing channels is the one thing here that *drives* the rig from a diagnostic,
+    // so it holds only as long as the client that asked for it: closing the page, or
+    // the socket dropping, lets go. `nodeId` may be a peer's, for the reason a watch's
+    // may — only the station holding the socket can put bytes on it.
+    LocalRpcMeta {
+        method: "output.test",
+        args_schema: r#"[{"name":"outputId","type":"string","optional":false},{"name":"nodeId","type":"string","optional":true},{"name":"test","type":"object","optional":true}]"#,
+        doc: "Force channels to a level on an output's wire, for as long as this client holds them. Omit `test` to let go.",
+    },
     // Opening a show is not a change to the show, which is what makes these RPCs
     // rather than commands: nothing about which showfile this console has open is in
     // anybody's undo stack, and a peer must not be told to change shows because
@@ -741,6 +750,45 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             if node != deps.node_id {
                 if let (Some(sync), Some(ask)) = (&deps.sync, moved) {
                     sync.watch_peer_output(node, output_id, ask).await;
+                }
+            }
+            Ok(Value::Null)
+        }
+        "output.test" => {
+            let caller = deps.caller.ok_or_else(|| {
+                "forcing channels is about one client holding them, so it needs one".to_string()
+            })?;
+            let output_id: uuid::Uuid = serde_json::from_value(args["outputId"].clone())
+                .map_err(|e| format!("invalid outputId: {e}"))?;
+            let node = match args.get("nodeId") {
+                Some(v) if !v.is_null() => pult_schema::events::operation::NodeId(
+                    serde_json::from_value(v.clone())
+                        .map_err(|e| format!("invalid nodeId: {e}"))?,
+                ),
+                _ => deps.node_id,
+            };
+            // A missing test is the withdrawal, so a page that unmounts can say so
+            // without building one.
+            let test: pult_schema::types::output::ChannelTest = match args.get("test") {
+                Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("invalid test: {e}"))?,
+                _ => Default::default(),
+            };
+            let test = test.checked()?;
+            let moved = deps.viewers.tests.set(node, output_id, caller, test);
+            if node != deps.node_id {
+                if let Some(sync) = &deps.sync {
+                    // Always sent for a peer's output, moved or not, because the link
+                    // can have dropped and taken the test with it since the page last
+                    // said it. The page repeats the same test every few seconds while
+                    // it holds one, and this is what makes that mean something.
+                    let merged = deps
+                        .viewers
+                        .tests
+                        .merged_for(node, output_id)
+                        .or(moved)
+                        .unwrap_or_default();
+                    sync.test_peer_output(node, output_id, merged).await;
                 }
             }
             Ok(Value::Null)

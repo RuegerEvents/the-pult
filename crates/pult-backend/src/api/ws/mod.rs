@@ -283,6 +283,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             state.sync.watch_peer_output(node_id, output_id, ask).await;
         }
     }
+    // And whatever it was forcing on an output: a light must never stay at full
+    // because the tablet that put it there lost its signal.
+    for ((node_id, output_id), test) in state.viewers.tests.forget(session_id) {
+        if node_id != state.node_id {
+            state.sync.test_peer_output(node_id, output_id, test).await;
+        }
+    }
     // Give the send task a moment to write its close frame before it is taken down.
     // In the ordinary case — the browser hung up — `remove_session` above dropped the
     // last sender into its queue and it has already ended on its own.

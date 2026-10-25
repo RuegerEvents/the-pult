@@ -12,7 +12,7 @@ use pult_schema::types::{
         driving, emitters_of, Emitter, Fixture, FixtureType,
         ParameterValue,
     },
-    output::{UniverseFrame, UniverseSummary, UniverseTraffic},
+    output::{ChannelTest, UniverseFrame, UniverseSummary, UniverseTraffic},
     programmer::ProgrammerValue,
     sequence::Masters,
 };
@@ -537,6 +537,45 @@ pub fn render_carried(patch: &Patch, now_ms: u64, carried: &[u16]) -> Vec<Univer
     let mut out: Vec<Universe> = universes.into_values().collect();
     out.sort_by_key(|u| u.number);
     out
+}
+
+/// Put a hand-made test on top of what the show rendered.
+///
+/// After the render and before the dedup, which is the whole of where it belongs: the
+/// forced bytes must be what the cache compares and what the wire viewer reads back,
+/// or the sheet would describe a wire the receiver is not on.
+///
+/// **A universe the patch does not occupy is made**, because testing a line before
+/// anything is patched on it is the first use of this and not an edge case. It is
+/// made only if the output carries it — `carried` is the filter every connector
+/// obeys, and a test is not a way round it.
+///
+/// *Solo* blacks the universe first, so the named channels are the only light on that
+/// line; without it only the named channels are taken from the show and the rest
+/// goes on running.
+pub fn force(universes: &mut Vec<Universe>, test: &ChannelTest, carried: &[u16]) {
+    for each in &test.universes {
+        if !pult_schema::types::output::carries(carried, each.universe) {
+            continue;
+        }
+        let at = match universes.binary_search_by_key(&each.universe, |u| u.number) {
+            Ok(at) => at,
+            Err(at) => {
+                universes.insert(at, Universe::new(each.universe));
+                at
+            }
+        };
+        let universe = &mut universes[at];
+        if each.solo {
+            universe.channels = [0; UNIVERSE_SIZE];
+        }
+        for (channel, level) in &each.levels {
+            // Checked on the way in, so a miss here is a caller that skipped that.
+            if let Some(slot) = universe.channels.get_mut((*channel as usize).wrapping_sub(1)) {
+                *slot = *level;
+            }
+        }
+    }
 }
 
 // ── Not sending what has not changed ──────────────────────────────────────────

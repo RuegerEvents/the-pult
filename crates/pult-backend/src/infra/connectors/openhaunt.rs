@@ -20,7 +20,7 @@ use pult_schema::types::{
     effect::{Curve, Direction, Easing, RunningEffect, RunningFade, Shape},
     fixture::{Fixture, FixtureAddress, ParameterDirection, ParameterValue, PhysicalRange},
     openhaunt::PortEffectCapability,
-    output::{MessageTraffic, OutputMessage, OutputSection, SectionBody},
+    output::{ChannelTest, MessageTraffic, OutputMessage, OutputSection, SectionBody},
 };
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
@@ -30,7 +30,7 @@ use uuid::Uuid;
 use crate::{
     infra::{
         connectors::{
-            dmx::{render_carried, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER},
+            dmx::{force, render_carried, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER},
             sacn::e131_data_packet,
             Frame, Frames, OutputPlugin, SendFuture,
         },
@@ -51,6 +51,8 @@ pub struct OpenHauntOutput {
     /// listening for. The ports themselves are reached by serial rather than by
     /// universe and this says nothing about them.
     carried: Vec<u16>,
+    /// Channels somebody is forcing by hand on the universes fed to gateways.
+    test: ChannelTest,
     sent: UniverseCache,
     sequence: SequenceCounter,
     /// The last value sent for each port, keyed by (serial, port), so a relay is
@@ -87,6 +89,7 @@ impl OpenHauntOutput {
             cid: *Uuid::new_v4().as_bytes(),
             sacn_port,
             carried: Vec::new(),
+            test: ChannelTest::default(),
             sent: UniverseCache::default(),
             sequence: SequenceCounter::default(),
             last_sent: BTreeMap::new(),
@@ -134,7 +137,8 @@ impl OpenHauntOutput {
         let now = std::time::Instant::now();
         // Render once for the whole patch, not once per gateway: the universes are
         // the same however many nodes are waiting for them.
-        let universes = render_carried(patch, now_ms, &self.carried);
+        let mut universes = render_carried(patch, now_ms, &self.carried);
+        force(&mut universes, &self.test, &self.carried);
         let evaluating = now.elapsed();
         let mut bytes = 0u64;
         let mut packets = 0u32;
@@ -365,6 +369,12 @@ impl OutputPlugin for OpenHauntOutput {
             frame.packets += packets;
             Ok(frame)
         })
+    }
+
+    /// Only the sACN half: a test forces bytes on a universe, and a node's ports are
+    /// reached by serial and have none.
+    fn set_test(&mut self, test: &ChannelTest) {
+        self.test = test.clone();
     }
 
     /// A ring costs something per message, so it is kept only while it is read.

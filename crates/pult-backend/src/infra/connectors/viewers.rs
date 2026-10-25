@@ -53,12 +53,22 @@ pub struct Viewers {
     /// cost nothing at all — which is the same promise the log makes and the reason
     /// there is no unconditional tick anywhere near the frame path.
     changed: watch::Sender<u64>,
+    /// Who is *forcing* channels on an output, which is the same question the other
+    /// way round and travels by the same two routes. Held here rather than beside
+    /// this in `AppState`, `LocalRpcDeps` and `Watched` because every place that
+    /// already carries a `Viewers` is a place that has to carry this, and a browser's
+    /// disconnect or a peer's has to unwind both.
+    pub tests: super::channel_tests::ChannelTests,
 }
 
 impl Default for Viewers {
     fn default() -> Self {
         let (changed, _) = watch::channel(0);
-        Viewers { inner: Arc::new(Mutex::new(Inner::default())), changed }
+        Viewers {
+            inner: Arc::new(Mutex::new(Inner::default())),
+            changed,
+            tests: Default::default(),
+        }
     }
 }
 

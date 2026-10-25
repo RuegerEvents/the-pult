@@ -315,6 +315,13 @@
 							<td class="status">
 								<span class="dot" class:on={healthy(output)} class:bad={!!status?.last_error}></span>
 								<span class="summary" title={status?.last_error ?? ''}>{summarize(output)}</span>
+								{#if status?.testing?.length}
+									<span
+										class="testing"
+										title="Channels are being forced by hand on this output; the show is not in control of them"
+										>TEST u{status.testing.join(', ')}</span
+									>
+								{/if}
 							</td>
 							<td>
 								<button
@@ -483,6 +490,7 @@
 	.dot.on { background: #4ade80; }
 	.dot.bad { background: #e05555; }
 	.summary { color: #bbb; font-variant-numeric: tabular-nums; }
+	.testing { margin-left: 8px; padding: 0 6px; border: 1px solid #d99a2b; border-radius: 3px; color: #ffd58a; background: #2a2010; font-size: 11px; letter-spacing: 0.04em; }
 	.hint { color: #777; font-size: 12px; }
 	.new-row { display: flex; gap: 6px; margin-bottom: 4px; }
 	.empty { color: #777; font-size: 13px; padding: 8px 0; }

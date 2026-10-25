@@ -26,7 +26,11 @@ use pult_schema::{
 // leader is on the wire for — is visible from, and drivable at, every station. The
 // state goes one way like a log line and the ask goes the other like a raise; neither
 // is show state, and neither is replicated, persisted or undone.
-pub const PROTOCOL_VERSION: u32 = 8;
+// 9 added OutputTest, so a console can force channels on a peer's wire. The one
+// message here that *drives* the rig rather than reports on it, which is why it lives
+// on the connection like an ask: a link that drops takes the test with it, and a light
+// is never left at full by a console that went away.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -124,6 +128,16 @@ pub enum SyncMessage {
     OutputWatch {
         output_id: Uuid,
         focuses: Vec<Option<String>>,
+    },
+    /// Force channels on one of the receiver's outputs, by hand.
+    ///
+    /// `test` is the whole of what the sender wants forced there and replaces what it
+    /// sent before, empty meaning "let go" — the shape of [`SyncMessage::OutputWatch`]
+    /// and for the same reason. It lives on this connection: the receiver forgets it
+    /// when the link goes, so nothing has to expire.
+    OutputTest {
+        output_id: Uuid,
+        test: pult_schema::types::output::ChannelTest,
     },
     /// What one of the sender's outputs is putting on the wire, for a station that
     /// asked. One way and unacknowledged, like a log line, and never relayed: the

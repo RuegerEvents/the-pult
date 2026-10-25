@@ -973,3 +973,79 @@ fn a_recorded_sequence_level_dims_its_cues_on_the_wire() {
     assert_eq!(render(&patch, 10_500)[0].channels[0], 255, "before the take's first point, the fader");
     assert_eq!(render(&patch, 11_500)[0].channels[0], 128, "then the recorded level");
 }
+
+// ── Forcing channels by hand ──────────────────────────────────────────────────
+
+fn forced(universe: u16, solo: bool, levels: &[(u16, u8)]) -> ChannelTest {
+    ChannelTest {
+        universes: vec![pult_schema::types::output::TestUniverse {
+            universe,
+            solo,
+            levels: levels.iter().copied().collect(),
+        }],
+    }
+}
+
+#[test]
+fn a_forced_channel_is_taken_from_the_show_and_the_rest_is_left_running() {
+    let ft = a_type(vec![dimmer()]);
+    let mut fixture = a_fixture(&ft, 1, 1);
+    holding(&mut fixture, "Intensity", ParameterValue::Float(1.0));
+    let mut universes = render(&patch(vec![fixture], vec![ft]), 0);
+
+    force(&mut universes, &forced(1, false, &[(2, 10), (512, 255)]), &[]);
+
+    assert_eq!(universes[0].channels[0], 255, "channel 1 is the show's");
+    assert_eq!(universes[0].channels[1], 10, "channel 2 is the tester's, over the show's 0");
+    assert_eq!(universes[0].channels[511], 255, "channel 512 is the last index");
+}
+
+#[test]
+fn a_channel_forced_to_zero_is_forced_dark() {
+    let ft = a_type(vec![dimmer()]);
+    let mut fixture = a_fixture(&ft, 1, 1);
+    holding(&mut fixture, "Intensity", ParameterValue::Float(1.0));
+    let mut universes = render(&patch(vec![fixture], vec![ft]), 0);
+
+    force(&mut universes, &forced(1, false, &[(1, 0)]), &[]);
+
+    assert_eq!(universes[0].channels[0], 0, "naming a channel at 0 is not the same as not naming it");
+}
+
+#[test]
+fn solo_blacks_the_rest_of_that_universe_and_only_that_universe() {
+    let ft = a_type(vec![dimmer()]);
+    let mut a = a_fixture(&ft, 1, 1);
+    let mut b = a_fixture(&ft, 2, 1);
+    holding(&mut a, "Intensity", ParameterValue::Float(1.0));
+    holding(&mut b, "Intensity", ParameterValue::Float(1.0));
+    let mut universes = render(&patch(vec![a, b], vec![ft]), 0);
+
+    force(&mut universes, &forced(1, true, &[(9, 40)]), &[]);
+
+    assert_eq!(universes[0].channels[0], 0, "universe 1 is dark but for the forced channel");
+    assert_eq!(universes[0].channels[8], 40);
+    assert_eq!(universes[1].channels[0], 255, "universe 2 was not named and goes on running");
+}
+
+#[test]
+fn a_universe_nothing_is_patched_on_is_made_and_kept_in_order() {
+    let ft = a_type(vec![dimmer()]);
+    let fixture = a_fixture(&ft, 5, 1);
+    let mut universes = render(&patch(vec![fixture], vec![ft]), 0);
+
+    force(&mut universes, &forced(2, false, &[(1, 1)]), &[]);
+    force(&mut universes, &forced(9, false, &[(1, 1)]), &[]);
+
+    let numbers: Vec<u16> = universes.iter().map(|u| u.number).collect();
+    assert_eq!(numbers, vec![2, 5, 9], "ascending, as the connectors and the dedup expect");
+}
+
+#[test]
+fn a_test_does_not_reach_past_what_the_output_carries() {
+    let mut universes = Vec::new();
+
+    force(&mut universes, &forced(3, false, &[(1, 255)]), &[1, 2]);
+
+    assert!(universes.is_empty(), "the filter every connector obeys is not something a test can opt out of");
+}

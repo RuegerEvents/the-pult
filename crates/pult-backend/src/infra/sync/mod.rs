@@ -83,6 +83,11 @@ pub enum SyncCommand {
     /// [`SyncCommand::RaisePeerLog`], recomputed from who is watching rather than
     /// counted up and down.
     WatchPeerOutput { node_id: NodeId, output_id: Uuid, focuses: Vec<Option<String>> },
+    TestPeerOutput {
+        node_id: NodeId,
+        output_id: Uuid,
+        test: pult_schema::types::output::ChannelTest,
+    },
     /// Publish what the exchange is doing to every peer.
     ///
     /// Fanned out rather than addressed, because every station of the session wants
@@ -189,6 +194,19 @@ impl SyncHandle {
         focuses: Vec<Option<String>>,
     ) {
         let _ = self.0.send(SyncCommand::WatchPeerOutput { node_id, output_id, focuses }).await;
+    }
+
+    /// Force channels on one of a peer's outputs, or with an empty test let go.
+    ///
+    /// A peer that is not connected is simply not told: a test that outlived its
+    /// connection would be a light left on by a console that is no longer there.
+    pub async fn test_peer_output(
+        &self,
+        node_id: NodeId,
+        output_id: Uuid,
+        test: pult_schema::types::output::ChannelTest,
+    ) {
+        let _ = self.0.send(SyncCommand::TestPeerOutput { node_id, output_id, test }).await;
     }
 
     /// How many peers this station is connected to.
@@ -476,6 +494,14 @@ impl SyncManager {
                     // Dropped rather than queued if the link is full, for the reason a
                     // raised log is: a diagnostic must never be what holds up a show.
                     let _ = sender.0.try_send(SyncMessage::OutputWatch { output_id, focuses });
+                }
+            }
+            SyncCommand::TestPeerOutput { node_id, output_id, test } => {
+                if let Some(sender) = self.peers.get(&node_id) {
+                    // Dropped if the link is full, like the asks beside it. Unlike them
+                    // this one is re-sent by the page while it is held, so a drop is a
+                    // few seconds of the show instead of a test.
+                    let _ = sender.0.try_send(SyncMessage::OutputTest { output_id, test });
                 }
             }
             SyncCommand::ConnectPeer { addrs, session_id, show_id, reply } => {

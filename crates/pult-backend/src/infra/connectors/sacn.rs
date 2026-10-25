@@ -14,10 +14,10 @@ use anyhow::Result;
 use tokio::net::UdpSocket;
 use uuid::Uuid;
 
-use pult_schema::types::output::{OutputSection, SectionBody};
+use pult_schema::types::output::{ChannelTest, OutputSection, SectionBody};
 
 use super::{
-    dmx::{render_carried, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER, UNIVERSE_SIZE},
+    dmx::{force, render_carried, Patch, SequenceCounter, UniverseCache, REFRESH_AFTER, UNIVERSE_SIZE},
     Frame, Frames, OutputPlugin, SendFuture,
 };
 
@@ -181,6 +181,8 @@ pub struct SacnOutput {
     target: Option<SocketAddr>,
     /// The universes this output carries. Empty is every one in the patch.
     carried: Vec<u16>,
+    /// Channels somebody is forcing by hand, laid over the render.
+    test: ChannelTest,
     /// The priority byte every packet carries.
     ///
     /// Worked out by the manager from the row's [`SacnPriority`], this station's slot
@@ -221,6 +223,7 @@ impl SacnOutput {
             source_name: "the-pult".to_string(),
             target,
             carried: Vec::new(),
+            test: ChannelTest::default(),
             priority: DEFAULT_PRIORITY,
             sent: UniverseCache::default(),
             sequence: SequenceCounter::default(),
@@ -273,7 +276,8 @@ impl OutputPlugin for SacnOutput {
             let now = std::time::Instant::now();
             // Timed on its own: rendering is where every parameter of every patched
             // fixture is worked out, and putting the bytes on the wire is the rest.
-            let universes = render_carried(patch, now_ms, &self.carried);
+            let mut universes = render_carried(patch, now_ms, &self.carried);
+            force(&mut universes, &self.test, &self.carried);
             let mut frame = Frame::evaluated(now.elapsed());
             for universe in universes {
                 if !self.sent.needs_send(&universe, now, REFRESH_AFTER) {
@@ -299,6 +303,10 @@ impl OutputPlugin for SacnOutput {
             }
             Ok(frame)
         })
+    }
+
+    fn set_test(&mut self, test: &ChannelTest) {
+        self.test = test.clone();
     }
 
     /// The same reading of the same cache Art-Net answers with, so a sheet looks the

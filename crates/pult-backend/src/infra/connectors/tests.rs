@@ -948,3 +948,164 @@ fn a_settled_connector_that_starts_moving_does_not_wait_out_its_keep_alive() {
          arrive when the first light had already got where it was going"
     );
 }
+
+// ── Forcing channels by hand ──────────────────────────────────────────────────
+
+fn forcing(universe: u16, solo: bool, levels: &[(u16, u8)]) -> ChannelTest {
+    ChannelTest {
+        universes: vec![pult_schema::types::output::TestUniverse {
+            universe,
+            solo,
+            levels: levels.iter().copied().collect(),
+        }],
+    }
+}
+
+/// Packets from `socket` until one satisfies `wanted`, or fail after a second. The
+/// wire is 40 Hz and the dedup is per universe, so what a test is waiting for is the
+/// *next change*, not the next packet.
+async fn recv_until(socket: &tokio::net::UdpSocket, wanted: impl Fn(&[u8]) -> bool) -> Vec<u8> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(!left.is_zero(), "the wire never showed what was forced");
+        let mut buffer = vec![0u8; 2048];
+        let Ok(Ok(n)) = tokio::time::timeout(left, socket.recv(&mut buffer)).await else {
+            panic!("the wire went quiet before it showed what was forced");
+        };
+        buffer.truncate(n);
+        if wanted(&buffer) {
+            return buffer;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_forced_channel_leaves_on_a_universe_nobody_patched() {
+    // The first use of this, and the reason a test cannot wait for a fixture: a line
+    // checked before anything is patched on it. No patch is pushed at all here.
+    let (receiver, addr) = a_receiver().await;
+    let node_id = NodeId::new();
+    let (manager, handle, viewers, _updates) = a_watchable_manager(node_id, an_engine().await);
+    let output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
+    let id = output.id;
+    tokio::spawn(manager.run());
+    handle.configure(vec![output]);
+
+    viewers.tests.set(node_id, id, Uuid::new_v4(), forcing(7, false, &[(3, 200)]));
+
+    let packet = recv_until(&receiver, |p| p[14] == 7).await;
+    assert_eq!(packet[18 + 2], 200, "channel 3 is index 2");
+    assert_eq!(packet[18 + 1], 0);
+    assert_eq!(packet[18 + 3], 0);
+}
+
+#[tokio::test]
+async fn an_overlay_takes_only_its_channels_and_solo_takes_the_rest_to_dark() {
+    let (receiver, addr) = a_receiver().await;
+    let node_id = NodeId::new();
+    let (manager, handle, viewers, _updates) = a_watchable_manager(node_id, an_engine().await);
+    let output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
+    let id = output.id;
+    tokio::spawn(manager.run());
+    handle.configure(vec![output]);
+    push_a_patch(&handle, a_dimmer_patch(1.0)).await; // universe 3, channel 1 at full
+    let alice = Uuid::new_v4();
+
+    viewers.tests.set(node_id, id, alice, forcing(3, false, &[(5, 77)]));
+    let packet = recv_until(&receiver, |p| p[14] == 3 && p[18 + 4] == 77).await;
+    assert_eq!(packet[18], 255, "the show goes on running on every channel not named");
+
+    viewers.tests.set(node_id, id, alice, forcing(3, true, &[(5, 77)]));
+    let packet = recv_until(&receiver, |p| p[14] == 3 && p[18] == 0).await;
+    assert_eq!(packet[18 + 4], 77, "and solo leaves the forced channel the only light on the line");
+}
+
+#[tokio::test]
+async fn letting_go_gives_the_wire_back_to_the_show_at_once() {
+    let (receiver, addr) = a_receiver().await;
+    let node_id = NodeId::new();
+    let (manager, handle, viewers, _updates) = a_watchable_manager(node_id, an_engine().await);
+    let output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
+    let id = output.id;
+    tokio::spawn(manager.run());
+    handle.configure(vec![output]);
+    push_a_patch(&handle, a_dimmer_patch(1.0)).await;
+    let alice = Uuid::new_v4();
+
+    viewers.tests.set(node_id, id, alice, forcing(3, true, &[(5, 77)]));
+    recv_until(&receiver, |p| p[14] == 3 && p[18] == 0 && p[18 + 4] == 77).await;
+
+    // A tab that closes, not a deliberate release: the case that matters.
+    let started = std::time::Instant::now();
+    viewers.tests.forget(alice);
+    let packet = recv_until(&receiver, |p| p[14] == 3 && p[18] == 255).await;
+    assert_eq!(packet[18 + 4], 0, "the forced channel went with it");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(400),
+        "a settled line waits 800 ms between keep-alives; letting go must not wait it out"
+    );
+}
+
+#[tokio::test]
+async fn a_rebuilt_connector_is_forced_again() {
+    // Widening the filter rebuilds the plugin, which starts with nothing forced. The
+    // test is the operator's and has not changed, so it must survive the rebuild.
+    let (receiver, addr) = a_receiver().await;
+    let node_id = NodeId::new();
+    let (manager, handle, viewers, _updates) = a_watchable_manager(node_id, an_engine().await);
+    let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
+    let id = output.id;
+    tokio::spawn(manager.run());
+    output.universes = vec![7];
+    handle.configure(vec![output.clone()]);
+    viewers.tests.set(node_id, id, Uuid::new_v4(), forcing(7, false, &[(1, 99)]));
+    recv_until(&receiver, |p| p[14] == 7 && p[18] == 99).await;
+
+    output.universes = vec![7, 8];
+    handle.configure(vec![output]);
+    // Gone-then-back: a fresh dedup cache puts a first frame out.
+    let packet = recv_until(&receiver, |p| p[14] == 7 && p[18] == 99).await;
+    assert_eq!(packet[18], 99);
+}
+
+#[tokio::test]
+async fn a_test_cannot_reach_a_universe_the_output_does_not_carry() {
+    let (receiver, addr) = a_receiver().await;
+    let node_id = NodeId::new();
+    let (manager, handle, viewers, _updates) = a_watchable_manager(node_id, an_engine().await);
+    let mut output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
+    let id = output.id;
+    output.universes = vec![1];
+    tokio::spawn(manager.run());
+    handle.configure(vec![output]);
+
+    viewers.tests.set(node_id, id, Uuid::new_v4(), forcing(9, false, &[(1, 255)]));
+    let anything =
+        tokio::time::timeout(std::time::Duration::from_millis(300), recv(&receiver)).await;
+    assert!(anything.is_err(), "the universe list is a filter, and a test is not a way round it");
+}
+
+#[tokio::test]
+async fn the_row_says_which_universes_are_being_forced() {
+    let (_receiver, addr) = a_receiver().await;
+    let engine = an_engine().await;
+    let node_id = NodeId::new();
+    let (manager, handle, viewers, _updates) = a_watchable_manager(node_id, engine.clone());
+    let output = an_output(OutputKind::Artnet, Some(&addr.to_string()));
+    let id = output.id;
+    tokio::spawn(manager.run());
+    handle.configure(vec![output]);
+    let alice = Uuid::new_v4();
+
+    viewers.tests.set(node_id, id, alice, forcing(7, false, &[(1, 1)]));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(statuses(&engine).await[&id.to_string()].testing, vec![7]);
+
+    viewers.tests.forget(alice);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        statuses(&engine).await[&id.to_string()].testing.is_empty(),
+        "so a channel stuck at full always has a reason on the row, and loses it when it is let go"
+    );
+}

@@ -22,7 +22,7 @@ use pult_schema::{
         fixture::{Fixture, FixtureType},
         network::NetService,
         output::{
-            OutputConfig, OutputCoverage, OutputKind, OutputSection, OutputStatus, OutputStatuses,
+            ChannelTest, OutputConfig, OutputCoverage, OutputKind, OutputSection, OutputStatus, OutputStatuses,
             OutputView,
         },
         programmer::ProgrammerValue,
@@ -35,6 +35,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 pub mod artnet;
+pub mod channel_tests;
 pub mod dmx;
 pub mod input;
 pub mod openhaunt;
@@ -178,6 +179,13 @@ pub trait OutputPlugin: Send {
     /// around, as the DMX family's is in its dedup cache, has nothing to do here.
     fn watched(&mut self, _watching: bool) {}
 
+    /// Somebody is forcing these channels, or has stopped (an empty test).
+    ///
+    /// Told the *whole* test every time, which replaces the last, so a connector
+    /// keeps one value and no history. Only the DMX family has anything to do: a
+    /// protocol with no channels has nothing a channel number could mean.
+    fn set_test(&mut self, _test: &ChannelTest) {}
+
     /// What this connector is putting on the wire, drawn for a viewer.
     ///
     /// Called at [`VIEW_MS`] and only while watched, never on the frame path. `focus`
@@ -271,6 +279,9 @@ struct Running {
     plugin: Box<dyn OutputPlugin>,
     wire: Wire,
     status: OutputStatus,
+    /// What was last handed to the plugin as forced by hand, so a pass that finds the
+    /// same answer says nothing and one that finds a new answer draws at once.
+    test: ChannelTest,
     /// Sends since the last status report, for the frame rate.
     sends_since_report: u32,
     reported_at: std::time::Instant,
@@ -307,6 +318,7 @@ impl Running {
             },
             config,
             plugin,
+            test: ChannelTest::default(),
             sends_since_report: 0,
             reported_at: std::time::Instant::now(),
             next_frame: None,
@@ -406,6 +418,8 @@ struct Watching {
     updates: crate::engine::UpdateBroadcast,
     /// Woken when an ask moves, so a station with no viewer open never ticks.
     wake: watch::Receiver<u64>,
+    /// And woken when a test moves, which is the other half of the same table.
+    test_wake: watch::Receiver<u64>,
     /// The last view published per `(output, focus)`, so an unchanged one is not sent
     /// again. This is the whole of "diff at panel rate": a settled rig redraws to the
     /// same bytes, and the same bytes are not news.
@@ -506,6 +520,7 @@ impl OutputManager {
     ) -> Self {
         self.watching = Some(Watching {
             wake: viewers.subscribe(),
+            test_wake: viewers.tests.subscribe(),
             viewers,
             updates,
             last: HashMap::new(),
@@ -593,9 +608,11 @@ impl OutputManager {
                 // Somebody opened a viewer, or closed one. Nothing is drawn here —
                 // the loop simply comes round again with a deadline instead of an
                 // hour, and the connector is told whether it is being read.
-                changed = wait_for_viewers(self.watching.as_mut()) => {
-                    if changed {
-                        self.tell_connectors_who_is_watching();
+                woken = wait_for_viewers(self.watching.as_mut()) => {
+                    match woken {
+                        Some(Woken::Viewers) => self.tell_connectors_who_is_watching(),
+                        Some(Woken::Tests) => self.apply_tests().await,
+                        None => {}
                     }
                 }
                 _ = tokio::time::sleep_until(next_view.into()) => {
@@ -646,6 +663,38 @@ impl OutputManager {
                     watching.last.retain(|(output, _), _| output != id);
                 }
             }
+        }
+    }
+
+    /// Hand each connector the channels somebody is forcing on it, and draw at once
+    /// where that moved.
+    ///
+    /// Recomputed from who is here, like [`Self::tell_connectors_who_is_watching`],
+    /// and compared against what each connector was last given — so a rebuilt
+    /// connector, which starts with nothing, is given its test again by the pass the
+    /// reconcile ends with, and a pass that finds nothing new does nothing.
+    ///
+    /// **Drawn at once** because a settled DMX line waits 800 ms between keep-alives,
+    /// and a channel that took most of a second to come on under a finger would read
+    /// as a fault in the cable being tested.
+    async fn apply_tests(&mut self) {
+        let Some(watching) = &self.watching else { return };
+        let mut wanted = watching.viewers.tests.of(self.node_id);
+        let now = std::time::Instant::now();
+        let mut moved = false;
+        for (id, output) in self.running.iter_mut() {
+            let want = wanted.remove(id).unwrap_or_default();
+            if output.test == want {
+                continue;
+            }
+            output.plugin.set_test(&want);
+            output.status.testing = want.universe_numbers();
+            output.test = want;
+            output.next_frame = Some(now);
+            moved = true;
+        }
+        if moved {
+            self.publish_status().await;
         }
     }
 
@@ -751,7 +800,19 @@ impl OutputManager {
     /// Sequentially, and one plugin's failure does not stop the rest: an unplugged
     /// Art-Net interface must not silence sACN.
     async fn draw_these(&mut self, which: &[Uuid], changed: Vec<Uuid>) {
-        let Some(patch) = &self.patch else { return };
+        // A station that has not been handed a patch yet still has a line to test, and
+        // that is when a person checking cable is most likely to be standing at it.
+        // Nothing else is drawn without one: an empty patch is only borrowed for a
+        // test, so a connector with nothing forced behaves exactly as it did.
+        let blank;
+        let patch = match &self.patch {
+            Some(patch) => patch,
+            None if self.running.values().any(|output| !output.test.is_empty()) => {
+                blank = Patch::new(Vec::new(), Vec::new(), Vec::new());
+                &blank
+            }
+            None => return,
+        };
         // One reading of the clock for the whole frame. Two would put two fixtures of
         // the same cue a fraction of a cycle apart, which is exactly the disagreement
         // this change spent its effort removing.
@@ -845,6 +906,7 @@ impl OutputManager {
                 },
             }
         }
+        self.apply_tests().await;
         self.publish_status().await;
     }
 
@@ -1042,11 +1104,20 @@ pub fn recorded_levels_at(
 ///
 /// For ever rather than returning, so the `select!` above has one fewer branch to be
 /// enabled and disabled — a station with no viewers simply never wakes on this arm.
-async fn wait_for_viewers(watching: Option<&mut Watching>) -> bool {
+async fn wait_for_viewers(watching: Option<&mut Watching>) -> Option<Woken> {
     match watching {
-        Some(watching) => watching.wake.changed().await.is_ok(),
+        Some(watching) => tokio::select! {
+            changed = watching.wake.changed() => changed.ok().map(|_| Woken::Viewers),
+            changed = watching.test_wake.changed() => changed.ok().map(|_| Woken::Tests),
+        },
         None => std::future::pending().await,
     }
+}
+
+/// Which half of the viewers' table moved.
+enum Woken {
+    Viewers,
+    Tests,
 }
 
 /// Open the socket an output needs.

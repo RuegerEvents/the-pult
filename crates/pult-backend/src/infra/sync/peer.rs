@@ -11,7 +11,7 @@ use tokio::{
     net::TcpStream,
     sync::{mpsc, watch},
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -510,6 +510,29 @@ async fn run_peer_loop(
                         );
                         continue;
                     }
+                    // Forcing channels on one of our outputs. Registered under this
+                    // station's own id with the peer standing in for a session, so the
+                    // output manager cannot tell a booth from a tab. Refused if it is
+                    // not a test this station would have accepted from its own page.
+                    SyncMessage::OutputTest { output_id, test } => {
+                        match test.clone().checked() {
+                            Ok(test) => {
+                                debug!(
+                                    "[sync] peer {} forces {} universes on output {output_id}",
+                                    peer_node_id.0,
+                                    test.universes.len()
+                                );
+                                watched.viewers.tests.set(
+                                    our_node_id,
+                                    *output_id,
+                                    peer_as_viewer,
+                                    test,
+                                );
+                            }
+                            Err(e) => warn!("[sync] peer {} sent a bad test: {e}", peer_node_id.0),
+                        }
+                        continue;
+                    }
                     // The exchange, both ways. The state is written straight into
                     // this station's own LOCAL path so a browser here sees what the
                     // leader sees; an ask goes to the manager, which is only running
@@ -667,6 +690,9 @@ async fn run_peer_loop(
     // and why nothing here expires: a station that vanishes cannot leave a connector
     // drawing for it.
     watched.viewers.forget(peer_as_viewer);
+    // And whatever it was forcing: the light goes back to the show the moment the
+    // link that held the test is gone.
+    watched.viewers.tests.forget(peer_as_viewer);
     result
 }
 
@@ -724,7 +750,9 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
         // Both answered in run_peer_loop, which holds the connection's own ask.
         SyncMessage::LogLines { .. } | SyncMessage::LogRaise { .. } => {}
         // The same: this connection holds the ask and the answer.
-        SyncMessage::OutputWatch { .. } | SyncMessage::OutputTraffic { .. } => {}
+        SyncMessage::OutputWatch { .. }
+        | SyncMessage::OutputTraffic { .. }
+        | SyncMessage::OutputTest { .. } => {}
         // Both answered in run_peer_loop, which can reach the engine and the exchange.
         SyncMessage::XchangeState { .. } | SyncMessage::XchangeAsk { .. } => {}
         SyncMessage::LeaderChanged { .. } | SyncMessage::SessionMembers { .. } => {
