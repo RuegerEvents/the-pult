@@ -50,7 +50,7 @@
 	function toggleNode(z: SpeakerZone, serial: string) {
 		const has = z.nodes.some((n) => n.serial === serial);
 		void zone(z.id).nodes.set(
-			has ? z.nodes.filter((n) => n.serial !== serial) : [...z.nodes, { serial, mode: 'Clip' as NodeAudioMode }]
+			has ? z.nodes.filter((n) => n.serial !== serial) : [...z.nodes, { serial, mode: 'Stream' as NodeAudioMode }]
 		);
 	}
 

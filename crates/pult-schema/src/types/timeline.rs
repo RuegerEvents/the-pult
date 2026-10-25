@@ -634,15 +634,19 @@ pub enum AudioDestination {
 /// Per clip and chosen by the operator, never worked out: a clip that grew past the
 /// node's store and quietly became a stream would change its latency and start
 /// depending on the wifi, with nothing at the desk saying so.
+///
+/// **Streamed by default** (changed at the gig, 2026-10-25): picking a node for a clip
+/// used to mean an upload first — megabytes into the node's flash before anybody could
+/// switch it to a stream. Storing is now the deliberate choice it should have been.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum NodeAudioMode {
     /// Uploaded to the node's flash ahead of time and started there at a show time.
     /// Immune to the network once it is there, and the right thing for a scare.
-    #[default]
     Clip,
     /// Sent as it plays, over RTP from the station driving the nodes, a playout delay
     /// ahead. No size limit, and it needs the network for as long as it sounds.
+    #[default]
     Stream,
 }
 

@@ -73,16 +73,19 @@
 	 * Sending a clip to a node's flash is asked first: an upload is megabytes written
 	 * into the node's flash, which pauses its caches for every sector erased, and is
 	 * not something that should start because somebody clicked a node to look at it.
-	 * Streaming writes nothing and goes straight through.
+	 * Streaming writes nothing and goes straight through — and is what picking a node
+	 * gives a clip that was not on one, so storing is only ever the deliberate choice.
 	 */
 	let confirmingUpload = $state<{ serial: string; name: string } | null>(null);
 	function pickNode(serial: string) {
-		const storing = rows.some((r) => (nodeOf(r.clip.destination)?.mode ?? 'Clip') === 'Clip');
+		// Moving a clip that is already stored on one node to another is a new upload,
+		// and asks; anything else streams.
+		const storing = rows.some((r) => nodeOf(r.clip.destination)?.mode === 'Clip');
 		if (storing) {
 			confirmingUpload = { serial, name: nodes.find((n) => n.serial === serial)?.name ?? serial };
 			return;
 		}
-		void change((clip) => ({ destination: { Node: { serial, mode: nodeOf(clip.destination)?.mode ?? 'Clip' } } }));
+		void change(() => ({ destination: { Node: { serial, mode: 'Stream' } } }));
 	}
 	function confirmUpload() {
 		const ask = confirmingUpload;
