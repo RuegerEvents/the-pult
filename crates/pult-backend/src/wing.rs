@@ -14,6 +14,7 @@
 //! run and says so on its status row; without the map it runs and the panel shows
 //! numbers where it would show names.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use pult_schema::types::wing::WingPhase;
@@ -34,6 +35,14 @@ pub struct WingHandle {
     events: broadcast::Sender<Vec<Event>>,
     out: Arc<Mutex<OutputState>>,
     map: Option<Arc<WingMap>>,
+    /// The faders a hand is on, by fader index, as the wing itself reports touch.
+    ///
+    /// Kept here, beside the frame, so a motor lets go **in the next USB frame** rather
+    /// than when a browser has heard about the touch and sent a frame back: wing → Pi →
+    /// socket → page → its next 40 ms feedback → Pi → wing was a tenth of a second and
+    /// more in which the motor held against the hand, and the faders felt heavy (found
+    /// at the gig). Whatever a page asks for, a touched fader is not driven.
+    hands: Arc<Mutex<HashSet<usize>>>,
 }
 
 impl std::fmt::Debug for WingHandle {
@@ -58,9 +67,14 @@ impl WingHandle {
         self.map.clone()
     }
 
-    /// Change the frame the USB thread keeps putting on the wire.
+    /// Change the frame the USB thread keeps putting on the wire. A fader somebody's
+    /// hand is on stays released, whatever `f` asked for it.
     pub fn drive(&self, f: impl FnOnce(&mut OutputState)) {
-        f(&mut self.out.lock().unwrap());
+        let mut out = self.out.lock().unwrap();
+        f(&mut out);
+        for index in self.hands.lock().unwrap().iter() {
+            out.release_fader(*index);
+        }
     }
 
     /// Every light off and every motor let go: what a wing nobody is driving looks
@@ -83,6 +97,7 @@ impl WingHandle {
             events: events.clone(),
             out: Arc::new(Mutex::new(OutputState::default())),
             map: None,
+            hands: Default::default(),
         };
         (handle, report_tx, events)
     }
@@ -163,6 +178,9 @@ pub fn install_from(files: WingFiles) -> WingHandle {
     let (report_tx, report) = watch::channel(WingReport { phase: WingPhase::Absent, device: None });
     let (events, _) = broadcast::channel(256);
     let events_tx = events.clone();
+    let hands: Arc<Mutex<HashSet<usize>>> = Default::default();
+    let touches = map.as_deref().map(touch_keys).unwrap_or_default();
+    let (hands_tx, out_tx) = (hands.clone(), wing.out.clone());
     // The USB thread talks over a std channel and the stations want a watch and a
     // broadcast; one bridge thread rather than teaching the USB loop about either.
     let reports = wing.reports;
@@ -170,6 +188,21 @@ pub fn install_from(files: WingFiles) -> WingHandle {
         while let Ok(r) = reports.recv() {
             match r {
                 usb::Report::Events { events } => {
+                    // A hand on a fader frees its motor here, before anything else hears
+                    // about it; see `WingHandle::hands`.
+                    for event in &events {
+                        if let Event::Key { index, down } = event {
+                            if let Some(fader) = touches.get(index) {
+                                let mut held = hands_tx.lock().unwrap();
+                                if *down {
+                                    held.insert(*fader);
+                                    out_tx.lock().unwrap().release_fader(*fader);
+                                } else {
+                                    held.remove(fader);
+                                }
+                            }
+                        }
+                    }
                     let _ = events_tx.send(events);
                 }
                 usb::Report::Status { state, detail } => {
@@ -201,7 +234,23 @@ pub fn install_from(files: WingFiles) -> WingHandle {
         tracing::warn!("the wing's report thread did not start: {e}");
     }
 
-    WingHandle { report, events, out: wing.out, map }
+    WingHandle { report, events, out: wing.out, map, hands }
+}
+
+/// Which hardkeys are a hand on which fader: MA models touching a fader as a hardkey
+/// with the code `FADER` and that fader's own executor. The station's copy of
+/// `faderKeys` in the frontend's `wing.ts`, the `touch` half of it only.
+fn touch_keys(map: &WingMap) -> HashMap<u16, usize> {
+    let by_executor: HashMap<&str, usize> = map
+        .faders
+        .iter()
+        .filter_map(|(index, control)| Some((control.executor.as_deref()?, *index as usize)))
+        .collect();
+    map.hardkeys
+        .iter()
+        .filter(|(_, control)| control.code.as_deref() == Some("FADER"))
+        .filter_map(|(index, control)| Some((*index, *by_executor.get(control.executor.as_deref()?)?)))
+        .collect()
 }
 
 /// What the USB thread's own words come to.
@@ -230,6 +279,19 @@ mod tests {
             WingPhase::Fault { reason: "claiming interface 0: Access denied".into() }
         );
         assert_eq!(phase_of("restarting", "the wing is starting what it was given"), WingPhase::Booting);
+    }
+
+    #[test]
+    fn a_touched_fader_is_not_driven_whatever_a_page_asks() {
+        let (wing, _, _) = WingHandle::detached(WingPhase::Running);
+        wing.hands.lock().unwrap().insert(3);
+        wing.drive(|out| {
+            out.set_fader(3, 2000);
+            out.set_fader(4, 2000);
+        });
+        let frame = wing.frame();
+        assert_eq!(frame.faders[3], None, "the hand has it");
+        assert!(frame.faders[4].is_some());
     }
 
     #[test]
