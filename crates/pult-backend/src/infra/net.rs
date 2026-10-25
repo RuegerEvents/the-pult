@@ -163,6 +163,9 @@ struct Inner {
     interfaces: Vec<NetInterface>,
     bindings: BTreeMap<NetService, ServiceBinding>,
     standing: Standing,
+    /// Whether the last look found multicast refused, so the moment it is allowed can
+    /// be told apart from it always having been.
+    multicast_refused: bool,
 }
 
 /// Where this station stands in the session, as the reporter last worked it out.
@@ -201,6 +204,7 @@ impl Network {
                 interfaces: interfaces(),
                 bindings: BTreeMap::new(),
                 standing: Standing::default(),
+                multicast_refused: multicast_refused().is_some(),
             }),
             moved: Default::default(),
         })
@@ -223,9 +227,20 @@ impl Network {
     /// came up starts by itself when somebody plugs it in, and never needs a restart
     /// at twenty-five past seven.
     pub fn observe(&self, found: Vec<NetInterface>) {
+        // macOS refuses a freshly built app the local network for its first few seconds
+        // (seen at every install at the gig), and an mDNS daemon started in that window
+        // stays deaf for good: the Mini showed every node as not on the network after
+        // each restart. Multicast becoming allowed is therefore an address change as far
+        // as the daemons are concerned — they start again on it.
+        let refused = multicast_refused().is_some();
         let moved = match self.inner.write() {
             Ok(mut inner) => {
-                let moved = addresses_of(&inner.interfaces) != addresses_of(&found);
+                let mut moved = addresses_of(&inner.interfaces) != addresses_of(&found);
+                if inner.multicast_refused && !refused {
+                    tracing::info!("[network] multicast is allowed now; discovery starts again");
+                    moved = true;
+                }
+                inner.multicast_refused = refused;
                 inner.interfaces = found;
                 moved
             }

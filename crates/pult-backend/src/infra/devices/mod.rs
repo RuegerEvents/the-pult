@@ -46,6 +46,21 @@ pub const SERVICE_TYPE: &str = "_openhaunt._tcp.local.";
 /// How often an adopted node's strips are compared with the show.
 const STRIP_CHECK: Duration = Duration::from_secs(5);
 
+/// How long a station that remembers a session waits for its rejoin before it drives
+/// the nodes on its own.
+///
+/// Found at the gig: a station restarting is a lone leader for the second or two before
+/// it rejoins, and in that second it told every adopted node "your broker is me" — then
+/// joined the Mini as a follower and closed its door, leaving the node dialing a closed
+/// broker, shown as not on the network. A station with a leader to go back to does not
+/// drive; one whose leader never answers drives after this, which is a failover and
+/// exactly when it should.
+const REJOIN_GRACE: Duration = Duration::from_secs(30);
+
+/// How often the driving station tells an adopted node that is not on its broker
+/// where the brokers are, whether or not the list has changed.
+const STRAY_CHECK: Duration = Duration::from_secs(30);
+
 // ── Events in ─────────────────────────────────────────────────────────────────
 
 /// Discovery, as the manager sees it. mDNS is one source; a test is another.
@@ -240,6 +255,9 @@ pub struct DeviceManager {
     /// The broker list this station last handed its nodes, leader first (doc 15).
     /// Empty while not driving.
     brokers: Vec<String>,
+    /// Until when this station holds off driving the nodes at start-up, because it
+    /// remembers a session it is about to rejoin. See [`REJOIN_GRACE`].
+    grace_until: Option<std::time::Instant>,
 }
 
 impl DeviceManager {
@@ -276,6 +294,8 @@ impl DeviceManager {
                 clock_seq: 0,
                 door: None,
                 brokers: Vec::new(),
+                grace_until: crate::infra::session::remembered::load(node_id)
+                    .map(|_| std::time::Instant::now() + REJOIN_GRACE),
             },
             DeviceHandle(tx),
             directory_rx,
@@ -317,6 +337,9 @@ impl DeviceManager {
         // the catch-all; a patch from this station reconciles at once.
         let mut strips = tokio::time::interval(STRIP_CHECK);
         strips.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut strays = tokio::time::interval(STRAY_CHECK);
+        strays.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut grace = tokio::time::interval(std::time::Duration::from_secs(2));
 
         loop {
             tokio::select! {
@@ -353,6 +376,13 @@ impl DeviceManager {
                 Some(_) = stations.next() => self.refresh_brokers().await,
                 _ = clock.tick() => self.publish_clock().await,
                 _ = strips.tick() => self.reconcile_all_strips().await,
+                _ = strays.tick() => self.tell_strays().await,
+                _ = grace.tick(), if self.grace_until.is_some() => {
+                    if self.grace_until.is_some_and(|until| std::time::Instant::now() >= until) {
+                        self.grace_until = None;
+                        self.reconsider_leadership().await;
+                    }
+                }
             }
         }
         if let Some(mqtt) = self.mqtt.take() {
@@ -373,7 +403,13 @@ impl DeviceManager {
     /// never been near an OpenHaunt node should not be listening on 1883 because it
     /// was started — the same reason Art-Net is off unless asked for.
     async fn reconsider_leadership(&mut self) {
-        let driving = !self.is_follower().await && self.has_adopted_a_device().await;
+        let waiting = self.grace_until.is_some_and(|until| std::time::Instant::now() < until);
+        let follower = self.is_follower().await;
+        if follower {
+            // In a session: the wait for it is over.
+            self.grace_until = None;
+        }
+        let driving = !follower && !waiting && self.has_adopted_a_device().await;
         if driving != self.mqtt.is_some() {
             if driving {
                 self.start_driving().await;
@@ -494,6 +530,36 @@ impl DeviceManager {
             tokio::spawn(async move {
                 match http.post(format!("{base}/config")).json(&config).send().await {
                     Ok(r) if r.status().is_success() => info!("[devices] {serial} told the broker list while out of sight"),
+                    Ok(r) => debug!("[devices] {serial} refused the broker list: {}", r.status()),
+                    Err(e) => debug!("[devices] {serial} is not at its last address: {e}"),
+                }
+            });
+        }
+    }
+
+    /// Tell every adopted node that is not on this station's broker where the brokers
+    /// are, list changed or not — the repair for a node somebody else pointed away, a
+    /// station that was briefly a leader while it restarted, say. Over HTTP at its last
+    /// address, off the actor, as `refresh_brokers` does for a node out of sight.
+    async fn tell_strays(&mut self) {
+        if self.mqtt.is_none() {
+            return;
+        }
+        let strays: Vec<String> = self
+            .state
+            .discovered
+            .values()
+            .filter(|d| d.adopted_fixture_id.is_some() && !self.on_broker.contains(&d.serial) && !d.ip.is_empty())
+            .map(|d| d.serial.clone())
+            .collect();
+        for serial in strays {
+            let (Some(config), Some(base)) = (self.config_for(&serial).await, self.base_url(&serial)) else {
+                continue;
+            };
+            let http = self.http.clone();
+            tokio::spawn(async move {
+                match http.post(format!("{base}/config")).json(&config).send().await {
+                    Ok(r) if r.status().is_success() => info!("[devices] {serial} was not on this broker; told it the broker list"),
                     Ok(r) => debug!("[devices] {serial} refused the broker list: {}", r.status()),
                     Err(e) => debug!("[devices] {serial} is not at its last address: {e}"),
                 }

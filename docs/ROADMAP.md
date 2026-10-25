@@ -7273,6 +7273,17 @@ to the leader it remembers, and if that one is down it joins whoever leads now a
 the MacBook on the Pi 8 s later; Mini up, back on the Mini 7 s after that. Going home must
 not drop the stand-in first — that read to the sync layer as the leader going, elected the
 MacBook, and set off a promotion and a handback inside half a second.
+**And every restart left the nodes "not on the network".** Two causes, both restarts. A
+station coming up is a lone leader for the second before it rejoins, and in that second it
+told each adopted node "your broker is me" and then closed that broker as a follower: the
+node was found pointing at the audio MacBook. A station that remembers a session now holds
+off driving the nodes for up to 30 s at start-up (`REJOIN_GRACE`), and the driving station
+tells any adopted node that is not on its broker where the brokers are every 30 s, list
+changed or not (`tell_strays`). And a freshly built app is refused multicast for its first
+seconds, which left the mDNS daemons started in that window deaf for good; multicast being
+allowed again now counts as an address change, which is what restarts them
+(`Network::observe`).
+
 Also found: **two joins in a row make a leader**. The second connection replaces the
 first, the first one's close reads as the leader going, and the station promotes itself
 — which a deploy script that joined after the station had already rejoined by itself did.
