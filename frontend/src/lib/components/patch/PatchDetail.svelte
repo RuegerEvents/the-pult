@@ -139,7 +139,21 @@
 			<span class="sub">{sharedType?.name ?? `${typeIds.length} types`}</span>
 		</header>
 
-		<div class="fields">
+		<!-- Enter commits the field it is pressed in: a field that writes on change is
+		     blurred (which is its change), and the two that act through a button — names
+		     for several, and laying several out — press that button. -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="fields"
+			onkeydown={(e) => {
+				if (e.key !== 'Enter' || e.isComposing || !(e.target instanceof HTMLInputElement)) return;
+				e.preventDefault();
+				const input = e.target;
+				const button = input.closest('.inline')?.querySelector<HTMLButtonElement>('button.btn');
+				if (button && !button.disabled) button.click();
+				else input.blur();
+			}}
+		>
 			{#if one}
 				<span class="label">Name</span>
 				<input

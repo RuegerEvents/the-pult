@@ -18,7 +18,7 @@
 	import { untrack } from 'svelte';
 
 	import type { Cue, Easing, ParameterCapture, Sequence } from '$lib/generated/index.js';
-	import { createCue, cueIdsThrough, cueOnlyCompensation, DEFAULT_FADE_MS, trackedThrough } from '$lib/cues.js';
+	import { createCue, cueIdsThrough, defaultCueName, newCueNumber, cueOnlyCompensation, DEFAULT_FADE_MS, trackedThrough } from '$lib/cues.js';
 	import { CURVE_LABELS, CURVES, curveForKey } from '$lib/fade.js';
 	import { displayLabel, formatValue, parameterKey } from '$lib/patch.js';
 	import { clear, entries, storeInto, storePreset, updatePreset } from '$lib/stores/programmer.js';
@@ -84,7 +84,12 @@
 	let presetTarget = $state<string | null>(null);
 	let presetName = $state('');
 	let cueId = $state<string | null>(null);
-	let name = $state('');
+	/**
+	 * The cue's name: what was typed, or "Cue <n>" for the number it is about to get,
+	 * which follows the *After* choice until somebody types. Prefilled and selected,
+	 * so Enter stores it as it is and typing replaces it.
+	 */
+	let typedName = $state<string | null>(null);
 	let mode = $state<'merge' | 'replace'>('merge');
 	/**
 	 * Track or cue only.
@@ -134,6 +139,10 @@
 	);
 	let after = $state<string | null | undefined>(undefined);
 	const insertAfter = $derived(after === undefined ? afterActive : after);
+	const name = $derived(
+		typedName ??
+			(sequence ? defaultCueName(newCueNumber(sequence, $cues, insertAfter)) : defaultCueName(1))
+	);
 	const nameOf = (fixtureId: string) =>
 		$fixtures.find((f) => f.id === fixtureId)?.name ?? fixtureId.slice(0, 6);
 
@@ -505,8 +514,10 @@
 							<input
 								class="text"
 								placeholder="Cue name…"
-								bind:value={name}
+								value={name}
+								oninput={(e) => (typedName = e.currentTarget.value)}
 								use:focusOnMount
+								onfocus={(e) => e.currentTarget.select()}
 								onkeydown={(e) => e.key === 'Enter' && canStore && store()}
 							/>
 						</label>

@@ -111,7 +111,9 @@ const KEYPAD: Record<string, string> = {
 	AT: 'at',
 	FULL: 'full',
 	FIXTURE: 'fixture',
-	CHANNEL: 'fixture',
+	// CHANNEL is deliberately not here: on MA it selects by channel number, which this
+	// console has no separate idea of, and typing `fixture` for it lit a key that only
+	// duplicated FIXTURE. Unmapped, it is dark and free to be learned.
 	GROUP: 'group',
 	PRESET: 'preset',
 	CUE: 'cue',

@@ -29,8 +29,7 @@
 	import Verbs from '$lib/components/programmer/Verbs.svelte';
 	import { goOnFocusedSheet } from '$lib/stores/cues.js';
 	import { startWing } from '$lib/stores/wing.js';
-	import { clear } from '$lib/stores/programmer.js';
-	import { clearSelection } from '$lib/stores/selection.js';
+	import { clearStep } from '$lib/stores/clear.js';
 	import UserBar from '$lib/components/UserBar.svelte';
 	import { connection } from '$lib/stores/connection.js';
 	import { isSurfacePath } from '$lib/surface.js';
@@ -112,17 +111,6 @@
 
 	/** The verbs in the top bar, so the keymap can press the same buttons. */
 	let verbs = $state<ReturnType<typeof Verbs> | null>(null);
-	/**
-	 * When Escape was last pressed, for the second one.
-	 *
-	 * Esc gives the rig back to playback; Esc Esc also drops the selection. Two acts
-	 * rather than one because they are separate on purpose — the spec keeps the buffer
-	 * and the selection apart, so a look can be parked and reached again from a
-	 * different selection — and because dropping a hard-won selection by reflex is a
-	 * minute of clicking to get back.
-	 */
-	let lastEscape = 0;
-	const ESCAPE_AGAIN_MS = 600;
 
 	/**
 	 * Ctrl-Z anywhere that is not a text field.
@@ -169,12 +157,10 @@
 				void verbs?.update();
 				return;
 			}
+			// Esc is Clear: the selection, then the programmer (`stores/clear.ts`).
 			if (event.key === 'Escape') {
 				event.preventDefault();
-				const now = Date.now();
-				if (now - lastEscape < ESCAPE_AGAIN_MS) clearSelection();
-				lastEscape = now;
-				void clear({ keepLocked: true });
+				void clearStep();
 				return;
 			}
 			if (event.key === ' ') {

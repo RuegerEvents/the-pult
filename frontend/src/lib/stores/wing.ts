@@ -25,8 +25,9 @@ import { topDialog } from './dialogs.js';
 import { beginGesture, endGesture, nudging } from './gesture.js';
 import { output, watching } from './output.js';
 import { consolePluginOf, openConsoleLine, pluginsState } from './plugins.js';
-import { byKey, clear as clearProgrammer, remove as removeEntry, setValueOn } from './programmer.js';
-import { applySelectionEffect, clearSelection, query, recall, selection, targetElements } from './selection.js';
+import { byKey, remove as removeEntry, setValueOn } from './programmer.js';
+import { clearStep } from './clear.js';
+import { applySelectionEffect, query, recall, selection, targetElements } from './selection.js';
 import { collection, showClient, showData } from './show.js';
 import { undo } from './undo.js';
 import { userId } from './user.js';
@@ -87,8 +88,6 @@ const DRIVE_KEY = 'pult.wing.drive';
 const AT_KEY = 'pult.wing.at';
 /** How often the desk's lights and motors are brought up to date. */
 const FEEDBACK_MS = 40;
-/** A second CLEAR this soon after the first clears the selection as well. */
-const CLEAR_AGAIN_MS = 1500;
 
 // ── What is known ─────────────────────────────────────────────────────────────
 
@@ -562,19 +561,14 @@ async function onKey(index: number, down: boolean, map: WingMap | null): Promise
 	}
 }
 
-let lastClear = 0;
-
 /**
- * CLEAR, the way MA's works: a line being typed is emptied first; then the programmer
- * is cleared; and a second CLEAR straight after clears the selection as well.
+ * CLEAR, the way MA's works: a line being typed is emptied first, then the selection,
+ * then the programmer — one per press, the same steps as the button and Esc
+ * (`stores/clear.ts`).
  */
 async function clearKey(): Promise<void> {
 	if (readLine().trim()) return type(() => '');
-	const now = Date.now();
-	const again = now - lastClear < CLEAR_AGAIN_MS;
-	lastClear = now;
-	if (again) clearSelection();
-	else await clearProgrammer({ keepLocked: true });
+	await clearStep();
 }
 
 // ── The command line ──────────────────────────────────────────────────────────

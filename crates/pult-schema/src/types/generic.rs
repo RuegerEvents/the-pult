@@ -121,9 +121,27 @@ pub fn library() -> Vec<FixtureType> {
     for preset in emitter_presets() {
         types.push(a_type(
             &format!("par-{}", preset.name.to_lowercase()),
-            &format!("Generic {} par", preset.name),
+            // "Dim" in the name because that is the first channel, and an operator
+            // reading the list next to the strobe variants could not tell otherwise.
+            // The key, and so the id, is what it always was: shows already holding one
+            // still find it.
+            &format!("Generic Dim {}", preset.name),
             25.0,
-            vec![plain(ParameterKind::Intensity, 0.0, "Dimmer"), color(preset.emitters)],
+            vec![plain(ParameterKind::Intensity, 0.0, "Dimmer"), color(preset.emitters.clone())],
+        ));
+        // The same par with a strobe channel after the color, which is the layout most
+        // cheap LED pars actually ship in: dimmer first, strobe last. A strobe rests at
+        // 0, which on those units is "no strobe". Named the way the manual's channel
+        // chart reads, so a patch of them comes out as "Dim RGBW Strobe 1, 2, …".
+        types.push(a_type(
+            &format!("par-{}-strobe", preset.name.to_lowercase()),
+            &format!("Generic Dim {} Strobe", preset.name),
+            25.0,
+            vec![
+                plain(ParameterKind::Intensity, 0.0, "Dimmer"),
+                color(preset.emitters),
+                plain(ParameterKind::Strobe, 0.0, "Beam"),
+            ],
         ));
     }
     types.push(a_type(
@@ -148,7 +166,7 @@ mod tests {
 
     #[test]
     fn an_rgbwa_uv_par_is_seven_channels_with_a_byte_per_die() {
-        let par = library().into_iter().find(|t| t.name == "Generic RGBWA+UV par").unwrap();
+        let par = library().into_iter().find(|t| t.name == "Generic Dim RGBWA+UV").unwrap();
         assert_eq!(par.channel_count, 7, "a dimmer and six dies");
         let mode = par.mode("Default");
         assert_eq!(mode.breaks, vec![7]);
@@ -170,8 +188,23 @@ mod tests {
     }
 
     #[test]
+    fn a_strobing_par_is_dimmer_first_and_strobe_last() {
+        let par = library().into_iter().find(|t| t.name == "Generic Dim RGBW Strobe").unwrap();
+        assert_eq!(par.channel_count, 6, "a dimmer, four dies and a strobe");
+        let mode = par.mode("Default");
+        let order: Vec<_> = mode
+            .channels
+            .iter()
+            .map(|c| (c.offsets.clone(), c.emitter.clone()))
+            .collect();
+        assert_eq!(order.first().unwrap().0, vec![1], "the dimmer is channel 1");
+        assert_eq!(order.last().unwrap().0, vec![6], "the strobe is the last channel");
+        assert_eq!(order.last().unwrap().1, None, "and drives no die");
+    }
+
+    #[test]
     fn a_plain_color_is_still_three_bytes() {
-        let rgb = library().into_iter().find(|t| t.name == "Generic RGB par").unwrap();
+        let rgb = library().into_iter().find(|t| t.name == "Generic Dim RGB").unwrap();
         assert_eq!(rgb.channel_count, 4);
     }
 }

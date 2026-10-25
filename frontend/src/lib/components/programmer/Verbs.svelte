@@ -17,7 +17,7 @@
 
 	import { addToast } from '$lib/toasts.js';
 	import { clear, entries, updateDriven } from '$lib/stores/programmer.js';
-	import { clearSelection } from '$lib/stores/selection.js';
+	import { clearStep, nextClear } from '$lib/stores/clear.js';
 	import StoreMenu from './StoreMenu.svelte';
 
 	/** Open with a subset ticked — what Update hands over when it cannot place a key. */
@@ -60,12 +60,15 @@
 <div class="verbs">
 	<button class="verb" disabled={!anything} onclick={() => openStore()} title="⌘⏎">Store</button>
 	<button class="verb" disabled={!anything || busy} onclick={update} title="⌘U">Update</button>
+	<!-- The selection first, then the programmer: see `stores/clear.ts`. The title says
+	     which, so the next press is never a surprise. -->
 	<button
 		class="verb quiet"
-		disabled={!anything}
-		onclick={() => clear({ keepLocked: true })}
-		title="Esc — a second Esc clears the selection too"
-		ondblclick={() => clearSelection()}
+		disabled={$nextClear === null}
+		onclick={() => clearStep()}
+		title={$nextClear === 'selection'
+			? 'Esc — clears the selection; the next press clears the programmer'
+			: 'Esc — clears the programmer'}
 	>
 		Clear
 	</button>

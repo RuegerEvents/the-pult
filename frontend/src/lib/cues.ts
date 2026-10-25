@@ -27,6 +27,21 @@ export type NewCue = {
 };
 
 /**
+ * The number a cue made by `createCue` will get: behind `after`, between it and the
+ * next, or the next whole number at the end. One function so the Store dialog can
+ * name a cue by the number it is about to have.
+ */
+export function newCueNumber(sequence: Sequence, cues: Cue[], after?: string | null): number {
+	const order = orderedCues(sequence, cues);
+	const at = after ? order.findIndex((c) => c.id === after) : -1;
+	return at >= 0 ? insertNumber(order[at].number, order[at + 1]?.number) : order.length + 1;
+}
+
+/** "Cue 4", "Cue 3.5": the name a new cue gets when nobody types one. */
+export const defaultCueName = (number: number): string =>
+	`Cue ${Number.isInteger(number) ? number : Number(number.toFixed(3))}`;
+
+/**
  * Add a cue to a sequence, and hand back what was made.
  *
  * Appended by default. Given an `after`, it is inserted directly behind that cue with
@@ -54,7 +69,7 @@ export async function createCue(
 	const cue: Cue = {
 		id: uuid(),
 		name,
-		number: number ?? (at >= 0 ? insertNumber(order[at].number, order[at + 1]?.number) : order.length + 1),
+		number: number ?? newCueNumber(sequence, cues, after),
 		captures,
 		follow_mode: followMode,
 		fade_in_ms: fadeInMs,

@@ -63,8 +63,18 @@
 	// Where the rig already is, once: the field is the operator's from here on.
 	// svelte-ignore state_referenced_locally
 	let universe = $state(universesInUse(fixtures)[0] ?? 1);
-	/** An address somebody typed. `null` follows the next free run as the rest changes. */
-	let typedAddress = $state<number | null>(null);
+	/**
+	 * The address field as typed. Empty follows the next free run as the rest changes,
+	 * and shows it as the placeholder — so clearing the field to type another number
+	 * does not have the next free one put straight back under the cursor.
+	 */
+	// A number input binds a number, and `null` when it is empty.
+	let addressText = $state<number | null>(null);
+	const typedAddress = $derived(
+		addressText !== null && Number.isInteger(addressText) && addressText >= 1 && addressText <= CHANNELS
+			? addressText
+			: null
+	);
 	let busy = $state(false);
 
 	function modesOf(type: FixtureType): Mode[] {
@@ -198,13 +208,21 @@
 			// else, its first mode is the honest fallback.
 			const modeInType = type.dmx_modes.find((m) => m.name === modeName)?.name ?? type.dmx_modes[0]?.name ?? DEFAULT_MODE;
 			const made: string[] = [];
+			// Taken *before* the first write, and the reason is not obvious: `names` is
+			// worked out from the fixtures already patched ("the first number after the
+			// highest"), so every fixture created in this loop moves it. Read live, five
+			// dimmers came out as Dimmer 1, 2, 4, 8 and 9 — each name was worked out
+			// after the previous row had landed. Likewise the places, which depend on what
+			// is free.
+			const planned = [...names];
+			const places = [...run];
 			beginGesture();
 			try {
-				for (const [i, place] of run.entries()) {
+				for (const [i, place] of places.entries()) {
 					const id = uuid();
 					await data.fixtures.create({
 						id,
-						name: names[i],
+						name: planned[i],
 						fixture_type_id: type.id,
 						address: { Dmx: { mode: modeInType, breaks: [{ universe: place.universe, address: place.address }] } },
 						// In nobody's drawing until somebody places it, nothing reported and
@@ -286,7 +304,18 @@
 			</div>
 		</div>
 
-		<div class="fields how">
+		<!-- Enter anywhere in the fields patches, the way a dialog's default button does;
+		     a select keeps its own Enter, which opens it. -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="fields how"
+			onkeydown={(e) => {
+				if (e.key !== 'Enter' || e.isComposing || !picked || busy || count < 1) return;
+				if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLButtonElement) return;
+				e.preventDefault();
+				void patch();
+			}}
+		>
 			{#if picked}
 				<span class="label">Type</span>
 				<span class="chosen">{picked.name}</span>
@@ -303,7 +332,7 @@
 				<span class="label">Names <Help label="Naming them">Numbered from after the highest one already patched with this name. <b>{'{n}'}</b> puts the number somewhere other than the end.</Help></span>
 				<input class="input" bind:value={pattern} />
 				<span class="label">Universe</span>
-				<input class="input narrow" type="number" min="1" bind:value={universe} oninput={() => (typedAddress = null)} />
+				<input class="input narrow" type="number" min="1" bind:value={universe} oninput={() => (addressText = null)} />
 				<span class="label">Address</span>
 				<div class="inline">
 					<input
@@ -311,11 +340,11 @@
 						type="number"
 						min="1"
 						max="512"
-						value={address}
-						oninput={(e) => (typedAddress = Number(e.currentTarget.value) || null)}
+						placeholder={String(address)}
+						bind:value={addressText}
 					/>
 					{#if typedAddress !== null}
-						<button class="link" onclick={() => (typedAddress = null)}>next free</button>
+						<button class="link" onclick={() => (addressText = null)}>next free</button>
 					{:else}
 						<span class="note">next free</span>
 					{/if}

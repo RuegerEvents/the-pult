@@ -19,9 +19,9 @@
 	 * - **A preset** — its values, and nothing where it says nothing.
 	 *
 	 * Rows are the selection, in the selection's own order, because that is the thing
-	 * an operator is working on. With nothing selected it is the whole patch, and the
-	 * *All* switch is there for the moment somebody wants the rig with their selection
-	 * marked in it rather than filtered to it.
+	 * an operator is working on — when *All fixtures* is off. It is on by default, so the
+	 * sheet is the whole rig with the selection marked in it; off, it is the selection
+	 * alone, or the whole patch when nothing is selected.
 	 */
 
 	import type {
@@ -84,14 +84,25 @@
 
 	const data = getDataContext();
 	const fixtures = collection('fixtures');
+	/**
+	 * Each fixture's 1-based place in the patch's own order — the number `fixture N`
+	 * means on the command line and the wing — whatever the sheet is showing. With
+	 * *All fixtures* off the rows are the selection, and their row number would not be
+	 * the number to type.
+	 */
+	const indexOf = $derived(new Map($fixtures.map((f, i) => [f.id, i + 1])));
 	const types = collection('fixture_types');
 	const cues = collection('cues');
 	const sequences = collection('sequences');
 	const timelines = collection('timelines');
 	const presets = collection('presets');
 
-	/** Show the whole patch with the selection marked, rather than the selection alone. */
-	let all = $state(false);
+	/**
+	 * Show the whole patch with the selection marked, rather than the selection alone.
+	 * On by default (2026-10-25, at the gig): the sheet reads as the rig, and a table
+	 * that shrinks to two rows on every click read as fixtures going missing.
+	 */
+	let all = $state(true);
 	/** The cell an operator has picked, which is what the inspector strip edits. */
 	let picked = $state<{ fixtureId: string; key: string } | null>(null);
 
@@ -407,7 +418,7 @@
 			<table>
 				<thead>
 					<tr>
-						<th class="name">Fixture</th>
+						<th class="name"><span class="index" title="What to type after FIXTURE">#</span> Fixture</th>
 						{#each columns as column (column.key)}
 							<th class="group-{fadeGroup(column.key).toLowerCase()}">{column.label}</th>
 						{/each}
@@ -418,10 +429,13 @@
 						<tr class:picked={$selected.has(fixture.id)} class:lassoed={lassoed.has(fixture.id)} data-lasso-id={fixture.id}>
 							<th class="name">
 								<div class="name-cell">
+								<span class="index" title="fixture {indexOf.get(fixture.id)} on the command line and the wing"
+									>{indexOf.get(fixture.id)}</span
+								>
 								<button
 									class="row-name"
 									onclick={(e) => pick(e, fixture.id)}
-									title="Click to select · Ctrl/Cmd-click to add or remove · Shift-click for a range · drag a lasso over rows"
+									title="Click to select · Ctrl/Cmd-click to add or remove · Shift-click for a range · drag a lasso over rows (on a touchscreen: one finger lassos, two fingers scroll)"
 								>{fixture.name}</button>
 								{#if cellsOf(fixture) > 0}
 									<button
@@ -773,6 +787,15 @@
 		position: sticky;
 		border-bottom: 1px solid #ffffff08;
 		font-weight: 400;
+	}
+	.index {
+		display: inline-block;
+		min-width: 2.2em;
+		padding-left: 6px;
+		text-align: right;
+		color: var(--text-faint, #666);
+		font-variant-numeric: tabular-nums;
+		user-select: none;
 	}
 	/* The whole cell picks, not only the name's letters: the button fills it. */
 	.name-cell {
