@@ -106,6 +106,20 @@ fn precompressed(path: &str, headers: &HeaderMap) -> Option<(EmbeddedFile, Optio
     None
 }
 
+/// Which build of the frontend this station serves: SvelteKit's own stamp out of
+/// `_app/version.json`, the same string a page has as `version` from
+/// `$app/environment`. A page that finds the station serving a different one is
+/// running a stale copy — a tablet left open across a redeploy — and reloads itself.
+///
+/// Read per call rather than once, because a debug build serves `frontend/build`
+/// off the disk and a fresh `npm run build` is a new build there too. `None` for
+/// the placeholder a fresh clone compiles with, which has no stamp.
+pub fn build_id() -> Option<String> {
+    let file = Frontend::get("_app/version.json")?;
+    let stamp: serde_json::Value = serde_json::from_slice(&file.data).ok()?;
+    stamp.get("version")?.as_str().map(String::from)
+}
+
 /// Whether a real frontend is in here, as opposed to the placeholder `build.rs`
 /// leaves behind so that a fresh clone compiles. The bundler's output is the tell:
 /// a built frontend always has `_app/`, and the placeholder is one file.

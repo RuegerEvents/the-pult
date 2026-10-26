@@ -462,6 +462,9 @@ async fn config(State(state): State<ConfigState>) -> Json<serde_json::Value> {
         "syncPort": state.sync_port,
         "nodeId": state.node_id.0,
         "version": crate::VERSION,
+        // Which build of the page this station serves. A tab running another one is
+        // stale — a tablet left open across a redeploy — and reloads itself.
+        "build": crate::api::spa::build_id(),
         // Which show, or none. A page compares this with the one it loaded under and
         // reloads when they differ: opening a show is a new console for this tab,
         // and that holds whether the tab is on this machine or is the tablet at the

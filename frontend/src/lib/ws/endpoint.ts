@@ -39,6 +39,11 @@ export type BackendConfig = {
 	showsDir: string | null;
 	/** The project's own URL, built into the binary. The welcome screen's links. */
 	repository: string;
+	/**
+	 * The build of the page the station serves (SvelteKit's stamp), or `null` for a
+	 * placeholder. A page running another one is stale: see `$lib/build.ts`.
+	 */
+	build?: string | null;
 };
 
 /** Where the socket has always been, and the only path this joins to an origin. */

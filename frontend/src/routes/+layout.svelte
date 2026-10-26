@@ -29,6 +29,7 @@
 	import Verbs from '$lib/components/programmer/Verbs.svelte';
 	import { goOnFocusedSheet } from '$lib/stores/cues.js';
 	import { startWing } from '$lib/stores/wing.js';
+	import { checkBuild } from '$lib/stores/build.js';
 	import { clearStep } from '$lib/stores/clear.js';
 	import UserBar from '$lib/components/UserBar.svelte';
 	import TakeReview from '$lib/components/timeline/TakeReview.svelte';
@@ -81,7 +82,9 @@
 		client,
 		browser ? backendOrigin(window.location) : 'http://localhost:7700',
 		undefined,
-		endSwitch
+		endSwitch,
+		// A tab left open across a redeploy reloads onto the new build.
+		checkBuild
 	);
 	setStationContext(station);
 	// One store per collection, shared by every panel: a tiled workspace can have the
