@@ -415,6 +415,19 @@ pub struct DmxMode {
     pub channels: Vec<DmxChannelLayout>,
 }
 
+/// One node with a loudspeaker, as the station driving it sees it.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DrivenNode {
+    pub name: String,
+    /// Seen on the network by the driving station.
+    pub online: bool,
+    /// On the driving station's broker, which is the only way it hears a `play`.
+    pub on_broker: bool,
+    pub audio: Option<NodeAudio>,
+    pub store: Option<NodeAudioState>,
+    pub summary: Option<NodeAudioSummary>,
+}
+
 /// One parameter's part of a template.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EffectLayer {
@@ -1411,6 +1424,20 @@ pub enum NetService {
     Input(Uuid),
 }
 
+/// A node's loudspeaker, as `GET /api/v1/info` describes it. See the OpenHaunt
+/// protocol's audio extension (`node/docs/13-audio.md`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeAudio {
+    /// The rate the node mixes at. Anything else it is sent is resampled there.
+    pub rate: u32,
+    /// How many clips play at once. The stream is one more, beside these.
+    pub voices: u32,
+    pub outputs: Vec<NodeAudioOutput>,
+    pub clips: NodeClipBudget,
+    #[serde(default)]
+    pub stream: Option<NodeStreamCaps>,
+}
+
 /// How a clip reaches a node.
 ///
 /// Per clip and chosen by the operator, never worked out: a clip that grew past the
@@ -1440,6 +1467,54 @@ pub enum NodeAudioMode {
     Stream,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeAudioOutput {
+    /// `line` or `speaker` on the V0 boards.
+    pub id: String,
+    pub name: String,
+    /// `line` or `amp`. An amp output is not a line out, and the panel says so.
+    pub kind: String,
+    pub channels: u16,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeAudioState {
+    /// The clips the node holds, by the sha of the bytes it holds.
+    pub stored: Vec<String>,
+    pub bytes_total: u64,
+    pub bytes_free: u64,
+    /// The clip being uploaded now, if one is.
+    pub uploading: Option<String>,
+    /// How many clips the show wants on this node and does not have yet.
+    pub pending: u32,
+    /// An RTP stream is going to this node.
+    pub streaming: bool,
+    /// Why something is not on the node, in words.
+    pub fault: Option<String>,
+}
+
+/// A node's audio status, coarse enough to replicate: what changes when something
+/// starts, stops or goes wrong, and nothing that moves every second — no stream depth,
+/// no voice positions. The full status stays in the driving station's LOCAL `devices`.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeAudioSummary {
+    /// The node has the console's clock.
+    pub locked: bool,
+    pub underruns: u64,
+    /// How many clips it is sounding.
+    pub voices: u32,
+    /// Its stream is active.
+    pub streaming: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeClipBudget {
+    #[serde(default)]
+    pub formats: Vec<String>,
+    pub bytes_total: u64,
+    pub bytes_free: u64,
+}
+
 #[derive(
     Debug,
     Clone,
@@ -1453,6 +1528,42 @@ pub enum NodeAudioMode {
     serde::Deserialize
 )]
 pub struct NodeId(pub Uuid);
+
+/// What a station knows about the nodes' sound: the SYNCED `node_reports` collection,
+/// keyed by the station's `NodeId`, one row per station.
+///
+/// **Only the station driving the nodes can say**: it holds the broker, it hears each
+/// node's `audio/status`, it uploads the clips and streams. A station that is not
+/// driving them has its own mDNS browse and nothing else, so its own view said a node
+/// was offline, or not there at all, while the leader was playing through it (found at
+/// the gig, 2026-10-25). So the driving station publishes what it knows here, and every
+/// other station and page reads the driving row instead of guessing. Rewritten only
+/// when something in it moved, like `station_audio`: the per-second parts of a node's
+/// status are left out on purpose ([`NodeAudioSummary`]).
+///
+/// A row is read only while its station still has a `stations` row, so a driver that
+/// died mid-show stops being believed when its station row is pruned.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeReport {
+    /// The station's `NodeId`.
+    pub id: Uuid,
+    /// This station is the one driving the nodes. A row with this false says nothing.
+    pub driving: bool,
+    /// Every node with a loudspeaker, by serial.
+    pub nodes: BTreeMap<String, DrivenNode>,
+    /// Why a node clip is not playing: by timeline id, then clip id, then node serial.
+    pub clip_faults: BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeStreamCaps {
+    pub payload: String,
+    pub max_buffer_ms: u32,
+    /// The UDP port the node listens on for the stream. Absent is 5004; a node that
+    /// shares an address with others (a simulator) names its own.
+    #[serde(default)]
+    pub port: Option<u16>,
+}
 
 /// One configured output.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

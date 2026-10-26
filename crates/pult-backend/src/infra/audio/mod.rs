@@ -1091,10 +1091,13 @@ impl AudioManager {
     async fn publish_status(&mut self) {
         let now = pult_schema::clock::now_ms();
         let mut statuses = AudioStatuses::new();
+        // The driving station's, read from its report where that is not this one: a
+        // station that does not drive the nodes cannot tell whether one is playing.
+        let all_node_faults = self.node_faults().await;
         for timeline in &self.timelines {
-            // A timeline another station plays still gets a row here where this one is
-            // the station driving its nodes and a node clip of it is not playing.
-            let node_faults = self.nodes.faults.get(&timeline.id);
+            // A timeline another station plays still gets a row here where a node clip
+            // of it is not playing, so every station's pages say so.
+            let node_faults = all_node_faults.get(&timeline.id);
             if !self.plays(timeline) && node_faults.is_none() {
                 continue;
             }

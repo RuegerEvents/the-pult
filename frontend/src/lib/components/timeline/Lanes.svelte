@@ -55,7 +55,7 @@
 	import { collection, showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { outlines, wantOutline } from '$lib/stores/takeOutlines.js';
-	import { audioStatus, current, devices, locate, positionOf, takeRowHeight, toggle, writeColumns } from '$lib/stores/timelines.js';
+	import { audioStatus, current, devices, drivingReport, locate, positionOf, takeRowHeight, toggle, writeColumns } from '$lib/stores/timelines.js';
 	import { encodeKey, trackPoints, type TrackPoint } from '$lib/evaluator.js';
 	import { addToast } from '$lib/toasts.js';
 	import { entries as programmerEntries } from '$lib/stores/programmer.js';
@@ -191,7 +191,7 @@
 	let longPress: ReturnType<typeof setTimeout> | null = null;
 
 	const viewKey = $derived(`pult.waveform.${timeline.id}`);
-	const nodes = $derived(audioNodes($devices));
+	const nodes = $derived(audioNodes($devices, $drivingReport));
 	const faulted = $derived($audioStatus?.[timeline.id]?.clip_faults ?? {});
 	/// Clips sounding through some of where they go and not the rest: drawn amber with a
 	/// red stripe rather than red, which is kept for a clip nothing plays.

@@ -55,7 +55,7 @@ use pult_schema::{
     lifecycle::Lifecycle,
     path::PathSegment,
     types::{
-        devices::{NodeAudio, NodeAudioState, NodeAudioStates},
+        devices::{DrivenNode, NodeAudio, NodeAudioState, NodeAudioStates, NodeReport},
         timeline::{AtEnd, AudioClip, NodeAudioMode, Timeline},
         zone::{node_targets, SpeakerZone},
     },
@@ -118,6 +118,11 @@ pub struct Nodes {
     /// node: a zone may hold several, and one of them being down is not all of them.
     pub(super) faults: HashMap<Uuid, BTreeMap<String, BTreeMap<String, String>>>,
     published: Option<NodeAudioStates>,
+    /// Whether this station drove the nodes at the last look, which decides whose
+    /// faults its status rows carry: its own, or the driving station's report.
+    pub(super) driving: bool,
+    /// What this station last said in its `node_reports` row.
+    reported: Option<NodeReport>,
 }
 
 /// One region, made for one kind of node.
@@ -185,6 +190,8 @@ impl Nodes {
             streams: HashMap::new(),
             faults: HashMap::new(),
             published: None,
+            driving: false,
+            reported: None,
         }
     }
 
@@ -412,6 +419,8 @@ impl AudioManager {
         self.reconcile_streams(streamed, &directory).await;
         self.schedule_nodes(pult_schema::clock::now_ms());
         self.publish_nodes(&wanted).await;
+        self.nodes.driving = true;
+        self.publish_report(&directory).await;
     }
 
     /// No longer the station driving the nodes: stop every stream and forget what was
@@ -427,6 +436,87 @@ impl AudioManager {
             self.nodes.published = None;
             self.write_node_audio(&NodeAudioStates::new()).await;
         }
+        self.nodes.driving = false;
+        self.publish_report(&DeviceDirectory::default()).await;
+    }
+
+    /// Say what this station knows about the nodes' sound in its `node_reports` row:
+    /// everything, where it drives them, and that it does not, where it does not. See
+    /// [`NodeReport`] for why the other stations read this rather than their own view.
+    ///
+    /// Only when it moved *and* the row is still there: joining a session replaces
+    /// this station's state with the leader's, which `station_audio` found the hard way.
+    async fn publish_report(&mut self, directory: &DeviceDirectory) {
+        let driving = self.nodes.driving;
+        let nodes = directory
+            .entries
+            .iter()
+            .filter(|(_, e)| driving && e.adopted && e.audio.is_some())
+            .map(|(serial, e)| {
+                (
+                    serial.clone(),
+                    DrivenNode {
+                        name: e.name.clone(),
+                        online: e.online,
+                        on_broker: e.on_broker,
+                        audio: e.audio.clone(),
+                        store: self.nodes.published.as_ref().and_then(|p| p.get(serial)).cloned(),
+                        summary: e.audio_summary.clone(),
+                    },
+                )
+            })
+            .collect();
+        let clip_faults = self
+            .nodes
+            .faults
+            .iter()
+            .map(|(timeline, clips)| (timeline.to_string(), clips.clone()))
+            .collect();
+        let row = NodeReport { id: self.node_id.0, driving, nodes, clip_faults };
+        let Ok(value) = serde_json::to_value(&row) else { return };
+        let path = vec![PathSegment::Key("node_reports".into()), PathSegment::Id(row.id)];
+        if self.nodes.reported.as_ref() == Some(&row)
+            && self.engine.get(path.clone()).await.is_ok_and(|held| held == value)
+        {
+            return;
+        }
+        if self.engine.set(path, Lifecycle::Synced, value.clone()).await.is_err() {
+            let create = vec![PathSegment::Key("node_reports".into()), PathSegment::Key("__create".into())];
+            if let Err(e) = self.engine.set(create, Lifecycle::Synced, value).await {
+                debug!("[audio] could not publish what this station knows about the nodes: {e}");
+                return;
+            }
+        }
+        self.nodes.reported = Some(row);
+    }
+
+    /// Why each node clip is not playing, from whoever can say: this station's own
+    /// view where it drives the nodes, and the driving station's report otherwise. A
+    /// report from a station that has gone (no `stations` row any more) is not believed.
+    pub(super) async fn node_faults(&self) -> HashMap<Uuid, BTreeMap<String, BTreeMap<String, String>>> {
+        if self.nodes.driving {
+            return self.nodes.faults.clone();
+        }
+        let read = |table: &'static str| async move {
+            match self.engine.get(vec![PathSegment::Key(table.into())]).await {
+                Ok(serde_json::Value::Array(rows)) => rows,
+                _ => Vec::new(),
+            }
+        };
+        let live: BTreeSet<String> =
+            read("stations").await.iter().filter_map(|s| s["id"].as_str().map(String::from)).collect();
+        let report = read("node_reports")
+            .await
+            .into_iter()
+            .filter_map(|row| serde_json::from_value::<NodeReport>(row).ok())
+            .filter(|r| r.driving && r.id != self.node_id.0 && live.contains(&r.id.to_string()))
+            .max_by_key(|r| r.id);
+        let Some(report) = report else { return HashMap::new() };
+        report
+            .clip_faults
+            .into_iter()
+            .filter_map(|(timeline, clips)| Some((timeline.parse().ok()?, clips)))
+            .collect()
     }
 
     /// A node that was away has forgotten every voice it was playing, and may have been

@@ -16,7 +16,7 @@
 	import { showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { openSetup } from '$lib/stores/setup.js';
-	import { audioOutput, devices, timelines } from '$lib/stores/timelines.js';
+	import { audioOutput, devices, drivingReport, timelines } from '$lib/stores/timelines.js';
 	import { audioPrefs, loadAudioPrefs, namesFor, stationNames } from '$lib/stores/zones.js';
 	import { channelName, mappingOn, needsMapping, widthName } from '$lib/zones.js';
 	import { getStationContext } from '$lib/ws/context.js';
@@ -25,7 +25,7 @@
 
 	const station = getStationContext();
 	loadAudioPrefs();
-	const nodes = $derived(audioNodes($devices));
+	const nodes = $derived(audioNodes($devices, $drivingReport));
 	const here = $derived($station?.nodeId ?? null);
 	const names = $derived(namesFor($audioPrefs, $audioOutput?.device));
 

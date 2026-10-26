@@ -23,6 +23,7 @@ import type {
 	Detected,
 	DevicesState,
 	NodeAudioState,
+	NodeReport,
 	TakeStatus,
 	Timeline
 } from '$lib/generated/index.js';
@@ -39,8 +40,33 @@ export const audioStatus = localPath<Record<string, AudioStatus>>('audio_status'
 export const audioOutput = localPath<AudioOutput>('audio_output');
 /** The OpenHaunt nodes this station can see, and what their loudspeakers can do. */
 export const devices = localPath<DevicesState>('devices');
+/** What this station has made of each node's clip store, where it drives them. */
+const nodeAudioHere = localPath<Record<string, NodeAudioState>>('node_audio');
+
+const nodeReports = collection('node_reports') as Readable<NodeReport[]>;
+const stationRows = collection('stations') as Readable<{ id: string }[]>;
+
+/**
+ * The report of the station driving the nodes (`NodeReport`), or `null` when none is
+ * driving. One whose station has gone is not believed. The station's own rule,
+ * `node_faults` in `infra/audio/nodes.rs`, picks the same row.
+ */
+export const drivingReport: Readable<NodeReport | null> = derived([nodeReports, stationRows], ([$reports, $stations]) => {
+	const live = new Set($stations.map((s) => s.id));
+	const driving = $reports.filter((r) => r.driving && live.has(r.id)).sort((a, b) => (a.id < b.id ? 1 : -1));
+	return driving[0] ?? null;
+});
+
 /** What the station driving the nodes has made of each one's clip store. */
-export const nodeAudio = localPath<Record<string, NodeAudioState>>('node_audio');
+export const nodeAudio: Readable<Record<string, NodeAudioState>> = derived(
+	[nodeAudioHere, drivingReport],
+	([$here, $report]) => {
+		if (!$report) return $here ?? {};
+		const out: Record<string, NodeAudioState> = {};
+		for (const [serial, n] of Object.entries($report.nodes)) if (n?.store) out[serial] = n.store;
+		return out;
+	}
+);
 /**
  * What this station is recording, per timeline. LOCAL: a take in progress is in the
  * recording station's memory, so a page on another station sees "armed" and not this.

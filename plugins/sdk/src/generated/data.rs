@@ -2247,6 +2247,158 @@ impl NamedAssetEntity {
     }
 }
 
+// ── node_reports ────────────────────────────────────────────────────────
+
+/// What a station knows about the nodes' sound: the SYNCED `node_reports` collection,
+/// keyed by the station's `NodeId`, one row per station.
+///
+/// **Only the station driving the nodes can say**: it holds the broker, it hears each
+/// node's `audio/status`, it uploads the clips and streams. A station that is not
+/// driving them has its own mDNS browse and nothing else, so its own view said a node
+/// was offline, or not there at all, while the leader was playing through it (found at
+/// the gig, 2026-10-25). So the driving station publishes what it knows here, and every
+/// other station and page reads the driving row instead of guessing. Rewritten only
+/// when something in it moved, like `station_audio`: the per-second parts of a node's
+/// status are left out on purpose ([`NodeAudioSummary`]).
+///
+/// A row is read only while its station still has a `stations` row, so a driver that
+/// died mid-show stops being believed when its station row is pruned.
+///
+/// The `node_reports` collection.
+pub fn node_reports() -> NodeReportCollection {
+    NodeReportCollection { at: Collection::at("node_reports") }
+}
+
+/// The `node_reports` collection, reached by [`node_reports()`].
+pub struct NodeReportCollection {
+    at: Collection,
+}
+
+impl NodeReportCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<NodeReport>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> NodeReportEntity {
+        NodeReportEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> NodeReportEntity {
+        NodeReportEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &NodeReport) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `node_reports` row, reached by [`NodeReportCollection::by_id`] or
+/// [`NodeReportCollection::nth`].
+pub struct NodeReportEntity {
+    at: Entity,
+}
+
+impl NodeReportEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<NodeReport, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &NodeReport) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// The station's `NodeId`.
+    ///
+    /// SYNCED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// This station is the one driving the nodes. A row with this false says nothing.
+    ///
+    /// SYNCED.
+    pub fn driving(&self) -> Field<bool> {
+        self.at.field("driving")
+    }
+
+    /// Every node with a loudspeaker, by serial.
+    ///
+    /// SYNCED.
+    pub fn nodes(&self) -> Field<BTreeMap<String, DrivenNode>> {
+        self.at.field("nodes")
+    }
+
+    /// Why a node clip is not playing: by timeline id, then clip id, then node serial.
+    ///
+    /// SYNCED.
+    pub fn clip_faults(&self) -> Field<BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>> {
+        self.at.field("clip_faults")
+    }
+}
+
 // ── outputs ─────────────────────────────────────────────────────────────
 
 /// One configured output.

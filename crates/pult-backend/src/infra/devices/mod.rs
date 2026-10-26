@@ -212,6 +212,14 @@ pub struct DeviceEntry {
     /// Connected to this station's broker, which is the only way a node hears an audio
     /// command. Online on mDNS and not yet on the broker is a node that would miss one.
     pub on_broker: bool,
+    /// What the node calls itself, for the report the driving station replicates.
+    pub name: String,
+    /// A fixture in the show is this node, which is what makes it one a clip can go to.
+    pub adopted: bool,
+    /// The coarse half of what the node last said on `audio/status`. Here, and not the
+    /// whole status, because the directory wakes everything watching it: this half
+    /// changes when a voice starts or something goes wrong, the rest every second.
+    pub audio_summary: Option<pult_schema::types::devices::NodeAudioSummary>,
     /// How many times this station has seen the node start over without going away:
     /// a reboot quick enough that mDNS never noticed (its uptime went backwards), or a
     /// strip re-patched (the node rebuilds the strip's ports at their defaults).
@@ -673,11 +681,19 @@ impl DeviceManager {
                 self.publish().await;
             }
             MqttEvent::AudioStatus { serial, status } => {
+                use pult_schema::types::devices::NodeAudioSummary;
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
+                let moved = device.audio_status.as_ref().map(NodeAudioSummary::of) != Some(NodeAudioSummary::of(&status));
                 device.audio_status = Some(status);
-                // The LOCAL state only: the directory carries what a node *can* do, and
-                // a status once a second would wake everything watching it for nothing.
-                self.push_state().await;
+                // The LOCAL state every time, the directory only when the coarse half
+                // moved: a status once a second would wake everything watching the
+                // directory for nothing, and the report other stations read is made
+                // from it (`NodeReport`).
+                if moved {
+                    self.publish().await;
+                } else {
+                    self.push_state().await;
+                }
             }
         }
     }
@@ -1337,6 +1353,12 @@ impl DeviceManager {
                             effects: d.effects.clone(),
                             audio: d.audio.clone(),
                             on_broker: self.on_broker.contains(&d.serial),
+                            name: d.name.clone(),
+                            adopted: d.adopted_fixture_id.is_some(),
+                            audio_summary: d
+                                .audio_status
+                                .as_ref()
+                                .map(pult_schema::types::devices::NodeAudioSummary::of),
                             starts: self.starts.get(&d.serial).copied().unwrap_or(0),
                         },
                     )

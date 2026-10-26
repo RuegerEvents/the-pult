@@ -16,7 +16,7 @@
 	import Dialog from '$lib/components/Dialog.svelte';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { openSetup } from '$lib/stores/setup.js';
-	import { audioOutput, audioStatus, current, devices, nodeAudio, writeColumns } from '$lib/stores/timelines.js';
+	import { audioOutput, audioStatus, current, devices, drivingReport, nodeAudio, writeColumns } from '$lib/stores/timelines.js';
 	import { audioPrefs, loadAudioPrefs, namesFor, playerOf, stations, zones } from '$lib/stores/zones.js';
 	import { clock, parsePosition } from '$lib/waveform.js';
 	import { channelName, mappingOn, widthName, zoneProblem } from '$lib/zones.js';
@@ -24,7 +24,7 @@
 
 	let { rows }: { rows: ClipRow[] } = $props();
 
-	const nodes = $derived(audioNodes($devices));
+	const nodes = $derived(audioNodes($devices, $drivingReport));
 	const one = $derived(rows.length === 1 ? rows[0] : null);
 	const station = getStationContext();
 	loadAudioPrefs();
@@ -268,7 +268,15 @@
 	{:else if shared && nodeOf(shared)}
 		{@const node = nodeOf(shared)!}
 		{@const store = $nodeAudio?.[node.serial]}
-		{@const status = $devices?.discovered[node.serial]?.audio_status}
+		{@const here = $devices?.discovered[node.serial]?.audio_status}
+		{@const said = $drivingReport?.nodes[node.serial]?.summary}
+		<!-- This station's own conversation with the node where it has one, and the
+		     driving station's summary of it where it has not. -->
+		{@const status = here
+			? { locked: here.locked, underruns: here.underruns, voices: here.voices.length, streaming: !!here.stream?.active, depth: here.stream?.depth_ms ?? null }
+			: said
+				? { locked: said.locked, underruns: said.underruns, voices: said.voices, streaming: said.streaming, depth: null }
+				: null}
 		<span class="label">How</span>
 		<div class="segmented" role="group" aria-label="How the clip reaches the node">
 			<button
@@ -304,8 +312,10 @@
 						<span class="says-bad">{status.underruns} underruns</span>
 					{:else}
 						<span class="says-good"
-							>{status.voices.length} voice{status.voices.length === 1 ? '' : 's'} sounding{status.stream?.active
-								? `, stream ${status.stream.depth_ms} ms buffered`
+							>{status.voices} voice{status.voices === 1 ? '' : 's'} sounding{status.streaming
+								? status.depth !== null
+									? `, stream ${status.depth} ms buffered`
+									: ', streaming'
 								: ''}</span
 						>
 					{/if}

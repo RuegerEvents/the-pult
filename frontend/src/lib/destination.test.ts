@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { DevicesState, SpeakerZone } from '$lib/generated/index.js';
+import type { DevicesState, NodeReport, SpeakerZone } from '$lib/generated/index.js';
 import { audioNodes, bytesText, destinationText, nodeOf, zoneOf } from './destination.js';
 
 const ZONES = [{ id: 'z2', name: 'Area 2', color: null, width: 1, channels: {}, nodes: [], notes: '' } as SpeakerZone];
@@ -66,6 +66,20 @@ describe('where a clip goes', () => {
 		expect(nodes.map((n) => n.serial)).toEqual(['a', 'b']);
 		expect(nodes[0].outputs).toBe('Line out and Speaker');
 		expect(audioNodes(null)).toEqual([]);
+	});
+
+	it('believes the station driving the nodes over its own browse', () => {
+		// This station's mDNS lost node b and never described node e; the leader drives both.
+		const here = devices();
+		here.discovered.b = { ...here.discovered.b!, online: false };
+		const driven = (name: string) => ({ name, online: true, on_broker: true, audio: here.discovered.a!.audio, store: null, summary: null });
+		const report = { id: 's1', driving: true, nodes: { b: driven('Gate'), e: driven('Crypt') }, clip_faults: {} } as NodeReport;
+		const nodes = audioNodes(here, report);
+		expect(nodes.map((n) => [n.serial, n.online])).toEqual([
+			['a', true],
+			['e', true],
+			['b', true]
+		]);
 	});
 
 	it('says where a clip goes in a few words', () => {

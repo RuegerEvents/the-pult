@@ -17,6 +17,7 @@ import type { InputConfig } from '../generated/InputConfig.js';
 import type { Layer } from '../generated/Layer.js';
 import type { Layout } from '../generated/Layout.js';
 import type { NamedAsset } from '../generated/NamedAsset.js';
+import type { NodeReport } from '../generated/NodeReport.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { PluginDatum } from '../generated/PluginDatum.js';
 import type { PluginPackage } from '../generated/PluginPackage.js';
@@ -92,6 +93,10 @@ export type LayoutEntity = PathProxy<Layout> & {
 };
 
 export type NamedAssetEntity = PathProxy<NamedAsset> & {
+  delete(): Promise<void>;
+};
+
+export type NodeReportEntity = PathProxy<NodeReport> & {
   delete(): Promise<void>;
 };
 
@@ -369,6 +374,20 @@ export type NamedAssetCollection = {
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: NamedAssetEntity;
+};
+
+export type NodeReportCollection = {
+  get(): Promise<NodeReport[]>;
+  set(value: NodeReport[]): Promise<void>;
+  subscribe(cb: (value: NodeReport[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: NodeReport[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): NodeReportEntity;
+  nth(n: number): NodeReportEntity;
+  create(entity: NodeReport): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: NodeReportEntity;
 };
 
 export type OutputConfigCollection = {
@@ -682,6 +701,7 @@ export type DataRoot = {
   layers: LayerCollection;
   layouts: LayoutCollection;
   named_assets: NamedAssetCollection;
+  node_reports: NodeReportCollection;
   outputs: OutputConfigCollection;
   plugin_data: PluginDatumCollection;
   plugin_packages: PluginPackageCollection;

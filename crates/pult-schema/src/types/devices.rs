@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::types::openhaunt::{EffectCapability, NodeDescription};
 use crate::types::pixels::NodePixels;
+use crate::PultSchema;
 
 /// What a node last said about itself on its health topic.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -234,6 +235,78 @@ pub struct NodeAudioState {
     pub streaming: bool,
     /// Why something is not on the node, in words.
     pub fault: Option<String>,
+}
+
+/// A node's audio status, coarse enough to replicate: what changes when something
+/// starts, stops or goes wrong, and nothing that moves every second — no stream depth,
+/// no voice positions. The full status stays in the driving station's LOCAL `devices`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeAudioSummary {
+    /// The node has the console's clock.
+    pub locked: bool,
+    pub underruns: u64,
+    /// How many clips it is sounding.
+    pub voices: u32,
+    /// Its stream is active.
+    pub streaming: bool,
+}
+
+impl NodeAudioSummary {
+    pub fn of(status: &NodeAudioStatus) -> Self {
+        NodeAudioSummary {
+            locked: status.locked,
+            underruns: status.underruns,
+            voices: status.voices.len() as u32,
+            streaming: status.stream.as_ref().is_some_and(|s| s.active),
+        }
+    }
+}
+
+/// One node with a loudspeaker, as the station driving it sees it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DrivenNode {
+    pub name: String,
+    /// Seen on the network by the driving station.
+    pub online: bool,
+    /// On the driving station's broker, which is the only way it hears a `play`.
+    pub on_broker: bool,
+    pub audio: Option<NodeAudio>,
+    pub store: Option<NodeAudioState>,
+    pub summary: Option<NodeAudioSummary>,
+}
+
+/// What a station knows about the nodes' sound: the SYNCED `node_reports` collection,
+/// keyed by the station's `NodeId`, one row per station.
+///
+/// **Only the station driving the nodes can say**: it holds the broker, it hears each
+/// node's `audio/status`, it uploads the clips and streams. A station that is not
+/// driving them has its own mDNS browse and nothing else, so its own view said a node
+/// was offline, or not there at all, while the leader was playing through it (found at
+/// the gig, 2026-10-25). So the driving station publishes what it knows here, and every
+/// other station and page reads the driving row instead of guessing. Rewritten only
+/// when something in it moved, like `station_audio`: the per-second parts of a node's
+/// status are left out on purpose ([`NodeAudioSummary`]).
+///
+/// A row is read only while its station still has a `stations` row, so a driver that
+/// died mid-show stops being believed when its station row is pruned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, PultSchema)]
+#[ts(export)]
+#[pult(table = "node_reports")]
+pub struct NodeReport {
+    /// The station's `NodeId`.
+    #[pult(lifecycle = SYNCED, primary_key)]
+    pub id: Uuid,
+    /// This station is the one driving the nodes. A row with this false says nothing.
+    #[pult(lifecycle = SYNCED)]
+    pub driving: bool,
+    /// Every node with a loudspeaker, by serial.
+    #[pult(lifecycle = SYNCED)]
+    pub nodes: BTreeMap<String, DrivenNode>,
+    /// Why a node clip is not playing: by timeline id, then clip id, then node serial.
+    #[pult(lifecycle = SYNCED)]
+    pub clip_faults: BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>,
 }
 
 /// This node's view of the OpenHaunt devices around it.
