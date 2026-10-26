@@ -326,7 +326,7 @@
 										checked={target.from_start}
 										onchange={(e) => retarget(tile, { ...target, from_start: e.currentTarget.checked })}
 									/>
-									play from the top
+									start from the beginning
 								</label>
 							{:else if target.kind === 'SequenceGo' || target.kind === 'SequenceOff'}
 								<select class="input" value={target.sequence_id} onchange={(e) => retarget(tile, { ...target, sequence_id: e.currentTarget.value })}>

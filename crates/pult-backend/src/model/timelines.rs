@@ -207,6 +207,18 @@ impl Timelines {
                     };
                     out.fire.push(fire_at(event, at));
                 }
+                // An event that drives no sequence — stopping or playing another
+                // timeline, setting a variable — has no tracked state to take, so the
+                // rule above dropped it, even one at the very position played from: a
+                // phone's "start from the beginning" on the trigger never stopped the
+                // loop (HHG, 2026-10-26). Those fire as crossed, from where this run
+                // started to the playhead, and nothing before it.
+                let started = timeline.position_at_anchor_ms;
+                for event in timeline.crossed(started.checked_sub(1), position) {
+                    if event.action.sequence_id().is_none() {
+                        out.fire.push(fire_at(event, wall_of(timeline, event.at_ms as u64, wall_ms, running_to)));
+                    }
+                }
                 // Always restated after a jump, even into the same segment: the
                 // playhead is somewhere else in the bar, so the master's `t0` is now
                 // wrong by however far it moved.
@@ -583,6 +595,33 @@ mod tests {
         assert!(timelines.pass(32_000, std::slice::from_ref(&again)).fire.is_empty(), "nothing at the top");
         assert_eq!(timelines.pass(32_600, std::slice::from_ref(&again)).fire.len(), 1, "0.5 s in");
         assert_eq!(timelines.pass(34_100, &[again]).fire.len(), 1, "2 s in");
+    }
+
+    /// Played from a position, an event that drives no sequence — stopping another
+    /// timeline — fires where it is, as well as the tracked state of the sequences.
+    #[test]
+    fn a_play_from_the_beginning_fires_a_timeline_event_at_the_beginning() {
+        let mut timelines = Timelines::default();
+        let other = Uuid::from_u128(77);
+        let stop = TimelineEvent {
+            id: Uuid::from_u128(5),
+            at_ms: 0,
+            action: TimelineAction::StopTimeline { timeline_id: other },
+        };
+        let earlier = TimelineEvent {
+            id: Uuid::from_u128(6),
+            at_ms: 0,
+            action: TimelineAction::StopTimeline { timeline_id: Uuid::from_u128(78) },
+        };
+        let timeline = playing(a_timeline(vec![stop, go_next(0, 1)]), 1_000, 0);
+        let fired = timelines.pass(1_000, std::slice::from_ref(&timeline)).fire;
+        assert_eq!(fired.len(), 2, "the Go and the Stop");
+        // Located half way in, an event before the start of this run is not fired.
+        let mut located = a_timeline(vec![earlier]);
+        located.running = true;
+        located.anchor_ms = 2_000;
+        located.position_at_anchor_ms = 500;
+        assert!(timelines.pass(2_000, &[located]).fire.is_empty());
     }
 
     /// A Play anchored ahead of now — the stream lead — fires its first event at the

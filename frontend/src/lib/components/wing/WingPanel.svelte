@@ -518,7 +518,7 @@
 						</select>
 						<div class="segmented" role="group" aria-label="What the key does">
 							<button class:on={!fromStart} aria-pressed={!fromStart} onclick={() => (fromStart = false)}>Play / stop</button>
-							<button class:on={fromStart} aria-pressed={fromStart} onclick={() => (fromStart = true)}>Play from the top</button>
+							<button class:on={fromStart} aria-pressed={fromStart} onclick={() => (fromStart = true)}>Start from the beginning</button>
 						</div>
 					{:else if choice === 'Press'}
 						<select class="input" bind:value={pressIndex}>

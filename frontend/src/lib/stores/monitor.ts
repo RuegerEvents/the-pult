@@ -13,7 +13,9 @@
  * not in the show, which has no business knowing which tablet has its speaker up. A
  * page that was listening when it reloaded is *armed* rather than listening: a browser
  * starts sound only from a tap (Safari is strict about it), so the toggle says so and
- * the next tap carries on.
+ * the next tap carries on — **any** tap or key on the page, not only the Listen button,
+ * because a station restarting reloads every page and the sound has to come back
+ * without anybody finding the timeline panel first.
  */
 
 import { browser } from '$app/environment';
@@ -53,6 +55,18 @@ monitorSettings.subscribe((s) => {
 
 /** What this tab is doing about it. Armed until a tap starts the sound. */
 export const monitorState = writable<MonitorState>(read().timelineId ? 'armed' : 'off');
+
+// Armed at load: the first gesture anywhere on the page is the tap that may start it.
+if (browser && read().timelineId) {
+	const resume = () => {
+		window.removeEventListener('pointerdown', resume, true);
+		window.removeEventListener('keydown', resume, true);
+		const { timelineId } = get(monitorSettings);
+		if (timelineId && get(monitorState) === 'armed') start(timelineId);
+	};
+	window.addEventListener('pointerdown', resume, true);
+	window.addEventListener('keydown', resume, true);
+}
 
 let context: AudioContext | null = null;
 let gain: GainNode | null = null;

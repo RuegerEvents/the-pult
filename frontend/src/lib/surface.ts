@@ -420,8 +420,11 @@ export async function pressTarget(
 			if (!timeline) return;
 			const when = stamp();
 			const proxy = data.timelines.byId(timeline.id);
-			if (timeline.running) await proxy.stop({ at: when });
-			else await proxy.play(target.from_start ? { at: when, fromMs: 0 } : { at: when });
+			// From the beginning always starts it again from 0:00, running or not — a
+			// trigger pressed twice is a second scare, not a stop. Otherwise it toggles.
+			if (target.from_start) await proxy.play({ at: when, fromMs: 0 });
+			else if (timeline.running) await proxy.stop({ at: when });
+			else await proxy.play({ at: when });
 			return;
 		}
 		case 'SequenceGo':
@@ -456,7 +459,7 @@ export function targetLive(target: TileTarget, show: SurfaceShow): boolean {
 
 /**
  * Everything a key could press, as one list with names: every sequence's Go and Off,
- * every timeline from where it is and from the top, every flow button, every variable
+ * every timeline from where it is and from the beginning, every flow button, every variable
  * toggled or reset. What a wing key's binding is chosen from.
  */
 export function pressableTargets(show: SurfaceShow): { label: string; target: TileTarget }[] {
@@ -467,7 +470,7 @@ export function pressableTargets(show: SurfaceShow): { label: string; target: Ti
 	}
 	for (const t of show.timelines) {
 		out.push({ label: `Play/stop · ${t.name}`, target: { kind: 'Timeline', timeline_id: t.id, from_start: false } });
-		out.push({ label: `Play from the top · ${t.name}`, target: { kind: 'Timeline', timeline_id: t.id, from_start: true } });
+		out.push({ label: `Start from the beginning · ${t.name}`, target: { kind: 'Timeline', timeline_id: t.id, from_start: true } });
 	}
 	for (const b of flowButtons(show)) {
 		out.push({ label: `Press · ${b.name}`, target: { kind: 'FlowButton', node_id: b.id } });
