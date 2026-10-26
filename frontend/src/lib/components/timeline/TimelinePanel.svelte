@@ -9,8 +9,9 @@
 	 * Inspector the way clicking a preset does; with nothing picked up, the docked
 	 * Inspector shows the timeline's own settings.
 	 *
-	 * **The Inspector is docked here only while there is no Inspector panel** in the
-	 * layout (or this panel is maximized and has the screen to itself). Two places
+	 * **The Inspector is docked here only while no Inspector panel can be seen**: none
+	 * in the layout, one behind another tab, or this panel maximized with the screen to
+	 * itself. Two places
 	 * editing one clip at once would be two answers to "where do I change this", which is
 	 * the confusion the Inspector exists to end — so it is the same component, in one
 	 * place at a time.
@@ -38,7 +39,7 @@
 	import TimelineList from './TimelineList.svelte';
 	import Transport from './Transport.svelte';
 	import { timelineOfItem } from '$lib/kinds/timeline.kind.js';
-	import { panelsIn } from '$lib/layout.js';
+	import { panelsShown } from '$lib/layout.js';
 	import { selectSubject, subject, subjectRows } from '$lib/objects.js';
 	import { maximized, revealPanel, tree } from '$lib/stores/layout.js';
 	import { canEdit } from '$lib/stores/showLock.js';
@@ -58,7 +59,7 @@
 	const timeline = $derived($openTimeline);
 	/** Narrower than this, the list is a dropdown. */
 	const narrow = $derived(width < 760);
-	const inspectorElsewhere = $derived(panelsIn($tree).includes('inspector') && $maximized !== 'timeline');
+	const inspectorElsewhere = $derived(panelsShown($tree).includes('inspector') && $maximized !== 'timeline');
 	/** The docked Inspector needs room; below this it hands over to the panel. */
 	const docked = $derived(!inspectorElsewhere && width >= 900);
 

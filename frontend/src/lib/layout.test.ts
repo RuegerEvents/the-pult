@@ -7,6 +7,7 @@ import {
 	movePanel,
 	normalize,
 	panelsIn,
+	panelsShown,
 	removePanel,
 	resize,
 	split,
@@ -35,6 +36,12 @@ describe('reading a tree', () => {
 
 	it('lists panels left to right, top to bottom', () => {
 		expect(panelsIn(nested())).toEqual(['rig', 'values', 'selection']);
+	});
+
+	it('shows only the front tab of each group', () => {
+		const tree = split('Row', [tabs(['timeline', 'inspector'], 0), tabs(['sheet', 'values'], 1)], [0.5, 0.5]);
+		expect(panelsShown(tree)).toEqual(['timeline', 'values']);
+		expect(panelsShown(tabs([]))).toEqual([]);
 	});
 
 	it('says which tile a panel is in', () => {

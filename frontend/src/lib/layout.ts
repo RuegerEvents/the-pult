@@ -67,6 +67,16 @@ export function panelsIn(tree: LayoutNode): string[] {
 }
 
 /**
+ * The panels somebody can see: the front tab of each group. A panel behind another
+ * tab is in the layout and shows nothing, which is the difference a panel deciding
+ * whether to stand in for another one has to know.
+ */
+export function panelsShown(tree: LayoutNode): string[] {
+	if (tree.type === 'Tabs') return tree.panels.length ? [tree.panels[Math.min(tree.active, tree.panels.length - 1)]] : [];
+	return tree.children.flatMap(panelsShown);
+}
+
+/**
  * The tab group a panel is in, or null when it is not open.
  *
  * Not used by the operations here — they are told where to act. It is how anything
