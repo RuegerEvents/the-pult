@@ -420,11 +420,11 @@ export async function pressTarget(
 			if (!timeline) return;
 			const when = stamp();
 			const proxy = data.timelines.byId(timeline.id);
-			// From the beginning always starts it again from 0:00, running or not — a
-			// trigger pressed twice is a second scare, not a stop. Otherwise it toggles.
-			if (target.from_start) await proxy.play({ at: when, fromMs: 0 });
-			else if (timeline.running) await proxy.stop({ at: when });
-			else await proxy.play({ at: when });
+			// A toggle either way: running, it stops; stopped, it plays — from 0:00 when
+			// the tile says from the beginning. (Always restarting was tried, and took
+			// away the phone's only Stop.)
+			if (timeline.running) await proxy.stop({ at: when });
+			else await proxy.play(target.from_start ? { at: when, fromMs: 0 } : { at: when });
 			return;
 		}
 		case 'SequenceGo':

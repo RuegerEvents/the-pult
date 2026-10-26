@@ -9,6 +9,11 @@
  * reaches nothing but its own speaker, and a tab that sleeps loses its sound and
  * nothing else.
  *
+ * **To as many timelines as it likes**: the loop and the trigger together, each its own
+ * stream on `/ws/monitor`, placed by its own chunks' clock and mixed on this tab's one
+ * speaker at one level. It used to be one timeline, and listening to the trigger
+ * silently stopped the loop.
+ *
  * Whether this tab listens, and how loud, is kept per browser like `stores/view.ts` —
  * not in the show, which has no business knowing which tablet has its speaker up. A
  * page that was listening when it reloaded is *armed* rather than listening: a browser
@@ -28,8 +33,8 @@ import { backendOrigin, wsUrlFrom } from '../ws/endpoint.js';
 const KEY = 'pult.monitor';
 
 export type MonitorSettings = {
-	/** The timeline this tab listens to, or `null` for not listening. */
-	timelineId: string | null;
+	/** The timelines this tab listens to. */
+	timelineIds: string[];
 	/** 0–1, on this tab's speaker only. */
 	level: number;
 };
@@ -39,10 +44,17 @@ export type MonitorSettings = {
 export type MonitorState = 'off' | 'armed' | 'listening' | 'loading' | 'no-clock';
 
 function read(): MonitorSettings {
-	const fallback: MonitorSettings = { timelineId: null, level: 0.8 };
+	const fallback: MonitorSettings = { timelineIds: [], level: 0.8 };
 	if (!browser) return fallback;
 	try {
-		return { ...fallback, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') };
+		const stored = JSON.parse(localStorage.getItem(KEY) ?? '{}');
+		// A tab that listened to one timeline before there could be several.
+		const ids: string[] = Array.isArray(stored.timelineIds)
+			? stored.timelineIds
+			: stored.timelineId
+				? [stored.timelineId]
+				: [];
+		return { timelineIds: ids, level: typeof stored.level === 'number' ? stored.level : fallback.level };
 	} catch {
 		return fallback;
 	}
@@ -53,43 +65,52 @@ monitorSettings.subscribe((s) => {
 	if (browser) localStorage.setItem(KEY, JSON.stringify(s));
 });
 
-/** What this tab is doing about it. Armed until a tap starts the sound. */
-export const monitorState = writable<MonitorState>(read().timelineId ? 'armed' : 'off');
+/** What this tab is doing about each timeline. Armed until a tap starts the sound. */
+export const monitorStates = writable<Record<string, MonitorState>>(
+	Object.fromEntries(read().timelineIds.map((id) => [id, 'armed' as MonitorState]))
+);
+
+function setState(timelineId: string, state: MonitorState) {
+	monitorStates.update((all) => (all[timelineId] === state ? all : { ...all, [timelineId]: state }));
+}
 
 // Armed at load: the first gesture anywhere on the page is the tap that may start it.
-if (browser && read().timelineId) {
+if (browser && read().timelineIds.length > 0) {
 	const resume = () => {
 		window.removeEventListener('pointerdown', resume, true);
 		window.removeEventListener('keydown', resume, true);
-		const { timelineId } = get(monitorSettings);
-		if (timelineId && get(monitorState) === 'armed') start(timelineId);
+		const states = get(monitorStates);
+		for (const id of get(monitorSettings).timelineIds) if (states[id] === 'armed') start(id);
 	};
 	window.addEventListener('pointerdown', resume, true);
 	window.addEventListener('keydown', resume, true);
 }
 
+/** One timeline being listened to: its socket, and where its last chunk ends. */
+type Stream = { socket: WebSocket | null; retry: ReturnType<typeof setTimeout> | null; lastEnd: number | null };
+
 let context: AudioContext | null = null;
 let gain: GainNode | null = null;
-let socket: WebSocket | null = null;
-let lastEnd: number | null = null;
-let retry: ReturnType<typeof setTimeout> | null = null;
+const streams = new Map<string, Stream>();
 
-/** Listen to a timeline, from a tap, or stop when it is the one already listened to. */
+/** Listen to a timeline, from a tap, or stop when it is already being listened to. */
 export function toggleListening(timelineId: string): void {
-	const { timelineId: current } = get(monitorSettings);
-	const state = get(monitorState);
-	if (current === timelineId && (state === 'listening' || state === 'loading')) {
-		stopListening();
+	const state = get(monitorStates)[timelineId];
+	if (state === 'listening' || state === 'loading') {
+		stopListening(timelineId);
 		return;
 	}
-	monitorSettings.update((s) => ({ ...s, timelineId }));
+	monitorSettings.update((s) => ({
+		...s,
+		timelineIds: s.timelineIds.includes(timelineId) ? s.timelineIds : [...s.timelineIds, timelineId]
+	}));
 	start(timelineId);
 }
 
-export function stopListening(): void {
-	monitorSettings.update((s) => ({ ...s, timelineId: null }));
-	close();
-	monitorState.set('off');
+export function stopListening(timelineId: string): void {
+	monitorSettings.update((s) => ({ ...s, timelineIds: s.timelineIds.filter((id) => id !== timelineId) }));
+	close(timelineId);
+	setState(timelineId, 'off');
 }
 
 export function setMonitorLevel(level: number): void {
@@ -97,48 +118,56 @@ export function setMonitorLevel(level: number): void {
 	if (gain) gain.gain.value = level;
 }
 
-/** Called from the tap itself, which is what lets the sound start at all. */
+/** Called from a tap, which is what lets the sound start at all. */
 function start(timelineId: string): void {
-	close();
+	close(timelineId);
 	context ??= new AudioContext({ latencyHint: 'interactive' });
 	void context.resume();
-	gain = context.createGain();
-	gain.gain.value = get(monitorSettings).level;
-	gain.connect(context.destination);
-	connect(timelineId);
+	if (!gain) {
+		gain = context.createGain();
+		gain.gain.value = get(monitorSettings).level;
+		gain.connect(context.destination);
+	}
+	const stream: Stream = { socket: null, retry: null, lastEnd: null };
+	streams.set(timelineId, stream);
+	connect(timelineId, stream);
 }
 
-function connect(timelineId: string): void {
+function connect(timelineId: string, stream: Stream): void {
 	const url = wsUrlFrom(backendOrigin(location), `/ws/monitor?timeline=${encodeURIComponent(timelineId)}`);
 	const ws = new WebSocket(url);
 	ws.binaryType = 'arraybuffer';
-	ws.onopen = () => monitorState.set('listening');
+	ws.onopen = () => setState(timelineId, 'listening');
 	ws.onmessage = (e) => {
-		if (e.data instanceof ArrayBuffer) play(e.data);
+		if (e.data instanceof ArrayBuffer) play(timelineId, stream, e.data);
 	};
 	ws.onclose = () => {
-		if (socket !== ws) return;
-		socket = null;
+		if (stream.socket !== ws) return;
+		stream.socket = null;
 		// Still meant to be listening: the station restarted, or the link dropped.
-		if (get(monitorSettings).timelineId === timelineId) {
-			retry = setTimeout(() => connect(timelineId), 2_000);
+		if (streams.get(timelineId) === stream && get(monitorSettings).timelineIds.includes(timelineId)) {
+			stream.retry = setTimeout(() => connect(timelineId, stream), 2_000);
 		}
 	};
-	socket = ws;
+	stream.socket = ws;
 }
 
-function close(): void {
-	if (retry) clearTimeout(retry);
-	retry = null;
-	const ws = socket;
-	socket = null;
+function close(timelineId: string): void {
+	const stream = streams.get(timelineId);
+	if (!stream) return;
+	streams.delete(timelineId);
+	if (stream.retry) clearTimeout(stream.retry);
+	const ws = stream.socket;
+	stream.socket = null;
 	ws?.close();
-	gain?.disconnect();
-	gain = null;
-	lastEnd = null;
+	// The speaker goes when nothing is left on it.
+	if (streams.size === 0) {
+		gain?.disconnect();
+		gain = null;
+	}
 }
 
-function play(bytes: ArrayBuffer): void {
+function play(timelineId: string, stream: Stream, bytes: ArrayBuffer): void {
 	if (!context || !gain) return;
 	const chunk = decodeChunk(bytes);
 	if (!chunk) return;
@@ -146,13 +175,12 @@ function play(bytes: ArrayBuffer): void {
 	// No estimate of the station clock yet: nothing to place a chunk against, so a
 	// gap rather than a sound in the wrong place.
 	if (now === null) {
-		monitorState.set('no-clock');
+		setState(timelineId, 'no-clock');
 		return;
 	}
-	const state = chunk.loading ? 'loading' : 'listening';
-	if (get(monitorState) !== state) monitorState.set(state);
+	setState(timelineId, chunk.loading ? 'loading' : 'listening');
 	const wanted = context.currentTime + (chunk.atMs - now) / 1000;
-	const at = placeChunk(wanted, lastEnd, context.currentTime);
+	const at = placeChunk(wanted, stream.lastEnd, context.currentTime);
 	if (at === null) return;
 	const buffer = context.createBuffer(chunk.channels.length, chunk.frames, chunk.sampleRate);
 	chunk.channels.forEach((samples, c) => buffer.copyToChannel(samples, c));
@@ -160,5 +188,5 @@ function play(bytes: ArrayBuffer): void {
 	source.buffer = buffer;
 	source.connect(gain);
 	source.start(at);
-	lastEnd = at + buffer.duration;
+	stream.lastEnd = at + buffer.duration;
 }

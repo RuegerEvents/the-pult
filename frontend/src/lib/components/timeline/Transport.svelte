@@ -29,7 +29,7 @@
 	import { countdownOf, lapOf, locate, now, playCounted, positionOf, recordFrom, stop, takes } from '$lib/stores/timelines.js';
 	import { armArgs, PROGRAMMER, takeSummary } from '$lib/takes.js';
 	import { pageId } from '$lib/stores/takeReview.js';
-	import { monitorSettings, monitorState, setMonitorLevel, toggleListening } from '$lib/stores/monitor.js';
+	import { monitorSettings, monitorStates, setMonitorLevel, toggleListening } from '$lib/stores/monitor.js';
 	import { dropdown } from '$lib/actions.js';
 	import { clock, parsePosition } from '$lib/waveform.js';
 
@@ -53,7 +53,7 @@
 		void showData().timelines.byId(timeline.id).record({ ...args, armedBy: pageId });
 	}
 	/** Whether this tab's speaker is on this timeline: see `stores/monitor.ts`. */
-	const hearing = $derived($monitorSettings.timelineId === timeline.id ? $monitorState : 'off');
+	const hearing = $derived($monitorStates[timeline.id] ?? 'off');
 	let levelMenu = $state(false);
 	/** Held open while the slider is dragged, which can take the mouse out of the menu. */
 	let sliding = $state(false);

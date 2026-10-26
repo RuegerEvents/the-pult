@@ -780,12 +780,12 @@ impl Control {
             }
             TileTarget::Timeline { timeline_id, from_start } => {
                 let running = self.lit.timelines.iter().any(|t| t.id == timeline_id && t.running);
-                // From the beginning always starts it again, running or not, as the
-                // surface's tile does (`surface.ts`); otherwise the key toggles.
-                if from_start {
-                    self.set(field("timelines", timeline_id, "play"), json!({ "at": now_ms(), "fromMs": 0 }), None).await;
-                } else if running {
+                // A toggle, as the surface's tile is (`surface.ts`): running, it stops;
+                // stopped, it plays — from 0:00 when the key says from the beginning.
+                if running {
                     self.set(field("timelines", timeline_id, "stop"), at, None).await;
+                } else if from_start {
+                    self.set(field("timelines", timeline_id, "play"), json!({ "at": now_ms(), "fromMs": 0 }), None).await;
                 } else {
                     self.set(field("timelines", timeline_id, "play"), at, None).await;
                 }
