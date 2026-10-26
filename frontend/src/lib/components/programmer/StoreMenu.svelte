@@ -566,7 +566,7 @@
 								<input class="num" type="number" min="0" step="100" bind:value={cueFadeIn} />
 								<span class="unit">ms</span>
 							</label>
-							<label class="field">
+							<label class="field" title="How long what this cue sets takes to go when the cue ends — going back past it, or Off">
 								<span>Fade out</span>
 								<input class="num" type="number" min="0" step="100" bind:value={cueFadeOut} />
 								<span class="unit">ms</span>

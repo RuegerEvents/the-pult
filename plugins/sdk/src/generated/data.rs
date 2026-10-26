@@ -532,15 +532,17 @@ impl CueEntity {
         self.at.field("follow_mode")
     }
 
-    /// What every capture of this cue takes on the way up, unless it says its own.
+    /// How long this cue takes to come in: every capture it takes, up or down, unless
+    /// the capture says its own.
     ///
     /// PERSISTED.
     pub fn fade_in_ms(&self) -> Field<u32> {
         self.at.field("fade_in_ms")
     }
 
-    /// And on the way down. Zero is not "snap": it means this cue does not split its
-    /// fade, and everything takes the in time in both directions.
+    /// How long what it set takes to go when it ends: going back past it lets go of
+    /// what only it and later cues set, and Off lets go of everything. Zero is the
+    /// show's *letting go* time (`Show::home_fade_ms`).
     ///
     /// PERSISTED.
     pub fn fade_out_ms(&self) -> Field<u32> {

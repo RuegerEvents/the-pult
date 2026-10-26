@@ -199,8 +199,8 @@
 					<tr>
 						<th class="num">Cue</th>
 						<th>Name</th>
-						<th class="ms" title="What this cue's captures take on the way up">In</th>
-						<th class="ms" title="And on the way down. Empty means the in time.">Out</th>
+						<th class="ms" title="How long this cue takes to come in: everything it sets, up or down">In</th>
+						<th class="ms" title="How long what this cue set takes to go when the cue ends — going back past it, or Off. Empty is the show's letting-go time.">Out</th>
 						<th>Curve</th>
 						<th>Follow</th>
 						<th class="count" title="Parameters this cue captures">Caps</th>

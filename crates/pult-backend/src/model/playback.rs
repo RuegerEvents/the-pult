@@ -721,7 +721,8 @@ impl Playback {
                 // reach it, now that Go at the last cue stays there. So everything it
                 // was driving and nothing else is still driving goes home.
                 self.playing.remove(&sequence.id);
-                self.release_sequence(wall_ms, sequence, view);
+                let leaving = previous.and_then(|id| view.cues.get(&id).copied());
+                self.release_sequence(wall_ms, sequence, view, leaving);
                 continue;
             };
             self.playing.insert(sequence.id, cue_id);
@@ -729,7 +730,8 @@ impl Playback {
 
             if let (Some(cue), Some(index)) = (view.cues.get(&cue_id), sequence.active_cue_index) {
                 let anchor = view.anchor_for(sequence, wall_ms);
-                self.take_cue(wall_ms, anchor, index, cue, view, sequence);
+                let leaving = previous.and_then(|id| view.cues.get(&id).copied());
+                self.take_cue(wall_ms, anchor, index, cue, view, sequence, leaving);
             }
         }
     }
@@ -764,6 +766,7 @@ impl Playback {
         cue: &Cue,
         view: &ShowView<'_>,
         sequence: &Sequence,
+        leaving: Option<&Cue>,
     ) {
         // The latest capture of every key, over the stack up to here.
         let mut tracked: HashMap<Key, (&Cue, &pult_schema::types::cue::ParameterCapture)> =
@@ -779,13 +782,14 @@ impl Playback {
         // What only later cues capture goes home — unless something else that is on
         // could still want it, the same rule a release follows.
         let still_driven = view.captured_by_the_sequences_that_are_on(Some(sequence.id));
-        let down = if cue.fade_out_ms > 0 { cue.fade_out_ms } else { cue.fade_in_ms };
         for at in view.captured_by(sequence) {
             if tracked.contains_key(&at) {
                 continue;
             }
             let driven = still_driven.contains(&at);
-            self.let_go(wall_ms, at, view, down, sequence.id, driven);
+            // What a later cue set goes over the out time of the cue being left.
+            let out = out_time(view, leaving, &at);
+            self.let_go(wall_ms, at, view, out, sequence.id, driven);
         }
 
         let mut latest_end = wall_ms;
@@ -884,6 +888,7 @@ impl Playback {
         wall_ms: u64,
         sequence: &Sequence,
         view: &ShowView<'_>,
+        leaving: Option<&Cue>,
     ) {
         let mine = view.captured_by(sequence);
         if mine.is_empty() {
@@ -893,7 +898,9 @@ impl Playback {
 
         for at in mine {
             let driven = still_driven.contains(&at);
-            self.let_go(wall_ms, at, view, view.home_fade_ms, sequence.id, driven);
+            // Off ends the cue that was up, so its out time is how its values go.
+            let out = out_time(view, leaving, &at);
+            self.let_go(wall_ms, at, view, out, sequence.id, driven);
         }
     }
 
@@ -1120,16 +1127,13 @@ impl Playback {
                 // the cue lands rather than fading from a zero nobody vouched for.
                 .unwrap_or_else(|| to.clone());
 
-            // A capture's own time wins; zero means "use the cue's". Which of the two
-            // the parameter takes is decided by where it is going — a split fade is
-            // the whole reason a cue has an out time as well as an in time.
-            let up = if capture.fade_in_ms > 0 { capture.fade_in_ms } else { cue.fade_in_ms };
-            let down = match (capture.fade_out_ms, cue.fade_out_ms) {
-                (0, 0) => up,
-                (0, cue_out) => cue_out,
-                (own, _) => own,
-            };
-            let duration_ms = if descending(&from, &to) { down } else { up };
+            // A capture's own time wins; zero means "use the cue's". The cue's *in*
+            // time, whichever way the parameter is going: a cue's in time is how it
+            // starts, and its out time is how what it set goes when it ends — see
+            // `out_time`. (It used to split by direction, ETC's downtime, which read
+            // as a bug: back into a cue with an out time, every light caught higher
+            // than the cue faded while every one caught lower snapped.)
+            let duration_ms = if capture.fade_in_ms > 0 { capture.fade_in_ms } else { cue.fade_in_ms };
 
             let fade = Fade {
                 fixture_id: capture.fixture_id,
@@ -1333,21 +1337,17 @@ fn unmastered(view: &ShowView<'_>, key: &str, cue_id: Uuid, showing: ParameterVa
     }
 }
 
-/// Is this capture asking the parameter to come down rather than to go up?
-///
-/// Which decides whether it takes the out time or the in time. Only values with an
-/// order to be on can answer: a color has three of them and no agreed way to rank
-/// them, a relay has none at all, and a fixture whose parameter changes kind
-/// mid-show is a mistake rather than a direction. All of those take the in time,
-/// which is the one time they have always taken — so a show that never sets an out
-/// time runs exactly as it did.
-fn descending(from: &ParameterValue, to: &ParameterValue) -> bool {
-    use ParameterValue::*;
-    match (from, to) {
-        (Float(a), Float(b)) => b < a,
-        (Int(a), Int(b)) => b < a,
-        _ => false,
-    }
+/// How long what a cue set takes to go when that cue ends — the sequence going
+/// back past it, or off: the cue's own capture for the key where it says an out
+/// time, then the cue's out time, then the show's *letting go* time.
+fn out_time(view: &ShowView<'_>, leaving: Option<&Cue>, at: &Key) -> u32 {
+    let Some(cue) = leaving else { return view.home_fade_ms };
+    let own = cue
+        .captures
+        .iter()
+        .find(|c| c.fixture_id == at.0 && parameter_key(&c.parameter_kind) == at.1)
+        .map_or(0, |c| c.fade_out_ms);
+    [own, cue.fade_out_ms].into_iter().find(|ms| *ms > 0).unwrap_or(view.home_fade_ms)
 }
 
 #[cfg(test)]

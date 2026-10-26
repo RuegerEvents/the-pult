@@ -595,10 +595,10 @@ fn an_unchanged_fixture_is_not_written_again() {
 
 // ── Split fades ───────────────────────────────────────────────────────────────
 
-/// Two fixtures under one cue, one coming up and one going down, so a single tick
-/// shows both times at once — which is the whole of what an out time is for.
+/// Two fixtures under one cue, one coming up and one going down: both take the cue's
+/// in time, because the in time is how a cue starts. The out time is for its end.
 #[test]
-fn a_cue_with_an_out_time_takes_it_only_where_the_parameter_comes_down() {
+fn a_cue_starts_on_its_in_time_in_both_directions_whatever_its_out_time() {
     let rising = a_fixture();
     let mut falling = a_fixture();
     already_at(&mut falling, "Intensity", ParameterValue::Float(1.0));
@@ -615,10 +615,58 @@ fn a_cue_with_an_out_time_takes_it_only_where_the_parameter_comes_down() {
     pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
     pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
 
-    // Halfway through a one-second in time.
     assert!((as_float(live(&fixtures, rising.id, "Intensity", start + 500)) - 0.5).abs() < 0.001);
-    // An eighth of the way through a four-second out time, from full.
-    assert!((as_float(live(&fixtures, falling.id, "Intensity", start + 500)) - 0.875).abs() < 0.001);
+    assert!((as_float(live(&fixtures, falling.id, "Intensity", start + 500)) - 0.5).abs() < 0.001);
+}
+
+/// Off ends the cue that is up, so what it set goes over that cue's out time.
+#[test]
+fn taking_a_sequence_off_lets_go_over_the_out_time_of_the_cue_that_was_up() {
+    let fixture = a_fixture();
+    let mut cue = a_cue(0, vec![intensity(fixture.id, 1.0)]);
+    cue.fade_out_ms = 2000;
+    let mut fixtures = vec![fixture.clone()];
+    let cues = [cue.clone()];
+    let mut sequences = [a_sequence(&[&cue], Some(0))];
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 0), 1.0, "in time 0: it snaps on");
+
+    sequences[0].active_cue_index = None;
+    pass(&mut playback, 1000, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!((level_of(&fixtures, &[], fixture.id, 1500) - 0.75).abs() < 0.001, "a quarter of two seconds out");
+}
+
+/// Back from a cue to the one before it: what the earlier cue sets itself comes back
+/// on *its* in time — the case found at HHG, where going back to a cue with an out
+/// time faded every light that had been caught higher. What only the later cue set
+/// goes on the later cue's out time, and a capture's own out time wins over its cue's.
+#[test]
+fn going_back_takes_the_earlier_cue_in_and_lets_go_of_the_later_cue_out() {
+    let room = a_fixture();
+    let extra = a_fixture();
+    let other = a_fixture();
+    let mut stimmung = a_cue(0, vec![intensity(room.id, 0.4)]);
+    stimmung.fade_out_ms = 500;
+    let mut own = intensity(other.id, 1.0);
+    own.fade_out_ms = 1000;
+    let mut flicker = a_cue(0, vec![intensity(room.id, 1.0), intensity(extra.id, 1.0), own]);
+    flicker.fade_out_ms = 2000;
+    let mut fixtures = vec![room.clone(), extra.clone(), other.clone()];
+    let cues = [stimmung.clone(), flicker.clone()];
+    let mut sequences = [a_sequence(&[&stimmung, &flicker], Some(1))];
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], room.id, 0), 1.0);
+
+    sequences[0].active_cue_index = Some(0);
+    sequences[0].went_at = Some(WALL + 1000);
+    pass(&mut playback, 1000, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!((level_of(&fixtures, &[], room.id, 1000) - 0.4).abs() < 0.001, "Stimmung's in time is 0: a snap");
+    assert!((level_of(&fixtures, &[], extra.id, 1500) - 0.75).abs() < 0.001, "Flicker's out time, 2 s");
+    assert!((level_of(&fixtures, &[], other.id, 1500) - 0.5).abs() < 0.001, "the capture's own out time, 1 s");
 }
 
 /// The property every show written before this change relies on: an unset out time
@@ -641,31 +689,6 @@ fn a_cue_with_no_out_time_fades_one_way_in_both_directions() {
     assert!(
         (as_float(live(&fixtures, fixture.id, "Intensity", start + 500)) - 0.5).abs() < 0.001,
         "the in time, taken downwards",
-    );
-}
-
-#[test]
-fn a_captures_own_out_time_wins_over_the_cues() {
-    let mut fixture = a_fixture();
-    already_at(&mut fixture, "Intensity", ParameterValue::Float(1.0));
-
-    let mut capture = intensity(fixture.id, 0.0);
-    capture.fade_out_ms = 2000;
-    let mut cue = a_cue(1000, vec![capture]);
-    cue.fade_out_ms = 8000;
-
-    let mut fixtures = vec![fixture.clone()];
-    let cues = [cue.clone()];
-    let sequences = [a_sequence(&[&cue], Some(0))];
-
-    let mut playback = Playback::default();
-    let start = 0;
-    pass(&mut playback, start, &mut fixtures, &sequences, &cues, &[], &[]);
-    pass(&mut playback, start + 500, &mut fixtures, &sequences, &cues, &[], &[]);
-
-    assert!(
-        (as_float(live(&fixtures, fixture.id, "Intensity", start + 500)) - 0.75).abs() < 0.001,
-        "a quarter of the way through two seconds, not a sixteenth of eight",
     );
 }
 

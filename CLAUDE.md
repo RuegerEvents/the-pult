@@ -956,12 +956,12 @@ key only later cues capture, over the cue's down time; jumping forward applies w
 the cues in between set. Tracking playback, deliberately, and the reason a blackout cue
 still has to zero everything by name.
 
-**A cue fades two ways.** `fade_in_ms` is what a parameter takes going up and
-`fade_out_ms` what it takes coming down, on the cue and per capture, the capture
-winning. Zero out means "this cue does not split its fade" rather than "snap", so a
-show that never sets one runs exactly as it did. Only values with an order to be on
-can be going down — a color has three and a relay none, and those take the in time
-rather than have the console guess a ranking.
+**A cue fades in when it starts and out when it ends.** `fade_in_ms` is what everything
+a cue takes moves on, up or down; `fade_out_ms` is how what it set goes when the cue
+ends — the sequence going back past it, or Off — falling back to the show's *letting
+go* time. Per capture as well as per cue, the capture winning. It used to split by
+direction (ETC's downtime), and at HHG that read as a bug: back into a cue with an out
+time, every light caught higher than the cue faded and every one caught lower snapped.
 
 **And it fades in a shape, asked for in the same three steps.** The capture's `easing`,
 then the cue's, then the show's `fade_curves` — `FadeCurves::resolve` in `pult-schema`,

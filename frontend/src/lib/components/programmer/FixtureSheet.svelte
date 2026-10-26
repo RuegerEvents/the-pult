@@ -549,14 +549,14 @@
 						onchange={(e) => editCapture({ fade_in_ms: Number(e.currentTarget.value) || 0 })}
 					/>
 				</label>
-				<label>
+				<label title="How long this value takes to go when its cue ends. Empty is the cue's out time.">
 					out
 					<input
 						class="num"
 						type="number"
 						min="0"
 						step="100"
-						placeholder="in"
+						placeholder="cue"
 						value={capture.fade_out_ms || ''}
 						onchange={(e) => editCapture({ fade_out_ms: Number(e.currentTarget.value) || 0 })}
 					/>

@@ -265,10 +265,12 @@ pub struct Cue {
     pub number: f64,
     pub captures: Vec<ParameterCapture>,
     pub follow_mode: FollowMode,
-    /// What every capture of this cue takes on the way up, unless it says its own.
+    /// How long this cue takes to come in: every capture it takes, up or down, unless
+    /// the capture says its own.
     pub fade_in_ms: u32,
-    /// And on the way down. Zero is not "snap": it means this cue does not split its
-    /// fade, and everything takes the in time in both directions.
+    /// How long what it set takes to go when it ends: going back past it lets go of
+    /// what only it and later cues set, and Off lets go of everything. Zero is the
+    /// show's *letting go* time (`Show::home_fade_ms`).
     pub fade_out_ms: u32,
     /// What shape this cue's captures fade on, unless one of them says its own.
     /// `None` is the show's default for each parameter's group, which is what every
@@ -1722,12 +1724,11 @@ pub struct ParameterCapture {
     pub fixture_id: Uuid,
     pub parameter_kind: ParameterKind,
     pub value: ParameterValue,
-    /// How long this capture takes when the parameter is going *up*, and when it is
-    /// going nowhere a console can rank — a color, a relay. Zero means the cue's.
+    /// How long this capture takes when its cue is taken, whichever way the parameter
+    /// is going. Zero means the cue's in time.
     pub fade_in_ms: u32,
-    /// The same, for a parameter coming *down*. Zero means the cue's out time, and a
-    /// cue with no out time either means the in time: a show that never says
-    /// otherwise fades one way in both directions, as it always has.
+    /// How long it takes to go when its cue ends — the sequence going back past it,
+    /// or off. Zero means the cue's out time.
     pub fade_out_ms: u32,
     pub delay_in_ms: u32,
     /// A periodic instruction instead of a destination. When this is set the capture
