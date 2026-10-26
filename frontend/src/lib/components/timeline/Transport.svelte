@@ -211,17 +211,19 @@
 		     A tap is what lets a browser start sound, so a reloaded page is "armed". -->
 		<button
 			class="chip"
-			class:on={hearing === 'listening'}
+			class:on={hearing === 'listening' || hearing === 'loading'}
 			class:armed={hearing === 'armed'}
-			aria-pressed={hearing === 'listening'}
+			aria-pressed={hearing === 'listening' || hearing === 'loading'}
 			title={hearing === 'armed'
 				? 'Tap to carry on listening on this tab'
 				: hearing === 'no-clock'
 					? 'Waiting for the station clock before anything can be heard in step'
-					: 'Hear this timeline on this tab, in step with the playhead. Only this speaker: the show is never played from a browser'}
+					: hearing === 'loading'
+						? 'The station is still loading some of this timeline’s sound; it joins in when it is ready'
+						: 'Hear this timeline on this tab, in step with the playhead. Only this speaker: the show is never played from a browser'}
 			onclick={() => toggleListening(timeline.id)}
 		>
-			<Ear size={12} />listen
+			<Ear size={12} />{hearing === 'loading' ? 'loading…' : 'listen'}
 		</button>
 		{#if hearing !== 'off'}
 			<input

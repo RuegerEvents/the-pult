@@ -266,3 +266,33 @@ async fn a_listening_page_hears_the_running_timeline_ahead_of_the_clock() {
     manager.feed_monitors(now + 1_000).await;
     assert!(manager.monitors.is_empty(), "a page that went is not rendered for");
 }
+
+/// A page starting to listen mid-show must never stall the station playing the show:
+/// its chase, its anchor writes and its node streams all run on the manager's loop. So
+/// a file not decoded here is loaded on a task of its own and the tick returns at once,
+/// its chunks saying "loading". Here the load can never finish — the file is in no
+/// store and the engine asked for peers answers nobody — and the tick still returns.
+#[tokio::test]
+async fn a_listener_on_an_undecoded_timeline_does_not_hold_up_the_tick() {
+    let mut manager = a_manager(NodeId(Uuid::from_u128(1)), false);
+    let pool = std::sync::Arc::new(crate::infra::showfile::open_in_memory().await.unwrap());
+    let dir = std::env::temp_dir().join(format!("pult-monitor-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    manager.assets = Some(crate::infra::assets::AssetStore::new(Some(dir.clone()), pool));
+
+    let now = 1_000_000;
+    let mut playing = a_timeline(None);
+    playing.clips = vec![a_clip(0, 0, None)];
+    playing.running = true;
+    playing.anchor_ms = now - 2_000;
+    manager.timelines = vec![playing];
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(monitor::QUEUE);
+    manager.monitors.push(monitor::Listener::new(None, tx));
+    let ticked = tokio::time::timeout(std::time::Duration::from_millis(200), manager.feed_monitors(now)).await;
+    assert!(ticked.is_ok(), "the tick waited on a file");
+    let chunk = pult_audio::monitor::decode(&rx.try_recv().expect("a chunk")).unwrap();
+    assert!(chunk.loading, "and the page is told the file is still coming");
+    assert!(chunk.samples.iter().all(|s| *s == 0.0), "without the clip in it meanwhile");
+    let _ = std::fs::remove_dir_all(dir);
+}

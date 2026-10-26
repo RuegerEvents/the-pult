@@ -7517,6 +7517,14 @@ goes takes its receiver with it, and the next chunk sent to it finds that out. A
 that falls a second behind has chunks dropped rather than queued. A file a monitor cannot
 get is tried once per listener, or a missing asset would be fetched twenty times a second.
 
+**And a monitor never waits on a file.** The loop it renders on is the one that runs the
+chase, the anchor writes and the node streams, so a tablet starting to listen mid-show
+must not stall the station playing it, not even once. A clip whose file is not decoded
+here is fetched and decoded on a task of its own, into the cache the station plays from,
+and left out of the chunks until it is there. Meanwhile the chunks carry a *loading*
+flag and the chip says so. Rendering a chunk is not `async` at all, which is how that
+stays true.
+
 **A tap starts the sound.** Browsers start an `AudioContext` only from a gesture, and
 Safari strictly so. A page that was listening when it reloaded is therefore *armed*: the
 chip is dashed and the next tap carries on.

@@ -707,24 +707,7 @@ impl AudioManager {
     /// The same path a plugin bundle takes, and for the same reason: a file uploaded at
     /// front of house has to reach the station backstage, and it cannot ride the oplog.
     async fn asset_bytes(&self, sha: &str) -> Result<Vec<u8>, String> {
-        let store = self.assets.as_ref().ok_or_else(|| "no show is open".to_string())?;
-        if let Ok(Some(asset)) = store.get(sha).await {
-            return Ok(asset.bytes);
-        }
-        let peers = crate::infra::assets::peer_addresses(&self.engine, self.node_id.0).await;
-        if peers.is_empty() {
-            return Err("this station has not got the audio, and there is no peer to ask".into());
-        }
-        match crate::infra::assets::fetch_from_peers(store, sha, &peers).await {
-            Ok(crate::infra::assets::Fetched::Got(asset)) => Ok(asset.bytes),
-            Ok(crate::infra::assets::Fetched::NobodyHasIt) => {
-                Err("no station in this session has the audio file".into())
-            }
-            Ok(crate::infra::assets::Fetched::Unreachable(n)) => {
-                Err(format!("{n} station(s) could not be asked for the audio"))
-            }
-            Err(e) => Err(format!("the audio could not be fetched: {e}")),
-        }
+        asset_bytes(self.assets.as_ref(), &self.engine, self.node_id, sha).await
     }
 
     // ── Steering ──────────────────────────────────────────────────────────────
@@ -1341,6 +1324,32 @@ fn frames_per_second(rate: pult_audio::LtcRate) -> f64 {
 /// unlocked between every frame.
 fn patience_ms(rate: LtcRate) -> u32 {
     (4_000.0 / frames_per_second(ltc_rate(rate))).round() as u32
+}
+
+/// An asset's bytes, from here or from a peer. Free of the manager so a monitor can
+/// fetch on a task of its own, off the manager's loop; see [`monitor`].
+async fn asset_bytes(
+    assets: Option<&AssetStore>,
+    engine: &EngineHandle,
+    me: NodeId,
+    sha: &str,
+) -> Result<Vec<u8>, String> {
+    let store = assets.ok_or_else(|| "no show is open".to_string())?;
+    if let Ok(Some(asset)) = store.get(sha).await {
+        return Ok(asset.bytes);
+    }
+    let peers = crate::infra::assets::peer_addresses(engine, me.0).await;
+    if peers.is_empty() {
+        return Err("this station has not got the audio, and there is no peer to ask".into());
+    }
+    match crate::infra::assets::fetch_from_peers(store, sha, &peers).await {
+        Ok(crate::infra::assets::Fetched::Got(asset)) => Ok(asset.bytes),
+        Ok(crate::infra::assets::Fetched::NobodyHasIt) => Err("no station in this session has the audio file".into()),
+        Ok(crate::infra::assets::Fetched::Unreachable(n)) => {
+            Err(format!("{n} station(s) could not be asked for the audio"))
+        }
+        Err(e) => Err(format!("the audio could not be fetched: {e}")),
+    }
 }
 
 #[cfg(test)]

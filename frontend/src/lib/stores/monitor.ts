@@ -32,7 +32,9 @@ export type MonitorSettings = {
 	level: number;
 };
 
-export type MonitorState = 'off' | 'armed' | 'listening' | 'no-clock';
+/** `loading` is listening while the station is still fetching or decoding a file the
+ *  timeline plays, which is left out of the sound until it is ready. */
+export type MonitorState = 'off' | 'armed' | 'listening' | 'loading' | 'no-clock';
 
 function read(): MonitorSettings {
 	const fallback: MonitorSettings = { timelineId: null, level: 0.8 };
@@ -61,7 +63,8 @@ let retry: ReturnType<typeof setTimeout> | null = null;
 /** Listen to a timeline, from a tap, or stop when it is the one already listened to. */
 export function toggleListening(timelineId: string): void {
 	const { timelineId: current } = get(monitorSettings);
-	if (current === timelineId && get(monitorState) === 'listening') {
+	const state = get(monitorState);
+	if (current === timelineId && (state === 'listening' || state === 'loading')) {
 		stopListening();
 		return;
 	}
@@ -132,7 +135,8 @@ function play(bytes: ArrayBuffer): void {
 		monitorState.set('no-clock');
 		return;
 	}
-	if (get(monitorState) === 'no-clock') monitorState.set('listening');
+	const state = chunk.loading ? 'loading' : 'listening';
+	if (get(monitorState) !== state) monitorState.set(state);
 	const wanted = context.currentTime + (chunk.atMs - now) / 1000;
 	const at = placeChunk(wanted, lastEnd, context.currentTime);
 	if (at === null) return;

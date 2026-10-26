@@ -16,8 +16,11 @@
 //!
 //! ```text
 //! magic "PLMN" | u16 version | u16 channels | u32 sample rate | f64 at_ms | u32 frames
-//! | frames × channels × i16, interleaved
+//! | u16 flags | frames × channels × i16, interleaved
 //! ```
+//!
+//! Flag 1 is *loading*: a file the chunk covers is still being fetched or decoded on
+//! the rendering station, so the page can say why it hears less than the timeline plays.
 
 use thiserror::Error;
 
@@ -33,7 +36,8 @@ pub const CHUNK_MS: u64 = 50;
 /// one before its moment arrives; a quarter of a second covers a busy tablet's
 /// socket, and a locate inside it is heard late by at most that much.
 pub const LEAD_MS: u64 = 250;
-const HEADER: usize = 4 + 2 + 2 + 4 + 8 + 4;
+const HEADER: usize = 4 + 2 + 2 + 4 + 8 + 4 + 2;
+const LOADING: u16 = 1;
 
 /// Frames in one chunk at [`SAMPLE_RATE`].
 pub const fn chunk_frames() -> usize {
@@ -46,6 +50,8 @@ pub struct Chunk {
     pub at_ms: f64,
     pub channels: usize,
     pub sample_rate: u32,
+    /// A file this chunk covers is still loading on the station, and is not in it.
+    pub loading: bool,
     pub samples: Vec<f32>,
 }
 
@@ -69,6 +75,7 @@ pub fn encode(chunk: &Chunk) -> Vec<u8> {
     out.extend_from_slice(&chunk.sample_rate.to_le_bytes());
     out.extend_from_slice(&chunk.at_ms.to_le_bytes());
     out.extend_from_slice(&(frames as u32).to_le_bytes());
+    out.extend_from_slice(&(if chunk.loading { LOADING } else { 0 }).to_le_bytes());
     for sample in &chunk.samples[..frames * channels] {
         let s = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
         out.extend_from_slice(&s.to_le_bytes());
@@ -93,6 +100,7 @@ pub fn decode(bytes: &[u8]) -> Result<Chunk, ChunkError> {
     let sample_rate = u32_at(8);
     let at_ms = f64::from_le_bytes(bytes[12..20].try_into().unwrap());
     let frames = u32_at(20) as usize;
+    let loading = u16_at(24) & LOADING != 0;
     let body = &bytes[HEADER..];
     if body.len() < frames * channels * 2 {
         return Err(ChunkError::Short);
@@ -101,7 +109,7 @@ pub fn decode(bytes: &[u8]) -> Result<Chunk, ChunkError> {
         .chunks_exact(2)
         .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / i16::MAX as f32)
         .collect();
-    Ok(Chunk { at_ms, channels, sample_rate, samples })
+    Ok(Chunk { at_ms, channels, sample_rate, loading, samples })
 }
 
 /// The chunks due between where the stream has got to and `now + LEAD_MS`, as the
@@ -129,10 +137,11 @@ mod tests {
 
     #[test]
     fn a_chunk_comes_back_as_it_went() {
-        let chunk = Chunk { at_ms: 12_345.5, channels: 2, sample_rate: SAMPLE_RATE, samples: vec![0.0, 1.0, -1.0, 0.5] };
+        let chunk = Chunk { at_ms: 12_345.5, channels: 2, sample_rate: SAMPLE_RATE, loading: true, samples: vec![0.0, 1.0, -1.0, 0.5] };
         let back = decode(&encode(&chunk)).unwrap();
         assert_eq!(back.at_ms, 12_345.5);
         assert_eq!(back.channels, 2);
+        assert!(back.loading);
         assert_eq!(back.samples.len(), 4);
         for (a, b) in chunk.samples.iter().zip(&back.samples) {
             assert!((a - b).abs() < 1.0 / 16_000.0, "{a} {b}");
@@ -142,10 +151,10 @@ mod tests {
     #[test]
     fn what_is_not_a_chunk_is_refused() {
         assert_eq!(decode(b"PLMN"), Err(ChunkError::Short));
-        let mut bytes = encode(&Chunk { at_ms: 0.0, channels: 2, sample_rate: SAMPLE_RATE, samples: vec![0.0; 4] });
+        let mut bytes = encode(&Chunk { at_ms: 0.0, channels: 2, sample_rate: SAMPLE_RATE, loading: false, samples: vec![0.0; 4] });
         bytes[0] = b'X';
         assert_eq!(decode(&bytes), Err(ChunkError::Magic));
-        let mut bytes = encode(&Chunk { at_ms: 0.0, channels: 2, sample_rate: SAMPLE_RATE, samples: vec![0.0; 4] });
+        let mut bytes = encode(&Chunk { at_ms: 0.0, channels: 2, sample_rate: SAMPLE_RATE, loading: false, samples: vec![0.0; 4] });
         bytes.truncate(bytes.len() - 1);
         assert_eq!(decode(&bytes), Err(ChunkError::Short));
     }

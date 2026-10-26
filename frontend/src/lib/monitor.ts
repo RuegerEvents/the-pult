@@ -11,11 +11,19 @@
  */
 
 /** One chunk, its channels apart, the way an `AudioBuffer` wants them. */
-export type MonitorChunk = { atMs: number; sampleRate: number; frames: number; channels: Float32Array<ArrayBuffer>[] };
+export type MonitorChunk = {
+	atMs: number;
+	sampleRate: number;
+	frames: number;
+	/** A file the chunk covers is still loading on the station, and is not in it. */
+	loading: boolean;
+	channels: Float32Array<ArrayBuffer>[];
+};
 
 const MAGIC = 'PLMN';
 const VERSION = 1;
-const HEADER = 24;
+const HEADER = 26;
+const LOADING = 1;
 
 /** A chunk off the wire, or `null` for anything that is not one this page can read. */
 export function decodeChunk(bytes: ArrayBuffer): MonitorChunk | null {
@@ -27,6 +35,7 @@ export function decodeChunk(bytes: ArrayBuffer): MonitorChunk | null {
 	const sampleRate = view.getUint32(8, true);
 	const atMs = view.getFloat64(12, true);
 	const frames = view.getUint32(20, true);
+	const loading = (view.getUint16(24, true) & LOADING) !== 0;
 	if (count === 0 || bytes.byteLength < HEADER + frames * count * 2) return null;
 	const channels = Array.from({ length: count }, () => new Float32Array(frames));
 	let at = HEADER;
@@ -36,7 +45,7 @@ export function decodeChunk(bytes: ArrayBuffer): MonitorChunk | null {
 			at += 2;
 		}
 	}
-	return { atMs, sampleRate, frames, channels };
+	return { atMs, sampleRate, frames, loading, channels };
 }
 
 /** How close to where the last chunk ended a chunk may be told to start and still be

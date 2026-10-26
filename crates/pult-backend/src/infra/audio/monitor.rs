@@ -24,6 +24,9 @@
 //! that goes takes its receiver with it, and the next chunk sent to it finds that out.
 //! Nothing expires.
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
 use pult_audio::monitor::{self, Chunk, CHANNELS, SAMPLE_RATE};
 use pult_schema::types::timeline::Timeline;
 use tokio::sync::mpsc;
@@ -45,17 +48,26 @@ pub struct Listener {
     /// Files this page's monitor has asked for that are not decoded here. Each is
     /// tried once, or a file no station can supply would be fetched twenty times a
     /// second for as long as somebody listened.
-    tried: std::collections::HashSet<String>,
+    tried: HashSet<String>,
+    /// Of those, the ones still being fetched and decoded, which is what makes a chunk
+    /// say "loading". The task doing it takes its sha out when it is done either way.
+    loading: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Listener {
     pub fn new(timeline: Option<Uuid>, chunks: mpsc::Sender<Vec<u8>>) -> Self {
-        Listener { timeline, chunks, next: None, tried: Default::default() }
+        Listener { timeline, chunks, next: None, tried: Default::default(), loading: Default::default() }
     }
 }
 
 impl AudioManager {
     /// Render and send what each listening page is owed, up to a lead ahead of `now`.
+    ///
+    /// **Never waits on a file.** A tablet starting to listen mid-show must not stall
+    /// the station playing the show — its chase, its anchor writes, its node streams
+    /// all run on this loop. A clip whose file is not decoded here is fetched and
+    /// decoded on a task of its own, into the shared cache, and left out of the chunks
+    /// until it is there; the chunks say "loading" meanwhile.
     pub(super) async fn feed_monitors(&mut self, now: u64) {
         if self.monitors.is_empty() {
             return;
@@ -66,8 +78,9 @@ impl AudioManager {
             let (due, next) = monitor::due(listener.next, now);
             listener.next = Some(next);
             for at in due {
-                let Some(samples) = self.monitor_chunk(listener.timeline, &mut listener.tried, at).await else { continue };
-                let bytes = monitor::encode(&Chunk { at_ms: at as f64, channels: CHANNELS, sample_rate: SAMPLE_RATE, samples });
+                let Some((samples, loading)) = self.monitor_chunk(listener, at) else { continue };
+                let chunk = Chunk { at_ms: at as f64, channels: CHANNELS, sample_rate: SAMPLE_RATE, loading, samples };
+                let bytes = monitor::encode(&chunk);
                 if listener.chunks.try_send(bytes).is_err() {
                     debug!("[audio] a listening page is behind; a monitor chunk was dropped");
                 }
@@ -78,9 +91,11 @@ impl AudioManager {
         self.monitors = listeners;
     }
 
-    /// One chunk of sound at show millisecond `at`, or `None` when nothing it covers is
-    /// running — a page is sent silence by being sent nothing.
-    async fn monitor_chunk(&mut self, only: Option<Uuid>, tried: &mut std::collections::HashSet<String>, at: u64) -> Option<Vec<f32>> {
+    /// One chunk of sound at show millisecond `at`, and whether a file it needs is still
+    /// loading — or `None` when nothing it covers is running, which a page is told by
+    /// being sent nothing. Not `async`, and that is the guarantee: nothing in it waits.
+    fn monitor_chunk(&self, listener: &mut Listener, at: u64) -> Option<(Vec<f32>, bool)> {
+        let only = listener.timeline;
         let timelines: Vec<Timeline> = self
             .timelines
             .iter()
@@ -91,16 +106,16 @@ impl AudioManager {
             return None;
         }
         let mut mixer = pult_audio::Mixer::new(CHANNELS, SAMPLE_RATE, timelines.len());
+        let mut loading = false;
         for timeline in &timelines {
             let mut voices = Vec::new();
             for clip in &timeline.clips {
-                let decoded = match self.cache.get(&clip.asset) {
-                    Some(decoded) => decoded,
-                    None if tried.insert(clip.asset.clone()) => {
-                        let Ok(decoded) = self.decoded(&clip.asset).await else { continue };
-                        decoded
+                let Some(decoded) = self.cache.get(&clip.asset) else {
+                    if listener.tried.insert(clip.asset.clone()) {
+                        self.load_for_monitor(&clip.asset, listener.loading.clone());
                     }
-                    None => continue,
+                    loading |= listener.loading.lock().is_ok_and(|l| l.contains(&clip.asset));
+                    continue;
                 };
                 let Ok(routes) = pult_audio::mix::route(decoded.channels as usize, &[1, 2], CHANNELS) else { continue };
                 voices.push(pult_audio::Voice {
@@ -126,6 +141,31 @@ impl AudioManager {
         }
         let mut samples = vec![0.0; monitor::chunk_frames() * CHANNELS];
         mixer.render(&mut samples);
-        Some(samples)
+        Some((samples, loading))
+    }
+
+    /// Fetch and decode a file for a monitor on a task of its own, into the cache the
+    /// station plays from. The decode itself is on a blocking thread (`AudioCache`).
+    fn load_for_monitor(&self, sha: &str, loading: Arc<Mutex<HashSet<String>>>) {
+        if self.refused.contains(sha) {
+            return;
+        }
+        if let Ok(mut l) = loading.lock() {
+            l.insert(sha.to_string());
+        }
+        let (sha, cache, assets, engine, me) =
+            (sha.to_string(), self.cache.clone(), self.assets.clone(), self.engine.clone(), self.node_id);
+        tokio::spawn(async move {
+            let done = match super::asset_bytes(assets.as_ref(), &engine, me, &sha).await {
+                Ok(bytes) => cache.decode(&sha, bytes).await.map(|_| ()),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = done {
+                debug!("[audio] a monitor could not load {}: {e}", &sha[..8.min(sha.len())]);
+            }
+            if let Ok(mut l) = loading.lock() {
+                l.remove(&sha);
+            }
+        });
     }
 }
