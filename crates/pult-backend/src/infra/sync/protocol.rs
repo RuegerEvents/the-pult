@@ -45,6 +45,12 @@ pub enum SyncMessage {
         /// replaying the operations it missed and sending a whole snapshot.
         #[serde(default)]
         clock: VectorClock,
+        /// The joiner has just started and has not been linked since, so its clock is
+        /// a promise its state cannot keep: see [`super::peer::Freshness`]. Defaulted,
+        /// so a station that does not know the field reads it as `false` and behaves as
+        /// it always did.
+        #[serde(default)]
+        fresh: bool,
     },
     HelloAck {
         accepted: bool,
@@ -57,6 +63,9 @@ pub enum SyncMessage {
         #[serde(default)]
         clock: VectorClock,
         rejection_reason: Option<String>,
+        /// The responder has just started; the joiner sends it a snapshot.
+        #[serde(default)]
+        fresh: bool,
     },
     LeaderChanged {
         new_leader_node_id: NodeId,
@@ -414,6 +423,7 @@ mod tests {
                 session_id: uuid::Uuid::new_v4(),
                 show_id: uuid::Uuid::new_v4(),
                 clock: Default::default(),
+                fresh: false,
             },
         )
         .await

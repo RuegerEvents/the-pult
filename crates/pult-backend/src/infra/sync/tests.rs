@@ -47,6 +47,17 @@ async fn a_node() -> Node {
 /// estimate to converge on. Skewing what one of them *answers* is what gives a test a
 /// disagreement to watch being measured.
 async fn a_node_reporting_skew(skew_ms: i64) -> Node {
+    a_node_built(skew_ms, false).await
+}
+
+/// A node that has been up and linked for a while, so it is not fresh: see
+/// `peer::Freshness`. Every other node a test makes has just started, and two of those
+/// catch each other up the way stations always did.
+async fn a_node_already_linked() -> Node {
+    a_node_built(0, true).await
+}
+
+async fn a_node_built(skew_ms: i64, linked: bool) -> Node {
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let id = NodeId(Uuid::new_v4());
     let (tx, rx) = tokio::sync::mpsc::channel(256);
@@ -55,6 +66,9 @@ async fn a_node_reporting_skew(skew_ms: i64) -> Node {
     let (mut manager, sync, addr) =
         SyncManager::bind(id, 0, engine.clone(), None).await.expect("bind an ephemeral sync port");
     manager.reporting_clock_skew(skew_ms);
+    if linked {
+        manager.watched.fresh.linked();
+    }
     let sync_mgr_links = manager.peer_links();
     tokio::spawn(manager.run());
 
@@ -386,6 +400,35 @@ async fn a_brand_new_node_is_sent_a_snapshot() {
         name_of(&joiner, seq.id).await.as_deref() == Some("Act 1")
     })
     .await;
+}
+
+/// A station restarted mid-show: its clock, rebuilt from its oplog, says it has seen
+/// the leader's writes, but what those writes did to SYNCED state went with its
+/// process. Replaying only what came after that clock left it without the row; having
+/// just started, it is sent the whole show instead — whichever side dials.
+#[tokio::test]
+async fn a_station_that_has_just_started_is_sent_a_snapshot_whatever_its_clock_says() {
+    for joiner_dials in [true, false] {
+        let leader = a_node_already_linked().await;
+        let seq = a_sequence("Act 1");
+        create(&leader, &seq).await;
+
+        // The restarted station: it has the leader's clock and none of its state.
+        let restarted = a_node().await;
+        let unrelated = seq_path(Uuid::new_v4(), "name");
+        peer_write(&restarted, leader.id, leader.engine.get_clock().await, unrelated, "x").await;
+        assert_eq!(name_of(&restarted, seq.id).await, None, "the row went with the process");
+
+        if joiner_dials {
+            restarted.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("answers");
+        } else {
+            leader.sync.connect_peer(vec![restarted.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("answers");
+        }
+        eventually("the restarted station to have the show again", || async {
+            name_of(&restarted, seq.id).await.as_deref() == Some("Act 1")
+        })
+        .await;
+    }
 }
 
 /// The point of the oplog: a node that was connected, missed a few writes, and came

@@ -90,6 +90,52 @@ pub struct Watched {
     /// *answers* is what gives a test a disagreement to watch being measured, without
     /// asserting on a corrected clock that both of them share.
     pub report_skew_ms: i64,
+    /// Whether this station has just started, which decides how its first link
+    /// catches it up.
+    pub fresh: Freshness,
+}
+
+/// A station that has just started, and has not been linked to a peer since.
+///
+/// **Its vector clock says more than its state does.** The clock is rebuilt from the
+/// oplog on disk, so it counts every operation this station ever applied — but the
+/// SYNCED half of what those operations did lived only in memory and went with the
+/// process: the programmer, what each sequence has up, a timeline's anchor and whether
+/// it is recording. Rejoining with that clock asked only for what came after it, so a
+/// station restarted mid-programming came back with no programmer at all, failed every
+/// write to an entry it no longer held ("path not found", 72 of them in four
+/// milliseconds on the audio laptop at the gig), and drew its timelines from a
+/// different show than its peers.
+///
+/// So a fresh station's first link is a **snapshot** from the side that is not fresh,
+/// whichever of them dialed. Two minutes, because a restarted station finds its
+/// session in about ten seconds, and a station that has been running alone for longer
+/// than that holds work of its own that a snapshot would throw away. Two fresh
+/// stations — a whole venue powered up at once — replay as they always did.
+#[derive(Clone)]
+pub struct Freshness {
+    started: std::time::Instant,
+    linked: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Default for Freshness {
+    fn default() -> Self {
+        Freshness { started: std::time::Instant::now(), linked: Default::default() }
+    }
+}
+
+impl Freshness {
+    /// How long after starting a station still counts as fresh, linked or not.
+    pub const FOR: std::time::Duration = std::time::Duration::from_secs(120);
+
+    pub fn is_fresh(&self) -> bool {
+        !self.linked.load(std::sync::atomic::Ordering::Relaxed) && self.started.elapsed() < Self::FOR
+    }
+
+    /// A link has been made; from now on this station holds state worth keeping.
+    pub fn linked(&self) {
+        self.linked.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Spawns an outbound peer connection task.
@@ -122,17 +168,19 @@ pub async fn spawn_outbound(
             show_id,
             // What we already know, so the peer can send us only the difference.
             clock: engine.get_clock().await,
+            fresh: watched.fresh.is_fresh(),
         },
     )
     .await?;
 
     // Wait for HelloAck
-    let (peer_node_id, peer_clock) = match read_frame(&mut read_half).await? {
-        SyncMessage::HelloAck { accepted: true, node_id, leader_node_id: remote_leader, clock, .. } => {
+    let we_are_fresh = watched.fresh.is_fresh();
+    let (peer_node_id, peer_clock, peer_fresh) = match read_frame(&mut read_half).await? {
+        SyncMessage::HelloAck { accepted: true, node_id, leader_node_id: remote_leader, clock, fresh, .. } => {
             info!("[sync] connected to peer {}, leader={}", node_id.0, remote_leader.0);
             // The peer we are talking to, not the leader. Keying the connection by the
             // leader made every node connected to one leader collide in the peer map.
-            (node_id, clock)
+            (node_id, clock, fresh)
         }
         SyncMessage::HelloAck { accepted: false, rejection_reason, .. } => {
             anyhow::bail!("peer rejected handshake: {:?}", rejection_reason);
@@ -142,12 +190,17 @@ pub async fn spawn_outbound(
 
     // Catch-up runs both ways. A node that reconnects is not always the stale one:
     // it may have been writing while it was away.
-    if let Some(operations) = engine.operations_since(peer_clock).await {
+    if peer_fresh && !we_are_fresh {
+        // It has just started and lost what it held in memory; see `Freshness`.
+        info!("[sync] peer {} has just started, sending it a snapshot", peer_node_id.0);
+        write_frame(&mut write_half, &SyncMessage::StateSnapshot { state: engine.get_snapshot().await }).await?;
+    } else if let Some(operations) = engine.operations_since(peer_clock).await {
         if !operations.is_empty() {
             debug!("[sync] replaying {} operations to peer {}", operations.len(), peer_node_id.0);
             write_frame(&mut write_half, &SyncMessage::OperationBatch { operations }).await?;
         }
     }
+    watched.fresh.linked();
 
     let to_manager = on_lost.clone();
     tokio::spawn(async move {
@@ -213,8 +266,9 @@ async fn handle_inbound(
     let mut write_half = Counted::new(write_half, bytes.clone());
 
     // Wait for Hello
-    let (peer_node_id, peer_clock) = match read_frame(&mut read_half).await? {
-        SyncMessage::Hello { node_id, protocol_version, clock, .. } => {
+    let we_are_fresh = watched.fresh.is_fresh();
+    let (peer_node_id, peer_clock, peer_fresh) = match read_frame(&mut read_half).await? {
+        SyncMessage::Hello { node_id, protocol_version, clock, fresh, .. } => {
             if protocol_version != PROTOCOL_VERSION {
                 write_frame(
                     &mut write_half,
@@ -226,12 +280,13 @@ async fn handle_inbound(
                         rejection_reason: Some(format!(
                             "protocol version mismatch: got {protocol_version}, expected {PROTOCOL_VERSION}"
                         )),
+                        fresh: false,
                     },
                 )
                 .await?;
                 anyhow::bail!("protocol version mismatch from {addr}");
             }
-            (node_id, clock)
+            (node_id, clock, fresh)
         }
         other => anyhow::bail!("expected Hello from {addr}, got {:?}", other),
     };
@@ -245,13 +300,18 @@ async fn handle_inbound(
             leader_node_id,
             clock: engine.get_clock().await,
             rejection_reason: None,
+            // Just started here, so the joiner sends the snapshot; see `Freshness`.
+            fresh: we_are_fresh,
         },
     )
     .await?;
 
     // Bring the joiner up to date, replaying what it missed where that is cheaper
-    // than sending the whole show.
-    match engine.operations_since(peer_clock).await {
+    // than sending the whole show — or the whole show, where it has just started and
+    // its clock promises state it lost with its process.
+    let catch_up = if peer_fresh && !we_are_fresh { None } else { engine.operations_since(peer_clock).await };
+    watched.fresh.linked();
+    match catch_up {
         Some(operations) => {
             info!(
                 "[sync] inbound peer {} from {addr}, replaying {} operations",
