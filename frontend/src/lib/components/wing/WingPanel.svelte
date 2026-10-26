@@ -47,6 +47,7 @@
 	import { pressableTargets, type SurfaceShow } from '$lib/surface.js';
 	import { DIGITAL_INPUTS, slotReading } from '$lib/wing.js';
 	import ToggleControl from '$lib/components/programmer/controls/ToggleControl.svelte';
+	import WingPages from './WingPages.svelte';
 
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
@@ -349,6 +350,10 @@
 					</button>
 				{/if}
 			</div>
+
+			{#if $wingMap}
+				<WingPages map={$wingMap} {describe} />
+			{/if}
 
 			{#if $learned}
 				<div class="editor">

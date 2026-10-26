@@ -49,7 +49,7 @@ pub use zone::{
 };
 pub use variable::{Variable, VariableCreate, VariableKind, VariableOp, VariablePatch};
 pub use wing::{
-    BindingAction, ColorComponent, ControlBinding, ControlBindingCreate, ControlBindingPatch, SurfaceControl,
+    BindingAction, ColorComponent, ControlBinding, ControlBindingCreate, ControlBindingPatch, ControlPage, SurfaceControl,
     StoreOnto, WingAsk, WingCalculator, WingContext, WingEncoders, WingOperator, WingPhase, WingSelection, WingSlot,
     WingState, COMMAND_WING,
 };

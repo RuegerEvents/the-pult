@@ -10,6 +10,13 @@ CREATE TABLE IF NOT EXISTS control_bindings (
     "page" TEXT
 );
 
+CREATE TABLE IF NOT EXISTS control_pages (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "surface" TEXT NOT NULL,
+    "number" INTEGER NOT NULL,
+    "name" TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS cues (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,

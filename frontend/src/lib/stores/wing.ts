@@ -39,6 +39,7 @@ import { WS_PATH, wsUrlFrom } from '../ws/endpoint.js';
 import type {
 	BindingAction,
 	ControlBinding,
+	ControlPage,
 	ParameterKind,
 	ParameterValue,
 	StoreOnto,
@@ -144,6 +145,42 @@ export const wingStoreAsk = writable<{ preselect: string[]; onto: StoreOnto | nu
 const fixtures = collection('fixtures');
 const types = collection('fixture_types');
 const bindings = collection('control_bindings');
+const pageRows = collection('control_pages');
+
+/** Every binding of this wing's, on every page. */
+export const allWingBindings: Readable<ControlBinding[]> = derived(bindings, ($bindings) =>
+	$bindings.filter((b) => b.surface === COMMAND_WING)
+);
+
+/** What each named page is called, by number. */
+export const pageNames: Readable<Map<number, string>> = derived(pageRows, ($rows) => {
+	const out = new Map<number, string>();
+	for (const row of $rows as ControlPage[]) if (row.surface === COMMAND_WING && row.name) out.set(row.number, row.name);
+	return out;
+});
+
+/**
+ * The pages worth a tab: every page something is bound or named on, the page the wing
+ * is on, and one empty page past the last, which is where the next thing is learned.
+ */
+export const wingPages: Readable<number[]> = derived(
+	[allWingBindings, pageNames, wingPage],
+	([$bindings, $names, $page]) => {
+		const used = new Set<number>([1, $page, ...$names.keys(), ...$bindings.map((b) => b.page ?? 1)]);
+		used.add(Math.max(...used) + 1);
+		return [...used].sort((a, b) => a - b);
+	}
+);
+
+/** Name a page, or take its name away with an empty one. */
+export async function renamePage(number: number, name: string): Promise<void> {
+	const data = showData();
+	const row = (get(pageRows) as ControlPage[]).find((r) => r.surface === COMMAND_WING && r.number === number);
+	const trimmed = name.trim();
+	if (row && !trimmed) await data.control_pages.byId(row.id).delete();
+	else if (row) await data.control_pages.byId(row.id).name.set(trimmed);
+	else if (trimmed) await data.control_pages.create({ id: uuid(), surface: COMMAND_WING, number, name: trimmed });
+}
 
 /** This wing's bindings on the page it is on, by control. A binding with no page is on page 1. */
 export const wingBindings: Readable<Map<string, ControlBinding>> = derived(

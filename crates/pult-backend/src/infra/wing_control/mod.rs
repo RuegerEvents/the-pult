@@ -1291,10 +1291,19 @@ impl Control {
                 positions.insert(*index as usize, (level.clamp(0.0, 1.0) * keys::FADER_FULL).round() as u16);
             }
         }
+        // An executor fader nothing on this page is bound to goes to the bottom, so a
+        // page turned to reads as empty rather than showing the last page's levels.
+        // The rest — the crossfaders — are only ever let go.
+        let executors: HashSet<usize> = self
+            .map
+            .as_deref()
+            .map(|map| map.faders.iter().filter(|(_, c)| c.executor.is_some()).map(|(i, _)| *i as usize).collect())
+            .unwrap_or_default();
         self.wing.drive(|out| {
             for index in 0..out.faders.len() {
                 match positions.get(&index) {
                     Some(raw) => out.set_fader(index, *raw),
+                    None if executors.contains(&index) => out.set_fader(index, 0),
                     None => out.release_fader(index),
                 }
             }

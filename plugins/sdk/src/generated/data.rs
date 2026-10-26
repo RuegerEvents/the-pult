@@ -259,6 +259,142 @@ impl ControlBindingEntity {
     }
 }
 
+// ── control_pages ───────────────────────────────────────────────────────
+
+/// A page of bindings, named. A page with bindings and no row is just its number, so
+/// only a page somebody has named has one.
+///
+/// The `control_pages` collection.
+pub fn control_pages() -> ControlPageCollection {
+    ControlPageCollection { at: Collection::at("control_pages") }
+}
+
+/// The `control_pages` collection, reached by [`control_pages()`].
+pub struct ControlPageCollection {
+    at: Collection,
+}
+
+impl ControlPageCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<ControlPage>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> ControlPageEntity {
+        ControlPageEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> ControlPageEntity {
+        ControlPageEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &ControlPage) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `control_pages` row, reached by [`ControlPageCollection::by_id`] or
+/// [`ControlPageCollection::nth`].
+pub struct ControlPageEntity {
+    at: Entity,
+}
+
+impl ControlPageEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<ControlPage, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &ControlPage) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// Which kind of surface: [`COMMAND_WING`].
+    ///
+    /// PERSISTED.
+    pub fn surface(&self) -> Field<String> {
+        self.at.field("surface")
+    }
+
+    /// The page, from 1.
+    ///
+    /// PERSISTED.
+    pub fn number(&self) -> Field<u32> {
+        self.at.field("number")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+}
+
 // ── cues ────────────────────────────────────────────────────────────────
 
 /// A single lighting state snapshot with timing information.

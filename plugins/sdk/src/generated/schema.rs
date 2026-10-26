@@ -244,6 +244,18 @@ pub struct ControlBinding {
     pub page: Option<u32>,
 }
 
+/// A page of bindings, named. A page with bindings and no row is just its number, so
+/// only a page somebody has named has one.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ControlPage {
+    pub id: Uuid,
+    /// Which kind of surface: [`COMMAND_WING`].
+    pub surface: String,
+    /// The page, from 1.
+    pub number: u32,
+    pub name: String,
+}
+
 /// A single lighting state snapshot with timing information.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Cue {

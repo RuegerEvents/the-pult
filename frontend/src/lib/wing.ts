@@ -94,3 +94,39 @@ export function learnable(control: SurfaceControl, action: BindingAction): Bindi
 	}
 }
 
+
+// ── The playback section, drawn ───────────────────────────────────────────────
+
+/** One fader column: the fader, the key above it (Off) and the key under it (Go). */
+export type FaderColumn = { fader: number; executor: number; off: number | null; go: number | null };
+
+/**
+ * The wing's playback section out of MA's table: the executor faders in executor
+ * order, each with its two keys, and the X keys in their own order. The station's
+ * `keys::fader_keys` reads the same table the same way: a fader's own executor's
+ * `EXEC` key is under it, and the one a hundred below is above it.
+ */
+export function playbackLayout(map: WingMap): { columns: FaderColumn[]; xKeys: { index: number; n: number }[] } {
+	const execKey = new Map<string, number>();
+	for (const [index, c] of Object.entries(map.hardkeys)) {
+		if (c.Code === 'EXEC' && c.ExecutorIndex) execKey.set(c.ExecutorIndex, Number(index));
+	}
+	const columns = Object.entries(map.faders)
+		.filter(([, c]) => c.ExecutorIndex)
+		.map(([index, c]) => {
+			const executor = Number(c.ExecutorIndex);
+			return {
+				fader: Number(index),
+				executor,
+				go: execKey.get(String(executor)) ?? null,
+				off: execKey.get(String(executor - 100)) ?? null
+			};
+		})
+		.sort((a, b) => a.executor - b.executor);
+	const xKeys = Object.entries(map.hardkeys)
+		.map(([index, c]) => ({ index: Number(index), m: /^X(\d+)$/.exec(c.Code ?? '') }))
+		.filter((k): k is { index: number; m: RegExpExecArray } => k.m !== null)
+		.map((k) => ({ index: k.index, n: Number(k.m[1]) }))
+		.sort((a, b) => a.n - b.n);
+	return { columns, xKeys };
+}

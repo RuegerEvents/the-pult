@@ -300,6 +300,24 @@ impl ControlBinding {
     }
 }
 
+/// A page of bindings, named. A page with bindings and no row is just its number, so
+/// only a page somebody has named has one.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PultSchema)]
+#[ts(export)]
+#[pult(table = "control_pages")]
+pub struct ControlPage {
+    #[pult(lifecycle = PERSISTED, primary_key)]
+    pub id: Uuid,
+    /// Which kind of surface: [`COMMAND_WING`].
+    #[pult(lifecycle = PERSISTED)]
+    pub surface: String,
+    /// The page, from 1.
+    #[pult(lifecycle = PERSISTED)]
+    pub number: u32,
+    #[pult(lifecycle = PERSISTED)]
+    pub name: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,6 +5,7 @@ import type { PathProxy, SubscribeOptions } from './proxy.js';
 import type { PultWsClient } from './client.js';
 import { createDataProxy } from './proxy.js';
 import type { ControlBinding } from '../generated/ControlBinding.js';
+import type { ControlPage } from '../generated/ControlPage.js';
 import type { Cue } from '../generated/Cue.js';
 import type { EffectTemplate } from '../generated/EffectTemplate.js';
 import type { Fixture } from '../generated/Fixture.js';
@@ -45,6 +46,10 @@ import type { Version } from '../generated/Version.js';
 // ── Entity handles ───────────────────────────────────────────────────────────
 
 export type ControlBindingEntity = PathProxy<ControlBinding> & {
+  delete(): Promise<void>;
+};
+
+export type ControlPageEntity = PathProxy<ControlPage> & {
   delete(): Promise<void>;
 };
 
@@ -211,6 +216,20 @@ export type ControlBindingCollection = {
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: ControlBindingEntity;
+};
+
+export type ControlPageCollection = {
+  get(): Promise<ControlPage[]>;
+  set(value: ControlPage[]): Promise<void>;
+  subscribe(cb: (value: ControlPage[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: ControlPage[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): ControlPageEntity;
+  nth(n: number): ControlPageEntity;
+  create(entity: ControlPage): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: ControlPageEntity;
 };
 
 export type CueCollection = {
@@ -708,6 +727,7 @@ export type VersionCollection = {
 /** Typed root for the pult:data context. Every field maps to a live path proxy. */
 export type DataRoot = {
   control_bindings: ControlBindingCollection;
+  control_pages: ControlPageCollection;
   cues: CueCollection;
   effect_templates: EffectTemplateCollection;
   fixtures: FixtureCollection;
