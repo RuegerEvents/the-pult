@@ -8,6 +8,7 @@
 	 * change first.
 	 */
 
+	import { dropdown } from '$lib/actions.js';
 	import { addUser, beUser, currentUser, hasChosen, signOut, users, userId } from '$lib/stores/user.js';
 	import { redo, undo } from '$lib/stores/undo.js';
 	import { focusOnMount } from '$lib/actions.js';
@@ -64,8 +65,7 @@
 	</button>
 
 	{#if open}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="menu" onpointerleave={() => { if (!adding) open = false; }}>
+		<div class="menu" use:dropdown={{ close: () => (open = false), keep: () => adding }}>
 			{#each $users as user (user.id)}
 				<button class:on={user.id === $userId} onclick={() => { beUser(user.id); open = false; }}>
 					<span class="dot" style:background={user.color}></span>

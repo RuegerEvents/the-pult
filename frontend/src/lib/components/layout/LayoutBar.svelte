@@ -8,6 +8,7 @@
 	 * down, which is the whole reason rearranging does not save on its own.
 	 */
 
+	import { dropdown } from '$lib/actions.js';
 	import { PRESETS } from '$lib/layout/presets.js';
 	import {
 		active,
@@ -58,8 +59,7 @@
 		</button>
 
 	{#if open}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="menu" onpointerleave={() => (open = false)}>
+		<div class="menu" use:dropdown={{ close: () => (open = false) }}>
 			<span class="heading">Presets</span>
 			{#each PRESETS as preset (preset.key)}
 				<button

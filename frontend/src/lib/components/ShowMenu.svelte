@@ -11,6 +11,7 @@
 	 * reconnects onto the new console, and reloads.
 	 */
 
+	import { dropdown } from '$lib/actions.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { show as openShow } from '$lib/stores/show.js';
 	import { openSetup } from '$lib/stores/setup.js';
@@ -124,8 +125,7 @@
 		</button>
 
 	{#if open}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="menu" onpointerleave={() => (open = false)}>
+		<div class="menu" use:dropdown={{ close: () => (open = false) }}>
 			<span class="heading">This show</span>
 			<button
 				disabled={busy}
