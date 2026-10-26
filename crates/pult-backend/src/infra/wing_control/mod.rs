@@ -1589,8 +1589,8 @@ enum Write {
     In(Uuid),
 }
 
-/// The fade a new cue gets: the Store dialog's, `cues.ts`'s `DEFAULT_FADE_MS`.
-const DEFAULT_FADE_MS: u32 = 500;
+/// The fade a new cue gets: none, the Store dialog's, `cues.ts`'s `DEFAULT_FADE_MS`.
+const DEFAULT_FADE_MS: u32 = 0;
 
 /// Which cue is driving each key: the latest capture of it over the tracked stack of
 /// each live sequence, the sequence that went most recently winning — what a Go put

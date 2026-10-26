@@ -682,8 +682,10 @@ impl CommandLine {
                     number: (cue_ids.len() + 1) as f64,
                     captures,
                     follow_mode: FollowMode::Manual,
-                    fade_in_ms: 500,
-                    fade_out_ms: 500,
+                    // No fade, like every cue the console makes unasked
+                    // (`cues.ts`'s `DEFAULT_FADE_MS`).
+                    fade_in_ms: 0,
+                    fade_out_ms: 0,
                     // The cue says nothing either, so the show's own curve per
                     // parameter group answers.
                     easing: None,

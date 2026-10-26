@@ -86,13 +86,13 @@ export async function createCue(
 }
 
 /**
- * Half a second, which is the fade an unfamiliar console should give you.
+ * No fade: a cue made without being asked for one snaps, in and out.
  *
- * Long enough that a Go is not a jump, short enough that it does not feel like the
- * desk hesitating. Every cue made without being asked gets this, and every one of
- * them can be changed afterwards.
+ * It was half a second, and at HHG that half second was what every cue had to be
+ * edited away from — a look is set where it is set, and a fade is a decision someone
+ * makes. Zero in and zero out. Every cue can be given one afterwards.
  */
-export const DEFAULT_FADE_MS = 500;
+export const DEFAULT_FADE_MS = 0;
 
 /** A sequence's cues, in the order the sequence lists them. */
 export function orderedCues(sequence: Sequence, cues: Cue[]): Cue[] {
