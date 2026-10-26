@@ -169,14 +169,17 @@ impl Timelines {
                         flashes: timeline.all_flashes().to_vec(),
                     });
                 }
-                // A stopped timeline keeps its place in the record rather than being
-                // forgotten: pressing play again must not re-fire everything before
-                // the playhead.
+                // A stopped timeline's record follows its playhead to just short of
+                // it: pressing play again must not re-fire everything before the
+                // playhead, and must fire what is exactly *at* it. Kept where the last
+                // run left it, the record made a timeline played from the top a second
+                // time skip its first event — and one stopped at 30 s and played again
+                // from the start skip everything until 30 s (HHG, 2026-10-26).
                 self.seen.insert(
                     timeline.id,
                     Seen {
                         running: false,
-                        fired_to: before.and_then(|s| s.fired_to),
+                        fired_to: running_to.checked_sub(1),
                         position_ms: running_to,
                         at_ms: wall_ms,
                         segment,
@@ -194,7 +197,15 @@ impl Timelines {
 
             if jumped {
                 for event in timeline.tracked_at(position) {
-                    out.fire.push(fire_at(event, wall_ms));
+                    // What it jumped past is applied now; what is exactly where it
+                    // starts goes when the playhead gets there, which on a Play with a
+                    // stream lead is the anchor and not this pass.
+                    let at = if event.at_ms as u64 >= timeline.position_at_anchor_ms {
+                        wall_of(timeline, event.at_ms as u64, wall_ms, running_to)
+                    } else {
+                        wall_ms
+                    };
+                    out.fire.push(fire_at(event, at));
                 }
                 // Always restated after a jump, even into the same segment: the
                 // playhead is somewhere else in the bar, so the master's `t0` is now
@@ -223,11 +234,10 @@ impl Timelines {
 
             let fired_to = before.and_then(|seen| seen.fired_to);
             for event in timeline.crossed(fired_to, position) {
-                // The wall millisecond the *event* fell at, worked out backwards from
-                // the playhead — so a pass that ran 40 ms late still anchors the cue
-                // where it belonged.
-                let late = running_to.saturating_sub(event.at_ms as u64);
-                out.fire.push(fire_at(event, wall_at(timeline, wall_ms, late)));
+                // The wall millisecond the *event* falls at — so a pass that ran 40 ms
+                // late still anchors the cue where it belonged, and one that ran before
+                // a delayed start anchors it at the start.
+                out.fire.push(fire_at(event, wall_of(timeline, event.at_ms as u64, wall_ms, running_to)));
             }
             self.seen.insert(
                 timeline.id,
@@ -287,6 +297,17 @@ fn wall_at(timeline: &Timeline, wall_ms: u64, behind: u64) -> u64 {
     } else {
         wall_ms
     }
+}
+
+/// The wall millisecond the playhead is at `at_ms`: from the anchor, which also answers
+/// for a position the playhead has not reached yet — an event at the start of a Play
+/// anchored ahead of now. Before the anchor's position, measured back from now.
+fn wall_of(timeline: &Timeline, at_ms: u64, wall_ms: u64, running_to: u64) -> u64 {
+    let rate = timeline.rate.max(0.0);
+    if rate > 0.0 && at_ms >= timeline.position_at_anchor_ms {
+        return timeline.anchor_ms + ((at_ms - timeline.position_at_anchor_ms) as f64 / rate as f64) as u64;
+    }
+    wall_at(timeline, wall_ms, running_to.saturating_sub(at_ms))
 }
 
 /// Which grid segment a position falls in: the last one that has started.
@@ -523,6 +544,57 @@ mod tests {
         again.anchor_ms = 5_000;
         let fired = timelines.pass(5_100, &[again]).fire;
         assert!(fired.is_empty(), "the playhead has not gone back over it");
+    }
+
+    /// Played from the top a second time, an event at zero fires again.
+    #[test]
+    fn an_event_at_the_very_start_fires_every_time_the_timeline_is_played_from_it() {
+        let mut timelines = Timelines::default();
+        let first = playing(a_timeline(vec![go_next(0, 1)]), 1_000, 0);
+        assert_eq!(timelines.pass(1_000, std::slice::from_ref(&first)).fire.len(), 1);
+        timelines.pass(3_000, std::slice::from_ref(&first));
+
+        let mut stopped = first.clone();
+        stopped.running = false;
+        stopped.position_at_anchor_ms = 0;
+        stopped.anchor_ms = 4_000;
+        timelines.pass(4_000, std::slice::from_ref(&stopped));
+
+        let again = playing(stopped.clone(), 5_000, 0);
+        let fired = timelines.pass(5_000, &[again]).fire;
+        assert_eq!(fired.len(), 1, "the start again");
+    }
+
+    /// Stopped at 30 s, put back at the top and played: everything after the top fires.
+    #[test]
+    fn played_again_from_earlier_everything_after_it_fires_once_more() {
+        let mut timelines = Timelines::default();
+        let timeline = playing(a_timeline(vec![go_next(500, 1), go_next(2_000, 2)]), 0, 0);
+        timelines.pass(30_000, std::slice::from_ref(&timeline));
+
+        let mut stopped = timeline.clone();
+        stopped.running = false;
+        stopped.position_at_anchor_ms = 0;
+        stopped.anchor_ms = 31_000;
+        timelines.pass(31_000, std::slice::from_ref(&stopped));
+        timelines.pass(31_500, std::slice::from_ref(&stopped));
+
+        let again = playing(stopped.clone(), 32_000, 0);
+        assert!(timelines.pass(32_000, std::slice::from_ref(&again)).fire.is_empty(), "nothing at the top");
+        assert_eq!(timelines.pass(32_600, std::slice::from_ref(&again)).fire.len(), 1, "0.5 s in");
+        assert_eq!(timelines.pass(34_100, &[again]).fire.len(), 1, "2 s in");
+    }
+
+    /// A Play anchored ahead of now — the stream lead — fires its first event at the
+    /// anchor, not at the pass that saw the Play.
+    #[test]
+    fn an_event_at_the_start_of_a_delayed_play_goes_at_the_start() {
+        let mut timelines = Timelines::default();
+        let timeline = playing(a_timeline(vec![go_next(0, 1)]), 10_400, 0);
+        let fired = timelines.pass(10_000, std::slice::from_ref(&timeline)).fire;
+        assert_eq!(fired.len(), 1);
+        let TimelineFire::Sequence { at, .. } = &fired[0] else { panic!("a sequence event") };
+        assert_eq!(*at, 10_400);
     }
 
     #[test]
