@@ -55,7 +55,7 @@
 	import { collection, showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { outlines, wantOutline } from '$lib/stores/takeOutlines.js';
-	import { audioStatus, current, devices, locate, positionOf, takeRowHeight, takes, toggle, writeColumns } from '$lib/stores/timelines.js';
+	import { audioStatus, current, devices, locate, positionOf, takeRowHeight, toggle, writeColumns } from '$lib/stores/timelines.js';
 	import { encodeKey, trackPoints, type TrackPoint } from '$lib/evaluator.js';
 	import { addToast } from '$lib/toasts.js';
 	import { entries as programmerEntries } from '$lib/stores/programmer.js';
@@ -519,8 +519,12 @@
 		relaidAt = performance.now();
 		liveVersion = untrack(() => liveVersion) + 1;
 	}
+	// From the timeline's own SYNCED `recording` and `running`, which every station
+	// holds. It used to wait for the LOCAL `takes` row as well, which only the station
+	// recording the take writes — the leader — so a page on any other station never drew
+	// the lane at all (found at the gig, 2026-10-25).
 	const recordingProgrammerNow = $derived(
-		!!$takes?.[timeline.id] && !!timeline.recording && 'Programmer' in timeline.recording && timeline.running
+		!!timeline.recording && 'Programmer' in timeline.recording && timeline.running
 	);
 	$effect(() => {
 		if (!recordingProgrammerNow) {

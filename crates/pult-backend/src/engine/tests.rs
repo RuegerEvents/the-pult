@@ -5065,10 +5065,12 @@ mod recording_sequence_acts {
         serde_json::from_value(h.engine.get(field_path("timelines", id, "events")).await.unwrap()).unwrap()
     }
 
-    /// A Go pressed while a timeline records from the programmer is an event on it, at
-    /// the playhead, naming the cue it went to — and an Off is an Off.
+    /// A Go pressed while a timeline records from the programmer waits with the take, at
+    /// the playhead and naming the cue it went to — and an Off is an Off. Nothing reaches
+    /// the timeline's events until the take is answered: it used to, and was the one
+    /// thing a take caught that skipped the review.
     #[tokio::test]
-    async fn a_go_and_an_off_while_recording_land_on_the_timeline() {
+    async fn a_go_and_an_off_while_recording_wait_with_the_take() {
         let h = harness().await;
         let (sequence, one, _) = a_sequence_with_two_cues(&h).await;
         let timeline = a_timeline(Some(RecordSource::Programmer { release: true }));
@@ -5080,7 +5082,10 @@ mod recording_sequence_acts {
         let off = field_path("sequences", sequence.id, "off");
         h.engine.set_as(user, None, off, Lifecycle::Synced, serde_json::json!({})).await.unwrap();
 
-        let events = events_of(&h, timeline.id).await;
+        assert!(events_of(&h, timeline.id).await.is_empty(), "not on the timeline yet");
+        let pending: Option<pult_schema::types::timeline::PendingTake> =
+            serde_json::from_value(h.engine.get(field_path("timelines", timeline.id, "pending")).await.unwrap()).unwrap();
+        let events = pending.expect("a take is waiting").events;
         assert_eq!(events.len(), 2, "{events:?}");
         assert_eq!(events[0].action, TimelineAction::GoToCue { sequence_id: sequence.id, cue_id: one.id });
         assert_eq!(events[1].action, TimelineAction::Off { sequence_id: sequence.id });
@@ -5101,6 +5106,10 @@ mod recording_sequence_acts {
         h.engine.set_as(Uuid::new_v4(), None, go, Lifecycle::Synced, serde_json::json!({})).await.unwrap();
         assert!(events_of(&h, idle.id).await.is_empty());
         assert!(events_of(&h, from_input.id).await.is_empty());
+        for t in [&idle, &from_input] {
+            let pending = h.engine.get(field_path("timelines", t.id, "pending")).await.unwrap();
+            assert!(pending.is_null(), "nothing waits either: {pending}");
+        }
     }
 }
 

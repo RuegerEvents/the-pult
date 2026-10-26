@@ -3126,8 +3126,9 @@ impl ShowEngine {
     }
 
     /// A sequence act taken while a timeline is recording from the programmer — a Go,
-    /// a Back, an Off, a jump to a cue — written onto that timeline as an event at its
-    /// playhead, so the take carries the cues as well as the faders.
+    /// a Back, an Off, a jump to a cue — kept with the take as an event at its
+    /// playhead, so the take carries the cues as well as the faders and the review asks
+    /// about both.
     ///
     /// Recorded as the state the act left the sequence in rather than as the button:
     /// a cue to go to, or Off. A recorded Go played back from somewhere else would go
@@ -3135,8 +3136,13 @@ impl ShowEngine {
     /// played. The leader records, the way it records the programmer, and only an
     /// operator's act reaches here — the timeline's own firing goes through
     /// `run_synced_command`, or a recording timeline would record itself.
-    async fn record_sequence_act(&mut self, path: &Path, authorship: &Authorship) {
-        use pult_schema::types::timeline::{RecordSource, Timeline, TimelineAction, TimelineEvent};
+    ///
+    /// Onto `pending` and not `events`, which is where it went until 2026-10-26: written
+    /// straight into the timeline, a Go was the one thing a take caught that skipped the
+    /// review. Unattributed, like the passes it waits beside: a take waiting is not an
+    /// edit anybody's Ctrl-Z should reach. The answer to the review is the edit.
+    async fn record_sequence_act(&mut self, path: &Path, _authorship: &Authorship) {
+        use pult_schema::types::timeline::{PendingTake, RecordSource, Timeline, TimelineAction, TimelineEvent};
         if self.state.is_follower() {
             return;
         }
@@ -3168,24 +3174,21 @@ impl ShowEngine {
         };
         let now = pult_schema::types::sequence::now_ms();
         for timeline in recording {
-            let mut events = timeline.events.clone();
-            events.push(TimelineEvent {
+            let mut pending =
+                timeline.pending.clone().unwrap_or_else(|| PendingTake { armed_by: timeline.armed_by.clone(), ..Default::default() });
+            pending.events.push(TimelineEvent {
                 id: Uuid::new_v4(),
                 at_ms: u32::try_from(timeline.position_at(now)).unwrap_or(u32::MAX),
                 action: action.clone(),
             });
-            events.sort_by_key(|e| e.at_ms);
-            let Ok(value) = serde_json::to_value(&events) else { continue };
+            let Ok(value) = serde_json::to_value(&pending) else { continue };
             let path = vec![
                 PathSegment::Key("timelines".into()),
                 PathSegment::Id(timeline.id),
-                PathSegment::Key("events".into()),
+                PathSegment::Key("pending".into()),
             ];
-            if let Err(e) = self
-                .write_through(path, value, Lifecycle::Persisted, Authorship::by(authorship.user_id, None))
-                .await
-            {
-                warn!("[timelines] could not record a sequence act onto {}: {e}", timeline.name);
+            if let Err(e) = self.write_through(path, value, Lifecycle::Persisted, Authorship::none()).await {
+                warn!("[timelines] could not keep a sequence act with the take on {}: {e}", timeline.name);
             }
         }
     }

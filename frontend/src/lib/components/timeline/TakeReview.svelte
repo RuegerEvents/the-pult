@@ -20,10 +20,12 @@
 	import { discardTake, mergeTake, reviewRows, reviewing, waiting, type ReviewRow } from '$lib/stores/takeReview.js';
 	import { addToast } from '$lib/toasts.js';
 	import { clock } from '$lib/waveform.js';
+	import type { TimelineAction } from '$lib/generated/index.js';
 
 	const fixtures = collection('fixtures');
 	const types = collection('fixture_types');
 	const sequences = collection('sequences');
+	const cues = collection('cues');
 
 	const open = $derived($waiting.find((w) => w.timeline.id === $reviewing) ?? null);
 	const rows = $derived(open ? reviewRows(open.pending) : []);
@@ -41,6 +43,21 @@
 	});
 
 	const id = (what: 'take' | 'flash', row: ReviewRow) => `${what}:${row.fixtureId}/${row.key}`;
+	const cueKey = (eventId: string) => `cue:${eventId}`;
+
+	/** The cues taken while it rolled, in the order they were taken. */
+	const caughtCues = $derived([...(open?.pending.events ?? [])].sort((a, b) => a.at_ms - b.at_ms));
+
+	function cueName(action: TimelineAction): string {
+		const sequence = (sid: string) => $sequences.find((s) => s.id === sid)?.name ?? 'a sequence';
+		if ('GoToCue' in action) {
+			const { sequence_id, cue_id } = action.GoToCue;
+			return `${sequence(sequence_id)} → ${$cues.find((c) => c.id === cue_id)?.name ?? 'a cue'}`;
+		}
+		if ('Off' in action) return `${sequence(action.Off.sequence_id)} off`;
+		if ('GoNext' in action) return `Go on ${sequence(action.GoNext.sequence_id)}`;
+		return Object.keys(action)[0] ?? 'a cue';
+	}
 
 	function toggle(key: string) {
 		const next = new Set(unticked);
@@ -67,7 +84,8 @@
 					rows
 						.filter((r) => (what === 'take' ? r.takes : r.flashes) > 0 && !unticked.has(id(what, r)))
 						.map((r): [string, string] => [r.fixtureId, r.key]);
-				await mergeTake(open.timeline.id, chosen('take'), chosen('flash'));
+				const events = caughtCues.filter((e) => !unticked.has(cueKey(e.id))).map((e) => e.id);
+				await mergeTake(open.timeline.id, chosen('take'), chosen('flash'), events);
 			} else {
 				await discardTake(open.timeline.id);
 			}
@@ -81,7 +99,8 @@
 
 	const passes = $derived(open?.pending.passes.length ?? 0);
 	const nothingTicked = $derived(
-		rows.every((r) => (r.takes === 0 || unticked.has(id('take', r))) && (r.flashes === 0 || unticked.has(id('flash', r))))
+		rows.every((r) => (r.takes === 0 || unticked.has(id('take', r))) && (r.flashes === 0 || unticked.has(id('flash', r)))) &&
+			caughtCues.every((e) => unticked.has(cueKey(e.id)))
 	);
 </script>
 
@@ -100,8 +119,9 @@
 		<div class="review">
 			<p class="lead">
 				<strong>{open.timeline.name}</strong> recorded {rows.length}
-				{rows.length === 1 ? 'parameter' : 'parameters'}{passes > 1 ? ` over ${passes} passes` : ''}.
-				Nothing is in the timeline until it is merged.
+				{rows.length === 1 ? 'parameter' : 'parameters'}{passes > 1 ? ` over ${passes} passes` : ''}{caughtCues.length
+					? ` and ${caughtCues.length} ${caughtCues.length === 1 ? 'cue' : 'cues'}`
+					: ''}. Nothing is in the timeline until it is merged.
 			</p>
 			<table>
 				<thead>
@@ -132,9 +152,31 @@
 					{/each}
 				</tbody>
 			</table>
+			{#if caughtCues.length > 0}
+				<table class="cues">
+					<thead>
+						<tr><th>Cue taken</th><th>At</th><th>Keep</th></tr>
+					</thead>
+					<tbody>
+						{#each caughtCues as event (event.id)}
+							<tr>
+								<td>{cueName(event.action)}</td>
+								<td class="num">{clock(event.at_ms)}</td>
+								<td>
+									<label>
+										<input type="checkbox" checked={!unticked.has(cueKey(event.id))} onchange={() => toggle(cueKey(event.id))} />
+										an event
+									</label>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
 			<p class="note">
 				A take replaces what its parameter played from where it was first touched to where the recording
-				stopped. Flashes are added on top and remove nothing. Either answer is one Ctrl-Z.
+				stopped. Flashes are added on top and remove nothing, and so are the cues, as events. Either answer is one
+				Ctrl-Z.
 			</p>
 		</div>
 		{#snippet footer()}
@@ -198,6 +240,9 @@
 		align-items: center;
 		gap: 6px;
 		cursor: pointer;
+	}
+	table.cues {
+		margin-top: 12px;
 	}
 	.none {
 		color: #555;

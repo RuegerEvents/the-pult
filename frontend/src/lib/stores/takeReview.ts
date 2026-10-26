@@ -42,7 +42,7 @@ const timelines = collection('timelines') as Readable<Timeline[]>;
 
 export const waiting: Readable<Waiting[]> = derived(timelines, ($timelines) =>
 	$timelines
-		.filter((t) => !!t.pending && t.pending.passes.length > 0)
+		.filter((t) => !!t.pending && (t.pending.passes.length > 0 || (t.pending.events ?? []).length > 0))
 		.map((t) => ({ timeline: t, pending: t.pending!, mine: !!pageId && t.pending!.armed_by === pageId }))
 );
 
@@ -80,9 +80,17 @@ export function reviewRows(pending: PendingTake): ReviewRow[] {
 	return [...rows.values()].sort((a, b) => a.fromMs - b.fromMs || a.key.localeCompare(b.key));
 }
 
-/** Keep these: `[fixtureId, key]` per parameter, a take's and a flash's chosen apart. */
-export async function mergeTake(timelineId: string, takes: [string, string][], flashes: [string, string][]): Promise<void> {
-	await showClient().call('take.merge', { timelineId, takes, flashes });
+/**
+ * Keep these: `[fixtureId, key]` per parameter, a take's and a flash's chosen apart, and
+ * the cues taken while it rolled by their event ids.
+ */
+export async function mergeTake(
+	timelineId: string,
+	takes: [string, string][],
+	flashes: [string, string][],
+	events: string[]
+): Promise<void> {
+	await showClient().call('take.merge', { timelineId, takes, flashes, events });
 }
 
 export async function discardTake(timelineId: string): Promise<void> {
@@ -99,9 +107,12 @@ export function startTakeReview(): void {
 	const seen = new Map<string, number>();
 	waiting.subscribe(($waiting) => {
 		for (const w of $waiting) {
-			const passes = w.pending.passes.length;
-			if (!w.mine || (seen.get(w.timeline.id) ?? 0) >= passes) continue;
-			seen.set(w.timeline.id, passes);
+			// A cue taken mid-take waits from the moment it is taken; the review is for
+			// when the recording is over, so it opens once the timeline is no longer armed.
+			if (w.timeline.recording) continue;
+			const caught = w.pending.passes.length + (w.pending.events ?? []).length;
+			if (!w.mine || (seen.get(w.timeline.id) ?? 0) >= caught) continue;
+			seen.set(w.timeline.id, caught);
 			if (get(reviewing) === null) reviewing.set(w.timeline.id);
 		}
 		// Answered somewhere else: the review open here has nothing left to show.

@@ -350,7 +350,11 @@ pub struct PendingTake {
     pub armed_by: Option<String>,
     /// One per pass, in the order they were recorded: a looping rehearsal is a pass per
     /// lap, and a later lap is merged over an earlier one.
-    pub passes: Vec<PendingPass>,
+    pub passes: Vec<PendingPass>,    /// The cues taken while it rolled — a Go, a Back, an Off — as the events they would
+    /// be on the timeline, waiting with the rest. Recorded as the state the act left the
+    /// sequence in, so a Go played back goes to the cue that came next when it was taken.
+    #[serde(default)]
+    pub events: Vec<TimelineEvent>,
 }
 
 /// One pass of a pending take.
@@ -420,6 +424,17 @@ impl PendingTake {
             store_take(rows, pass, &takes);
             into.extend(pass.flashes.iter().filter(|f| flashes(f.fixture_id, &f.key)).cloned());
         }
+    }
+
+    /// The cues it caught that were chosen, onto a timeline's events in time order.
+    pub fn merge_events(&self, events: &mut Vec<TimelineEvent>, keep: impl Fn(Uuid) -> bool) {
+        events.extend(self.events.iter().filter(|e| keep(e.id)).cloned());
+        events.sort_by_key(|e| e.at_ms);
+    }
+
+    /// Whether there is anything in it to answer for.
+    pub fn is_empty(&self) -> bool {
+        self.passes.is_empty() && self.events.is_empty()
     }
 }
 

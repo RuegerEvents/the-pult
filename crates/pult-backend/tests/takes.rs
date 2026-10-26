@@ -5,7 +5,7 @@
 //! it, the stop stores the take and gives the faders back, and the stored take — read
 //! back off the asset store as bytes — drives an Art-Net output on the next play. Then
 //! the two overdubs a skeleton is built from: a pass on another key goes beside the
-//! first take, and a pass on the same key is spliced into it.
+//! first take, and a pass on the same key punches in from its touch to its stop.
 //!
 //! **Values and orders, never milliseconds**, for the reason `tests/counts.rs` gives.
 //! Where a pass lands is asserted by which values are in a take and in what order.
@@ -291,32 +291,43 @@ async fn a_take_from_the_programmer_plays_back_and_overdubs() {
     assert_eq!(values(&head, "Zoom"), vec![level(102)]);
 
     // ── A better end to the jaw ──────────────────────────────────────────────
-    // Well after the first take's last point, so the splice keeps all of it, adds the
-    // new move, and resumes the old take's value where the pass stopped.
+    // A pass from 10 s that touches the jaw a moment in. It punches in at the touch,
+    // not at the pass's start: the new row runs from the touch to the stop, and
+    // everything outside that stretch, the head included, is left alone.
     timeline(&station, song.id, "record", serde_json::json!({ "programmer": true })).await;
     timeline(&station, song.id, "play", serde_json::json!({ "fromMs": 10_000 })).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     hold(&station, skeleton.id, ParameterKind::Intensity, "Intensity", level(204)).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     timeline(&station, song.id, "stop", serde_json::json!({})).await;
-    eventually("the jaw's pass was spliced in", || async {
+    let head_asset = after_head[1].asset.clone();
+    eventually("the jaw's pass was stored", || async {
         let tracks = tracks_of(&station, song.id).await;
-        !armed(&station, song.id).await && tracks.len() == 2 && tracks[0].asset != take.asset
+        !armed(&station, song.id).await && tracks.iter().any(|t| t.asset != take.asset && t.asset != head_asset)
     })
     .await;
-    let after_splice = tracks_of(&station, song.id).await;
-    assert_eq!(after_splice[1].asset, after_head[1].asset, "the head's take was not touched");
-    let spliced = decoded(&station, &after_splice[0].asset).await;
-    assert_eq!(
-        values(&spliced, "Intensity"),
-        vec![level(51), level(153), level(255), level(204), level(255)],
-        "the old take, the new move, and the old take resuming"
+    let after_punch = tracks_of(&station, song.id).await;
+    let heads: Vec<&TimelineTrack> = after_punch.iter().filter(|t| t.key.as_deref() == Some("Zoom")).collect();
+    assert!(heads.len() == 1 && heads[0].asset == head_asset, "the head's take was not touched: {heads:?}");
+    let jaws: Vec<&TimelineTrack> = after_punch.iter().filter(|t| t.key.as_deref() == Some("Intensity")).collect();
+    let new = jaws.iter().find(|t| t.asset != take.asset).expect("the new pass has a row");
+    let touch = new.from_ms.expect("the new row starts somewhere");
+    assert!(touch > 10_100, "the row starts at the touch, not where the pass started: {touch}");
+    assert!(new.to_ms.is_some_and(|out| out > touch), "and runs to the stop: {new:?}");
+    // The first take was itself stored from its first touch to its stop, a second in,
+    // so a pass at ten seconds does not reach it and it is exactly as it was.
+    assert!(
+        jaws.iter().any(|t| t.asset == take.asset && t.from_ms == take.from_ms && t.to_ms == take.to_ms),
+        "the old take is left as it was: {jaws:?}"
     );
+    assert!(take.to_ms.is_some_and(|out| out < touch), "and it ended before the touch: {take:?}");
+    let punched = decoded(&station, &new.asset).await;
+    assert_eq!(values(&punched, "Intensity"), vec![level(204)], "only the new move");
 }
 
 /// A scare looping round while the operator gets the jaw right: every lap that was
-/// touched is a pass, each later lap is spliced into the take the earlier one made, and
-/// the fader is given back only when the timeline finally stops.
+/// touched is a pass of its own, each replacing only from its touch to where it ended,
+/// and the fader is given back only when the timeline finally stops.
 #[tokio::test]
 async fn every_lap_of_a_looping_rehearsal_is_a_pass() {
     let station = a_station().await;
@@ -379,13 +390,16 @@ async fn every_lap_of_a_looping_rehearsal_is_a_pass() {
     timeline(&station, scare.id, "stop", serde_json::json!({})).await;
 
     eventually("both laps were stored", || async { !armed(&station, scare.id).await }).await;
-    let tracks = tracks_of(&station, scare.id).await;
-    assert_eq!(tracks.len(), 1, "the second lap went into the first lap's take");
-    let take = decoded(&station, &tracks[0].asset).await;
-    assert_eq!(
-        values(&take, "Intensity"),
-        vec![level(153), level(51)],
-        "lap two's early move, then lap one's later one, which lap two never reached"
+    let mut tracks = tracks_of(&station, scare.id).await;
+    tracks.sort_by_key(|t| t.from_ms);
+    assert_eq!(tracks.len(), 2, "a row per lap: {tracks:?}");
+    let (lap_two, lap_one) = (&tracks[0], &tracks[1]);
+    assert_ne!(lap_one.asset, lap_two.asset, "each lap is its own recording");
+    assert_eq!(values(&decoded(&station, &lap_two.asset).await, "Intensity"), vec![level(153)], "lap two's early move");
+    assert_eq!(values(&decoded(&station, &lap_one.asset).await, "Intensity"), vec![level(51)], "lap one's later one");
+    assert!(
+        lap_two.to_ms.unwrap_or(u32::MAX) <= lap_one.from_ms.unwrap_or(0),
+        "lap two stopped before lap one's touch, so it did not cut it: {tracks:?}"
     );
     eventually("the fader was given back at the stop", || async {
         read::<ProgrammerValue>(&station, "programmer_values").await.is_empty()

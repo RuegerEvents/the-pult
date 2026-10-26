@@ -1728,6 +1728,11 @@ pub struct PendingTake {
     /// One per pass, in the order they were recorded: a looping rehearsal is a pass per
     /// lap, and a later lap is merged over an earlier one.
     pub passes: Vec<PendingPass>,
+    /// The cues taken while it rolled — a Go, a Back, an Off — as the events they would
+    /// be on the timeline, waiting with the rest. Recorded as the state the act left the
+    /// sequence in, so a Go played back goes to the cue that came next when it was taken.
+    #[serde(default)]
+    pub events: Vec<TimelineEvent>,
 }
 
 /// What a parameter's 0..1 actually spans.

@@ -314,8 +314,8 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     // Merge back and puts the take up for review again.
     LocalRpcMeta {
         method: "take.merge",
-        args_schema: r#"[{"name":"timelineId","type":"string","optional":false},{"name":"takes","type":"array","optional":true},{"name":"flashes","type":"array","optional":true}]"#,
-        doc: "Merge a timeline's pending take: the take of each [fixtureId, key] in takes and the flashes of each in flashes, or everything where a list is left out.",
+        args_schema: r#"[{"name":"timelineId","type":"string","optional":false},{"name":"takes","type":"array","optional":true},{"name":"flashes","type":"array","optional":true},{"name":"events","type":"array","optional":true}]"#,
+        doc: "Merge a timeline's pending take: the take of each [fixtureId, key] in takes, the flashes of each in flashes, and the cues taken whose ids are in events, or everything where a list is left out.",
     },
     LocalRpcMeta {
         method: "take.discard",
@@ -555,9 +555,15 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                 }
             };
             if method == "take.discard" {
-                answer_a_take(deps, timeline_id, Some(Vec::new()), Some(Vec::new())).await
+                answer_a_take(deps, timeline_id, Some(Vec::new()), Some(Vec::new()), Some(Vec::new())).await
             } else {
-                answer_a_take(deps, timeline_id, keys("takes")?, keys("flashes")?).await
+                let events: Option<Vec<uuid::Uuid>> = match args.get("events") {
+                    Some(v) if !v.is_null() => {
+                        Some(serde_json::from_value(v.clone()).map_err(|e| format!("invalid events: {e}"))?)
+                    }
+                    _ => None,
+                };
+                answer_a_take(deps, timeline_id, keys("takes")?, keys("flashes")?, events).await
             }
         }
         "input.grab" => {
@@ -1423,13 +1429,14 @@ async fn what_is_it_doing(
 /// the review — `None` for a list means all of it, an empty list none.
 ///
 /// Every write under the caller's name and one gesture, which is what makes the answer
-/// one Ctrl-Z: the rows, the flashes and the review come back together, so undoing a
+/// one Ctrl-Z: the rows, the flashes, the cues and the review come back together, so undoing a
 /// Merge puts the take up for review again rather than losing it.
 async fn answer_a_take(
     deps: &LocalRpcDeps,
     timeline_id: uuid::Uuid,
     takes: Option<Vec<(uuid::Uuid, String)>>,
     flashes: Option<Vec<(uuid::Uuid, String)>>,
+    events: Option<Vec<uuid::Uuid>>,
 ) -> Result<Value, String> {
     use pult_schema::{lifecycle::Lifecycle, types::timeline::Timeline};
 
@@ -1448,6 +1455,8 @@ async fn answer_a_take(
     let mut rows = timeline.tracks.clone();
     let mut kept = timeline.all_flashes().to_vec();
     pending.merge(&mut rows, &mut kept, |id, key| chosen(&takes, id, key), |id, key| chosen(&flashes, id, key));
+    let mut cues = timeline.events.clone();
+    pending.merge_events(&mut cues, |id| events.as_ref().is_none_or(|ids| ids.contains(&id)));
 
     let user_id = asking_user(deps);
     let gesture = Some(uuid::Uuid::new_v4());
@@ -1464,11 +1473,15 @@ async fn answer_a_take(
         let value = serde_json::to_value(&kept).map_err(|e| e.to_string())?;
         deps.engine.set_as(user_id, gesture, field("flashes"), Lifecycle::Persisted, value).await.map_err(|e| e.to_string())?;
     }
+    if cues.len() != timeline.events.len() {
+        let value = serde_json::to_value(&cues).map_err(|e| e.to_string())?;
+        deps.engine.set_as(user_id, gesture, field("events"), Lifecycle::Persisted, value).await.map_err(|e| e.to_string())?;
+    }
     deps.engine
         .set_as(user_id, gesture, field("pending"), Lifecycle::Persisted, Value::Null)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "rows": rows.len(), "flashes": kept.len() }))
+    Ok(serde_json::json!({ "rows": rows.len(), "flashes": kept.len(), "events": cues.len() }))
 }
 
 /// Read a wire and put what is on it into the programmer.
