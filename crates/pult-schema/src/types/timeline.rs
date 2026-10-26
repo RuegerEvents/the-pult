@@ -900,6 +900,18 @@ pub enum NodeAudioMode {
 /// The same rule [`crate::types::sequence`]'s `went_at` follows, and it has to be the
 /// same rule: a timeline's anchor and a cue's `went_at` are compared against each
 /// other every time an event fires.
+/// How far ahead a Play is anchored on a stopped timeline that streams to a node.
+///
+/// A stream cannot be heard sooner than its playout delay after it starts, plus the
+/// moment the node takes to open its port (150 ms and 100 ms in `infra/audio/nodes.rs`),
+/// so a Play anchored at the press lost that much of the clip's head on the node: the
+/// stream joined where the timeline had got to by the time it was audible. Anchored this
+/// far ahead instead, with margin for the command to reach the node, the stream is
+/// running before the anchor and the first sample lands on it — and everything else on
+/// the timeline waits with it, so the show stays in one piece. A station that sets a
+/// longer delay than the default outruns this, and its log says so.
+pub const STREAM_LEAD_MS: u64 = 400;
+
 fn at_arg(args: &serde_json::Value) -> u64 {
     args.get("at").and_then(|v| v.as_u64()).unwrap_or_else(crate::clock::now_ms)
 }

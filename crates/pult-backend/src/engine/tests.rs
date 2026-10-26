@@ -5113,6 +5113,78 @@ mod recording_sequence_acts {
     }
 }
 
+// ── A Play on a timeline that streams to a node ──────────────────────────────
+
+mod streamed_play {
+    use super::*;
+    use pult_schema::types::timeline::{
+        AudioClip, AudioDestination, NodeAudioMode, Timeline, TimelineSource, STREAM_LEAD_MS,
+    };
+
+    fn a_timeline(destination: AudioDestination) -> Timeline {
+        Timeline {
+            id: Uuid::new_v4(),
+            name: "Scare".into(),
+            clips: vec![AudioClip {
+                id: Uuid::new_v4(),
+                name: "Scream".into(),
+                asset: "00".into(),
+                peaks: None,
+                start_ms: 0,
+                offset_ms: 0,
+                length_ms: None,
+                gain_db: 0.0,
+                fade_in_ms: 0,
+                fade_out_ms: 0,
+                looped: false,
+                destination,
+            }],
+            detected: None,
+            source: TimelineSource::Internal,
+            grid: Vec::new(),
+            markers: Vec::new(),
+            events: Vec::new(),
+            tracks: Vec::new(),
+            flashes: None,
+            pending: None,
+            speed_master: None,
+            node_id: None,
+            end: None,
+            running: false,
+            anchor_ms: 0,
+            position_at_anchor_ms: 0,
+            rate: 1.0,
+            recording: None,
+            armed_by: None,
+        }
+    }
+
+    async fn played_at(h: &Harness, timeline: &Timeline, at: u64) -> u64 {
+        h.engine.set(create_path("timelines"), Lifecycle::Persisted, json(timeline)).await.unwrap();
+        let play = field_path("timelines", timeline.id, "play");
+        h.engine.set_as(Uuid::new_v4(), None, play, Lifecycle::Synced, serde_json::json!({ "at": at })).await.unwrap();
+        h.engine.get(field_path("timelines", timeline.id, "anchor_ms")).await.unwrap().as_u64().unwrap()
+    }
+
+    /// A stream is heard a delay after it starts, so a Play anchored at the press lost
+    /// the clip's head on the node. It is anchored the lead ahead instead.
+    #[tokio::test]
+    async fn a_play_that_streams_to_a_node_is_anchored_where_the_stream_is_heard() {
+        let h = harness().await;
+        let now = pult_schema::types::sequence::now_ms();
+        let streamed = a_timeline(AudioDestination::Node { serial: "gate".into(), mode: NodeAudioMode::Stream });
+        assert!(played_at(&h, &streamed, now).await >= now + STREAM_LEAD_MS);
+
+        // A count-in already further ahead is left alone.
+        let counted = a_timeline(AudioDestination::Node { serial: "gate".into(), mode: NodeAudioMode::Stream });
+        assert_eq!(played_at(&h, &counted, now + 3_000).await, now + 3_000);
+
+        // A clip played from the node's flash is scheduled ahead by the node itself.
+        let stored = a_timeline(AudioDestination::Node { serial: "gate".into(), mode: NodeAudioMode::Clip });
+        assert_eq!(played_at(&h, &stored, now).await, now);
+    }
+}
+
 /// A station restarted on its own showfile counts on from where its log got to. It
 /// used to start again from zero: the next write collided with a row from early in
 /// the show (`UNIQUE` on `(node_id, seq)`, toasted and lost), and a peer that had

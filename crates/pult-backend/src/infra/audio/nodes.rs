@@ -86,6 +86,10 @@ pub const STREAM_PORT: u16 = 5004;
 /// The playout delay a stream runs at when the station's preferences say nothing.
 pub const DEFAULT_STREAM_DELAY_MS: u32 = 150;
 
+/// How long a node takes to open its port after `stream start`, which a stream's first
+/// sample is heard that much after on top of its delay.
+pub const STREAM_OPENS_MS: u64 = 100;
+
 /// Everything the station driving the nodes is keeping about them.
 pub struct Nodes {
     directory: Option<watch::Receiver<DeviceDirectory>>,
@@ -389,6 +393,13 @@ impl AudioManager {
                     continue;
                 };
                 if mode == NodeAudioMode::Stream {
+                    // Decoded now, as a station's own clips are the moment they are on a
+                    // timeline, and not when Play is pressed: decoding a song took
+                    // longer than a count-in on the first Play after a restart, and the
+                    // stream started that late, joining the clip part of the way in.
+                    if let Err(e) = self.decoded(&clip.asset).await {
+                        fault(&mut faults, e);
+                    }
                     streamed.entry(serial.to_string()).or_default().push((timeline.clone(), clip.clone()));
                     continue;
                 }
@@ -814,6 +825,15 @@ impl AudioManager {
                     }
                     let Some(devices) = self.nodes.devices.clone() else { continue };
                     info!("[audio] streaming to node {serial} at {address}, {} ms ahead", self.nodes.delay_ms);
+                    let heard_after = self.nodes.delay_ms as u64 + STREAM_OPENS_MS;
+                    if heard_after >= pult_schema::types::timeline::STREAM_LEAD_MS {
+                        warn!(
+                            "[audio] a stream delay of {} ms is heard {heard_after} ms after it starts, past the {} ms a Play \
+                             is anchored ahead: the head of a clip will be lost on node {serial}",
+                            self.nodes.delay_ms,
+                            pult_schema::types::timeline::STREAM_LEAD_MS
+                        );
+                    }
                     let streamer = Streamer::start(
                         serial.clone(), address, rate, channels, self.nodes.delay_ms, devices, decks, built,
                     );
@@ -1033,10 +1053,10 @@ fn stream(
     let mut buffer = vec![0.0f32; frames * channels];
     let mut decks: Vec<StreamDeck> = Vec::new();
 
-    // The node opens its port within 100 ms of `start`, so the first sample is heard
-    // that much later than a delay from now.
+    // The node opens its port within [`STREAM_OPENS_MS`] of `start`, so the first sample
+    // is heard that much later than a delay from now.
     let now = pult_schema::clock::now_ms();
-    let mut session = Session { at: now + delay_ms as u64 + 100, ts: 0, rate };
+    let mut session = Session { at: now + delay_ms as u64 + STREAM_OPENS_MS, ts: 0, rate };
     let mut sent_frames: u64 = 0;
     let announce = |session: &Session| {
         devices.audio(

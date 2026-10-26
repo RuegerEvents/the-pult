@@ -1653,6 +1653,9 @@ impl ShowEngine {
     /// minus the reply. Shared by follow cues and by triggers, so the two cannot
     /// drift into replicating differently.
     async fn run_synced_command(&mut self, path: Path, args: serde_json::Value) {
+        // A timeline event playing a timeline that streams to a node, as a Play from a
+        // person does: see `lead_a_streamed_play`.
+        let args = self.lead_a_streamed_play(&path, args);
         if self.apply_set(path.clone(), args.clone(), Lifecycle::Synced).await.is_ok() {
             // Everything, for the reason a `Call` is everything: the path is the
             // command's, and what running it wrote is not in it.
@@ -2331,8 +2334,59 @@ impl ShowEngine {
                          write to [\"programmer_values\", \"__home\"]"
                     .into(),
             }),
-            _ => Ok(vec![(path, value)]),
+            _ => {
+                let value = self.lead_a_streamed_play(&path, value);
+                Ok(vec![(path, value)])
+            }
         }
+    }
+
+    /// A Play on a stopped timeline that streams to a node, anchored where the stream
+    /// can first be heard: [`STREAM_LEAD_MS`] ahead at the least, so the node's first
+    /// audible sample is the clip's first sample rather than wherever the timeline had
+    /// got to by then. Resolved here, before the write is logged, so every station and
+    /// the oplog hold the one anchor — the reason `__by` is resolved here too. A count-in
+    /// further ahead is left as it is, and so is a Play on a timeline already running,
+    /// which would otherwise hold where it is for the lead.
+    ///
+    /// [`STREAM_LEAD_MS`]: pult_schema::types::timeline::STREAM_LEAD_MS
+    fn lead_a_streamed_play(&self, path: &Path, mut value: serde_json::Value) -> serde_json::Value {
+        use pult_schema::types::{
+            timeline::{NodeAudioMode, Timeline, STREAM_LEAD_MS},
+            zone::{node_targets, SpeakerZone},
+        };
+        let [PathSegment::Key(table), PathSegment::Id(id), PathSegment::Key(verb)] = path.as_slice() else {
+            return value;
+        };
+        if table != "timelines" || verb != "play" {
+            return value;
+        }
+        let Some(timeline) =
+            self.state.entity("timelines", *id).and_then(|v| serde_json::from_value::<Timeline>(v.clone()).ok())
+        else {
+            return value;
+        };
+        if timeline.running {
+            return value;
+        }
+        let zones: Vec<SpeakerZone> = self.read_collection("speaker_zones");
+        let streams = timeline
+            .clips
+            .iter()
+            .any(|clip| node_targets(&clip.destination, &zones).iter().any(|(_, mode)| *mode == NodeAudioMode::Stream));
+        if !streams {
+            return value;
+        }
+        let now = pult_schema::types::sequence::now_ms();
+        let earliest = now + STREAM_LEAD_MS;
+        let at = value.get("at").and_then(serde_json::Value::as_u64).unwrap_or(now);
+        if at < earliest {
+            if !value.is_object() {
+                value = serde_json::json!({});
+            }
+            value["at"] = serde_json::json!(earliest);
+        }
+        value
     }
 
     /// `["programmer_values", "__by"]` with `{ fixtureId, parameterKind, by }`.
