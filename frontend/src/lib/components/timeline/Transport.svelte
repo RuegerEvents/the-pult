@@ -1,7 +1,8 @@
 <script lang="ts">
 	/**
 	 * The transport, above the lanes: play or stop, back to the top, where the playhead
-	 * is, record, how it ends, listening and snapping.
+	 * is, record, listening and snapping. How it ends is the timeline's Inspector and the
+	 * end handle on the lanes; it took a wide button here for a setting.
 	 *
 	 * The readout is arithmetic over the SYNCED anchor once an animation frame, the way
 	 * the station works it out, and **shows a gap until this browser knows the station's
@@ -15,23 +16,21 @@
 	 */
 
 	import Circle from '@lucide/svelte/icons/circle';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Ear from '@lucide/svelte/icons/ear';
-	import Endless from '@lucide/svelte/icons/infinity';
 	import Magnet from '@lucide/svelte/icons/magnet';
 	import Play from '@lucide/svelte/icons/play';
-	import Repeat from '@lucide/svelte/icons/repeat';
 	import SkipBack from '@lucide/svelte/icons/skip-back';
 	import Square from '@lucide/svelte/icons/square';
-	import ArrowRightToLine from '@lucide/svelte/icons/arrow-right-to-line';
 
 	import type { Timeline } from '$lib/generated/index.js';
-	import { selectSubject } from '$lib/objects.js';
 	import { collection, showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { countdownOf, lapOf, locate, now, playCounted, positionOf, recordFrom, stop, takes } from '$lib/stores/timelines.js';
 	import { armArgs, PROGRAMMER, takeSummary } from '$lib/takes.js';
 	import { pageId } from '$lib/stores/takeReview.js';
 	import { monitorSettings, monitorState, setMonitorLevel, toggleListening } from '$lib/stores/monitor.js';
+	import { dropdown } from '$lib/actions.js';
 	import { clock, parsePosition } from '$lib/waveform.js';
 
 	let { timeline, snapping = $bindable() }: { timeline: Timeline; snapping: boolean } = $props();
@@ -55,6 +54,9 @@
 	}
 	/** Whether this tab's speaker is on this timeline: see `stores/monitor.ts`. */
 	const hearing = $derived($monitorSettings.timelineId === timeline.id ? $monitorState : 'off');
+	let levelMenu = $state(false);
+	/** Held open while the slider is dragged, which can take the mouse out of the menu. */
+	let sliding = $state(false);
 </script>
 
 <div class="transport">
@@ -116,20 +118,12 @@
 		>
 			<Circle size={12} />{take ? 'Recording' : timeline.recording ? 'Armed' : 'Record'}
 		</button>
-		<button class="btn" title="How it ends — in the Inspector" onclick={() => selectSubject({ kind: 'timeline', id: timeline.id })}>
-			{#if timeline.end?.then === 'Loop'}
-				<Repeat size={14} />Loops at {clock(timeline.end.at_ms)}
-			{:else if timeline.end}
-				<ArrowRightToLine size={14} />Stops at {clock(timeline.end.at_ms)}
-			{:else}
-				<Endless size={14} />Runs until stopped
-			{/if}
-		</button>
 	</div>
 
 	<div class="group">
 		<!-- This tab's speaker, for listening while programming: never a show output.
 		     A tap is what lets a browser start sound, so a reloaded page is "armed". -->
+		<span class="split">
 		<button
 			class="btn btn-icon"
 			class:on={hearing === 'listening' || hearing === 'loading'}
@@ -146,18 +140,35 @@
 		>
 			<Ear size={14} />{hearing === 'loading' ? 'Loading…' : 'Listen'}
 		</button>
-		{#if hearing !== 'off'}
-			<input
-				class="level"
-				type="range"
-				min="0"
-				max="1"
-				step="0.01"
-				aria-label="How loud this tab plays it"
-				value={$monitorSettings.level}
-				oninput={(e) => setMonitorLevel(Number(e.currentTarget.value))}
-			/>
+		<button
+			class="btn btn-icon caret"
+			class:on={hearing === 'listening' || hearing === 'loading'}
+			aria-haspopup="true"
+			aria-expanded={levelMenu}
+			aria-label="How loud this tab plays it"
+			title="How loud this tab plays it"
+			onclick={() => (levelMenu = !levelMenu)}><ChevronDown size={12} /></button
+		>
+		{#if levelMenu}
+			<div class="menu" use:dropdown={{ close: () => (levelMenu = false), keep: () => sliding }}>
+				<span class="heading">Volume on this tab</span>
+				<input
+					class="level"
+					type="range"
+					min="0"
+					max="1"
+					step="0.01"
+					aria-label="How loud this tab plays it"
+					value={$monitorSettings.level}
+					onpointerdown={() => (sliding = true)}
+					onpointerup={() => (sliding = false)}
+					onpointercancel={() => (sliding = false)}
+					oninput={(e) => setMonitorLevel(Number(e.currentTarget.value))}
+				/>
+				<span class="figure">{Math.round($monitorSettings.level * 100)}%</span>
+			</div>
 		{/if}
+		</span>
 		<button class="btn btn-icon" class:on={snapping} aria-pressed={snapping} title="Drags snap to the grid and the markers" onclick={() => (snapping = !snapping)}>
 			<Magnet size={14} />Snap
 		</button>
@@ -165,8 +176,54 @@
 </div>
 
 <style>
+	/* Listen and its caret read as one button with two halves. */
+	.split {
+		position: relative;
+		display: inline-flex;
+	}
+	.split > .btn:first-child {
+		border-top-right-radius: 0;
+		border-bottom-right-radius: 0;
+	}
+	.split > .caret {
+		min-width: 0;
+		padding: 0 6px;
+		margin-left: -1px;
+		border-top-left-radius: 0;
+		border-bottom-left-radius: 0;
+	}
+	.menu {
+		position: absolute;
+		top: calc(100% + 4px);
+		right: 0;
+		z-index: 20;
+		display: grid;
+		grid-template-columns: 1fr auto;
+		align-items: center;
+		gap: 6px 10px;
+		width: 220px;
+		padding: 10px 12px;
+		background: var(--bg-panel);
+		border: 1px solid var(--line-strong);
+		border-radius: 6px;
+		box-shadow: 0 8px 24px rgb(0 0 0 / 0.45);
+	}
+	.menu .heading {
+		grid-column: 1 / -1;
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-faint);
+	}
 	.level {
-		width: 72px;
+		width: 100%;
+	}
+	.figure {
+		min-width: 3em;
+		text-align: right;
+		font-size: var(--font-xs);
+		font-variant-numeric: tabular-nums;
+		color: var(--text-dim);
 	}
 	.countdown {
 		min-width: 5.5em;
