@@ -523,9 +523,12 @@ impl SyncManager {
                 let watched = self.watched.clone();
                 let connected = self.connected_tx.clone();
                 tokio::spawn(async move {
-                    let Some((addr, stream)) = dial(&addrs).await else {
-                        let _ = reply.send(Err(format!("nothing answered at any of {addrs:?}")));
-                        return;
+                    let (addr, stream) = match dial(&addrs).await {
+                        Ok(dialed) => dialed,
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                            return;
+                        }
                     };
                     match spawn_outbound(
                         stream, node_id, session_id, show_id, engine, watched, on_lost,
@@ -739,16 +742,26 @@ const DIAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
 /// caller ranks them by how far they reach and this works down the list.
 /// The budget is split evenly between them, so one address that neither answers nor
 /// refuses cannot spend the whole of it before the one that works is tried.
-async fn dial(addrs: &[SocketAddr]) -> Option<(SocketAddr, tokio::net::TcpStream)> {
+///
+/// What each address said goes into the answer, because "nothing answered" alone is a
+/// refused port, a timeout and a route that does not exist all looking the same.
+async fn dial(addrs: &[SocketAddr]) -> Result<(SocketAddr, tokio::net::TcpStream), String> {
     let each = DIAL_BUDGET / addrs.len().max(1) as u32;
+    let mut said = Vec::new();
     for addr in addrs {
         match tokio::time::timeout(each, tokio::net::TcpStream::connect(addr)).await {
-            Ok(Ok(stream)) => return Some((*addr, stream)),
-            Ok(Err(e)) => debug!("[sync] {addr} did not answer: {e}"),
-            Err(_) => debug!("[sync] {addr} said nothing in {each:?}"),
+            Ok(Ok(stream)) => return Ok((*addr, stream)),
+            Ok(Err(e)) => {
+                debug!("[sync] {addr} did not answer: {e}");
+                said.push(format!("{addr}: {e}"));
+            }
+            Err(_) => {
+                debug!("[sync] {addr} said nothing in {each:?}");
+                said.push(format!("{addr}: nothing in {each:?}"));
+            }
         }
     }
-    None
+    Err(format!("nothing answered ({})", said.join("; ")))
 }
 
 #[cfg(test)]

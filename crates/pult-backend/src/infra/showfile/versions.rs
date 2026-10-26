@@ -273,3 +273,204 @@ async fn row_inside(file: &Path, id: Uuid) -> Option<pult_schema::types::Version
     pool.close().await;
     rows.into_iter().find(|row| row.id == id)
 }
+
+// ── Restoring in place ────────────────────────────────────────────────────────
+
+/// Collections a restore leaves as they are.
+///
+/// `versions`, because the list of points to come back to is not part of any one of
+/// them: restoring an older version must not delete the newer ones, or the "Before
+/// restoring…" version taken a moment ago. `users`, because the people at the desk are
+/// the ones doing the restoring.
+const KEPT_BY_A_RESTORE: &[&str] = &["versions", "users"];
+
+/// A version put back as the show, **as ordinary writes**: the rows it does not have
+/// deleted, the ones it has and the show does not created, and every stored field that
+/// differs set — one gesture, under `user`.
+///
+/// It used to swap the file in and restart the station, which a peer then undid by
+/// replaying its newer operations over it, so it was refused in a session. As writes
+/// it replicates like any edit, so every station follows, nobody leaves the session,
+/// and one Ctrl-Z takes the restore back. Only PERSISTED fields are written: what a
+/// sequence has up, a timeline's playhead and the programmer stay what they are.
+///
+/// The snapshot is read through a copy opened the way a show is opened, so a file from
+/// another generation is refused by name and a field added since is filled in, exactly
+/// as opening it would.
+pub async fn restore_in_place(bundle: &Bundle, version: Uuid, engine: &EngineHandle, user: Uuid) -> Result<usize> {
+    use pult_schema::{path::PathSegment, registry::EntityMeta};
+
+    let from = bundle.version_path(version);
+    if !from.exists() {
+        anyhow::bail!(
+            "this station does not hold {version}. A version's row travels and its \
+             snapshot does not: restore it on the station that took it."
+        );
+    }
+    let scratch = std::env::temp_dir().join(format!("pult-restore-{}.db", Uuid::new_v4()));
+    std::fs::copy(&from, &scratch).with_context(|| format!("reading {}", from.display()))?;
+    let then = read_rows(&scratch).await;
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", scratch.display()));
+    }
+    let then = then?;
+
+    let mut now = serde_json::Map::new();
+    for meta in EntityMeta::all_with_tables() {
+        let (Some(table), Some(_)) = (meta.table_name, meta.load_all) else { continue };
+        if let Ok(value) = engine.get(vec![PathSegment::Key(table.into())]).await {
+            now.insert(table.to_string(), value);
+        }
+    }
+
+    let writes = difference(&now, &then);
+    let gesture = Some(Uuid::new_v4());
+    let count = writes.len();
+    for (path, value) in writes {
+        let lifecycle = pult_schema::registry::path_lifecycle(&path);
+        if let Err(e) = engine.set_as(user, gesture, path.clone(), lifecycle, value).await {
+            warn!("[versions] restoring {version}: {path:?}: {e}");
+        }
+    }
+    info!("[versions] restored {version} in place: {count} writes");
+    Ok(count)
+}
+
+/// Every stored collection of a showfile, by table, as the engine serves them.
+async fn read_rows(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>> {
+    use pult_schema::registry::EntityMeta;
+    let pool = super::open(path).await.context("opening the version")?;
+    let mut out = serde_json::Map::new();
+    for meta in EntityMeta::all_with_tables() {
+        let (Some(table), Some(load)) = (meta.table_name, meta.load_all) else { continue };
+        match load(pool.clone()).await {
+            Ok(value) => {
+                out.insert(table.to_string(), value);
+            }
+            Err(e) => warn!("[versions] reading {table} out of a version: {e}"),
+        }
+    }
+    pool.close().await;
+    Ok(out)
+}
+
+/// The rows of a collection by id, whether it came as an array or as a map.
+fn by_id(value: &serde_json::Value) -> std::collections::BTreeMap<String, &serde_json::Value> {
+    match value {
+        serde_json::Value::Array(rows) => rows
+            .iter()
+            .filter_map(|row| Some((row.get("id")?.as_str()?.to_string(), row)))
+            .collect(),
+        serde_json::Value::Object(rows) => rows.iter().map(|(id, row)| (id.clone(), row)).collect(),
+        _ => Default::default(),
+    }
+}
+
+/// The writes that make the show `now` into `then`, over its stored fields.
+///
+/// Pure, so the rule is tested without a station. A singleton (the show itself) is a
+/// row with no id, compared field by field. A field whose lifecycle is not PERSISTED
+/// is never written, however it differs: that is running state, and a restore is not
+/// a Go.
+pub fn difference(
+    now: &serde_json::Map<String, serde_json::Value>,
+    then: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<(pult_schema::path::Path, serde_json::Value)> {
+    use pult_schema::{lifecycle::Lifecycle, path::PathSegment, registry::EntityMeta};
+
+    let mut out = Vec::new();
+    let stored = |meta: &EntityMeta, field: &str| meta.field_lifecycle(field) == Some(Lifecycle::Persisted);
+    let fields = |meta: &EntityMeta, path: Vec<PathSegment>, was: &serde_json::Value, is: &serde_json::Value, out: &mut Vec<_>| {
+        let (Some(was), Some(is)) = (was.as_object(), is.as_object()) else { return };
+        for (field, value) in is {
+            if field == "id" || !stored(meta, field) || was.get(field) == Some(value) {
+                continue;
+            }
+            let mut at = path.clone();
+            at.push(PathSegment::Key(field.clone()));
+            out.push((at, value.clone()));
+        }
+    };
+    for meta in EntityMeta::all_with_tables() {
+        let Some(table) = meta.table_name else { continue };
+        if meta.load_all.is_none() || KEPT_BY_A_RESTORE.contains(&table) {
+            continue;
+        }
+        let (Some(is), Some(was)) = (then.get(table), now.get(table)) else { continue };
+        if meta.is_singleton {
+            fields(meta, vec![PathSegment::Key(table.into())], was, is, &mut out);
+            continue;
+        }
+        let (was, is) = (by_id(was), by_id(is));
+        for id in was.keys().filter(|id| !is.contains_key(*id)) {
+            let Ok(id) = id.parse() else { continue };
+            out.push((
+                vec![PathSegment::Key(table.into()), PathSegment::Id(id), PathSegment::Key("__delete".into())],
+                serde_json::Value::Null,
+            ));
+        }
+        for (id, row) in &is {
+            match was.get(id) {
+                None => out.push((
+                    vec![PathSegment::Key(table.into()), PathSegment::Key("__create".into())],
+                    (*row).clone(),
+                )),
+                Some(current) => {
+                    let Ok(uuid) = id.parse() else { continue };
+                    fields(meta, vec![PathSegment::Key(table.into()), PathSegment::Id(uuid)], current, row, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pult_schema::path::PathSegment;
+    use serde_json::json;
+
+    fn show(sequences: serde_json::Value, versions: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        m.insert("sequences".into(), sequences);
+        m.insert("versions".into(), versions);
+        m
+    }
+
+    #[test]
+    fn a_restore_creates_deletes_and_sets_stored_fields_only() {
+        let (kept, gone, back) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let now = show(
+            json!([
+                { "id": kept.to_string(), "name": "Renamed since", "cue_ids": [], "active_cue_index": 4, "went_at": 9, "master": null },
+                { "id": gone.to_string(), "name": "Made since", "cue_ids": [], "active_cue_index": null, "went_at": null, "master": null },
+            ]),
+            json!([{ "id": Uuid::from_u128(9).to_string() }]),
+        );
+        let then = show(
+            json!([
+                { "id": kept.to_string(), "name": "Act 1", "cue_ids": [], "active_cue_index": null, "went_at": null, "master": null },
+                { "id": back.to_string(), "name": "Deleted since", "cue_ids": [], "active_cue_index": null, "went_at": null, "master": null },
+            ]),
+            json!([]),
+        );
+        let writes = difference(&now, &then);
+        let named = |path: &pult_schema::path::Path| {
+            path.iter()
+                .map(|s| match s {
+                    PathSegment::Key(k) => k.clone(),
+                    PathSegment::Id(id) => id.to_string(),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let paths: Vec<String> = writes.iter().map(|(p, _)| named(p)).collect();
+        assert!(paths.contains(&format!("sequences/{kept}/name")), "{paths:?}");
+        assert!(paths.contains(&format!("sequences/{gone}/__delete")), "{paths:?}");
+        assert!(paths.contains(&"sequences/__create".to_string()), "{paths:?}");
+        assert!(!paths.iter().any(|p| p.ends_with("active_cue_index") || p.ends_with("went_at")), "running state stays: {paths:?}");
+        assert!(!paths.iter().any(|p| p.starts_with("versions")), "the versions are not restored: {paths:?}");
+    }
+}

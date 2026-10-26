@@ -298,7 +298,7 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     LocalRpcMeta {
         method: "show.restore",
         args_schema: r#"[{"name":"versionId","type":"string","optional":false}]"#,
-        doc: "Put a saved version back as the show. Refused while a peer is connected.",
+        doc: "Put a saved version back as the show, as one undoable edit that every station in the session follows.",
     },
     LocalRpcMeta {
         method: "show.list",
@@ -859,7 +859,7 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
         "show.restore" => {
             let version: uuid::Uuid = serde_json::from_value(args["versionId"].clone())
                 .map_err(|e| format!("invalid versionId: {e}"))?;
-            restore_a_show(version, &deps.shows, deps.sync.as_ref(), &deps.engine).await
+            restore_a_show(version, &deps.shows, &deps.engine, asking_user(deps)).await
         }
         "show.list" => list_shows(&deps.shows).await,
         "paperwork.tables" => {
@@ -1246,26 +1246,18 @@ pub async fn open_a_show(
 pub async fn restore_a_show(
     version: uuid::Uuid,
     shows: &crate::ShowsHandle,
-    sync: Option<&crate::infra::sync::SyncHandle>,
     engine: &EngineHandle,
+    user: uuid::Uuid,
 ) -> Result<Value, String> {
-    let alone = match sync {
-        Some(sync) => sync.peer_count().await == 0,
-        None => true,
-    };
-    if !alone {
-        return Err("leave the session first: a peer still holds this show as it is now, \
-                    and would put it straight back"
-            .into());
-    }
+    let bundle = shows.bundle.as_ref().ok_or_else(|| "no show is open".to_string())?;
 
     // A point to come back *from*, taken before the show is overwritten. Restoring is
     // the one act in this console that throws work away, and an operator who restores
-    // the wrong version must have somewhere to go.
+    // the wrong version must have somewhere to go — beside the Ctrl-Z that now takes a
+    // restore back, because a version outlives an undo history.
     //
     // Automatic and unattributed: nobody asked for this one, and it must not be the
-    // thing Ctrl-Z reaches for. Its row is not in the database being put back — that
-    // one was written earlier — which is why `versions::reconcile` exists.
+    // thing Ctrl-Z reaches for.
     let name = restoring_from(engine, version).await;
     let taken = engine
         .set(
@@ -1283,8 +1275,11 @@ pub async fn restore_a_show(
         tracing::warn!("[versions] could not save a point to come back from: {e}");
     }
 
-    shows.ask(crate::ShowSwitch::Restore { version }).await?;
-    Ok(serde_json::json!({ "ok": true }))
+    // In place, as writes: see `versions::restore_in_place` for why not a file swap.
+    let changed = crate::infra::showfile::versions::restore_in_place(bundle, version, engine, user)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(serde_json::json!({ "ok": true, "changed": changed }))
 }
 
 /// What to call the version taken just before a restore.

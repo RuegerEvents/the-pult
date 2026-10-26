@@ -415,7 +415,6 @@ async fn a_restored_show_is_the_show_as_it_was() {
     let console = Console::start(config).await.expect("a console starts");
     let port = console.http_addr().port();
     let shows = console.shows();
-    let sync = console.sync();
     let engine = console.engine().expect("a station is running");
 
     // Something to lose, then a point to come back to, then losing it.
@@ -430,17 +429,23 @@ async fn a_restored_show_is_the_show_as_it_was() {
     tokio::spawn(console.serve());
     assert_eq!(show_name(&show).await, "Act Two");
 
-    rpcs::restore_a_show(id, &shows, sync.as_ref(), &engine).await.expect("nobody else is here");
+    // As writes, in place: the station stays up, and a peer would follow it.
+    let user = pult_schema::types::user::User::DEFAULT_ID;
+    rpcs::restore_a_show(id, &shows, &engine, user).await.expect("it restores");
 
     for _ in 0..200 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         if show_name(&show).await == "Act One" {
-            // The file is put back *before* the next station binds the port, so the
-            // console is asked only once it is answering again. Asking at once was
-            // the flake: on a loaded machine the gap between the two is long enough
-            // to land in.
             config_when_settled(port, true).await;
-            return;
+            // And it is one edit, which one Ctrl-Z takes back.
+            assert!(!engine.undo(user, false).await.is_empty(), "the restore is in the history");
+            for _ in 0..200 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if show_name(&show).await == "Act Two" {
+                    return;
+                }
+            }
+            panic!("undoing the restore did not put the show back");
         }
     }
     panic!(

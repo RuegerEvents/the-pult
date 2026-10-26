@@ -25,7 +25,6 @@
 	import { users } from '$lib/stores/user.js';
 	import { addToast } from '$lib/toasts.js';
 	import { asSize, parentPath } from '$lib/shows.js';
-	import { beginSwitch, endSwitch } from '$lib/stores/switching.js';
 	import { readPreferences } from '$lib/preferences.js';
 	import Dialog from '$lib/components/Dialog.svelte';
 	import Help from '$lib/components/Help.svelte';
@@ -136,18 +135,21 @@
 		}
 	}
 
+	/**
+	 * Put a version back. As ordinary writes on the station, in one gesture: every
+	 * station in the session follows, nobody restarts, and Ctrl-Z takes it back. What is
+	 * running — cues up, timelines rolling — stays running.
+	 */
 	async function restore(version: Version) {
 		confirming = null;
 		restoreRefusal = '';
-		beginSwitch(version.name ? `restoring “${version.name}”` : 'restoring a version');
 		try {
-			await client.call('show.restore', { versionId: version.id });
+			const answer = (await client.call('show.restore', { versionId: version.id })) as { changed?: number } | null;
+			const n = answer?.changed ?? 0;
+			addToast(n === 0 ? 'The show already was that version' : `Restored “${label(version)}”: ${n} ${n === 1 ? 'change' : 'changes'}`, 'success');
 		} catch (e) {
-			endSwitch();
-			// The refusal that matters is "leave the session first": a peer holds the
-			// show as it is now and would replay it straight back over whatever this
-			// station put there. Shown in place rather than as a toast, because it is
-			// an answer to the button that was just pressed.
+			// Shown in place rather than as a toast, because it is an answer to the button
+			// that was just pressed: most often a version this station never held.
 			restoreRefusal = `${e}`;
 		}
 	}
@@ -364,10 +366,10 @@
 		<div class="ask">
 			<h3>Restore “{label(version)}”?</h3>
 			<p>
-				The show goes back to how it was at {when(version.created_at)}. A version of
-				what it is now is taken first, so this can be undone by restoring that one.
+				The show goes back to how it was at {when(version.created_at)}, on every station in the
+				session. Ctrl-Z takes it back, and a version of what it is now is taken first as well.
 			</p>
-			<p class="fine">The console restarts, and this page reloads onto the restored show.</p>
+			<p class="fine">Nothing restarts. What is running keeps running: cues that are up, timelines rolling.</p>
 		</div>
 	</Dialog>
 {/if}
