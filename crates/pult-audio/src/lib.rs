@@ -28,6 +28,7 @@ pub mod beats;
 pub mod lock;
 pub mod ltc;
 pub mod mix;
+pub mod monitor;
 pub mod peaks;
 pub mod resample;
 pub mod rtp;

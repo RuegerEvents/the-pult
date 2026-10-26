@@ -76,6 +76,7 @@
 pub mod decode;
 pub mod device;
 pub mod models;
+pub mod monitor;
 pub mod nodes;
 
 use std::collections::{HashMap, HashSet};
@@ -164,6 +165,9 @@ pub enum AudioCommand {
         reply: oneshot::Sender<Result<Detected, String>>,
     },
     Devices { reply: oneshot::Sender<AudioDevices> },
+    /// A page wants to listen: chunks of one timeline's sound, or every running one's,
+    /// sent until the receiver is dropped. See [`monitor`].
+    Monitor { timeline: Option<Uuid>, chunks: mpsc::Sender<Vec<u8>> },
     #[allow(dead_code, reason = "Stop has no caller until the server shuts down gracefully")]
     Stop,
 }
@@ -195,6 +199,14 @@ impl AudioHandle {
             .await
             .map_err(|_| "the audio manager has stopped".to_string())?;
         answer.await.map_err(|_| "the audio manager did not answer".to_string())?
+    }
+
+    /// Listen: one timeline's sound, or every running timeline's, as monitor chunks
+    /// until the receiver is dropped. See [`monitor`].
+    pub async fn monitor(&self, timeline: Option<Uuid>) -> Option<mpsc::Receiver<Vec<u8>>> {
+        let (chunks, rx) = mpsc::channel(monitor::QUEUE);
+        self.0.send(AudioCommand::Monitor { timeline, chunks }).await.ok()?;
+        Some(rx)
     }
 
     pub async fn devices(&self) -> AudioDevices {
@@ -291,6 +303,8 @@ pub struct AudioManager {
     clip_channels: HashMap<Uuid, std::collections::BTreeMap<String, Vec<u16>>>,
     /// What the OpenHaunt nodes' loudspeakers hold and are told. See [`nodes`].
     nodes: nodes::Nodes,
+    /// The pages listening. Asked for, never published: with none, nothing is rendered.
+    monitors: Vec<monitor::Listener>,
 }
 
 impl AudioManager {
@@ -333,6 +347,7 @@ impl AudioManager {
                 clip_faults: HashMap::new(),
                 clip_channels: HashMap::new(),
                 nodes: nodes::Nodes::new(prefs.node_stream_delay_ms),
+                monitors: Vec::new(),
                 names: (None, prefs.names.clone()),
                 station_said: None,
             },
@@ -392,6 +407,9 @@ impl AudioManager {
                                 .unwrap_or_default();
                             let _ = reply.send(found);
                         }
+                        AudioCommand::Monitor { timeline, chunks } => {
+                            self.monitors.push(monitor::Listener::new(timeline, chunks));
+                        }
                     }
                 }
                 got = self.samples.recv() => {
@@ -401,6 +419,7 @@ impl AudioManager {
                 Some(done) = self.nodes.results.recv() => self.node_request_done(done).await,
                 _ = steer.tick() => {
                     self.steer().await;
+                    self.feed_monitors(pult_schema::clock::now_ms()).await;
                     self.schedule_nodes(pult_schema::clock::now_ms());
                 }
                 _ = report.tick() => {
@@ -1231,7 +1250,7 @@ fn transport_of(timeline: &Timeline) -> (u64, u64, f32) {
 
 
 /// A clip's place, as the mixer wants it.
-fn placement(clip: &AudioClip) -> pult_audio::Placement {
+pub(super) fn placement(clip: &AudioClip) -> pult_audio::Placement {
     pult_audio::Placement {
         start_ms: clip.start_ms as f64,
         offset_ms: clip.offset_ms as f64,
@@ -1245,7 +1264,7 @@ fn placement(clip: &AudioClip) -> pult_audio::Placement {
 
 /// Where a timeline ends, as a deck needs it. An end at zero is no end, the rule
 /// `model/timelines.rs` follows, or a loop there would wrap on every frame.
-fn deck_end(timeline: &Timeline) -> Option<pult_audio::mix::End> {
+pub(super) fn deck_end(timeline: &Timeline) -> Option<pult_audio::mix::End> {
     timeline.end.filter(|end| end.at_ms > 0).map(|end| pult_audio::mix::End {
         at_ms: end.at_ms as f64,
         looped: end.then == AtEnd::Loop,
@@ -1259,7 +1278,7 @@ fn deck_end(timeline: &Timeline) -> Option<pult_audio::mix::End> {
 /// deck reaching the end and the leader relocating the transport there. Measuring drift
 /// against the unfolded number would read that moment as a whole loop's worth of drift
 /// and rewrite the anchor for it.
-fn folded(timeline: &Timeline, position_ms: u64) -> u64 {
+pub(super) fn folded(timeline: &Timeline, position_ms: u64) -> u64 {
     match timeline.end.filter(|end| end.at_ms > 0) {
         Some(end) if position_ms >= end.at_ms => match end.then {
             AtEnd::Loop => position_ms % end.at_ms,

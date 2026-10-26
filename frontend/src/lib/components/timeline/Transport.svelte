@@ -16,6 +16,7 @@
 	 */
 
 	import Circle from '@lucide/svelte/icons/circle';
+	import Ear from '@lucide/svelte/icons/ear';
 	import Magnet from '@lucide/svelte/icons/magnet';
 	import Play from '@lucide/svelte/icons/play';
 	import Repeat from '@lucide/svelte/icons/repeat';
@@ -30,6 +31,7 @@
 	import { countdownOf, countInSeconds, lapOf, locate, now, playCounted, positionOf, stop, takes } from '$lib/stores/timelines.js';
 	import { armArgs, armChoice, PROGRAMMER, releases, takeSummary } from '$lib/takes.js';
 	import { pageId } from '$lib/stores/takeReview.js';
+	import { monitorSettings, monitorState, setMonitorLevel, toggleListening } from '$lib/stores/monitor.js';
 	import { addToast } from '$lib/toasts.js';
 	import { clock, parsePosition } from '$lib/waveform.js';
 
@@ -56,6 +58,8 @@
 		// Says which page armed it, so this is the page the review opens on.
 		void showData().timelines.byId(timeline.id).record({ ...armArgs(choice, release), armedBy: pageId });
 	const listening = $derived($inputs.some((i) => i.enabled));
+	/** Whether this tab's speaker is on this timeline: see `stores/monitor.ts`. */
+	const hearing = $derived($monitorSettings.timelineId === timeline.id ? $monitorState : 'off');
 
 	/** What is on the wire now, into the programmer, for the selected fixtures. */
 	async function grab() {
@@ -203,6 +207,34 @@
 	</div>
 
 	<div class="group end">
+		<!-- This tab's speaker, for listening while programming: never a show output.
+		     A tap is what lets a browser start sound, so a reloaded page is "armed". -->
+		<button
+			class="chip"
+			class:on={hearing === 'listening'}
+			class:armed={hearing === 'armed'}
+			aria-pressed={hearing === 'listening'}
+			title={hearing === 'armed'
+				? 'Tap to carry on listening on this tab'
+				: hearing === 'no-clock'
+					? 'Waiting for the station clock before anything can be heard in step'
+					: 'Hear this timeline on this tab, in step with the playhead. Only this speaker: the show is never played from a browser'}
+			onclick={() => toggleListening(timeline.id)}
+		>
+			<Ear size={12} />listen
+		</button>
+		{#if hearing !== 'off'}
+			<input
+				class="level"
+				type="range"
+				min="0"
+				max="1"
+				step="0.01"
+				aria-label="How loud this tab plays it"
+				value={$monitorSettings.level}
+				oninput={(e) => setMonitorLevel(Number(e.currentTarget.value))}
+			/>
+		{/if}
 		<button class="chip" class:on={snapping} aria-pressed={snapping} title="Drags snap to the grid and the markers" onclick={() => (snapping = !snapping)}>
 			<Magnet size={12} />snap
 		</button>
@@ -210,6 +242,12 @@
 </div>
 
 <style>
+	.chip.armed {
+		border-style: dashed;
+	}
+	.level {
+		width: 72px;
+	}
 	.countdown {
 		min-width: 5.5em;
 		font-size: 18px;

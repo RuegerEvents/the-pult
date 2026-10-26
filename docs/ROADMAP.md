@@ -7473,6 +7473,61 @@ its folder's path as well as its name.
 
 ```
 cd frontend && npx vitest run src/lib/folders.test.ts   # the tree, the moves, the delete
+
+### 88. A tablet can listen to a timeline, and still plays nothing
+
+Asked for at the gig (2026-10-26): the tablet in the maze, hearing the song while somebody
+programs to it. Decided as a **monitor**: a page listens to what a timeline is playing,
+in step with the playhead it draws. It is never a show output and never a clock, so
+"a tablet plays nothing" still holds for the show. Turned on and off per tab with a
+level, kept per browser beside the view settings (`stores/monitor.ts`).
+
+**Rendered from the show, not tapped from the device.** A timeline's position is
+arithmetic over its SYNCED anchor, and every station holds every asset (`assets::mirror`),
+so any station can work out the sound at any show millisecond. `infra/audio/monitor.rs`
+does it with the same `pult_audio::Mixer` the callback runs, every clip routed to a
+stereo pair, a lead (`LEAD_MS`, 250 ms) ahead of the show clock, in 50 ms chunks. That
+answers three of the questions at once:
+- **The callback is not touched.** It never locks, allocates or frees. A monitor ring
+  read out of it would have been the first thing in it that could.
+- **A page listens to its own station.** No socket has to reach the station holding the
+  loudspeakers, which the wing has to do and this does not.
+- **It hears every clip**, including the ones sent to a node's loudspeaker. A tap on this
+  station's device would have missed those.
+
+**PCM, `i16`, 48 kHz stereo, on `/ws/monitor`.** That is about 1.5 Mbit/s per listening
+tab, which a venue LAN does not notice. A browser decodes it with a `DataView` and nothing
+else. Opus would be a tenth of the size, but it needs an encoder in this build and
+WebCodecs in the page, and Safari on an older iPad has neither. The format
+(`pult_audio::monitor`, read again by `frontend/src/lib/monitor.ts`) is a header, the show
+millisecond of the first frame, and the samples. It is a socket of its own because the
+chunks are binary and come twenty a second, and the show socket carries JSON that the
+page parses on its main thread. It sits under `/ws` so the dev proxy carries it with
+nothing added.
+
+**In sync by placing, never by steering.** Each chunk is played at
+`now + (at_ms − consoleNow())` on the page's audio clock. A chunk within 20 ms of where the
+last one ended is laid end to end with it, so clock-estimate wobble never clicks.
+Anything further off is a locate and goes where it belongs. A chunk whose moment has
+passed is dropped. With no clock estimate yet, the page plays nothing and says so. Nothing
+the page does reaches the show.
+
+**Asked for, never published.** With nobody listening, nothing is rendered. A page that
+goes takes its receiver with it, and the next chunk sent to it finds that out. A page
+that falls a second behind has chunks dropped rather than queued. A file a monitor cannot
+get is tried once per listener, or a missing asset would be fetched twenty times a second.
+
+**A tap starts the sound.** Browsers start an `AudioContext` only from a gesture, and
+Safari strictly so. A page that was listening when it reloaded is therefore *armed*: the
+chip is dashed and the next tap carries on.
+
+What is unverified: none of it has been heard on a tablet, on Safari, or across the venue
+LAN, and a correction the audio chase makes inside the lead is heard up to 250 ms late.
+
+```
+cargo test -p pult-audio monitor                        # the codec, and what is due when
+cargo test -p pult-backend --lib a_listening_page       # rendered ahead, silent when stopped, forgotten when gone
+cd frontend && npx vitest run src/lib/monitor.test.ts   # read back, and placed
 ```
 
 ## What is next

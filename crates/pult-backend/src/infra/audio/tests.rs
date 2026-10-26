@@ -225,3 +225,44 @@ async fn each_station_resolves_a_clips_zone_through_its_own_map() {
     let clips = manager.station_clips(&timeline);
     assert_eq!(clips[0].1, Err("Area 2 is not mapped on stage-rack".to_string()));
 }
+
+/// A listening page is sent the running timeline's sound a lead ahead of the clock,
+/// each chunk saying the show millisecond it belongs to; a stopped timeline sends it
+/// nothing; and a page that has gone is forgotten at the next chunk.
+#[tokio::test]
+async fn a_listening_page_hears_the_running_timeline_ahead_of_the_clock() {
+    let mut manager = a_manager(NodeId(Uuid::from_u128(1)), false);
+    // Ten seconds of a steady half-level tone, decoded into the cache as a file would be.
+    let tone: Vec<f32> = (0..48_000 * 10).map(|i| if i % 2 == 0 { 0.5 } else { -0.5 }).collect();
+    let wav = pult_audio::wav::encode(&tone, 1, 48_000, pult_audio::wav::Encoding::Pcm16).unwrap();
+    manager.cache.decode("abc", wav).await.expect("it decodes");
+
+    let now = 1_000_000;
+    let mut playing = a_timeline(None);
+    playing.clips = vec![a_clip(0, 0, None)];
+    playing.running = true;
+    playing.anchor_ms = now - 2_000;
+    manager.timelines = vec![playing.clone()];
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(monitor::QUEUE);
+    manager.monitors.push(monitor::Listener::new(None, tx));
+    manager.feed_monitors(now).await;
+    let mut heard = Vec::new();
+    while let Ok(bytes) = rx.try_recv() {
+        heard.push(pult_audio::monitor::decode(&bytes).expect("a chunk"));
+    }
+    assert!(!heard.is_empty(), "something was sent");
+    assert!(heard.iter().all(|c| c.at_ms >= now as f64 && c.at_ms < (now + pult_audio::monitor::LEAD_MS) as f64));
+    assert!(heard.iter().all(|c| c.samples.iter().any(|s| s.abs() > 0.1)), "and it is the tone, not silence");
+
+    // Stopped: nothing more is owed.
+    manager.timelines[0].running = false;
+    manager.feed_monitors(now + 500).await;
+    assert!(rx.try_recv().is_err(), "a stopped timeline sends nothing");
+
+    // Gone: forgotten.
+    drop(rx);
+    manager.timelines[0].running = true;
+    manager.feed_monitors(now + 1_000).await;
+    assert!(manager.monitors.is_empty(), "a page that went is not rendered for");
+}

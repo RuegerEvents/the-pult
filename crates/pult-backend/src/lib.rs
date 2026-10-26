@@ -1033,6 +1033,9 @@ pub async fn start(config: Config) -> Result<Running> {
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        // A timeline's sound, for a page listening while somebody programs. Under `/ws`
+        // so the dev proxy carries it with nothing added; see `api/ws/monitor.rs`.
+        .route("/ws/monitor", get(crate::api::ws::monitor::monitor_handler))
         // A hosted MVR-xchange group, on the port that already serves the page — so
         // the address to hand somebody is the one they use to reach this console.
         // Refuses unless the exchange is actually hosting; see `xchange::ws`.

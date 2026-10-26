@@ -19,6 +19,8 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+pub mod monitor;
+
 // ── Subscription registry ─────────────────────────────────────────────────────
 
 type SessionId = Uuid;
