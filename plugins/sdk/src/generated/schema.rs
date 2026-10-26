@@ -3482,7 +3482,7 @@ pub struct WingSelection {
     /// The question, where the selection is one: a group recalled keeps following the
     /// rig on the page that takes it on.
     pub query: Option<SelectionQuery>,
-    pub rev: u64,
+    pub rev: u32,
     pub from_wing: bool,
 }
 
@@ -3494,7 +3494,7 @@ pub struct WingSlot {
     pub default_value: ParameterValue,
 }
 
-/// The LOCAL `wing` row: what the wing on *this* station is doing, and who drives it.
+/// The LOCAL `wing` row: what the wing on *this* station is doing, and who shows it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WingState {
     pub phase: WingPhase,
@@ -3508,8 +3508,8 @@ pub struct WingState {
     /// dialog, a learned control waiting to be bound.
     pub claimed_by: Option<String>,
     /// The seven digital inputs as the wing last reported them, one bit each, or
-    /// `None` before it has. A level rather than a press, so a page starting to drive
-    /// the wing takes this as the baseline its edges are measured from.
+    /// `None` before it has. A level rather than a press, so where they rest can be
+    /// read before any of them is bound.
     #[serde(default)]
     pub digital: Option<u8>,
     /// What the wing's operator has in hand, kept by the station.
