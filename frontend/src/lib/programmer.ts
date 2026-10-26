@@ -21,6 +21,7 @@ import type {
 import { fadeGroup } from './fade.js';
 import type { FadeGroup, PhysicalRange } from './generated/index.js';
 import { displayLabel, inCell, kindBase, modeHas, modeOf, parameterKey } from './patch.js';
+import { consoleNow } from './ws/clock.js';
 import type { Showing } from './stores/output.js';
 
 // ── Entry ids ─────────────────────────────────────────────────────────────────
@@ -381,7 +382,7 @@ export function entriesFromCue(cue: Cue): ProgrammerValue[] {
 		value: capture.value,
 		// Back into the programmer, and anchored now: the operator is holding it
 		// again rather than replaying it from where the cue put it.
-		effect: capture.effect ? { ...capture.effect, t0: Date.now() } : null,
+		effect: capture.effect ? { ...capture.effect, t0: consoleNow() ?? Date.now() } : null,
 		// And the reference comes back with it, so editing a cue and updating it does
 		// not quietly turn every palette reference in it into a literal.
 		preset: capture.preset ?? null,

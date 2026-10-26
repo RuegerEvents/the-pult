@@ -16,6 +16,7 @@
 	 * intensity and color together and Apply is one act over both.
 	 */
 
+	import { untrack } from 'svelte';
 	import type {
 		EffectLayer,
 		EffectTemplate,
@@ -133,6 +134,70 @@
 			layers = [fresh((intensity ?? shared[0]).kind)];
 			active = 0;
 		}
+	});
+
+	/**
+	 * What the selection is already running in the programmer, as layers: per
+	 * parameter, the effect the first selected fixture holds — which is what a cue
+	 * loaded for editing put there. `mixed` names the parameters some other selected
+	 * fixture runs a different effect on.
+	 */
+	function heldLayers(): { layers: EffectLayer[]; mixed: string[]; template: string | null } {
+		const out = new Map<string, EffectLayer>();
+		const ids = new Map<string, string>();
+		const mixed = new Set<string>();
+		const templatesSeen = new Set<string | null>();
+		const chosen = picked.map((f) => f.id);
+		const held = $entries.filter((e) => e.effect && chosen.includes(e.fixture_id));
+		held.sort((a, b) => chosen.indexOf(a.fixture_id) - chosen.indexOf(b.fixture_id));
+		for (const entry of held) {
+			const spec = entry.effect!;
+			const key = parameterKey(entry.parameter_kind).split('@')[0];
+			const param = shared.find((p) => p.key === key);
+			if (!param) continue;
+			templatesSeen.add(spec.template ?? null);
+			const seen = ids.get(key);
+			if (seen !== undefined) {
+				if (seen !== spec.effect_id) mixed.add(param.label);
+				continue;
+			}
+			ids.set(key, spec.effect_id);
+			out.set(key, {
+				kind: param.kind,
+				curve: spec.curve,
+				rate: spec.rate,
+				low: spec.low,
+				high: spec.high,
+				width: spec.width,
+				direction: spec.direction,
+				spread: spec.spread,
+				spread_cycles: 1
+			});
+		}
+		const template = templatesSeen.size === 1 ? [...templatesSeen][0] : null;
+		return { layers: [...out.values()], mixed: [...mixed], template };
+	}
+
+	// A new selection that is already running effects shows those, so a cue loaded for
+	// editing can be edited here fixture by fixture. One that runs none keeps what is
+	// being built: an operator who loaded "fire" and then picked the lanterns wants fire
+	// on the lanterns.
+	let selected = '';
+	$effect(() => {
+		const now = picked.map((f) => f.id).join(',');
+		if (now === selected) return;
+		selected = now;
+		untrack(() => {
+			const held = heldLayers();
+			if (held.layers.length === 0) return;
+			layers = held.layers;
+			active = 0;
+			from = held.template ? ($templates.find((t) => t.id === held.template) ?? null) : null;
+			notice =
+				held.mixed.length > 0
+					? `The selection runs different effects on ${held.mixed.join(', ')}: showing the first fixture's`
+					: null;
+		});
 	});
 
 	const layer = $derived<EffectLayer | null>(layers[active] ?? layers[0] ?? null);

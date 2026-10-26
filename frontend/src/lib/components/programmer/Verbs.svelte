@@ -16,7 +16,8 @@
 	 */
 
 	import { addToast } from '$lib/toasts.js';
-	import { clear, entries, updateDriven } from '$lib/stores/programmer.js';
+	import { cancelEdit, clear, editingCue, entries, updateDriven, updateEdit } from '$lib/stores/programmer.js';
+	import { collection } from '$lib/stores/show.js';
 	import { clearStep, nextClear } from '$lib/stores/clear.js';
 	import { wingStoreAsk } from '$lib/stores/wing.js';
 	import StoreMenu from './StoreMenu.svelte';
@@ -41,7 +42,25 @@
 		storing = { preselect: ask.preselect.length > 0 ? ask.preselect : null, onto: ask.onto };
 	});
 
+	const cues = collection('cues');
+	/** The cue loaded for editing, if one is: Update writes back into it, Cancel drops it. */
+	const editing = $derived($cues.find((c) => c.id === $editingCue) ?? null);
+
 	export async function update() {
+		if (editing) {
+			if (busy) return;
+			busy = true;
+			try {
+				const name = `${editing.number.toFixed(1)} · ${editing.name}`;
+				await updateEdit();
+				addToast(`Updated cue ${name}`, 'success');
+			} catch (e) {
+				addToast(`${e}`);
+			} finally {
+				busy = false;
+			}
+			return;
+		}
 		if (busy || !anything) return;
 		busy = true;
 		try {
@@ -68,9 +87,23 @@
 	}
 </script>
 
+{#if editing}
+	<!-- A cue loaded for editing: Update beside it writes the programmer back into it
+	     and leaves, Cancel leaves without. Here and not only in the Values panel, which
+	     a layout may not have open — and then there was no way out of editing at all. -->
+	<div class="verbs editing" title="Editing cue {editing.number.toFixed(1)} · {editing.name}">
+		<span class="what">Editing {editing.number.toFixed(1)} · {editing.name}</span>
+		<button class="verb quiet" onclick={() => void cancelEdit()} title="Leave without changing the cue">Cancel</button>
+	</div>
+{/if}
 <div class="verbs">
 	<button class="verb" disabled={!anything} onclick={() => openStore()} title="⌘⏎">Store</button>
-	<button class="verb" disabled={!anything || busy} onclick={update} title="⌘U">Update</button>
+	<button
+		class="verb"
+		disabled={(!anything && !editing) || busy}
+		onclick={update}
+		title={editing ? '⌘U — write the programmer back into the cue being edited' : '⌘U'}>Update</button
+	>
 	<!-- The selection first, then the programmer: see `stores/clear.ts`. The title says
 	     which, so the next press is never a surprise. -->
 	<button
@@ -113,6 +146,18 @@
 		padding: 0 14px;
 		cursor: pointer;
 		white-space: nowrap;
+	}
+	.verbs.editing {
+		border-color: var(--warning, #d9a400);
+		align-items: center;
+		margin-right: 6px;
+	}
+	.what {
+		padding: 0 10px;
+		font-size: var(--font-sm, 12px);
+		color: var(--warning, #d9a400);
+		white-space: nowrap;
+		border-right: 1px solid var(--line-strong, #3a3a3a);
 	}
 	.verb:last-child {
 		border-right: none;
