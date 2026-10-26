@@ -355,11 +355,27 @@ export async function updateEdit(): Promise<void> {
 	const cueId = get(editingCue);
 	if (!cueId) return;
 	const data = showData();
-	const before = get(cues).find((c) => c.id === cueId)?.captures ?? [];
-	const captures = storeCaptures(before, held, 'replace', new Set(held.map((e) => e.id)));
-	await data.cues.byId(cueId).captures.set(captures);
-	await clear({ keepLocked: true });
-	await data.show.editing_cue.set(null);
+	// Fetched, not read off this page's copies, for the reason `updateDriven` fetches:
+	// a page whose copy of the programmer was empty replaced a whole cue with nothing
+	// (HHG, 2026-10-26 — Flicker lost all eighteen captures to one Update).
+	const [programmer, cueList] = await Promise.all([data.programmer_values.get(), data.cues.get()]);
+	// Replace means the cue holds exactly what the programmer holds, so an empty
+	// programmer is a cue emptied. Nobody means that by Update; Cancel is for leaving.
+	if (programmer.length === 0) {
+		throw new Error('The programmer is empty, so Update would leave the cue with nothing in it. Cancel leaves the edit without changing the cue.');
+	}
+	const before = cueList.find((c) => c.id === cueId)?.captures ?? [];
+	const captures = storeCaptures(before, programmer, 'replace', new Set(programmer.map((e) => e.id)));
+	beginGesture();
+	try {
+		await data.cues.byId(cueId).captures.set(captures);
+		for (const entry of programmer) {
+			if (!entry.locked) await data.programmer_values.byId(entry.id).delete();
+		}
+		await data.show.editing_cue.set(null);
+	} finally {
+		endGesture();
+	}
 }
 
 export async function cancelEdit(): Promise<void> {

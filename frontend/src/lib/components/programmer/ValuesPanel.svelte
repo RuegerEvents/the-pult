@@ -15,6 +15,7 @@
 	 * amber is what is reaching the rig.
 	 */
 
+	import { addToast } from '$lib/toasts.js';
 	import type { FadeGroup, ParameterKind, ParameterValue } from '$lib/generated/index.js';
 	import { fadeGroup } from '$lib/fade.js';
 	import { commonValueOf, editableParameters, rowTargets, type Target } from '$lib/programmer.js';
@@ -162,7 +163,7 @@
 			<span class="name">{editing.number.toFixed(1)} · {editing.name}</span>
 			<span class="spacer"></span>
 			<button class="ghost" onclick={cancelEdit}>Cancel</button>
-			<button class="primary" onclick={updateEdit}>Update</button>
+			<button class="primary" onclick={() => updateEdit().catch((e) => addToast(e instanceof Error ? e.message : String(e)))}>Update</button>
 		</div>
 	{/if}
 

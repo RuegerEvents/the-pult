@@ -100,7 +100,7 @@
 	<button class="verb" disabled={!anything} onclick={() => openStore()} title="⌘⏎">Store</button>
 	<button
 		class="verb"
-		disabled={(!anything && !editing) || busy}
+		disabled={!anything || busy}
 		onclick={update}
 		title={editing ? '⌘U — write the programmer back into the cue being edited' : '⌘U'}>Update</button
 	>

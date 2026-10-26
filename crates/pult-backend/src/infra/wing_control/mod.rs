@@ -1174,6 +1174,20 @@ impl Control {
             self.toast("The programmer is empty: nothing to update", false);
             return;
         }
+        // A cue loaded for editing is where Update goes, as the page's Update does:
+        // left out, the wing merged into the driving cue, cleared the programmer and
+        // left the edit open — and the page's Update after it then wrote the empty
+        // programmer over the whole cue (HHG, 2026-10-26).
+        let editing = self
+            .engine
+            .get(vec![PathSegment::Key("show".into()), PathSegment::Key("editing_cue".into())])
+            .await
+            .ok()
+            .and_then(|v| serde_json::from_value::<Uuid>(v).ok());
+        if let Some(cue_id) = editing {
+            self.update_edit(cue_id, &held).await;
+            return;
+        }
         let sequences: Vec<Sequence> = self.read("sequences").await;
         let cues: Vec<Cue> = self.read("cues").await;
         let driving = driving_cues(&sequences, &cues);
@@ -1214,6 +1228,29 @@ impl Control {
         if self.station.claimed() {
             self.ask(WingAsk::Store { preselect: orphans, onto: None });
         }
+    }
+
+    /// Update while a cue is loaded for editing: the cue becomes exactly what the
+    /// programmer holds — `programmer.ts`'s `updateEdit`, timing kept — the programmer
+    /// is cleared and the edit ends, one gesture.
+    async fn update_edit(&mut self, cue_id: Uuid, held: &HashMap<Uuid, ProgrammerValue>) {
+        let Some(cue) = self.read_one::<Cue>("cues", cue_id).await else {
+            self.toast("The cue being edited is no longer in the show", false);
+            return;
+        };
+        let mut entries: Vec<&ProgrammerValue> = held.values().collect();
+        entries.sort_by_key(|e| e.id);
+        let keep: HashSet<(Uuid, String)> = entries.iter().map(|e| (e.fixture_id, parameter_key(&e.parameter_kind))).collect();
+        let captures: Vec<ParameterCapture> = store_captures(&cue.captures, &entries)
+            .into_iter()
+            .filter(|c| keep.contains(&(c.fixture_id, parameter_key(&c.parameter_kind))))
+            .collect();
+        let gesture = Uuid::new_v4();
+        let Ok(value) = serde_json::to_value(&captures) else { return };
+        self.set(field("cues", cue_id, "captures"), value, Some(gesture)).await;
+        self.clear_programmer(gesture).await;
+        self.set(vec![PathSegment::Key("show".into()), PathSegment::Key("editing_cue".into())], Value::Null, Some(gesture)).await;
+        self.toast(&format!("Updated \"{}\"", cue.name), true);
     }
 
     /// Which playback a key is, for STORE: a fader's executor key is its fader — a
