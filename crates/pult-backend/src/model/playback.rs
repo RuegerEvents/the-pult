@@ -478,6 +478,64 @@ impl Playback {
                 },
             });
         }
+
+        self.start_new_captures(wall_ms, view);
+    }
+
+    /// **And a capture a standing cue gained is started.** Repointing reaches only a
+    /// fade that already exists, so a key stored into the cue on stage for the first
+    /// time — the Store dialog Update opens for the keys no cue was driving — had
+    /// nothing to move. It went live only after the sequence was taken off and on
+    /// again, and when the programmer cleared, the light fell back to home (found at
+    /// the gig, 2026-10-25).
+    ///
+    /// What should be driving each key is worked out the way a Go works it out: the
+    /// latest capture over each live sequence's tracked stack, the sequence that went
+    /// most recently winning a contested key. A key is started when nothing of
+    /// playback's is driving it, or when an *earlier* cue of the same sequence still
+    /// is — the edit made a later cue say it. Anything another sequence or a release is
+    /// doing is left alone, and so is a key already heading where it should.
+    ///
+    /// Started through `start_capture`, from where the parameter is: during Update or a
+    /// Store that is the programmer's value, which is the value being stored, so the
+    /// light does not move.
+    fn start_new_captures(&mut self, wall_ms: u64, view: &ShowView<'_>) {
+        let mut live: Vec<&Sequence> = view.sequences.iter().filter(|s| s.active_cue_index.is_some()).collect();
+        live.sort_by_key(|s| s.went_at.unwrap_or(0));
+        let mut wanted: HashMap<Key, (&Sequence, &Cue, &pult_schema::types::cue::ParameterCapture)> = HashMap::new();
+        for sequence in live {
+            let Some(active) = sequence.active_cue_index else { continue };
+            let through = sequence.cue_ids.iter().take(active + 1);
+            for (cue, capture) in pult_schema::types::cue::tracked_through(through, |id| view.cues.get(id).copied()) {
+                wanted.insert((capture.fixture_id, parameter_key(&capture.parameter_kind)), (sequence, cue, capture));
+            }
+        }
+
+        let mut starts: Vec<(&Sequence, &Cue, &pult_schema::types::cue::ParameterCapture)> = Vec::new();
+        for (at, (sequence, cue, capture)) in &wanted {
+            if let Some(effect) = self.effects.get(at) {
+                // An effect is driving it; only one of this sequence's earlier cues
+                // gives it up to the capture now standing.
+                match effect.source {
+                    EffectSource::Cue(id) if id != cue.id && sequence.cue_ids.contains(&id) => {}
+                    _ => continue,
+                }
+            } else if let Some(fade) = self.fades.iter().find(|f| f.fixture_id == at.0 && f.key == at.1) {
+                let ours = fade.running.cue_id == cue.id;
+                let earlier = !fade.running.cue_id.is_nil() && sequence.cue_ids.contains(&fade.running.cue_id);
+                let heading_there = capture.effect.is_none() && fade.running.to == *capture.value_in(&view.presets);
+                if ours || !earlier || heading_there {
+                    continue;
+                }
+            }
+            starts.push((sequence, cue, capture));
+        }
+        for (sequence, cue, capture) in starts {
+            // An effect keeps the phase the cue's other effects took from its Go; a fade
+            // runs from now.
+            let anchor = if capture.effect.is_some() { sequence.went_at.unwrap_or(wall_ms) } else { wall_ms };
+            self.start_capture(wall_ms, anchor, cue, cue, capture, view);
+        }
     }
 
     /// The same pass, told whether the cues or the presets have moved since the last one.

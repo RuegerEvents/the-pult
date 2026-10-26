@@ -2477,6 +2477,74 @@ mod editing_a_standing_cue {
         );
     }
 
+    /// A key stored into the cue on stage for the first time — the Store dialog Update
+    /// opens for what no cue was driving — goes live at once, with nobody taking the
+    /// sequence off and on again. Before this, nothing started it: repointing reaches
+    /// only a fade that already exists.
+    #[test]
+    fn a_key_stored_into_the_standing_cue_goes_live() {
+        let one = a_fixture();
+        let mut two = a_fixture();
+        two.name = "Spot 2".into();
+        let cue = a_cue(0, vec![intensity(one.id, 0.9)]);
+        let sequences = [a_sequence(&[&cue], Some(0))];
+        let mut cues = [cue];
+        let mut fixtures = vec![one.clone(), two.clone()];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, two.id, "Intensity", 0), Some(ParameterValue::Float(0.0)), "at home: nothing drives it yet");
+
+        cues[0].captures = vec![intensity(one.id, 0.9), intensity(two.id, 0.6)];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass_after_edits(WALL + 5_000, &view, true)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(
+            live(&fixtures, two.id, "Intensity", 60_000),
+            Some(ParameterValue::Float(0.6)),
+            "the cue on stage now drives it"
+        );
+        assert_eq!(live(&fixtures, one.id, "Intensity", 60_000), Some(ParameterValue::Float(0.9)), "untouched");
+    }
+
+    /// The same for a key an *earlier* cue set: storing it into the cue that is up
+    /// makes that cue the one driving it, the way taking the cue would have.
+    #[test]
+    fn a_key_an_earlier_cue_set_follows_the_standing_cue_once_it_captures_it() {
+        let fixture = a_fixture();
+        let first = a_cue(0, vec![intensity(fixture.id, 0.9)]);
+        let second = a_cue(1, vec![]);
+        let mut cues = [first, second];
+        let sequences = [a_sequence(&[&cues[0], &cues[1]], Some(1))];
+        let mut fixtures = vec![fixture.clone()];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, fixture.id, "Intensity", 60_000), Some(ParameterValue::Float(0.9)), "tracked");
+
+        cues[1].captures = vec![intensity(fixture.id, 0.4)];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass_after_edits(WALL + 5_000, &view, true)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, fixture.id, "Intensity", 60_000), Some(ParameterValue::Float(0.4)));
+    }
+
     /// A store that rewrites a cue's captures without changing any of their values —
     /// a merge, which rewrites the whole array — moves nothing.
     #[test]
