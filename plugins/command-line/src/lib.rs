@@ -509,7 +509,7 @@ impl CommandLine {
                     Target::Index(n) => format!("Preset {n}"),
                 };
                 let n = values.len();
-                data::presets().create(&Preset { id: uuid::Uuid::new_v4(), name: name.clone(), values, color: None })?;
+                data::presets().create(&Preset { id: uuid::Uuid::new_v4(), name: name.clone(), values, color: None, folder: None })?;
                 Ok(lines_response(vec![output_line(
                     "result",
                     format!("stored \"{name}\" — {n} values"),
