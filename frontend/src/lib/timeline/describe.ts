@@ -62,6 +62,32 @@ export function describeAction(
 	return `${sequence} off`;
 }
 
+/**
+ * Which row of the events lane an event goes on, and that row's name: a row per
+ * sequence, one for every timeline played or stopped, one for every variable.
+ */
+export function eventRow(action: TimelineAction, sequences: Named[]): { row: string; label: string } {
+	const sequence = sequenceOf(action);
+	if (sequence !== null) return { row: `sequence:${sequence}`, label: sequences.find((s) => s.id === sequence)?.name ?? 'A gone sequence' };
+	if (timelineOf(action) !== null) return { row: 'timelines', label: 'Timelines' };
+	return { row: 'variables', label: 'Variables' };
+}
+
+/** What an event says on its own row, where the row already names the sequence:
+ *  "→ Scare", "→ next", "off". Everything else as `describeAction` says it. */
+export function describeOnRow(
+	action: TimelineAction,
+	sequences: Sequence[],
+	cues: Cue[],
+	timelines: Named[] = [],
+	variables: Named[] = []
+): string {
+	if ('GoToCue' in action) return `→ ${cues.find((c) => c.id === action.GoToCue.cue_id)?.name ?? 'a gone cue'}`;
+	if ('GoNext' in action) return '→ next';
+	if ('Off' in action) return 'off';
+	return describeAction(action, sequences, cues, timelines, variables);
+}
+
 /** The cues of a sequence, in its own order. */
 export function cuesOf(sequenceId: string | null, sequences: Sequence[], cues: Cue[]): Cue[] {
 	const sequence = sequences.find((s) => s.id === sequenceId);

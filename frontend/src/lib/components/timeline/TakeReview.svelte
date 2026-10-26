@@ -97,7 +97,6 @@
 		}
 	}
 
-	const passes = $derived(open?.pending.passes.length ?? 0);
 	const nothingTicked = $derived(
 		rows.every((r) => (r.takes === 0 || unticked.has(id('take', r))) && (r.flashes === 0 || unticked.has(id('flash', r)))) &&
 			caughtCues.every((e) => unticked.has(cueKey(e.id)))
@@ -115,14 +114,8 @@
 {/if}
 
 {#if open}
-	<Dialog title="Keep the take?" size="wide" onclose={() => reviewing.set(null)} onaccept={() => answer(true)}>
+	<Dialog title={`Keep the take on ${open.timeline.name}?`} size="wide" onclose={() => reviewing.set(null)} onaccept={() => answer(true)}>
 		<div class="review">
-			<p class="lead">
-				<strong>{open.timeline.name}</strong> recorded {rows.length}
-				{rows.length === 1 ? 'parameter' : 'parameters'}{passes > 1 ? ` over ${passes} passes` : ''}{caughtCues.length
-					? ` and ${caughtCues.length} ${caughtCues.length === 1 ? 'cue' : 'cues'}`
-					: ''}. Nothing is in the timeline until it is merged.
-			</p>
 			<table>
 				<thead>
 					<tr><th>Parameter</th><th>From</th><th>Take</th><th>Flashes</th></tr>
@@ -173,11 +166,6 @@
 					</tbody>
 				</table>
 			{/if}
-			<p class="note">
-				A take replaces what its parameter played from where it was first touched to where the recording
-				stopped. Flashes are added on top and remove nothing, and so are the cues, as events. Either answer is one
-				Ctrl-Z.
-			</p>
 		</div>
 		{#snippet footer()}
 			<button class="btn btn-ghost" onclick={() => reviewing.set(null)}>Later</button>
@@ -205,14 +193,6 @@
 	}
 	.review {
 		padding: 14px 16px;
-	}
-	.lead {
-		margin: 0 0 12px;
-		color: #ccc;
-		font-size: 13px;
-	}
-	strong {
-		color: #fff;
 	}
 	table {
 		width: 100%;
@@ -246,11 +226,6 @@
 	}
 	.none {
 		color: #555;
-	}
-	.note {
-		margin: 12px 0 0;
-		color: #777;
-		font-size: 11px;
 	}
 	.spacer {
 		flex: 1;

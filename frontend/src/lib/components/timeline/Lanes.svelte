@@ -63,7 +63,7 @@
 	import { cropped, parameterRow, rowKeys, rowSpan, splitRows } from '$lib/takes.js';
 	import type { TimelineTrack } from '$lib/generated/index.js';
 	import { zones } from '$lib/stores/zones.js';
-	import { describeAction } from '$lib/timeline/describe.js';
+	import { describeOnRow, eventRow } from '$lib/timeline/describe.js';
 	import {
 		CLIP_ROW_H,
 		RULER_H,
@@ -300,7 +300,7 @@
 		return layOut({
 			segments: timeline.grid.map((s, i) => ({ id: segmentId(timeline.id, i), atMs: s.at_ms })),
 			markers: timeline.markers.map((m) => ({ id: m.id, atMs: m.at_ms })),
-			events: timeline.events.map((e) => ({ id: e.id, atMs: e.at_ms })),
+			events: timeline.events.map((e) => ({ id: e.id, atMs: e.at_ms, ...eventRow(e.action, $sequences) })),
 			clips: timeline.clips.map((clip) => {
 				const span = clipSpan(clip, fileMs(clip), until);
 				return {
@@ -862,15 +862,16 @@
 		}
 		const eventsLane = layout.lanes.find((l) => l.kind === 'events')!;
 		for (const event of timeline.events) {
+			const rowTop = eventsLane.top + Math.max(0, eventsLane.rowKeys?.indexOf(eventRow(event.action, $sequences).row) ?? 0) * eventsLane.rowHeight;
 			const x = Math.round(xOf(event.at_ms, view, width)) + 0.5;
 			if (x < -150 || x > width + 150) continue;
 			const chosen = picked.has(`timeline-event:${event.id}`);
 			ctx.strokeStyle = chosen || hovering === event.id ? '#fff' : 'rgba(52,211,153,0.5)';
 			ctx.beginPath();
-			ctx.moveTo(x, eventsLane.top);
+			ctx.moveTo(x, rowTop);
 			ctx.lineTo(x, H);
 			ctx.stroke();
-			const mid = eventsLane.top + eventsLane.height / 2;
+			const mid = rowTop + eventsLane.rowHeight / 2;
 			ctx.fillStyle = chosen ? '#fff' : '#34d399';
 			ctx.beginPath();
 			ctx.moveTo(x, mid - 6);
@@ -881,7 +882,7 @@
 			ctx.fill();
 			ctx.fillStyle = chosen ? '#fff' : '#a7f3d0';
 			ctx.font = '11px system-ui, sans-serif';
-			ctx.fillText(describeAction(event.action, $sequences, $cues, $allTimelines, $variables), x + 9, mid + 4);
+			ctx.fillText(describeOnRow(event.action, $sequences, $cues, $allTimelines, $variables), x + 9, mid + 4);
 		}
 
 		// The ruler, over everything: time, the tempo segments, the detector's proposal.
@@ -1364,6 +1365,28 @@
 		openMenu(item.ref, e.clientX, e.clientY);
 	}
 
+	/** A new event at a position, picked up into the Inspector. `row` is a row of the
+	 *  events lane (`eventRow`), which says what it acts on. */
+	async function addEvent(at: number, row = '') {
+		const live = current(timeline.id);
+		if (!live || !$canEdit) return;
+		const id = uuid();
+		const onSequence = row.startsWith('sequence:') ? row.slice('sequence:'.length) : (row === '' ? $sequences[0]?.id : undefined);
+		const action: TimelineAction = onSequence
+			? { GoNext: { sequence_id: onSequence } }
+			: row === 'variables' && $variables[0]
+				? { SetVariable: { variable_id: $variables[0].id, op: 'Toggle' } }
+				: { StopTimeline: { timeline_id: timeline.id } };
+		const events = [...live.events, { id, at_ms: Math.round(at), action }];
+		await writeColumns(timeline.id, { events: events.sort((a, b) => a.at_ms - b.at_ms) });
+		selectSubject({ kind: 'timeline-event', id });
+	}
+
+	/** An event at the playhead, for the panel's button. */
+	export async function eventAtPlayhead() {
+		await addEvent(Math.round(snapped(playhead() ?? 0)));
+	}
+
 	/** Writes an event or a marker where somebody double-clicked its lane. */
 	async function onDoubleClick(e: MouseEvent) {
 		if (!$canEdit) return;
@@ -1382,15 +1405,11 @@
 		const at = Math.round(snapped(msOf(x, view, width)));
 		const id = uuid();
 		if (lane.kind === 'events') {
-			// A Go into the first sequence where there is one; a show with none yet starts
-			// with a play, which the Inspector turns into whatever was meant.
-			const sequence = $sequences[0];
-			const action: TimelineAction = sequence
-				? { GoNext: { sequence_id: sequence.id } }
-				: { PlayTimeline: { timeline_id: timeline.id, if_running: 'Ignore' } };
-			const events = [...live.events, { id, at_ms: at, action }];
-			await writeColumns(timeline.id, { events: events.sort((a, b) => a.at_ms - b.at_ms) });
-			selectSubject({ kind: 'timeline-event', id });
+			// Like the row it was asked on: a Go on that row's sequence, a stop on the
+			// timelines row. Otherwise a Go into the first sequence, or a play where the
+			// show has none — which the Inspector turns into whatever was meant.
+			const row = lane.rowKeys?.[Math.floor((y - lane.top) / lane.rowHeight)] ?? '';
+			await addEvent(at, row);
 		} else if (lane.kind === 'markers') {
 			await writeColumns(timeline.id, { markers: [...live.markers, { id, at_ms: at, name: 'Marker' }] });
 			selectSubject({ kind: 'timeline-marker', id });
@@ -1533,6 +1552,10 @@
 								onpointerup={endRows}
 								onpointercancel={endRows}
 							></div>
+						{:else if lane.kind === 'events'}
+							{#each lane.rows as row, i (i)}
+								<span class="row event-row" style:top="{i * lane.rowHeight + 3}px" title={row}>{row}</span>
+							{/each}
 						{:else}
 							<span class="name" title={lane.label}>{lane.label}</span>
 							{#if lane.kind === 'audio' && lane.height > CLIP_ROW_H}<span class="detail">{lane.rows.length} overlapping</span>{/if}
@@ -1670,6 +1693,13 @@
 	}
 	.lane-label.markers .name {
 		color: #f0c674;
+	}
+	.lane-label.events {
+		justify-content: flex-start;
+	}
+	.lane-label .event-row {
+		left: 8px;
+		color: var(--cat-playback);
 	}
 	.lane-label.events .name {
 		color: var(--cat-playback);

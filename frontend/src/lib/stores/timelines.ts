@@ -210,14 +210,45 @@ countInSeconds.subscribe((n) => {
 });
 
 /**
+ * How far ahead the station anchors a Play that streams to a node, so its first sample
+ * is heard on the anchor: `STREAM_LEAD_MS` in `pult_schema::types::timeline`. A wait
+ * this short is buffering, not a count-in.
+ */
+const STREAM_LEAD_MS = 400;
+
+/**
  * Whole seconds left before a timeline played with its anchor in the future gets
  * there, or `null` when it is not counting in. Read off the anchor rather than kept by
  * a timer here, so every browser and every station shows the same count.
+ *
+ * Only a timeline armed to record counts in, and a wait no longer than the stream lead
+ * is a Play waiting for its sound, which shows as the readout holding still rather than
+ * as a "1" and a Cancel button.
  */
 export function countdownOf(timeline: Timeline, nowMs: number | null): number | null {
-	if (!timeline.running || nowMs === null || nowMs >= timeline.anchor_ms) return null;
-	return Math.ceil((timeline.anchor_ms - nowMs) / 1000);
+	if (!timeline.running || !timeline.recording || nowMs === null) return null;
+	const left = timeline.anchor_ms - nowMs;
+	if (left <= STREAM_LEAD_MS) return null;
+	return Math.ceil(left / 1000);
 }
+
+const RECORD_FROM_KEY = 'pult.timeline.recordFrom';
+
+/**
+ * What the Record button arms from: `'programmer'` or an input's id. This browser's,
+ * like the count-in, because the timeline's own `recording` is empty while it is not
+ * armed and has nowhere to keep a choice.
+ */
+export const recordFrom = writable<string>(browser ? (localStorage.getItem(RECORD_FROM_KEY) ?? 'programmer') : 'programmer');
+recordFrom.subscribe((choice) => {
+	if (browser) {
+		try {
+			localStorage.setItem(RECORD_FROM_KEY, choice);
+		} catch {
+			// kept until the page reloads
+		}
+	}
+});
 
 /**
  * Play — with a count-in when the timeline is armed to record and one is set. The

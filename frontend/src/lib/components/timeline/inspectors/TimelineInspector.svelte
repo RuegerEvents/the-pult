@@ -13,15 +13,20 @@
 	 * that silently rewrote the grid of a show somebody had already programmed against
 	 * would be worse than one that could not detect anything.
 	 *
-	 * What it records is not here: that is the transport's *Recording* menu, where it is
-	 * shown while it happens, and so is a grab. And what a setting means is behind its
-	 * `?` rather than written under it, the rule every panel follows now.
+	 * What the transport's Record button arms from, the count-in before a recording and a
+	 * grab off the wire are here too — the first two this browser's, kept beside the open
+	 * timeline. What a setting means is behind its `?` rather than written under it, the
+	 * rule every panel follows now.
 	 */
 
 	import type { AtEnd, LtcRate, Timeline } from '$lib/generated/index.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { collection, showClient, showData } from '$lib/stores/show.js';
-	import { audioStatus, now, positionOf, proposals } from '$lib/stores/timelines.js';
+	import { audioStatus, countInSeconds, now, positionOf, proposals, recordFrom } from '$lib/stores/timelines.js';
+	import { selection } from '$lib/stores/selection.js';
+	import { armArgs, armChoice, PROGRAMMER } from '$lib/takes.js';
+	import { pageId } from '$lib/stores/takeReview.js';
+	import { addToast } from '$lib/toasts.js';
 	import { gridFrom } from '$lib/timeline/grid.js';
 	import { subject } from '$lib/objects.js';
 	import { clock, parsePosition } from '$lib/waveform.js';
@@ -31,6 +36,27 @@
 
 	const stations = collection('stations');
 	const masters = collection('speed_masters');
+	const inputs = collection('inputs');
+	const COUNT_INS = [0, 2, 3, 5];
+
+	/** A new source re-arms a timeline that is armed, so the button says what it will do. */
+	function chooseSource(timeline: Timeline, choice: string) {
+		recordFrom.set(choice);
+		if (timeline.recording && armChoice(timeline.recording) !== choice) {
+			void proxy(timeline.id).record({ ...armArgs(choice, true), armedBy: pageId });
+		}
+	}
+
+	/** What is on the wire now, into the programmer, for the selected fixtures. */
+	async function grab() {
+		try {
+			const answer = (await showClient().call('input.grab', { fixtureIds: $selection })) as { written: number };
+			if (answer.written === 0) addToast('Nothing on the wire reaches those fixtures.', 'warning');
+			else addToast(`${answer.written} value${answer.written === 1 ? '' : 's'} grabbed into the programmer.`, 'success');
+		} catch (e) {
+			addToast(String(e));
+		}
+	}
 
 	let problem = $state<string | null>(null);
 	let busy = $state<string | null>(null);
@@ -127,6 +153,41 @@
 			{:else}
 				<span class="note">runs until somebody stops it</span>
 			{/if}
+		</div>
+
+		<span class="label"
+			>Records from <Help label="What a recording takes"
+				>From the next Play to the Stop. From the programmer: every key you move from your first touch,
+				each flash as a flash, and every Go, Back and Off as an event — given back to playback when it
+				stops. From an input: everything that input carries. Nothing is kept until you say so.</Help
+			></span
+		>
+		<div class="inline">
+			<select
+				class="select"
+				disabled={!$canEdit}
+				value={timeline.recording ? armChoice(timeline.recording) : $inputs.some((i) => i.id === $recordFrom && i.enabled) ? $recordFrom : PROGRAMMER}
+				onchange={(e) => chooseSource(timeline, e.currentTarget.value)}
+			>
+				<option value={PROGRAMMER}>the programmer</option>
+				{#each $inputs.filter((i) => i.enabled) as input (input.id)}
+					<option value={input.id}>{input.name}</option>
+				{/each}
+			</select>
+			{#if $inputs.some((i) => i.enabled)}
+				<button class="btn" disabled={$selection.length === 0} title={$selection.length === 0 ? 'Nothing is selected' : ''} onclick={grab}
+					>Grab selection from the wire</button
+				>
+			{/if}
+		</div>
+
+		<span class="label">Count-in</span>
+		<div class="segmented" role="group" aria-label="Count in before recording">
+			{#each COUNT_INS as n (n)}
+				<button class:on={$countInSeconds === n} aria-pressed={$countInSeconds === n} onclick={() => countInSeconds.set(n)}
+					>{n === 0 ? 'off' : `${n} s`}</button
+				>
+			{/each}
 		</div>
 
 		<span class="label">Played by</span>

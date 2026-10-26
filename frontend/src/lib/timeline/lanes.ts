@@ -24,6 +24,10 @@
  * Drawn from `pult_render::outline`, the same parse of the same bytes the station
  * plays, so a lane cannot show a take the lamps would not do.
  *
+ * **Events take a row per thing they act on**: each sequence that is Gone has its own,
+ * and so do the timelines a timeline plays or stops and the variables it changes, so a
+ * scare's cues on Area 2 read as one line rather than interleaved with everybody else's.
+ *
  * **A flash is drawn on its parameter's row too**, over the takes, because that is
  * where it plays: one block per press, as long as the key was held. And the rows are
  * as tall as this browser asks (`keyRowHeight`), because a jaw's movement is read in a
@@ -114,7 +118,10 @@ export type FlashInput = { id: string } & KeyInput;
 
 export type LaneInput = {
 	clips: ClipInput[];
-	events: { id: string; atMs: number }[];
+	/** `row` is what the event acts on — a sequence, the timelines, the variables
+	 *  (`eventRow` in `describe.ts`) — and gives it a row of its own; left out, every
+	 *  event shares one. */
+	events: { id: string; atMs: number; row?: string; label?: string }[];
 	markers: { id: string; atMs: number }[];
 	segments: { id: string; atMs: number }[];
 	takes: TakeInput[];
@@ -153,9 +160,28 @@ export function layOut(input: LaneInput, keyRowHeight = KEY_ROW_H): Layout {
 		items.push({ ref: { kind: 'timeline-marker', id: marker.id }, lane: 'markers', row: 0, fromMs: marker.atMs, toMs: marker.atMs });
 	}
 
-	push({ key: 'events', kind: 'events', label: 'Events', rows: [''], height: FLAG_H, rowHeight: FLAG_H, headHeight: 0 });
+	// A row per thing the events act on — each sequence that is Gone, then the
+	// timelines and the variables — in name order, so one sequence's cues read as a line.
+	const eventLabels = new Map<string, string>();
+	for (const event of input.events) eventLabels.set(event.row ?? '', event.label ?? 'Events');
+	const rank = (row: string) => (row === 'timelines' ? 1 : row === 'variables' ? 2 : 0);
+	const eventRows = [...eventLabels.keys()].sort(
+		(a, b) => rank(a) - rank(b) || eventLabels.get(a)!.localeCompare(eventLabels.get(b)!)
+	);
+	if (eventRows.length === 0) eventRows.push('');
+	push({
+		key: 'events',
+		kind: 'events',
+		label: 'Events',
+		rows: eventRows.map((k) => eventLabels.get(k) ?? 'Events'),
+		rowKeys: eventRows,
+		height: eventRows.length * FLAG_H,
+		rowHeight: FLAG_H,
+		headHeight: 0
+	});
 	for (const event of input.events) {
-		items.push({ ref: { kind: 'timeline-event', id: event.id }, lane: 'events', row: 0, fromMs: event.atMs, toMs: event.atMs });
+		const row = eventRows.indexOf(event.row ?? '');
+		items.push({ ref: { kind: 'timeline-event', id: event.id }, lane: 'events', row, fromMs: event.atMs, toMs: event.atMs });
 	}
 
 	// One lane per destination, in the order their first sound starts.

@@ -69,6 +69,31 @@ describe('the lanes', () => {
 		expect(lanes[1].top).toBe(RULER_H + FLAG_H);
 	});
 
+	it('give each sequence its events go a row, then the timelines and the variables', () => {
+		const input = scare();
+		input.events = [
+			{ id: 'stop', atMs: 9_000, row: 'timelines', label: 'Timelines' },
+			{ id: 'area2', atMs: 0, row: 'sequence:a2', label: 'Area 2' },
+			{ id: 'count', atMs: 5_000, row: 'variables', label: 'Variables' },
+			{ id: 'area1', atMs: 1_000, row: 'sequence:a1', label: 'Area 1' },
+			{ id: 'area2b', atMs: 4_000, row: 'sequence:a2', label: 'Area 2' }
+		];
+		const { lanes, items } = layOut(input);
+		const events = lanes.find((l) => l.key === 'events')!;
+		expect(events.rows).toEqual(['Area 1', 'Area 2', 'Timelines', 'Variables']);
+		expect(events.height).toBe(4 * FLAG_H);
+		const rowOf = (id: string) => items.find((i) => i.ref.id === id)!.row;
+		expect([rowOf('area1'), rowOf('area2'), rowOf('area2b'), rowOf('stop'), rowOf('count')]).toEqual([0, 1, 1, 2, 3]);
+	});
+
+	it('keep one events row with nothing on it, to double-click into', () => {
+		const input = scare();
+		input.events = [];
+		const events = layOut(input).lanes.find((l) => l.key === 'events')!;
+		expect(events.rows).toEqual(['Events']);
+		expect(events.height).toBe(FLAG_H);
+	});
+
 	it('give one destination one lane, with a row for each sound that overlaps another', () => {
 		const { lanes, items } = layOut(scare());
 		const speakers = lanes.find((l) => l.key === 'audio:station:4')!;

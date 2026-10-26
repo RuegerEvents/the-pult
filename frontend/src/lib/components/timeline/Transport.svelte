@@ -1,38 +1,37 @@
 <script lang="ts">
 	/**
 	 * The transport, above the lanes: play or stop, back to the top, where the playhead
-	 * is, how it ends, what it records and whether drags snap.
+	 * is, record, how it ends, listening and snapping.
 	 *
 	 * The readout is arithmetic over the SYNCED anchor once an animation frame, the way
 	 * the station works it out, and **shows a gap until this browser knows the station's
 	 * clock** — a playhead out by however wrong this machine's clock is would be the
 	 * plausible-wrong-number `ws/clock.ts` exists to remove.
 	 *
-	 * Three groups that wrap as groups — playing, how it ends and records, snapping — so
-	 * a narrow panel breaks between them and never between a button and its label.
-	 * Recording is a menu on its own chip: what it records from is set where it is
-	 * shown, and while a take is running it says what the take holds. A grab is in it
-	 * too — the same decoding of the wire, taken once rather than continuously.
+	 * Every control is a button of one kind, and a toggle says it is on by its color.
+	 * Record is one press: it arms from what this browser last chose in the Inspector —
+	 * the programmer unless somebody picked an input — and gives the faders back when the
+	 * take stops. The count-in and a grab from the wire are in the Inspector too.
 	 */
 
 	import Circle from '@lucide/svelte/icons/circle';
 	import Ear from '@lucide/svelte/icons/ear';
+	import Endless from '@lucide/svelte/icons/infinity';
 	import Magnet from '@lucide/svelte/icons/magnet';
 	import Play from '@lucide/svelte/icons/play';
 	import Repeat from '@lucide/svelte/icons/repeat';
 	import SkipBack from '@lucide/svelte/icons/skip-back';
 	import Square from '@lucide/svelte/icons/square';
+	import ArrowRightToLine from '@lucide/svelte/icons/arrow-right-to-line';
 
 	import type { Timeline } from '$lib/generated/index.js';
 	import { selectSubject } from '$lib/objects.js';
-	import { selection } from '$lib/stores/selection.js';
-	import { collection, showClient, showData } from '$lib/stores/show.js';
+	import { collection, showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
-	import { countdownOf, countInSeconds, lapOf, locate, now, playCounted, positionOf, stop, takes } from '$lib/stores/timelines.js';
-	import { armArgs, armChoice, PROGRAMMER, releases, takeSummary } from '$lib/takes.js';
+	import { countdownOf, lapOf, locate, now, playCounted, positionOf, recordFrom, stop, takes } from '$lib/stores/timelines.js';
+	import { armArgs, PROGRAMMER, takeSummary } from '$lib/takes.js';
 	import { pageId } from '$lib/stores/takeReview.js';
 	import { monitorSettings, monitorState, setMonitorLevel, toggleListening } from '$lib/stores/monitor.js';
-	import { addToast } from '$lib/toasts.js';
 	import { clock, parsePosition } from '$lib/waveform.js';
 
 	let { timeline, snapping = $bindable() }: { timeline: Timeline; snapping: boolean } = $props();
@@ -43,35 +42,19 @@
 	let typing = $state(false);
 	const take = $derived($takes?.[timeline.id] ?? null);
 	const counting = $derived(countdownOf(timeline, $now));
-	const COUNT_INS = [0, 2, 3, 5];
-	let recordMenu = $state(false);
 
-	const source = $derived(armChoice(timeline.recording));
-	const sourceName = $derived(
-		source === ''
-			? 'off'
-			: source === PROGRAMMER
-				? 'programmer'
-				: ($inputs.find((i) => i.id === source)?.name ?? 'an input')
+	/** The input chosen in the Inspector, while it is still switched on; the programmer otherwise. */
+	const source = $derived(
+		$recordFrom !== PROGRAMMER && $inputs.some((i) => i.id === $recordFrom && i.enabled) ? $recordFrom : PROGRAMMER
 	);
-	const arm = (choice: string, release: boolean) =>
+	const sourceName = $derived(source === PROGRAMMER ? 'the programmer' : ($inputs.find((i) => i.id === source)?.name ?? 'an input'));
+	function toggleRecord() {
 		// Says which page armed it, so this is the page the review opens on.
-		void showData().timelines.byId(timeline.id).record({ ...armArgs(choice, release), armedBy: pageId });
-	const listening = $derived($inputs.some((i) => i.enabled));
+		const args = timeline.recording ? armArgs('', true) : armArgs(source, true);
+		void showData().timelines.byId(timeline.id).record({ ...args, armedBy: pageId });
+	}
 	/** Whether this tab's speaker is on this timeline: see `stores/monitor.ts`. */
 	const hearing = $derived($monitorSettings.timelineId === timeline.id ? $monitorState : 'off');
-
-	/** What is on the wire now, into the programmer, for the selected fixtures. */
-	async function grab() {
-		recordMenu = false;
-		try {
-			const answer = (await showClient().call('input.grab', { fixtureIds: $selection })) as { written: number };
-			if (answer.written === 0) addToast('Nothing on the wire reaches those fixtures.', 'warning');
-			else addToast(`${answer.written} value${answer.written === 1 ? '' : 's'} grabbed into the programmer.`, 'success');
-		} catch (e) {
-			addToast(String(e));
-		}
-	}
 </script>
 
 <div class="transport">
@@ -118,99 +101,37 @@
 	</div>
 
 	<div class="group">
-		<button class="chip" title="How it ends — in the Inspector" onclick={() => selectSubject({ kind: 'timeline', id: timeline.id })}>
+		<button
+			class="btn rec"
+			class:armed={!!timeline.recording}
+			class:rolling={!!take}
+			aria-pressed={!!timeline.recording}
+			disabled={!$canEdit}
+			title={take
+				? takeSummary(take)
+				: timeline.recording
+					? 'Armed: the next Play records until Stop. Press to disarm'
+					: `Arm a recording from ${sourceName}`}
+			onclick={toggleRecord}
+		>
+			<Circle size={12} />{take ? 'Recording' : timeline.recording ? 'Armed' : 'Record'}
+		</button>
+		<button class="btn" title="How it ends — in the Inspector" onclick={() => selectSubject({ kind: 'timeline', id: timeline.id })}>
 			{#if timeline.end?.then === 'Loop'}
-				<Repeat size={12} />goes round at {clock(timeline.end.at_ms)}
+				<Repeat size={14} />Loops at {clock(timeline.end.at_ms)}
 			{:else if timeline.end}
-				stops at {clock(timeline.end.at_ms)}
+				<ArrowRightToLine size={14} />Stops at {clock(timeline.end.at_ms)}
 			{:else}
-				runs until stopped
+				<Endless size={14} />Runs until stopped
 			{/if}
 		</button>
-
-		<span class="menu-anchor">
-			<button
-				class="chip"
-				class:armed={!!timeline.recording}
-				class:rolling={!!take}
-				aria-haspopup="menu"
-				aria-expanded={recordMenu}
-				onclick={() => (recordMenu = !recordMenu)}
-			>
-				<Circle size={10} />{take ? 'Recording' : `Recording: ${sourceName}`}<span class="caret">▾</span>
-			</button>
-			{#if recordMenu}
-				<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-				<div class="catch" onclick={() => (recordMenu = false)}></div>
-				<div class="menu" role="menu">
-					<span class="heading">Records from</span>
-					<button role="menuitemradio" aria-checked={source === ''} class:on={source === ''} disabled={!$canEdit} onclick={() => arm('', false)}>Nothing</button>
-					<button
-						role="menuitemradio"
-						aria-checked={source === PROGRAMMER}
-						class:on={source === PROGRAMMER}
-						disabled={!$canEdit}
-						onclick={() => arm(PROGRAMMER, releases(timeline.recording))}>The programmer, and sequence Gos</button
-					>
-					{#each $inputs.filter((i) => i.enabled) as input (input.id)}
-						<button role="menuitemradio" aria-checked={source === input.id} class:on={source === input.id} disabled={!$canEdit} onclick={() => arm(input.id, false)}>
-							{input.name}
-						</button>
-					{/each}
-					{#if source}
-						<span class="heading rule">Count in</span>
-						<div class="count-ins" role="group" aria-label="Count in before recording">
-							{#each COUNT_INS as n (n)}
-								<button
-									class:on={$countInSeconds === n}
-									aria-pressed={$countInSeconds === n}
-									onclick={() => countInSeconds.set(n)}>{n === 0 ? 'off' : `${n} s`}</button
-								>
-							{/each}
-						</div>
-					{/if}
-					{#if source === PROGRAMMER}
-						<label class="check" title="When the take is stored, give the keys it recorded back. Off, the faders stay held and beat the take until you clear them.">
-							<input
-								type="checkbox"
-								disabled={!$canEdit}
-								checked={releases(timeline.recording)}
-								onchange={(e) => arm(PROGRAMMER, e.currentTarget.checked)}
-							/>
-							Give the faders back after
-						</label>
-					{/if}
-					<span class="heading rule">Once</span>
-					<button
-						role="menuitem"
-						disabled={!listening || $selection.length === 0}
-						title={!listening ? 'No input is switched on' : $selection.length === 0 ? 'Nothing is selected' : ''}
-						onclick={grab}>Grab the selection from the wire</button
-					>
-					<p class="note">
-						{#if take}
-							{takeSummary(take)}
-						{:else if source === PROGRAMMER}
-							From the next Play to the next Stop: every programmer key that moves, from your first
-							touch to the Stop, every flash key as a flash, every sequence level you move as a curve, and
-							every Go, Back and Off as an event. On a loop each lap you touch is a pass. Nothing is kept until
-							you say so when it stops.
-						{:else if source}
-							The station holding that input records from the next Play to the next Stop.
-						{:else}
-							Nothing is recorded.
-						{/if}
-					</p>
-				</div>
-			{/if}
-		</span>
 	</div>
 
-	<div class="group end">
+	<div class="group">
 		<!-- This tab's speaker, for listening while programming: never a show output.
 		     A tap is what lets a browser start sound, so a reloaded page is "armed". -->
 		<button
-			class="chip"
+			class="btn btn-icon"
 			class:on={hearing === 'listening' || hearing === 'loading'}
 			class:armed={hearing === 'armed'}
 			aria-pressed={hearing === 'listening' || hearing === 'loading'}
@@ -223,7 +144,7 @@
 						: 'Hear this timeline on this tab, in step with the playhead. Only this speaker: the show is never played from a browser'}
 			onclick={() => toggleListening(timeline.id)}
 		>
-			<Ear size={12} />{hearing === 'loading' ? 'loading…' : 'listen'}
+			<Ear size={14} />{hearing === 'loading' ? 'Loading…' : 'Listen'}
 		</button>
 		{#if hearing !== 'off'}
 			<input
@@ -237,16 +158,13 @@
 				oninput={(e) => setMonitorLevel(Number(e.currentTarget.value))}
 			/>
 		{/if}
-		<button class="chip" class:on={snapping} aria-pressed={snapping} title="Drags snap to the grid and the markers" onclick={() => (snapping = !snapping)}>
-			<Magnet size={12} />snap
+		<button class="btn btn-icon" class:on={snapping} aria-pressed={snapping} title="Drags snap to the grid and the markers" onclick={() => (snapping = !snapping)}>
+			<Magnet size={14} />Snap
 		</button>
 	</div>
 </div>
 
 <style>
-	.chip.armed {
-		border-style: dashed;
-	}
 	.level {
 		width: 72px;
 	}
@@ -258,19 +176,10 @@
 		font-variant-numeric: tabular-nums;
 		text-align: center;
 	}
-	.count-ins { display: flex; gap: 4px; padding: 2px 8px 6px; }
-	.count-ins button {
-		background: none; border: 1px solid var(--line-strong, #3a3a3a); border-radius: 3px;
-		color: inherit; font: inherit; font-size: 12px; padding: 2px 8px; cursor: pointer;
-	}
-	.count-ins button.on { border-color: #ef4444; color: #fecaca; }
+	/* Its groups are the bar's own items, so they wrap with the panel's buttons as one
+	   row of groups rather than as two blocks side by side. */
 	.transport {
-		display: flex;
-		align-items: center;
-		gap: 6px 14px;
-		flex-wrap: wrap;
-		flex: 1;
-		min-width: 0;
+		display: contents;
 	}
 	/* A group never breaks inside itself; the transport wraps between groups. */
 	.group {
@@ -278,9 +187,6 @@
 		align-items: center;
 		gap: 6px;
 		flex-wrap: nowrap;
-	}
-	.group.end {
-		margin-left: auto;
 	}
 	.readout {
 		min-width: 104px;
@@ -308,34 +214,26 @@
 	.gap {
 		color: var(--text-faint);
 	}
-	.chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		min-height: 28px;
-		padding: 0 9px;
-		border: 1px solid var(--line-strong);
-		border-radius: 14px;
-		background: var(--bg-raised);
-		color: var(--text-dim);
-		font: inherit;
-		font-size: var(--font-xs);
-		cursor: pointer;
-		white-space: nowrap;
-	}
-	.chip:hover {
-		color: var(--text);
-		border-color: var(--line-input);
-	}
-	.chip.on {
+	.btn.on {
 		color: var(--accent);
 		border-color: var(--accent-solid);
 	}
-	.chip.armed {
+	.btn.armed {
+		color: var(--text-dim);
+		border-style: dashed;
+	}
+	.rec :global(svg) {
+		color: var(--bad);
+	}
+	.rec.armed {
 		color: var(--bad);
 		border-color: var(--bad);
+		border-style: solid;
 	}
-	.chip.rolling {
+	.rec.armed :global(svg) {
+		fill: var(--bad);
+	}
+	.rec.rolling {
 		background: color-mix(in srgb, var(--bad) 20%, var(--bg-raised));
 		animation: pulse 1.2s ease-in-out infinite;
 	}
@@ -343,83 +241,5 @@
 		50% {
 			background: color-mix(in srgb, var(--bad) 8%, var(--bg-raised));
 		}
-	}
-	.caret {
-		font-size: 9px;
-		opacity: 0.7;
-	}
-	.menu-anchor {
-		position: relative;
-	}
-	.catch {
-		position: fixed;
-		inset: 0;
-		z-index: 19;
-	}
-	.menu {
-		position: absolute;
-		top: calc(100% + 4px);
-		left: 0;
-		z-index: 20;
-		width: 280px;
-		padding: 6px;
-		display: flex;
-		flex-direction: column;
-		background: var(--bg-panel);
-		border: 1px solid var(--line-strong);
-		border-radius: 6px;
-		box-shadow: 0 8px 24px rgb(0 0 0 / 0.45);
-	}
-	.menu .heading {
-		padding: 4px 8px;
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		color: var(--text-faint);
-	}
-	.menu button {
-		text-align: left;
-		padding: 7px 8px;
-		border: none;
-		border-radius: 4px;
-		background: none;
-		color: var(--text);
-		font: inherit;
-		font-size: var(--font-sm);
-		cursor: pointer;
-	}
-	.menu button:hover:not(:disabled) {
-		background: var(--bg-hover);
-	}
-	.menu .heading.rule {
-		margin-top: 4px;
-		padding-top: 8px;
-		border-top: 1px solid var(--line);
-	}
-	.menu button:disabled {
-		color: var(--text-faint);
-		cursor: default;
-	}
-	.menu button.on {
-		color: var(--accent);
-	}
-	.menu button.on::before {
-		content: '● ';
-	}
-	.check {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 8px;
-		font-size: var(--font-sm);
-		color: var(--text-dim);
-		border-top: 1px solid var(--line);
-		margin-top: 4px;
-	}
-	.note {
-		margin: 4px 8px 4px;
-		font-size: var(--font-xs);
-		line-height: 1.45;
-		color: var(--text-faint);
 	}
 </style>

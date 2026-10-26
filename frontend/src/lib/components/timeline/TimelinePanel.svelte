@@ -28,6 +28,7 @@
 	import PanelRight from '@lucide/svelte/icons/panel-right';
 	import Upload from '@lucide/svelte/icons/upload';
 	import Flag from '@lucide/svelte/icons/flag';
+	import Diamond from '@lucide/svelte/icons/diamond';
 	import Help from '../Help.svelte';
 	import { addToast } from '$lib/toasts.js';
 
@@ -51,7 +52,7 @@
 	let width = $state(1200);
 	let root = $state<HTMLDivElement | null>(null);
 	let snapping = $state(true);
-	let lanes = $state<{ markerAtPlayhead: () => Promise<void> } | null>(null);
+	let lanes = $state<{ markerAtPlayhead: () => Promise<void>; eventAtPlayhead: () => Promise<void> } | null>(null);
 	let uploading = $state(false);
 
 	const timeline = $derived($openTimeline);
@@ -166,6 +167,14 @@
 				<Transport {timeline} bind:snapping />
 				<div class="actions">
 					{#if $canEdit}
+						<button class="btn" title="An event at the playhead — it Goes a sequence, plays or stops a timeline, or sets a variable; pick which in the Inspector" onclick={() => lanes?.eventAtPlayhead()}>
+							<Diamond size={14} />Event
+						</button>
+						<button class="btn" title="A marker at the playhead (M)" onclick={() => lanes?.markerAtPlayhead()}>
+							<Flag size={14} />Marker
+						</button>
+					{/if}
+					{#if $canEdit}
 						<label class="btn file" title="Add a sound at the playhead">
 							<Upload size={14} />{uploading ? 'Storing…' : 'Sound'}
 							<input
@@ -180,16 +189,11 @@
 							/>
 						</label>
 					{/if}
-					{#if $canEdit}
-						<button class="btn" title="A marker at the playhead (M)" onclick={() => lanes?.markerAtPlayhead()}>
-							<Flag size={14} />Marker
-						</button>
-					{/if}
 					<Help label="How the lanes work">
 						<p>
 							Click to pick up and to locate · drag to move, an edge to trim, empty space to draw a
-							band · double-click the event or marker lane to add one · wheel or the buttons to
-							zoom.
+							band · double-click the marker lane, or a row of the event lane, to add one there ·
+							wheel or the buttons to zoom.
 						</p>
 						<p>
 							With the lanes focused: <b>Space</b> plays and stops, <b>M</b> drops a marker at the
@@ -264,14 +268,18 @@
 	.bar {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		flex-wrap: wrap;
+		gap: 6px 14px;
 	}
-	.bar :global(.transport) {
-		flex: 1;
-	}
+	.bar :global(.group),
 	.actions {
 		display: flex;
+		align-items: center;
 		gap: 6px;
+		flex-wrap: nowrap;
+	}
+	.actions {
+		margin-left: auto;
 	}
 	.file {
 		position: relative;

@@ -6,6 +6,9 @@
 	 * once and then scrolled past for the rest of the show. This keeps them one tap
 	 * away instead: a tap rather than a hover, because a tablet has no hover, and the
 	 * text closes on Escape or a tap anywhere else.
+	 *
+	 * The text is placed against the window, not the button's box: a `?` at the right
+	 * edge of a panel opened its text past the edge, cut off by the panel around it.
 	 */
 
 	import type { Snippet } from 'svelte';
@@ -15,6 +18,20 @@
 
 	let open = $state(false);
 	let root: HTMLSpanElement | undefined = $state();
+	let text: HTMLSpanElement | undefined = $state();
+	let place = $state({ left: 0, top: 0 });
+
+	/** Under the button, moved left as far as it takes to stay inside the window. */
+	$effect(() => {
+		if (!open || !root || !text) return;
+		const button = root.getBoundingClientRect();
+		const width = text.offsetWidth;
+		const height = text.offsetHeight;
+		const left = Math.max(8, Math.min(button.left, window.innerWidth - width - 8));
+		const below = button.bottom + 6;
+		const top = below + height > window.innerHeight - 8 ? Math.max(8, button.top - 6 - height) : below;
+		place = { left, top };
+	});
 
 	function away(event: PointerEvent) {
 		if (open && root && !root.contains(event.target as Node)) open = false;
@@ -40,7 +57,7 @@
 		<CircleHelp size={14} />
 	</button>
 	{#if open}
-		<span class="text" role="note">{@render children()}</span>
+		<span class="text" role="note" bind:this={text} style:left="{place.left}px" style:top="{place.top}px">{@render children()}</span>
 	{/if}
 </span>
 
@@ -63,10 +80,8 @@
 		color: var(--text, #ddd);
 	}
 	.text {
-		position: absolute;
-		top: calc(100% + 6px);
-		left: 0;
-		z-index: 20;
+		position: fixed;
+		z-index: 1000;
 		width: max-content;
 		max-width: 340px;
 		padding: 10px 12px;
