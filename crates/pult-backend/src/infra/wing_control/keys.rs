@@ -56,6 +56,7 @@ pub fn keypad_word(code: &str) -> Option<&'static str> {
         "STORE" => "store",
         "UPDATE" => "update",
         "DELETE" => "delete",
+        "MOVE" => "move",
         "HELP" => "help",
         "OFF" => "off",
         _ => return None,
@@ -101,6 +102,12 @@ pub fn key_verb(code: &str) -> Option<Verb> {
 /// stored onto it.
 pub fn x_key(code: &str) -> bool {
     code.strip_prefix('X').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// A key of a playback of its own: an X key or an executor's key. MA's EXEC keys are the
+/// ones above and under the faders and the two rows at the top.
+pub fn playback_key(code: &str) -> bool {
+    x_key(code) || code == "EXEC"
 }
 
 /// The line with one more key typed onto it.

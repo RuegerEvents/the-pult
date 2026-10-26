@@ -76,15 +76,15 @@ export function slotReading(value: ParameterValue | null, component?: 'r' | 'g' 
 
 /**
  * What a control can be bound to from something the operator touched, or `null` when
- * the two do not fit: a fader or an encoder moves a parameter and a fader may be a
- * sequence's level; a key presses something, or flashes a parameter it was shown.
+ * the two do not fit: a fader or an encoder moves a parameter or is a sequence's
+ * level; a key presses something, or flashes a parameter it was shown.
  */
 export function learnable(control: SurfaceControl, action: BindingAction): BindingAction | null {
 	switch (control.kind) {
 		case 'Fader':
 			return action.kind === 'Parameter' || action.kind === 'Master' ? action : null;
 		case 'Encoder':
-			return action.kind === 'Parameter' ? action : null;
+			return action.kind === 'Parameter' || action.kind === 'Master' ? action : null;
 		case 'Key':
 		case 'Digital':
 			if (action.kind === 'Parameter') {
@@ -106,7 +106,17 @@ export type FaderColumn = { fader: number; executor: number; off: number | null;
  * `keys::fader_keys` reads the same table the same way: a fader's own executor's
  * `EXEC` key is under it, and the one a hundred below is above it.
  */
-export function playbackLayout(map: WingMap): { columns: FaderColumn[]; xKeys: { index: number; n: number }[] } {
+/** One executor with no fader: its knob and its key, either of which it may lack. */
+export type ExecutorCell = { executor: number; key: number | null; encoder: number | null };
+
+export function playbackLayout(map: WingMap): {
+	columns: FaderColumn[];
+	xKeys: { index: number; n: number }[];
+	/** The executor rows above the faders, top row first: 4xx, then 3xx. */
+	upper: ExecutorCell[][];
+	/** The knobs on the left, 291 to 298. */
+	left: ExecutorCell[];
+} {
 	const execKey = new Map<string, number>();
 	for (const [index, c] of Object.entries(map.hardkeys)) {
 		if (c.Code === 'EXEC' && c.ExecutorIndex) execKey.set(c.ExecutorIndex, Number(index));
@@ -128,5 +138,17 @@ export function playbackLayout(map: WingMap): { columns: FaderColumn[]; xKeys: {
 		.filter((k): k is { index: number; m: RegExpExecArray } => k.m !== null)
 		.map((k) => ({ index: k.index, n: Number(k.m[1]) }))
 		.sort((a, b) => a.n - b.n);
-	return { columns, xKeys };
+	const knob = new Map<string, number>();
+	for (const [index, c] of Object.entries(map.encoders)) if (c.ExecutorIndex) knob.set(c.ExecutorIndex, Number(index));
+	const cells = (from: number, to: number): ExecutorCell[] => {
+		const out: ExecutorCell[] = [];
+		for (let executor = from; executor <= to; executor++) {
+			const key = execKey.get(String(executor)) ?? null;
+			const encoder = knob.get(String(executor)) ?? null;
+			if (key !== null || encoder !== null) out.push({ executor, key, encoder });
+		}
+		return out;
+	};
+	const upper = [cells(401, 410), cells(301, 310)].filter((row) => row.length > 0);
+	return { columns, xKeys, upper, left: cells(291, 298) };
 }

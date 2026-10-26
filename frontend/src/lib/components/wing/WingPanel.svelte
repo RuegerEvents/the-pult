@@ -147,7 +147,10 @@
 						{ kind: 'Parameter', label: 'A parameter' },
 						{ kind: 'Master', label: 'A sequence’s level' }
 					]
-				: [{ kind: 'Parameter', label: 'A parameter' }];
+				: [
+						{ kind: 'Parameter', label: 'A parameter' },
+						{ kind: 'Master', label: 'A sequence’s level' }
+					];
 
 	let choice = $state<Choice>('Press');
 	let pressIndex = $state(0);

@@ -86,6 +86,33 @@
 		</span>
 	</div>
 
+	{#snippet cell(c: { executor: number; key: number | null; encoder: number | null })}
+		<div class="cell">
+			{#if c.encoder !== null}
+				{@const control = { kind: 'Encoder', index: c.encoder } as SurfaceControl}
+				{@const does = what(control)}
+				<button class="knob" class:bound={does} disabled={!editable} onclick={() => edit(control)} title={does ?? `Knob of exec ${c.executor}: nothing on this page`}>
+					{does ?? ''}
+				</button>
+			{/if}
+			{#if c.key !== null}
+				{@const control = { kind: 'Key', index: c.key } as SurfaceControl}
+				{@const does = what(control)}
+				<button class="key" class:bound={does} disabled={!editable} onclick={() => edit(control)} title={does ?? `Exec ${c.executor}: nothing on this page`}>
+					{does ?? c.executor}
+				</button>
+			{/if}
+		</div>
+	{/snippet}
+
+	{#each layout.upper as row, r (r)}
+		<div class="desk">
+			{#each row as c (c.executor)}
+				{@render cell(c)}
+			{/each}
+		</div>
+	{/each}
+
 	<div class="desk">
 		{#each layout.columns as column, i (column.fader)}
 			{@const fader = { kind: 'Fader', index: column.fader } as SurfaceControl}
@@ -111,6 +138,17 @@
 			</div>
 		{/each}
 	</div>
+
+	{#if layout.left.length > 0}
+		<div class="left">
+			<span class="dim">Left knobs</span>
+			<div class="row">
+				{#each layout.left as c (c.executor)}
+					{@render cell(c)}
+				{/each}
+			</div>
+		</div>
+	{/if}
 
 	{#if layout.xKeys.length > 0}
 		<div class="xkeys">
@@ -235,6 +273,38 @@
 		text-align: center;
 		font-size: 10px;
 		color: var(--text-faint, #666);
+	}
+	.cell {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		min-width: 0;
+	}
+	.knob {
+		background: var(--bg-sunken, #161616);
+		border: 1px solid var(--line, #2c2c2c);
+		border-radius: 50%;
+		aspect-ratio: 1;
+		max-width: 46px;
+		align-self: center;
+		width: 100%;
+		color: var(--text-faint, #666);
+		font: inherit;
+		font-size: 9px;
+		line-height: 1.1;
+		overflow: hidden;
+		padding: 2px;
+		cursor: default;
+	}
+	.left {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.left .row {
+		display: grid;
+		grid-template-columns: repeat(8, minmax(0, 1fr));
+		gap: 6px;
 	}
 	.xkeys {
 		display: grid;

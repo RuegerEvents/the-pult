@@ -86,6 +86,9 @@ const BINDINGS_EVERY: Duration = Duration::from_secs(2);
 /// above zero, so zero itself would never be crossed.
 const FADER_BOTTOM: f32 = 0.01;
 
+/// The fader a level moved by an encoder is written under: none, so it has no gesture.
+const NO_FADER: u16 = u16::MAX;
+
 const RECENT: Duration = Duration::from_millis(400);
 /// How long a run of encoder clicks stays one gesture after the last of them: the
 /// page's `nudging`, so a spin is one Ctrl-Z and a pause ends it.
@@ -161,6 +164,9 @@ struct Control {
     /// Where each master fader was last read, which leaving or reaching the bottom is
     /// measured from.
     fader_levels: HashMap<u16, f32>,
+    /// After MOVE, the control whose binding is going somewhere, until the second one
+    /// is touched.
+    moving: Option<SurfaceControl>,
 }
 
 /// Run the wing for as long as this station runs.
@@ -203,6 +209,7 @@ pub async fn run(
         held_keys: HashSet::new(),
         digital: None,
         fader_levels: HashMap::new(),
+        moving: None,
     };
     control.read_bindings().await;
     control.read_show().await;
@@ -424,19 +431,12 @@ impl Control {
             }
             BindingAction::Master { sequence_id } => {
                 self.masters.insert(sequence_id, (index, level));
-                // Up off the bottom takes a sequence that is off, and down onto it takes
-                // one that is on off: MA's fader that starts and stops its executor.
                 let light = self.lit.sequences.iter().find(|s| s.id == sequence_id);
-                let on = light.is_some_and(|s| s.active_cue_index.is_some());
                 let before = self
                     .fader_levels
                     .insert(index, level)
                     .unwrap_or_else(|| light.and_then(|s| s.master).unwrap_or(1.0));
-                if before <= FADER_BOTTOM && level > FADER_BOTTOM && !on {
-                    self.set(field("sequences", sequence_id, "goNext"), json!({ "at": now_ms() }), None).await;
-                } else if before > FADER_BOTTOM && level <= FADER_BOTTOM && on {
-                    self.set(field("sequences", sequence_id, "off"), json!({ "at": now_ms() }), None).await;
-                }
+                self.master_moved(sequence_id, before, level).await;
             }
             _ => {}
         }
@@ -448,6 +448,9 @@ impl Control {
 
         // A hand on a fader is a gesture beginning, and lifting off is it ending.
         if let Some(FaderKey::Touch(fader)) = fader_key {
+            if down && self.edit_binding(SurfaceControl::Fader { index: fader }).await {
+                return;
+            }
             if down {
                 self.fader_gestures.insert(fader, Uuid::new_v4());
             } else {
@@ -486,6 +489,15 @@ impl Control {
         }
         if down && self.catch_learn(SurfaceControl::Key { index }).await {
             return;
+        }
+
+        // After DELETE or MOVE, a key is the binding being deleted or moved — or, for
+        // a fader's own key with nothing on it, the fader's.
+        if down {
+            let control = self.bound_control(index, fader_key);
+            if self.edit_binding(control).await {
+                return;
+            }
         }
 
         // After STORE, a playback control is where the programmer goes: MA's Store onto
@@ -575,10 +587,28 @@ impl Control {
         if self.catch_learn(SurfaceControl::Encoder { index: index as u16 }).await {
             return;
         }
+        if self.edit_binding(SurfaceControl::Encoder { index: index as u16 }).await {
+            return;
+        }
         if let Some(action) = self.binding(&SurfaceControl::Encoder { index: index as u16 }).cloned() {
-            if let BindingAction::Parameter { fixture_id, parameter } = action {
-                let target = ParameterTarget { fixture_id, parameter_kind: parameter };
-                self.turn(vec![target], None, delta, keys::COARSE, None).await;
+            match action {
+                BindingAction::Parameter { fixture_id, parameter } => {
+                    let target = ParameterTarget { fixture_id, parameter_kind: parameter };
+                    self.turn(vec![target], None, delta, keys::COARSE, None).await;
+                }
+                // A knob as a sequence's level: a hundred clicks from the bottom to full.
+                BindingAction::Master { sequence_id } => {
+                    let before = self
+                        .masters
+                        .get(&sequence_id)
+                        .map(|(_, level)| *level)
+                        .or_else(|| self.lit.sequences.iter().find(|s| s.id == sequence_id).map(|s| s.master.unwrap_or(1.0)))
+                        .unwrap_or(1.0);
+                    let level = (before + delta as f32 * 0.01).clamp(0.0, 1.0);
+                    self.masters.insert(sequence_id, (NO_FADER, level));
+                    self.master_moved(sequence_id, before, level).await;
+                }
+                _ => {}
             }
             return;
         }
@@ -595,6 +625,115 @@ impl Control {
                 self.turn(targets, Some(on.default_value.clone()), delta, step, on.component).await;
             }
         }
+    }
+
+    /// Up off the bottom takes a sequence that is off, and down onto it takes one that
+    /// is on off: MA's fader that starts and stops its executor.
+    async fn master_moved(&mut self, sequence_id: Uuid, before: f32, level: f32) {
+        let on = self.lit.sequences.iter().any(|s| s.id == sequence_id && s.active_cue_index.is_some());
+        if before <= FADER_BOTTOM && level > FADER_BOTTOM && !on {
+            self.set(field("sequences", sequence_id, "goNext"), json!({ "at": now_ms() }), None).await;
+        } else if before > FADER_BOTTOM && level <= FADER_BOTTOM && on {
+            self.set(field("sequences", sequence_id, "off"), json!({ "at": now_ms() }), None).await;
+        }
+    }
+
+    // ── DELETE and MOVE on a binding ──────────────────────────────────────────
+
+    /// The control a key stands for when a binding is deleted or moved: the key, where
+    /// something is bound to it, and otherwise the fader it belongs to, where that is.
+    fn bound_control(&self, index: u16, fader_key: Option<FaderKey>) -> SurfaceControl {
+        let key = SurfaceControl::Key { index };
+        if self.binding(&key).is_some() {
+            return key;
+        }
+        match fader_key {
+            Some(FaderKey::Go(fader) | FaderKey::Off(fader)) if self.binding(&SurfaceControl::Fader { index: fader }).is_some() => {
+                SurfaceControl::Fader { index: fader }
+            }
+            _ => key,
+        }
+    }
+
+    /// The binding row a control has on this page.
+    fn binding_row(&self, control: &SurfaceControl) -> Option<&ControlBinding> {
+        let page = self.station.operator().page;
+        self.bindings.iter().find(|b| &b.control == control && b.page() == page)
+    }
+
+    /// DELETE then a control unbinds it; MOVE then two controls moves the first one's
+    /// binding onto the second, and swaps where the second had one. Only the binding:
+    /// what it pointed at — a sequence, a group — stays in the show. Answers whether the
+    /// control was taken for this, so it does nothing else.
+    async fn edit_binding(&mut self, control: SurfaceControl) -> bool {
+        let line = self.station.operator().line.trim().to_string();
+        if line != "move" {
+            self.moving = None;
+        }
+        match line.as_str() {
+            "delete" => {
+                self.station.update_operator(|op| op.line.clear()).await;
+                let Some(row) = self.binding_row(&control).cloned() else {
+                    self.toast("Nothing is bound to that on this page", false);
+                    return true;
+                };
+                let gesture = Some(Uuid::new_v4());
+                self.set(field("control_bindings", row.id, "__delete"), Value::Null, gesture).await;
+                self.read_bindings().await;
+                self.toast(&format!("{} unbound", self.control_label(&control)), true);
+                true
+            }
+            "move" => {
+                let Some(from) = self.moving.take() else {
+                    if self.binding_row(&control).is_none() {
+                        self.station.update_operator(|op| op.line.clear()).await;
+                        self.toast("Nothing is bound to that on this page to move", false);
+                    } else {
+                        self.moving = Some(control);
+                    }
+                    return true;
+                };
+                self.station.update_operator(|op| op.line.clear()).await;
+                // A binding moved from a fader onto an executor's key goes to that key's
+                // fader: a sequence's level cannot be a key.
+                let to = match (from, control) {
+                    (SurfaceControl::Fader { .. }, SurfaceControl::Key { index }) => match self.fader_keys.get(&index) {
+                        Some(FaderKey::Go(fader) | FaderKey::Off(fader)) => SurfaceControl::Fader { index: *fader },
+                        _ => control,
+                    },
+                    _ => control,
+                };
+                if to == from {
+                    return true;
+                }
+                if std::mem::discriminant(&from) != std::mem::discriminant(&to) {
+                    self.toast("A binding moves onto a control of the same kind: a key to a key, a fader to a fader", false);
+                    return true;
+                }
+                let Some(row) = self.binding_row(&from).cloned() else { return true };
+                let gesture = Some(Uuid::new_v4());
+                if let Some(there) = self.binding_row(&to).cloned() {
+                    self.set(field("control_bindings", there.id, "control"), json!(from), gesture).await;
+                }
+                self.set(field("control_bindings", row.id, "control"), json!(to), gesture).await;
+                self.read_bindings().await;
+                self.toast(&format!("Moved to {}", self.control_label(&to)), true);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What MA calls a control, for a toast.
+    fn control_label(&self, control: &SurfaceControl) -> String {
+        let map = self.map.as_deref();
+        let label = match control {
+            SurfaceControl::Key { index } => map.and_then(|m| m.hardkeys.get(index)).map(|c| c.label.clone()),
+            SurfaceControl::Fader { index } => map.and_then(|m| m.faders.get(&(*index as u8))).map(|c| c.label.clone()),
+            SurfaceControl::Encoder { index } => map.and_then(|m| m.encoders.get(&(*index as u8))).map(|c| c.label.clone()),
+            SurfaceControl::Digital { index } => Some(format!("digital in {}", index + 1)),
+        };
+        label.unwrap_or_else(|| "That control".into())
     }
 
     // ── A binding, run ────────────────────────────────────────────────────────
@@ -1100,7 +1239,7 @@ impl Control {
             Some(BindingAction::Press {
                 target: TileTarget::SequenceGo { sequence_id } | TileTarget::SequenceOff { sequence_id },
             }) => Some(StoreOnto { control, page, sequence_id: Some(*sequence_id) }),
-            None if keys::x_key(code) || matches!(fader_key, Some(FaderKey::Off(_))) => {
+            None if keys::playback_key(code) => {
                 Some(StoreOnto { control, page, sequence_id: None })
             }
             _ => None,
@@ -1382,7 +1521,10 @@ impl Control {
                 if operator.page > 1 { keys::DIM } else { 0 }
             } else if verb == Some(Verb::NextPage) {
                 if operator.page <= self.last_page() { keys::DIM } else { 0 }
-            } else if code == "STORE" && operator.line.trim() == "store" {
+            } else if (code == "STORE" && storing)
+                || (code == "DELETE" && operator.line.trim() == "delete")
+                || (code == "MOVE" && operator.line.trim() == "move")
+            {
                 // Waiting for where: MA's Store blinks until it is told.
                 if blink { keys::LIT } else { keys::DIM }
             } else if keys::keypad_word(code).is_some() || verb.is_some() {
