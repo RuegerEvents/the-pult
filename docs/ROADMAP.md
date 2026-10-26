@@ -8336,6 +8336,41 @@ console, and it answers surface-layer's questions for this device rather than in
 - **LEDs carry state, not decoration**: the keypad dim and bright while held, a bound key
   lit while its target is live, LEARN blinking while armed.
 
+**Revised 2026-10-26, at the gig: the station runs the whole wing.** The first bullet
+above was wrong in practice. A page busy drawing the rig lagged every key and fader
+behind its main thread, and a wing whose page had closed did nothing at all. The faders,
+flash keys and motors moved to the station on 10-25 (`2617f4b`). The rest followed on
+10-26: keypad and command line, encoders and calculator, the dimmer wheel (MA's
+`WheelMaster`, half a percent a click, which nobody has checked against a hand yet), GO,
+CLEAR, OOPS, bindings, digital inputs, learning and the lights. All of it now lives in
+`infra/wing_control/`, and its arithmetic is in `keys.rs` with no copy in the browser.
+
+- **The selection is shared, not owned.** The station holds the wing's selection. The
+  page that claims the wing pushes its own selection there (`wing.context`). A selection
+  made on the wing (a group key, a typed `fixture 3`) is marked `from_wing` with a
+  `rev`, and the claiming page takes it on as its own. A page that has not yet seen the
+  wing's `rev` cannot overwrite it. With no page claiming, the wing keeps the selection
+  it has.
+- **GO goes on the claiming page's cue sheet touched last, or else on the sequence that
+  went most recently from anywhere.** Space on the page still refuses to guess. A desk
+  with no screen has to.
+- **Writes are the claiming page's user's**, or the show's default operator's. A fader
+  touch is one gesture, a run of encoder clicks is another (closed 400 ms after the last
+  click), and Update and Store are one each. That makes OOPS on an empty line the page's
+  Ctrl-Z. A flash stays unattributed: it puts back what it found, and if a press landed
+  in the history, OOPS would take back the flash instead of the edit before it.
+- **STORE and UPDATE are the top bar's.** UPDATE with nothing typed runs Update: each
+  value goes into the cue driving it, as one gesture, and the programmer is cleared once
+  every value has found its cue. Keys no cue drives go to the claiming page's Store
+  dialog, already ticked. STORE followed by a master's executor key stores a new cue at
+  the end of that sequence (MA's Store onto an executor), and the STORE key blinks while
+  it waits. STORE followed by PLEASE opens the Store dialog. A full line like
+  `store sequence 1 cue 4` is still the command line's.
+- **A page is for what needs a screen.** It reads the line, the encoder bar and the
+  calculator from the LOCAL `wing` row. It answers `wing_asks`: a toast, the Store
+  dialog, a learned control to bind, and ESC and PLEASE while one of its dialogs is open.
+  It also writes the wing's line into a command-line panel when one is open.
+
 #### ma3-command-wing-io
 
 The rest of the wing's rear panel. MA's `HardwareIoConnectors` row for it:

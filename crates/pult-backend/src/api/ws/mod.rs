@@ -508,9 +508,9 @@ mod tests {
             .collect();
         // Two subscribe, one does not.
         for (id, _) in &sessions[..2] {
-            registry.subscribe(*id, PathPattern::new("wing_events"));
+            registry.subscribe(*id, PathPattern::new("wing_asks"));
         }
-        let path = vec![pult_schema::path::PathSegment::Key("wing_events".into())];
+        let path = vec![pult_schema::path::PathSegment::Key("wing_asks".into())];
         for (id, _) in &sessions {
             registry.deliver(*id, &path, serde_json::json!([{ "kind": "key", "index": 3, "down": true }]));
         }

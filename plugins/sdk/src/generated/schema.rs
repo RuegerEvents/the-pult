@@ -116,7 +116,7 @@ pub enum BindingAction {
     CommandLine { line: String },
     /// A key puts one parameter at full while it is held, and lets go on release.
     Flash { fixture_id: Uuid, parameter: ParameterKind },
-    /// A key recalls a saved group into the driving page's selection.
+    /// A key recalls a saved group into the wing's selection.
     SelectGroup { group_id: Uuid },
     /// A fader or an encoder moves one parameter of one fixture, in the programmer.
     Parameter { fixture_id: Uuid, parameter: ParameterKind },
@@ -196,6 +196,15 @@ pub struct ClockSync {
     pub converging: bool,
     /// When an estimate last landed. `None` on a station that has never had one.
     pub measured_at: Option<Timestamp>,
+}
+
+/// One channel of a color, which is what a knob can turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorComponent {
+    R,
+    G,
+    B,
 }
 
 /// One color of a readout, from `at` upwards.
@@ -3326,6 +3335,44 @@ pub struct ViewportBlock {
     pub dimensions: Option<Dimensions>,
 }
 
+/// One encoder's calculator: which of the five, and what has been typed into it.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingCalculator {
+    pub slot: u8,
+    pub text: String,
+}
+
+/// The encoder bar: five slots of the selection's attributes, one page of them.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingEncoders {
+    pub page: u32,
+    pub pages: u32,
+    /// Always five; `None` past the end of what the selection has.
+    pub slots: Vec<Option<WingSlot>>,
+}
+
+/// The wing's half of an operator: its command line, its encoders, the calculator,
+/// learning, and the selection all of them act on.
+///
+/// The station's, so the wing does the same thing whether or not a page is open
+/// (found at the gig: a page drawing the rig lagged every key behind it). A page that
+/// claims the wing reads this to show it, and shares its selection with it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingOperator {
+    /// What the keypad has typed and PLEASE has not yet run.
+    pub line: String,
+    /// The calculator a large encoder's press opens, while one is.
+    pub calculator: Option<WingCalculator>,
+    /// The selection's attributes as the five encoders page through them.
+    pub encoders: WingEncoders,
+    /// Waiting for the next control touched, to bind it.
+    pub learning: bool,
+    pub selection: WingSelection,
+    /// The sequence GO and GO BACK act on: the claiming page's cue sheet touched last,
+    /// or the sequence that went most recently. `None` when there is none.
+    pub go_sequence: Option<Uuid>,
+}
+
 /// Where the wing on this station has got to.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind")]
@@ -3346,23 +3393,50 @@ pub enum WingPhase {
     Fault { reason: String },
 }
 
-/// The LOCAL `wing` row: what the wing on *this* station is doing, and who drives it.
+/// What the wing has selected: the claiming page's selection, or one made on the wing.
+///
+/// `rev` counts changes, and `from_wing` says the last one was made on the wing — a
+/// group key, a typed `fixture 3` — which is the one kind a page takes on as its own.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingSelection {
+    pub fixtures: Vec<Uuid>,
+    #[serde(default)]
+    pub cells: Vec<CellSpan>,
+    /// The question, where the selection is one: a group recalled keeps following the
+    /// rig on the page that takes it on.
+    pub query: Option<SelectionQuery>,
+    pub rev: u64,
+    pub from_wing: bool,
+}
+
+/// One position on the encoder bar: a parameter, or one channel of a color.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WingSlot {
+    pub kind: ParameterKind,
+    pub component: Option<ColorComponent>,
+    pub default_value: ParameterValue,
+}
+
+/// The LOCAL `wing` row: what the wing on *this* station is doing, and who drives it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WingState {
     pub phase: WingPhase,
     /// What it said it is, once it has said.
     pub device: Option<String>,
-    /// The short session id of the page driving it, or `None` when no page is.
+    /// The short session id of the page showing it, or `None` when no page is.
     ///
-    /// A wing acts on one operator's selection, command line and gestures, and those
-    /// live in a page — so a page claims it, and with none claiming it the wing is
-    /// dark and does nothing.
+    /// The wing works with no page at all: the station runs every control. A page
+    /// that claims it is the one that shares its selection with the wing, shows its
+    /// command line and encoders, and answers what needs a screen — the Store
+    /// dialog, a learned control waiting to be bound.
     pub claimed_by: Option<String>,
     /// The seven digital inputs as the wing last reported them, one bit each, or
     /// `None` before it has. A level rather than a press, so a page starting to drive
     /// the wing takes this as the baseline its edges are measured from.
     #[serde(default)]
     pub digital: Option<u8>,
+    /// What the wing's operator has in hand, kept by the station.
+    pub operator: WingOperator,
 }
 
 /// How this console reaches its group.

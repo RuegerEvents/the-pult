@@ -621,8 +621,8 @@ pub async fn start(config: Config) -> Result<Running> {
     // owned here rather than by the engine: a page's row is written by a report and
     // removed by a disconnect, neither of which is a change to the show.
     let clients = crate::infra::clients::ClientRegistry::new(engine_handle.clone());
-    // The process's wing, where `main` installed one: this station relays it to the
-    // page that claims it, and is dark until one does.
+    // The process's wing, where `main` installed one: this station runs it, and shows
+    // it to the page that claims it.
     let wing = config
         .wing
         .clone()
@@ -665,8 +665,8 @@ pub async fn start(config: Config) -> Result<Running> {
         Some((device_directory.clone(), device_handle.clone())),
         net.clone(),
     );
-    // The wing's faders, flash keys and motors are run by this station rather than a
-    // page (`infra/wing_control.rs`), and the motors read the output's own patch.
+    // The wing is run by this station rather than a page (`infra/wing_control/`), and
+    // the motors read the output's own patch.
     let wing_output = output.clone();
     // The recordings this station has decoded, shared between the connectors and the
     // engine: one reads a track to put it on a wire, the other reads the same one to
@@ -847,14 +847,7 @@ pub async fn start(config: Config) -> Result<Running> {
     // socket and no other station has ever heard of it.
     tasks.push(tokio::spawn(crate::infra::clients::sweep(clients.clone(), REPORT_INTERVAL * 5)));
     if let Some(wing) = wing.clone() {
-        tasks.push(tokio::spawn(wing.run(broadcast.clone())));
-    }
-    if let Some(handle) = config.wing.clone() {
-        tasks.push(tokio::spawn(crate::infra::wing_control::run(
-            handle,
-            engine_handle.clone(),
-            wing_output.clone(),
-        )));
+        tasks.push(tokio::spawn(wing.run()));
     }
 
     // The route a hosted MVR-xchange group is served on exists for the life of the
@@ -954,6 +947,19 @@ pub async fn start(config: Config) -> Result<Running> {
         node_id,
     );
     tasks.push(tokio::spawn(plugin_mgr.run()));
+    // The whole wing is run by this station rather than a page
+    // (`infra/wing_control/`): an operator's, so its writes queue with a person's, and
+    // the command line through the plugins like the panel's.
+    if let (Some(station), Some(handle)) = (wing.clone(), config.wing.clone()) {
+        tasks.push(tokio::spawn(crate::infra::wing_control::run(
+            station,
+            handle,
+            operator_handle.clone(),
+            wing_output.clone(),
+            plugin_handle.clone(),
+            broadcast.clone(),
+        )));
+    }
     let plugin_handle_for_running = plugin_handle.clone();
     let sync_handle_for_running = sync_handle.clone();
     let session_handle_for_running = session_handle.clone();

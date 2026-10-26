@@ -15,7 +15,11 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::{
-    types::{fixture::ParameterKind, surface::TileTarget},
+    types::{
+        fixture::{ParameterKind, ParameterValue},
+        group::{CellSpan, SelectionQuery},
+        surface::TileTarget,
+    },
     PultSchema,
 };
 
@@ -45,24 +49,146 @@ pub enum WingPhase {
     Fault { reason: String },
 }
 
-/// The LOCAL `wing` row: what the wing on *this* station is doing, and who drives it.
+/// The LOCAL `wing` row: what the wing on *this* station is doing, and who shows it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WingState {
     pub phase: WingPhase,
     /// What it said it is, once it has said.
     pub device: Option<String>,
-    /// The short session id of the page driving it, or `None` when no page is.
+    /// The short session id of the page showing it, or `None` when no page is.
     ///
-    /// A wing acts on one operator's selection, command line and gestures, and those
-    /// live in a page — so a page claims it, and with none claiming it the wing is
-    /// dark and does nothing.
+    /// The wing works with no page at all: the station runs every control. A page
+    /// that claims it is the one that shares its selection with the wing, shows its
+    /// command line and encoders, and answers what needs a screen — the Store
+    /// dialog, a learned control waiting to be bound.
     pub claimed_by: Option<String>,
     /// The seven digital inputs as the wing last reported them, one bit each, or
-    /// `None` before it has. A level rather than a press, so a page starting to drive
-    /// the wing takes this as the baseline its edges are measured from.
+    /// `None` before it has. A level rather than a press, so where they rest can be
+    /// read before any of them is bound.
     #[serde(default)]
     pub digital: Option<u8>,
+    /// What the wing's operator has in hand, kept by the station.
+    #[serde(default)]
+    pub operator: WingOperator,
+}
+
+/// The wing's half of an operator: its command line, its encoders, the calculator,
+/// learning, and the selection all of them act on.
+///
+/// The station's, so the wing does the same thing whether or not a page is open
+/// (found at the gig: a page drawing the rig lagged every key behind it). A page that
+/// claims the wing reads this to show it, and shares its selection with it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WingOperator {
+    /// What the keypad has typed and PLEASE has not yet run.
+    pub line: String,
+    /// The calculator a large encoder's press opens, while one is.
+    pub calculator: Option<WingCalculator>,
+    /// The selection's attributes as the five encoders page through them.
+    pub encoders: WingEncoders,
+    /// Waiting for the next control touched, to bind it.
+    pub learning: bool,
+    pub selection: WingSelection,
+    /// The sequence GO and GO BACK act on: the claiming page's cue sheet touched last,
+    /// or the sequence that went most recently. `None` when there is none.
+    pub go_sequence: Option<Uuid>,
+}
+
+/// One encoder's calculator: which of the five, and what has been typed into it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WingCalculator {
+    pub slot: u8,
+    pub text: String,
+}
+
+/// The encoder bar: five slots of the selection's attributes, one page of them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WingEncoders {
+    pub page: u32,
+    pub pages: u32,
+    /// Always five; `None` past the end of what the selection has.
+    pub slots: Vec<Option<WingSlot>>,
+}
+
+impl Default for WingEncoders {
+    fn default() -> Self {
+        WingEncoders { page: 0, pages: 1, slots: vec![None; 5] }
+    }
+}
+
+/// One position on the encoder bar: a parameter, or one channel of a color.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WingSlot {
+    pub kind: ParameterKind,
+    pub component: Option<ColorComponent>,
+    pub default_value: ParameterValue,
+}
+
+/// One channel of a color, which is what a knob can turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorComponent {
+    R,
+    G,
+    B,
+}
+
+/// What the wing has selected: the claiming page's selection, or one made on the wing.
+///
+/// `rev` counts changes, and `from_wing` says the last one was made on the wing — a
+/// group key, a typed `fixture 3` — which is the one kind a page takes on as its own.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WingSelection {
+    pub fixtures: Vec<Uuid>,
+    #[serde(default)]
+    pub cells: Vec<CellSpan>,
+    /// The question, where the selection is one: a group recalled keeps following the
+    /// rig on the page that takes it on.
+    pub query: Option<SelectionQuery>,
+    pub rev: u32,
+    pub from_wing: bool,
+}
+
+/// What the claiming page tells the station about itself: its selection, its cue
+/// sheet, whether a dialog is up, and who is at it. `wing.context`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct WingContext {
+    pub fixtures: Vec<Uuid>,
+    #[serde(default)]
+    pub cells: Vec<CellSpan>,
+    pub query: Option<SelectionQuery>,
+    /// The wing selection's `rev` the page had seen when it said this. A page that had
+    /// not yet seen a selection made on the wing does not get to overwrite it.
+    pub seen_rev: u32,
+    pub focused_sequence: Option<Uuid>,
+    /// A dialog is open on the page, so ESC and PLEASE answer it.
+    pub dialog: bool,
+    pub user_id: Option<Uuid>,
+}
+
+/// What the station asks the claiming page to do, on the `wing_asks` path: the parts
+/// of a wing's act that need a screen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(tag = "kind")]
+pub enum WingAsk {
+    /// Say something: what a command line answered, why a key did nothing.
+    Toast { text: String, good: bool },
+    /// Learning caught this control; the page binds it to what is touched next.
+    Learned { control: SurfaceControl },
+    /// Open the Store dialog, with these programmer entries ticked (all when empty).
+    Store { preselect: Vec<Uuid> },
+    /// ESC or PLEASE, for the dialog on top.
+    Dialog { accept: bool },
 }
 
 // ── What its controls do (PERSISTED) ──────────────────────────────────────────
@@ -93,7 +219,7 @@ pub enum BindingAction {
     CommandLine { line: String },
     /// A key puts one parameter at full while it is held, and lets go on release.
     Flash { fixture_id: Uuid, parameter: ParameterKind },
-    /// A key recalls a saved group into the driving page's selection.
+    /// A key recalls a saved group into the wing's selection.
     SelectGroup { group_id: Uuid },
     /// A fader or an encoder moves one parameter of one fixture, in the programmer.
     Parameter { fixture_id: Uuid, parameter: ParameterKind },

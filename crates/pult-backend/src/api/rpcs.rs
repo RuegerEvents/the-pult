@@ -317,17 +317,27 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     LocalRpcMeta {
         method: "wing.claim",
         args_schema: "[]",
-        doc: "This page drives the command wing from now on: what is pressed is relayed to it, and it lights the desk.",
+        doc: "This page shows the command wing from now on: it shares its selection with it, and answers what needs a screen. The station runs the wing either way.",
     },
     LocalRpcMeta {
         method: "wing.release",
         args_schema: "[]",
-        doc: "Stop driving the command wing; it goes dark.",
+        doc: "Stop showing the command wing. It goes on working.",
     },
     LocalRpcMeta {
-        method: "wing.feedback",
-        args_schema: r#"[{"name":"leds","type":"array","optional":true},{"name":"faders","type":"array","optional":true}]"#,
-        doc: "The frame the driving page wants on the wing: a level per LED channel, and per fader a position for its motor or null to leave it to the hand.",
+        method: "wing.context",
+        args_schema: r#"[{"name":"fixtures","type":"array","optional":false},{"name":"cells","type":"array","optional":true},{"name":"query","type":"object","optional":true},{"name":"seenRev","type":"number","optional":false},{"name":"focusedSequence","type":"string","optional":true},{"name":"dialog","type":"boolean","optional":false},{"name":"userId","type":"string","optional":true}]"#,
+        doc: "What the page showing the wing has selected, which cue sheet it touched last, whether a dialog is open on it, and who is at it.",
+    },
+    LocalRpcMeta {
+        method: "wing.learn",
+        args_schema: r#"[{"name":"on","type":"boolean","optional":false}]"#,
+        doc: "Start or stop learning: the next control touched on the wing is handed to this page to bind.",
+    },
+    LocalRpcMeta {
+        method: "wing.calculator",
+        args_schema: r#"[{"name":"slot","type":"number","optional":true},{"name":"text","type":"string","optional":true},{"name":"set","type":"boolean","optional":true}]"#,
+        doc: "Open an encoder's calculator (no slot closes it), with what is typed, and set it on the wing's selection when `set`.",
     },
     LocalRpcMeta {
         method: "wing.map",
@@ -667,7 +677,8 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             log.emit(level, "browser", source, message);
             Ok(Value::Null)
         }
-        "wing.claim" | "wing.release" | "wing.feedback" | "wing.map" => {
+        "wing.claim" | "wing.release" | "wing.context" | "wing.learn" | "wing.calculator" | "wing.map" => {
+            use crate::infra::wing::Inbound;
             let wing = deps
                 .wing
                 .as_ref()
@@ -675,29 +686,30 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
             if method == "wing.map" {
                 return Ok(wing.map());
             }
-            // The other three are a page driving a desk, so they need a page.
+            // The rest are a page showing a desk, so they need a page.
             let caller = deps
                 .caller
-                .ok_or_else(|| format!("{method} is a page driving the wing, so it needs one"))?;
+                .ok_or_else(|| format!("{method} is a page showing the wing, so it needs one"))?;
             match method {
                 "wing.claim" => serde_json::to_value(wing.claim(caller).await).map_err(|e| e.to_string()),
                 "wing.release" => {
                     serde_json::to_value(wing.release(caller).await).map_err(|e| e.to_string())
                 }
+                "wing.context" => {
+                    let context = serde_json::from_value(args).map_err(|e| format!("wing.context: {e}"))?;
+                    wing.from_page(caller, Inbound::Context(context))?;
+                    Ok(Value::Null)
+                }
+                "wing.learn" => {
+                    let on = args.get("on").and_then(Value::as_bool).unwrap_or(false);
+                    wing.from_page(caller, Inbound::Learn(on))?;
+                    Ok(Value::Null)
+                }
                 _ => {
-                    let leds: Option<Vec<u8>> = match args.get("leds") {
-                        None | Some(Value::Null) => None,
-                        Some(v) => Some(
-                            serde_json::from_value(v.clone()).map_err(|e| format!("leds: {e}"))?,
-                        ),
-                    };
-                    let faders: Option<Vec<Option<u16>>> = match args.get("faders") {
-                        None | Some(Value::Null) => None,
-                        Some(v) => Some(
-                            serde_json::from_value(v.clone()).map_err(|e| format!("faders: {e}"))?,
-                        ),
-                    };
-                    wing.feedback(caller, leds, faders)?;
+                    let slot = args.get("slot").and_then(Value::as_u64).map(|s| s.min(4) as u8);
+                    let text = args.get("text").and_then(Value::as_str).map(String::from);
+                    let set = args.get("set").and_then(Value::as_bool).unwrap_or(false);
+                    wing.from_page(caller, Inbound::Calculator { slot, text, set })?;
                     Ok(Value::Null)
                 }
             }

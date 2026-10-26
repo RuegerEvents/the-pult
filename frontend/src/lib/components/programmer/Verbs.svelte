@@ -18,6 +18,7 @@
 	import { addToast } from '$lib/toasts.js';
 	import { clear, entries, updateDriven } from '$lib/stores/programmer.js';
 	import { clearStep, nextClear } from '$lib/stores/clear.js';
+	import { wingStoreAsk } from '$lib/stores/wing.js';
 	import StoreMenu from './StoreMenu.svelte';
 
 	/** Open with a subset ticked — what Update hands over when it cannot place a key. */
@@ -29,6 +30,15 @@
 	export async function openStore(preselect: string[] | null = null) {
 		storing = { preselect };
 	}
+
+	// STORE and PLEASE on the wing, or an Update there that left keys no cue drives:
+	// the station runs the wing and has no dialog to open, so it asks this one.
+	$effect(() => {
+		const ask = $wingStoreAsk;
+		if (!ask) return;
+		wingStoreAsk.set(null);
+		void openStore(ask.preselect.length > 0 ? ask.preselect : null);
+	});
 
 	export async function update() {
 		if (busy || !anything) return;

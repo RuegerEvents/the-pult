@@ -1,62 +1,83 @@
-//! The wing, on one station: who is driving it, and the relay between it and that page.
+//! The wing, on one station: who is showing it, and the row a page reads it from.
 //!
-//! A wing acts on one operator's selection, command line and gestures, and those live
-//! in a page. So the station does no programming here at all: a page claims the wing,
-//! the station relays what is pressed to it on the `wing_events` path, and the page
-//! answers with the frame of lights and motor positions it wants (`wing.feedback`).
-//! With no page claiming it the wing is dark and does nothing, and the panel says so.
+//! The station runs the whole wing (`infra/wing_control/`), page or no page. A page
+//! claims it to share its selection with it and to show what it is doing; with none
+//! claiming, the wing goes on doing everything it does and simply has nobody to show
+//! the command line to. Only one page claims it at a time, so a second tab cannot
+//! stand in for the operator at the desk.
 //!
-//! Events ride `UpdateBroadcast` the way log lines do — no `ShowState` entry, nothing
-//! replicated, and a page that has not claimed the wing simply does not subscribe.
-//! The status is the LOCAL `wing` row, so every page on this station can see whether a
-//! wing is here and who has it.
+//! The status and the operator — the line, the encoders, the calculator, learning, the
+//! selection — are the LOCAL `wing` row, so every page on this station can see whether
+//! a wing is here, who has it and what it is doing. What the station needs a screen for
+//! rides `UpdateBroadcast` on `wing_asks` the way log lines do: no `ShowState` entry,
+//! nothing replicated, and a page that has not claimed the wing does not subscribe.
 
 use std::sync::{Arc, Mutex};
 
 use pult_schema::{
     lifecycle::Lifecycle,
     path::PathSegment,
-    types::wing::WingState,
+    types::wing::{WingContext, WingOperator, WingState},
 };
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::{
-    engine::{EngineHandle, UpdateBroadcast},
-    infra::clients::short_id,
-    wing::WingHandle,
-};
+use crate::{engine::EngineHandle, infra::clients::short_id, wing::WingHandle};
 
-/// Where pressed controls are relayed to the page driving the wing.
-pub const EVENTS_PATH: &str = "wing_events";
+/// Where the station asks the claiming page for what needs a screen.
+pub const ASKS_PATH: &str = "wing_asks";
+
+/// What a claiming page says to the wing, handed to the loop that runs it.
+#[derive(Debug)]
+pub enum Inbound {
+    Context(WingContext),
+    /// The page that claimed the wing has let go of it, or gone.
+    Released,
+    Learn(bool),
+    /// Open the calculator on an encoder (`None` closes it), with what is typed, and
+    /// set it on the selection when `set`.
+    Calculator { slot: Option<u8>, text: Option<String>, set: bool },
+}
 
 #[derive(Clone)]
 pub struct WingStation {
     wing: WingHandle,
     claimed: Arc<Mutex<Option<Uuid>>>,
-    /// The digital inputs as last reported, kept whether or not a page is driving, so
-    /// the page that starts to has a baseline.
+    /// The digital inputs as last reported, kept whether or not a page is claiming.
     digital: Arc<Mutex<Option<u8>>>,
+    operator: Arc<Mutex<WingOperator>>,
+    inbound: mpsc::UnboundedSender<Inbound>,
+    inbound_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<Inbound>>>>,
     engine: EngineHandle,
 }
 
 impl WingStation {
-    /// Take over the process's wing for this station, dark until a page claims it.
+    /// Take over the process's wing for this station.
     ///
-    /// Dark rather than as the last station left it, because a show was just switched
-    /// and whatever the previous page was lighting meant the previous show.
+    /// Dark to begin with rather than as the last station left it, because a show was
+    /// just switched and whatever it was lighting meant the previous show.
     pub fn new(wing: WingHandle, engine: EngineHandle) -> Self {
         wing.go_dark();
-        Self { wing, claimed: Arc::new(Mutex::new(None)), digital: Arc::new(Mutex::new(None)), engine }
+        let (inbound, rx) = mpsc::unbounded_channel();
+        Self {
+            wing,
+            claimed: Arc::new(Mutex::new(None)),
+            digital: Arc::new(Mutex::new(None)),
+            operator: Arc::new(Mutex::new(WingOperator::default())),
+            inbound,
+            inbound_rx: Arc::new(Mutex::new(Some(rx))),
+            engine,
+        }
     }
 
-    /// Follow the wing for as long as the station runs: its status into the `wing`
-    /// row, and what is pressed onto the broadcast.
-    pub async fn run(self, broadcast: UpdateBroadcast) {
+    /// Follow the wing for as long as the station runs: its status and its digital
+    /// inputs into the `wing` row.
+    pub async fn run(self) {
         let mut report = self.wing.report();
         let mut events = self.wing.events();
         self.publish().await;
         // A wing that can never change state — no grandMA3 to boot it from — has a
-        // status nobody will write again, and that is no reason to stop relaying.
+        // status nobody will write again, and that is no reason to stop reading it.
         let mut reporting = true;
         loop {
             tokio::select! {
@@ -78,30 +99,25 @@ impl WingStation {
                                 self.publish().await;
                             }
                         }
-                        // Nobody claiming it is nobody to tell: a wing on a station whose
-                        // pages have all gone does nothing, rather than acting for a page
-                        // that has not asked.
-                        if self.claimed.lock().unwrap().is_none() { continue }
-                        if let Ok(value) = serde_json::to_value(&batch) {
-                            let path = vec![PathSegment::Key(EVENTS_PATH.into())];
-                            let _ = broadcast.0.send((path, value));
-                        }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("the wing relay fell behind by {n} batches");
-                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
             }
         }
     }
 
-    /// This page drives the wing from now on — taking it from another page if one had
+    /// What the loop running the wing hears from the page. Once: there is one loop.
+    pub fn take_inbound(&self) -> Option<mpsc::UnboundedReceiver<Inbound>> {
+        self.inbound_rx.lock().unwrap().take()
+    }
+
+    /// This page shows the wing from now on — taking it from another page if one had
     /// it, because the operator standing at the wing is the one who asked.
     pub async fn claim(&self, session: Uuid) -> WingState {
         let previous = self.claimed.lock().unwrap().replace(session);
-        if previous != Some(session) {
-            self.wing.go_dark();
+        if previous.is_some() && previous != Some(session) {
+            let _ = self.inbound.send(Inbound::Released);
         }
         self.publish().await
     }
@@ -112,7 +128,7 @@ impl WingStation {
         self.state()
     }
 
-    /// A page has gone. If it was driving the wing, nobody is now.
+    /// A page has gone. If it was claiming the wing, nobody is now.
     pub async fn forget(&self, session: Uuid) {
         let was = {
             let mut claimed = self.claimed.lock().unwrap();
@@ -124,41 +140,41 @@ impl WingStation {
             }
         };
         if was {
-            self.wing.go_dark();
+            let _ = self.inbound.send(Inbound::Released);
             self.publish().await;
         }
     }
 
-    /// The frame a page wants on the wing: every LED channel, and per fader either a
-    /// position for its motor to hold or `None` to leave it to the hand.
-    ///
-    /// Only from the page driving it, so a second tab cannot paint the desk the first
-    /// one is reading.
-    pub fn feedback(
-        &self,
-        session: Uuid,
-        leds: Option<Vec<u8>>,
-        faders: Option<Vec<Option<u16>>>,
-    ) -> Result<(), String> {
+    /// Whether some page is claiming the wing.
+    pub fn claimed(&self) -> bool {
+        self.claimed.lock().unwrap().is_some()
+    }
+
+    /// Something only the claiming page may say: anybody else is refused, so a second
+    /// tab cannot change what the wing acts on under the operator.
+    pub fn from_page(&self, session: Uuid, message: Inbound) -> Result<(), String> {
         if *self.claimed.lock().unwrap() != Some(session) {
             return Err("this page is not driving the wing".into());
         }
-        self.wing.drive(|out| {
-            if let Some(leds) = leds {
-                for (channel, level) in leds.into_iter().enumerate() {
-                    out.set_led(channel, level);
-                }
-            }
-            if let Some(faders) = faders {
-                for (index, position) in faders.into_iter().enumerate() {
-                    match position {
-                        Some(value) => out.set_fader(index, value),
-                        None => out.release_fader(index),
-                    }
-                }
-            }
-        });
-        Ok(())
+        self.inbound.send(message).map_err(|_| "the wing is not running".to_string())
+    }
+
+    /// The operator as it is now.
+    pub fn operator(&self) -> WingOperator {
+        self.operator.lock().unwrap().clone()
+    }
+
+    /// Change the operator and publish the row, if anything changed.
+    pub async fn update_operator(&self, f: impl FnOnce(&mut WingOperator)) {
+        let changed = {
+            let mut operator = self.operator.lock().unwrap();
+            let before = operator.clone();
+            f(&mut operator);
+            *operator != before
+        };
+        if changed {
+            self.publish().await;
+        }
     }
 
     /// MA's names for every control, where this machine has a grandMA3 to read them
@@ -177,6 +193,7 @@ impl WingStation {
             device: report.device,
             claimed_by: self.claimed.lock().unwrap().map(short_id),
             digital: *self.digital.lock().unwrap(),
+            operator: self.operator(),
         }
     }
 
@@ -195,19 +212,18 @@ mod tests {
     use super::*;
     use crate::engine::ShowEngine;
     use crate::infra::showfile;
-    use futures::StreamExt;
-    use pult_schema::{events::operation::NodeId, path::PathPattern, types::wing::WingPhase};
+    use pult_schema::{events::operation::NodeId, types::wing::WingPhase};
     use pult_wing::Event;
 
-    async fn a_station() -> (WingStation, EngineHandle, UpdateBroadcast, tokio::sync::broadcast::Sender<Vec<Event>>) {
+    async fn a_station() -> (WingStation, EngineHandle, tokio::sync::broadcast::Sender<Vec<Event>>) {
         let pool = Arc::new(showfile::open_in_memory().await.expect("in-memory showfile"));
-        let (engine, handle, broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
+        let (engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
         tokio::spawn(engine.run());
         let (wing, _report, events) = WingHandle::detached(WingPhase::Running);
         let station = WingStation::new(wing, handle.clone());
-        tokio::spawn(station.clone().run(broadcast.clone()));
+        tokio::spawn(station.clone().run());
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        (station, handle, broadcast, events)
+        (station, handle, events)
     }
 
     async fn row(engine: &EngineHandle) -> WingState {
@@ -216,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_row_says_whether_a_wing_is_here_and_who_has_it() {
-        let (station, engine, _, _) = a_station().await;
+        let (station, engine, _) = a_station().await;
         assert_eq!(row(&engine).await.phase, WingPhase::Running);
         assert_eq!(row(&engine).await.claimed_by, None);
 
@@ -225,59 +241,34 @@ mod tests {
         assert_eq!(row(&engine).await.claimed_by, Some(short_id(page)));
 
         station.forget(page).await;
-        assert_eq!(row(&engine).await.claimed_by, None, "a page that goes takes the wing with it");
+        assert_eq!(row(&engine).await.claimed_by, None, "a page that goes takes its claim with it");
     }
 
-    /// Nobody claiming it is nobody to act for: what is pressed goes nowhere.
+    /// The digital inputs are a level the row keeps whether or not anybody is claiming,
+    /// so a page knows where they rest.
     #[tokio::test]
-    async fn a_press_reaches_a_page_only_once_one_has_claimed_the_wing() {
-        let (station, _engine, broadcast, events) = a_station().await;
-        let mut relayed = broadcast.subscribe_filtered(PathPattern::new(EVENTS_PATH));
-        let press = vec![Event::Key { index: 155, down: true }];
-
-        events.send(press.clone()).unwrap();
-        let nothing =
-            tokio::time::timeout(std::time::Duration::from_millis(100), relayed.next()).await;
-        assert!(nothing.is_err(), "unclaimed, a press is relayed to nobody");
-
-        station.claim(Uuid::new_v4()).await;
-        events.send(press.clone()).unwrap();
-        let got = tokio::time::timeout(std::time::Duration::from_secs(1), relayed.next())
-            .await
-            .expect("relayed")
-            .expect("a value");
-        assert_eq!(got, serde_json::to_value(&press).unwrap());
-    }
-
-    /// The digital inputs are a level the row keeps whether or not anybody is driving,
-    /// so the page that starts to knows where they rest.
-    #[tokio::test]
-    async fn the_row_keeps_the_digital_inputs_with_nobody_driving() {
-        let (_station, engine, _, events) = a_station().await;
+    async fn the_row_keeps_the_digital_inputs_with_nobody_claiming() {
+        let (_station, engine, events) = a_station().await;
         assert_eq!(row(&engine).await.digital, None, "nothing reported yet");
         events.send(vec![Event::Digital { bits: 0b10 }]).unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(row(&engine).await.digital, Some(0b10));
     }
 
-    /// Only the page driving the wing paints it, and when it lets go the desk goes dark
-    /// with every motor released.
+    /// Only the claiming page may tell the wing what it is acting on.
     #[tokio::test]
-    async fn only_the_driving_page_lights_the_wing() {
-        let (station, _engine, _, _) = a_station().await;
-        let driver = Uuid::new_v4();
-        let other = Uuid::new_v4();
-        station.claim(driver).await;
+    async fn only_the_claiming_page_is_heard() {
+        let (station, _engine, _) = a_station().await;
+        let (page, other) = (Uuid::new_v4(), Uuid::new_v4());
+        station.claim(page).await;
+        assert!(station.from_page(other, Inbound::Learn(true)).is_err());
+        assert!(station.from_page(page, Inbound::Learn(true)).is_ok());
+    }
 
-        assert!(station.feedback(other, Some(vec![9; 3]), None).is_err());
-        station.feedback(driver, Some(vec![9; 3]), Some(vec![Some(2048), None])).unwrap();
-        let frame = station.wing.frame();
-        assert_eq!(&frame.leds[..3], &[9, 9, 9]);
-        assert_eq!(frame.faders[0], Some(2048));
-
-        station.forget(driver).await;
-        let frame = station.wing.frame();
-        assert!(frame.leds.iter().all(|l| *l == 0));
-        assert!(frame.faders.iter().all(Option::is_none));
+    #[tokio::test]
+    async fn the_operator_is_in_the_row() {
+        let (station, engine, _) = a_station().await;
+        station.update_operator(|op| op.line = "fixture 1".into()).await;
+        assert_eq!(row(&engine).await.operator.line, "fixture 1");
     }
 }

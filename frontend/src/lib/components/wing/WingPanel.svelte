@@ -27,12 +27,15 @@
 		learning,
 		openCalculator,
 		selectedParameter,
+		setLearning,
 		setTyped,
 		setDrivesHere,
 		setWingAt,
 		slotValue,
+		typeCalculator,
 		unbind,
 		wingBindings,
+		wingGoSequence,
 		wingLine,
 		wingMap,
 		wingAt,
@@ -210,6 +213,9 @@
 	}
 
 	const typedHere = $derived(openConsoleLine() ? null : $wingLine);
+	const goName = $derived(
+		$wingGoSequence ? ($sequences.find((s) => s.id === $wingGoSequence)?.name ?? null) : null
+	);
 </script>
 
 <div class="wing">
@@ -251,7 +257,7 @@
 		{:else if someoneElse}
 			<p class="dim">Another page ({$wingState.claimed_by}) is driving it. Switching Drive on takes it over.</p>
 		{:else if !$driving && $wingState.claimed_by === null}
-			<p class="dim">No page is driving it, so it is dark and does nothing.</p>
+			<p class="dim">The station runs it with no page showing it. Switch Drive on to share this page's selection with it and see what it types.</p>
 		{/if}
 		{#if $wingState.digital !== null}
 			<!-- The rear panel's contacts, live, so where they rest can be read before
@@ -292,11 +298,11 @@
 									inputmode="decimal"
 									autofocus
 									value={$calculator.text}
-									oninput={(e) => calculator.set({ slot: i, text: e.currentTarget.value })}
+									oninput={(e) => typeCalculator(i, e.currentTarget.value)}
 									onkeydown={(e) => {
 										e.stopPropagation();
-										if (e.key === 'Enter') setTyped(e.currentTarget.value);
-										if (e.key === 'Escape') calculator.set(null);
+										if (e.key === 'Enter') setTyped(i, e.currentTarget.value);
+										if (e.key === 'Escape') openCalculator(null);
 									}}
 								/>
 							{:else}
@@ -323,6 +329,7 @@
 			<section>
 				<h3>Command line <span class="dim">no command line panel is open, so the wing types here</span></h3>
 				<pre class="line mono">› {typedHere}</pre>
+				<p class="dim">GO goes on {goName ?? 'nothing yet: click a cue sheet, or take a cue'}.</p>
 			</section>
 		{/if}
 
@@ -332,7 +339,7 @@
 				{#if $canEdit}
 					<button
 						class="btn {$learning ? 'btn-primary learning' : 'btn-ghost'}"
-						onclick={() => learning.update((on) => !on)}
+						onclick={() => setLearning(!$learning)}
 					>
 						{$learning ? 'Touch a control on the wing…' : 'Learn'}
 					</button>

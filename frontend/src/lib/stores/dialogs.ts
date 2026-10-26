@@ -7,6 +7,8 @@
  * for as long as it is mounted; the wing asks for the top one.
  */
 
+import { writable } from 'svelte/store';
+
 export type OpenDialog = {
 	/** Dismiss it, as its ✕ would. */
 	close: () => void;
@@ -16,12 +18,20 @@ export type OpenDialog = {
 
 const stack: OpenDialog[] = [];
 
+/**
+ * How many are open, for the station running the wing: it hands ESC and PLEASE to
+ * this page while one is, rather than to the command line behind it.
+ */
+export const dialogCount = writable(0);
+
 /** A dialog opened. Answers the function that says it closed. */
 export function opened(dialog: OpenDialog): () => void {
 	stack.push(dialog);
+	dialogCount.set(stack.length);
 	return () => {
 		const at = stack.indexOf(dialog);
 		if (at >= 0) stack.splice(at, 1);
+		dialogCount.set(stack.length);
 	};
 }
 

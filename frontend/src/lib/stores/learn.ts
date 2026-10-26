@@ -9,9 +9,9 @@
  * Nothing is kept: an offer is heard by whoever is listening at that moment, and a page
  * nobody is learning on throws every one away.
  *
- * The wing's own writes are not offers. It moves the programmer from its encoders and
- * faders too, and a control learning from the very fader that is being learned would
- * bind itself to whatever it happened to touch.
+ * The wing's own writes are not offers, and cannot be: the station runs the wing, so
+ * nothing it moves passes through here. A control learning from the very fader that is
+ * being learned would otherwise bind itself to whatever it happened to touch.
  */
 
 import type { BindingAction } from '../generated/index.js';
@@ -19,11 +19,10 @@ import type { BindingAction } from '../generated/index.js';
 export type Offer = { action: BindingAction };
 
 const listeners = new Set<(offer: Offer) => void>();
-let quiet = 0;
 
 /** Say that the operator just touched this. */
 export function offer(action: BindingAction): void {
-	if (quiet > 0 || listeners.size === 0) return;
+	if (listeners.size === 0) return;
 	for (const listen of listeners) listen({ action });
 }
 
@@ -31,14 +30,4 @@ export function offer(action: BindingAction): void {
 export function onOffer(listen: (offer: Offer) => void): () => void {
 	listeners.add(listen);
 	return () => listeners.delete(listen);
-}
-
-/** Run something the wing does, which is not the operator touching anything. */
-export function fromWing<T>(act: () => T): T {
-	quiet += 1;
-	try {
-		return act();
-	} finally {
-		quiet -= 1;
-	}
 }
