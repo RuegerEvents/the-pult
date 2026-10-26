@@ -129,17 +129,20 @@
 				return `${fixtureName(action.fixture_id)} · ${displayLabel(action.parameter)}`;
 			case 'Master':
 				return `level of ${$sequences.find((s) => s.id === action.sequence_id)?.name ?? 'a sequence no longer in the show'}`;
+			case 'FlashSequence':
+				return `flashes ${$sequences.find((s) => s.id === action.sequence_id)?.name ?? 'a sequence no longer in the show'}`;
 		}
 	}
 
 	// ── The editor for the control learning caught ──
-	type Choice = 'Press' | 'CommandLine' | 'Flash' | 'SelectGroup' | 'Parameter' | 'Master';
+	type Choice = 'Press' | 'CommandLine' | 'Flash' | 'FlashSequence' | 'SelectGroup' | 'Parameter' | 'Master';
 	const choicesFor = (c: SurfaceControl): { kind: Choice; label: string }[] =>
 		c.kind === 'Key' || c.kind === 'Digital'
 			? [
 					{ kind: 'Press', label: 'Press something' },
 					{ kind: 'CommandLine', label: 'Run a command line' },
 					{ kind: 'Flash', label: 'Flash a parameter' },
+					{ kind: 'FlashSequence', label: 'Flash a sequence' },
 					{ kind: 'SelectGroup', label: 'Select a group' }
 				]
 			: c.kind === 'Fader'
@@ -186,6 +189,8 @@
 				return groupId ? { kind: 'SelectGroup', group_id: groupId } : null;
 			case 'Master':
 				return sequenceId ? { kind: 'Master', sequence_id: sequenceId } : null;
+			case 'FlashSequence':
+				return sequenceId ? { kind: 'FlashSequence', sequence_id: sequenceId } : null;
 			case 'Flash':
 			case 'Parameter': {
 				const row = selectedRows.find((r) => r.key === parameterKeyChosen) ?? selectedRows[0];
@@ -381,7 +386,7 @@
 							<option value="">Which group?</option>
 							{#each $groups as g (g.id)}<option value={g.id}>{g.name}</option>{/each}
 						</select>
-					{:else if choice === 'Master'}
+					{:else if choice === 'Master' || choice === 'FlashSequence'}
 						<select class="input" bind:value={sequenceId}>
 							<option value="">Which sequence?</option>
 							{#each $sequences as s (s.id)}<option value={s.id}>{s.name}</option>{/each}

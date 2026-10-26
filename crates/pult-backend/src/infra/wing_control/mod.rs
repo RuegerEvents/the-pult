@@ -151,6 +151,9 @@ struct Control {
     flashed: HashMap<Uuid, Option<ParameterValue>>,
     /// Entries a flash put there itself and has not yet taken away.
     flash_owned: HashSet<Uuid>,
+    /// Sequences a flash key is holding, with whether each was on and the level its
+    /// fader was at before the press — what letting go puts back.
+    flashed_sequences: HashMap<Uuid, (bool, Option<f32>)>,
     /// The hue each color a fader moves had, last time it was not black.
     hues: HashMap<Uuid, (f32, f32, f32)>,
     /// What an encoder last turned each entry to, and when.
@@ -203,6 +206,7 @@ pub async fn run(
         fader_gestures: HashMap::new(),
         flashed: HashMap::new(),
         flash_owned: HashSet::new(),
+        flashed_sequences: HashMap::new(),
         hues: HashMap::new(),
         recent: HashMap::new(),
         nudge: None,
@@ -741,6 +745,7 @@ impl Control {
     async fn run(&mut self, action: BindingAction, down: bool) {
         match action {
             BindingAction::Flash { fixture_id, parameter } => self.flash(fixture_id, parameter, down).await,
+            BindingAction::FlashSequence { sequence_id } => self.flash_sequence(sequence_id, down).await,
             BindingAction::Press { target } if down => self.press(target).await,
             BindingAction::CommandLine { line } if down => {
                 self.station.update_operator(|op| op.line = line.clone()).await;
@@ -785,6 +790,31 @@ impl Control {
                 self.set(field("sequences", sequence_id, "off"), at, None).await;
             }
             _ => {}
+        }
+    }
+
+    /// A sequence at full while the key is held, and on release as it was: off again if
+    /// it was off, and its fader where it was. MA's Flash on an executor.
+    async fn flash_sequence(&mut self, sequence_id: Uuid, down: bool) {
+        let light = self.lit.sequences.iter().find(|s| s.id == sequence_id);
+        if down {
+            let was = (light.is_some_and(|s| s.active_cue_index.is_some()), light.and_then(|s| s.master));
+            // A second press while one is held keeps the first one's memory.
+            self.flashed_sequences.entry(sequence_id).or_insert(was);
+            if was.1.is_some() {
+                self.set(field("sequences", sequence_id, "master"), Value::Null, None).await;
+            }
+            if !was.0 {
+                self.set(field("sequences", sequence_id, "goNext"), json!({ "at": now_ms() }), None).await;
+            }
+            return;
+        }
+        let Some((was_on, level)) = self.flashed_sequences.remove(&sequence_id) else { return };
+        if !was_on {
+            self.set(field("sequences", sequence_id, "off"), json!({ "at": now_ms() }), None).await;
+        }
+        if let Some(level) = level {
+            self.set(field("sequences", sequence_id, "master"), json!(level), None).await;
         }
     }
 
@@ -1583,6 +1613,9 @@ impl Control {
     /// Whether what a bound key presses is live: a running timeline, a sequence with a
     /// cue up, a variable that holds something — `surface.ts`'s `targetLive`.
     fn live(&self, action: &BindingAction) -> bool {
+        if let BindingAction::FlashSequence { sequence_id } = action {
+            return self.lit.sequences.iter().any(|s| s.id == *sequence_id && s.active_cue_index.is_some());
+        }
         let BindingAction::Press { target } = action else { return false };
         match target {
             TileTarget::Timeline { timeline_id, .. } => self.lit.timelines.iter().any(|t| t.id == *timeline_id && t.running),

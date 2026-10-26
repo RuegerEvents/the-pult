@@ -265,6 +265,9 @@ pub enum BindingAction {
     Parameter { fixture_id: Uuid, parameter: ParameterKind },
     /// A fader is a sequence's level; its executor keys are that sequence's Go and Off.
     Master { sequence_id: Uuid },
+    /// A key flashes a sequence: held, it goes at full; let go, it goes off again if it
+    /// was off before the press, and its fader is back where it was either way.
+    FlashSequence { sequence_id: Uuid },
 }
 
 /// One control, bound.
