@@ -1,6 +1,6 @@
 /**
  * What is written on a timeline, as objects: its clips, events, markers, tempo
- * segments and takes.
+ * segments, takes and flashes.
  *
  * Each is something a person picks up on a lane, so each is a kind — and that is what
  * puts its editor in the Inspector rather than in a form under the canvas, the way a
@@ -19,8 +19,9 @@ import Bookmark from '@lucide/svelte/icons/bookmark';
 import Zap from '@lucide/svelte/icons/zap';
 import Metronome from '@lucide/svelte/icons/metronome';
 import Activity from '@lucide/svelte/icons/activity';
+import Flashlight from '@lucide/svelte/icons/flashlight';
 
-import type { AudioClip, GridSegment, Marker, Timeline, TimelineEvent, TimelineTrack } from '$lib/generated/index.js';
+import type { AudioClip, GridSegment, Marker, Timeline, TimelineEvent, TimelineFlash, TimelineTrack } from '$lib/generated/index.js';
 import { copyName, registerKind, type ObjectRow } from '$lib/objects.js';
 import { collection } from '$lib/stores/show.js';
 import { current, locate, positionOf, setClip, timelines, writeColumns } from '$lib/stores/timelines.js';
@@ -35,6 +36,7 @@ import EventInspector from '$lib/components/timeline/inspectors/EventInspector.s
 import MarkerInspector from '$lib/components/timeline/inspectors/MarkerInspector.svelte';
 import SegmentInspector from '$lib/components/timeline/inspectors/SegmentInspector.svelte';
 import TakeInspector from '$lib/components/timeline/inspectors/TakeInspector.svelte';
+import FlashInspector from '$lib/components/timeline/inspectors/FlashInspector.svelte';
 import { uuid } from '$lib/uuid.js';
 
 export type ClipRow = ObjectRow & { timelineId: string; clip: AudioClip };
@@ -42,6 +44,7 @@ export type EventRow = ObjectRow & { timelineId: string; event: TimelineEvent };
 export type MarkerRow = ObjectRow & { timelineId: string; marker: Marker };
 export type SegmentRow = ObjectRow & { timelineId: string; index: number; segment: GridSegment };
 export type TakeRow = ObjectRow & { timelineId: string; track: TimelineTrack };
+export type FlashRow = ObjectRow & { timelineId: string; flash: TimelineFlash };
 
 const sequences = collection('sequences');
 const fixtures = collection('fixtures');
@@ -84,6 +87,16 @@ const takeRows: Readable<TakeRow[]> = derived([all, fixtures], ([$t, $f]) =>
 			const fixture = $f.find((f) => f.id === track.fixture_id)?.name;
 			const name = track.name || (track.key ? `${fixture ?? 'Take'} · ${track.key}` : 'Take');
 			return { id: track.id, name, timelineId: t.id, track };
+		})
+	)
+);
+
+/** A flash by what it lights and when: "Skeleton 1 · Intensity at 0:12.4". */
+const flashRows: Readable<FlashRow[]> = derived([all, fixtures], ([$t, $f]) =>
+	$t.flatMap((t) =>
+		(t.flashes ?? []).map((flash) => {
+			const fixture = $f.find((f) => f.id === flash.fixture_id)?.name ?? 'Flash';
+			return { id: flash.id, name: `${fixture} · ${flash.key} at ${clock(flash.at_ms)}`, timelineId: t.id, flash };
 		})
 	)
 );
@@ -213,6 +226,26 @@ registerKind<TakeRow>({
 	inspector: TakeInspector
 });
 
+registerKind<FlashRow>({
+	kind: 'timeline-flash',
+	label: 'Flash',
+	category: 'playback',
+	icon: Flashlight,
+	rows: flashRows,
+	panel: 'timeline',
+	actLabel: 'Go to',
+	act: (row) => locate(row.timelineId, row.flash.at_ms),
+	duplicate: async (row) => {
+		const timeline = current(row.timelineId);
+		if (!timeline) return;
+		// Right after the original, where a second press of the same key usually goes.
+		const copy = { ...row.flash, id: uuid(), at_ms: row.flash.at_ms + row.flash.duration_ms + 500 };
+		await writeColumns(row.timelineId, { flashes: [...(timeline.flashes ?? []), copy] });
+	},
+	remove: (row) => drop(row.timelineId, { kind: 'timeline-flash', id: row.id }),
+	inspector: FlashInspector
+});
+
 /** Which timeline an item on one belongs to, for the panel that has to open it. */
 export function timelineOfItem(ref: { kind: string; id: string }): string | null {
 	const find = <R extends { id: string; timelineId: string }>(rows: Readable<R[]>) =>
@@ -230,6 +263,8 @@ export function timelineOfItem(ref: { kind: string; id: string }): string | null
 			return find(segmentRows);
 		case 'timeline-take':
 			return find(takeRows);
+		case 'timeline-flash':
+			return find(flashRows);
 		default:
 			return null;
 	}

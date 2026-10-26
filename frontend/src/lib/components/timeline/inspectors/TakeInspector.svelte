@@ -39,9 +39,11 @@
 			>Plays <Help label="What a take does"
 				>A take holds its parameter over its stretch of the timeline, over playback and under the
 				programmer. Drag either end to crop it, press S to slice the takes under the playhead, and
-				delete a slice to remove that part. Recording the parameter again replaces the stretch the
-				pass ran over. Stopping the timeline lets go, over the show's home fade, into whatever playback
-				holds beneath.</Help
+				delete a slice to remove that part. With the take the only thing picked up, its change points
+				are handles: drag one in time or level, double-click its row to add one, and Delete removes the
+				one picked. Recording the parameter again replaces it from where it is first touched to where
+				the recording stops. Stopping the timeline lets go, over the show's home fade, into whatever
+				playback holds beneath.</Help
 			></span
 		>
 		<label class="inline note">

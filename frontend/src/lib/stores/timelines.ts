@@ -241,6 +241,8 @@ export async function createTimeline(name: string): Promise<string> {
 		markers: [],
 		events: [],
 		tracks: [],
+		flashes: null,
+		pending: null,
 		speed_master: null,
 		// The leader, which is the rule outputs follow.
 		node_id: null,
@@ -249,7 +251,8 @@ export async function createTimeline(name: string): Promise<string> {
 		anchor_ms: 0,
 		position_at_anchor_ms: 0,
 		rate: 1,
-		recording: null
+		recording: null,
+		armed_by: null
 	});
 	// Shown at once. Without this the panel goes on showing the first timeline, and the
 	// next thing somebody does — attaching a file, say — happens to a different timeline
@@ -257,3 +260,15 @@ export async function createTimeline(name: string): Promise<string> {
 	openTimelineId.set(id);
 	return id;
 }
+
+// ── How tall a recordings row is ──────────────────────────────────────────────
+
+const ROW_KEY = 'pult.timeline.takeRow';
+
+/**
+ * How tall each row of the Recordings lane is drawn, in pixels. This browser's, in
+ * `localStorage` beside the zoom: a jaw's movement is read in a row's height, and how
+ * much of the screen that is worth is a question about the screen, not about the show.
+ */
+export const takeRowHeight = writable<number>((browser && Number(localStorage.getItem(ROW_KEY))) || 18);
+if (browser) takeRowHeight.subscribe((h) => localStorage.setItem(ROW_KEY, String(Math.round(h))));

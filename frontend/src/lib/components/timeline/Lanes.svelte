@@ -29,6 +29,15 @@
 	 * with no end has a faint one waiting where its content runs out; dragging that is
 	 * how an end gets made. A click on it asks whether the end stops, goes round, or is
 	 * taken away. Typing a time in the Inspector is still there for the exact number.
+	 *
+	 * **A take's change points are handles while it is the one thing picked up.** Drag
+	 * one in time and level, double-click its row to add one, and Delete removes the one
+	 * picked. Nothing is written while a handle moves: letting go writes a new recording of
+	 * that one key — through the one encoder, `encode_key` in the wasm — and points the row
+	 * at it, one write and one Ctrl-Z, and the recording it replaced stays as it was for
+	 * every other row that plays it. **A flash is a block on its row**: drag it to move it,
+	 * an end to stretch it. And the Recordings lane's lower edge drags its rows taller,
+	 * for this browser.
 	 */
 
 	import { onMount, untrack } from 'svelte';
@@ -46,9 +55,11 @@
 	import { collection, showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { outlines, wantOutline } from '$lib/stores/takeOutlines.js';
-	import { audioStatus, current, devices, locate, positionOf, takes, toggle, writeColumns } from '$lib/stores/timelines.js';
+	import { audioStatus, current, devices, locate, positionOf, takeRowHeight, takes, toggle, writeColumns } from '$lib/stores/timelines.js';
+	import { encodeKey, trackPoints, type TrackPoint } from '$lib/evaluator.js';
+	import { addToast } from '$lib/toasts.js';
 	import { entries as programmerEntries } from '$lib/stores/programmer.js';
-	import { LivePass } from '$lib/timeline/liveTake.js';
+	import { LivePass, levelOf } from '$lib/timeline/liveTake.js';
 	import { cropped, parameterRow, rowKeys, rowSpan, splitRows } from '$lib/takes.js';
 	import type { TimelineTrack } from '$lib/generated/index.js';
 	import { zones } from '$lib/stores/zones.js';
@@ -69,6 +80,9 @@
 		removed,
 		segmentId,
 		segmentIndex,
+		stretched,
+		KEY_ROW_MAX,
+		KEY_ROW_MIN,
 		type ItemRef,
 		type Layout,
 		type Placed,
@@ -163,6 +177,8 @@
 				grabbed: Pick<AudioClip, 'start_ms' | 'offset_ms' | 'length_ms'>;
 		  }
 		| { mode: 'crop'; id: string; grip: 'front' | 'back'; fromMs: number; span: { fromMs: number; toMs: number } }
+		| { mode: 'stretch'; id: string; grip: 'front' | 'back'; fromMs: number; grabbed: { at_ms: number; duration_ms: number } }
+		| { mode: 'point'; index: number; x: number; y: number; moved: boolean }
 		| { mode: 'band'; x0: number; y0: number; x1: number; y1: number; additive: boolean; before: ObjectRef[] }
 		| { mode: 'scrub' }
 		| { mode: 'end'; x: number; then: AtEnd; moved: boolean }
@@ -312,9 +328,172 @@
 							}))
 						: []
 				};
-			}).concat(liveTakeInput())
-		});
+			}).concat(liveTakeInput()),
+			flashes: (timeline.flashes ?? []).map((f) => ({
+				id: f.id,
+				row: parameterRow(f.fixture_id, f.key),
+				label: keyLabel(f.fixture_id, f.key),
+				fromMs: f.at_ms,
+				toMs: f.at_ms + Math.max(1, f.duration_ms)
+			}))
+		}, $takeRowHeight);
 	});
+
+	// ── A take's change points, as handles ────────────────────────────────────
+
+	/** The one take picked up, with its change points in its recording's own time. */
+	type Editing = { trackId: string; asset: string; fixtureId: string; key: string; points: TrackPoint[]; chosen: number | null };
+	let editing = $state.raw<Editing | null>(null);
+	const TRACK_MIME = 'application/vnd.pult.track';
+	/** Past this many points in view the handles are a smear, and are not drawn. */
+	const MAX_HANDLES = 300;
+	const HANDLE_PX = 6;
+
+	const soleTake = $derived.by(() => {
+		const refs = $subject.filter((r) => picked.has(refKey(r)));
+		if (refs.length !== 1 || refs[0].kind !== 'timeline-take') return null;
+		return timeline.tracks.find((t) => t.id === refs[0].id) ?? null;
+	});
+
+	$effect(() => {
+		const track = soleTake;
+		const editable = $canEdit;
+		const was = untrack(() => editing);
+		if (!track || !editable || track.fixture_id === null || track.key === null) {
+			if (was) editing = null;
+			return;
+		}
+		if (was && was.trackId === track.id && was.asset === track.asset) return;
+		// Another take, or the same one at another recording: no handles until it is read.
+		if (was) editing = null;
+		const { id, asset } = track;
+		const fixtureId = track.fixture_id;
+		const key = track.key;
+		void (async () => {
+			try {
+				const response = await fetch(`/assets/${asset}`);
+				if (!response.ok) return;
+				const points = await trackPoints(new Uint8Array(await response.arrayBuffer()), fixtureId, key);
+				// Still the one picked up, at the recording it was read from.
+				const now = untrack(() => soleTake);
+				if (points && now?.id === id && now.asset === asset) {
+					editing = { trackId: id, asset, fixtureId, key, points, chosen: null };
+					dirty = true;
+				}
+			} catch {
+				// A station that has not got the take yet: no handles until it has.
+			}
+		})();
+	});
+
+	/** Where the edited take is drawn, its window in its recording's time, and its scale. */
+	function editFrame() {
+		const edit = editing;
+		if (!edit) return null;
+		const item = layout.items.find((i) => i.ref.kind === 'timeline-take' && i.ref.id === edit.trackId);
+		const track = timeline.tracks.find((t) => t.id === edit.trackId);
+		const span = track ? spanOfTake(track) : null;
+		if (!item || !track || !span) return null;
+		const r = rectOf(item, layout, view, width);
+		const levels = edit.points.filter((p) => !p.release).map((p) => levelOf(p.value));
+		const lo = Math.min(0, ...levels);
+		const hi = Math.max(1, ...levels);
+		const top = r.top + 1;
+		const bottom = r.bottom - 1;
+		return {
+			edit,
+			track,
+			rect: r,
+			// The window, in the recording's own milliseconds.
+			from: span.fromMs - track.offset_ms,
+			to: span.toMs - track.offset_ms,
+			x: (ms: number) => xOf(ms + track.offset_ms, view, width),
+			y: (level: number) => bottom - ((level - lo) / (hi - lo)) * (bottom - top),
+			level: (y: number) => lo + ((bottom - Math.max(top, Math.min(bottom, y))) / Math.max(1, bottom - top)) * (hi - lo)
+		};
+	}
+
+	/** The points of the edited take inside its window, with their index in the whole list. */
+	function handles(frame: NonNullable<ReturnType<typeof editFrame>>): { index: number; x: number; y: number; release: boolean }[] {
+		const out: { index: number; x: number; y: number; release: boolean }[] = [];
+		frame.edit.points.forEach((p, index) => {
+			if (p.ms < frame.from || p.ms >= frame.to) return;
+			const x = frame.x(p.ms);
+			if (x < -HANDLE_PX || x > width + HANDLE_PX) return;
+			out.push({ index, x, y: p.release ? frame.rect.bottom - 2 : frame.y(levelOf(p.value)), release: !!p.release });
+		});
+		return out.length > MAX_HANDLES ? [] : out;
+	}
+
+	function handleAt(x: number, y: number): number | null {
+		const frame = editFrame();
+		if (!frame) return null;
+		for (const h of handles(frame)) if (Math.abs(h.x - x) <= HANDLE_PX && Math.abs(h.y - y) <= HANDLE_PX) return h.index;
+		return null;
+	}
+
+	/** A value like `like` at a level, for a point dragged up or down. Only a number moves. */
+	function valueAt(like: TrackPoint['value'], level: number): TrackPoint['value'] {
+		if (like.type === 'Float') return { type: 'Float', value: Math.max(0, Math.min(1, level)) };
+		if (like.type === 'Int') return { type: 'Int', value: Math.round(Math.max(0, level)) };
+		return like;
+	}
+
+	/** Write the edited points as a recording of their own, and point the row at it. */
+	async function commitPoints(points: TrackPoint[]) {
+		const edit = editing;
+		const live = current(timeline.id);
+		if (!edit || !live) return;
+		try {
+			const bytes = await encodeKey(edit.fixtureId, edit.key, points);
+			if (!bytes) return;
+			const response = await fetch('/assets', { method: 'POST', headers: { 'content-type': TRACK_MIME }, body: bytes.slice().buffer });
+			if (!response.ok) throw new Error(await response.text());
+			const { sha256 } = (await response.json()) as { sha256: string };
+			const sorted = [...points].sort((a, b) => a.ms - b.ms);
+			editing = { ...edit, asset: sha256, points: sorted, chosen: null };
+			beginGesture();
+			try {
+				await writeColumns(timeline.id, {
+					tracks: live.tracks.map((t) => (t.id === edit.trackId ? { ...t, asset: sha256 } : t))
+				});
+			} finally {
+				endGesture();
+			}
+		} catch (e) {
+			addToast(`The take could not be changed: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	/** Move a handle to where the pointer is, inside the take's window. Drawn, not written. */
+	function movePoint(index: number, x: number, y: number) {
+		const frame = editFrame();
+		if (!frame) return;
+		const point = frame.edit.points[index];
+		if (!point) return;
+		const ms = Math.round(Math.max(frame.from, Math.min(frame.to - 1, msOf(x, view, width) - frame.track.offset_ms)));
+		const value = point.release ? point.value : valueAt(point.value, frame.level(y));
+		const points = frame.edit.points.map((p, i) => (i === index ? { ...p, ms, value } : p));
+		editing = { ...frame.edit, points, chosen: index };
+		dirty = true;
+	}
+
+	// ── The Recordings lane's rows, made taller ───────────────────────────────
+
+	let rowsDrag: { y0: number; h0: number; rows: number } | null = null;
+	function startRows(e: PointerEvent, rows: number) {
+		e.preventDefault();
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		rowsDrag = { y0: e.clientY, h0: $takeRowHeight, rows: Math.max(1, rows) };
+	}
+	function moveRows(e: PointerEvent) {
+		if (!rowsDrag) return;
+		const h = rowsDrag.h0 + (e.clientY - rowsDrag.y0) / rowsDrag.rows;
+		takeRowHeight.set(Math.round(Math.max(KEY_ROW_MIN, Math.min(KEY_ROW_MAX, h))));
+	}
+	function endRows() {
+		rowsDrag = null;
+	}
 
 	const canvasHeight = $derived(Math.max(layout.height, visibleHeight));
 
@@ -629,6 +808,38 @@
 			ctx.strokeRect(r.left + 0.5, r.top + 0.5, Math.max(2, r.right - r.left) - 1, r.bottom - r.top - 1);
 		}
 
+		// Flashes: a block per press, over the takes on their row, as long as the key was held.
+		for (const item of layout.items) {
+			if (item.ref.kind !== 'timeline-flash') continue;
+			const r = rectOf(item, layout, view, width);
+			if (r.right < 0 || r.left > width) continue;
+			const chosen = picked.has(refKey(item.ref));
+			ctx.fillStyle = chosen ? 'rgba(251,191,36,0.6)' : 'rgba(251,191,36,0.32)';
+			ctx.fillRect(r.left, r.top, Math.max(2, r.right - r.left), r.bottom - r.top);
+			ctx.strokeStyle = chosen ? '#fde68a' : '#f59e0b';
+			ctx.strokeRect(r.left + 0.5, r.top + 0.5, Math.max(2, r.right - r.left) - 1, r.bottom - r.top - 1);
+		}
+
+		// The picked take's change points, as handles: hollow where it lets go.
+		const frame = editFrame();
+		if (frame) {
+			for (const h of handles(frame)) {
+				const chosenPoint = frame.edit.chosen === h.index;
+				ctx.fillStyle = chosenPoint ? '#fff' : '#4ade80';
+				ctx.strokeStyle = '#052e16';
+				ctx.beginPath();
+				if (h.release) ctx.rect(h.x - 3, h.y - 3, 6, 6);
+				else ctx.arc(h.x, h.y, chosenPoint ? 4 : 3, 0, Math.PI * 2);
+				if (h.release && !chosenPoint) {
+					ctx.strokeStyle = '#4ade80';
+					ctx.stroke();
+				} else {
+					ctx.fill();
+					ctx.stroke();
+				}
+			}
+		}
+
 		// Markers and events.
 		const markersLane = layout.lanes.find((l) => l.kind === 'markers')!;
 		for (const marker of timeline.markers) {
@@ -854,6 +1065,14 @@
 			});
 			return;
 		}
+		if (drag.mode === 'stretch') {
+			const edge = drag.grip === 'front' ? drag.grabbed.at_ms : drag.grabbed.at_ms + drag.grabbed.duration_ms;
+			const at = snapped(edge + rawMs - drag.fromMs);
+			await writeColumns(timeline.id, {
+				flashes: (live.flashes ?? []).map((f) => (f.id === drag.id ? stretched(f, drag.grip, at, drag.grabbed) : f))
+			});
+			return;
+		}
 		if (drag.mode === 'trim') {
 			const clip = live.clips.find((c) => c.id === drag.id);
 			if (!clip) return;
@@ -937,6 +1156,13 @@
 		const item = hit(layout, view, width, x, y);
 		const additive = e.shiftKey || e.metaKey || e.ctrlKey;
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		const handle = $canEdit && !additive ? handleAt(x, y) : null;
+		if (handle !== null && editing) {
+			editing = { ...editing, chosen: handle };
+			drag = { mode: 'point', index: handle, x, y, moved: false };
+			dirty = true;
+			return;
+		}
 		if (y < RULER_H && $canEdit && onEndHandle(x, y)) {
 			drag = { mode: 'end', x, then: timeline.end?.then ?? 'Stop', moved: false };
 			return;
@@ -995,6 +1221,14 @@
 				return;
 			}
 		}
+		if (item.ref.kind === 'timeline-flash' && refs.length === 1) {
+			const grip = takeGrip(item, pending.x);
+			const flash = (live.flashes ?? []).find((f) => f.id === item.ref.id);
+			if (flash && grip) {
+				drag = { mode: 'stretch', id: flash.id, grip, fromMs, grabbed: { at_ms: flash.at_ms, duration_ms: flash.duration_ms } };
+				return;
+			}
+		}
 		const grabbed = grabbedFrom(live, refs, segmentIndex);
 		const anchorMs = item.fromMs;
 		drag = { mode: 'move', grabbed, fromMs, anchorMs };
@@ -1022,11 +1256,17 @@
 						? 'col-resize'
 						: 'crosshair'
 					: (item.ref.kind === 'timeline-clip' && gripOf(item, x) !== 'body') ||
-						  (item.ref.kind === 'timeline-take' && item.ref.id !== 'live' && takeGrip(item, x))
+						  ((item.ref.kind === 'timeline-take' || item.ref.kind === 'timeline-flash') && item.ref.id !== 'live' && takeGrip(item, x))
 						? 'ew-resize'
 						: 'grab';
 			}
 			dirty = true;
+			return;
+		}
+		if (drag.mode === 'point') {
+			if (!drag.moved && Math.hypot(x - drag.x, y - drag.y) < SLOP_PX) return;
+			drag = { ...drag, moved: true };
+			movePoint(drag.index, x, y);
 			return;
 		}
 		if (drag.mode === 'pending') {
@@ -1097,7 +1337,11 @@
 			}
 			return;
 		}
-		if (was.mode === 'move' || was.mode === 'trim' || was.mode === 'crop') endGesture();
+		if (was.mode === 'point') {
+			if (was.moved && editing) void commitPoints(editing.points);
+			return;
+		}
+		if (was.mode === 'move' || was.mode === 'trim' || was.mode === 'crop' || was.mode === 'stretch') endGesture();
 	}
 
 	function clearTimelineItems() {
@@ -1120,6 +1364,13 @@
 	async function onDoubleClick(e: MouseEvent) {
 		if (!$canEdit) return;
 		const { x, y } = pointerAt(e);
+		const frame = editFrame();
+		if (frame && handleAt(x, y) === null && x >= frame.rect.left && x <= frame.rect.right && y >= frame.rect.top && y <= frame.rect.bottom) {
+			const ms = Math.round(msOf(x, view, width) - frame.track.offset_ms);
+			const like = frame.edit.points.find((p) => !p.release)?.value ?? { type: 'Float', value: 0 };
+			void commitPoints([...frame.edit.points.filter((p) => p.ms !== ms), { ms, value: valueAt(like, frame.level(y)) }]);
+			return;
+		}
 		if (hit(layout, view, width, x, y)) return;
 		const lane = laneAt(layout, y);
 		const live = current(timeline.id);
@@ -1145,6 +1396,12 @@
 	async function onKeyDown(e: KeyboardEvent) {
 		if (endMenu && e.key === 'Escape') {
 			endMenu = null;
+			return;
+		}
+		if ((e.key === 'Delete' || e.key === 'Backspace') && $canEdit && editing?.chosen != null) {
+			e.preventDefault();
+			const gone = editing.chosen;
+			void commitPoints(editing.points.filter((_, i) => i !== gone));
 			return;
 		}
 		if ((e.key === 'Delete' || e.key === 'Backspace') && $canEdit) {
@@ -1238,6 +1495,7 @@
 		void $sequences;
 		void $cues;
 		void canvasHeight;
+		void editing;
 		dirty = true;
 	});
 </script>
@@ -1262,6 +1520,15 @@
 							{#each lane.rows as row, i (i)}
 								{#if row}<span class="row" style:top="{lane.headHeight + 2 + i * lane.rowHeight}px" title={row}>{row}</span>{/if}
 							{/each}
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div
+								class="row-grip"
+								title="Drag to make the rows taller or shorter"
+								onpointerdown={(e) => startRows(e, lane.rows.length)}
+								onpointermove={moveRows}
+								onpointerup={endRows}
+								onpointercancel={endRows}
+							></div>
 						{:else}
 							<span class="name" title={lane.label}>{lane.label}</span>
 							{#if lane.kind === 'audio' && lane.height > CLIP_ROW_H}<span class="detail">{lane.rows.length} overlapping</span>{/if}
@@ -1354,6 +1621,18 @@
 	}
 	.lane-label.take {
 		justify-content: flex-start;
+	}
+	.row-grip {
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		height: 6px;
+		cursor: ns-resize;
+		touch-action: none;
+	}
+	.row-grip:hover {
+		background: rgb(255 255 255 / 12%);
 	}
 	.lane-label .name {
 		color: var(--text);

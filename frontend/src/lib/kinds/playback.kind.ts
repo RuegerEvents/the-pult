@@ -87,10 +87,14 @@ registerKind<Timeline>({
 			events: timeline.events.map((e) => ({ ...e, id: uuid() })),
 			markers: timeline.markers.map((m) => ({ ...m, id: uuid() })),
 			tracks: timeline.tracks.map((t) => ({ ...t, id: uuid() })),
+			flashes: (timeline.flashes ?? []).map((f) => ({ ...f, id: uuid() })),
+			// A review belongs to the take that was recorded, on the timeline it was recorded on.
+			pending: null,
 			running: false,
 			anchor_ms: 0,
 			position_at_anchor_ms: 0,
-			recording: null
+			recording: null,
+			armed_by: null
 		});
 	},
 	remove: (timeline) => showData().timelines.byId(timeline.id).delete(),

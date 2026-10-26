@@ -31,6 +31,8 @@
 	import { startWing } from '$lib/stores/wing.js';
 	import { clearStep } from '$lib/stores/clear.js';
 	import UserBar from '$lib/components/UserBar.svelte';
+	import TakeReview from '$lib/components/timeline/TakeReview.svelte';
+	import { startTakeReview } from '$lib/stores/takeReview.js';
 	import { connection } from '$lib/stores/connection.js';
 	import { isSurfacePath } from '$lib/surface.js';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
@@ -88,6 +90,8 @@
 	initShowStores(data, client);
 	// The command wing, if this station has one and this page drives it.
 	startWing();
+	// A recording this page armed opens its review here when it stops.
+	startTakeReview();
 	// Which tiles this browser had up last time. The layouts themselves are the
 	// show's; which one is on screen is this operator's.
 	restoreLayout();
@@ -309,6 +313,7 @@
 				</button>
 				<span class="tb-sep"></span>
 			{/if}
+			<TakeReview />
 			<UserBar />
 			<ConnectionStatus {connected} />
 		</header>

@@ -7349,6 +7349,82 @@ must not start the loop it ends with, and a variable written twice is a count go
 cargo test -p pult-backend --lib model::timelines   # an event at the end plays the next one
 ```
 
+### 86. A re-record punches in, a flash is an object, and a take waits to be kept
+
+Built at Heinz Horror Garten, 2026-10-26, from what recording the skeletons asked for. Four
+complaints, and the first was a real defect.
+
+**A re-record wiped what came before the touch.** A pass replaced each key it touched from
+where the *pass* began, so arming at 0:00 and catching the jaw at 0:30 cut the first thirty
+seconds of the old take too. Each key's window now starts at its own first touch and runs to
+the stop — a punch-in — and `store_take` moved into `pult-schema` beside `cut_rows`, so the
+station's pass and the merge run the same rule. A key held before the pass and let go during
+it is a touch at the let-go, so recording over a stretch with the key released still removes
+it.
+
+**A flash is not a take.** The answer to *how is a button told from a fader*, written in
+`model/takes.rs`: a key that **appears** in the programmer during the pass and **leaves** it
+having held **one value** throughout is a press. Anything else — it moved while held, it was
+held before the pass began, it is still held at the stop — is a fader. The rule reads what
+the programmer did and nothing about who wrote it, so the wing's flash keys, a surface's
+flash tile and anything later all fall under it. A press becomes a `TimelineFlash` (a value,
+a start, a length) on `Timeline::flashes`, and `pult_render::compose_with` lays flashes over
+the composed rows: over a flash the flash plays, at its end whatever was there carries on,
+and nothing is cut — so a second pass adds presses. Compiled twice like the rest; the wasm's
+`compose_track` takes the flashes as a third argument. Each is an object kind
+(`timeline-flash`) with its own Inspector, drawn as an amber block on its parameter's row,
+dragged to move and stretched by an end.
+
+**Nothing merges until somebody says so.** A pass is an asset the moment it stops and a
+`PendingPass` on the PERSISTED `Timeline::pending`: the asset, each key and where its window
+starts, where the pass stopped, and its flashes. The page that armed the recording says who
+it is (`armedBy` on `record`, a per-tab id in `sessionStorage`, kept as the SYNCED
+`armed_by`) and opens *Keep the take?* by itself; every other page shows a chip in the top
+bar, because a tablet that armed and went to sleep must not strand the take. A row per
+parameter with its take and its flashes ticked apart; `take.merge` writes what was ticked
+and `take.discard` writes nothing, each clearing the review, under the caller's name and in
+one gesture — so one Ctrl-Z of a Merge puts the take back up for review, and the station
+never answers for anybody.
+
+PERSISTED rather than SYNCED, decided because of the failover: a SYNCED review survives a
+leader going away only if a follower was up at the time, and not the whole rig restarting.
+The asset is mirrored to the spare like any other (`infra::assets::mirror`), so either
+station can merge. And `flashes` and `pending` are `Option`s, the stated cost of
+`from_columns`: a non-`Option` column added to a show that already exists is a show that
+does not open. No `SCHEMA_GENERATION` bump — adding a field is free.
+
+**A take's points are editable.** With one take picked up its change points are handles:
+dragged in time and level (a number moves; a color or a switch moves only in time), added
+by a double-click on the row, deleted with Delete. Letting go encodes that one key through
+the wasm's `encode_key`, posts it to `/assets` and points the row at the new sha — one write,
+one Ctrl-Z. The recording the row pointed at is never rewritten, so a slice of the same
+recording on another row is untouched. The Recordings lane's lower edge drags its rows
+taller, kept per browser (`takeRowHeight`), because a jaw is read in a row's height.
+
+**The traps.**
+
+- *A pass of nothing but flashes has no recording.* Its `asset` is empty and it has no keys,
+  so the merge never makes a row pointing at nothing.
+- *A take off a wire is a whole capture.* Every key was listening from the start, so its
+  window starts where the take started — punch-in is about a hand, and a wire has none.
+- *The faders are given back at the stop, before the review.* Between the stop and the
+  Merge the stage shows what is under the take. Releasing at the Merge instead would have
+  held a value nobody was touching for as long as the dialog sat open.
+
+**What is not done.** A Go, Back or Off taken during a programmer take still lands straight
+on the timeline as an event (`record_sequence_act`) and is not in the review. A take off a
+wire is reviewed, but cannot yet be reviewed key by key from the input's own panel. There is
+no `compose` corpus beside `driven-values.json`; the composition is one implementation, and
+its tests are in `pult-render`. The live preview while recording still draws a press as a
+red stretch rather than an amber block. Nothing here has been tried on a tablet.
+
+```
+cargo test -p pult-render compose          # flashes over takes
+cargo test -p pult-backend --lib model::takes   # punch-in and the flash rule
+cargo test -p pult-backend --test takes    # a real station, merged through take.merge
+cd frontend && npm test                    # lanes, takes
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

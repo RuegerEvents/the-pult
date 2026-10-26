@@ -36,6 +36,8 @@ const aTimeline = (over: Partial<Timeline> = {}): Timeline => ({
 	markers: [],
 	events: [],
 	tracks: [aTrack()],
+	flashes: null,
+	pending: null,
 	speed_master: null,
 	node_id: null,
 	end: null,
@@ -44,6 +46,7 @@ const aTimeline = (over: Partial<Timeline> = {}): Timeline => ({
 	position_at_anchor_ms: 500,
 	rate: 1,
 	recording: null,
+	armed_by: null,
 	...over
 });
 

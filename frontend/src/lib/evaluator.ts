@@ -14,7 +14,7 @@
  * during server-side rendering.
  */
 
-import type { ParameterValue, RunningEffect, Shape } from './generated/index.js';
+import type { ParameterValue, RunningEffect, Shape, TimelineFlash } from './generated/index.js';
 import type { DrivenBy } from './driving.js';
 import type { NodeEffect } from './stage.js';
 
@@ -43,7 +43,7 @@ type Instance = {
 	evaluate(nowMs: number): Float32Array;
 	text(key: string, nowMs: number): string | undefined;
 	load_track(sha: string, bytes: Uint8Array): void;
-	compose_track(id: string, parts: unknown): boolean;
+	compose_track(id: string, parts: unknown, flashes: unknown): boolean;
 	play_track(sha: string, anchorMs: number, positionAtAnchorMs: number, rate: number, levels: boolean): void;
 	stop_track(sha: string): void;
 	forget_track(sha: string): void;
@@ -56,6 +56,8 @@ type Wasm = {
 	effect_values(effects: unknown, nowMs: number): Float32Array;
 	shape_level(shape: unknown, width: number, traveled: number, salt: number): number;
 	track_outline(bytes: Uint8Array, budget: number): KeyOutline[];
+	track_points(bytes: Uint8Array, fixtureId: string, key: string): TrackPoint[];
+	encode_key(fixtureId: string, key: string, points: TrackPoint[]): Uint8Array;
 	pixel_effect(
 		effect: string,
 		color: Uint8Array,
@@ -212,11 +214,27 @@ export type TrackPart = {
 };
 
 /**
- * A timeline's rows composed into one recording under `id`, by the station's own
- * `pult_render::compose`. Whether every sha the rows name was loaded.
+ * A timeline's rows composed into one recording under `id`, and its flashes over them,
+ * by the station's own `pult_render::compose_with`. Whether every sha the rows name
+ * was loaded.
  */
-export function composeTrack(id: string, parts: TrackPart[]): boolean {
-	return instance?.compose_track(id, parts) ?? false;
+export function composeTrack(id: string, parts: TrackPart[], flashes: TimelineFlash[] = []): boolean {
+	return instance?.compose_track(id, parts, flashes) ?? false;
+}
+
+/** One change point of a take, as the codec has it. A release says nothing from `ms` on. */
+export type TrackPoint = { ms: number; value: ParameterValue; release?: boolean };
+
+/** Every change point one recording holds for one key, read through the one codec. */
+export async function trackPoints(bytes: Uint8Array, fixtureId: string, key: string): Promise<TrackPoint[] | null> {
+	await loadEvaluator();
+	return module ? module.track_points(bytes, fixtureId, key) : null;
+}
+
+/** A recording of one key with these points, as the bytes a take is stored in. */
+export async function encodeKey(fixtureId: string, key: string, points: TrackPoint[]): Promise<Uint8Array | null> {
+	await loadEvaluator();
+	return module ? module.encode_key(fixtureId, key, points) : null;
 }
 
 /**

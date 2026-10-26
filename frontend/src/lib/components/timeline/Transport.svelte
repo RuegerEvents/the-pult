@@ -29,6 +29,7 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { countdownOf, countInSeconds, lapOf, locate, now, playCounted, positionOf, stop, takes } from '$lib/stores/timelines.js';
 	import { armArgs, armChoice, PROGRAMMER, releases, takeSummary } from '$lib/takes.js';
+	import { pageId } from '$lib/stores/takeReview.js';
 	import { addToast } from '$lib/toasts.js';
 	import { clock, parsePosition } from '$lib/waveform.js';
 
@@ -52,7 +53,8 @@
 				: ($inputs.find((i) => i.id === source)?.name ?? 'an input')
 	);
 	const arm = (choice: string, release: boolean) =>
-		void showData().timelines.byId(timeline.id).record(armArgs(choice, release));
+		// Says which page armed it, so this is the page the review opens on.
+		void showData().timelines.byId(timeline.id).record({ ...armArgs(choice, release), armedBy: pageId });
 	const listening = $derived($inputs.some((i) => i.enabled));
 
 	/** What is on the wire now, into the programmer, for the selected fixtures. */
@@ -186,8 +188,9 @@
 							{takeSummary(take)}
 						{:else if source === PROGRAMMER}
 							From the next Play to the next Stop: every programmer key that moves, from your first
-							touch, every sequence level you move as a curve, and every Go, Back and Off as an event.
-							On a loop each lap you touch is a pass.
+							touch to the Stop, every flash key as a flash, every sequence level you move as a curve, and
+							every Go, Back and Off as an event. On a loop each lap you touch is a pass. Nothing is kept until
+							you say so when it stops.
 						{:else if source}
 							The station holding that input records from the next Play to the next Stop.
 						{:else}

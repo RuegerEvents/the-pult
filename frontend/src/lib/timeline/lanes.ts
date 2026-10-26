@@ -23,6 +23,11 @@
  * over, sliced and cropped, reads as one row with its pieces in it, the way it plays.
  * Drawn from `pult_render::outline`, the same parse of the same bytes the station
  * plays, so a lane cannot show a take the lamps would not do.
+ *
+ * **A flash is drawn on its parameter's row too**, over the takes, because that is
+ * where it plays: one block per press, as long as the key was held. And the rows are
+ * as tall as this browser asks (`keyRowHeight`), because a jaw's movement is read in a
+ * row's height and eighteen pixels is a summary of one.
  */
 
 import { clipLanes, msOf, xOf, type View } from '$lib/waveform.js';
@@ -33,7 +38,8 @@ export type ItemKind =
 	| 'timeline-event'
 	| 'timeline-marker'
 	| 'timeline-segment'
-	| 'timeline-take';
+	| 'timeline-take'
+	| 'timeline-flash';
 
 export type ItemRef = { kind: ItemKind; id: string };
 
@@ -44,6 +50,9 @@ export const RULER_H = 24;
 export const FLAG_H = 22;
 export const CLIP_ROW_H = 40;
 export const KEY_ROW_H = 18;
+/** How tall a recordings row may be made, by dragging the lane's lower edge. */
+export const KEY_ROW_MIN = 14;
+export const KEY_ROW_MAX = 120;
 /** The row a take whose recording has not been read yet is drawn on. */
 const UNREAD_ROW = 'unread';
 
@@ -100,18 +109,25 @@ export type TakeInput = {
 	keys: KeyInput[] | null;
 };
 
+/** One flash, on its parameter's row, from where it was pressed to where it was let go. */
+export type FlashInput = { id: string } & KeyInput;
+
 export type LaneInput = {
 	clips: ClipInput[];
 	events: { id: string; atMs: number }[];
 	markers: { id: string; atMs: number }[];
 	segments: { id: string; atMs: number }[];
 	takes: TakeInput[];
+	flashes?: FlashInput[];
 };
 
 export type Layout = { lanes: Lane[]; items: Placed[]; height: number };
 
-/** The lanes, top to bottom, and where every item on them goes. */
-export function layOut(input: LaneInput): Layout {
+/** The lanes, top to bottom, and where every item on them goes. `keyRowHeight` is how
+ *  tall each recordings row is drawn. */
+export function layOut(input: LaneInput, keyRowHeight = KEY_ROW_H): Layout {
+	const rowH = Math.max(KEY_ROW_MIN, Math.min(KEY_ROW_MAX, Math.round(keyRowHeight)));
+	const flashes = input.flashes ?? [];
 	const lanes: Lane[] = [];
 	const items: Placed[] = [];
 	let top = RULER_H;
@@ -173,11 +189,12 @@ export function layOut(input: LaneInput): Layout {
 
 	// One lane for every recording, a row per parameter, in the order a person reads a
 	// rig: by fixture, then by parameter.
-	if (input.takes.length) {
+	if (input.takes.length || flashes.length) {
 		const labels = new Map<string, string>();
 		for (const take of input.takes) {
 			for (const k of take.keys ?? [{ row: UNREAD_ROW, label: 'reading…', fromMs: 0, toMs: 0 }]) labels.set(k.row, k.label);
 		}
+		for (const flash of flashes) labels.set(flash.row, flash.label);
 		const rowKeys = [...labels.keys()].sort((a, b) =>
 			a === UNREAD_ROW ? 1 : b === UNREAD_ROW ? -1 : labels.get(a)!.localeCompare(labels.get(b)!)
 		);
@@ -187,8 +204,8 @@ export function layOut(input: LaneInput): Layout {
 			label: 'Recordings',
 			rows: rowKeys.map((k) => labels.get(k)!),
 			rowKeys,
-			height: rowKeys.length * KEY_ROW_H + 4,
-			rowHeight: KEY_ROW_H,
+			height: rowKeys.length * rowH + 4,
+			rowHeight: rowH,
 			headHeight: 0
 		});
 		for (const take of input.takes) {
@@ -201,6 +218,16 @@ export function layOut(input: LaneInput): Layout {
 					toMs: Math.max(k.fromMs, k.toMs)
 				});
 			}
+		}
+		// After the takes, so a flash is drawn — and picked up — over the take it plays over.
+		for (const flash of flashes) {
+			items.push({
+				ref: { kind: 'timeline-flash', id: flash.id },
+				lane: 'takes',
+				row: rowKeys.indexOf(flash.row),
+				fromMs: flash.fromMs,
+				toMs: Math.max(flash.fromMs + 1, flash.toMs)
+			});
 		}
 	}
 
@@ -285,6 +312,8 @@ export type Movable = {
 	markers: { id: string; at_ms: number }[];
 	grid: { at_ms: number }[];
 	tracks: { id: string; offset_ms: number; from_ms: number | null; to_ms: number | null }[];
+	/** `null` is none, the way the schema keeps it. */
+	flashes?: { id: string; at_ms: number; duration_ms: number }[] | null;
 };
 
 /** Where each grabbed item was when the drag began, which every frame is measured from. */
@@ -310,6 +339,9 @@ export function grabbedFrom(timeline: Movable, refs: ItemRef[], segmentIndex: (i
 				break;
 			case 'timeline-take':
 				at = timeline.tracks.find((t) => t.id === ref.id)?.offset_ms;
+				break;
+			case 'timeline-flash':
+				at = timeline.flashes?.find((f) => f.id === ref.id)?.at_ms;
 				break;
 		}
 		if (at !== undefined) out.set(refKey(ref), at);
@@ -380,7 +412,33 @@ export function moved<T extends Movable>(
 			return { ...t, offset_ms: from + delta, from_ms: shift(t.from_ms), to_ms: shift(t.to_ms) };
 		}) as T['tracks'];
 	}
+	if (touched('timeline-flash')) {
+		out.flashes = (timeline.flashes ?? []).map((f) => {
+			const from = has('timeline-flash', f.id);
+			return from === undefined ? f : { ...f, at_ms: from + delta };
+		}) as T['flashes'];
+	}
 	return out;
+}
+
+/**
+ * A flash with one end moved to `atMs`: the front moves where it starts and keeps where
+ * it ends, the back changes only how long it is. Never shorter than a millisecond, and
+ * never inside out.
+ */
+export function stretched<F extends { at_ms: number; duration_ms: number }>(
+	flash: F,
+	grip: 'front' | 'back',
+	atMs: number,
+	grabbed: { at_ms: number; duration_ms: number }
+): F {
+	const at = Math.round(atMs);
+	const end = grabbed.at_ms + grabbed.duration_ms;
+	if (grip === 'front') {
+		const start = Math.max(0, Math.min(at, end - 1));
+		return { ...flash, at_ms: start, duration_ms: end - start };
+	}
+	return { ...flash, at_ms: grabbed.at_ms, duration_ms: Math.max(1, at - grabbed.at_ms) };
 }
 
 function splitKey(key: string): [ItemKind, string] {
@@ -409,6 +467,8 @@ export function removed<T extends Movable>(
 	if (segments.size) out.grid = timeline.grid.filter((_, i) => !segments.has(i)) as T['grid'];
 	const tracks = ids('timeline-take');
 	if (tracks.size) out.tracks = timeline.tracks.filter((t) => !tracks.has(t.id)) as T['tracks'];
+	const flashes = ids('timeline-flash');
+	if (flashes.size) out.flashes = (timeline.flashes ?? []).filter((f) => !flashes.has(f.id)) as T['flashes'];
 	return out;
 }
 

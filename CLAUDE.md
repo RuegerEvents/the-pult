@@ -1775,12 +1775,23 @@ made with the wrong selection is missing fixtures nobody notices until playback.
 key that changes while the timeline rolls, from its first touch. The engine feeds the
 take a snapshot after each write it applies, and tells the input manager about a moved
 transport *before* that, or the first move after a loop wraps lands on the lap that
-ended. **A pass is spliced into the take already playing the key**, from first touch to
-the stop, and the old take resumes there (`model::takes::merge`). A second track would
-not layer: the evaluator takes one track per key, and a started track never goes quiet
-again. A jump closes the pass, so a looping timeline is a rehearsal where every touched
-lap is a pass. The faders are given back at the final stop, because programmer beats
-track.
+ended. **A pass punches in at each key's first touch**: a row per parameter from the
+touch to the stop, cut out of every row already playing that key
+(`types::timeline::store_take`), so the old take plays up to the hand landing on the
+fader and resumes after the stop. **A button is not a take**: a key that appears in the
+programmer and leaves it holding one value becomes a `TimelineFlash` — a value, a start
+and a length — laid over every row by `pult_render::compose_with` and cutting none, so a
+second pass adds presses rather than erasing the first's. A jump closes the pass, so a
+looping timeline is a rehearsal where every touched lap is a pass. The faders are given
+back at the final stop, because programmer beats track.
+
+**And nothing a take records is merged by the station.** Every pass is an asset at once
+and a line on the timeline's PERSISTED `pending`; the page that armed it (`armedBy`,
+kept as `Timeline::armed_by`) opens a review, every other page offers it in the top bar,
+and `take.merge` / `take.discard` answer it under the caller's name in one gesture — so
+one Ctrl-Z puts a merged take back up for review. A take's change points are edited in
+the lanes and written as a new one-key recording the row points at; the recording a row
+pointed at before is never rewritten. See task 86.
 
 **Stopping a timeline lets its keys go.** The engine samples each enabled track at the
 stop position — through `infra/tracks.rs`, the *same* cache the output manager reads, so

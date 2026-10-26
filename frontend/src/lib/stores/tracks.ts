@@ -26,20 +26,28 @@
 import { readable, type Readable } from 'svelte/store';
 
 import { composeTrack, forgetTrack, loadEvaluator, loadTrack, playTrack, stopTrack, type TrackPart } from '../evaluator.js';
-import type { Timeline } from '../generated/index.js';
+import type { Timeline, TimelineFlash } from '../generated/index.js';
 import { collection } from './show.js';
 
 /** Where the console serves an asset from. Same origin, like everything else. */
 const assetUrl = (sha: string) => `/assets/${sha}`;
 
 /** What one running timeline's recordings come to: its rows, composed under one id. */
-type Rolling = { id: string; parts: TrackPart[]; anchorMs: number; positionMs: number; rate: number; levels: boolean };
+type Rolling = {
+	id: string;
+	parts: TrackPart[];
+	flashes: TimelineFlash[];
+	anchorMs: number;
+	positionMs: number;
+	rate: number;
+	levels: boolean;
+};
 
 /**
  * Which recordings a set of timelines is playing: per running timeline, its enabled
  * rows, composed in the wasm exactly as the station's `playing_tracks` composes them —
- * each row its window of its parameter, nudged by its own offset — and played on the
- * timeline's own transport.
+ * each row its window of its parameter, nudged by its own offset, with the timeline's
+ * flashes over them — and played on the timeline's own transport.
  */
 export function rolling(timelines: Timeline[]): Rolling[] {
 	const out: Rolling[] = [];
@@ -55,13 +63,15 @@ export function rolling(timelines: Timeline[]): Rolling[] {
 				to_ms: track.to_ms,
 				offset_ms: track.offset_ms
 			}));
-		if (parts.length === 0) continue;
+		const flashes = timeline.flashes ?? [];
+		if (parts.length === 0 && flashes.length === 0) continue;
 		// A timeline recording a new pass leaves the sequences' levels to their faders,
 		// as the station's `playing_tracks` does: the fader is what is being recorded.
 		const recording = !!timeline.recording && 'Programmer' in timeline.recording;
 		out.push({
 			id: `timeline:${timeline.id}`,
 			parts,
+			flashes,
 			anchorMs: timeline.anchor_ms,
 			positionMs: timeline.position_at_anchor_ms,
 			rate: timeline.rate,
@@ -124,9 +134,9 @@ export const tracks: Readable<number> = readable(0, (set) => {
 			for (const part of track.parts) fetchOnce(part.sha);
 			// Composed again only when the rows or the bytes under them changed: a crop
 			// dragged is a new composition per frame, and a cue taken is none.
-			const signature = JSON.stringify([track.parts, track.parts.map((p) => ready.has(p.sha))]);
+			const signature = JSON.stringify([track.parts, track.flashes, track.parts.map((p) => ready.has(p.sha))]);
 			if (playing.get(track.id) !== signature) {
-				composeTrack(track.id, track.parts);
+				composeTrack(track.id, track.parts, track.flashes);
 				playing.set(track.id, signature);
 			}
 			playTrack(track.id, track.anchorMs, track.positionMs, track.rate, track.levels);
