@@ -1030,10 +1030,17 @@ impl Playback {
             // about. The map is written whole, so publishing only what this object
             // knows would silently take a parameter's driver away because some *other*
             // parameter of the same fixture moved.
+            //
+            // Never the programmer's own shape, though: that lives exactly as long as
+            // its entry, and `held_effects` above already lists every one still held.
+            // Carried forward, an effect cleared out of the programmer kept running for
+            // ever — Clear took the entry and the light went on chasing, until a plain
+            // value on the same key unlisted it (found at the gig, 2026-10-26).
             if let Some(fixture) = view.fixture(fixture_id) {
                 for (key, effect) in &fixture.live_effects {
                     let mine = (fixture_id, key.clone());
                     if !held.contains(&mine)
+                        && !matches!(effect.source, EffectSource::Programmer)
                         && !self.effects.contains_key(&mine)
                         && !self.holds_a_fade(&mine)
                     {

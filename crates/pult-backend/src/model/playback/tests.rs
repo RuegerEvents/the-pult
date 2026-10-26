@@ -1134,6 +1134,27 @@ fn a_settled_programmer_is_not_re_emitted() {
     assert!(again.is_empty(), "nothing changed, so nothing should be written");
 }
 
+/// An effect cleared out of the programmer stops. Its entry is gone, so nothing holds
+/// the key, and the shape it left on the fixture must not be carried forward as if some
+/// other layer had put it there — which is what kept a cleared chase running.
+#[test]
+fn an_effect_cleared_out_of_the_programmer_stops() {
+    let fixture = a_fixture();
+    let mut fixtures = vec![fixture.clone()];
+    let cues: [Cue; 0] = [];
+    let sequences: [Sequence; 0] = [];
+    let programmer = [held_effect(fixture.id, a_sine(0.0))];
+
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &programmer, &[]);
+    assert!(!fixtures[0].live_effects.is_empty(), "the shape is published");
+
+    pass(&mut playback, 100, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!(fixtures[0].live_effects.is_empty(), "and goes with its entry: {:?}", fixtures[0].live_effects);
+    let again = pass(&mut playback, 200, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!(again.is_empty(), "and stays gone without being written again");
+}
+
 /// A plain held value is never published at all. It is a SYNCED programmer entry that
 /// every consumer already has, and putting a second copy of it on the fixture would be
 /// the station telling the browser what the browser told the station.
