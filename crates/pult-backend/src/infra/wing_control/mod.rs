@@ -81,6 +81,11 @@ const SHOW_EVERY: Duration = Duration::from_millis(200);
 /// How often the bindings and the encoder bar are read again, beside being told.
 const BINDINGS_EVERY: Duration = Duration::from_secs(2);
 /// How long an encoder's own last value is trusted over the programmer's.
+/// Where a master fader counts as down: below it, a sequence that is on goes off, and
+/// leaving it upwards takes a sequence that is off. A fader at rest reads a count or two
+/// above zero, so zero itself would never be crossed.
+const FADER_BOTTOM: f32 = 0.01;
+
 const RECENT: Duration = Duration::from_millis(400);
 /// How long a run of encoder clicks stays one gesture after the last of them: the
 /// page's `nudging`, so a spin is one Ctrl-Z and a pause ends it.
@@ -153,6 +158,9 @@ struct Control {
     held_keys: HashSet<u16>,
     /// The digital inputs as last read, which an edge is measured from.
     digital: Option<u8>,
+    /// Where each master fader was last read, which leaving or reaching the bottom is
+    /// measured from.
+    fader_levels: HashMap<u16, f32>,
 }
 
 /// Run the wing for as long as this station runs.
@@ -194,6 +202,7 @@ pub async fn run(
         nudge: None,
         held_keys: HashSet::new(),
         digital: None,
+        fader_levels: HashMap::new(),
     };
     control.read_bindings().await;
     control.read_show().await;
@@ -415,6 +424,19 @@ impl Control {
             }
             BindingAction::Master { sequence_id } => {
                 self.masters.insert(sequence_id, (index, level));
+                // Up off the bottom takes a sequence that is off, and down onto it takes
+                // one that is on off: MA's fader that starts and stops its executor.
+                let light = self.lit.sequences.iter().find(|s| s.id == sequence_id);
+                let on = light.is_some_and(|s| s.active_cue_index.is_some());
+                let before = self
+                    .fader_levels
+                    .insert(index, level)
+                    .unwrap_or_else(|| light.and_then(|s| s.master).unwrap_or(1.0));
+                if before <= FADER_BOTTOM && level > FADER_BOTTOM && !on {
+                    self.set(field("sequences", sequence_id, "goNext"), json!({ "at": now_ms() }), None).await;
+                } else if before > FADER_BOTTOM && level <= FADER_BOTTOM && on {
+                    self.set(field("sequences", sequence_id, "off"), json!({ "at": now_ms() }), None).await;
+                }
             }
             _ => {}
         }
@@ -1060,7 +1082,9 @@ impl Control {
     /// itself. `None` for any other key, which STORE leaves to do what it does.
     fn store_onto(&self, index: u16, code: &str, fader_key: Option<FaderKey>) -> Option<StoreOnto> {
         let page = self.station.operator().page;
-        if let Some(FaderKey::Go(fader) | FaderKey::Off(fader)) = fader_key {
+        // The key under a fader is that fader's playback. The key above it is one of
+        // its own, like an X key: it is the fader's Off only while nothing is on it.
+        if let Some(FaderKey::Go(fader)) = fader_key {
             let control = SurfaceControl::Fader { index: fader };
             return match self.binding(&control) {
                 Some(BindingAction::Master { sequence_id }) => {
@@ -1076,7 +1100,9 @@ impl Control {
             Some(BindingAction::Press {
                 target: TileTarget::SequenceGo { sequence_id } | TileTarget::SequenceOff { sequence_id },
             }) => Some(StoreOnto { control, page, sequence_id: Some(*sequence_id) }),
-            None if keys::x_key(code) => Some(StoreOnto { control, page, sequence_id: None }),
+            None if keys::x_key(code) || matches!(fader_key, Some(FaderKey::Off(_))) => {
+                Some(StoreOnto { control, page, sequence_id: None })
+            }
             _ => None,
         }
     }
@@ -1331,8 +1357,12 @@ impl Control {
                 Some(BindingAction::Master { sequence_id }) => Some((go, *sequence_id)),
                 _ => None,
             });
+            let storing = operator.line.trim() == "store";
             let level = if self.held_keys.contains(index) {
                 keys::LIT
+            } else if storing && self.store_onto(*index, code, self.fader_keys.get(index).copied()).is_some() {
+                // Waiting for where: every playback STORE can go onto says so.
+                if blink { keys::LIT } else { keys::DIM }
             } else if verb == Some(Verb::Learn) {
                 if operator.learning {
                     if blink { keys::LIT } else { 0 }

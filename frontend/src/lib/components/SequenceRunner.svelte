@@ -97,6 +97,9 @@
 	// The time goes with the command: every station runs it from the same arguments,
 	// so a Go that carries when it happened anchors the cue's fades and effects at one
 	// millisecond everywhere rather than at whenever each station got the message.
+	/** Where a fader counts as down. */
+	const FADER_BOTTOM = 0.01;
+
 	async function goNext(seqId: string) {
 		offer({ kind: 'Press', target: { kind: 'SequenceGo', sequence_id: seqId } });
 		await data.sequences.byId(seqId).goNext({ at: actAt() });
@@ -116,9 +119,17 @@
 
 	// The sequence's fader. Full is written as no level at all, which is what a show
 	// opens at, so a fader pushed back to the top leaves the row as it found it.
+	//
+	// Up off the bottom takes a sequence that is off, and down onto it takes one that
+	// is on off — the wing's faders do the same (`FADER_BOTTOM` in `wing_control`).
 	function setMaster(seqId: string, level: number) {
 		offer({ kind: 'Master', sequence_id: seqId });
+		const seq = sequences.find((s) => s.id === seqId);
+		const before = seq?.master ?? 1;
+		const on = seq?.active_cue_index != null;
 		void data.sequences.byId(seqId).master.set(level >= 1 ? null : level);
+		if (before <= FADER_BOTTOM && level > FADER_BOTTOM && !on) void goNext(seqId);
+		else if (before > FADER_BOTTOM && level <= FADER_BOTTOM && on) void takeOff(seqId);
 	}
 
 	/** Its cues, in the Cues panel: what an executor's cues say is that panel's. */
