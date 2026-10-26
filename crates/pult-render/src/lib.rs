@@ -21,7 +21,7 @@ pub mod pixfx;
 pub mod track;
 pub mod value;
 
-pub use driving::{settles_at, value_at, Driving};
+pub use driving::{settles_at, value_at, Beside, Driving, HtpLayer, MAX_BESIDE};
 pub use effect::{
     blend, curve_level, cycle_position, ease, effect_value_at, fade_is_done, fade_progress,
     fade_value_at, shape_level, step_value, traveled, Curve, Direction, Easing, EffectSource,

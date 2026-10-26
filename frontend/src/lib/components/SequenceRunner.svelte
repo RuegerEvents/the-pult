@@ -211,6 +211,7 @@
 						onclick={() => openCues(seq.id)}
 						ondblclick={() => $canEdit && (naming = { sequence: seq })}>{seq.name}</button
 					>
+					{#if seq.merge === 'Htp'}<span class="htp" title="HTP: its intensities show where they are higher">HTP</span>{/if}
 					{#if $canEdit}
 						<button class="delete" title="Delete {seq.name}" aria-label="Delete {seq.name}" onclick={() => (deleting = seq)}>
 							<X size={12} />
@@ -300,6 +301,15 @@
 {/if}
 
 <style>
+	.htp {
+		font-size: 9px;
+		font-weight: 600;
+		padding: 0 4px;
+		border-radius: 3px;
+		border: 1px solid var(--cat-playback, #4a8cff);
+		color: var(--cat-playback, #4a8cff);
+		align-self: center;
+	}
 	.runner {
 		display: flex;
 		flex-direction: column;

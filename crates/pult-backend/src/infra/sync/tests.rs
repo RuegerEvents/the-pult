@@ -88,7 +88,7 @@ fn seq_path(id: Uuid, field: &str) -> Path {
 }
 
 fn a_sequence(name: &str) -> Sequence {
-    Sequence { folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None, master: None }
+    Sequence { merge: None, folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None, master: None }
 }
 
 async fn create(node: &Node, seq: &Sequence) {
@@ -887,6 +887,7 @@ async fn a_sensor_reading_on_the_leader_reaches_the_follower() {
         sensed_values: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        live_htp: Default::default(),
         home_values: Default::default(),
         ..Fixture::default()
     };
@@ -1494,7 +1495,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
         is_active: false,
     };
     put(&one, "cues", serde_json::to_value(&cue).unwrap()).await;
-    let sequence = Sequence {
+    let sequence = Sequence { merge: None,
         folder: None,
         id: Uuid::new_v4(),
         name: "Act 1".into(),

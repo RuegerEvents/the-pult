@@ -100,7 +100,7 @@ fn a_show() -> Show {
 }
 
 fn a_sequence(name: &str, cue_ids: Vec<Uuid>) -> Sequence {
-    Sequence { folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None, master: None }
+    Sequence { merge: None, folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None, master: None }
 }
 
 fn a_cue(name: &str, number: f64) -> Cue {
@@ -131,6 +131,7 @@ fn a_fixture(name: &str, address: u16) -> Fixture {
         sensed_values: Default::default(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        live_htp: Default::default(),
         home_values: Default::default(),
         ..Fixture::default()
     }

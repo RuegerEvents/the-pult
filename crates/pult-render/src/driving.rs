@@ -15,15 +15,68 @@
 //! where the parameter got to — nothing stores the number any more — and evaluating a
 //! finished fade is exactly the constant it landed on.
 //!
+//! **Beside** the playback layer there can be more of it: an intensity that several
+//! sequences are playing at once, merged highest-takes-precedence. The winner of the
+//! playback layer is still `effect` or `fade`, and the others are `beside` — each one
+//! with its own sequence's level — and what comes out is the highest of them. Only a
+//! single number has a highest, so anything else ignores them. See
+//! `pult_schema::types::sequence::Merge`.
+//!
 //! A **track** sits between the programmer and the effect, which is the one place it
 //! can go: a recording is somebody else's console asserting a value, so it has to
 //! beat the playback it was recorded over and lose to the operator standing at this
 //! desk. It is also the only layer that can be present and say nothing — before its
 //! first change point it has captured nothing, and what is under it shows through.
 
+use serde::{Deserialize, Serialize};
+
 use crate::effect::{fade_value_at, effect_value_at, RunningEffect, RunningFade};
 use crate::track::TrackAt;
 use crate::value::ParameterValue;
+
+/// One more sequence playing an intensity beside the one that went last, which an HTP
+/// merge keeps rather than replacing: an effect or a fade, whichever it is asserting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct HtpLayer {
+    #[serde(default)]
+    pub effect: Option<RunningEffect>,
+    #[serde(default)]
+    pub fade: Option<RunningFade>,
+}
+
+impl HtpLayer {
+    /// What it is asserting at `now_ms`, before its sequence's level.
+    pub fn value_at(&self, now_ms: u64) -> Option<ParameterValue> {
+        match (&self.effect, &self.fade) {
+            (Some(effect), _) => Some(effect_value_at(effect, now_ms)),
+            (None, Some(fade)) => Some(fade_value_at(fade, now_ms)),
+            (None, None) => None,
+        }
+    }
+
+    /// When it stops changing on its own: never for an effect, when it lands for a fade.
+    fn settles_at(&self) -> Option<u64> {
+        match (&self.effect, &self.fade) {
+            (Some(_), _) => None,
+            (None, Some(fade)) => Some(fade.t0.saturating_add(fade.duration_ms as u64)),
+            (None, None) => Some(0),
+        }
+    }
+}
+
+/// The most layers an intensity can be played by beside the winning one. Fixed so a
+/// [`Driving`] stays `Copy` and building one allocates nothing; a fifth sequence on one
+/// light past that is left out of the highest, which no show here comes near.
+pub const MAX_BESIDE: usize = 4;
+
+/// One of those layers as the evaluator takes it: what it asserts, and the level of the
+/// sequence asserting it, `None` being full.
+#[derive(Debug, Clone, Copy)]
+pub struct Beside<'a> {
+    pub layer: &'a HtpLayer,
+    pub master: Option<f32>,
+}
 
 /// The layers acting on one parameter, highest priority first.
 ///
@@ -51,6 +104,24 @@ pub struct Driving<'a> {
     /// is one a master reaches, is the caller's to say — this crate knows neither what
     /// a sequence is nor which keys are intensities — and `None` is full.
     pub master: Option<f32>,
+    /// The other sequences playing this intensity under an HTP merge, each at its own
+    /// level. Empty everywhere else, which is nearly everywhere.
+    pub beside: [Option<Beside<'a>>; MAX_BESIDE],
+}
+
+impl<'a> Driving<'a> {
+    /// The layers beside the winning one, from what a fixture carries under a key, each
+    /// with the level its caller works out for it.
+    pub fn beside_from(
+        layers: &'a [HtpLayer],
+        mut master: impl FnMut(&HtpLayer) -> Option<f32>,
+    ) -> [Option<Beside<'a>>; MAX_BESIDE] {
+        let mut out = [None; MAX_BESIDE];
+        for (slot, layer) in out.iter_mut().zip(layers) {
+            *slot = Some(Beside { layer, master: master(layer) });
+        }
+        out
+    }
 }
 
 impl<'a> Driving<'a> {
@@ -61,6 +132,7 @@ impl<'a> Driving<'a> {
             && self.effect.is_none()
             && self.fade.is_none()
             && self.home.is_none()
+            && self.beside.iter().all(Option::is_none)
     }
 
     /// True when playback, a recording or the programmer is asserting something —
@@ -70,6 +142,7 @@ impl<'a> Driving<'a> {
             || self.track.is_some()
             || self.effect.is_some()
             || self.fade.is_some()
+            || self.beside.iter().any(Option::is_some)
     }
 }
 
@@ -91,11 +164,26 @@ pub fn value_at(driving: &Driving<'_>, now_ms: u64) -> Option<ParameterValue> {
         (None, Some(fade)) => Some(fade_value_at(fade, now_ms)),
         (None, None) => None,
     };
-    if let Some(value) = played {
-        return Some(match driving.master {
+    let played = played.map(|value| match driving.master {
+        Some(level) => value.scaled(level),
+        None => value,
+    });
+    // Highest takes precedence over the sequences beside the winner: a level each, at
+    // its own fader. Only a number has a highest.
+    let played = driving.beside.iter().flatten().fold(played, |best, beside| {
+        let Some(value) = beside.layer.value_at(now_ms) else { return best };
+        let value = match beside.master {
             Some(level) => value.scaled(level),
             None => value,
-        });
+        };
+        match (&best, &value) {
+            (None, _) => Some(value),
+            (Some(ParameterValue::Float(a)), ParameterValue::Float(b)) if b > a => Some(value),
+            _ => best,
+        }
+    });
+    if played.is_some() {
+        return played;
     }
     driving.home.cloned()
 }
@@ -120,10 +208,14 @@ pub fn settles_at(driving: &Driving<'_>) -> Option<u64> {
     if driving.effect.is_some() {
         return None;
     }
-    match driving.fade {
-        Some(fade) => Some(fade.t0.saturating_add(fade.duration_ms as u64)),
-        None => Some(0),
+    let mut settles = match driving.fade {
+        Some(fade) => fade.t0.saturating_add(fade.duration_ms as u64),
+        None => 0,
+    };
+    for beside in driving.beside.iter().flatten() {
+        settles = settles.max(beside.layer.settles_at()?);
     }
+    Some(settles)
 }
 
 #[cfg(test)]
@@ -157,6 +249,35 @@ mod tests {
             t0,
             source: EffectSource::Programmer,
         }
+    }
+
+    #[test]
+    fn an_htp_layer_beside_the_winner_shows_where_it_is_higher_at_its_own_level() {
+        // The base at 40% at full, and a sequence that went later at 100% on a fader at
+        // 20%: the base shows. Bring that fader to 60% and it does.
+        let base = HtpLayer { effect: None, fade: Some(a_fade(0.4, 0.4, 0, 0)) };
+        let later = a_fade(1.0, 1.0, 0, 0);
+        let layers = [base];
+        let low = Driving {
+            fade: Some(&later),
+            master: Some(0.2),
+            beside: Driving::beside_from(&layers, |_| None),
+            ..Default::default()
+        };
+        assert_eq!(value_at(&low, 10), Some(ParameterValue::Float(0.4)));
+        let high = Driving { master: Some(0.6), ..low };
+        assert_eq!(value_at(&high, 10), Some(ParameterValue::Float(0.6)));
+        // And the base's own fader scales the base.
+        let base_down = Driving { beside: Driving::beside_from(&layers, |_| Some(0.5)), ..low };
+        assert_eq!(value_at(&base_down, 10), Some(ParameterValue::Float(0.2)));
+    }
+
+    #[test]
+    fn a_running_fade_beside_the_winner_keeps_a_parameter_from_settling() {
+        let layers = [HtpLayer { effect: None, fade: Some(a_fade(0.0, 1.0, 1_000, 2_000)) }];
+        let landed = a_fade(0.5, 0.5, 0, 0);
+        let driving = Driving { fade: Some(&landed), beside: Driving::beside_from(&layers, |_| None), ..Default::default() };
+        assert_eq!(settles_at(&driving), Some(3_000));
     }
 
     #[test]

@@ -38,7 +38,7 @@ pub mod wing;
 pub mod folder;
 
 pub use fixture::{home_value, home_value_by_key, output_parameters, parameter_key, Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
-pub use sequence::{Sequence, SequenceCreate, SequencePatch};
+pub use sequence::{Merge, Sequence, SequenceCreate, SequencePatch};
 pub use cue::{Cue, CueCreate, CuePatch, FollowMode, ParameterCapture};
 pub use effect::{
     Curve, Direction, Easing, EffectSpec, EffectSource, Rate, RunningEffect, RunningFade, Shape,

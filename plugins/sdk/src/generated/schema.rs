@@ -637,6 +637,12 @@ pub struct Fixture {
     /// driven, replaced when a cue, a release or an action takes the key.
     #[serde(default)]
     pub live_fades: HashMap<String, RunningFade>,
+    /// What other sequences are playing on an intensity beside the one in
+    /// `live_effects` or `live_fades`, under an HTP merge, keyed by parameter key. The
+    /// parameter shows the highest of them all; see `sequence::Merge`. Empty on almost
+    /// every fixture, and LOCAL and defaulted for the reasons the two above are.
+    #[serde(default)]
+    pub live_htp: HashMap<String, Vec<serde_json::Value>>,
     /// What this fixture's parameters rest at when nothing is driving them, keyed by
     /// parameter key. Empty on nearly every fixture, and then the answer is
     /// whatever its type declares.
@@ -1360,6 +1366,32 @@ pub struct Marker {
     pub id: Uuid,
     pub at_ms: u32,
     pub name: String,
+}
+
+/// How a sequence's intensities meet another sequence that is on and playing the same
+/// light.
+///
+/// **LTP**, latest takes precedence, is what every sequence did before there was a
+/// choice and still does by default: the sequence that went last owns the parameter
+/// outright. **HTP**, highest takes precedence, keeps what the others are playing beside
+/// it, and the light shows the highest of them, each at its own fader. A sequence of
+/// buttons over a base look wants HTP, so pulling its fader down leaves the base where
+/// it was rather than taking it to black. Intensities only: a color or a position has no
+/// highest, and goes on following the latest Go whatever this says.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum Merge {
+    #[default]
+    Ltp,
+    Htp,
 }
 
 /// Where a fixture is clamped on the piece it hangs off.
@@ -2492,6 +2524,10 @@ pub struct Sequence {
     /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
     #[serde(default)]
     pub folder: Option<Uuid>,
+    /// How its intensities meet another sequence's on the same light, or `None` for
+    /// [`Merge::Ltp`]. See [`Merge`].
+    #[serde(default)]
+    pub merge: Option<Merge>,
 }
 
 /// What one service was told, what it managed, and what went wrong.

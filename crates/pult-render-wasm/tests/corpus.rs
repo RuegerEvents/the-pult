@@ -51,6 +51,18 @@ struct DrivenBy {
     home: Option<ParameterValue>,
     #[serde(default)]
     master: Option<f32>,
+    /// Other sequences on this intensity beside the winner, under an HTP merge: the
+    /// shape the wasm `BesideSpec` reads.
+    #[serde(default)]
+    beside: Vec<BesideSpec>,
+}
+
+#[derive(Deserialize)]
+struct BesideSpec {
+    #[serde(flatten)]
+    layer: pult_render::HtpLayer,
+    #[serde(default)]
+    master: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -121,6 +133,13 @@ fn every_case_in_the_corpus_evaluates_to_what_it_says() {
             fade: case.driving.fade.as_ref(),
             home: case.driving.home.as_ref(),
             master: case.driving.master,
+            beside: {
+                let mut out = [None; pult_render::MAX_BESIDE];
+                for (slot, spec) in out.iter_mut().zip(&case.driving.beside) {
+                    *slot = Some(pult_render::Beside { layer: &spec.layer, master: spec.master });
+                }
+                out
+            },
         };
         let got = pult_render::value_at(&driving, case.at);
         let ok = match (&got, &case.expect) {

@@ -1003,6 +1003,13 @@ pub struct Fixture {
     #[serde(default)]
     #[pult(lifecycle = LOCAL)]
     pub live_fades: HashMap<String, RunningFade>,
+    /// What other sequences are playing on an intensity beside the one in
+    /// `live_effects` or `live_fades`, under an HTP merge, keyed by parameter key. The
+    /// parameter shows the highest of them all; see `sequence::Merge`. Empty on almost
+    /// every fixture, and LOCAL and defaulted for the reasons the two above are.
+    #[serde(default)]
+    #[pult(lifecycle = LOCAL)]
+    pub live_htp: HashMap<String, Vec<pult_render::HtpLayer>>,
     /// What this fixture's parameters rest at when nothing is driving them, keyed by
     /// parameter key. Empty on nearly every fixture, and then the answer is
     /// whatever its type declares.
@@ -1168,6 +1175,11 @@ pub fn driving<'a>(
         fade,
         home: home_value_ref_by_key(fixture, fixture_type, key),
         master: masters.over(key, effect, fade),
+        beside: fixture
+            .live_htp
+            .get(key)
+            .map(|layers| pult_render::Driving::beside_from(layers, |layer| masters.over_layer(key, layer)))
+            .unwrap_or_default(),
     }
 }
 

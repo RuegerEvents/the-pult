@@ -135,6 +135,37 @@ pub struct Sequence {
     #[ts(optional = nullable)]
     #[pult(lifecycle = PERSISTED)]
     pub folder: Option<Uuid>,
+    /// How its intensities meet another sequence's on the same light, or `None` for
+    /// [`Merge::Ltp`]. See [`Merge`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub merge: Option<Merge>,
+}
+
+/// How a sequence's intensities meet another sequence that is on and playing the same
+/// light.
+///
+/// **LTP**, latest takes precedence, is what every sequence did before there was a
+/// choice and still does by default: the sequence that went last owns the parameter
+/// outright. **HTP**, highest takes precedence, keeps what the others are playing beside
+/// it, and the light shows the highest of them, each at its own fader. A sequence of
+/// buttons over a base look wants HTP, so pulling its fader down leaves the base where
+/// it was rather than taking it to black. Intensities only: a color or a position has no
+/// highest, and goes on following the latest Go whatever this says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum Merge {
+    #[default]
+    Ltp,
+    Htp,
+}
+
+impl Sequence {
+    /// How it merges: [`Merge::Ltp`] where it says nothing.
+    pub fn merge(&self) -> Merge {
+        self.merge.unwrap_or_default()
+    }
 }
 
 /// Which sequence's level dims a parameter, worked out from the cues the layers name.
@@ -207,6 +238,11 @@ impl Masters {
     /// Asked of whichever playback layer wins — an effect over a fade, the order
     /// [`pult_render::value_at`] takes them in. A programmer shape and a release name
     /// no cue, so nothing dims them.
+    /// The master over one HTP layer beside the winner, by the same rule.
+    pub fn over_layer(&self, key: &str, layer: &pult_render::HtpLayer) -> Option<f32> {
+        self.over(key, layer.effect.as_ref(), layer.fade.as_ref())
+    }
+
     pub fn over(
         &self,
         key: &str,
@@ -252,7 +288,7 @@ mod tests {
     use super::*;
 
     fn a_sequence(cue_ids: Vec<Uuid>) -> Sequence {
-        Sequence {
+        Sequence { merge: None,
             folder: None,
             id: Uuid::new_v4(),
             name: "Act 1".into(),

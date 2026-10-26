@@ -7,11 +7,12 @@ describe('learning from what the operator touches', () => {
 	const master = { kind: 'Master' as const, sequence_id: 's' };
 	const go = { kind: 'Press' as const, target: { kind: 'SequenceGo' as const, sequence_id: 's' } };
 
-	it('gives a fader a parameter or a level, and an encoder only a parameter', () => {
+	it('gives a fader or an encoder a parameter or a level, and never a press', () => {
 		expect(learnable({ kind: 'Fader', index: 0 }, parameter)).toEqual(parameter);
 		expect(learnable({ kind: 'Fader', index: 0 }, master)).toEqual(master);
 		expect(learnable({ kind: 'Fader', index: 0 }, go)).toBeNull();
-		expect(learnable({ kind: 'Encoder', index: 13 }, master)).toBeNull();
+		expect(learnable({ kind: 'Encoder', index: 13 }, master)).toEqual(master);
+		expect(learnable({ kind: 'Encoder', index: 13 }, go)).toBeNull();
 	});
 
 	it('gives a key a press, or a flash of the parameter it was shown', () => {

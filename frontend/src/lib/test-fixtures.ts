@@ -89,6 +89,7 @@ export function aFixture(over: Partial<Fixture> = {}): Fixture {
 		sensed_values: {},
 		live_effects: {},
 		live_fades: {},
+		live_htp: {},
 		home_values: {},
 		...over
 	};

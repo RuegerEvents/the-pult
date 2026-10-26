@@ -206,7 +206,8 @@ CREATE TABLE IF NOT EXISTS sequences (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
     "cue_ids" TEXT NOT NULL,
-    "folder" TEXT
+    "folder" TEXT,
+    "merge" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sheets (

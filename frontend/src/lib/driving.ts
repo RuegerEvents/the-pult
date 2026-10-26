@@ -12,6 +12,7 @@
 import type {
 	Fixture,
 	FixtureType,
+	HtpLayer,
 	ParameterValue,
 	ProgrammerValue,
 	RunningEffect,
@@ -34,6 +35,9 @@ export type DrivenBy = {
 	/** The sequence whose cue is driving this intensity, so a level a playing take
 	 *  recorded for it is put over `master` by the evaluator, frame by frame. */
 	sequence?: string;
+	/** Other sequences playing this intensity beside the winner under an HTP merge,
+	 *  each at its own fader — `live_htp`, and the evaluator shows the highest. */
+	beside?: (HtpLayer & { master?: number })[];
 };
 
 /** Which sequence each cue belongs to, for every sequence at any level. */
@@ -142,6 +146,13 @@ export function drivenBy(
 		if (home !== undefined) row.home = home;
 		const master = masterOver(masters, key, effect, fade);
 		if (master !== undefined) row.master = master;
+		const beside = fixture.live_htp?.[key];
+		if (beside && beside.length > 0) {
+			row.beside = beside.map((layer) => {
+				const level = masterOver(masters, key, layer.effect ?? undefined, layer.fade ?? undefined);
+				return level === undefined ? layer : { ...layer, master: level };
+			});
+		}
 		if (sequenceOfCue.size > 0 && fadeGroup(key) === 'Intensity') {
 			const cue = winningCue(effect, fade);
 			const sequence = cue === undefined ? undefined : sequenceOfCue.get(cue);

@@ -2182,6 +2182,151 @@
           }
         }
       }
+    },
+    {
+      "name": "an htp layer beside the winner shows where it is higher",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 0,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "master": 0.2,
+        "beside": [
+          {
+            "fade": {
+              "from": {
+                "type": "Float",
+                "value": 0.4
+              },
+              "to": {
+                "type": "Float",
+                "value": 0.4
+              },
+              "t0": 0,
+              "duration_ms": 0,
+              "easing": "Linear",
+              "cue_id": "00000000-0000-0000-0000-000000000000"
+            }
+          }
+        ]
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.4
+      }
+    },
+    {
+      "name": "the winner shows where it is higher than what is beside it",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "to": {
+            "type": "Float",
+            "value": 1.0
+          },
+          "t0": 0,
+          "duration_ms": 0,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "master": 0.6,
+        "beside": [
+          {
+            "fade": {
+              "from": {
+                "type": "Float",
+                "value": 0.4
+              },
+              "to": {
+                "type": "Float",
+                "value": 0.4
+              },
+              "t0": 0,
+              "duration_ms": 0,
+              "easing": "Linear",
+              "cue_id": "00000000-0000-0000-0000-000000000000"
+            }
+          }
+        ]
+      },
+      "at": 1000,
+      "expect": {
+        "type": "Float",
+        "value": 0.6
+      }
+    },
+    {
+      "name": "an htp layer beside the winner is scaled by its own sequence's level",
+      "driving": {
+        "fade": {
+          "from": {
+            "type": "Float",
+            "value": 0.1
+          },
+          "to": {
+            "type": "Float",
+            "value": 0.1
+          },
+          "t0": 0,
+          "duration_ms": 0,
+          "easing": "Linear",
+          "cue_id": "00000000-0000-0000-0000-000000000000"
+        },
+        "beside": [
+          {
+            "fade": {
+              "from": {
+                "type": "Float",
+                "value": 0.8
+              },
+              "to": {
+                "type": "Float",
+                "value": 0.8
+              },
+              "t0": 0,
+              "duration_ms": 0,
+              "easing": "Linear",
+              "cue_id": "00000000-0000-0000-0000-000000000000"
+            },
+            "master": 0.5
+          },
+          {
+            "fade": {
+              "from": {
+                "type": "Float",
+                "value": 0.0
+              },
+              "to": {
+                "type": "Float",
+                "value": 1.0
+              },
+              "t0": 1000,
+              "duration_ms": 2000,
+              "easing": "Linear",
+              "cue_id": "00000000-0000-0000-0000-000000000000"
+            }
+          }
+        ]
+      },
+      "at": 1500,
+      "expect": {
+        "type": "Float",
+        "value": 0.4
+      }
     }
   ]
 }

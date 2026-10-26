@@ -1401,6 +1401,11 @@ impl ShowEngine {
                     self.apply_local(path, serde_json::to_value(fades).unwrap_or_default()).await;
                     moved.push(fixture_id);
                 }
+                PlaybackEffect::SetLiveHtp { fixture_id, layers } => {
+                    let path = entity_field_path("fixtures", fixture_id, "live_htp");
+                    self.apply_local(path, serde_json::to_value(layers).unwrap_or_default()).await;
+                    moved.push(fixture_id);
+                }
                 PlaybackEffect::SetCueActive { cue_id, is_active } => {
                     let path = entity_field_path("cues", cue_id, "is_active");
                     self.apply_local(path, serde_json::Value::Bool(is_active)).await;

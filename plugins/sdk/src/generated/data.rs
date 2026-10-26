@@ -983,6 +983,16 @@ impl FixtureEntity {
         self.at.field("live_fades")
     }
 
+    /// What other sequences are playing on an intensity beside the one in
+    /// `live_effects` or `live_fades`, under an HTP merge, keyed by parameter key. The
+    /// parameter shows the highest of them all; see `sequence::Merge`. Empty on almost
+    /// every fixture, and LOCAL and defaulted for the reasons the two above are.
+    ///
+    /// LOCAL.
+    pub fn live_htp(&self) -> Field<HashMap<String, Vec<serde_json::Value>>> {
+        self.at.field("live_htp")
+    }
+
     /// What this fixture's parameters rest at when nothing is driving them, keyed by
     /// parameter key. Empty on nearly every fixture, and then the answer is
     /// whatever its type declares.
@@ -4060,6 +4070,14 @@ impl SequenceEntity {
     /// PERSISTED.
     pub fn folder(&self) -> Field<Option<Uuid>> {
         self.at.field("folder")
+    }
+
+    /// How its intensities meet another sequence's on the same light, or `None` for
+    /// [`Merge::Ltp`]. See [`Merge`].
+    ///
+    /// PERSISTED.
+    pub fn merge(&self) -> Field<Option<Merge>> {
+        self.at.field("merge")
     }
 
     /// Step back one cue: the cue before the active one is taken, the way a Go takes

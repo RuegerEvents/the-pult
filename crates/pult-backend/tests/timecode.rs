@@ -231,7 +231,7 @@ async fn a_timeline_event_goes_the_cue_it_names() {
         easing: None,
         is_active: false,
     };
-    let sequence = Sequence {
+    let sequence = Sequence { merge: None,
         folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Act 1".into(),

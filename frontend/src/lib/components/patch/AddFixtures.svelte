@@ -238,6 +238,7 @@
 						sensed_values: {},
 						live_effects: {},
 						live_fades: {},
+						live_htp: {},
 						home_values: {}
 					});
 					made.push(id);

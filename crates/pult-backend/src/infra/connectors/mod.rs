@@ -1040,6 +1040,7 @@ impl OutputManager {
                 sensed_values: Default::default(),
                 live_effects: Default::default(),
                 live_fades: Default::default(),
+                live_htp: Default::default(),
                 home_values: Default::default(),
             })
             .collect()

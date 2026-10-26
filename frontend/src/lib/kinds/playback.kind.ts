@@ -13,6 +13,7 @@ import Play from '@lucide/svelte/icons/play';
 import type { Cue, Sequence, Timeline } from '$lib/generated/index.js';
 import { copyName, registerKind } from '$lib/objects.js';
 import TimelineInspector from '$lib/components/timeline/inspectors/TimelineInspector.svelte';
+import SequenceInspector from '$lib/components/inspectors/SequenceInspector.svelte';
 import { collection, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';
 import { actAt, consoleNow } from '$lib/ws/clock.js';
@@ -31,6 +32,7 @@ registerKind<Sequence>({
 	icon: Play,
 	rows: sequences,
 	panel: 'playback',
+	inspector: SequenceInspector,
 	actLabel: 'Go',
 	act: (sequence) => showData().sequences.byId(sequence.id).goNext({ at: actAt() }),
 	rename: (sequence, name) => showData().sequences.byId(sequence.id).name.set(name),

@@ -99,6 +99,7 @@ fn a_fixture() -> Fixture {
         sensed_values: HashMap::new(),
         live_effects: Default::default(),
         live_fades: Default::default(),
+        live_htp: Default::default(),
         home_values: Default::default(),
         ..Fixture::default()
     }
@@ -152,7 +153,7 @@ fn intensity(fixture_id: Uuid, value: f32) -> ParameterCapture {
 }
 
 fn a_sequence(cues: &[&Cue], active: Option<usize>) -> Sequence {
-    Sequence {
+    Sequence { merge: None,
         folder: None,
         id: Uuid::new_v4(),
         name: "Act 1".into(),
@@ -249,6 +250,11 @@ fn apply(fixtures: &mut [Fixture], effects: &[PlaybackEffect]) {
             PlaybackEffect::SetLiveEffects { fixture_id, effects } => {
                 if let Some(f) = fixtures.iter_mut().find(|f| f.id == *fixture_id) {
                     f.live_effects = effects.clone();
+                }
+            }
+            PlaybackEffect::SetLiveHtp { fixture_id, layers } => {
+                if let Some(f) = fixtures.iter_mut().find(|f| f.id == *fixture_id) {
+                    f.live_htp = layers.clone();
                 }
             }
             _ => {}
@@ -2662,4 +2668,82 @@ fn a_lowered_master_leaves_position_alone() {
     pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
     assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 10), 0.25);
     assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Pan", 10), 0.9);
+}
+
+// ── Handing back, and HTP ─────────────────────────────────────────────────────
+
+/// The base look, and a sequence that went over one of its lights later.
+fn base_and_over(over_merge: Option<Merge>, over_level: f32) -> (Fixture, Vec<Cue>, Vec<Sequence>) {
+    let fixture = a_fixture();
+    let base = a_cue(0, vec![intensity(fixture.id, 0.4)]);
+    let over = a_cue(0, vec![intensity(fixture.id, over_level)]);
+    let mut sequences = vec![a_sequence(&[&base], Some(0)), a_sequence(&[&over], None)];
+    sequences[1].merge = over_merge;
+    (fixture, vec![base, over], sequences)
+}
+
+#[test]
+fn taking_off_a_sequence_hands_a_light_back_to_the_one_still_on() {
+    // The scare's last cue is black over the room's look; taking the scare off gives
+    // the room its look back rather than leaving it dark.
+    let (fixture, cues, mut sequences) = base_and_over(None, 0.0);
+    let mut fixtures = vec![fixture.clone()];
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    sequences[1].active_cue_index = Some(0);
+    sequences[1].went_at = Some(WALL + 10);
+    pass(&mut playback, 10, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 20), 0.0, "LTP: the later Go has it");
+
+    sequences[1].active_cue_index = None;
+    pass(&mut playback, 30, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 40), 0.4, "back to the base look");
+}
+
+#[test]
+fn an_htp_sequence_shows_only_where_it_is_higher_at_its_own_fader() {
+    let (fixture, cues, mut sequences) = base_and_over(Some(Merge::Htp), 1.0);
+    let mut fixtures = vec![fixture.clone()];
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    sequences[1].active_cue_index = Some(0);
+    sequences[1].went_at = Some(WALL + 10);
+    sequences[1].master = Some(0.2);
+    pass(&mut playback, 10, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 20), 0.4, "the base is higher");
+
+    sequences[1].master = Some(0.6);
+    pass(&mut playback, 30, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 40), 0.6, "now the fader is");
+
+    sequences[1].active_cue_index = None;
+    pass(&mut playback, 50, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(live_mastered(&fixtures, &sequences, fixture.id, "Intensity", 60), 0.4, "off: the base again");
+    assert!(fixtures[0].live_htp.is_empty(), "and nothing is left beside it");
+}
+
+#[test]
+fn an_ltp_sequence_takes_a_light_an_htp_one_shares() {
+    // An HTP layer kept beside the base, and then a third, LTP, sequence over both:
+    // it owns the light outright, and taking it off hands it to the HTP sequence.
+    let (fixture, mut cues, mut sequences) = base_and_over(Some(Merge::Htp), 0.8);
+    let last = a_cue(0, vec![intensity(fixture.id, 0.1)]);
+    sequences.push(a_sequence(&[&last], None));
+    cues.push(last);
+    let mut fixtures = vec![fixture.clone()];
+    let mut playback = Playback::default();
+    pass(&mut playback, 0, &mut fixtures, &sequences, &cues, &[], &[]);
+    sequences[1].active_cue_index = Some(0);
+    sequences[1].went_at = Some(WALL + 10);
+    pass(&mut playback, 10, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 20), 0.8);
+
+    sequences[2].active_cue_index = Some(0);
+    sequences[2].went_at = Some(WALL + 30);
+    pass(&mut playback, 30, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert!((level_of(&fixtures, &[], fixture.id, 40) - 0.1).abs() < 1e-6, "LTP owns it");
+
+    sequences[2].active_cue_index = None;
+    pass(&mut playback, 50, &mut fixtures, &sequences, &cues, &[], &[]);
+    assert_eq!(level_of(&fixtures, &[], fixture.id, 60), 0.8, "handed to the one that went last of those on");
 }

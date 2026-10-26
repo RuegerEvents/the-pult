@@ -26,7 +26,7 @@ use pult_render::{
     effect::{RunningEffect, RunningFade},
     track::{Track, TrackAt, TrackPoint, Transport},
     value::ParameterValue,
-    Driving,
+    Beside, Driving, HtpLayer, MAX_BESIDE,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -65,6 +65,20 @@ pub struct DrivenBy {
     /// the station's connectors do.
     #[serde(default)]
     pub sequence: Option<String>,
+    /// Other sequences playing this intensity beside the winner under an HTP merge,
+    /// each at its own level. See [`Driving::beside`].
+    #[serde(default)]
+    pub beside: Vec<BesideSpec>,
+}
+
+/// One HTP layer beside the winner, as the page describes it: the fixture's own
+/// `live_htp` entry and the level of its sequence.
+#[derive(Deserialize)]
+pub struct BesideSpec {
+    #[serde(flatten)]
+    pub layer: HtpLayer,
+    #[serde(default)]
+    pub master: Option<f32>,
 }
 
 /// One parameter's change points and where the playhead is, written out in full.
@@ -98,6 +112,13 @@ impl DrivenBy {
             fade: self.fade.as_ref(),
             home: self.home.as_ref(),
             master: self.master,
+            beside: {
+                let mut out = [None; MAX_BESIDE];
+                for (slot, spec) in out.iter_mut().zip(&self.beside) {
+                    *slot = Some(Beside { layer: &spec.layer, master: spec.master });
+                }
+                out
+            },
         }
     }
 }
