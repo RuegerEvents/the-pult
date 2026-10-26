@@ -30,7 +30,13 @@ use pult_schema::{
 // message here that *drives* the rig rather than reports on it, which is why it lives
 // on the connection like an ask: a link that drops takes the test with it, and a light
 // is never left at full by a console that went away.
-pub const PROTOCOL_VERSION: u32 = 9;
+// 10 added SnapshotRequest: a station that is not the session's leader takes the
+// leader's whole show on every link, after sending what it did while it was away. A
+// replay of the operations since a vector clock brought a joiner up to date on what
+// changed and never on what it had that the leader did not, so stations drifted apart
+// row by row (a wing binding on the Pi and in no other showfile, a show name that
+// differed between stations; the gig, 2026-10-25).
+pub const PROTOCOL_VERSION: u32 = 10;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -82,6 +88,10 @@ pub enum SyncMessage {
     OperationRequest {
         known: VectorClock,
     },
+    /// Send me your whole show. The side of a link that is not the session's leader
+    /// asks the leader, after sending its own catch-up, so what it did while it was
+    /// away is in the answer.
+    SnapshotRequest,
     /// Operations the receiver was missing, oldest first. Replayed in order, they
     /// land on the same state the sender has.
     OperationBatch {

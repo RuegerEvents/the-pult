@@ -3697,6 +3697,33 @@ impl ShowEngine {
     async fn apply_snapshot(&mut self, data: serde_json::Value) {
         if let Ok(mut state) = serde_json::from_value::<ShowState>(data) {
             state.post_load_init();
+            // What this station holds that the show it is taking on does not: gone from
+            // the file too, not only from memory. Saving a snapshot upserts every row it
+            // has and deletes none, so a row only this station had — a wing binding on
+            // the Pi and in nobody else's show — came back from its own file at the
+            // next restart.
+            for meta in EntityMeta::all_with_tables() {
+                let (Some(table), Some(delete_one)) = (meta.table_name, meta.delete_one) else { continue };
+                if meta.is_singleton {
+                    continue;
+                }
+                let theirs = state.entities.get(table).and_then(|v| v.as_object());
+                let stale: Vec<Uuid> = self
+                    .state
+                    .entities
+                    .get(table)
+                    .and_then(|v| v.as_object())
+                    .into_iter()
+                    .flat_map(|ours| ours.keys())
+                    .filter(|id| !theirs.is_some_and(|t| t.contains_key(*id)))
+                    .filter_map(|id| id.parse().ok())
+                    .collect();
+                for id in stale {
+                    if let Err(e) = delete_one(self.pool.as_ref().clone(), id).await {
+                        warn!("[engine] could not drop {table} {id} the show no longer has: {e}");
+                    }
+                }
+            }
             // LOCAL state belongs to this node: its session, and what it can see on
             // its own network segment. A leader's copy of either means nothing here.
             state.local = std::mem::take(&mut self.state.local);

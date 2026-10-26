@@ -431,6 +431,43 @@ async fn a_station_that_has_just_started_is_sent_a_snapshot_whatever_its_clock_s
     }
 }
 
+/// A follower takes the leader's whole show, so a row only it had — the Pi's wing
+/// binding at the gig — is gone from it after joining, from memory and from its file.
+/// A replay since a clock carried what changed and never that.
+#[tokio::test]
+async fn a_follower_drops_what_the_leader_does_not_have() {
+    let leader = a_node_already_linked().await;
+    let follower = a_node_already_linked().await;
+    let shared = a_sequence("Act 1");
+    create(&leader, &shared).await;
+    let stray = a_sequence("Only on the Pi");
+    create(&follower, &stray).await;
+
+    follower.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("answers");
+    eventually("the follower to take the leader's show", || async {
+        name_of(&follower, shared.id).await.as_deref() == Some("Act 1") && name_of(&follower, stray.id).await.is_none()
+    })
+    .await;
+    // And not only in memory: the next restart reads the file.
+    eventually("the stray row to leave the follower's file", || async {
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM sequences").fetch_all(follower.pool.as_ref()).await.unwrap_or_default();
+        !rows.iter().any(|(id,)| *id == stray.id.to_string())
+    })
+    .await;
+}
+
+#[test]
+fn who_catches_whom_up() {
+    use super::peer::{catch_up, CatchUp::*};
+    // (we lead, they lead, we are fresh, they are fresh)
+    assert_eq!(catch_up(false, true, false, false), ReplayThenRequest, "a follower takes the leader's show");
+    assert_eq!(catch_up(true, false, false, false), Wait, "and the leader is asked for it");
+    assert_eq!(catch_up(false, true, false, true), SendSnapshot, "unless the leader has just restarted");
+    assert_eq!(catch_up(true, false, true, false), Replay, "which then waits for the follower's");
+    assert_eq!(catch_up(false, false, false, false), Replay, "two followers replay as before");
+    assert_eq!(catch_up(false, true, true, true), ReplayThenRequest, "a venue powered up at once");
+}
+
 /// The point of the oplog: a node that was connected, missed a few writes, and came
 /// back should be told those writes rather than re-sent the whole show.
 #[tokio::test]

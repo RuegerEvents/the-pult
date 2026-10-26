@@ -138,6 +138,54 @@ impl Freshness {
     }
 }
 
+/// How one side of a new link brings the other up to date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatchUp {
+    /// Send the other side this station's whole show: it has just started, and this
+    /// one has not (see [`Freshness`]).
+    SendSnapshot,
+    /// Send the operations it has not seen, and nothing more.
+    Replay,
+    /// Send what this station did that the leader has not seen, then ask for the
+    /// leader's whole show (`SnapshotRequest`). **A follower takes the leader's show.**
+    ReplayThenRequest,
+    /// Nothing: this is the leader, and the other side will ask for the show.
+    Wait,
+}
+
+/// The one rule, decided the same way on both ends of a link from what each knows
+/// about the other: whether either side leads this session (by the responder's
+/// account, which both ends have) and whether either has just started.
+///
+/// A follower takes the leader's whole show, because a replay since a clock carries
+/// what changed and never what a joiner holds that the leader does not — which is how
+/// stations drifted apart row by row. The exception is a leader that has just
+/// restarted and lost what it held in memory; a follower that has not is the one that
+/// knows the show, and sends it. Two stations neither of which leads replay as they
+/// always did.
+pub fn catch_up(we_lead: bool, they_lead: bool, we_are_fresh: bool, they_are_fresh: bool) -> CatchUp {
+    if they_are_fresh && !we_are_fresh {
+        CatchUp::SendSnapshot
+    } else if we_are_fresh && !they_are_fresh {
+        CatchUp::Replay
+    } else if they_lead && !we_lead {
+        CatchUp::ReplayThenRequest
+    } else if we_lead && !they_lead {
+        CatchUp::Wait
+    } else {
+        CatchUp::Replay
+    }
+}
+
+/// The whole show, logged with its size: snapshots now cross every link a follower
+/// makes, and a frame is capped at `MAX_FRAME_BYTES`.
+async fn snapshot_message(engine: &EngineHandle, to: NodeId) -> SyncMessage {
+    let state = engine.get_snapshot().await;
+    let bytes = serde_json::to_vec(&state).map(|b| b.len()).unwrap_or(0);
+    info!("[sync] sending peer {} the whole show ({} kB)", to.0, bytes / 1024);
+    SyncMessage::StateSnapshot { state }
+}
+
 /// Spawns an outbound peer connection task.
 /// Returns a `PeerSender` for sending messages and a `NodeId` for the remote peer.
 pub async fn spawn_outbound(
@@ -175,12 +223,12 @@ pub async fn spawn_outbound(
 
     // Wait for HelloAck
     let we_are_fresh = watched.fresh.is_fresh();
-    let (peer_node_id, peer_clock, peer_fresh) = match read_frame(&mut read_half).await? {
+    let (peer_node_id, peer_clock, peer_fresh, link_leader) = match read_frame(&mut read_half).await? {
         SyncMessage::HelloAck { accepted: true, node_id, leader_node_id: remote_leader, clock, fresh, .. } => {
             info!("[sync] connected to peer {}, leader={}", node_id.0, remote_leader.0);
             // The peer we are talking to, not the leader. Keying the connection by the
             // leader made every node connected to one leader collide in the peer map.
-            (node_id, clock, fresh)
+            (node_id, clock, fresh, remote_leader)
         }
         SyncMessage::HelloAck { accepted: false, rejection_reason, .. } => {
             anyhow::bail!("peer rejected handshake: {:?}", rejection_reason);
@@ -190,15 +238,24 @@ pub async fn spawn_outbound(
 
     // Catch-up runs both ways. A node that reconnects is not always the stale one:
     // it may have been writing while it was away.
-    if peer_fresh && !we_are_fresh {
-        // It has just started and lost what it held in memory; see `Freshness`.
-        info!("[sync] peer {} has just started, sending it a snapshot", peer_node_id.0);
-        write_frame(&mut write_half, &SyncMessage::StateSnapshot { state: engine.get_snapshot().await }).await?;
-    } else if let Some(operations) = engine.operations_since(peer_clock).await {
-        if !operations.is_empty() {
-            debug!("[sync] replaying {} operations to peer {}", operations.len(), peer_node_id.0);
-            write_frame(&mut write_half, &SyncMessage::OperationBatch { operations }).await?;
+    let how = catch_up(link_leader == our_node_id, link_leader == peer_node_id, we_are_fresh, peer_fresh);
+    match how {
+        CatchUp::SendSnapshot => {
+            // It has just started and lost what it held in memory; see `Freshness`.
+            write_frame(&mut write_half, &snapshot_message(&engine, peer_node_id).await).await?;
         }
+        CatchUp::Replay | CatchUp::ReplayThenRequest => {
+            if let Some(operations) = engine.operations_since(peer_clock).await {
+                if !operations.is_empty() {
+                    debug!("[sync] replaying {} operations to peer {}", operations.len(), peer_node_id.0);
+                    write_frame(&mut write_half, &SyncMessage::OperationBatch { operations }).await?;
+                }
+            }
+            if how == CatchUp::ReplayThenRequest {
+                write_frame(&mut write_half, &SyncMessage::SnapshotRequest).await?;
+            }
+        }
+        CatchUp::Wait => {}
     }
     watched.fresh.linked();
 
@@ -306,28 +363,31 @@ async fn handle_inbound(
     )
     .await?;
 
-    // Bring the joiner up to date, replaying what it missed where that is cheaper
-    // than sending the whole show — or the whole show, where it has just started and
-    // its clock promises state it lost with its process.
-    let catch_up = if peer_fresh && !we_are_fresh { None } else { engine.operations_since(peer_clock).await };
+    // Bring the joiner up to date: `catch_up` is the rule, decided the same way at the
+    // other end. A replay the oplog can no longer answer is the whole show instead.
+    let how = catch_up(leader_node_id == our_node_id, leader_node_id == peer_node_id, we_are_fresh, peer_fresh);
     watched.fresh.linked();
-    match catch_up {
-        Some(operations) => {
-            info!(
-                "[sync] inbound peer {} from {addr}, replaying {} operations",
-                peer_node_id.0,
-                operations.len(),
-            );
-            write_frame(&mut write_half, &SyncMessage::OperationBatch { operations }).await?;
+    match how {
+        CatchUp::SendSnapshot => {
+            write_frame(&mut write_half, &snapshot_message(&engine, peer_node_id).await).await?;
         }
-        None => {
-            info!("[sync] inbound peer {} from {addr}, sending a snapshot", peer_node_id.0);
-            write_frame(
-                &mut write_half,
-                &SyncMessage::StateSnapshot { state: engine.get_snapshot().await },
-            )
-            .await?;
+        CatchUp::Replay | CatchUp::ReplayThenRequest => {
+            match engine.operations_since(peer_clock).await {
+                Some(operations) => {
+                    info!(
+                        "[sync] inbound peer {} from {addr}, replaying {} operations",
+                        peer_node_id.0,
+                        operations.len(),
+                    );
+                    write_frame(&mut write_half, &SyncMessage::OperationBatch { operations }).await?;
+                }
+                None => write_frame(&mut write_half, &snapshot_message(&engine, peer_node_id).await).await?,
+            }
+            if how == CatchUp::ReplayThenRequest {
+                write_frame(&mut write_half, &SyncMessage::SnapshotRequest).await?;
+            }
         }
+        CatchUp::Wait => info!("[sync] inbound peer {} from {addr}, which will ask for the show", peer_node_id.0),
     }
 
     let (tx, outgoing) = mpsc::channel::<SyncMessage>(64);
@@ -640,6 +700,14 @@ async fn run_peer_loop(
                     }
                     _ => {}
                 }
+                if let SyncMessage::SnapshotRequest = msg {
+                    // Built after everything the asker sent before asking has been
+                    // applied: one engine queue, in order.
+                    if let Err(e) = write_frame(&mut write_half, &snapshot_message(&engine, peer_node_id).await).await {
+                        break Err(e);
+                    }
+                    continue;
+                }
                 if let SyncMessage::OperationRequest { known } = msg {
                     let reply = match engine.operations_since(known).await {
                         Some(operations) => SyncMessage::OperationBatch { operations },
@@ -823,7 +891,7 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
             engine.apply_operation_batch(operations).await;
         }
         // Answered in run_peer_loop, which holds the write half.
-        SyncMessage::OperationRequest { .. } => {}
+        SyncMessage::OperationRequest { .. } | SyncMessage::SnapshotRequest => {}
         other => {
             debug!("[sync] unexpected message: {:?}", other);
         }
