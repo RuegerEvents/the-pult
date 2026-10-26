@@ -453,7 +453,7 @@ pub async fn a_preset(
     values: Vec<pult_schema::types::preset::PresetValue>,
 ) -> Result<Uuid> {
     let preset =
-        pult_schema::types::preset::Preset { id: id(), name: name.into(), values, color: None };
+        pult_schema::types::preset::Preset { folder: None, id: id(), name: name.into(), values, color: None };
     into.create("presets", &preset).await?;
     Ok(preset.id)
 }
@@ -472,6 +472,7 @@ pub async fn a_stack(into: &Seeder, name: &str, cues: Vec<Cue>, start: bool) -> 
         into.create("cues", cue).await?;
     }
     let sequence = Sequence {
+        folder: None,
         id: id(),
         name: name.to_string(),
         cue_ids: cues.iter().map(|cue| cue.id).collect(),
@@ -525,7 +526,7 @@ pub async fn draw(
     nodes: &[(FlowNodeKind, f32, f32)],
     wires: &[(usize, u8, usize, u8)],
 ) -> Result<Vec<Uuid>> {
-    let flow = Flow { id: id(), name: name.to_string(), enabled: true };
+    let flow = Flow { folder: None, id: id(), name: name.to_string(), enabled: true };
     into.create("flows", &flow).await?;
 
     let mut ids = Vec::new();

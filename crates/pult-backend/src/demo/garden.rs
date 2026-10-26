@@ -562,6 +562,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             map.insert(station, channels.clone());
         }
         SpeakerZone {
+            folder: None,
             id: id(),
             name: name.into(),
             color: Some(color.into()),
@@ -814,7 +815,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         tile("Garden Go", None, TileSize::Half, TileTarget::SequenceGo { sequence_id: garden }),
         tile("All off", Some(red), TileSize::Half, TileTarget::SequenceOff { sequence_id: garden }),
     ]);
-    into.create("surfaces", &Surface { id: id(), name: "Maze".into(), tiles, color: None }).await?;
+    into.create("surfaces", &Surface { folder: None, id: id(), name: "Maze".into(), tiles, color: None }).await?;
 
     into.describe_the_production(production(
         "Heinz Horror Garten",
@@ -960,6 +961,7 @@ fn catalog_piece(catalog_id: &str) -> SceneObject {
 
 fn variable(name: &str, kind: VariableKind, initial: f64) -> Variable {
     Variable {
+        folder: None,
         id: id(),
         name: name.into(),
         kind,
@@ -976,6 +978,7 @@ fn tile(label: &str, color: Option<&str>, size: TileSize, target: TileTarget) ->
 
 fn a_timeline(name: &str, end: Option<TimelineEnd>) -> Timeline {
     Timeline {
+        folder: None,
         id: id(),
         name: name.into(),
         clips: Vec::new(),

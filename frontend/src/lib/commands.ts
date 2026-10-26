@@ -18,6 +18,7 @@ import Terminal from '@lucide/svelte/icons/terminal';
 import { fuzzyFilter } from '$lib/fuzzy.js';
 import type { Category } from '$lib/layout/categories.js';
 import { objectKinds, selectSubject, type ObjectKind } from '$lib/objects.js';
+import { pathOf } from '$lib/stores/folders.js';
 import { findPanel } from '$lib/layout.js';
 import { revealPanel, tree } from '$lib/stores/layout.js';
 import { allPanels, focusConsole } from '$lib/stores/plugins.js';
@@ -95,8 +96,11 @@ export const panelCommands: CommandSource = () =>
 
 /** Every object of every kind: tap-equivalent first, inspect beside it. */
 export function objectCommands(kinds: Map<string, ObjectKind>): Command[] {
+	// Where each object is filed, so "scares" finds every timeline in the Scares folder.
+	const path = get(pathOf);
 	return [...kinds.values()].flatMap((kind) =>
 		get(kind.rows).flatMap((row) => {
+			const where = path(row.folder);
 			const act: Command[] = kind.act
 				? [
 						{
@@ -106,7 +110,7 @@ export function objectCommands(kinds: Map<string, ObjectKind>): Command[] {
 							hint: kind.actLabel ?? 'Use',
 							category: kind.category,
 							icon: kind.icon,
-							keywords: kind.label,
+							keywords: where ? `${kind.label} ${where}` : kind.label,
 							run: () => kind.act!(row)
 						}
 					]
@@ -120,7 +124,7 @@ export function objectCommands(kinds: Map<string, ObjectKind>): Command[] {
 					hint: 'Inspect',
 					category: kind.category,
 					icon: kind.icon,
-					keywords: `${kind.label} inspect edit`,
+					keywords: `${kind.label} inspect edit${where ? ` ${where}` : ''}`,
 					run: () => {
 						selectSubject({ kind: kind.kind, id: row.id });
 						revealPanel('inspector');

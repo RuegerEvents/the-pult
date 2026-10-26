@@ -27,7 +27,7 @@ struct Draw {
 impl Draw {
     fn new() -> Self {
         let mut draw = Draw::default();
-        draw.flows.push(Flow { id: Uuid::new_v4(), name: "Doorbell".into(), enabled: true });
+        draw.flows.push(Flow { folder: None, id: Uuid::new_v4(), name: "Doorbell".into(), enabled: true });
         draw
     }
 
@@ -649,6 +649,7 @@ impl Draw {
     fn variable(&mut self, name: &str) -> Uuid {
         let id = Uuid::new_v4();
         self.variables.push(Variable {
+            folder: None,
             id,
             name: name.into(),
             kind: VariableKind::Number,

@@ -27,6 +27,7 @@ const presets = collection('presets');
 
 registerKind<Group>({
 	kind: 'group',
+	table: 'groups',
 	label: 'Group',
 	category: 'program',
 	icon: SquareMousePointer,
@@ -49,6 +50,7 @@ registerKind<Group>({
 
 registerKind<Preset>({
 	kind: 'preset',
+	table: 'presets',
 	label: 'Preset',
 	category: 'program',
 	icon: LayoutGrid,

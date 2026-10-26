@@ -1,5 +1,7 @@
 <script lang="ts">
 	import NameDialog from '../NameDialog.svelte';
+	import Foldered from '$lib/components/objects/Foldered.svelte';
+	import { objectHandle } from '$lib/objectHandle.js';
 	import { onMount, untrack } from 'svelte';
 	import {
 		Background,
@@ -270,9 +272,9 @@
 		{#if flows.length === 0}
 			<p class="empty">Nothing wired up yet.</p>
 		{:else}
-			<ul>
-				{#each flows as flow (flow.id)}
-					<li>
+			<Foldered kind="flow" rows={flows} layout="column">
+				{#snippet item(flow)}
+					<div class="flow-row" use:objectHandle={{ kind: 'flow', id: flow.id }}>
 						{#if renaming === flow.id && $canEdit}
 							<form
 								class="rename"
@@ -311,9 +313,9 @@
 						{#if $canEdit}
 							<button class="danger" title="Delete flow" onclick={() => deleteFlow(flow)}>×</button>
 						{/if}
-					</li>
-				{/each}
-			</ul>
+					</div>
+				{/snippet}
+			</Foldered>
 		{/if}
 
 		<p class="note">
@@ -374,8 +376,7 @@
 	.rail { width: 200px; flex: none; border-right: 1px solid #2a2a2a; padding: 16px 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 	.rail-head { display: flex; align-items: center; justify-content: space-between; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
-	ul { list-style: none; display: flex; flex-direction: column; gap: 2px; }
-	li { display: flex; align-items: center; gap: 4px; }
+	.flow-row { display: flex; align-items: center; gap: 4px; }
 	.pick { flex: 1; text-align: left; background: none; border: none; color: #bbb; padding: 5px 7px; border-radius: 3px; font: inherit; font-size: 13px; cursor: pointer; }
 	.pick:hover { background: #252525; color: #fff; }
 	.pick.current { background: #1e3a5f44; color: #4a9eff; }

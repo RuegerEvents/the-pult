@@ -14,6 +14,7 @@ import { collection, showClient, showData } from '$lib/stores/show.js';
 
 registerKind<Flow>({
 	kind: 'flow',
+	table: 'flows',
 	label: 'Flow',
 	category: 'automation',
 	icon: Workflow,
@@ -34,6 +35,7 @@ registerKind<Flow>({
 
 registerKind<VariableRow>({
 	kind: 'variable',
+	table: 'variables',
 	label: 'Variable',
 	category: 'automation',
 	icon: Variable,

@@ -333,6 +333,11 @@ pub struct Group {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 // ── Geometry ──────────────────────────────────────────────────────────────────

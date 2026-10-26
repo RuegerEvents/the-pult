@@ -17,6 +17,7 @@
 	import { onMount } from 'svelte';
 
 	import Card from '$lib/components/objects/Card.svelte';
+	import Foldered from '$lib/components/objects/Foldered.svelte';
 	import { focusOnMount } from '$lib/actions.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { showData } from '$lib/stores/show.js';
@@ -268,8 +269,8 @@
 				scare out of the same speakers.
 			</p>
 		{:else}
-			<div class="cards">
-				{#each $zones as zone (zone.id)}
+			<Foldered kind="speaker-zone" rows={$zones}>
+				{#snippet item(zone)}
 					{@const missing = unmappedOn(zone, $stationNames)}
 					<Card
 						ref={{ kind: 'speaker-zone', id: zone.id }}
@@ -278,8 +279,8 @@
 						state={missing.length ? `not mapped on ${missing.join(', ')}` : `${widthName(zone.width)}${zone.nodes.length ? ` + ${zone.nodes.length} node` : ''}`}
 						dim={missing.length > 0}
 					/>
-				{/each}
-			</div>
+				{/snippet}
+			</Foldered>
 
 			<header class="matrix-head">
 				<h4>On {targetName}{matrixNames?.alias ? ` · ${matrixNames.alias}` : matrixCard ? ` · ${matrixCard}` : ''}</h4>
@@ -413,11 +414,6 @@
 		color: var(--text-faint);
 		font-size: var(--font-xs);
 		font-variant-numeric: tabular-nums;
-	}
-	.cards {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
 	}
 	.empty {
 		color: var(--text-dim);

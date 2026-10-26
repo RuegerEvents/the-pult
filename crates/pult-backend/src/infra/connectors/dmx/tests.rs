@@ -950,6 +950,7 @@ fn a_recorded_sequence_level_dims_its_cues_on_the_wire() {
         },
     );
     let sequence = Sequence {
+        folder: None,
         id: Uuid::new_v4(),
         name: "Act".into(),
         cue_ids: vec![cue],

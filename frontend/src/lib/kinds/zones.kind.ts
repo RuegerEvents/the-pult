@@ -20,6 +20,7 @@ import { uuid } from '$lib/uuid.js';
 
 registerKind<SpeakerZone>({
 	kind: 'speaker-zone',
+	table: 'speaker_zones',
 	label: 'Speaker zone',
 	category: 'setup',
 	icon: Speaker,

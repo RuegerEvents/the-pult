@@ -13,6 +13,8 @@
 	 */
 
 	import NameDialog from './NameDialog.svelte';
+	import Foldered from '$lib/components/objects/Foldered.svelte';
+	import { objectHandle } from '$lib/objectHandle.js';
 	import type { Variable, VariableKind } from '$lib/generated/index.js';
 	import { currentValue, variableLabel } from '$lib/flow.js';
 	import { collection } from '$lib/stores/show.js';
@@ -91,9 +93,10 @@
 		</p>
 	{/if}
 
-	{#each $variables as variable (variable.id)}
+	<Foldered kind="variable" rows={$variables} layout="column">
+	{#snippet item(variable)}
 		<section class="variable" class:on={currentValue(variable) !== 0}>
-			<div class="top">
+			<div class="top" use:objectHandle={{ kind: 'variable', id: variable.id }}>
 				{#if $canEdit}
 					<input
 						class="input name"
@@ -176,7 +179,8 @@
 				</div>
 			{/if}
 		</section>
-	{/each}
+	{/snippet}
+	</Foldered>
 
 	<p class="note">
 		Every value goes back to where it starts when the show is opened, carries over to the

@@ -22,6 +22,9 @@
 	import { collection } from '$lib/stores/show.js';
 	import X from '@lucide/svelte/icons/x';
 	import { uuid } from '$lib/uuid.js';
+	import { flatten, isWithin } from '$lib/folders.js';
+	import { objectHandle } from '$lib/objectHandle.js';
+	import { folders } from '$lib/stores/folders.js';
 
 	const data = getDataContext();
 	// GO and OFF stay live under the Show lock: they are what a show is run with. What
@@ -29,6 +32,25 @@
 	const fixtures = collection('fixtures');
 
 	let sequences = $state<Sequence[]>([]);
+
+	// Which folder the bank shows, on this screen: an executor bank scrolls sideways, so
+	// folders filter it rather than nesting in it. Subfolders are in their parent.
+	const FOLDER_KEY = 'pult.sequences.folder';
+	let shownFolder = $state((typeof localStorage !== 'undefined' && localStorage.getItem(FOLDER_KEY)) || '');
+	const sequenceFolders = $derived(flatten($folders, 'sequence'));
+	const shownSequences = $derived(
+		shownFolder && sequenceFolders.some((f) => f.folder.id === shownFolder)
+			? sequences.filter((s) => isWithin($folders, s.folder, shownFolder))
+			: sequences
+	);
+	function showFolder(id: string) {
+		shownFolder = id;
+		try {
+			localStorage.setItem(FOLDER_KEY, id);
+		} catch {
+			// Not remembered in a private window; still shown.
+		}
+	}
 	let cues = $state<Record<string, Cue>>({});
 	/** Naming a new sequence, or renaming one. */
 	let naming = $state<{ sequence: Sequence | null } | null>(null);
@@ -145,6 +167,14 @@
 <div class="runner">
 	<header>
 		<h2>Playback</h2>
+		{#if sequenceFolders.length > 0}
+			<select class="select folder" aria-label="Which folder" value={shownFolder} onchange={(e) => showFolder(e.currentTarget.value)}>
+				<option value="">All sequences</option>
+				{#each sequenceFolders as f (f.folder.id)}
+					<option value={f.folder.id}>{'— '.repeat(f.depth)}{f.folder.name}</option>
+				{/each}
+			</select>
+		{/if}
 		<span class="spacer"></span>
 		{#if $canEdit}
 			<button class="btn btn-ghost btn-small" onclick={() => (naming = { sequence: null })}>+ Sequence</button>
@@ -156,12 +186,13 @@
 	{/if}
 
 	<div class="executors">
-		{#each sequences as seq (seq.id)}
+		{#each shownSequences as seq (seq.id)}
 			{@const activeCue = seq.active_cue_index !== null ? cues[seq.cue_ids[seq.active_cue_index]] : null}
 			{@const running = runningOn(seq)}
 			{@const level = seq.master ?? 1}
 			<div class="exec" class:live={seq.active_cue_index !== null}>
-				<div class="top">
+				<!-- Right-click or hold for the menu every object has — Move to folder… among it. -->
+				<div class="top" use:objectHandle={{ kind: 'sequence', id: seq.id }}>
 					<button
 						class="name"
 						title="Open its cues in the Cues panel"

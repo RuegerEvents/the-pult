@@ -71,6 +71,11 @@ pub struct Preset {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 impl Preset {
@@ -113,6 +118,7 @@ mod tests {
 
     fn preset() -> Preset {
         Preset {
+            folder: None,
             color: None,
             id: Uuid::from_u128(1),
             name: "Warm".into(),
@@ -152,6 +158,7 @@ mod tests {
     #[test]
     fn an_indexed_kind_matches_by_key() {
         let preset = Preset {
+            folder: None,
             color: None,
             id: Uuid::from_u128(2),
             name: "Break-up".into(),

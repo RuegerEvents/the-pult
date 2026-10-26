@@ -169,6 +169,11 @@ pub struct Flow {
     pub name: String,
     #[pult(lifecycle = PERSISTED)]
     pub enabled: bool,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 /// One node in one graph.

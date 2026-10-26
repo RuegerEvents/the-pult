@@ -88,7 +88,7 @@ fn seq_path(id: Uuid, field: &str) -> Path {
 }
 
 fn a_sequence(name: &str) -> Sequence {
-    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None, master: None }
+    Sequence { folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None, master: None }
 }
 
 async fn create(node: &Node, seq: &Sequence) {
@@ -1495,6 +1495,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
     };
     put(&one, "cues", serde_json::to_value(&cue).unwrap()).await;
     let sequence = Sequence {
+        folder: None,
         id: Uuid::new_v4(),
         name: "Act 1".into(),
         cue_ids: vec![cue.id],

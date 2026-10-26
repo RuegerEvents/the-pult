@@ -130,6 +130,11 @@ pub struct Sequence {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub master: Option<f32>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 /// Which sequence's level dims a parameter, worked out from the cues the layers name.
@@ -248,6 +253,7 @@ mod tests {
 
     fn a_sequence(cue_ids: Vec<Uuid>) -> Sequence {
         Sequence {
+            folder: None,
             id: Uuid::new_v4(),
             name: "Act 1".into(),
             cue_ids,

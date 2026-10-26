@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS effect_templates (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
     "layers" TEXT NOT NULL,
-    "color" TEXT
+    "color" TEXT,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fixtures (
@@ -64,7 +65,8 @@ CREATE TABLE IF NOT EXISTS fixture_types (
 CREATE TABLE IF NOT EXISTS flows (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
-    "enabled" INTEGER NOT NULL
+    "enabled" INTEGER NOT NULL,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS flow_edges (
@@ -84,11 +86,19 @@ CREATE TABLE IF NOT EXISTS flow_nodes (
     "y" REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS folders (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "parent" TEXT,
+    "kind" TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS groups (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
     "query" TEXT NOT NULL,
-    "color" TEXT
+    "color" TEXT,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS inputs (
@@ -112,7 +122,8 @@ CREATE TABLE IF NOT EXISTS layers (
 CREATE TABLE IF NOT EXISTS layouts (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
-    "tree" TEXT NOT NULL
+    "tree" TEXT NOT NULL,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS named_assets (
@@ -158,7 +169,8 @@ CREATE TABLE IF NOT EXISTS presets (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
     "values" TEXT NOT NULL,
-    "color" TEXT
+    "color" TEXT,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS classes (
@@ -185,7 +197,8 @@ CREATE TABLE IF NOT EXISTS scene_objects (
 CREATE TABLE IF NOT EXISTS sequences (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
-    "cue_ids" TEXT NOT NULL
+    "cue_ids" TEXT NOT NULL,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sheets (
@@ -196,7 +209,8 @@ CREATE TABLE IF NOT EXISTS sheets (
     "landscape" INTEGER NOT NULL,
     "frame" INTEGER NOT NULL,
     "title_block" INTEGER NOT NULL,
-    "blocks" TEXT NOT NULL
+    "blocks" TEXT NOT NULL,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS show (
@@ -219,7 +233,8 @@ CREATE TABLE IF NOT EXISTS speaker_zones (
     "width" INTEGER NOT NULL,
     "channels" TEXT NOT NULL,
     "nodes" TEXT NOT NULL,
-    "notes" TEXT NOT NULL
+    "notes" TEXT NOT NULL,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS speed_masters (
@@ -246,7 +261,8 @@ CREATE TABLE IF NOT EXISTS surfaces (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
     "tiles" TEXT NOT NULL,
-    "color" TEXT
+    "color" TEXT,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -269,7 +285,8 @@ CREATE TABLE IF NOT EXISTS timelines (
     "pending" TEXT,
     "speed_master" TEXT,
     "node_id" TEXT,
-    "end" TEXT
+    "end" TEXT,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -284,7 +301,8 @@ CREATE TABLE IF NOT EXISTS variables (
     "kind" TEXT NOT NULL,
     "initial" REAL NOT NULL,
     "min" TEXT,
-    "max" TEXT
+    "max" TEXT,
+    "folder" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS versions (

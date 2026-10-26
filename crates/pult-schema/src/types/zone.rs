@@ -72,6 +72,11 @@ pub struct SpeakerZone {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub notes: String,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 impl SpeakerZone {
@@ -218,6 +223,7 @@ mod tests {
 
     fn a_zone(width: u16) -> SpeakerZone {
         SpeakerZone {
+            folder: None,
             id: Uuid::from_u128(10),
             name: "Area 2".into(),
             color: None,

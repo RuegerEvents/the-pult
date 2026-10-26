@@ -35,6 +35,7 @@ pub mod surface;
 pub mod pixels;
 pub mod zone;
 pub mod wing;
+pub mod folder;
 
 pub use fixture::{home_value, home_value_by_key, output_parameters, parameter_key, Fixture, FixtureCreate, FixturePatch, FixtureType, FixtureTypeCreate, FixtureTypePatch, ParameterDefinition, ParameterKind, ParameterValue};
 pub use sequence::{Sequence, SequenceCreate, SequencePatch};

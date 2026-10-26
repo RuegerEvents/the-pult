@@ -205,6 +205,7 @@ async fn a_take_from_the_programmer_plays_back_and_overdubs() {
     .await;
 
     let song = Timeline {
+        folder: None,
         id: Uuid::new_v4(),
         name: "Scare".into(),
         clips: Vec::new(),
@@ -350,6 +351,7 @@ async fn every_lap_of_a_looping_rehearsal_is_a_pass() {
     create(&station, "fixtures", Lifecycle::Persisted, serde_json::to_value(&jaw).unwrap()).await;
 
     let scare = Timeline {
+        folder: None,
         id: Uuid::new_v4(),
         name: "Scare".into(),
         clips: Vec::new(),

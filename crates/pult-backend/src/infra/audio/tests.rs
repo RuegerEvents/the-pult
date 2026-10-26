@@ -10,6 +10,7 @@ use super::*;
 
 fn a_timeline(node: Option<NodeId>) -> Timeline {
     Timeline {
+        folder: None,
         id: Uuid::from_u128(1),
         name: "Act 1".into(),
         clips: Vec::new(),
@@ -123,6 +124,7 @@ const ZONE: Uuid = Uuid::from_u128(20);
 /// One mono zone, mapped on the stations named.
 fn a_zone(mapped: &[(NodeId, u16)]) -> SpeakerZone {
     SpeakerZone {
+        folder: None,
         id: ZONE,
         name: "Area 2".into(),
         color: None,

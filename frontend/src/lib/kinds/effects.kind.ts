@@ -41,6 +41,7 @@ export async function applyToSelection(template: EffectTemplate): Promise<number
 
 registerKind<EffectTemplate>({
 	kind: 'effect',
+	table: 'effect_templates',
 	label: 'Effect',
 	category: 'program',
 	icon: Sparkles,

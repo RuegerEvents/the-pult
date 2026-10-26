@@ -27,6 +27,7 @@ const stamp = () => consoleNow() ?? Date.now();
 
 registerKind<Sequence>({
 	kind: 'sequence',
+	table: 'sequences',
 	label: 'Sequence',
 	category: 'playback',
 	icon: Play,
@@ -63,6 +64,7 @@ registerKind<Cue>({
 
 registerKind<Timeline>({
 	kind: 'timeline',
+	table: 'timelines',
 	label: 'Timeline',
 	category: 'playback',
 	icon: AudioWaveform,

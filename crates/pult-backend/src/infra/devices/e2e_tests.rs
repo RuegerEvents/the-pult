@@ -258,6 +258,7 @@ async fn a_button_on_a_node_advances_a_cue() {
     let fixture_id = h.devices.adopt("e2e-button".into()).await.unwrap();
 
     let sequence = Sequence {
+        folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Act 1".into(),
         cue_ids: vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()],
@@ -265,7 +266,7 @@ async fn a_button_on_a_node_advances_a_cue() {
         went_at: None,
         master: None,
     };
-    let flow = Flow { id: uuid::Uuid::new_v4(), name: "Front door".into(), enabled: true };
+    let flow = Flow { folder: None, id: uuid::Uuid::new_v4(), name: "Front door".into(), enabled: true };
     let node = |kind| FlowNode {
         id: uuid::Uuid::new_v4(),
         flow_id: flow.id,
@@ -458,6 +459,7 @@ fn a_scream() -> Vec<u8> {
 
 fn a_timeline_with(clip: pult_schema::types::timeline::AudioClip, anchor_ms: u64) -> pult_schema::types::timeline::Timeline {
     pult_schema::types::timeline::Timeline {
+        folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Scare".into(),
         clips: vec![clip],

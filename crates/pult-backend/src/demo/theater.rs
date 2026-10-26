@@ -175,6 +175,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         into.create(
             "groups",
             &Group {
+                folder: None,
                 color: None,
                 id: id(),
                 name: name.to_string(),

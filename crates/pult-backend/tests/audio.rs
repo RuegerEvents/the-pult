@@ -100,6 +100,7 @@ where
 
 fn a_timeline(source: TimelineSource, events: Vec<TimelineEvent>) -> Timeline {
     Timeline {
+        folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Act 1".into(),
         clips: Vec::new(),
@@ -141,6 +142,7 @@ async fn a_sequence(station: &Running) -> uuid::Uuid {
     create(station, "cues", serde_json::to_value(&first).unwrap()).await;
     create(station, "cues", serde_json::to_value(&second).unwrap()).await;
     let sequence = Sequence {
+        folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Act".into(),
         cue_ids: vec![first.id, second.id],

@@ -640,6 +640,7 @@ async fn a_pir_counting_into_a_variable_writes_no_history() {
         &station,
         "variables",
         serde_json::to_value(Variable {
+            folder: None,
             id: inside,
             name: "Area 1 inside".into(),
             kind: VariableKind::Number,
@@ -653,7 +654,7 @@ async fn a_pir_counting_into_a_variable_writes_no_history() {
     .await;
 
     let flow = Uuid::new_v4();
-    create(&station, "flows", serde_json::json!(Flow { id: flow, name: "Count in".into(), enabled: true })).await;
+    create(&station, "flows", serde_json::json!(Flow { folder: None, id: flow, name: "Count in".into(), enabled: true })).await;
     let node = |kind: FlowNodeKind| FlowNode {
         id: Uuid::new_v4(),
         flow_id: flow,

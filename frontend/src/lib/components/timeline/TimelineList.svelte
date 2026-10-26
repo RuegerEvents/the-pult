@@ -16,9 +16,12 @@
 
 	import type { Timeline } from '$lib/generated/index.js';
 	import Card from '$lib/components/objects/Card.svelte';
+	import Foldered from '$lib/components/objects/Foldered.svelte';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { createTimeline, lapOf, now, openTimelineId, positionOf, timelines } from '$lib/stores/timelines.js';
 	import { clock } from '$lib/waveform.js';
+	import { byFolder } from '$lib/folders.js';
+	import { folders } from '$lib/stores/folders.js';
 	import NameDialog from '../NameDialog.svelte';
 
 	let { open, narrow }: { open: Timeline | null; narrow: boolean } = $props();
@@ -45,8 +48,15 @@
 {#if narrow}
 	<div class="narrow">
 		<select class="select" value={open?.id ?? ''} onchange={(e) => openTimelineId.set(e.currentTarget.value)} aria-label="Timeline">
-			{#each $timelines as t (t.id)}
-				<option value={t.id}>{t.running ? '▶ ' : ''}{t.name}</option>
+			<!-- Folders as option groups: a phone-width tile has no room for the tree. -->
+			{#each byFolder($timelines, $folders) as group (group.path)}
+				{#if group.path}
+					<optgroup label={group.path}>
+						{#each group.rows as t (t.id)}<option value={t.id}>{t.running ? '▶ ' : ''}{t.name}</option>{/each}
+					</optgroup>
+				{:else}
+					{#each group.rows as t (t.id)}<option value={t.id}>{t.running ? '▶ ' : ''}{t.name}</option>{/each}
+				{/if}
 			{/each}
 		</select>
 		{#if $canEdit}
@@ -61,22 +71,25 @@
 				<button class="btn btn-icon" title="New timeline" aria-label="New timeline" onclick={() => (creating = true)}><Plus size={14} /></button>
 			{/if}
 		</div>
-		{#each $timelines as t (t.id)}
-			{@const s = stateOf(t, $now)}
-			<Card
-				ref={{ kind: 'timeline', id: t.id }}
-				name={t.name}
-				state={s.text}
-				progress={s.progress}
-				on={t.id === open?.id}
-				onact={() => openTimelineId.set(t.id)}
-			/>
-		{:else}
+		{#if $timelines.length === 0}
 			<p class="note">
 				No timelines. One is a position and what is written against it — a scare, a song, an
 				ambient bed, anything that has to happen at a time rather than on a button.
 			</p>
-		{/each}
+		{/if}
+		<Foldered kind="timeline" rows={$timelines} layout="column">
+			{#snippet item(t)}
+				{@const s = stateOf(t, $now)}
+				<Card
+					ref={{ kind: 'timeline', id: t.id }}
+					name={t.name}
+					state={s.text}
+					progress={s.progress}
+					on={t.id === open?.id}
+					onact={() => openTimelineId.set(t.id)}
+				/>
+			{/snippet}
+		</Foldered>
 	</div>
 {/if}
 

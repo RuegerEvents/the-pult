@@ -565,6 +565,11 @@ pub struct Sheet {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub blocks: Vec<SheetBlock>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 // ── The arithmetic ───────────────────────────────────────────────────────────
@@ -1359,6 +1364,7 @@ fn table_block(rect: Rect, title: &str, kind: TableKind, grouping: Grouping) -> 
 
 fn sheet(sort_order: i32, name: &str, blocks: Vec<SheetBlock>) -> Sheet {
     Sheet {
+        folder: None,
         id: sheet_id(name),
         name: name.into(),
         sort_order,

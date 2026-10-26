@@ -77,11 +77,17 @@ pub struct EffectTemplate {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 impl EffectTemplate {
     fn seeded(name: &str, layers: Vec<EffectLayer>) -> Self {
         EffectTemplate {
+            folder: None,
             id: Uuid::new_v5(&NAMESPACE, name.as_bytes()),
             name: name.to_string(),
             layers,

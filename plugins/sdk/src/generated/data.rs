@@ -558,6 +558,13 @@ impl EffectTemplateEntity {
     pub fn color(&self) -> Field<Option<String>> {
         self.at.field("color")
     }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
+    }
 }
 
 // ── fixtures ────────────────────────────────────────────────────────────
@@ -1209,6 +1216,13 @@ impl FlowEntity {
     pub fn enabled(&self) -> Field<bool> {
         self.at.field("enabled")
     }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
+    }
 }
 
 // ── flow_edges ──────────────────────────────────────────────────────────
@@ -1527,6 +1541,141 @@ impl FlowNodeEntity {
     }
 }
 
+// ── folders ─────────────────────────────────────────────────────────────
+
+/// One folder in one pool.
+///
+/// The `folders` collection.
+pub fn folders() -> FolderCollection {
+    FolderCollection { at: Collection::at("folders") }
+}
+
+/// The `folders` collection, reached by [`folders()`].
+pub struct FolderCollection {
+    at: Collection,
+}
+
+impl FolderCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<Folder>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> FolderEntity {
+        FolderEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> FolderEntity {
+        FolderEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &Folder) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `folders` row, reached by [`FolderCollection::by_id`] or
+/// [`FolderCollection::nth`].
+pub struct FolderEntity {
+    at: Entity,
+}
+
+impl FolderEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<Folder, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &Folder) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// PERSISTED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// PERSISTED.
+    pub fn name(&self) -> Field<String> {
+        self.at.field("name")
+    }
+
+    /// The folder this one is in, or `None` at the top of its pool.
+    ///
+    /// PERSISTED.
+    pub fn parent(&self) -> Field<Option<Uuid>> {
+        self.at.field("parent")
+    }
+
+    /// Which kind of object it holds, by the pools' name for the kind.
+    ///
+    /// PERSISTED.
+    pub fn kind(&self) -> Field<String> {
+        self.at.field("kind")
+    }
+}
+
 // ── groups ──────────────────────────────────────────────────────────────
 
 /// A saved selection: a name and the question it stands for.
@@ -1662,6 +1811,13 @@ impl GroupEntity {
     /// PERSISTED.
     pub fn color(&self) -> Field<Option<String>> {
         self.at.field("color")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 
@@ -2100,6 +2256,13 @@ impl LayoutEntity {
     /// PERSISTED.
     pub fn tree(&self) -> Field<LayoutNode> {
         self.at.field("tree")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 
@@ -3056,6 +3219,13 @@ impl PresetEntity {
     pub fn color(&self) -> Field<Option<String>> {
         self.at.field("color")
     }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
+    }
 }
 
 // ── programmer_values ───────────────────────────────────────────────────
@@ -3740,6 +3910,13 @@ impl SequenceEntity {
         self.at.field("master")
     }
 
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
+    }
+
     /// Step back one cue: the cue before the active one is taken, the way a Go takes
     /// the next.
     ///
@@ -3962,6 +4139,13 @@ impl SheetEntity {
     /// PERSISTED.
     pub fn blocks(&self) -> Field<Vec<SheetBlock>> {
         self.at.field("blocks")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 
@@ -4284,6 +4468,13 @@ impl SpeakerZoneEntity {
     /// PERSISTED.
     pub fn notes(&self) -> Field<String> {
         self.at.field("notes")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 
@@ -5387,6 +5578,13 @@ impl SurfaceEntity {
     pub fn color(&self) -> Field<Option<String>> {
         self.at.field("color")
     }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
+    }
 }
 
 // ── symbols ─────────────────────────────────────────────────────────────
@@ -5782,6 +5980,13 @@ impl TimelineEntity {
         self.at.field("armed_by")
     }
 
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
+    }
+
     /// Put the playhead somewhere, running or not.
     ///
     /// Args: `{ "positionMs": <timeline ms>, "at"?: <console unix ms> }`.
@@ -6118,6 +6323,13 @@ impl VariableEntity {
     /// SYNCED.
     pub fn value(&self) -> Field<Option<f64>> {
         self.at.field("value")
+    }
+
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    ///
+    /// PERSISTED.
+    pub fn folder(&self) -> Field<Option<Uuid>> {
+        self.at.field("folder")
     }
 }
 

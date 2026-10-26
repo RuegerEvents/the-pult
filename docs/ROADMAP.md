@@ -7425,6 +7425,56 @@ cargo test -p pult-backend --test takes    # a real station, merged through take
 cd frontend && npm test                    # lanes, takes
 ```
 
+### 87. Folders for every pool
+
+Built at Heinz Horror Garten, 2026-10-26: the show had grown past the point where a flat
+pool of timelines, sequences and presets could be read. Folders on every kind a pool shows.
+
+**A folder is a row, and an object names its folder.** `folders` is a PERSISTED collection,
+`Folder { id, name, parent, kind }` (`pult_schema::types::folder`), and every pooled object
+carries `folder: Option<Uuid>`. So renaming a folder or moving it under another is one
+write, however much is in it, and folders nest. A path written on each object ("Act 1 /
+Scares") was the other answer and was declined: a rename would rewrite every member. Adding
+the field is free — `add_missing_columns`, an `Option`, no `SCHEMA_GENERATION` bump — and
+the TypeScript side is `folder?: string | null` (`#[ts(optional = nullable)]`) so no page that
+creates an object had to change.
+
+**A folder holds one kind.** `kind` is the browser registry's name for it (`"timeline"`,
+`"preset"`), so a pool is only ever offered its own folders. A folder whose parent is gone,
+or whose parents loop, draws at the top; an object whose folder is gone draws at the top
+level. Nothing is lost from view because its folder was, and nothing cascades.
+
+**Deleting a folder deletes nothing in it.** Its objects and its folders move up to its
+parent, then it goes, all in one gesture, so one Ctrl-Z puts it back full. Throwing a scare
+away because its folder was tidied up is not a thing a console should do.
+
+**Which kinds.** Every registered kind whose rows are a show collection says so with
+`table` on its `registerKind`, and that is the whole of what makes it fileable: the shared
+context menu grows *Move to folder…*, and `stores/folders.ts` writes the row's `folder`
+through it. Nothing lists the kinds. Today that is groups, presets, sequences, timelines,
+flows, variables, surfaces, speaker zones and effect templates. Cues are not — a cue's place
+is its sequence's order — and neither are a timeline's clips, events, takes and flashes,
+which live inside it. Layouts and sheets carry the field but are not registered kinds, so
+nothing files them yet.
+
+**How a pool draws them.** `components/objects/Foldered.svelte` takes the panel's own way of
+drawing an object as a snippet and decides only where each goes: collapsible groups, then
+the objects in no folder, laid out `wrap`, `grid` or `column` to match the panel. A folder
+header is an object of its own kind (`kinds/folders.kind.ts`): a tap opens or closes it,
+remembered per browser in `localStorage`; right-click or a long-press opens the one context
+menu with Rename, New folder inside, Move to folder… and Delete; dropping an object of the
+pool's kind on a header files it, dropping it on the pool outside every folder takes it out,
+and dragging a header onto another nests it. The Show lock hides all of the editing and
+leaves the opening and closing. What is not a card — a flow in its list, a variable, a
+sequence's executor — gets the card's menu and drag from `objectHandle.ts`. The executor
+bank scrolls sideways, so there folders are a filter in its header rather than sections; a
+narrow timeline list is a `<select>` with an option group per folder. ⌘K finds an object by
+its folder's path as well as its name.
+
+```
+cd frontend && npx vitest run src/lib/folders.test.ts   # the tree, the moves, the delete
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

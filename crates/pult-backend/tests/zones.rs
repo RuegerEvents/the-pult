@@ -125,6 +125,7 @@ async fn a_spare_plays_a_zone_on_its_own_channels() {
         }
     };
     let zone = SpeakerZone {
+        folder: None,
         id: Uuid::new_v4(),
         name: "Area 2".into(),
         color: None,
@@ -136,6 +137,7 @@ async fn a_spare_plays_a_zone_on_its_own_channels() {
     create(&leader, "speaker_zones", serde_json::to_value(&zone).unwrap()).await;
     let clip = Uuid::new_v4();
     let timeline = Timeline {
+        folder: None,
         id: Uuid::new_v4(),
         name: "Area 2 scare".into(),
         clips: vec![AudioClip {

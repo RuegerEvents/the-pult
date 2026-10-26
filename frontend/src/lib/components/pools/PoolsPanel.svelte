@@ -34,6 +34,7 @@
 	import { addToast } from '$lib/toasts.js';
 	import NameDialog from '$lib/components/NameDialog.svelte';
 	import Card from '$lib/components/objects/Card.svelte';
+	import Foldered from '$lib/components/objects/Foldered.svelte';
 	import { uuid } from '$lib/uuid.js';
 
 	const groups = collection('groups');
@@ -89,11 +90,11 @@
 		{#if $groups.length === 0}
 			<p class="empty">No saved groups. Select some fixtures and press <b>+ From selection</b>.</p>
 		{:else}
-			<div class="row">
-				{#each $groups as group (group.id)}
+			<Foldered kind="group" rows={$groups}>
+				{#snippet item(group)}
 					<Card ref={{ kind: 'group', id: group.id }} name={group.name} color={group.color} />
-				{/each}
-			</div>
+				{/snippet}
+			</Foldered>
 		{/if}
 	</section>
 
@@ -135,8 +136,8 @@
 		{:else if shown.length === 0}
 			<p class="empty">No preset holds anything in that group.</p>
 		{:else}
-			<div class="row">
-				{#each shown as preset (preset.id)}
+			<Foldered kind="preset" rows={shown}>
+				{#snippet item(preset)}
 					{@const reach = presetReach(preset, $selection)}
 					<Card
 						ref={{ kind: 'preset', id: preset.id }}
@@ -151,8 +152,8 @@
 							.filter(Boolean)
 							.join('  ·  ')}
 					/>
-				{/each}
-			</div>
+				{/snippet}
+			</Foldered>
 			<p class="note">
 				Tap to apply · ⌘-click or the corner dot to inspect · right-click or hold for more.
 				Deleting a preset changes no cue: each one keeps the value it was stored with
@@ -234,11 +235,6 @@
 		color: var(--accent);
 	}
 
-	.row {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-	}
 
 
 

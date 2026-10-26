@@ -341,6 +341,7 @@ mod tests {
 
     fn a_timeline(events: Vec<TimelineEvent>) -> Timeline {
         Timeline {
+            folder: None,
             id: Uuid::from_u128(1),
             name: "Song".into(),
             clips: Vec::new(),

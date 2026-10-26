@@ -53,6 +53,7 @@
 	import { collection } from '$lib/stores/show.js';
 	import ValueControl from '../programmer/controls/ValueControl.svelte';
 	import Card from '../objects/Card.svelte';
+	import Foldered from '$lib/components/objects/Foldered.svelte';
 	import { openTemplate } from '$lib/kinds/effects.kind.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import EffectPreview from './EffectPreview.svelte';
@@ -380,8 +381,8 @@
 		{#if $templates.length === 0}
 			<p class="empty">The pool is empty. Build an effect and store it here.</p>
 		{:else}
-			<div class="tiles">
-				{#each $templates as template (template.id)}
+			<Foldered kind="effect" rows={$templates} layout="grid" min={124}>
+				{#snippet item(template)}
 					<!-- Tap applies to the selection and loads it here, so what just happened
 					     is what the editor below shows. -->
 					<Card
@@ -393,8 +394,8 @@
 						dim={order.length === 0}
 						onact={() => (order.length === 0 ? load(template) : applyTemplate(template))}
 					/>
-				{/each}
-			</div>
+				{/snippet}
+			</Foldered>
 		{/if}
 	</section>
 
@@ -750,11 +751,6 @@
 	}
 	.pool-head h3 {
 		margin-right: auto;
-	}
-	.tiles {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
-		gap: 6px;
 	}
 	.head {
 		display: flex;

@@ -52,7 +52,7 @@ export type Verb = {
 };
 
 /** A row any kind's list hands out: at least an id and a name. */
-export type ObjectRow = { id: string; name: string; color?: string | null };
+export type ObjectRow = { id: string; name: string; color?: string | null; folder?: string | null };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ObjectKind<Row extends ObjectRow = any> = {
@@ -79,6 +79,12 @@ export type ObjectKind<Row extends ObjectRow = any> = {
 	inspector?: Component<any>;
 	/** Where it lives, so "go to" can bring that panel forward. */
 	panel?: string;
+	/**
+	 * The show collection its rows are, where they are one — which is what lets it be
+	 * put in a folder (`stores/folders.ts` writes the row's `folder`). Left out for a
+	 * kind whose rows live inside another object, like a timeline's clips.
+	 */
+	table?: string;
 };
 
 const registry = writable<Map<string, ObjectKind>>(new Map());
@@ -111,6 +117,9 @@ export function rowOf(ref: ObjectRef): ObjectRow | undefined {
 /** Set from the menu's Rename, read by the card that should become a text field. */
 export const renaming = writable<ObjectRef | null>(null);
 
+/** Set from the menu's Move to folder…, read by the picker at the root of the app. */
+export const moving = writable<ObjectRef | null>(null);
+
 /**
  * The menu for one object: the kind's own verbs first, then the shared ones in a
  * fixed order, so Delete is always last and always in the same place under a thumb.
@@ -131,6 +140,9 @@ export function verbsFor(ref: ObjectRef, locked: boolean): Verb[] {
 	}
 	if (kind.duplicate) {
 		verbs.push({ id: 'duplicate', label: 'Duplicate', structural: true, run: () => kind.duplicate!(row) });
+	}
+	if (kind.table) {
+		verbs.push({ id: 'move', label: 'Move to folder…', structural: true, run: () => moving.set(ref) });
 	}
 	if (kind.remove) {
 		verbs.push({ id: 'delete', label: 'Delete', structural: true, danger: true, run: () => kind.remove!(row) });

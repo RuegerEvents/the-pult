@@ -68,6 +68,11 @@ pub struct Variable {
     /// What it holds now. `None` is the initial value — see the module docs.
     #[pult(lifecycle = SYNCED)]
     pub value: Option<f64>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 impl Variable {
@@ -120,6 +125,7 @@ mod tests {
 
     fn count() -> Variable {
         Variable {
+            folder: None,
             id: Uuid::nil(),
             name: "Area 1 inside".into(),
             kind: VariableKind::Number,

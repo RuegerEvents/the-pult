@@ -232,6 +232,7 @@ async fn a_timeline_event_goes_the_cue_it_names() {
         is_active: false,
     };
     let sequence = Sequence {
+        folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Act 1".into(),
         cue_ids: vec![cue.id],
@@ -243,6 +244,7 @@ async fn a_timeline_event_goes_the_cue_it_names() {
     create(&station, "sequences", serde_json::to_value(&sequence).unwrap()).await;
 
     let timeline = Timeline {
+        folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Song".into(),
         clips: Vec::new(),

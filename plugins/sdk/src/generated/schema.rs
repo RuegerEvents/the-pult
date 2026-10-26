@@ -488,6 +488,9 @@ pub struct EffectTemplate {
     /// the rig.
     #[serde(default)]
     pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One light source in the fixture.
@@ -832,6 +835,9 @@ pub struct Flow {
     pub id: Uuid,
     pub name: String,
     pub enabled: bool,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One connection, from an output port to an input port.
@@ -897,6 +903,18 @@ pub enum FlowNodeKind {
     Gate,
     /// Does something to the show. Consumes a pulse.
     Action(TriggerAction),
+}
+
+/// One folder in one pool.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Folder {
+    pub id: Uuid,
+    pub name: String,
+    /// The folder this one is in, or `None` at the top of its pool.
+    #[serde(default)]
+    pub parent: Option<Uuid>,
+    /// Which kind of object it holds, by the pools' name for the kind.
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1033,6 +1051,9 @@ pub struct Group {
     /// the rig.
     #[serde(default)]
     pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// What a table's rows are grouped and subtotaled by.
@@ -1202,6 +1223,9 @@ pub struct Layout {
     pub name: String,
     /// The whole arrangement, as one JSON column.
     pub tree: LayoutNode,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One node of a workspace tree: either a division of the space, or panels in it.
@@ -2056,6 +2080,9 @@ pub struct Preset {
     /// the rig.
     #[serde(default)]
     pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One parameter of one fixture, as a preset holds it.
@@ -2445,6 +2472,9 @@ pub struct Sequence {
     /// keeps it, and a show opens at full.
     #[serde(default)]
     pub master: Option<f32>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// What one service was told, what it managed, and what went wrong.
@@ -2492,6 +2522,9 @@ pub struct Sheet {
     pub title_block: bool,
     #[serde(default)]
     pub blocks: Vec<SheetBlock>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One thing on a sheet.
@@ -2631,6 +2664,9 @@ pub struct SpeakerZone {
     pub nodes: Vec<ZoneNode>,
     #[serde(default)]
     pub notes: String,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One tempo several effects can follow.
@@ -2930,6 +2966,9 @@ pub struct Surface {
     /// the rig.
     #[serde(default)]
     pub color: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// One physical control, as the surface numbers it.
@@ -3153,6 +3192,9 @@ pub struct Timeline {
     /// reason: the station recording is usually not the one that page is on.
     #[serde(default)]
     pub armed_by: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// What a timeline does, and when: to a sequence, to another timeline, or to a variable.
@@ -3336,6 +3378,9 @@ pub struct Variable {
     pub max: Option<f64>,
     /// What it holds now. `None` is the initial value — see the module docs.
     pub value: Option<f64>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    pub folder: Option<Uuid>,
 }
 
 /// What a variable holds.

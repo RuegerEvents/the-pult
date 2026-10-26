@@ -8,6 +8,7 @@ use pult_schema::types::timeline::{TimelineEnd, TimelineSource};
 
 fn running(anchor_ms: u64, position_at_anchor_ms: u64) -> Timeline {
     Timeline {
+        folder: None,
         id: Uuid::from_u128(1),
         name: "Scare".into(),
         clips: Vec::new(),
@@ -201,6 +202,7 @@ fn a_zone_with_node_speakers_hands_its_clips_to_those_nodes() {
         zone::{SpeakerZone, ZoneNode},
     };
     let zone = SpeakerZone {
+        folder: None,
         id: Uuid::from_u128(5),
         name: "Area 2".into(),
         color: None,

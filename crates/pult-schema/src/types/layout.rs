@@ -83,6 +83,11 @@ pub struct Layout {
     /// The whole arrangement, as one JSON column.
     #[pult(lifecycle = PERSISTED)]
     pub tree: LayoutNode,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 #[cfg(test)]

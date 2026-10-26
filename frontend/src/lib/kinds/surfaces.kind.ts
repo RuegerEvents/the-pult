@@ -17,6 +17,7 @@ const surfaces = collection('surfaces');
 
 registerKind<Surface>({
 	kind: 'surface',
+	table: 'surfaces',
 	label: 'Surface',
 	category: 'playback',
 	icon: Smartphone,

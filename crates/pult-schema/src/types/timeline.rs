@@ -693,6 +693,11 @@ pub struct Timeline {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub armed_by: Option<String>,
+    /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub folder: Option<Uuid>,
 }
 
 fn one() -> f32 {
@@ -1051,6 +1056,7 @@ mod tests {
 
     fn a_timeline() -> Timeline {
         Timeline {
+            folder: None,
             id: Uuid::from_u128(1),
             name: "Act 1".into(),
             clips: Vec::new(),

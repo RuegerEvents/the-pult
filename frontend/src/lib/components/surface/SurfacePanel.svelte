@@ -41,6 +41,7 @@
 	import { getDataContext, getStationContext } from '$lib/ws/context.js';
 	import SurfaceTiles from './SurfaceTiles.svelte';
 	import Card from '$lib/components/objects/Card.svelte';
+	import Foldered from '$lib/components/objects/Foldered.svelte';
 	import QrCode from './QrCode.svelte';
 	import Dialog from '$lib/components/Dialog.svelte';
 	import NameDialog from '$lib/components/NameDialog.svelte';
@@ -178,8 +179,8 @@
 	{#if $surfaces.length > 0}
 		<!-- The surfaces as cards: a tap shows one here, and the shared menu opens it
 		     full-screen, copies its phone link, renames, paints or deletes it. -->
-		<div class="boards">
-			{#each $surfaces as s (s.id)}
+		<Foldered kind="surface" rows={$surfaces}>
+			{#snippet item(s)}
 				<Card
 					ref={{ kind: 'surface', id: s.id }}
 					name={s.name}
@@ -191,8 +192,8 @@
 						selectedTile = null;
 					}}
 				/>
-			{/each}
-		</div>
+			{/snippet}
+		</Foldered>
 	{/if}
 
 	{#if !surface}
@@ -522,9 +523,4 @@
 	.hint { color: #777; font-size: 12px; }
 	.empty { color: #777; font-size: 12px; line-height: 1.4; }
 	.ask { margin: 0; padding: 14px; font-size: 0.85rem; line-height: 1.5; }
-	.boards {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-	}
 </style>

@@ -100,7 +100,7 @@ fn a_show() -> Show {
 }
 
 fn a_sequence(name: &str, cue_ids: Vec<Uuid>) -> Sequence {
-    Sequence { id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None, master: None }
+    Sequence { folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None, master: None }
 }
 
 fn a_cue(name: &str, number: f64) -> Cue {
@@ -1026,7 +1026,7 @@ mod flows {
 
     /// A doorbell wired to an action: source → rising edge → whatever it does.
     async fn a_flow(h: &Harness, fixture_id: Uuid, action: TriggerAction) -> (Flow, FlowNode) {
-        let flow = Flow { id: Uuid::new_v4(), name: "Doorbell".into(), enabled: true };
+        let flow = Flow { folder: None, id: Uuid::new_v4(), name: "Doorbell".into(), enabled: true };
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
 
         let source = a_node(
@@ -1226,7 +1226,7 @@ mod flows {
         let sequence = a_sequence("Act 1", vec![Uuid::new_v4(), Uuid::new_v4()]);
         h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
 
-        let flow = Flow { id: Uuid::new_v4(), name: "Panic".into(), enabled: true };
+        let flow = Flow { folder: None, id: Uuid::new_v4(), name: "Panic".into(), enabled: true };
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let button = a_node(flow.id, FlowNodeKind::Button);
         let act = a_node(
@@ -2173,7 +2173,7 @@ mod watching_playback {
         let sequence = a_sequence("Act 1", vec![cue.id]);
         h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
 
-        let flow = Flow { id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
+        let flow = Flow { folder: None, id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let node = |kind| FlowNode {
             id: Uuid::new_v4(),
@@ -2272,7 +2272,7 @@ mod watching_playback {
         let sequence = a_sequence("Act 1", vec![cue.id]);
         h.engine.set(create_path("sequences"), Lifecycle::Persisted, json(&sequence)).await.unwrap();
 
-        let flow = Flow { id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
+        let flow = Flow { folder: None, id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let node = |kind| FlowNode {
             id: Uuid::new_v4(),
@@ -2396,7 +2396,7 @@ mod watching_playback {
         );
 
         // Now one lamp of the two thousand is watched, and the cue is retaken.
-        let flow = Flow { id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
+        let flow = Flow { folder: None, id: Uuid::new_v4(), name: "Siren".into(), enabled: true };
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let source = FlowNode {
             id: Uuid::new_v4(),
@@ -3285,7 +3285,7 @@ mod groups {
             h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
         }
 
-        let group = Group { id: Uuid::new_v4(), name: "Movers".into(), query: of_type(movers), color: None };
+        let group = Group { folder: None, id: Uuid::new_v4(), name: "Movers".into(), query: of_type(movers), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
 
         let resolved = rpcs::dispatch(
@@ -3328,7 +3328,7 @@ mod groups {
 
         // Whereas a group whose query currently matches nothing resolves to nothing.
         let empty =
-            Group { id: Uuid::new_v4(), name: "Nothing".into(), query: of_type(Uuid::new_v4()), color: None };
+            Group { folder: None, id: Uuid::new_v4(), name: "Nothing".into(), query: of_type(Uuid::new_v4()), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&empty)).await.unwrap();
         let resolved =
             rpcs::dispatch("selection.resolve", json!({ "groupId": empty.id }), &deps(&h.engine))
@@ -3347,7 +3347,7 @@ mod groups {
             .set(create_path("fixtures"), Lifecycle::Persisted, json(&at("Spot", 0.0, type_id)))
             .await
             .unwrap();
-        let group = Group { id: Uuid::new_v4(), name: "Spots".into(), query: of_type(type_id), color: None };
+        let group = Group { folder: None, id: Uuid::new_v4(), name: "Spots".into(), query: of_type(type_id), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
 
         let before = showfile::oplog::len(&h.pool).await.unwrap();
@@ -3390,6 +3390,7 @@ mod groups {
         }
 
         let group = Group {
+            folder: None,
             color: None,
             id: Uuid::new_v4(),
             name: "Movers".into(),
@@ -3454,6 +3455,7 @@ mod groups {
         let h = harness().await;
         let user = Uuid::new_v4();
         let group = Group {
+            folder: None,
             color: None,
             id: Uuid::new_v4(),
             name: "Specials".into(),
@@ -3513,7 +3515,7 @@ mod groups {
         for f in [at("B", 1.0, type_id), at("A", -1.0, type_id)] {
             h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(&f)).await.unwrap();
         }
-        let group = Group { id: Uuid::new_v4(), name: "All".into(), query: of_type(type_id), color: None };
+        let group = Group { folder: None, id: Uuid::new_v4(), name: "All".into(), query: of_type(type_id), color: None };
         h.engine.set(create_path("groups"), Lifecycle::Persisted, json(&group)).await.unwrap();
 
         let before =
@@ -4326,6 +4328,7 @@ mod home {
                 .await;
 
         let preset = Preset {
+            folder: None,
             color: None,
             id: Uuid::new_v4(),
             name: "Warm".into(),
@@ -4930,6 +4933,7 @@ async fn a_loop_goes_round_on_an_idle_station() {
     use pult_schema::types::timeline::{AtEnd, Timeline, TimelineEnd, TimelineSource};
     let h = harness().await;
     let ambience = Timeline {
+        folder: None,
         id: Uuid::new_v4(),
         name: "Ambience".into(),
         clips: Vec::new(),
@@ -5028,6 +5032,7 @@ mod recording_sequence_acts {
 
     fn a_timeline(recording: Option<RecordSource>) -> Timeline {
         Timeline {
+            folder: None,
             id: Uuid::new_v4(),
             name: "Song".into(),
             clips: Vec::new(),
@@ -5123,6 +5128,7 @@ mod streamed_play {
 
     fn a_timeline(destination: AudioDestination) -> Timeline {
         Timeline {
+            folder: None,
             id: Uuid::new_v4(),
             name: "Scare".into(),
             clips: vec![AudioClip {

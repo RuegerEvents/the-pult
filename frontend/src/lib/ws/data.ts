@@ -12,6 +12,7 @@ import type { FixtureType } from '../generated/FixtureType.js';
 import type { Flow } from '../generated/Flow.js';
 import type { FlowEdge } from '../generated/FlowEdge.js';
 import type { FlowNode } from '../generated/FlowNode.js';
+import type { Folder } from '../generated/Folder.js';
 import type { Group } from '../generated/Group.js';
 import type { InputConfig } from '../generated/InputConfig.js';
 import type { Layer } from '../generated/Layer.js';
@@ -74,6 +75,10 @@ export type FlowEdgeEntity = PathProxy<FlowEdge> & {
 export type FlowNodeEntity = PathProxy<FlowNode> & {
   delete(): Promise<void>;
   press(): Promise<void>;
+};
+
+export type FolderEntity = PathProxy<Folder> & {
+  delete(): Promise<void>;
 };
 
 export type GroupEntity = PathProxy<Group> & {
@@ -304,6 +309,20 @@ export type FlowNodeCollection = {
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: FlowNodeEntity;
+};
+
+export type FolderCollection = {
+  get(): Promise<Folder[]>;
+  set(value: Folder[]): Promise<void>;
+  subscribe(cb: (value: Folder[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: Folder[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): FolderEntity;
+  nth(n: number): FolderEntity;
+  create(entity: Folder): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: FolderEntity;
 };
 
 export type GroupCollection = {
@@ -696,6 +715,7 @@ export type DataRoot = {
   flows: FlowCollection;
   flow_edges: FlowEdgeCollection;
   flow_nodes: FlowNodeCollection;
+  folders: FolderCollection;
   groups: GroupCollection;
   inputs: InputConfigCollection;
   layers: LayerCollection;

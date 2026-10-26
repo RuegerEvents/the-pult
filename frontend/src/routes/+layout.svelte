@@ -38,6 +38,7 @@
 	import { isSurfacePath } from '$lib/surface.js';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
 	import ContextMenu from '$lib/components/objects/ContextMenu.svelte';
+	import MoveToFolder from '$lib/components/objects/MoveToFolder.svelte';
 	import { registerBuiltInCommands } from '$lib/commands.js';
 	import { showLocked, toggleShowLock } from '$lib/stores/showLock.js';
 	import Lock from '@lucide/svelte/icons/lock';
@@ -344,6 +345,7 @@
 
 <!-- One context menu for every object, at the root so no tile can clip it. -->
 <ContextMenu />
+<MoveToFolder />
 
 {#if palette}
 	<CommandPalette onclose={() => (palette = false)} />
