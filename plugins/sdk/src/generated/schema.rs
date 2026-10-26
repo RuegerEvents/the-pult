@@ -237,6 +237,11 @@ pub struct ControlBinding {
     /// What the panel calls it. Empty means the name of what it is bound to.
     #[serde(default)]
     pub label: String,
+    /// The page it acts on, from 1. `None` is page 1, which is where every binding made
+    /// before there were pages is: optional because a required column added to a show
+    /// that has rows is a column nothing filled, and such a show refuses to open.
+    #[serde(default)]
+    pub page: Option<u32>,
 }
 
 /// A single lighting state snapshot with timing information.
@@ -3609,6 +3614,10 @@ pub struct WingOperator {
     /// The sequence GO and GO BACK act on: the claiming page's cue sheet touched last,
     /// or the sequence that went most recently. `None` when there is none.
     pub go_sequence: Option<Uuid>,
+    /// The page of bindings the controls act on, from 1: PAGE_UP and PAGE_DOWN turn it.
+    /// LOCAL like the rest of this, so a restarted station is back on page 1.
+    #[serde(default)]
+    pub page: u32,
 }
 
 /// Where the wing on this station has got to.

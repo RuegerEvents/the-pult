@@ -49,7 +49,7 @@ use pult_schema::{
         user::User,
         variable::Variable,
         wing::{
-            BindingAction, ColorComponent, ControlBinding, SurfaceControl, WingAsk, WingCalculator,
+            BindingAction, ColorComponent, ControlBinding, StoreOnto, SurfaceControl, WingAsk, WingCalculator,
             WingContext, WingEncoders, WingSelection, WingSlot, COMMAND_WING,
         },
     },
@@ -273,8 +273,29 @@ impl Control {
         serde_json::from_value(row).ok()
     }
 
+    /// What a control does on the page the wing is on.
     fn binding(&self, control: &SurfaceControl) -> Option<&BindingAction> {
-        self.bindings.iter().find(|b| &b.control == control).map(|b| &b.action)
+        let page = self.station.operator().page;
+        self.bindings.iter().find(|b| &b.control == control && b.page() == page).map(|b| &b.action)
+    }
+
+    /// The last page anything is bound on, which PAGE_UP may go one past: an empty
+    /// page is where the next thing gets learned.
+    fn last_page(&self) -> u32 {
+        self.bindings.iter().map(ControlBinding::page).max().unwrap_or(1)
+    }
+
+    /// PAGE_UP and PAGE_DOWN: every control acts on another page of bindings. What the
+    /// faders moved on this page goes out first, under the bindings it was moved under.
+    async fn turn_binding_page(&mut self, by: i32) {
+        let page = self.station.operator().page;
+        let next = (page as i32 + by).clamp(1, self.last_page() as i32 + 1) as u32;
+        if next == page {
+            return;
+        }
+        self.write_pending().await;
+        self.station.update_operator(|op| op.page = next).await;
+        self.feedback().await;
     }
 
     fn code_of(&self, index: u16) -> Option<String> {
@@ -445,24 +466,30 @@ impl Control {
             return;
         }
 
+        // After STORE, a playback control is where the programmer goes: MA's Store onto
+        // an executor.
+        if self.station.operator().line.trim() == "store" {
+            if let Some(onto) = self.store_onto(index, &code, fader_key) {
+                if down {
+                    self.station.update_operator(|op| op.line.clear()).await;
+                    self.store_onto_control(onto).await;
+                }
+                return;
+            }
+        }
+
         if let Some(action) = self.binding(&SurfaceControl::Key { index }).cloned() {
             self.run(action, down).await;
             return;
         }
 
         // The keys of a fader that is a sequence's master are that sequence's Go and
-        // Off — or, after STORE, where the programmer is stored: MA's Store onto an
-        // executor.
+        // Off.
         if let Some(FaderKey::Go(fader) | FaderKey::Off(fader)) = fader_key {
             if let Some(BindingAction::Master { sequence_id }) =
                 self.binding(&SurfaceControl::Fader { index: fader }).cloned()
             {
                 if !down {
-                    return;
-                }
-                if self.station.operator().line.trim() == "store" {
-                    self.station.update_operator(|op| op.line.clear()).await;
-                    self.store_into(sequence_id).await;
                     return;
                 }
                 let verb = if matches!(fader_key, Some(FaderKey::Go(_))) { "goNext" } else { "off" };
@@ -499,6 +526,8 @@ impl Control {
             Some(Verb::GoBack) => self.go(true).await,
             Some(Verb::PageUp) => self.turn_page(-1).await,
             Some(Verb::PageDown) => self.turn_page(1).await,
+            Some(Verb::NextPage) => self.turn_binding_page(1).await,
+            Some(Verb::PrevPage) => self.turn_binding_page(-1).await,
             _ => {}
         }
     }
@@ -644,7 +673,7 @@ impl Control {
             // STORE and PLEASE is the Store dialog, which is a page's to show.
             "store" => {
                 if self.station.claimed() {
-                    self.ask(WingAsk::Store { preselect: Vec::new() });
+                    self.ask(WingAsk::Store { preselect: Vec::new(), onto: None });
                 } else {
                     self.toast("Store onto a master's key, or type where: store sequence 1 cue 4", false);
                 }
@@ -1022,7 +1051,48 @@ impl Control {
             self.toast("Nothing here is being driven by a cue", false);
         }
         if self.station.claimed() {
-            self.ask(WingAsk::Store { preselect: orphans });
+            self.ask(WingAsk::Store { preselect: orphans, onto: None });
+        }
+    }
+
+    /// Which playback a key is, for STORE: a fader's executor key is its fader — a
+    /// sequence's master or nothing yet — and an X key or a key that goes a sequence is
+    /// itself. `None` for any other key, which STORE leaves to do what it does.
+    fn store_onto(&self, index: u16, code: &str, fader_key: Option<FaderKey>) -> Option<StoreOnto> {
+        let page = self.station.operator().page;
+        if let Some(FaderKey::Go(fader) | FaderKey::Off(fader)) = fader_key {
+            let control = SurfaceControl::Fader { index: fader };
+            return match self.binding(&control) {
+                Some(BindingAction::Master { sequence_id }) => {
+                    Some(StoreOnto { control, page, sequence_id: Some(*sequence_id) })
+                }
+                None => Some(StoreOnto { control, page, sequence_id: None }),
+                // A fader moving a parameter is not a playback.
+                Some(_) => None,
+            };
+        }
+        let control = SurfaceControl::Key { index };
+        match self.binding(&control) {
+            Some(BindingAction::Press {
+                target: TileTarget::SequenceGo { sequence_id } | TileTarget::SequenceOff { sequence_id },
+            }) => Some(StoreOnto { control, page, sequence_id: Some(*sequence_id) }),
+            None if keys::x_key(code) => Some(StoreOnto { control, page, sequence_id: None }),
+            _ => None,
+        }
+    }
+
+    /// STORE onto a playback: the Store dialog on the claiming page, opened on that
+    /// playback's sequence or a new one. With no page there is no dialog, so a sequence
+    /// gets a new cue straight away and a control with none is refused.
+    async fn store_onto_control(&mut self, onto: StoreOnto) {
+        if self.station.claimed() {
+            self.write_pending().await;
+            self.ask(WingAsk::Store { preselect: Vec::new(), onto: Some(onto) });
+            return;
+        }
+        match onto.sequence_id {
+            Some(sequence_id) => self.store_into(sequence_id).await,
+            None => self.toast("Nothing is on that yet: a new sequence needs the Store dialog, on a page showing the wing", false),
         }
     }
 
@@ -1190,9 +1260,11 @@ impl Control {
     /// Put every bound fader where the show is, and let every other one go. A touched
     /// fader is left to the hand by `WingHandle::drive` itself.
     async fn drive_motors(&mut self) {
+        let page = self.station.operator().page;
         let faders: Vec<(u16, BindingAction)> = self
             .bindings
             .iter()
+            .filter(|b| b.page() == page)
             .filter_map(|b| match b.control {
                 SurfaceControl::Fader { index } => Some((index, b.action.clone())),
                 _ => None,
@@ -1267,6 +1339,10 @@ impl Control {
                 if operator.encoders.page > 0 { keys::DIM } else { 0 }
             } else if verb == Some(Verb::PageDown) {
                 if operator.encoders.page + 1 < operator.encoders.pages { keys::DIM } else { 0 }
+            } else if verb == Some(Verb::PrevPage) {
+                if operator.page > 1 { keys::DIM } else { 0 }
+            } else if verb == Some(Verb::NextPage) {
+                if operator.page <= self.last_page() { keys::DIM } else { 0 }
             } else if code == "STORE" && operator.line.trim() == "store" {
                 // Waiting for where: MA's Store blinks until it is told.
                 if blink { keys::LIT } else { keys::DIM }

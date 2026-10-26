@@ -79,7 +79,7 @@ pub struct WingState {
 /// The station's, so the wing does the same thing whether or not a page is open
 /// (found at the gig: a page drawing the rig lagged every key behind it). A page that
 /// claims the wing reads this to show it, and shares its selection with it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WingOperator {
     /// What the keypad has typed and PLEASE has not yet run.
@@ -94,6 +94,28 @@ pub struct WingOperator {
     /// The sequence GO and GO BACK act on: the claiming page's cue sheet touched last,
     /// or the sequence that went most recently. `None` when there is none.
     pub go_sequence: Option<Uuid>,
+    /// The page of bindings the controls act on, from 1: PAGE_UP and PAGE_DOWN turn it.
+    /// LOCAL like the rest of this, so a restarted station is back on page 1.
+    #[serde(default = "first_page")]
+    pub page: u32,
+}
+
+fn first_page() -> u32 {
+    1
+}
+
+impl Default for WingOperator {
+    fn default() -> Self {
+        WingOperator {
+            line: String::new(),
+            calculator: None,
+            encoders: WingEncoders::default(),
+            learning: false,
+            selection: WingSelection::default(),
+            go_sequence: None,
+            page: first_page(),
+        }
+    }
 }
 
 /// One encoder's calculator: which of the five, and what has been typed into it.
@@ -185,10 +207,28 @@ pub enum WingAsk {
     Toast { text: String, good: bool },
     /// Learning caught this control; the page binds it to what is touched next.
     Learned { control: SurfaceControl },
-    /// Open the Store dialog, with these programmer entries ticked (all when empty).
-    Store { preselect: Vec<Uuid> },
+    /// Open the Store dialog, with these programmer entries ticked (all when empty),
+    /// and onto a playback control where STORE was followed by one.
+    Store {
+        preselect: Vec<Uuid>,
+        #[serde(default)]
+        onto: Option<StoreOnto>,
+    },
     /// ESC or PLEASE, for the dialog on top.
     Dialog { accept: bool },
+}
+
+/// STORE followed by a playback control: a fader's executor key, or an X key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct StoreOnto {
+    /// The control that is the playback: the fader for an executor key, else the key.
+    pub control: SurfaceControl,
+    /// The page that control was on.
+    pub page: u32,
+    /// The sequence it plays, or `None` for a control nothing is bound to yet, which
+    /// the store makes a new sequence for and binds to it.
+    pub sequence_id: Option<Uuid>,
 }
 
 // ── What its controls do (PERSISTED) ──────────────────────────────────────────
@@ -245,6 +285,19 @@ pub struct ControlBinding {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub label: String,
+    /// The page it acts on, from 1. `None` is page 1, which is where every binding made
+    /// before there were pages is: optional because a required column added to a show
+    /// that has rows is a column nothing filled, and such a show refuses to open.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub page: Option<u32>,
+}
+
+impl ControlBinding {
+    /// The page it acts on, from 1.
+    pub fn page(&self) -> u32 {
+        self.page.unwrap_or(1)
+    }
 }
 
 #[cfg(test)]
@@ -259,6 +312,7 @@ mod tests {
             control: SurfaceControl::Fader { index: 3 },
             action: BindingAction::Master { sequence_id: Uuid::nil() },
             label: String::new(),
+            page: None,
         };
         let json = serde_json::to_value(&binding).unwrap();
         assert_eq!(json["control"], serde_json::json!({ "kind": "Fader", "index": 3 }));

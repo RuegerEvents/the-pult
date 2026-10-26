@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS control_bindings (
     "surface" TEXT NOT NULL,
     "control" TEXT NOT NULL,
     "action" TEXT NOT NULL,
-    "label" TEXT NOT NULL
+    "label" TEXT NOT NULL,
+    "page" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS cues (

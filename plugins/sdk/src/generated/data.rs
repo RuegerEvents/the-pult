@@ -248,6 +248,15 @@ impl ControlBindingEntity {
     pub fn label(&self) -> Field<String> {
         self.at.field("label")
     }
+
+    /// The page it acts on, from 1. `None` is page 1, which is where every binding made
+    /// before there were pages is: optional because a required column added to a show
+    /// that has rows is a column nothing filled, and such a show refuses to open.
+    ///
+    /// PERSISTED.
+    pub fn page(&self) -> Field<Option<u32>> {
+        self.at.field("page")
+    }
 }
 
 // ── cues ────────────────────────────────────────────────────────────────

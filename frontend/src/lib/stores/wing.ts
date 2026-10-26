@@ -41,6 +41,7 @@ import type {
 	ControlBinding,
 	ParameterKind,
 	ParameterValue,
+	StoreOnto,
 	SurfaceControl,
 	WingAsk,
 	WingOperator,
@@ -61,7 +62,8 @@ const OPERATOR: WingOperator = {
 	encoders: { page: 0, pages: 1, slots: [null, null, null, null, null] },
 	learning: false,
 	selection: { fixtures: [], cells: [], query: null, rev: 0, from_wing: false },
-	go_sequence: null
+	go_sequence: null,
+	page: 1
 };
 const EMPTY: WingState = { phase: { kind: 'Off' }, device: null, claimed_by: null, digital: null, operator: OPERATOR };
 const DRIVE_KEY = 'pult.wing.drive';
@@ -128,8 +130,14 @@ export const encoderBar: Readable<{ slots: (EncoderSlot | null)[]; page: number;
 	})
 );
 
-/** Asked of the page by the wing: open the Store dialog with these entries ticked. */
-export const wingStoreAsk = writable<{ preselect: string[] } | null>(null);
+/** The page of bindings the wing's controls act on, from 1. The station's. */
+export const wingPage: Readable<number> = derived(operator, ($op) => $op.page ?? 1);
+
+/**
+ * Asked of the page by the wing: open the Store dialog with these entries ticked, and
+ * onto a playback control where STORE was followed by one.
+ */
+export const wingStoreAsk = writable<{ preselect: string[]; onto: StoreOnto | null } | null>(null);
 
 // ── The show ──────────────────────────────────────────────────────────────────
 
@@ -137,12 +145,17 @@ const fixtures = collection('fixtures');
 const types = collection('fixture_types');
 const bindings = collection('control_bindings');
 
-/** This wing's bindings, by control. */
-export const wingBindings: Readable<Map<string, ControlBinding>> = derived(bindings, ($bindings) => {
-	const out = new Map<string, ControlBinding>();
-	for (const b of $bindings) if (b.surface === COMMAND_WING) out.set(controlKey(b.control), b);
-	return out;
-});
+/** This wing's bindings on the page it is on, by control. A binding with no page is on page 1. */
+export const wingBindings: Readable<Map<string, ControlBinding>> = derived(
+	[bindings, wingPage],
+	([$bindings, $page]) => {
+		const out = new Map<string, ControlBinding>();
+		for (const b of $bindings) {
+			if (b.surface === COMMAND_WING && (b.page ?? 1) === $page) out.set(controlKey(b.control), b);
+		}
+		return out;
+	}
+);
 
 export const controlKey = (c: SurfaceControl): string => `${c.kind}:${c.index}`;
 
@@ -401,7 +414,7 @@ function answer(ask: WingAsk): void {
 			learned.set(ask.control);
 			return;
 		case 'Store':
-			wingStoreAsk.set({ preselect: ask.preselect });
+			wingStoreAsk.set({ preselect: ask.preselect, onto: ask.onto ?? null });
 			return;
 		case 'Dialog': {
 			const dialog = topDialog();
@@ -468,7 +481,36 @@ export async function bind(control: SurfaceControl, action: BindingAction, label
 	const existing = get(wingBindings).get(controlKey(control));
 	if (existing) await data.control_bindings.byId(existing.id).set({ ...existing, action, label });
 	else {
-		await data.control_bindings.create({ id: uuid(), surface: COMMAND_WING, control, action, label });
+		const page = get(wingPage);
+		await data.control_bindings.create({ id: uuid(), surface: COMMAND_WING, control, action, label, page });
+	}
+}
+
+/**
+ * Bind the playback STORE was pressed onto to the sequence the store made: a fader as
+ * its master, an X key as its Go. On the page it was pressed on, whichever page the wing
+ * has turned to since.
+ */
+export async function bindOnto(onto: StoreOnto, sequenceId: string): Promise<void> {
+	const action: BindingAction =
+		onto.control.kind === 'Fader'
+			? { kind: 'Master', sequence_id: sequenceId }
+			: { kind: 'Press', target: { kind: 'SequenceGo', sequence_id: sequenceId } };
+	const key = controlKey(onto.control);
+	const existing = get(bindings).find(
+		(b) => b.surface === COMMAND_WING && (b.page ?? 1) === onto.page && controlKey(b.control) === key
+	);
+	const data = showData();
+	if (existing) await data.control_bindings.byId(existing.id).set({ ...existing, action });
+	else {
+		await data.control_bindings.create({
+			id: uuid(),
+			surface: COMMAND_WING,
+			control: onto.control,
+			action,
+			label: '',
+			page: onto.page
+		});
 	}
 }
 

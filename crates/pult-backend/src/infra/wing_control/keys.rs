@@ -71,8 +71,12 @@ pub enum Verb {
     Oops,
     Go,
     GoBack,
+    /// UP and DOWN: the encoders' page of attributes.
     PageUp,
     PageDown,
+    /// PAGE_UP and PAGE_DOWN: the page of bindings every control acts on.
+    NextPage,
+    PrevPage,
     Learn,
 }
 
@@ -86,9 +90,17 @@ pub fn key_verb(code: &str) -> Option<Verb> {
         "GOBACK" | "DEF_GOBACK" => Verb::GoBack,
         "UP" => Verb::PageUp,
         "DOWN" => Verb::PageDown,
+        "PAGE_UP" => Verb::NextPage,
+        "PAGE_DOWN" => Verb::PrevPage,
         "LEARN" => Verb::Learn,
         _ => return None,
     })
+}
+
+/// An X key, which MA gives no meaning of its own: a playback key once something is
+/// stored onto it.
+pub fn x_key(code: &str) -> bool {
+    code.strip_prefix('X').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// The line with one more key typed onto it.

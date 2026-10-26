@@ -17,12 +17,13 @@
 
 	import { untrack } from 'svelte';
 
-	import type { Cue, Easing, ParameterCapture, Sequence } from '$lib/generated/index.js';
+	import type { Cue, Easing, ParameterCapture, Sequence, StoreOnto } from '$lib/generated/index.js';
 	import { createCue, cueIdsThrough, defaultCueName, newCueNumber, cueOnlyCompensation, DEFAULT_FADE_MS, trackedThrough } from '$lib/cues.js';
 	import { CURVE_LABELS, CURVES, curveForKey } from '$lib/fade.js';
 	import { displayLabel, formatValue, parameterKey } from '$lib/patch.js';
 	import { clear, entries, storeInto, storePreset, updatePreset } from '$lib/stores/programmer.js';
 	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
+	import { bindOnto } from '$lib/stores/wing.js';
 	import { collection, show, showData } from '$lib/stores/show.js';
 	import { addToast } from '$lib/toasts.js';
 	import { focusOnMount } from '$lib/actions.js';
@@ -36,8 +37,13 @@
 		 * keys no cue is driving — which is the one case where a subset is the answer
 		 * rather than a guess.
 		 */
-		preselect = null
-	}: { onclose: () => void; preselect?: string[] | null } = $props();
+		preselect = null,
+		/**
+		 * The playback STORE was pressed onto on the wing: the dialog opens on its
+		 * sequence, or on a new one that the playback is then bound to.
+		 */
+		onto = null
+	}: { onclose: () => void; preselect?: string[] | null; onto?: StoreOnto | null } = $props();
 
 	const fixtures = collection('fixtures');
 	const sequences = collection('sequences');
@@ -62,7 +68,9 @@
 		}
 	};
 
-	let sequenceId = $state<string | null>(remembered(SEQUENCE_KEY));
+	let sequenceId = $state<string | null>(
+		untrack(() => (onto ? (onto.sequence_id ?? '__new') : remembered(SEQUENCE_KEY)))
+	);
 	/**
 	 * A sequence made by this store, for a show that has none or a cue that belongs in
 	 * a new one. Made in the same gesture as the cue, so one Ctrl-Z takes both back —
@@ -80,10 +88,18 @@
 	 * keeping, and "this is a look I will want again" is a decision made at exactly
 	 * that moment.
 	 */
-	let target = $state<'new' | 'existing' | 'preset'>('new');
+	/**
+	 * Onto a playback with exactly one cue, Store means that cue, merged: a playback
+	 * with one cue is usually a look being built up. With more, it means a new cue.
+	 */
+	const ontoOnlyCue = untrack(() => {
+		const s = onto?.sequence_id ? $sequences.find((q) => q.id === onto.sequence_id) : undefined;
+		return s && s.cue_ids.length === 1 ? s.cue_ids[0] : null;
+	});
+	let target = $state<'new' | 'existing' | 'preset'>(ontoOnlyCue ? 'existing' : 'new');
 	let presetTarget = $state<string | null>(null);
 	let presetName = $state('');
-	let cueId = $state<string | null>(null);
+	let cueId = $state<string | null>(ontoOnlyCue);
 	/**
 	 * The cue's name: what was typed, or "Cue <n>" for the number it is about to get,
 	 * which follows the *After* choice until somebody types. Prefilled and selected,
@@ -329,6 +345,8 @@
 				const compensated = cueOnlyCompensation(ahead.next, changed, ahead.before);
 				if (compensated) await showData().cues.byId(ahead.next.id).captures.set(compensated);
 			}
+			// A playback nothing was on plays what was stored onto it, in the same gesture.
+			if (onto && onto.sequence_id === null) await bindOnto(onto, into.id);
 			if (!keep) await clear({ keepLocked: true });
 			onclose();
 		} catch (e) {
@@ -494,6 +512,12 @@
 							<span>Called</span>
 							<input class="text" bind:value={sequenceName} placeholder="Sequence name…" />
 						</label>
+					{/if}
+					{#if onto && onto.sequence_id === null}
+						<p class="note">
+							The wing's {onto.control.kind === 'Fader' ? 'fader' : 'key'} gets the sequence this is stored into,
+							on page {onto.page}.
+						</p>
 					{/if}
 
 					<div class="seg" role="radiogroup" aria-label="Which cue">

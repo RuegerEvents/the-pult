@@ -38,6 +38,7 @@
 		wingGoSequence,
 		wingLine,
 		wingMap,
+		wingPage,
 		wingAt,
 		wingStations,
 		wingState
@@ -226,6 +227,7 @@
 			<span class="badge {badge.tone}">{badge.text}</span>
 			<span class="device">{phase.kind === 'Running' ? ($wingState.device ?? 'Command wing') : 'Command wing'}</span>
 			{#if elsewhere}<span class="dim">on {elsewhere}</span>{/if}
+			{#if phase.kind === 'Running'}<span class="page" title="The page of bindings the controls act on">Page {$wingPage}</span>{/if}
 			<span class="spacer"></span>
 			{#if choosing}
 				<label class="at">
@@ -335,7 +337,9 @@
 
 		<section>
 			<div class="section-head">
-				<h3>Bindings</h3>
+				<!-- Every control acts on one page of bindings at a time, and what is learned
+				     goes on the page the wing is on. -->
+				<h3>Bindings <span class="page">Page {$wingPage}</span> <span class="dim">PAGE+ and PAGE− to turn it</span></h3>
 				{#if $canEdit}
 					<button
 						class="btn {$learning ? 'btn-primary learning' : 'btn-ghost'}"
@@ -396,7 +400,7 @@
 
 			{#if $wingBindings.size === 0}
 				<p class="dim">
-					Nothing bound. Press LEARN on the wing (or Learn here), touch a key, fader or encoder, then
+					Nothing bound on page {$wingPage}. Press LEARN on the wing (or Learn here), touch a key, fader or encoder, then
 					move what it should control.
 				</p>
 			{:else}
@@ -573,6 +577,14 @@
 		border: 1px solid var(--accent, #4a9eff);
 		border-radius: 6px;
 		margin-bottom: 8px;
+	}
+	.page {
+		font-size: var(--font-sm, 12px);
+		font-weight: 600;
+		padding: 1px 6px;
+		border-radius: 4px;
+		background: var(--bg-raised, #2a2a2a);
+		color: var(--text-bright, #fff);
 	}
 	.bindings {
 		width: 100%;

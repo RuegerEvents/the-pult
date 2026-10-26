@@ -20,9 +20,10 @@
 	import { clearStep, nextClear } from '$lib/stores/clear.js';
 	import { wingStoreAsk } from '$lib/stores/wing.js';
 	import StoreMenu from './StoreMenu.svelte';
+	import type { StoreOnto } from '$lib/generated/index.js';
 
 	/** Open with a subset ticked — what Update hands over when it cannot place a key. */
-	let storing = $state<{ preselect: string[] | null } | null>(null);
+	let storing = $state<{ preselect: string[] | null; onto?: StoreOnto | null } | null>(null);
 	let busy = $state(false);
 
 	const anything = $derived($entries.length > 0);
@@ -37,7 +38,7 @@
 		const ask = $wingStoreAsk;
 		if (!ask) return;
 		wingStoreAsk.set(null);
-		void openStore(ask.preselect.length > 0 ? ask.preselect : null);
+		storing = { preselect: ask.preselect.length > 0 ? ask.preselect : null, onto: ask.onto };
 	});
 
 	export async function update() {
@@ -85,7 +86,10 @@
 </div>
 
 {#if storing}
-	<StoreMenu preselect={storing.preselect} onclose={() => (storing = null)} />
+	<!-- Keyed, so a second ask while one is open opens on what it asked for. -->
+	{#key storing}
+		<StoreMenu preselect={storing.preselect} onto={storing.onto ?? null} onclose={() => (storing = null)} />
+	{/key}
 {/if}
 
 <style>
