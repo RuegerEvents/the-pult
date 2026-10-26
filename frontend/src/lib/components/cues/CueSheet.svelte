@@ -20,6 +20,7 @@
 	 * with.
 	 */
 
+	import { actAt } from '$lib/ws/clock.js';
 	import type { Cue, Sequence } from '$lib/generated/index.js';
 	import { focusOnMount } from '$lib/actions.js';
 	import { createCue, orderedCues, reorderCueIds } from '$lib/cues.js';
@@ -75,10 +76,10 @@
 	// The time goes with the command, the way it does everywhere else: a Go that
 	// carries when it happened anchors the cue's fades at one millisecond on every
 	// station rather than at whenever each of them got the message.
-	const go = () => sequence && data.sequences.byId(sequence.id).goNext({ at: Date.now() });
+	const go = () => sequence && data.sequences.byId(sequence.id).goNext({ at: actAt() });
 	const goToCue = (cueId: string) =>
-		sequence && data.sequences.byId(sequence.id).goToCue({ cueId, at: Date.now() });
-	const off = () => sequence && data.sequences.byId(sequence.id).off({ at: Date.now() });
+		sequence && data.sequences.byId(sequence.id).goToCue({ cueId, at: actAt() });
+	const off = () => sequence && data.sequences.byId(sequence.id).off({ at: actAt() });
 
 	/**
 	 * Back: the cue before the one that is up.

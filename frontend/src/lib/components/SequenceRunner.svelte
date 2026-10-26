@@ -9,6 +9,7 @@
 	 * third, worse copy of both, and grew taller with the rig.
 	 */
 
+	import { actAt } from '$lib/ws/clock.js';
 	import { onMount } from 'svelte';
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Sequence, Cue } from '$lib/generated/index.js';
@@ -98,11 +99,11 @@
 	// millisecond everywhere rather than at whenever each station got the message.
 	async function goNext(seqId: string) {
 		offer({ kind: 'Press', target: { kind: 'SequenceGo', sequence_id: seqId } });
-		await data.sequences.byId(seqId).goNext({ at: Date.now() });
+		await data.sequences.byId(seqId).goNext({ at: actAt() });
 	}
 
 	async function goBack(seqId: string) {
-		await data.sequences.byId(seqId).goBack({ at: Date.now() });
+		await data.sequences.byId(seqId).goBack({ at: actAt() });
 	}
 
 	// Off is a command rather than a write of `active_cue_index`, so it carries its
@@ -110,7 +111,7 @@
 	// the same millisecond, and a rig with a home fade time fades home together.
 	async function takeOff(seqId: string) {
 		offer({ kind: 'Press', target: { kind: 'SequenceOff', sequence_id: seqId } });
-		await data.sequences.byId(seqId).off({ at: Date.now() });
+		await data.sequences.byId(seqId).off({ at: actAt() });
 	}
 
 	// The sequence's fader. Full is written as no level at all, which is what a show

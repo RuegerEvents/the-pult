@@ -67,6 +67,16 @@ export function consoleNow(): number | null {
 	return current === null ? null : Date.now() + current.offsetMs;
 }
 
+/**
+ * The `at` an act carries: the console millisecond it was taken, or nothing, and the
+ * station takes it at its own now. Never `Date.now()`: a tablet on a show LAN with no
+ * internet runs seconds off the station, and a Go stamped seconds in the past arrives
+ * with its fade already over, so the cue snaps.
+ */
+export function actAt(): number | undefined {
+	return consoleNow() ?? undefined;
+}
+
 /** The same, for a specific browser instant rather than for now. */
 export function consoleAt(localMs: number): number | null {
 	return current === null ? null : localMs + current.offsetMs;

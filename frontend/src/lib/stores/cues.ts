@@ -14,6 +14,7 @@
 import { get, writable } from 'svelte/store';
 
 import { addToast } from '../toasts.js';
+import { actAt } from '../ws/clock.js';
 import { showData } from './show.js';
 
 /** The cue whose contents the fixture sheet is showing, or `null` for the rig. */
@@ -66,8 +67,8 @@ export async function goOnFocusedSheet(back = false): Promise<void> {
 	}
 	const sequence = showData().sequences.byId(sequenceId);
 	try {
-		if (back) await sequence.goBack({ at: Date.now() });
-		else await sequence.goNext({ at: Date.now() });
+		if (back) await sequence.goBack({ at: actAt() });
+		else await sequence.goNext({ at: actAt() });
 	} catch (e) {
 		addToast(`${e}`);
 	}

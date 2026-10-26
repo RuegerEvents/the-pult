@@ -15,15 +15,13 @@ import { copyName, registerKind } from '$lib/objects.js';
 import TimelineInspector from '$lib/components/timeline/inspectors/TimelineInspector.svelte';
 import { collection, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';
-import { consoleNow } from '$lib/ws/clock.js';
+import { actAt, consoleNow } from '$lib/ws/clock.js';
 import { uuid } from '$lib/uuid.js';
 
 const sequences = collection('sequences');
 const cues = collection('cues');
 const timelines = collection('timelines');
 
-/** A Go carries the moment it was taken, like every transport act. */
-const stamp = () => consoleNow() ?? Date.now();
 
 registerKind<Sequence>({
 	kind: 'sequence',
@@ -34,14 +32,14 @@ registerKind<Sequence>({
 	rows: sequences,
 	panel: 'playback',
 	actLabel: 'Go',
-	act: (sequence) => showData().sequences.byId(sequence.id).goNext({ at: stamp() }),
+	act: (sequence) => showData().sequences.byId(sequence.id).goNext({ at: actAt() }),
 	rename: (sequence, name) => showData().sequences.byId(sequence.id).name.set(name),
 	verbs: (sequence) => [
 		{
 			id: 'off',
 			label: 'Off',
 			structural: false,
-			run: () => showData().sequences.byId(sequence.id).off({ at: stamp() })
+			run: () => showData().sequences.byId(sequence.id).off({ at: actAt() })
 		}
 	]
 });
@@ -57,7 +55,7 @@ registerKind<Cue>({
 	act: async (cue) => {
 		const sequence = get(sequences).find((s) => s.cue_ids.includes(cue.id));
 		if (!sequence) return addToast(`Cue ${cue.number} is in no sequence`);
-		await showData().sequences.byId(sequence.id).goToCue({ cueId: cue.id, at: stamp() });
+		await showData().sequences.byId(sequence.id).goToCue({ cueId: cue.id, at: actAt() });
 	},
 	rename: (cue, name) => showData().cues.byId(cue.id).name.set(name)
 });

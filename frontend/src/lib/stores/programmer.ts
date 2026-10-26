@@ -44,6 +44,7 @@ import { beginGesture, endGesture } from './gesture.js';
 import { offer } from './learn.js';
 import { collection, show, showData } from './show.js';
 import { uuid } from '$lib/uuid.js';
+import { actAt } from '$lib/ws/clock.js';
 
 // ── What is in the buffer ─────────────────────────────────────────────────────
 
@@ -332,7 +333,7 @@ export async function lockAll(locked = true): Promise<void> {
 export async function beginEdit(cue: Cue, sequence: Sequence | null): Promise<void> {
 	const data = showData();
 	await clear({ keepLocked: true });
-	if (sequence) await data.sequences.byId(sequence.id).goToCue({ cueId: cue.id, at: Date.now() });
+	if (sequence) await data.sequences.byId(sequence.id).goToCue({ cueId: cue.id, at: actAt() });
 	for (const entry of entriesFromCue(cue)) {
 		await data.programmer_values.create(entry);
 	}
