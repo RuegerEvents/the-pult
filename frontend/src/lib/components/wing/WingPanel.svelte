@@ -8,7 +8,8 @@
 	 * by touching the control, which is something done in the middle of programming.
 	 */
 
-	import type { BindingAction, ParameterKind, SurfaceControl, TileTarget } from '$lib/generated/index.js';
+	import { untrack } from 'svelte';
+	import type { BindingAction, Cue, ParameterKind, SurfaceControl, TileTarget } from '$lib/generated/index.js';
 	import { displayLabel, parameterKey } from '$lib/patch.js';
 	import { editableParameters } from '$lib/programmer.js';
 	import { selection } from '$lib/stores/selection.js';
@@ -53,6 +54,7 @@
 	const types = collection('fixture_types');
 	const sequences = collection('sequences');
 	const timelines = collection('timelines');
+	const cues = collection('cues');
 	const variables = collection('variables');
 	const flows = collection('flows');
 	const flowNodes = collection('flow_nodes');
@@ -131,42 +133,138 @@
 				return `level of ${$sequences.find((s) => s.id === action.sequence_id)?.name ?? 'a sequence no longer in the show'}`;
 			case 'FlashSequence':
 				return `flashes ${$sequences.find((s) => s.id === action.sequence_id)?.name ?? 'a sequence no longer in the show'}`;
+			case 'GoToCue': {
+				const seq = $sequences.find((s) => s.id === action.sequence_id);
+				const cue = $cues.find((c) => c.id === action.cue_id);
+				return seq && cue ? `goes to cue ${cue.number.toFixed(1)} · ${cue.name} of ${seq.name}` : 'a cue no longer in the show';
+			}
 		}
 	}
 
 	// ── The editor for the control learning caught ──
-	type Choice = 'Press' | 'CommandLine' | 'Flash' | 'FlashSequence' | 'SelectGroup' | 'Parameter' | 'Master';
+	//
+	// What a control does, chosen in steps: what kind of thing, which one, and — for a
+	// sequence — Go, Off, Flash or Go to cue, so the sequences are listed once and not
+	// once per act. Opening a control that is bound fills every step from what it does
+	// now, rather than starting over on the first sequence's Go.
+	type Choice = 'Sequence' | 'Timeline' | 'Press' | 'CommandLine' | 'Flash' | 'SelectGroup' | 'Parameter' | 'Master';
+	type SequenceAct = 'Go' | 'Off' | 'Flash' | 'GoToCue';
+	const SEQUENCE_ACTS: [SequenceAct, string][] = [
+		['Go', 'Go'],
+		['Off', 'Off'],
+		['Flash', 'Flash'],
+		['GoToCue', 'Go to cue']
+	];
 	const choicesFor = (c: SurfaceControl): { kind: Choice; label: string }[] =>
 		c.kind === 'Key' || c.kind === 'Digital'
 			? [
-					{ kind: 'Press', label: 'Press something' },
+					{ kind: 'Sequence', label: 'A sequence' },
+					{ kind: 'Timeline', label: 'A timeline' },
+					{ kind: 'Press', label: 'Something else' },
 					{ kind: 'CommandLine', label: 'Run a command line' },
 					{ kind: 'Flash', label: 'Flash a parameter' },
-					{ kind: 'FlashSequence', label: 'Flash a sequence' },
 					{ kind: 'SelectGroup', label: 'Select a group' }
 				]
-			: c.kind === 'Fader'
-				? [
-						{ kind: 'Parameter', label: 'A parameter' },
-						{ kind: 'Master', label: 'A sequence’s level' }
-					]
-				: [
-						{ kind: 'Parameter', label: 'A parameter' },
-						{ kind: 'Master', label: 'A sequence’s level' }
-					];
+			: [
+					{ kind: 'Parameter', label: 'A parameter' },
+					{ kind: 'Master', label: 'A sequence’s level' }
+				];
 
-	let choice = $state<Choice>('Press');
+	/** "Something else": what a surface tile can press, less what has its own choice. */
+	const others = $derived(
+		pressable.filter(
+			(p) => p.target.kind !== 'SequenceGo' && p.target.kind !== 'SequenceOff' && p.target.kind !== 'Timeline'
+		)
+	);
+
+	let choice = $state<Choice>('Sequence');
+	let sequenceId = $state('');
+	let sequenceAct = $state<SequenceAct>('Go');
+	let cueId = $state('');
+	let timelineId = $state('');
+	let fromStart = $state(false);
 	let pressIndex = $state(0);
 	let line = $state('');
 	let groupId = $state('');
-	let sequenceId = $state('');
 	let parameterKeyChosen = $state('');
+	/** The parameter a control is bound to now, kept until the selection offers another. */
+	let boundParameter = $state<{ fixture_id: string; parameter: ParameterKind } | null>(null);
 
 	$effect(() => {
 		const c = $learned;
 		if (!c) return;
-		const existing = $wingBindings.get(controlKey(c));
-		choice = (existing?.action.kind as Choice | undefined) ?? choicesFor(c)[0].kind;
+		untrack(() => fill(c, $wingBindings.get(controlKey(c))?.action ?? null));
+	});
+
+	/** The form, set to what a control does now — or to the start, for one bound to nothing. */
+	function fill(c: SurfaceControl, action: BindingAction | null) {
+		choice = choicesFor(c)[0].kind;
+		sequenceId = '';
+		sequenceAct = 'Go';
+		cueId = '';
+		timelineId = '';
+		fromStart = false;
+		pressIndex = 0;
+		line = '';
+		groupId = '';
+		parameterKeyChosen = '';
+		boundParameter = null;
+		if (!action) return;
+		switch (action.kind) {
+			case 'Press': {
+				const t = action.target;
+				if (t.kind === 'SequenceGo' || t.kind === 'SequenceOff') {
+					choice = 'Sequence';
+					sequenceId = t.sequence_id;
+					sequenceAct = t.kind === 'SequenceGo' ? 'Go' : 'Off';
+				} else if (t.kind === 'Timeline') {
+					choice = 'Timeline';
+					timelineId = t.timeline_id;
+					fromStart = t.from_start;
+				} else {
+					choice = 'Press';
+					pressIndex = Math.max(0, others.findIndex((p) => JSON.stringify(p.target) === JSON.stringify(t)));
+				}
+				return;
+			}
+			case 'FlashSequence':
+				choice = 'Sequence';
+				sequenceId = action.sequence_id;
+				sequenceAct = 'Flash';
+				return;
+			case 'GoToCue':
+				choice = 'Sequence';
+				sequenceId = action.sequence_id;
+				sequenceAct = 'GoToCue';
+				cueId = action.cue_id;
+				return;
+			case 'CommandLine':
+				choice = 'CommandLine';
+				line = action.line;
+				return;
+			case 'SelectGroup':
+				choice = 'SelectGroup';
+				groupId = action.group_id;
+				return;
+			case 'Master':
+				choice = 'Master';
+				sequenceId = action.sequence_id;
+				return;
+			case 'Flash':
+			case 'Parameter':
+				choice = action.kind;
+				boundParameter = { fixture_id: action.fixture_id, parameter: action.parameter };
+				parameterKeyChosen = parameterKey(action.parameter);
+				return;
+		}
+	}
+
+	/** The cues of the sequence chosen, in its order, for Go to cue. */
+	const cuesOfSequence = $derived.by((): Cue[] => {
+		const seq = $sequences.find((s) => s.id === sequenceId);
+		if (!seq) return [];
+		const byId = new Map($cues.map((c) => [c.id, c]));
+		return seq.cue_ids.map((id) => byId.get(id)).filter((c): c is Cue => !!c);
 	});
 
 	/** The selection's parameters, for "bind to what is selected". */
@@ -179,8 +277,26 @@
 
 	function actionFromForm(): BindingAction | null {
 		switch (choice) {
+			case 'Sequence': {
+				if (!sequenceId) return null;
+				switch (sequenceAct) {
+					case 'Go':
+						return { kind: 'Press', target: { kind: 'SequenceGo', sequence_id: sequenceId } };
+					case 'Off':
+						return { kind: 'Press', target: { kind: 'SequenceOff', sequence_id: sequenceId } };
+					case 'Flash':
+						return { kind: 'FlashSequence', sequence_id: sequenceId };
+					case 'GoToCue':
+						return cueId ? { kind: 'GoToCue', sequence_id: sequenceId, cue_id: cueId } : null;
+				}
+				return null;
+			}
+			case 'Timeline':
+				return timelineId
+					? { kind: 'Press', target: { kind: 'Timeline', timeline_id: timelineId, from_start: fromStart } }
+					: null;
 			case 'Press': {
-				const target: TileTarget | undefined = pressable[pressIndex]?.target;
+				const target: TileTarget | undefined = others[pressIndex]?.target;
 				return target ? { kind: 'Press', target } : null;
 			}
 			case 'CommandLine':
@@ -189,14 +305,14 @@
 				return groupId ? { kind: 'SelectGroup', group_id: groupId } : null;
 			case 'Master':
 				return sequenceId ? { kind: 'Master', sequence_id: sequenceId } : null;
-			case 'FlashSequence':
-				return sequenceId ? { kind: 'FlashSequence', sequence_id: sequenceId } : null;
 			case 'Flash':
 			case 'Parameter': {
+				// What is selected, where it offers the parameter; otherwise what the control
+				// is bound to now, so opening it and pressing Bind changes nothing.
 				const row = selectedRows.find((r) => r.key === parameterKeyChosen) ?? selectedRows[0];
-				if (!row) return null;
-				const picked = selectedParameter(row.kind as ParameterKind);
-				return picked ? { kind: choice, ...picked } : null;
+				const picked = row ? selectedParameter(row.kind as ParameterKind) : null;
+				const target = picked ?? boundParameter;
+				return target ? { kind: choice, ...target } : null;
 			}
 		}
 	}
@@ -375,9 +491,38 @@
 							<option value={c.kind}>{c.label}</option>
 						{/each}
 					</select>
-					{#if choice === 'Press'}
+					{#if choice === 'Sequence'}
+						<select class="input" bind:value={sequenceId} onchange={() => (cueId = '')}>
+							<option value="">Which sequence?</option>
+							{#each $sequences as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+						</select>
+						<div class="segmented" role="group" aria-label="What the key does">
+							{#each SEQUENCE_ACTS as [act, label] (act)}
+								<button class:on={sequenceAct === act} aria-pressed={sequenceAct === act} onclick={() => (sequenceAct = act)}
+									>{label}</button
+								>
+							{/each}
+						</div>
+						{#if sequenceAct === 'GoToCue'}
+							<select class="input" bind:value={cueId} disabled={!sequenceId}>
+								<option value="">Which cue?</option>
+								{#each cuesOfSequence as c (c.id)}<option value={c.id}>{c.number.toFixed(1)} · {c.name}</option>{/each}
+							</select>
+						{:else if sequenceAct === 'Flash'}
+							<span class="dim">Held: on at full. Let go: off again, on the cue's own times.</span>
+						{/if}
+					{:else if choice === 'Timeline'}
+						<select class="input" bind:value={timelineId}>
+							<option value="">Which timeline?</option>
+							{#each $timelines as t (t.id)}<option value={t.id}>{t.name}</option>{/each}
+						</select>
+						<div class="segmented" role="group" aria-label="What the key does">
+							<button class:on={!fromStart} aria-pressed={!fromStart} onclick={() => (fromStart = false)}>Play / stop</button>
+							<button class:on={fromStart} aria-pressed={fromStart} onclick={() => (fromStart = true)}>Play from the top</button>
+						</div>
+					{:else if choice === 'Press'}
 						<select class="input" bind:value={pressIndex}>
-							{#each pressable as p, i (i)}<option value={i}>{p.label}</option>{/each}
+							{#each others as p, i (i)}<option value={i}>{p.label}</option>{/each}
 						</select>
 					{:else if choice === 'CommandLine'}
 						<input class="input mono" placeholder="group 3 at 50" bind:value={line} />
@@ -386,13 +531,20 @@
 							<option value="">Which group?</option>
 							{#each $groups as g (g.id)}<option value={g.id}>{g.name}</option>{/each}
 						</select>
-					{:else if choice === 'Master' || choice === 'FlashSequence'}
+					{:else if choice === 'Master'}
 						<select class="input" bind:value={sequenceId}>
 							<option value="">Which sequence?</option>
 							{#each $sequences as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
 						</select>
 					{:else if selectedRows.length === 0}
-						<span class="dim">Select the fixture first: this binds to what is selected.</span>
+						{#if boundParameter}
+							<span class="dim"
+								>{fixtureName(boundParameter.fixture_id)} · {displayLabel(boundParameter.parameter)} — select fixtures
+								to bind it to something else.</span
+							>
+						{:else}
+							<span class="dim">Select the fixture first: this binds to what is selected.</span>
+						{/if}
 					{:else}
 						<select class="input" bind:value={parameterKeyChosen}>
 							{#each selectedRows as r (r.key)}<option value={r.key}>{r.label}</option>{/each}

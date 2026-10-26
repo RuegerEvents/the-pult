@@ -106,6 +106,8 @@ struct Lit {
 struct SequenceLight {
     id: Uuid,
     #[serde(default)]
+    cue_ids: Vec<Uuid>,
+    #[serde(default)]
     active_cue_index: Option<usize>,
     #[serde(default)]
     went_at: Option<u64>,
@@ -746,6 +748,9 @@ impl Control {
         match action {
             BindingAction::Flash { fixture_id, parameter } => self.flash(fixture_id, parameter, down).await,
             BindingAction::FlashSequence { sequence_id } => self.flash_sequence(sequence_id, down).await,
+            BindingAction::GoToCue { sequence_id, cue_id } if down => {
+                self.set(field("sequences", sequence_id, "goToCue"), json!({ "cueId": cue_id, "at": now_ms() }), None).await;
+            }
             BindingAction::Press { target } if down => self.press(target).await,
             BindingAction::CommandLine { line } if down => {
                 self.station.update_operator(|op| op.line = line.clone()).await;
@@ -1615,6 +1620,12 @@ impl Control {
     fn live(&self, action: &BindingAction) -> bool {
         if let BindingAction::FlashSequence { sequence_id } = action {
             return self.lit.sequences.iter().any(|s| s.id == *sequence_id && s.active_cue_index.is_some());
+        }
+        // Lit while that cue is the one up.
+        if let BindingAction::GoToCue { sequence_id, cue_id } = action {
+            return self.lit.sequences.iter().any(|s| {
+                s.id == *sequence_id && s.active_cue_index.and_then(|i| s.cue_ids.get(i)) == Some(cue_id)
+            });
         }
         let BindingAction::Press { target } = action else { return false };
         match target {

@@ -268,6 +268,8 @@ pub enum BindingAction {
     /// A key flashes a sequence: held, it goes at full; let go, it goes off again if it
     /// was off before the press, and its fader is back where it was either way.
     FlashSequence { sequence_id: Uuid },
+    /// A key takes one cue of a sequence.
+    GoToCue { sequence_id: Uuid, cue_id: Uuid },
 }
 
 /// One control, bound.
