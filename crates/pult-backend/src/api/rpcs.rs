@@ -497,6 +497,10 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
     // this one's. Before, a page served by a follower (the Pi, the audio MacBook's own
     // window) showed Adopt greyed out with a "Watching" badge as the only explanation.
     if method.starts_with("device.") {
+        // Every one names a device, and a call that does not is refused here rather
+        // than carried to the leader to be refused there — or, with no leader to ask,
+        // left waiting on a question about the session it never needed to put.
+        serial()?;
         if let Some((hostname, http_addr)) = leader_to_relay_to(deps).await {
             return call_station(&hostname, &http_addr, method, args.clone(), std::time::Duration::from_secs(20))
                 .await
@@ -1142,6 +1146,8 @@ pub fn is_local_rpc(method: &str) -> bool {
         // entity command is a *path* write (`["timelines", id, "play"]`) and never
         // reaches this function, which only ever sees the name of a `Call`.
         || method.starts_with("timeline.")
+        // A take waiting for its review: answered here, never by the engine's commands.
+        || method.starts_with("take.")
         || method.starts_with("variable.")
         || method.starts_with("client.")
         || method.starts_with("xchange.")
