@@ -82,6 +82,51 @@ pub struct ShowState {
     local: BTreeMap<String, serde_json::Value>,
 }
 
+/// Lay the SYNCED half of `theirs` over `ours`, leaving the PERSISTED half as it is.
+///
+/// A collection with no PERSISTED field at all — the programmer, the stations — is
+/// theirs whole. Otherwise each row both hold takes their SYNCED fields: a sequence's
+/// cue and master, a timeline's anchor, a fixture's fades. A row only they hold is not
+/// taken, since its create is an operation and arrives as one; a row only we hold is
+/// kept, since our file says it exists.
+fn running_state_over(
+    ours: &mut serde_json::Map<String, serde_json::Value>,
+    theirs: &serde_json::Map<String, serde_json::Value>,
+) {
+    for meta in EntityMeta::all_with_tables() {
+        let Some(table) = meta.table_name else { continue };
+        let Some(their_rows) = theirs.get(table) else { continue };
+        let lifecycles = (meta.field_lifecycles)();
+        if !lifecycles.iter().any(|(_, lc)| *lc == Lifecycle::Persisted) {
+            ours.insert(table.to_string(), their_rows.clone());
+            continue;
+        }
+        let synced: Vec<&str> =
+            lifecycles.iter().filter(|(_, lc)| *lc == Lifecycle::Synced).map(|(f, _)| *f).collect();
+        if synced.is_empty() {
+            continue;
+        }
+        let Some(our_rows) = ours.get_mut(table) else { continue };
+        let take = |ours: &mut serde_json::Value, theirs: &serde_json::Value| {
+            let (Some(ours), Some(theirs)) = (ours.as_object_mut(), theirs.as_object()) else { return };
+            for field in &synced {
+                if let Some(value) = theirs.get(*field) {
+                    ours.insert(field.to_string(), value.clone());
+                }
+            }
+        };
+        if meta.is_singleton {
+            take(our_rows, their_rows);
+        } else if let (Some(our_rows), Some(their_rows)) = (our_rows.as_object_mut(), their_rows.as_object()) {
+            for (id, row) in our_rows.iter_mut() {
+                if let Some(theirs) = their_rows.get(id) {
+                    take(row, theirs);
+                }
+            }
+        }
+    }
+}
+
 /// The LOCAL top-level paths and what an empty one looks like.
 ///
 /// Seeding matters: a frontend that asks for `devices` before the device manager
@@ -392,6 +437,9 @@ pub enum EngineCommand {
     /// be cheaper than sending them.
     GetOperationsSince {
         known: VectorClock,
+        /// Every operation the log still holds, however many: for a peer that will
+        /// not be sent a whole show instead (`CatchUp::ReplayThenRunning`).
+        however_many: bool,
         reply: oneshot::Sender<Option<Vec<Operation>>>,
     },
     LoadFromShowfile,
@@ -402,6 +450,9 @@ pub enum EngineCommand {
     /// Apply a snapshot received from the session leader. Replaces in-memory state
     /// and broadcasts updates to connected frontends.
     ApplyStateSnapshot(serde_json::Value),
+    /// Take the SYNCED half of a peer's whole show, keeping this station's PERSISTED
+    /// half: see `SyncMessage::RunningState`.
+    ApplyRunningState(serde_json::Value),
     Stop,
 }
 
@@ -562,7 +613,15 @@ impl EngineHandle {
     /// would be the cheaper way to catch them up.
     pub async fn operations_since(&self, known: VectorClock) -> Option<Vec<Operation>> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.0.send(EngineCommand::GetOperationsSince { known, reply: tx }).await;
+        let _ = self.0.send(EngineCommand::GetOperationsSince { known, however_many: false, reply: tx }).await;
+        rx.await.ok().flatten()
+    }
+
+    /// The same, with no point past which a whole show would be cheaper: `None` only
+    /// where the log has been pruned past what `known` last saw.
+    pub async fn every_operation_since(&self, known: VectorClock) -> Option<Vec<Operation>> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.0.send(EngineCommand::GetOperationsSince { known, however_many: true, reply: tx }).await;
         rx.await.ok().flatten()
     }
 
@@ -578,6 +637,10 @@ impl EngineHandle {
 
     pub async fn apply_state_snapshot(&self, snapshot: serde_json::Value) {
         let _ = self.0.send(EngineCommand::ApplyStateSnapshot(snapshot)).await;
+    }
+
+    pub async fn apply_running_state(&self, state: serde_json::Value) {
+        let _ = self.0.send(EngineCommand::ApplyRunningState(state)).await;
     }
 
     pub async fn call(
@@ -1203,8 +1266,8 @@ impl ShowEngine {
                 EngineCommand::GetClock { reply } => {
                     let _ = reply.send(self.clock.clone());
                 }
-                EngineCommand::GetOperationsSince { known, reply } => {
-                    let _ = reply.send(self.operations_since(&known).await);
+                EngineCommand::GetOperationsSince { known, however_many, reply } => {
+                    let _ = reply.send(self.operations_since(&known, however_many).await);
                 }
                 EngineCommand::GetSnapshot { reply } => {
                     let snapshot = self.build_snapshot();
@@ -1212,6 +1275,10 @@ impl ShowEngine {
                 }
                 EngineCommand::ApplyStateSnapshot(snapshot) => {
                     self.apply_snapshot(snapshot).await;
+                    self.touch_everything();
+                }
+                EngineCommand::ApplyRunningState(state) => {
+                    self.apply_running_state(state);
                     self.touch_everything();
                 }
             }
@@ -3312,8 +3379,8 @@ impl ShowEngine {
     ///
     /// A node that has never heard from anyone has an empty clock and would be sent
     /// every operation ever recorded, which is strictly worse than a snapshot.
-    async fn operations_since(&self, known: &VectorClock) -> Option<Vec<Operation>> {
-        if known.0.is_empty() {
+    async fn operations_since(&self, known: &VectorClock, however_many: bool) -> Option<Vec<Operation>> {
+        if known.0.is_empty() && !however_many {
             return None;
         }
         // Anything below a prune floor is gone, so the rows that survive are not the
@@ -3326,7 +3393,7 @@ impl ShowEngine {
         let missing = oplog::since(&self.pool, known).await.ok()?;
         let total = oplog::len(&self.pool).await.unwrap_or(0);
         // Replaying most of the log is not catch-up, it is a slow snapshot.
-        if total > 0 && missing.len() as u64 * 2 > total {
+        if !however_many && total > 0 && missing.len() as u64 * 2 > total {
             return None;
         }
         Some(missing)
@@ -3805,6 +3872,27 @@ impl ShowEngine {
                 self.persist_order(meta, table).await;
             }
         }
+        for key in ShowState::frontend_paths() {
+            let path = vec![PathSegment::Key(key)];
+            if let Some(val) = self.state.get_by_path(&path) {
+                let _ = self.broadcast.0.send((path, val));
+            }
+        }
+    }
+
+    /// Take what is running from a peer's whole show and nothing else: see
+    /// [`running_state_over`]. Nothing is written to the showfile, since nothing it
+    /// holds has changed.
+    fn apply_running_state(&mut self, data: serde_json::Value) {
+        let Ok(theirs) = serde_json::from_value::<ShowState>(data) else {
+            warn!("[sync] could not read what a peer says is running");
+            return;
+        };
+        running_state_over(&mut self.state.entities, &theirs.entities);
+        self.outputs_dirty = true;
+        self.inputs_dirty = true;
+        self.flows_dirty = true;
+        self.path_clocks.clear();
         for key in ShowState::frontend_paths() {
             let path = vec![PathSegment::Key(key)];
             if let Some(val) = self.state.get_by_path(&path) {

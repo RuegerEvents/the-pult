@@ -5231,3 +5231,28 @@ async fn a_restarted_station_counts_on_from_where_its_log_got_to() {
     let after = showfile::oplog::clock(&pool).await.unwrap().0[&me];
     assert!(after > before, "numbered past {before}, not from zero: {after}");
 }
+
+/// A restarted leader takes what is running from a follower and keeps its own show: a
+/// follower that never heard of a rename must not take it back.
+#[test]
+fn what_is_running_is_laid_over_the_show_and_leaves_it_alone() {
+    let id = Uuid::new_v4();
+    let cue = Uuid::new_v4();
+    let mut ours = serde_json::json!({
+        "sequences": { id.to_string(): { "id": id, "name": "Renamed", "cue_ids": [cue], "active_cue_index": null } },
+        "programmer_values": {},
+    });
+    let theirs = serde_json::json!({
+        "sequences": {
+            id.to_string(): { "id": id, "name": "Old name", "cue_ids": [cue], "active_cue_index": 0 },
+            Uuid::new_v4().to_string(): { "name": "Only theirs" },
+        },
+        "programmer_values": { "k": { "value": 1 } },
+    });
+    super::running_state_over(ours.as_object_mut().unwrap(), theirs.as_object().unwrap());
+    let row = &ours["sequences"][id.to_string()];
+    assert_eq!(row["name"], "Renamed", "the show is this station's");
+    assert_eq!(row["active_cue_index"], 0, "what is running is theirs");
+    assert_eq!(ours["sequences"].as_object().unwrap().len(), 1, "a create arrives as an operation");
+    assert_eq!(ours["programmer_values"]["k"]["value"], 1, "a SYNCED collection is theirs whole");
+}

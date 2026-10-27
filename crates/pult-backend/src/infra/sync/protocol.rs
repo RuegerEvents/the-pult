@@ -36,7 +36,12 @@ use pult_schema::{
 // changed and never on what it had that the leader did not, so stations drifted apart
 // row by row (a wing binding on the Pi and in no other showfile, a show name that
 // differed between stations; the gig, 2026-10-25).
-pub const PROTOCOL_VERSION: u32 = 10;
+// 11 added RunningState: a leader that has just restarted is sent what it missed and
+// what is running, never a whole show. A follower's whole show overwrote the leader's
+// own file with whatever that follower had happened to receive, and one that had not
+// been linked to every station took a rename and a flow edit back out of the show
+// (the gig, 2026-10-27).
+pub const PROTOCOL_VERSION: u32 = 11;
 
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024; // 8 MiB safety cap
 
@@ -100,6 +105,13 @@ pub enum SyncMessage {
     /// Full ShowState snapshot sent by leader immediately after HelloAck.
     /// The joiner applies it so it starts with current data, not an empty slate.
     StateSnapshot {
+        state: serde_json::Value,
+    },
+    /// The SYNCED half of a whole show — what is running, the programmer, the
+    /// stations — for a leader that has just restarted and lost it. Its PERSISTED half
+    /// is left alone: the leader's own file is the show, and what it missed while it
+    /// was away arrives as an `OperationBatch` first.
+    RunningState {
         state: serde_json::Value,
     },
     /// Field/entity update — replicate to all nodes.

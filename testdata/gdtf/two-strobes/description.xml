@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<GDTF DataVersion="1.2">
+    <FixtureType Name="Test Strobe" ShortName="TSTR" LongName="Test Strobe" Manufacturer="Pult" Description="A strobe in the shape of a Martin Atomic 3000: how often it flashes and how long each flash lasts are two channels, and a mode with two spellings of one strobe beside them." FixtureTypeID="1B1E4C3A-0000-4000-8000-000000000005" CanHaveChildren="No">
+        <AttributeDefinitions>
+            <FeatureGroups>
+                <FeatureGroup Name="Dimmer" Pretty="Dimmer">
+                    <Feature Name="Dimmer"/>
+                </FeatureGroup>
+                <FeatureGroup Name="Beam" Pretty="Beam">
+                    <Feature Name="Beam"/>
+                </FeatureGroup>
+            </FeatureGroups>
+            <Attributes>
+                <Attribute Name="Dimmer" Pretty="Dim" Feature="Dimmer.Dimmer" PhysicalUnit="Percent"/>
+                <Attribute Name="StrobeDuration" Pretty="Strobe Duration" Feature="Beam.Beam" PhysicalUnit="Time"/>
+                <Attribute Name="StrobeRate" Pretty="Strobe Rate" Feature="Beam.Beam" PhysicalUnit="Frequency"/>
+                <Attribute Name="Shutter1Strobe" Pretty="Strobe" Feature="Beam.Beam" PhysicalUnit="Frequency"/>
+            </Attributes>
+        </AttributeDefinitions>
+        <Models>
+            <Model Name="Body" Length="0.2" Width="0.2" Height="0.3" PrimitiveType="Cube"/>
+        </Models>
+        <Geometries>
+            <Geometry Name="Body" Model="Body" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,0,1}">
+                <Beam Name="Beam" Model="Body" Position="{1,0,0,0}{0,1,0,0}{0,0,1,0}{0,0,150,1}" LuminousFlux="1000" ColorTemperature="6500" BeamAngle="120" FieldAngle="130" BeamRadius="0.05" BeamType="Wash"/>
+            </Geometry>
+        </Geometries>
+        <DMXModes>
+            <DMXMode Name="Atomic" Geometry="Body">
+                <DMXChannels>
+                    <DMXChannel DMXBreak="1" Offset="1" Geometry="Body">
+                        <LogicalChannel Attribute="Dimmer">
+                            <ChannelFunction Name="Dimmer" Attribute="Dimmer" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="1"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="2" Geometry="Body">
+                        <LogicalChannel Attribute="StrobeDuration">
+                            <ChannelFunction Name="Duration" Attribute="StrobeDuration" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="0.65"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="3" Geometry="Body">
+                        <LogicalChannel Attribute="StrobeRate">
+                            <ChannelFunction Name="Rate" Attribute="StrobeRate" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="25"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                </DMXChannels>
+            </DMXMode>
+            <DMXMode Name="Two spellings" Geometry="Body">
+                <DMXChannels>
+                    <DMXChannel DMXBreak="1" Offset="1" Geometry="Body">
+                        <LogicalChannel Attribute="Shutter1Strobe">
+                            <ChannelFunction Name="Strobe" Attribute="Shutter1Strobe" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="25"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                    <DMXChannel DMXBreak="1" Offset="2" Geometry="Body">
+                        <LogicalChannel Attribute="StrobeRate">
+                            <ChannelFunction Name="Rate" Attribute="StrobeRate" DMXFrom="0/1" Default="0/1" PhysicalFrom="0" PhysicalTo="25"/>
+                        </LogicalChannel>
+                    </DMXChannel>
+                </DMXChannels>
+            </DMXMode>
+        </DMXModes>
+        <Revisions>
+            <Revision Text="First" Date="2026-10-27T00:00:00" ModifiedBy="the-pult"/>
+        </Revisions>
+    </FixtureType>
+</GDTF>

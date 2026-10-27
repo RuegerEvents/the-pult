@@ -58,6 +58,11 @@ async fn a_node_already_linked() -> Node {
 }
 
 async fn a_node_built(skew_ms: i64, linked: bool) -> Node {
+    a_node_following(skew_ms, linked, None).await
+}
+
+/// A station whose leader went away: `lost` is the one it was following.
+async fn a_node_following(skew_ms: i64, linked: bool, lost: Option<NodeId>) -> Node {
     let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
     let id = NodeId(Uuid::new_v4());
     let (tx, rx) = tokio::sync::mpsc::channel(256);
@@ -69,6 +74,7 @@ async fn a_node_built(skew_ms: i64, linked: bool) -> Node {
     if linked {
         manager.watched.fresh.linked();
     }
+    *manager.watched.lost_leader.lock().unwrap() = lost;
     let sync_mgr_links = manager.peer_links();
     tokio::spawn(manager.run());
 
@@ -431,6 +437,29 @@ async fn a_station_that_has_just_started_is_sent_a_snapshot_whatever_its_clock_s
     }
 }
 
+/// The leader restarts, and the station that stood in for it never heard of a rename
+/// the leader's own file holds — at the gig it had never been linked to the laptop
+/// the rename was made at. It hands back what it did meanwhile and what is running,
+/// never its copy of the show, so the rename stays.
+#[tokio::test]
+async fn a_restarted_leader_keeps_its_show_and_takes_what_is_running() {
+    let leader = a_node().await;
+    let renamed = a_sequence("Renamed");
+    create(&leader, &renamed).await;
+
+    let stand_in = a_node_following(0, true, Some(leader.id)).await;
+    create(&stand_in, &Sequence { name: "Old name".into(), ..renamed.clone() }).await;
+    let added = a_sequence("Made while the leader was away");
+    create(&stand_in, &added).await;
+
+    stand_in.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("answers");
+    eventually("the leader to have what was made while it was away", || async {
+        name_of(&leader, added.id).await.as_deref() == Some("Made while the leader was away")
+    })
+    .await;
+    assert_eq!(name_of(&leader, renamed.id).await.as_deref(), Some("Renamed"), "its own show stays");
+}
+
 /// A follower takes the leader's whole show, so a row only it had — the Pi's wing
 /// binding at the gig — is gone from it after joining, from memory and from its file.
 /// A replay since a clock carried what changed and never that.
@@ -459,13 +488,18 @@ async fn a_follower_drops_what_the_leader_does_not_have() {
 #[test]
 fn who_catches_whom_up() {
     use super::peer::{catch_up, CatchUp::*};
-    // (we lead, they lead, we are fresh, they are fresh)
-    assert_eq!(catch_up(false, true, false, false), ReplayThenRequest, "a follower takes the leader's show");
-    assert_eq!(catch_up(true, false, false, false), Wait, "and the leader is asked for it");
-    assert_eq!(catch_up(false, true, false, true), SendSnapshot, "unless the leader has just restarted");
-    assert_eq!(catch_up(true, false, true, false), Replay, "which then waits for the follower's");
-    assert_eq!(catch_up(false, false, false, false), Replay, "two followers replay as before");
-    assert_eq!(catch_up(false, true, true, true), ReplayThenRequest, "a venue powered up at once");
+    // (we lead, they lead, we are fresh, they are fresh, they were our leader)
+    assert_eq!(catch_up(false, true, false, false, false), ReplayThenRequest, "a follower takes the leader's show");
+    assert_eq!(catch_up(true, false, false, false, false), Wait, "and the leader is asked for it");
+    assert_eq!(catch_up(false, true, false, true, false), SendSnapshot, "unless the other has just restarted");
+    assert_eq!(
+        catch_up(false, true, false, true, true),
+        ReplayThenRunning,
+        "and a restarted leader keeps its own file, and is told what it missed"
+    );
+    assert_eq!(catch_up(true, false, true, false, false), Replay, "which then waits for the follower's");
+    assert_eq!(catch_up(false, false, false, false, false), Replay, "two followers replay as before");
+    assert_eq!(catch_up(false, true, true, true, false), ReplayThenRequest, "a venue powered up at once");
 }
 
 /// The point of the oplog: a node that was connected, missed a few writes, and came

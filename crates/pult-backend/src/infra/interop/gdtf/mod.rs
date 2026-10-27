@@ -185,6 +185,7 @@ fn derive_parameters(
         .map(|attribute| (attribute.name.as_str(), attribute))
         .collect();
 
+    let crowded = crowded_out(gdtf);
     let mut parameters: Vec<ParameterDefinition> = Vec::new();
     let mut emitters: Vec<Emitter> = Vec::new();
     let mut seen: BTreeMap<(String, bool), usize> = BTreeMap::new();
@@ -208,7 +209,7 @@ fn derive_parameters(
                 }
             }
 
-            let Some(kind) = attributes::kind_for(attribute) else { continue };
+            let Some(kind) = kind_in(attribute, &crowded) else { continue };
             let key = parameter_key(&kind);
 
             if let Some(color) = attributes::color_channel(attribute) {
@@ -244,7 +245,7 @@ fn derive_parameters(
                     .and_then(|a| a.feature.as_ref())
                     .and_then(|feature| feature.0.first().cloned()),
                 per_cell,
-                ..ParameterDefinition::new(kind, resting_value_for(&kind_of(attribute)))
+                ..ParameterDefinition::new(kind.clone(), resting_value_for(&kind))
             });
         }
     }
@@ -272,8 +273,62 @@ fn derive_parameters(
     (parameters, emitters, cells)
 }
 
-fn kind_of(attribute: &str) -> ParameterKind {
-    attributes::kind_for(attribute).unwrap_or(ParameterKind::Named(attribute.to_string()))
+/// The attributes that keep their own name because another attribute in the same mode
+/// has already taken the parameter they would map to.
+///
+/// [`attributes::kind_for`] folds several GDTF attributes onto one kind — a strobe has
+/// four spellings — which is right while a fixture uses one of them and loses a channel
+/// when it uses two: both land on one key, the type declares one parameter, and the
+/// one value is sent down both channels. The Martin Atomic 3000's flash length went
+/// that way under its rate. So the first attribute to reach a key keeps it and any
+/// other in the same mode is `Named`, controllable on its own the way any attribute
+/// nobody has thought about is. A color's channels are excepted: being one parameter is
+/// the point of them.
+fn crowded_out(gdtf: &GdtfType) -> std::collections::BTreeSet<String> {
+    let fine: std::collections::BTreeSet<&str> = gdtf
+        .attribute_definitions
+        .attributes
+        .items
+        .iter()
+        .filter(|a| a.main_attribute.as_ref().is_some_and(|m| !m.is_empty()))
+        .map(|a| a.name.as_str())
+        .collect();
+    let mut owner: BTreeMap<String, String> = BTreeMap::new();
+    let mut crowded = std::collections::BTreeSet::new();
+    for mode in &gdtf.dmx_modes.items {
+        let (channels, _) = resolve::expand_mode(gdtf, mode);
+        let mut here: BTreeMap<String, String> = BTreeMap::new();
+        for channel in &channels {
+            let Some(attribute) = channel.attribute.and_then(|node| node.last()) else { continue };
+            if fine.contains(&*attribute) || attributes::color_channel(attribute).is_some() {
+                continue;
+            }
+            let Some(kind) = attributes::kind_for(attribute) else { continue };
+            let key = parameter_key(&kind);
+            let first = here.entry(key.clone()).or_insert_with(|| attribute.to_string()).clone();
+            if first != *attribute {
+                // Whichever reached the key first in the whole file keeps it, so one
+                // mode cannot give it to one attribute and another to the other.
+                let keeper = owner.entry(key).or_insert_with(|| first.clone()).clone();
+                for each in [first, attribute.to_string()] {
+                    if each != keeper {
+                        crowded.insert(each);
+                    }
+                }
+            } else {
+                owner.entry(key).or_insert(first);
+            }
+        }
+    }
+    crowded
+}
+
+/// An attribute's kind once [`crowded_out`] has had its say.
+fn kind_in(attribute: &str, crowded: &std::collections::BTreeSet<String>) -> Option<ParameterKind> {
+    if crowded.contains(attribute) {
+        return Some(ParameterKind::Named(attribute.to_string()));
+    }
+    attributes::kind_for(attribute)
 }
 
 /// Where a parameter rests before anything drives it.
@@ -379,6 +434,7 @@ fn derive_modes(
     parameters: &[ParameterDefinition],
     warnings: &mut Vec<Warning>,
 ) -> Vec<DmxMode> {
+    let crowded = crowded_out(gdtf);
     gdtf.dmx_modes
         .items
         .iter()
@@ -387,7 +443,7 @@ fn derive_modes(
             let breaks = resolve::footprint(gdtf, mode);
             let layouts = channels
                 .iter()
-                .filter_map(|channel| layout_of(channel, emitters, parameters, warnings))
+                .filter_map(|channel| layout_of(channel, emitters, parameters, &crowded, warnings))
                 .collect();
             DmxMode { name: mode.name.clone(), breaks, channels: layouts }
         })
@@ -398,10 +454,11 @@ fn layout_of(
     channel: &resolve::ResolvedChannel<'_>,
     emitters: &[Emitter],
     parameters: &[ParameterDefinition],
+    crowded: &std::collections::BTreeSet<String>,
     warnings: &mut Vec<Warning>,
 ) -> Option<DmxChannelLayout> {
     let attribute = channel.attribute?.last()?.to_string();
-    let base = attributes::kind_for(&attribute)?;
+    let base = kind_in(&attribute, crowded)?;
     // A cell's channel names its cell, and a channel on no reference is the whole
     // fixture's: a bar's master, or the one color of a one-color mode. Both kinds are
     // declared (see `derive_parameters`), so each channel reads the key it carries.

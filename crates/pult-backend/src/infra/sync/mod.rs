@@ -653,6 +653,9 @@ impl SyncManager {
 
         self.members.retain(|id| *id != lost);
         let _ = self.leader.send(winner);
+        if let Ok(mut gone) = self.watched.lost_leader.lock() {
+            *gone = Some(lost);
+        }
 
         if winner == self.node_id {
             info!("[sync] leader {} is gone; taking over", lost.0);

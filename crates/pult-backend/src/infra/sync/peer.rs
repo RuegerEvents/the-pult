@@ -93,6 +93,18 @@ pub struct Watched {
     /// Whether this station has just started, which decides how its first link
     /// catches it up.
     pub fresh: Freshness,
+    /// The leader this station was following when it went away, if one did. Such a
+    /// station coming back fresh is told what it missed and what is running rather than
+    /// sent this station's whole show (`CatchUp::ReplayThenRunning`). Its own account
+    /// of who leads cannot decide that: a station that has just started answers that
+    /// it leads whether it did or not.
+    pub lost_leader: Arc<std::sync::Mutex<Option<NodeId>>>,
+}
+
+impl Watched {
+    fn lost_leader_is(&self, peer: NodeId) -> bool {
+        self.lost_leader.lock().map(|l| *l == Some(peer)).unwrap_or(false)
+    }
 }
 
 /// A station that has just started, and has not been linked to a peer since.
@@ -142,8 +154,13 @@ impl Freshness {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatchUp {
     /// Send the other side this station's whole show: it has just started, and this
-    /// one has not (see [`Freshness`]).
+    /// one has not (see [`Freshness`]), and this one leads.
     SendSnapshot,
+    /// Send the other side the operations it has not seen and then what is running
+    /// (`RunningState`): it is the leader this station was following, back from a
+    /// restart — so its file is the show, and only what it lost with its memory, and
+    /// what was done while it was away, are this station's to give it.
+    ReplayThenRunning,
     /// Send the operations it has not seen, and nothing more.
     Replay,
     /// Send what this station did that the leader has not seen, then ask for the
@@ -159,12 +176,24 @@ pub enum CatchUp {
 ///
 /// A follower takes the leader's whole show, because a replay since a clock carries
 /// what changed and never what a joiner holds that the leader does not — which is how
-/// stations drifted apart row by row. The exception is a leader that has just
-/// restarted and lost what it held in memory; a follower that has not is the one that
-/// knows the show, and sends it. Two stations neither of which leads replay as they
-/// always did.
-pub fn catch_up(we_lead: bool, they_lead: bool, we_are_fresh: bool, they_are_fresh: bool) -> CatchUp {
-    if they_are_fresh && !we_are_fresh {
+/// stations drifted apart row by row. The exception is a station that has just
+/// restarted and lost what it held in memory. Led by the side that has not, it takes
+/// that side's whole show like any follower — unless it is the leader that side was
+/// following (`they_were_our_leader`), which is given what it missed and what is
+/// running and keeps its own file. A follower's copy of the show is only as good as
+/// the links it had, and sent whole it once took a rename and a flow edit back out of
+/// the leader's show because it had never been linked to the station they were made
+/// at. Two stations neither of which leads replay as they always did.
+pub fn catch_up(
+    we_lead: bool,
+    they_lead: bool,
+    we_are_fresh: bool,
+    they_are_fresh: bool,
+    they_were_our_leader: bool,
+) -> CatchUp {
+    if they_are_fresh && !we_are_fresh && they_were_our_leader {
+        CatchUp::ReplayThenRunning
+    } else if they_are_fresh && !we_are_fresh {
         CatchUp::SendSnapshot
     } else if we_are_fresh && !they_are_fresh {
         CatchUp::Replay
@@ -184,6 +213,34 @@ async fn snapshot_message(engine: &EngineHandle, to: NodeId) -> SyncMessage {
     let bytes = serde_json::to_vec(&state).map(|b| b.len()).unwrap_or(0);
     info!("[sync] sending peer {} the whole show ({} kB)", to.0, bytes / 1024);
     SyncMessage::StateSnapshot { state }
+}
+
+/// What a restarted station that is not following us missed, then what is running.
+///
+/// Where the log can no longer say what it missed, it is sent nothing in place of that
+/// rather than a whole show: what was done here while it was away is lost to it, and a
+/// whole show would take back what was done there before it went, which is worse.
+async fn send_what_is_running<W: tokio::io::AsyncWrite + Unpin>(
+    write_half: &mut W,
+    engine: &EngineHandle,
+    to: NodeId,
+    known: VectorClock,
+) -> Result<()> {
+    match engine.every_operation_since(known).await {
+        Some(operations) => {
+            info!("[sync] peer {} has just started; replaying {} operations and what is running", to.0, operations.len());
+            if !operations.is_empty() {
+                write_frame(write_half, &SyncMessage::OperationBatch { operations }).await?;
+            }
+        }
+        None => warn!(
+            "[sync] peer {} has just started and this log no longer reaches back to what it last saw; \
+             sending what is running, and none of what was done here meanwhile",
+            to.0
+        ),
+    }
+    let state = engine.get_snapshot().await;
+    write_frame(write_half, &SyncMessage::RunningState { state }).await
 }
 
 /// Spawns an outbound peer connection task.
@@ -238,11 +295,20 @@ pub async fn spawn_outbound(
 
     // Catch-up runs both ways. A node that reconnects is not always the stale one:
     // it may have been writing while it was away.
-    let how = catch_up(link_leader == our_node_id, link_leader == peer_node_id, we_are_fresh, peer_fresh);
+    let how = catch_up(
+        link_leader == our_node_id,
+        link_leader == peer_node_id,
+        we_are_fresh,
+        peer_fresh,
+        watched.lost_leader_is(peer_node_id),
+    );
     match how {
         CatchUp::SendSnapshot => {
             // It has just started and lost what it held in memory; see `Freshness`.
             write_frame(&mut write_half, &snapshot_message(&engine, peer_node_id).await).await?;
+        }
+        CatchUp::ReplayThenRunning => {
+            send_what_is_running(&mut write_half, &engine, peer_node_id, peer_clock).await?;
         }
         CatchUp::Replay | CatchUp::ReplayThenRequest => {
             if let Some(operations) = engine.operations_since(peer_clock).await {
@@ -365,11 +431,20 @@ async fn handle_inbound(
 
     // Bring the joiner up to date: `catch_up` is the rule, decided the same way at the
     // other end. A replay the oplog can no longer answer is the whole show instead.
-    let how = catch_up(leader_node_id == our_node_id, leader_node_id == peer_node_id, we_are_fresh, peer_fresh);
+    let how = catch_up(
+        leader_node_id == our_node_id,
+        leader_node_id == peer_node_id,
+        we_are_fresh,
+        peer_fresh,
+        watched.lost_leader_is(peer_node_id),
+    );
     watched.fresh.linked();
     match how {
         CatchUp::SendSnapshot => {
             write_frame(&mut write_half, &snapshot_message(&engine, peer_node_id).await).await?;
+        }
+        CatchUp::ReplayThenRunning => {
+            send_what_is_running(&mut write_half, &engine, peer_node_id, peer_clock).await?;
         }
         CatchUp::Replay | CatchUp::ReplayThenRequest => {
             match engine.operations_since(peer_clock).await {
@@ -868,6 +943,10 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
             info!("[sync] received state snapshot from peer {}", peer_node_id.0);
             engine.apply_state_snapshot(state).await;
         }
+        SyncMessage::RunningState { state } => {
+            info!("[sync] received what is running from peer {}", peer_node_id.0);
+            engine.apply_running_state(state).await;
+        }
         SyncMessage::SyncedBroadcast { path, value, clock, authorship, .. } => {
             apply_synced(engine, peer_node_id, path, value, clock, authorship).await;
         }
@@ -910,7 +989,12 @@ async fn apply_synced(
     let op = Operation {
         id: Uuid::new_v4(),
         node_id: peer_node_id,
-        seq: 0,
+        // The writer's own sequence number, which is its entry in the clock it wrote
+        // under — what `log_local_write` stamped the same write with over there. Zero
+        // here once made every live write from a peer one row: the log is keyed by
+        // `(node_id, seq)` and replaces, so each write overwrote the one before, and a
+        // peer's rename lasted until its next station row two seconds later.
+        seq: clock.0.get(&peer_node_id).copied().unwrap_or(0),
         clock,
         lifecycle,
         path,
@@ -938,6 +1022,26 @@ mod tests {
     fn at(ms: u64) -> tokio::time::Instant {
         // A fixed origin, so the arithmetic is the thing under test.
         tokio::time::Instant::now() + std::time::Duration::from_millis(ms)
+    }
+
+    /// Two live writes from one peer are two rows in this station's log, not one.
+    #[tokio::test]
+    async fn a_live_write_from_a_peer_keeps_the_writers_own_sequence_number() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let engine = EngineHandle(tx);
+        let peer = NodeId(Uuid::new_v4());
+        let mut seqs = Vec::new();
+        for n in [41u64, 42] {
+            let mut clock = VectorClock::default();
+            clock.0.insert(peer, n);
+            clock.0.insert(NodeId(Uuid::new_v4()), 900);
+            apply_synced(&engine, peer, vec![], Value::Null, clock, Authorship::default()).await;
+            match rx.recv().await {
+                Some(EngineCommand::ApplyPeerOperation(op)) => seqs.push(op.seq),
+                _ => panic!("the write reaches the engine"),
+            }
+        }
+        assert_eq!(seqs, vec![41, 42]);
     }
 
     #[test]

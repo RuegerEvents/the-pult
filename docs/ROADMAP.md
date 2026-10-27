@@ -7788,6 +7788,48 @@ cargo test -p pult-backend --lib model::flows
 cd frontend && npx vitest run src/lib/flow.test.ts
 ```
 
+### 95. A peer's write stays written, a restarted leader keeps its show, and every channel is a parameter
+
+Found at the gig (2026-10-27): a node renamed from the audio laptop came back with its
+old name, and a flow pointed at the online node went back to the offline one. Both
+changes had reached the Mini; neither was on its disk.
+
+**A live write from a peer was logged as sequence 0.** `apply_synced` built the
+operation with `seq: 0`, and the oplog is keyed by `(node_id, seq)` and replaces, so
+every live write from one peer overwrote the one before. The rename lasted until the
+laptop's next `stations` row two seconds later. Only the operations a catch-up replayed
+were logged right. The seq is now the writer's own entry in the clock it wrote under,
+which is what `log_local_write` stamped it with over there. Probably also behind the
+Pi's drift on 2026-10-25.
+
+**And a restarted leader took a follower's whole show.** `catch_up` sent a fresh station
+the other side's snapshot, which was right for a follower and wrong for the leader: the
+Pi, standing in, handed the Mini its copy, and the Pi had never been linked to the
+laptop, so the rename was not in it. Now the station a restarted leader was following
+(`Watched::lost_leader`, set in `elect_leader`) sends `ReplayThenRunning`: every operation
+the leader has not seen, however many (`every_operation_since`), then `RunningState`,
+the SYNCED half of a show, laid over the leader's own (`running_state_over`). The
+leader's file stays the show. A restarted *follower* still takes the leader's whole show.
+Decided by the surviving side, because a station that has just started answers "I
+lead" whatever it did before. Protocol 11.
+
+Flows were never the problem: a source holds a fixture id. Both nodes being called
+"Node V0 …" just hid which one it was.
+
+**Two channels, two parameters.** The Martin Atomic 3000 from the GDTF Share has
+`StrobeDuration` and `StrobeRate`; both mapped to `Strobe`, the type declared one
+parameter, and the rate went out on both channels. `StrobeDuration` is its own name now,
+and `crowded_out` in `interop/gdtf` is the general rule: where two attributes in one mode
+would share a key, whichever reached it first in the file keeps it and the other is
+`Named`. Color channels are exempt. A stored `.gdtf` takes the fix by importing it again,
+which replaces the type in place.
+
+```
+cargo test -p pult-backend --lib infra::sync
+cargo test -p pult-backend --lib engine::tests::what_is_running
+cargo test -p pult-backend --lib interop::gdtf
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

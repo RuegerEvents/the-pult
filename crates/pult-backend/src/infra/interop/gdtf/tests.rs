@@ -357,3 +357,33 @@ fn a_minimal_file_is_still_a_fixture_type() {
     assert_eq!(fixture_type.parameters[0].kind, ParameterKind::Intensity);
     assert_eq!(fixture_type.physical.beam_angle_deg, Some(25.0));
 }
+
+/// Two channels, two parameters. A strobe's rate and its flash length both went to
+/// `Strobe` and the type declared one parameter for two channels — a Martin Atomic
+/// 3000 from the GDTF Share had no way to set how long a flash lasts, and its rate
+/// went out on both. And where two spellings of one thing share a mode, the second
+/// keeps its own name rather than vanishing under the first.
+#[test]
+fn every_channel_of_a_mode_is_a_parameter_of_its_own() {
+    let (fixture_type, _) = derive("two-strobes");
+    for mode in &fixture_type.dmx_modes {
+        let keys: Vec<&str> = mode.channels.iter().map(|c| c.parameter_key.as_str()).collect();
+        let mut distinct = keys.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), keys.len(), "{} puts two channels under one key: {keys:?}", mode.name);
+        for key in keys {
+            assert!(fixture_type.parameter_for_key(key).is_some(), "{key} in {} is a parameter", mode.name);
+        }
+    }
+    let atomic = &fixture_type.dmx_modes[0];
+    let keys: Vec<&str> = atomic.channels.iter().map(|c| c.parameter_key.as_str()).collect();
+    assert_eq!(keys, ["Intensity", "Named:StrobeDuration", "Strobe"]);
+    let spellings = &fixture_type.dmx_modes[1];
+    let keys: Vec<&str> = spellings.channels.iter().map(|c| c.parameter_key.as_str()).collect();
+    assert_eq!(
+        keys,
+        ["Named:Shutter1Strobe", "Strobe"],
+        "the spelling that reached the key first in the file keeps it in every mode"
+    );
+}
