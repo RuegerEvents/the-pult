@@ -7732,6 +7732,34 @@ cargo test -p pult-backend --lib a_patched_node      # listed offline after a re
 cd frontend && npx vitest run src/lib/zones.test.ts
 ```
 
+### 93. A value comes out of a cue, and the light lets go of it
+
+Asked at the gig (2026-10-27): how is a value taken out of a cue? Only by loading the
+cue into the programmer, taking the entry out there and Updating, which replaces — or a
+Store with *Replace* and the rest ticked. Two direct ways now, both one write of the
+cue's `captures`, so one Ctrl-Z:
+
+- **The sheet, with the cue in view.** The strip under a picked cell has *Remove from
+  cue* and *Remove fixture from cue*, beside the timing it already edited.
+- **The cue's Inspector**, opened from the *Caps* count in the cue list: every capture as
+  a row — fixture, parameter, value, its own timing — with ✕ per row and *Remove N from
+  cue* for the ticked ones.
+
+**And the light follows.** `repoint_edited_captures` reached only a fade whose capture
+still existed, so a value taken out of the cue on stage held the light where it was
+until the next Go. `Playback::release_dropped_captures` lets it go: an earlier cue of the
+same sequence that tracks the key is `start_new_captures`' to restart, another live
+sequence that captures it takes it over the way a Go would, and otherwise it goes home
+over `home_fade_ms`. A cue deleted whole is not this case and is left as it was.
+
+Found while answering: "Lampe Puls" did nothing because its cues had been re-stored with
+only a color in them, over a lamp whose intensity came from another sequence at 0–3%.
+Not a defect; the sheet with the cue in view would have shown it.
+
+```
+cargo test -p pult-backend --lib a_value_taken_out_of_the_standing_cue
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

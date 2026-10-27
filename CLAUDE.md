@@ -1077,6 +1077,9 @@ what the *next* cue was tracking into it, for every key the store changes that t
 cue does not capture itself, so a change stops at this cue's edge. The compensating
 capture carries the value and none of the timing — it is going into a different cue and
 should move the way that cue moves. Both are one gesture, so each is one Ctrl-Z.
+A value **taken out** of the cue on stage lets go the same way
+(`release_dropped_captures`): to an earlier cue that tracks it, another live sequence, or
+home. It is taken out from the sheet's cell strip or the cue's Inspector (*Caps*).
 
 **Space is Go on the cue sheet touched last**, and with none focused there is no Go and
 a toast. A console with three of them open has to answer which, and answering it by

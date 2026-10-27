@@ -339,6 +339,23 @@
 		await data.cues.byId(cue.id).captures.set(next);
 	}
 
+	/**
+	 * Take the picked capture out of the cue in view — or every capture of its fixture.
+	 * One write of the column, so one Ctrl-Z. A cue that is standing lets the key go the
+	 * way an edit does (`repoint_edited_captures`): to what the stack beneath says.
+	 */
+	async function removeFromCue(what: 'key' | 'fixture') {
+		const cue = shownCue;
+		const capture = pickedCapture;
+		if (!cue || !capture) return;
+		const next = cue.captures.filter((c) =>
+			what === 'fixture'
+				? c.fixture_id !== capture.fixture_id
+				: !(c.fixture_id === capture.fixture_id && parameterKey(c.parameter_kind) === parameterKey(capture.parameter_kind))
+		);
+		await data.cues.byId(cue.id).captures.set(next);
+	}
+
 	/** Typing a number into a live cell is the programmer, which is what a sheet is for. */
 	async function typeInto(fixture: Fixture, column: { key: string; kind: ParameterKind }, text: string) {
 		const percent = Number(text);
@@ -588,6 +605,13 @@
 						{/each}
 					</select>
 				</label>
+				<!-- Out of the cue: the parameter then tracks from an earlier cue, or rests. -->
+				<button class="chip" title="This cue stops setting it; it tracks from an earlier cue or rests" onclick={() => void removeFromCue('key')}
+					>Remove from cue</button
+				>
+				<button class="chip" title="Every parameter of {fixture?.name ?? 'this fixture'} out of this cue" onclick={() => void removeFromCue('fixture')}
+					>Remove fixture from cue</button
+				>
 			{:else if shownPreset}
 				{@const value = presetCells.get(drivingKey(picked.fixtureId, picked.key))}
 				{@const column = pickedColumn}

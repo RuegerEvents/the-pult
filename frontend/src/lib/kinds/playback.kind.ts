@@ -14,6 +14,7 @@ import type { Cue, Sequence, Timeline } from '$lib/generated/index.js';
 import { copyName, registerKind } from '$lib/objects.js';
 import TimelineInspector from '$lib/components/timeline/inspectors/TimelineInspector.svelte';
 import SequenceInspector from '$lib/components/inspectors/SequenceInspector.svelte';
+import CueInspector from '$lib/components/inspectors/CueInspector.svelte';
 import { collection, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';
 import { actAt, consoleNow } from '$lib/ws/clock.js';
@@ -53,6 +54,7 @@ registerKind<Cue>({
 	icon: ListOrdered,
 	rows: cues,
 	panel: 'cues',
+	inspector: CueInspector,
 	actLabel: 'Go to',
 	act: async (cue) => {
 		const sequence = get(sequences).find((s) => s.cue_ids.includes(cue.id));

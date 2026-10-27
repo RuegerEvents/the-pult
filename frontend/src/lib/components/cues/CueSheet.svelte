@@ -29,6 +29,8 @@
 	import { cueInView, focusedCueSheet, sequenceInView, viewCue } from '$lib/stores/cues.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { beginEdit, editingCue } from '$lib/stores/programmer.js';
+	import { selectSubject } from '$lib/objects.js';
+	import { revealPanel } from '$lib/stores/layout.js';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { OBJECT_MIME, readDropped } from '$lib/objects.js';
 	import { presetIntoCue } from '$lib/programmer.js';
@@ -370,7 +372,16 @@
 								{/if}
 							</td>
 							<td class="count">
-								{cue.captures.length}
+								<!-- The count opens the cue's values in the Inspector, where one is
+								     taken out of the cue without loading it into the programmer. -->
+								<button
+									class="caps"
+									title="Show this cue's values in the Inspector"
+									onclick={() => {
+										selectSubject({ kind: 'cue', id: cue.id });
+										revealPanel('inspector');
+									}}>{cue.captures.length}</button
+								>
 								<!-- How many of them are references rather than numbers, which is
 								     what says at a glance that editing a palette will move this
 								     cue. A capture whose preset is gone still counts: it is still
@@ -461,6 +472,15 @@
 </div>
 
 <style>
+	.caps {
+		background: none;
+		border: none;
+		color: inherit;
+		font: inherit;
+		cursor: pointer;
+		padding: 0 2px;
+		text-decoration: underline dotted;
+	}
 	.sheet {
 		display: flex;
 		flex-direction: column;

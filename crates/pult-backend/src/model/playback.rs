@@ -532,7 +532,61 @@ impl Playback {
             });
         }
 
+        self.release_dropped_captures(wall_ms, view);
         self.start_new_captures(wall_ms, view);
+    }
+
+    /// **And a capture a standing cue lost lets its key go.** Taking a value out of the
+    /// cue on stage left its fade where it was, holding the light at a value no cue said
+    /// any more until the next Go. Now the key goes where the stack says: to what another
+    /// live sequence's tracked stack captures, started the way a Go starts it, or home —
+    /// over `home_fade_ms`, from where it is. A key an earlier cue of the *same* sequence
+    /// still tracks is `start_new_captures`' to restart, and is left to it.
+    fn release_dropped_captures(&mut self, wall_ms: u64, view: &ShowView<'_>) {
+        let captured = |cue_id: Uuid, at: &Key| {
+            view.cues.get(&cue_id).is_none_or(|cue| {
+                cue.captures.iter().any(|c| c.fixture_id == at.0 && parameter_key(&c.parameter_kind) == at.1)
+            })
+        };
+        let mut dropped: Vec<(Key, Uuid)> = self
+            .fades
+            .iter()
+            .filter(|f| !f.running.cue_id.is_nil())
+            .map(|f| ((f.fixture_id, f.key.clone()), f.running.cue_id))
+            .filter(|(at, cue_id)| !captured(*cue_id, at))
+            .collect();
+        dropped.extend(self.effects.iter().filter_map(|(at, fx)| match fx.source {
+            EffectSource::Cue(cue_id) if !captured(cue_id, at) => Some((at.clone(), cue_id)),
+            _ => None,
+        }));
+        if dropped.is_empty() {
+            return;
+        }
+
+        let mut live: Vec<&Sequence> = view.sequences.iter().filter(|s| s.active_cue_index.is_some()).collect();
+        live.sort_by_key(|s| s.went_at.unwrap_or(0));
+        let mut wanted: HashMap<Key, (&Sequence, &Cue, &pult_schema::types::cue::ParameterCapture)> = HashMap::new();
+        for sequence in live {
+            let Some(active) = sequence.active_cue_index else { continue };
+            let through = sequence.cue_ids.iter().take(active + 1);
+            for (cue, capture) in pult_schema::types::cue::tracked_through(through, |id| view.cues.get(id).copied()) {
+                wanted.insert((capture.fixture_id, parameter_key(&capture.parameter_kind)), (sequence, cue, capture));
+            }
+        }
+
+        for (at, was) in dropped {
+            match wanted.get(&at) {
+                // The same sequence still tracks it from an earlier cue: restarted there.
+                Some((sequence, _, _)) if sequence.cue_ids.contains(&was) => {}
+                // Another live sequence says it: taken over from where it is.
+                Some((sequence, cue, capture)) => {
+                    let anchor = if capture.effect.is_some() { sequence.went_at.unwrap_or(wall_ms) } else { wall_ms };
+                    let (cue, capture) = (*cue, *capture);
+                    self.start_capture(wall_ms, anchor, cue, cue, capture, view);
+                }
+                None => self.release_key(wall_ms, at, view, view.home_fade_ms),
+            }
+        }
     }
 
     /// **And a capture a standing cue gained is started.** Repointing reaches only a

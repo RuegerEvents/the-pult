@@ -2597,6 +2597,40 @@ mod editing_a_standing_cue {
         assert_eq!(live(&fixtures, fixture.id, "Intensity", 60_000), Some(ParameterValue::Float(0.4)));
     }
 
+    /// A value taken out of the cue on stage lets the light go: home where nothing
+    /// else says it, and back to an earlier cue's value where that one tracks it.
+    /// Before, the fade stayed and held a value no cue said until the next Go.
+    #[test]
+    fn a_value_taken_out_of_the_standing_cue_lets_the_light_go() {
+        let one = a_fixture();
+        let mut two = a_fixture();
+        two.name = "Spot 2".into();
+        let first = a_cue(0, vec![intensity(two.id, 0.3)]);
+        let second = a_cue(1, vec![intensity(one.id, 0.9), intensity(two.id, 0.7)]);
+        let mut cues = [first, second];
+        let sequences = [a_sequence(&[&cues[0], &cues[1]], Some(1))];
+        let mut fixtures = vec![one.clone(), two.clone()];
+
+        let mut playback = Playback::default();
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass(WALL, &view)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, one.id, "Intensity", 60_000), Some(ParameterValue::Float(0.9)));
+
+        cues[1].captures = vec![];
+        let effects = {
+            let view =
+                ShowView::new(&sequences, &cues, &fixtures, the_type(), &[], &[], 2_000, curves(), &[]);
+            playback.pass_after_edits(WALL + 5_000, &view, true)
+        };
+        apply(&mut fixtures, &effects);
+        assert_eq!(live(&fixtures, one.id, "Intensity", 60_000), Some(ParameterValue::Float(0.0)), "nothing says it: home");
+        assert_eq!(live(&fixtures, two.id, "Intensity", 60_000), Some(ParameterValue::Float(0.3)), "the earlier cue tracks it");
+    }
+
     /// A store that rewrites a cue's captures without changing any of their values —
     /// a merge, which rewrites the whole array — moves nothing.
     #[test]
