@@ -212,6 +212,15 @@
 							{device.module_name || 'Unknown module'}
 							{#if device.caps.length}· {device.caps.join(', ')}{/if}
 						</span>
+						<!-- Where it is, in the row and not only behind the disclosure: the first
+						     thing anybody standing at a node with a laptop wants. -->
+						<span class="device-meta dim mono">
+							{#if device.ip}
+								{device.ip}{device.net.length > 1 ? ` · ${device.net.map((a) => `${a.ip} ${a.transport}`).join(', ')}` : ''}
+							{:else}
+								{device.online ? 'address not known yet' : 'offline · not seen since this station started'}
+							{/if}
+						</span>
 						{#if ports(device)}
 							<span class="device-meta dim">{ports(device)}</span>
 						{:else}
