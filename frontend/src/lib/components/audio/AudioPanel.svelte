@@ -135,6 +135,19 @@
 		}
 	}
 
+	/**
+	 * The dock beside the matrix shows zones and nothing else. A zone picked up here by
+	 * its card's dot or a ⌘-click is *added* to the subject, which still held the clip
+	 * somebody was editing on the timeline — so on this page anything that is not a
+	 * zone is let go of as soon as a zone is picked up.
+	 */
+	$effect(() => {
+		const refs = $subject;
+		if (refs.some((r) => r.kind === 'speaker-zone') && refs.some((r) => r.kind !== 'speaker-zone')) {
+			subject.set(refs.filter((r) => r.kind === 'speaker-zone'));
+		}
+	});
+
 	/** The zones that are the Inspector's subject, docked beside the matrix. */
 	const inspecting = $derived($subjectRows.some((g) => g.kind.kind === 'speaker-zone'));
 

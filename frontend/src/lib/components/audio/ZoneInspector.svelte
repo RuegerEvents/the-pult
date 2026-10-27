@@ -19,7 +19,7 @@
 	import { openSetup } from '$lib/stores/setup.js';
 	import { audioOutput, devices, drivingReport, timelines } from '$lib/stores/timelines.js';
 	import { audioPrefs, loadAudioPrefs, namesFor, stationNames } from '$lib/stores/zones.js';
-	import { mappingText, needsMapping, widthName, zoneProblem } from '$lib/zones.js';
+	import { mappingText, widthName, zoneProblem } from '$lib/zones.js';
 	import { getStationContext } from '$lib/ws/context.js';
 
 	let { rows }: { rows: SpeakerZone[] } = $props();
@@ -70,7 +70,8 @@
 	/** One station's mapping, in that station's words where this is that station. */
 	function mapped(z: SpeakerZone, stationId: string): string {
 		const text = mappingText(z, stationId, stationId === here ? names : undefined);
-		if (!text) return needsMapping(z) ? 'not mapped' : '—';
+		// Not mapped on a station is the ordinary case, not a fault: said as a dash.
+		if (!text) return '—';
 		return zoneProblem(z, stationId, 'it') ? `${text} — ${widthName(z.width)}, a side goes nowhere` : text;
 	}
 </script>
@@ -104,7 +105,7 @@
 			{#each $stationNames as s (s.id)}
 				{@const text = mapped(z, s.id)}
 				<span class="station" class:here={s.id === here} class:gone={!s.online}>{s.name}{s.id === here ? ' (this one)' : s.online ? '' : ' (offline)'}</span>
-				<span class:says-bad={text === 'not mapped' || text.includes('goes nowhere')} class="map">{text}</span>
+				<span class:says-bad={text.includes('goes nowhere')} class="map">{text}</span>
 			{/each}
 			{#each Object.keys(z.channels).filter((id) => !$stationNames.some((s) => s.id === id)) as gone (gone)}
 				<span class="station gone">a station not here</span>

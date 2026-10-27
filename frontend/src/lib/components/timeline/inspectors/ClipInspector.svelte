@@ -17,9 +17,9 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { openSetup } from '$lib/stores/setup.js';
 	import { audioOutput, audioStatus, current, devices, drivingReport, nodeAudio, writeColumns } from '$lib/stores/timelines.js';
-	import { audioPrefs, loadAudioPrefs, namesFor, playerOf, stations, zones } from '$lib/stores/zones.js';
+	import { audioPrefs, loadAudioPrefs, namesFor, playerOf, stationNames, stations, zones } from '$lib/stores/zones.js';
 	import { clock, parsePosition, timesOf } from '$lib/waveform.js';
-	import { channelName, mappingText, widthName, zoneProblem } from '$lib/zones.js';
+	import { mappingText, widthName } from '$lib/zones.js';
 	import { getStationContext } from '$lib/ws/context.js';
 
 	let { rows }: { rows: ClipRow[] } = $props();
@@ -94,14 +94,21 @@
 		void setAll({ destination: { Node: { serial: ask.serial, mode: 'Clip' } } });
 	}
 
-	/** Where a zone comes out on the player, in its own channel names where they are known. */
-	function onPlayer(zone: SpeakerZone): string {
-		if (!player) return 'no station is playing this';
-		const problem = zoneProblem(zone, player.id, player.hostname);
-		if (problem) return problem;
-		const here = mappingText(zone, player.id, names) ?? '';
+	/**
+	 * Where a zone comes out, on every station that maps it — in this station's own
+	 * channel names here. A station that does not map it is not listed rather than
+	 * warned about: a zone wired on some machines and not others is the ordinary case,
+	 * and a clip that cannot sound where it plays says so on its lane.
+	 */
+	function comesOut(zone: SpeakerZone): string {
+		const mapped = $stationNames
+			.map((s) => {
+				const text = mappingText(zone, s.id, s.id === $station?.nodeId ? names : undefined);
+				return text ? `${text} on ${s.name}` : null;
+			})
+			.filter(Boolean);
 		const speakers = zone.nodes.length ? `${zone.nodes.length} node speaker${zone.nodes.length === 1 ? '' : 's'}` : '';
-		return [here && `${here} on ${player.hostname}`, speakers].filter(Boolean).join(' + ');
+		return [...mapped, speakers].filter(Boolean).join(' + ') || 'nowhere yet';
 	}
 
 	const gainShared = $derived(rows.every((r) => r.clip.gain_db === rows[0].clip.gain_db) ? rows[0].clip.gain_db : null);
@@ -227,19 +234,17 @@
 		{#if !shared}<span class="note wide-note">several places — pick one for all of them</span>{/if}
 		{#each $zones as zone (zone.id)}
 			{@const chosen = shared !== null && zoneOf(shared) === zone.id}
-			{@const problem = player ? zoneProblem(zone, player.id, player.hostname) : null}
 			<button
 				class="target"
 				class:on={chosen}
-				class:warn={problem !== null}
 				disabled={!$canEdit}
 				style:--swatch={zone.color ?? categoryColor('playback')}
-				title={onPlayer(zone)}
+				title={comesOut(zone)}
 				onclick={() => pickZone(zone)}
 			>
 				<span class="swatch"></span>
 				<span class="target-name">{zone.name}</span>
-				<span class="target-note">{problem ?? widthName(zone.width)}</span>
+				<span class="target-note">{widthName(zone.width)}</span>
 			</button>
 		{/each}
 		{#each nodes as node (node.serial)}
@@ -263,7 +268,7 @@
 		{#if zone}
 			<span class="label">Comes out of</span>
 			<div class="inline note">
-				<span class:says-bad={!!(player && zoneProblem(zone, player.id, player.hostname))}>{onPlayer(zone)}</span>
+				<span>{comesOut(zone)}</span>
 				<button class="btn btn-ghost" onclick={() => openSetup('audio')}>Map zones…</button>
 			</div>
 		{/if}
@@ -422,9 +427,6 @@
 	.target-note {
 		font-size: var(--font-xs);
 		color: var(--text-dim);
-	}
-	.target.warn .target-note {
-		color: var(--live);
 	}
 	.target.on {
 		border-color: var(--accent-solid);
