@@ -25,7 +25,7 @@
 	import { audioPrefs, createZone, forgetStation, loadAudioPrefs, nameDevice, namesFor, stationAudio, stationNames, zones } from '$lib/stores/zones.js';
 	import { writePreferences } from '$lib/preferences.js';
 	import { getClientContext, getStationContext } from '$lib/ws/context.js';
-	import { channelName, freshZoneName, needsMapping, sideName, sidesAt, sidesOf, toggleChannel, unmappedOn, widthName, zoneProblem, type DeviceNames } from '$lib/zones.js';
+	import { channelName, freshZoneName, sideName, sidesAt, sidesOf, toggleChannel, widthName, type DeviceNames } from '$lib/zones.js';
 	import { isSubject, selectSubject, subject, subjectRows } from '$lib/objects.js';
 	import InspectorPanel from '$lib/components/inspector/InspectorPanel.svelte';
 	import Dialog from '$lib/components/Dialog.svelte';
@@ -311,13 +311,11 @@
 		{:else}
 			<Foldered kind="speaker-zone" rows={$zones}>
 				{#snippet item(zone)}
-					{@const missing = unmappedOn(zone, $stationNames)}
 					<Card
 						ref={{ kind: 'speaker-zone', id: zone.id }}
 						name={zone.name}
 						color={zone.color}
-						state={missing.length ? `not mapped on ${missing.join(', ')}` : `${widthName(zone.width)}${zone.nodes.length ? ` + ${zone.nodes.length} node` : ''}`}
-						dim={missing.length > 0}
+						state={`${widthName(zone.width)}${zone.nodes.length ? ` + ${zone.nodes.length} node` : ''}`}
 					/>
 				{/snippet}
 			</Foldered>
@@ -353,14 +351,14 @@
 					</thead>
 					<tbody>
 						{#each $zones as zone (zone.id)}
-							{@const problems = blocks.map((b) => zoneProblem(zone, b.id, b.label)).filter((p) => p !== null)}
 							<tr class:picked={isSubject($subject, { kind: 'speaker-zone', id: zone.id })}>
 								<th class="zone" style:--zone={zone.color ?? 'var(--cat-setup)'}>
 									<button class="zbutton" onclick={(e) => selectSubject({ kind: 'speaker-zone', id: zone.id }, e.metaKey || e.ctrlKey || e.shiftKey)}>
 										<span class="zname">{zone.name}</span>
-										<span class="zwidth" class:warn={problems.length > 0 && needsMapping(zone)} title={problems.join('\n')}
-											>{problems.length > 0 && needsMapping(zone) ? `${widthName(zone.width)} · not everywhere` : widthName(zone.width)}</span
-										>
+										<!-- A zone mapped on some stations and not others is the ordinary case — a
+										     scare plays where it is wired — so the row says what the zone is, not
+										     where it is missing. -->
+										<span class="zwidth">{widthName(zone.width)}</span>
 									</button>
 								</th>
 								{#each blocks as block (block.id)}
@@ -594,9 +592,6 @@
 	}
 	.zwidth {
 		color: var(--text-faint);
-	}
-	.zwidth.warn {
-		color: var(--live);
 	}
 	.cell {
 		width: 26px;
