@@ -13,12 +13,13 @@
 
 	import type { NodeAudioMode, SpeakerZone } from '$lib/generated/index.js';
 	import { audioNodes } from '$lib/destination.js';
+	import { clearSubject } from '$lib/objects.js';
 	import { showData } from '$lib/stores/show.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { openSetup } from '$lib/stores/setup.js';
 	import { audioOutput, devices, drivingReport, timelines } from '$lib/stores/timelines.js';
 	import { audioPrefs, loadAudioPrefs, namesFor, stationNames } from '$lib/stores/zones.js';
-	import { channelName, mappingOn, needsMapping, widthName } from '$lib/zones.js';
+	import { mappingText, needsMapping, widthName, zoneProblem } from '$lib/zones.js';
 	import { getStationContext } from '$lib/ws/context.js';
 
 	let { rows }: { rows: SpeakerZone[] } = $props();
@@ -43,6 +44,14 @@
 		return clips === 0 ? 'no clip goes here yet' : `${clips} clip${clips === 1 ? '' : 's'} on ${places} timeline${places === 1 ? '' : 's'}`;
 	}
 
+	/** The zone a Delete is being asked about: one press asks, the second deletes. Ctrl-Z puts it back. */
+	let deleting = $state<string | null>(null);
+	async function remove(z: SpeakerZone) {
+		deleting = null;
+		clearSubject();
+		await zone(z.id).delete();
+	}
+
 	function setWidth(z: SpeakerZone, width: number) {
 		void zone(z.id).width.set(Math.max(1, Math.min(64, Math.round(width))));
 	}
@@ -59,11 +68,10 @@
 	}
 
 	/** One station's mapping, in that station's words where this is that station. */
-	function mappingText(z: SpeakerZone, stationId: string): string {
-		const channels = mappingOn(z, stationId);
-		if (!channels) return needsMapping(z) ? 'not mapped' : '—';
-		const text = channels.map((c) => (stationId === here ? channelName(names, c) : `ch ${c}`)).join(', ');
-		return channels.length === z.width ? text : `${text} — ${widthName(z.width)} needs ${z.width}`;
+	function mapped(z: SpeakerZone, stationId: string): string {
+		const text = mappingText(z, stationId, stationId === here ? names : undefined);
+		if (!text) return needsMapping(z) ? 'not mapped' : '—';
+		return zoneProblem(z, stationId, 'it') ? `${text} — ${widthName(z.width)}, a side goes nowhere` : text;
 	}
 </script>
 
@@ -94,13 +102,13 @@
 		<span class="label">On stations</span>
 		<div class="stations">
 			{#each $stationNames as s (s.id)}
-				{@const text = mappingText(z, s.id)}
-				<span class="station" class:here={s.id === here}>{s.name}{s.id === here ? ' (this one)' : ''}</span>
-				<span class:says-bad={text === 'not mapped' || text.includes('needs')} class="map">{text}</span>
+				{@const text = mapped(z, s.id)}
+				<span class="station" class:here={s.id === here} class:gone={!s.online}>{s.name}{s.id === here ? ' (this one)' : s.online ? '' : ' (offline)'}</span>
+				<span class:says-bad={text === 'not mapped' || text.includes('goes nowhere')} class="map">{text}</span>
 			{/each}
 			{#each Object.keys(z.channels).filter((id) => !$stationNames.some((s) => s.id === id)) as gone (gone)}
 				<span class="station gone">a station not here</span>
-				<span class="map">ch {(z.channels[gone] ?? []).join(', ')}</span>
+				<span class="map">{mappingText(z, gone, undefined)}</span>
 			{/each}
 		</div>
 		<span></span>
@@ -140,6 +148,19 @@
 			value={z.notes}
 			onchange={(e) => void zone(z.id).notes.set(e.currentTarget.value)}
 		/>
+
+		{#if $canEdit}
+			<span></span>
+			<div class="inline">
+				{#if deleting === z.id}
+					<span class="says-bad">{usedBy(z) === 'no clip goes here yet' ? 'Delete it?' : `${usedBy(z)} — they will play nowhere. Delete it?`}</span>
+					<button class="btn btn-danger" onclick={() => void remove(z)}>Delete</button>
+					<button class="btn btn-ghost" onclick={() => (deleting = null)}>Cancel</button>
+				{:else}
+					<button class="btn btn-ghost" onclick={() => (deleting = z.id)}>Delete zone…</button>
+				{/if}
+			</div>
+		{/if}
 	</div>
 {/each}
 

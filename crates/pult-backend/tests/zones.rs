@@ -130,7 +130,7 @@ async fn a_spare_plays_a_zone_on_its_own_channels() {
         name: "Area 2".into(),
         color: None,
         width: 1,
-        channels: [(leader.node_id, vec![3]), (spare.node_id, vec![5])].into_iter().collect(),
+        channels: [(leader.node_id, pult_schema::types::zone::one_per_side(&[3])), (spare.node_id, pult_schema::types::zone::one_per_side(&[5]))].into_iter().collect(),
         nodes: Vec::new(),
         notes: String::new(),
     };

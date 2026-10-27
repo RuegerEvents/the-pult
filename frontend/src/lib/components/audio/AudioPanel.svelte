@@ -22,11 +22,14 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { showData } from '$lib/stores/show.js';
 	import { audioOutput } from '$lib/stores/timelines.js';
-	import { audioPrefs, createZone, loadAudioPrefs, nameDevice, namesFor, stationAudio, stationNames, zones } from '$lib/stores/zones.js';
+	import { audioPrefs, createZone, forgetStation, loadAudioPrefs, nameDevice, namesFor, stationAudio, stationNames, zones } from '$lib/stores/zones.js';
 	import { writePreferences } from '$lib/preferences.js';
 	import { getClientContext, getStationContext } from '$lib/ws/context.js';
-	import { channelName, freshZoneName, mappingOn, needsMapping, toggleChannel, unmappedOn, widthName, zoneProblem } from '$lib/zones.js';
-	import { selectSubject } from '$lib/objects.js';
+	import { channelName, freshZoneName, needsMapping, sideName, sidesAt, sidesOf, toggleChannel, unmappedOn, widthName, zoneProblem, type DeviceNames } from '$lib/zones.js';
+	import { isSubject, selectSubject, subject, subjectRows } from '$lib/objects.js';
+	import InspectorPanel from '$lib/components/inspector/InspectorPanel.svelte';
+	import Dialog from '$lib/components/Dialog.svelte';
+	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 
 	const client = getClientContext();
 	const station = getStationContext();
@@ -58,46 +61,82 @@
 	 * mapping nobody can see is a mapping nobody can take back.
 	 */
 	const channels = $derived.by(() => {
-		const mapped = here ? $zones.flatMap((z) => z.channels[here] ?? []) : [];
+		const mapped = here ? $zones.flatMap((z) => sidesOf(z, here).flat()) : [];
 		const last = Math.min(64, Math.max(channelCount, ...mapped));
 		return Array.from({ length: last }, (_, i) => i + 1);
 	});
 
-	// ── The matrix: any station's, mapped from here ───────────────────────────────
+	// ── The matrix: every station's channels side by side ─────────────────────────
 
 	/**
-	 * Whose channels the matrix maps: this station's by default, or any other in the
-	 * session, read off the `station_audio` row it publishes — so the booth can map the
-	 * spare's zones. Its names are its own preference and are shown, not edited, here:
-	 * one console rewriting another machine's settings file is what `LogRaise` refuses
-	 * too, and the mapping is all that has to be done from a distance.
+	 * One block of columns per station in the session, the way Dante Controller lays a
+	 * network out: a zone is a row, and where it comes out on each machine is read along
+	 * it, so "is Area 2 mapped on the spare" is answered without choosing whose card to
+	 * look at. A station's channel names are its own preference and are shown, not
+	 * edited, here except for this station's: one console rewriting another machine's
+	 * settings file is what `LogRaise` refuses too, and the mapping is all that has to be
+	 * done from a distance.
 	 */
-	let mapFor = $state<string | null>(null);
-	const target = $derived(mapFor ?? here);
-	const atHome = $derived(target === here);
-	const targetName = $derived($stationNames.find((s) => s.id === target)?.name ?? 'this station');
-	const targetRow = $derived($stationAudio.find((r) => r.id === target) ?? null);
-	const matrixNames = $derived(
-		atHome ? names : targetRow ? { alias: targetRow.alias, channels: targetRow.channel_names } : undefined
-	);
-	const matrixCard = $derived(atHome ? cardName : (targetRow?.device ?? null));
-	const matrixCount = $derived(atHome ? channelCount : Math.min(64, targetRow?.channels || 2));
+	type Block = {
+		id: string;
+		label: string;
+		count: number;
+		names: DeviceNames | undefined;
+		channels: number[];
+		told: boolean;
+		online: boolean;
+	};
+	const blocks = $derived.by((): Block[] => {
+		const ids = $stationNames.length > 0 ? $stationNames : here ? [{ id: here, name: 'this station', online: true }] : [];
+		const list = ids.map((s): Block => {
+			const home = s.id === here;
+			const row = $stationAudio.find((r) => r.id === s.id) ?? null;
+			const count = home ? channelCount : Math.min(64, row?.channels || 2);
+			const mapped = $zones.flatMap((z) => sidesOf(z, s.id).flat());
+			const last = Math.min(64, Math.max(count, ...mapped));
+			return {
+				id: s.id,
+				label: `${stationLabel(s)}${home ? ' (here)' : ''}`,
+				count,
+				names: home ? names : row ? { alias: row.alias, channels: row.channel_names } : undefined,
+				channels: Array.from({ length: last }, (_, i) => i + 1),
+				told: home || row !== null,
+				online: s.online
+			};
+		});
+		// This station first: it is the one whose names can be edited from here.
+		return list.sort((x, y) => (x.id === here ? -1 : y.id === here ? 1 : 0));
+	});
 	/**
-	 * A station as the picker names it: its hostname, and its card's alias beside it
+	 * A station as the matrix names it: its hostname, and its card's alias beside it
 	 * where two machines share a hostname — two MacBooks both called "MacBook-Pro" are
-	 * the ordinary case, and a picker of two identical words is no picker.
+	 * the ordinary case, and a header of two identical words is no header.
 	 */
 	const stationLabel = (s: { id: string; name: string }) => {
 		const shared = $stationNames.filter((o) => o.name === s.name).length > 1;
-		if (!shared) return s.name;
 		const alias = $stationAudio.find((r) => r.id === s.id)?.alias;
+		if (!shared) return alias ? `${s.name} · ${alias}` : s.name;
 		return `${s.name} · ${alias || s.id.slice(0, 8)}`;
 	};
-	const matrixChannels = $derived.by(() => {
-		const mapped = target ? $zones.flatMap((z) => z.channels[target] ?? []) : [];
-		const last = Math.min(64, Math.max(matrixCount, ...mapped));
-		return Array.from({ length: last }, (_, i) => i + 1);
-	});
+
+	/**
+	 * Forgetting a station the show remembers asks first, and says what goes: every
+	 * zone's mapping on it. One gesture, so one Ctrl-Z brings all of it back.
+	 */
+	let forgetting = $state<Block | null>(null);
+	const mappedOn = (id: string) => $zones.filter((z) => id in z.channels);
+	async function forget(block: Block) {
+		forgetting = null;
+		beginGesture();
+		try {
+			await forgetStation(block.id);
+		} finally {
+			endGesture();
+		}
+	}
+
+	/** The zones that are the Inspector's subject, docked beside the matrix. */
+	const inspecting = $derived($subjectRows.some((g) => g.kind.kind === 'speaker-zone'));
 
 	onMount(() => {
 		// Asked once rather than watched: enumerating a machine's devices blocks.
@@ -139,10 +178,10 @@
 		selectSubject({ kind: 'speaker-zone', id });
 	}
 
-	function toggle(zoneId: string, channel: number) {
+	function toggle(zoneId: string, station: string, channel: number) {
 		const zone = $zones.find((z) => z.id === zoneId);
-		if (!zone || !target) return;
-		void showData().speaker_zones.byId(zone.id).channels.set(toggleChannel(zone, target, channel));
+		if (!zone) return;
+		void showData().speaker_zones.byId(zone.id).channels.set(toggleChannel(zone, station, channel));
 	}
 
 	const groups = (list: AudioDevice[]) =>
@@ -152,6 +191,7 @@
 		].filter((g) => g.devices.length > 0);
 </script>
 
+<div class="audio-page">
 <div class="audio">
 	<section>
 		<h3>This station's sound card <span class="whose">this machine</span></h3>
@@ -282,62 +322,63 @@
 				{/snippet}
 			</Foldered>
 
-			<header class="matrix-head">
-				<h4>On {targetName}{matrixNames?.alias ? ` · ${matrixNames.alias}` : matrixCard ? ` · ${matrixCard}` : ''}</h4>
-				{#if $stationNames.length > 1}
-					<span class="spacer"></span>
-					<div class="segmented" role="group" aria-label="Whose channels">
-						{#each $stationNames as s (s.id)}
-							<button type="button" class:on={target === s.id} onclick={() => (mapFor = s.id)}
-								>{stationLabel(s)}{s.id === here ? ' (here)' : ''}</button
-							>
-						{/each}
-					</div>
-				{/if}
-			</header>
-			{#if !atHome}
-				<p class="note">
-					{targetName}'s channel names are its own and are changed on its own page; the
-					mapping is the show's, and is made here.
-					{#if !targetRow}It has not said what card it plays through yet.{/if}
-				</p>
-			{/if}
 			<div class="matrix-scroll">
 				<table class="matrix">
 					<thead>
 						<tr>
-							<th class="corner"></th>
-							{#each matrixChannels as channel (channel)}
-								<th
-									class:missing={channel > matrixCount}
-									title={channel > matrixCount ? `${channelName(matrixNames, channel)} — this card has not got it` : channelName(matrixNames, channel)}
-								>
-									<span class="number">{channel}</span>
-									{#if matrixNames?.channels?.[channel - 1]}<span class="cname">{matrixNames.channels[channel - 1]}</span>{/if}
+							<th class="corner" rowspan="2"></th>
+							{#each blocks as block (block.id)}
+								<th class="station" class:offline={!block.online} colspan={block.channels.length} title={block.told ? '' : 'It has not said what card it plays through yet'}>
+									{block.label}{block.online ? '' : ' · offline'}{block.told ? '' : ' — card unknown'}
+									{#if !block.online && $canEdit}
+										<button class="forget" title="Forget this station: its row and its mappings" onclick={() => (forgetting = block)}>Forget…</button>
+									{/if}
 								</th>
+							{/each}
+						</tr>
+						<tr>
+							{#each blocks as block (block.id)}
+								{#each block.channels as channel (channel)}
+									<th
+										class:missing={channel > block.count}
+										class:first={channel === 1}
+										title={channel > block.count ? `${channelName(block.names, channel)} — this card has not got it` : channelName(block.names, channel)}
+									>
+										<span class="number">{channel}</span>
+										{#if block.names?.channels?.[channel - 1]}<span class="cname">{block.names.channels[channel - 1]}</span>{/if}
+									</th>
+								{/each}
 							{/each}
 						</tr>
 					</thead>
 					<tbody>
 						{#each $zones as zone (zone.id)}
-							{@const mapped = target ? (mappingOn(zone, target) ?? []) : []}
-							{@const problem = target ? zoneProblem(zone, target, targetName) : null}
-							<tr>
+							{@const problems = blocks.map((b) => zoneProblem(zone, b.id, b.label)).filter((p) => p !== null)}
+							<tr class:picked={isSubject($subject, { kind: 'speaker-zone', id: zone.id })}>
 								<th class="zone" style:--zone={zone.color ?? 'var(--cat-setup)'}>
-									<span class="zname">{zone.name}</span>
-									<span class="zwidth" class:warn={problem !== null && needsMapping(zone)}>{problem ?? widthName(zone.width)}</span>
+									<button class="zbutton" onclick={(e) => selectSubject({ kind: 'speaker-zone', id: zone.id }, e.metaKey || e.ctrlKey || e.shiftKey)}>
+										<span class="zname">{zone.name}</span>
+										<span class="zwidth" class:warn={problems.length > 0 && needsMapping(zone)} title={problems.join('\n')}
+											>{problems.length > 0 && needsMapping(zone) ? `${widthName(zone.width)} · not everywhere` : widthName(zone.width)}</span
+										>
+									</button>
 								</th>
-								{#each matrixChannels as channel (channel)}
-									<td>
-										<button
-											class="cell"
-											class:on={mapped.includes(channel)}
-											disabled={!$canEdit || !target}
-											aria-label="{zone.name} on {channelName(matrixNames, channel)}"
-											aria-pressed={mapped.includes(channel)}
-											onclick={() => toggle(zone.id, channel)}
-										></button>
-									</td>
+								{#each blocks as block (block.id)}
+									{#each block.channels as channel (channel)}
+										{@const carried = sidesAt(zone, block.id, channel)}
+										{@const said = carried.map((side) => sideName(zone.width, side)).join('+')}
+										<td class:first={channel === 1}>
+											<button
+												class="cell"
+												class:on={carried.length > 0}
+												disabled={!$canEdit}
+												aria-label="{zone.name} on {block.label} {channelName(block.names, channel)}"
+												aria-pressed={carried.length > 0}
+												title={said ? `${zone.name} ${said} on ${channelName(block.names, channel)}` : ''}
+												onclick={() => toggle(zone.id, block.id, channel)}
+											>{zone.width > 1 ? said : ''}</button>
+										</td>
+									{/each}
 								{/each}
 							</tr>
 						{/each}
@@ -345,15 +386,100 @@
 				</table>
 			</div>
 			<p class="note">
-				A mono zone moves to the channel clicked; a stereo one takes two, and a third click
-				drops the oldest. A zone this station has not mapped is not played here, and says so on
-				the timeline rather than coming out of some other speaker.
+				A click puts a mono zone on that output or takes it off; on a stereo zone it goes
+				round left, right and off, so each side is set on its own. Any number of outputs can
+				carry the same side — a bed on all eight Dante channels is eight clicks. A zone a
+				station has not mapped is not played there, and says so on the timeline rather than
+				coming out of some other speaker.
 			</p>
 		{/if}
 	</section>
 </div>
+	<!-- A zone picked up is edited beside the matrix: Setup covers the workspace, so an
+	     Inspector panel somewhere behind it is no help. The timeline docks one the same way. -->
+	{#if inspecting}
+		<aside class="dock"><InspectorPanel /></aside>
+	{/if}
+</div>
+
+{#if forgetting}
+	{@const block = forgetting}
+	{@const lose = mappedOn(block.id)}
+	<Dialog title="Forget {block.label}?" onclose={() => (forgetting = null)} onaccept={() => void forget(block)}>
+		<p>
+			The show stops remembering this station.
+			{#if lose.length > 0}
+				{lose.length === 1 ? 'One zone loses' : `${lose.length} zones lose`} where it comes out there:
+				{lose.map((z) => z.name).join(', ')}.
+			{:else}
+				No zone is mapped on it.
+			{/if}
+		</p>
+		<p class="note">If it comes back, it is listed again and has to be mapped again. Ctrl-Z takes it back as one act.</p>
+		{#snippet footer()}
+			<button class="ghost" onclick={() => (forgetting = null)}>Cancel</button>
+			<button class="danger" onclick={() => void forget(block)}>Forget</button>
+		{/snippet}
+	</Dialog>
+{/if}
 
 <style>
+	.audio-page {
+		display: flex;
+		align-items: flex-start;
+		min-width: 0;
+	}
+	.audio-page > .audio {
+		flex: 1;
+		min-width: 0;
+	}
+	.dock {
+		position: sticky;
+		top: 0;
+		width: 320px;
+		flex: none;
+		border-left: 1px solid var(--line);
+		max-height: 100%;
+		overflow-y: auto;
+	}
+	.station {
+		text-align: left !important;
+		font-size: var(--font-xs);
+		font-weight: 600 !important;
+		color: var(--text);
+		border-left: 2px solid var(--line-strong);
+		padding: 4px 6px !important;
+		white-space: nowrap;
+		max-width: none !important;
+	}
+	.matrix th.first,
+	.matrix td.first {
+		border-left: 2px solid var(--line-strong);
+	}
+	.station.offline {
+		color: var(--text-dim);
+		font-style: italic;
+	}
+	.forget {
+		margin-left: 6px;
+		font: inherit;
+		font-style: normal;
+		font-size: var(--font-xs);
+		background: none;
+		border: 1px solid var(--line-strong);
+		border-radius: 4px;
+		color: var(--text-dim);
+		cursor: pointer;
+		padding: 0 6px;
+	}
+	.zbutton {
+		all: unset;
+		cursor: pointer;
+		display: block;
+	}
+	tr.picked th.zone {
+		background: var(--bg-hover, #2a2a2a);
+	}
 	.audio {
 		display: flex;
 		flex-direction: column;
@@ -379,12 +505,6 @@
 		display: flex;
 		align-items: baseline;
 		gap: 8px;
-	}
-	h4 {
-		margin: 6px 0 0;
-		font-size: var(--font-sm);
-		color: var(--text-dim);
-		font-weight: 600;
 	}
 	.whose {
 		font-size: var(--font-xs);
@@ -490,17 +610,11 @@
 	.cell.on {
 		background: var(--accent-solid);
 		border-color: var(--accent-solid);
+		color: var(--text-bright, #fff);
+		font-size: 10px;
+		font-weight: 700;
 	}
 	.cell:disabled {
 		cursor: default;
-	}
-	.matrix-head {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-	.matrix-head .spacer {
-		flex: 1;
 	}
 </style>

@@ -7673,6 +7673,65 @@ cargo test -p pult-backend --lib infra::audio  # where a repeated clip is over o
 cd frontend && npx vitest run src/lib/waveform.test.ts
 ```
 
+### 92. A show comes up the way it was left, and a zone is mapped before its station is on
+
+Asked for at the gig (2026-10-27), five things at once.
+
+**Three "Main" zones, and why.** Dropping a file on a timeline makes a stereo "Main" when
+the show has no zone. It decided that with `get(zones)`, and `get()` on a store nobody
+is subscribed to answers its initial empty list — so every drop made another one.
+`firstDestination` asks the station now. The trap is the one `programmer.ts` already
+names; it bit again because the store looked subscribed.
+
+**The Inspector in Setup.** Setup covers the workspace, so a zone picked in Setup → Audio
+had nowhere to be edited or deleted. The audio page docks an Inspector beside the matrix
+while a zone is the subject — the timeline panel's move — and the zone's own inspector
+has *Delete zone…*, which says how many clips go there before it deletes.
+
+**One matrix, every station, as Dante Controller lays it out.** A zone is a row, every
+station in the show is a block of columns, and the picker of whose channels to show is
+gone. A side is set on its own and goes to any number of outputs:
+`SpeakerZone::channels` is per station a list of outputs *per zone channel*
+(`Outputs`), so a stereo bed on all eight Dante channels is left on 1, 3, 5, 7 and right
+on 2, 4, 6, 8, and a click goes round off, L, R, off (`toggleChannel`). The mixer's
+`route_sides` applies the same three rules per side. **A show from before reads**:
+`Outputs` deserializes a bare number as a list of one, in its *type* — the SQLite path
+parses a column by its type and `unwrap`s, so a field attribute would have been skipped
+and every old show would have stopped opening. A zone is mapped on a station when every
+side goes somewhere (`mapped_on`).
+
+**A station and a node are remembered while they are off.** `station_audio` is PERSISTED
+now and carries the hostname, so it is also the show's list of stations it has seen:
+the matrix and the Stations panel list one that is off, its zones can be mapped, and
+*Forget…* in its column header deletes the row and its mappings in one gesture, after
+saying which zones lose one. A node the show is patched to is put in the device list at
+start, offline, from the fixtures (`DeviceManager::remember_patched`) — it used to be
+only what a browse had found since start, so after a restart an off node was nowhere and
+its strip's heads were not listed under it. Heard on the broker it is reached as one
+never seen. *Forget* on a node asks first and lists every fixture that goes with it.
+
+**Default state.** `Show::default_state` holds the sequences on and their cues, masters
+not at full, and the timelines running — never the programmer. *Save as default state*,
+*Go to default state* and *Clear* are in the Show menu (`defaultState.*` RPCs,
+`infra/default_state.rs`). Going to it takes each named cue again, turns every other
+sequence off, sets every master, plays each named timeline from its beginning and stops
+the rest. **It comes up by itself only where nobody is handing a show over**: on the
+station with no remembered leader to go back to (`sessions.toml`), once it leads, after
+twenty seconds — past the ten in which a stand-in hands the lead back — and only if
+nothing is running by then. Saving and clearing are one Ctrl-Z; going to it is not,
+because a Go is not.
+
+The Pi was off the network when this was built, and the new `channels` shape is one an
+older station cannot read: deploy the Pi before it rejoins.
+
+```
+cargo test -p pult-schema --lib zone                 # sides, many outputs, and an old map
+cargo test -p pult-audio mix                         # a side on every output it lists
+cargo test -p pult-backend --test default_state      # saved, scattered, put back
+cargo test -p pult-backend --lib a_patched_node      # listed offline after a restart
+cd frontend && npx vitest run src/lib/zones.test.ts
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

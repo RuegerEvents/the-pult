@@ -172,7 +172,8 @@ pub enum RouteError {
 }
 
 /// Which output channel gets what from a source. See the module header for the three
-/// rules. A channel named twice is taken once.
+/// rules. A channel named twice is taken once. One output per zone channel: the form
+/// [`route_sides`] takes with every side one output long.
 pub fn route(
     source_channels: usize,
     outputs: &[u16],
@@ -184,10 +185,24 @@ pub fn route(
             named.push(*channel);
         }
     }
-    if named.is_empty() {
+    let sides: Vec<Vec<u16>> = named.into_iter().map(|c| vec![c]).collect();
+    route_sides(source_channels, &sides, device_channels)
+}
+
+/// The same rules over a zone's channels, each going to any number of outputs: side
+/// `k` takes what the module header's rules give zone channel `k`, and every output in
+/// its list gets that. A stereo bed on all eight Dante channels is left on 1, 3, 5, 7 and
+/// right on 2, 4, 6, 8; a mono one on all eight is the file on every one. An output in
+/// two sides takes both, summed.
+pub fn route_sides(
+    source_channels: usize,
+    sides: &[Vec<u16>],
+    device_channels: usize,
+) -> Result<Vec<Route>, RouteError> {
+    if sides.iter().all(|outputs| outputs.is_empty()) {
         return Err(RouteError::Nowhere);
     }
-    for channel in &named {
+    for channel in sides.iter().flatten() {
         if *channel == 0 {
             return Err(RouteError::Zero);
         }
@@ -196,19 +211,23 @@ pub fn route(
         }
     }
     let source_channels = source_channels.max(1);
-    let spread = source_channels == 1 || named.len() % source_channels == 0;
-    Ok(named
-        .iter()
-        .enumerate()
-        .map(|(k, channel)| Route {
-            output: *channel as usize - 1,
-            feed: match (source_channels, spread) {
-                (1, _) => Feed::Channel(0),
-                (_, true) => Feed::Channel(k % source_channels),
-                (_, false) => Feed::Downmix,
-            },
-        })
-        .collect())
+    let spread = source_channels == 1 || sides.len() % source_channels == 0;
+    let mut routes = Vec::new();
+    for (k, outputs) in sides.iter().enumerate() {
+        let feed = match (source_channels, spread) {
+            (1, _) => Feed::Channel(0),
+            (_, true) => Feed::Channel(k % source_channels),
+            (_, false) => Feed::Downmix,
+        };
+        let mut taken: Vec<u16> = Vec::new();
+        for channel in outputs {
+            if !taken.contains(channel) {
+                taken.push(*channel);
+                routes.push(Route { output: *channel as usize - 1, feed });
+            }
+        }
+    }
+    Ok(routes)
 }
 
 /// A clip, ready to play: its file, its place, and where it goes.
@@ -535,6 +554,18 @@ mod tests {
         assert_eq!(twice.at(950.0, 1_000.0), Some((950.0, 0.5)), "no fade out of the first time round");
         assert_eq!(twice.at(1_050.0, 1_000.0), Some((50.0, 0.5)), "nor into the second");
         assert_eq!(twice.at(1_950.0, 1_000.0), Some((950.0, 0.25)), "out of the last");
+    }
+
+    /// A stereo file into a stereo zone whose sides each go to four outputs.
+    #[test]
+    fn a_side_goes_to_every_output_it_lists() {
+        let routes = route_sides(2, &[vec![1, 3, 5, 7], vec![2, 4, 6, 8]], 8).unwrap();
+        let left: Vec<usize> = routes.iter().filter(|r| r.feed == Feed::Channel(0)).map(|r| r.output).collect();
+        let right: Vec<usize> = routes.iter().filter(|r| r.feed == Feed::Channel(1)).map(|r| r.output).collect();
+        assert_eq!((left, right), (vec![0, 2, 4, 6], vec![1, 3, 5, 7]));
+        // A mono file into the same zone is the file on all eight.
+        assert!(route_sides(1, &[vec![1, 3], vec![2]], 8).unwrap().iter().all(|r| r.feed == Feed::Channel(0)));
+        assert_eq!(route_sides(2, &[vec![], vec![]], 8), Err(RouteError::Nowhere));
     }
 
     #[test]

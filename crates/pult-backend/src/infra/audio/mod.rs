@@ -452,7 +452,7 @@ impl AudioManager {
 
     /// The clips of a timeline this station mixes itself, each with the channels its
     /// zone is here — or why it has none. A clip only a node plays is not in it.
-    fn station_clips<'t>(&self, timeline: &'t Timeline) -> Vec<(&'t AudioClip, Result<Vec<u16>, String>)> {
+    fn station_clips<'t>(&self, timeline: &'t Timeline) -> Vec<(&'t AudioClip, Result<Vec<Vec<u16>>, String>)> {
         timeline
             .clips
             .iter()
@@ -553,7 +553,11 @@ impl AudioManager {
                     continue;
                 }
             };
-            routed.insert(clip.id.to_string(), channels.clone());
+            // Where it comes out here, every output once, for the status row.
+            let mut outputs: Vec<u16> = channels.iter().flatten().copied().collect();
+            outputs.sort_unstable();
+            outputs.dedup();
+            routed.insert(clip.id.to_string(), outputs);
             match self.voice(clip, channels, device_channels).await {
                 Ok(Some(voice)) => voices.push(voice),
                 // Decoded, with no device to route it to: the timeline's own fault says
@@ -668,12 +672,12 @@ impl AudioManager {
     async fn voice(
         &mut self,
         clip: &AudioClip,
-        channels: &[u16],
+        channels: &[Vec<u16>],
         device_channels: Option<usize>,
     ) -> Result<Option<pult_audio::Voice>, String> {
         let decoded = self.decoded(&clip.asset).await?;
         let Some(device_channels) = device_channels else { return Ok(None) };
-        let routes = pult_audio::mix::route(decoded.channels as usize, channels, device_channels)
+        let routes = pult_audio::mix::route_sides(decoded.channels as usize, channels, device_channels)
             .map_err(|e| e.to_string())?;
         Ok(Some(pult_audio::Voice {
             source: pult_audio::Source {
@@ -1201,6 +1205,7 @@ impl AudioManager {
             .map_or(named.channels.len() as u16, |o| o.channels);
         let row = pult_schema::types::StationAudio {
             id: self.node_id.0,
+            hostname: sysinfo::System::host_name().unwrap_or_else(|| "console".to_string()),
             device,
             alias: named.alias,
             channels,
@@ -1217,9 +1222,9 @@ impl AudioManager {
         {
             return;
         }
-        if self.engine.set(path, Lifecycle::Synced, value.clone()).await.is_err() {
+        if self.engine.set(path, Lifecycle::Persisted, value.clone()).await.is_err() {
             let create = vec![PathSegment::Key("station_audio".into()), PathSegment::Key("__create".into())];
-            if let Err(e) = self.engine.set(create, Lifecycle::Synced, value).await {
+            if let Err(e) = self.engine.set(create, Lifecycle::Persisted, value).await {
                 debug!("[audio] could not publish this station's card: {e}");
                 return;
             }

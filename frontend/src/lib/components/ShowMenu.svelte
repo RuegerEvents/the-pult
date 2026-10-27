@@ -72,6 +72,32 @@
 		if (what === 'copy' && typed) return ask('show.saveAs', { name: typed }, `saving a copy as ${typed}`);
 	}
 
+	/**
+	 * The show as it comes up: the sequences on and their cues, the masters and the
+	 * running timelines, never the programmer. Each is one Ctrl-Z.
+	 */
+	const hasDefault = $derived(!!$openShow?.default_state);
+	const defaultText = $derived.by(() => {
+		const d = $openShow?.default_state;
+		if (!d) return 'none';
+		const on = d.sequences.filter((s) => s.cue_id).length;
+		return `${on} sequence${on === 1 ? '' : 's'}, ${d.timelines.length} timeline${d.timelines.length === 1 ? '' : 's'}`;
+	});
+	async function defaultState(what: 'save' | 'apply' | 'clear') {
+		open = false;
+		try {
+			const answer = (await client.call(`defaultState.${what}`, {})) as { sequences?: number; timelines?: number } | null;
+			if (what === 'save') {
+				const n = answer?.sequences ?? 0;
+				const t = answer?.timelines ?? 0;
+				addToast(`Default state saved: ${n} sequence${n === 1 ? '' : 's'} on, ${t} timeline${t === 1 ? '' : 's'} running`, 'success');
+			} else if (what === 'apply') addToast('The show is in its default state', 'success');
+			else addToast('Default state cleared: the show comes up with nothing running', 'success');
+		} catch (e) {
+			addToast(`${e instanceof Error ? e.message : e}`);
+		}
+	}
+
 	/** A version, named or not. Not a switch: the console goes on running. */
 	async function save(withName?: string) {
 		busy = true;
@@ -148,6 +174,12 @@
 			<a class="row dim" href={exportUrl(true)} download onclick={() => (open = false)}>
 				Export with versions
 			</a>
+			<!-- How the show comes up: what runs when it opens with nothing running, and
+			     what Go to default state puts back. See `infra/default_state.rs`. -->
+			<span class="heading">Default state <span class="dim-note">{defaultText}</span></span>
+			<button onclick={() => defaultState('save')}>Save as default state</button>
+			<button disabled={!hasDefault} onclick={() => defaultState('apply')}>Go to default state</button>
+			<button disabled={!hasDefault} onclick={() => defaultState('clear')}>Clear default state</button>
 			<span class="heading">Another show</span>
 			<button onclick={() => ask('show.close', {}, 'closing the show')}>Close — back to the start</button>
 			<span class="path">{show.path}</span>
@@ -170,6 +202,12 @@
 {/if}
 
 <style>
+	.dim-note {
+		font-weight: 400;
+		text-transform: none;
+		letter-spacing: 0;
+		opacity: 0.7;
+	}
 	.bar {
 		position: relative;
 		display: flex;

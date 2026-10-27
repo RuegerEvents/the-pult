@@ -61,10 +61,16 @@ pub struct SpeakerZone {
     /// a downmix because somebody ticked one box of two.
     #[pult(lifecycle = PERSISTED)]
     pub width: u16,
-    /// Which of each station's output channels the zone is, counting from one.
+    /// Where each of the zone's channels comes out on each station: per station, one
+    /// list per zone channel (left, right, …) of that station's output channels,
+    /// counting from one. A list may hold several outputs — a bed on all eight Dante
+    /// channels — and an output may be in two lists, which sums them there.
+    ///
+    /// A show from before there were lists reads `[1, 2]` as left on 1 and right on 2
+    /// (`one_per_side`), which is what it meant.
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
-    pub channels: BTreeMap<NodeId, Vec<u16>>,
+    pub channels: BTreeMap<NodeId, Vec<Outputs>>,
     /// Node loudspeakers that are in the zone as well.
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
@@ -93,20 +99,65 @@ impl SpeakerZone {
     fn has_station_sound(&self) -> bool {
         !self.channels.is_empty() || self.nodes.is_empty()
     }
+
+    /// Whether a station has mapped every one of the zone's channels somewhere.
+    pub fn mapped_on(&self, station: NodeId) -> bool {
+        self.channels.get(&station).is_some_and(|sides| {
+            sides.len() == self.width as usize && sides.iter().all(|outputs| !outputs.is_empty())
+        })
+    }
+}
+
+/// The outputs one zone channel comes out of on one station, counting from one.
+///
+/// Its own type rather than a `Vec<u16>` because of how a show is read: the SQLite path
+/// parses a column by its *type*, so a field attribute would be skipped there, and a
+/// show from before there were lists — `[1, 2]`, one output per zone channel — would
+/// stop the show opening. This reads both, and is always written as a list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, TS)]
+#[serde(transparent)]
+#[ts(export, type = "Array<number>")]
+pub struct Outputs(pub Vec<u16>);
+
+impl<'de> Deserialize<'de> for Outputs {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Side {
+            Many(Vec<u16>),
+            One(u16),
+        }
+        Ok(match Side::deserialize(d)? {
+            Side::Many(outputs) => Outputs(outputs),
+            Side::One(output) => Outputs(vec![output]),
+        })
+    }
+}
+
+impl std::ops::Deref for Outputs {
+    type Target = Vec<u16>;
+    fn deref(&self) -> &Vec<u16> {
+        &self.0
+    }
+}
+
+/// One output per zone channel, the way a map was written before there were lists.
+pub fn one_per_side(outputs: &[u16]) -> Vec<Outputs> {
+    outputs.iter().map(|o| Outputs(vec![*o])).collect()
 }
 
 /// What a clip's destination comes to on one station's own sound card.
 ///
 /// `None` where the station mixes nothing for it — a clip going to one node, or to a
 /// zone that is only node loudspeakers. `Some(Err)` is a fault the status row says by
-/// name: a zone that has been deleted, one this station has not mapped, one mapped to
-/// the wrong number of channels.
+/// name: a zone that has been deleted, one this station has not mapped, one with a
+/// channel left going nowhere. The answer is a list of outputs per zone channel.
 pub fn station_channels(
     destination: &AudioDestination,
     zones: &[SpeakerZone],
     station: NodeId,
     station_name: &str,
-) -> Option<Result<Vec<u16>, String>> {
+) -> Option<Result<Vec<Vec<u16>>, String>> {
     let AudioDestination::Zone { zone } = destination else { return None };
     let Some(zone) = zones.iter().find(|z| z.id == *zone) else {
         return Some(Err("goes to a speaker zone that has been deleted".into()));
@@ -114,19 +165,25 @@ pub fn station_channels(
     if !zone.has_station_sound() {
         return None;
     }
-    let Some(channels) = zone.channels.get(&station).filter(|c| !c.is_empty()) else {
+    let Some(sides) = zone.channels.get(&station).filter(|c| c.iter().any(|o| !o.is_empty())) else {
         return Some(Err(format!("{} is not mapped on {station_name}", zone.name)));
     };
-    if channels.len() != zone.width as usize {
+    if !zone.mapped_on(station) {
+        let side = |i: usize| match (zone.width, i) {
+            (2, 0) => "left".to_string(),
+            (2, 1) => "right".to_string(),
+            (_, i) => format!("channel {}", i + 1),
+        };
+        let missing: Vec<String> =
+            (0..zone.width as usize).filter(|i| sides.get(*i).is_none_or(|o| o.is_empty())).map(side).collect();
         return Some(Err(format!(
-            "{} is {} and is mapped to {} channel{} on {station_name}",
+            "{} is {} and its {} goes nowhere on {station_name}",
             zone.name,
             zone.width_name(),
-            channels.len(),
-            if channels.len() == 1 { "" } else { "s" },
+            missing.join(" and "),
         )));
     }
-    Some(Ok(channels.clone()))
+    Some(Ok(sides[..zone.width as usize].iter().map(|o| o.0.clone()).collect()))
 }
 
 /// The node loudspeakers a clip's destination reaches, with how each is reached.
@@ -142,33 +199,41 @@ pub fn node_targets(destination: &AudioDestination, zones: &[SpeakerZone]) -> Ve
 }
 
 /// What one station plays through, and what it calls the card and its channels: the
-/// SYNCED `station_audio` collection, keyed by the station's `NodeId`.
+/// `station_audio` collection, keyed by the station's `NodeId`.
 ///
 /// So a zone can be mapped for a machine from another one — the booth mapping the
 /// spare's channels — with the names that machine gave them. The names stay that
 /// machine's preference (`[audio.names]`); this row only says what they are, and a
 /// station rewrites it only when something in it moved, like `station_networks`.
-/// SYNCED and not PERSISTED for the reason that one is: which card is in a machine does
-/// not travel with a show.
+///
+/// **PERSISTED, so a station is remembered while it is off.** It was SYNCED, on the
+/// grounds that which card is in a machine does not travel with a show — and then a
+/// station that was off was nowhere in the zone matrix, and its routing could not be
+/// set until it was on (HHG, 2026-10-27). The row is also the show's list of stations
+/// it has seen, which is why it carries the hostname; forgetting one is deleting it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, PultSchema)]
 #[ts(export)]
 #[pult(table = "station_audio")]
 pub struct StationAudio {
     /// The station's `NodeId`.
-    #[pult(lifecycle = SYNCED, primary_key)]
+    #[pult(lifecycle = PERSISTED, primary_key)]
     pub id: Uuid,
+    /// What the machine is called, so a station that is off is still named.
+    #[serde(default)]
+    #[pult(lifecycle = PERSISTED)]
+    pub hostname: String,
     /// The output card, by its own name: open, or the one the station is told to use.
-    #[pult(lifecycle = SYNCED)]
+    #[pult(lifecycle = PERSISTED)]
     pub device: Option<String>,
     /// What the station calls it.
-    #[pult(lifecycle = SYNCED)]
+    #[pult(lifecycle = PERSISTED)]
     pub alias: Option<String>,
     /// How many output channels it has: the open card's count, or as many as are named
     /// when nothing is open yet.
-    #[pult(lifecycle = SYNCED)]
+    #[pult(lifecycle = PERSISTED)]
     pub channels: u16,
     /// The channel names, the first being channel 1; empty is unnamed.
-    #[pult(lifecycle = SYNCED)]
+    #[pult(lifecycle = PERSISTED)]
     pub channel_names: Vec<String>,
 }
 
@@ -242,18 +307,18 @@ mod tests {
     #[test]
     fn each_station_plays_a_zone_on_its_own_channels() {
         let mut zone = a_zone(1);
-        zone.channels.insert(BOOTH, vec![4]);
-        zone.channels.insert(SPARE, vec![1]);
+        zone.channels.insert(BOOTH, one_per_side(&[4]));
+        zone.channels.insert(SPARE, one_per_side(&[1]));
         let zones = [zone.clone()];
-        assert_eq!(station_channels(&to(&zone), &zones, BOOTH, "booth"), Some(Ok(vec![4])));
-        assert_eq!(station_channels(&to(&zone), &zones, SPARE, "spare"), Some(Ok(vec![1])));
+        assert_eq!(station_channels(&to(&zone), &zones, BOOTH, "booth"), Some(Ok(vec![vec![4]])));
+        assert_eq!(station_channels(&to(&zone), &zones, SPARE, "spare"), Some(Ok(vec![vec![1]])));
     }
 
     /// Unmapped is a fault by name, never a fold onto a channel this station has.
     #[test]
     fn a_station_that_has_not_mapped_the_zone_says_so() {
         let mut zone = a_zone(2);
-        zone.channels.insert(BOOTH, vec![1, 2]);
+        zone.channels.insert(BOOTH, one_per_side(&[1, 2]));
         let zones = [zone.clone()];
         assert_eq!(
             station_channels(&to(&zone), &zones, SPARE, "spare"),
@@ -264,12 +329,34 @@ mod tests {
     #[test]
     fn a_stereo_zone_mapped_to_one_channel_is_refused() {
         let mut zone = a_zone(2);
-        zone.channels.insert(BOOTH, vec![3]);
+        zone.channels.insert(BOOTH, one_per_side(&[3]));
         let zones = [zone.clone()];
         assert_eq!(
             station_channels(&to(&zone), &zones, BOOTH, "booth"),
-            Some(Err("Area 2 is stereo and is mapped to 1 channel on booth".into()))
+            Some(Err("Area 2 is stereo and its right goes nowhere on booth".into()))
         );
+    }
+
+    /// One side on several outputs, and an old show's one output per side read as that.
+    #[test]
+    fn a_side_can_go_to_several_outputs_and_an_old_map_still_reads() {
+        let mut zone = a_zone(2);
+        zone.channels.insert(BOOTH, vec![Outputs(vec![1, 3, 5, 7]), Outputs(vec![2, 4, 6, 8])]);
+        let zones = [zone.clone()];
+        assert_eq!(
+            station_channels(&to(&zone), &zones, BOOTH, "booth"),
+            Some(Ok(vec![vec![1, 3, 5, 7], vec![2, 4, 6, 8]]))
+        );
+        let old: SpeakerZone = serde_json::from_value(serde_json::json!({
+            "id": Uuid::from_u128(10), "name": "Area 2", "width": 2,
+            "channels": { BOOTH.0.to_string(): [1, 2] },
+        }))
+        .unwrap();
+        assert_eq!(old.channels.get(&BOOTH), Some(&one_per_side(&[1, 2])));
+        // And by the SQLite path's own reading, which goes by the type.
+        let column: BTreeMap<NodeId, Vec<Outputs>> =
+            serde_json::from_str(&format!("{{\"{}\": [1, 2]}}", BOOTH.0)).unwrap();
+        assert_eq!(column.get(&BOOTH), Some(&one_per_side(&[1, 2])));
     }
 
     #[test]
@@ -294,10 +381,10 @@ mod tests {
     #[test]
     fn a_zone_can_be_channels_and_a_node_at_once() {
         let mut zone = a_zone(1);
-        zone.channels.insert(BOOTH, vec![4]);
+        zone.channels.insert(BOOTH, one_per_side(&[4]));
         zone.nodes.push(ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Stream });
         let zones = [zone.clone()];
-        assert_eq!(station_channels(&to(&zone), &zones, BOOTH, "booth"), Some(Ok(vec![4])));
+        assert_eq!(station_channels(&to(&zone), &zones, BOOTH, "booth"), Some(Ok(vec![vec![4]])));
         assert_eq!(node_targets(&to(&zone), &zones), vec![("a2".to_string(), NodeAudioMode::Stream)]);
     }
 
@@ -311,7 +398,7 @@ mod tests {
     #[test]
     fn a_clip_is_silent_only_when_every_member_failed() {
         let mut zone = a_zone(1);
-        zone.channels.insert(BOOTH, vec![4]);
+        zone.channels.insert(BOOTH, one_per_side(&[4]));
         zone.nodes = vec![ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Clip }];
         let zones = vec![zone.clone()];
         let none = BTreeMap::new();

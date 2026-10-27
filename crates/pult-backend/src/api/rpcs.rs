@@ -335,6 +335,22 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"sequenceId","type":"string","optional":true},{"name":"newSequence","type":"string","optional":true},{"name":"cueId","type":"string","optional":true},{"name":"replace","type":"boolean","optional":true},{"name":"include","type":"array","optional":true},{"name":"name","type":"string","optional":true},{"name":"after","type":"string","optional":true},{"name":"fadeInMs","type":"number","optional":true},{"name":"fadeOutMs","type":"number","optional":true},{"name":"easing","type":"string","optional":true},{"name":"followMode","type":"object","optional":true},{"name":"timing","type":"object","optional":true},{"name":"cueOnly","type":"boolean","optional":true},{"name":"keep","type":"boolean","optional":true},{"name":"onto","type":"object","optional":true}]"#,
         doc: "Store the programmer into a sequence (or a new one, by name): into cueId, merged or replaced, or as a new cue after `after`, appended when left out. One undoable act; the programmer is cleared unless `keep`.",
     },
+    // The show as it comes up (`infra/default_state.rs`), under the caller's name.
+    LocalRpcMeta {
+        method: "defaultState.save",
+        args_schema: "[]",
+        doc: "Save what the show is doing now — sequences on and their cues, masters, running timelines; never the programmer — as how it comes up.",
+    },
+    LocalRpcMeta {
+        method: "defaultState.apply",
+        args_schema: "[]",
+        doc: "Put the show into its default state: those cues, those masters, those timelines from their beginning, and everything else off. Answers whether there was one.",
+    },
+    LocalRpcMeta {
+        method: "defaultState.clear",
+        args_schema: "[]",
+        doc: "Forget the default state, so the show comes up with nothing running.",
+    },
     LocalRpcMeta {
         method: "input.grab",
         args_schema: r#"[{"name":"fixtureIds","type":"array","optional":false},{"name":"inputId","type":"string","optional":true}]"#,
@@ -566,6 +582,18 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                 _ => None,
             };
             what_is_it_doing(&deps.engine, fixture_id, kind).await
+        }
+        "defaultState.save" => {
+            let saved = crate::infra::default_state::save(&deps.engine, asking_user(deps)).await?;
+            serde_json::to_value(saved).map_err(|e| e.to_string())
+        }
+        "defaultState.apply" => {
+            let applied = crate::infra::default_state::apply(&deps.engine, asking_user(deps)).await?;
+            Ok(serde_json::json!({ "applied": applied }))
+        }
+        "defaultState.clear" => {
+            crate::infra::default_state::clear(&deps.engine, asking_user(deps)).await?;
+            Ok(Value::Null)
         }
         "programmer.update" => {
             let updated = crate::infra::storing::update(&deps.engine, asking_user(deps)).await?;
@@ -1184,6 +1212,7 @@ pub fn is_local_rpc(method: &str) -> bool {
         || method.starts_with("wing.")
         // Update and Store. Not the `programmer_values` collection, whose name has no dot.
         || method.starts_with("programmer.")
+        || method.starts_with("defaultState.")
         // Camel case, unlike the `fixture_types` collection, for the reason above.
         || method.starts_with("fixtureTypes.")
 }

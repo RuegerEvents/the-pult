@@ -111,6 +111,44 @@ pub struct Show {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub mvr_xchange: XchangeSettings,
+    /// What the show is doing when nobody has touched it: which sequences are on and
+    /// at which cue, at which master level, and which timelines run. `None` is nothing.
+    ///
+    /// Show data, because it is a fact about the show — the ambience that goes round
+    /// and the house lights that are on — and a showfile carried to another console
+    /// should come up the same way. Applied by the leader when a show opens with
+    /// nothing running (`infra/default_state.rs`), and by hand from the Show menu. The
+    /// programmer is never part of it: a held value is somebody at the desk.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub default_state: Option<DefaultState>,
+}
+
+/// The show as it is meant to come up. See [`Show::default_state`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DefaultState {
+    /// Every sequence that is on, or has a level other than full, as it was saved.
+    #[serde(default)]
+    pub sequences: Vec<DefaultSequence>,
+    /// The timelines that run, each from its beginning.
+    #[serde(default)]
+    pub timelines: Vec<Uuid>,
+    /// When it was saved, console unix ms.
+    #[serde(default)]
+    pub saved_at: u64,
+}
+
+/// One sequence in a [`DefaultState`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DefaultSequence {
+    pub sequence_id: Uuid,
+    /// The cue it is on, or `None` for off.
+    pub cue_id: Option<Uuid>,
+    /// Its master, or `None` for full.
+    pub master: Option<f32>,
 }
 
 /// What a title block says, beside the drawing's own name and scale.

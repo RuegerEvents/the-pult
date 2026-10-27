@@ -788,6 +788,17 @@ pub async fn start(config: Config) -> Result<Running> {
         }));
     }
 
+    // The show as it comes up: what was saved as its default state, applied by the
+    // station that leads it once it is clear nobody is handing a running show over.
+    if bundle.is_some() {
+        tasks.push(tokio::spawn(crate::infra::default_state::at_start(
+            engine_handle.clone(),
+            net.clone(),
+            node_id,
+            config.rejoin,
+        )));
+    }
+
     // The console's own checkpoints. Only the leader takes them, for the reason only
     // the leader prunes: two stations saving on different schedules would be twice
     // the versions and none of them anybody's.

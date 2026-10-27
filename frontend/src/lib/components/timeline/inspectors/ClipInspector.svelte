@@ -19,7 +19,7 @@
 	import { audioOutput, audioStatus, current, devices, drivingReport, nodeAudio, writeColumns } from '$lib/stores/timelines.js';
 	import { audioPrefs, loadAudioPrefs, namesFor, playerOf, stations, zones } from '$lib/stores/zones.js';
 	import { clock, parsePosition, timesOf } from '$lib/waveform.js';
-	import { channelName, mappingOn, widthName, zoneProblem } from '$lib/zones.js';
+	import { channelName, mappingText, widthName, zoneProblem } from '$lib/zones.js';
 	import { getStationContext } from '$lib/ws/context.js';
 
 	let { rows }: { rows: ClipRow[] } = $props();
@@ -99,8 +99,7 @@
 		if (!player) return 'no station is playing this';
 		const problem = zoneProblem(zone, player.id, player.hostname);
 		if (problem) return problem;
-		const channels = mappingOn(zone, player.id);
-		const here = channels ? channels.map((c) => channelName(names, c)).join(', ') : '';
+		const here = mappingText(zone, player.id, names) ?? '';
 		const speakers = zone.nodes.length ? `${zone.nodes.length} node speaker${zone.nodes.length === 1 ? '' : 's'}` : '';
 		return [here && `${here} on ${player.hostname}`, speakers].filter(Boolean).join(' + ');
 	}

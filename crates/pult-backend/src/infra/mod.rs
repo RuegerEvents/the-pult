@@ -11,6 +11,7 @@ pub mod clients;
 pub mod wing;
 pub mod wing_control;
 pub mod storing;
+pub mod default_state;
 pub mod devices;
 pub mod connectors;
 pub mod net;

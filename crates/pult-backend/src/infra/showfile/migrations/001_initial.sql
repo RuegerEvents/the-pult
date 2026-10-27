@@ -233,7 +233,8 @@ CREATE TABLE IF NOT EXISTS show (
     "haze_turbulence" REAL NOT NULL,
     "fade_curves" TEXT NOT NULL,
     "production" TEXT NOT NULL,
-    "mvr_xchange" TEXT NOT NULL
+    "mvr_xchange" TEXT NOT NULL,
+    "default_state" TEXT
 );
 
 CREATE TABLE IF NOT EXISTS speaker_zones (
@@ -265,6 +266,15 @@ CREATE TABLE IF NOT EXISTS stage_plans (
     "rotation_deg" REAL NOT NULL,
     "opacity" REAL NOT NULL,
     "visible" INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS station_audio (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "hostname" TEXT NOT NULL,
+    "device" TEXT,
+    "alias" TEXT,
+    "channels" INTEGER NOT NULL,
+    "channel_names" TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS surfaces (

@@ -1220,6 +1220,23 @@ async fn a_console_restarted_mid_show_recognizes_the_devices_it_had_adopted() {
     );
 }
 
+/// A node that is off when the console starts is in the list anyway, offline and
+/// adopted, so its zone and its strips can be set up before it is on.
+#[tokio::test]
+async fn a_patched_node_that_is_off_is_listed_offline_after_a_restart() {
+    let (addr, _log) = a_node(firmware(MAINS_RELAY).flags, firmware(MAINS_RELAY).description).await;
+    let h = harness().await;
+    h.resolve("sleeper", MAINS_RELAY, Some(addr)).await;
+    let fixture_id = h.devices.adopt("sleeper".into()).await.unwrap();
+
+    let after_restart = h.with_a_fresh_device_manager().await;
+    eventually("the node to be listed", || async { after_restart.state().await.discovered.contains_key("sleeper") }).await;
+    let state = after_restart.state().await;
+    let device = &state.discovered["sleeper"];
+    assert!(!device.online, "nothing has heard it");
+    assert_eq!(device.adopted_fixture_id, Some(fixture_id), "and it is still patched");
+}
+
 #[tokio::test]
 async fn a_follower_with_nothing_adopted_still_says_it_is_not_driving() {
     // Nothing to start or stop either side of the change, so the only thing that

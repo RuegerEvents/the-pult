@@ -559,7 +559,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     let zone = |name: &str, color: &str, channels: Vec<u16>, nodes: Vec<ZoneNode>| {
         let mut map = std::collections::BTreeMap::new();
         if let Some(station) = station {
-            map.insert(station, channels.clone());
+            map.insert(station, pult_schema::types::zone::one_per_side(&channels));
         }
         SpeakerZone {
             folder: None,

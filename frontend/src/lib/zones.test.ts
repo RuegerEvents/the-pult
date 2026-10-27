@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SpeakerZone } from '$lib/generated/index.js';
-import { channelName, freshZoneName, mappingOn, needsMapping, toggleChannel, unmappedOn, widthName, zoneProblem } from './zones.js';
+import { channelName, freshZoneName, mappingOn, needsMapping, sidesAt, sidesOf, toggleChannel, unmappedOn, widthName, zoneProblem } from './zones.js';
 
 const BOOTH = 'booth-id';
 const SPARE = 'spare-id';
@@ -26,21 +26,27 @@ describe('speaker zones', () => {
 	});
 
 	it('says which stations have not mapped a zone', () => {
-		const z = zone({ channels: { [BOOTH]: [4] } });
+		const z = zone({ channels: { [BOOTH]: [[4]] } });
 		const stations = [
 			{ id: BOOTH, name: 'booth' },
 			{ id: SPARE, name: 'spare' }
 		];
-		expect(mappingOn(z, BOOTH)).toEqual([4]);
+		expect(mappingOn(z, BOOTH)).toEqual([[4]]);
 		expect(mappingOn(z, SPARE)).toBeNull();
 		expect(unmappedOn(z, stations)).toEqual(['spare']);
 		expect(zoneProblem(z, SPARE, 'spare')).toBe('not mapped on spare');
 		expect(zoneProblem(z, BOOTH, 'booth')).toBeNull();
 	});
 
-	it('refuses a stereo zone mapped to one channel, as the station does', () => {
-		const z = zone({ width: 2, channels: { [BOOTH]: [1] } });
-		expect(zoneProblem(z, BOOTH, 'booth')).toBe('stereo, mapped to 1 channel on booth');
+	it('says which side of a stereo zone goes nowhere, as the station does', () => {
+		const z = zone({ width: 2, channels: { [BOOTH]: [[1], []] } });
+		expect(zoneProblem(z, BOOTH, 'booth')).toBe('stereo, right goes nowhere on booth');
+	});
+
+	it('reads a map written by a station still on one output per channel', () => {
+		const z = zone({ width: 2, channels: { [BOOTH]: [1, 2] as unknown as number[][] } });
+		expect(sidesOf(z, BOOTH)).toEqual([[1], [2]]);
+		expect(zoneProblem(z, BOOTH, 'booth')).toBeNull();
 	});
 
 	it('does not ask a station to map a zone of node speakers alone', () => {
@@ -50,23 +56,30 @@ describe('speaker zones', () => {
 		expect(zoneProblem(z, BOOTH, 'booth')).toBeNull();
 	});
 
-	it('moves a mono zone to the channel clicked', () => {
-		const z = zone({ channels: { [BOOTH]: [4] } });
-		expect(toggleChannel(z, BOOTH, 6)).toEqual({ [BOOTH]: [6] });
-		// Clicking the one it has takes it off, and the station is no longer named.
-		expect(toggleChannel(z, BOOTH, 4)).toEqual({});
+	it('puts a mono zone on as many outputs as are clicked, and takes one off again', () => {
+		let z = zone({ channels: { [BOOTH]: [[4]] } });
+		z = { ...z, channels: toggleChannel(z, BOOTH, 6) };
+		expect(z.channels[BOOTH]).toEqual([[4, 6]]);
+		z = { ...z, channels: toggleChannel(z, BOOTH, 4) };
+		expect(z.channels[BOOTH]).toEqual([[6]]);
+		// The last one off, and the station is no longer named.
+		expect(toggleChannel(z, BOOTH, 6)).toEqual({});
 	});
 
-	it('never lets a stereo zone grow past two channels', () => {
+	it('goes round off, left, right on a stereo zone, each side on any number of outputs', () => {
 		let z = zone({ width: 2 });
-		z = { ...z, channels: toggleChannel(z, BOOTH, 1) };
-		z = { ...z, channels: toggleChannel(z, BOOTH, 2) };
-		expect(z.channels[BOOTH]).toEqual([1, 2]);
-		z = { ...z, channels: toggleChannel(z, BOOTH, 5) };
-		expect(z.channels[BOOTH]).toEqual([2, 5]);
+		for (const output of [1, 3, 5, 7]) z = { ...z, channels: toggleChannel(z, BOOTH, output) };
+		for (const output of [2, 4, 6, 8]) {
+			z = { ...z, channels: toggleChannel(z, BOOTH, output) };
+			z = { ...z, channels: toggleChannel(z, BOOTH, output) };
+		}
+		expect(z.channels[BOOTH]).toEqual([[1, 3, 5, 7], [2, 4, 6, 8]]);
+		expect(sidesAt(z, BOOTH, 4)).toEqual([1]);
+		// A third click on a right takes it off altogether.
+		expect(toggleChannel(z, BOOTH, 8)[BOOTH]).toEqual([[1, 3, 5, 7], [2, 4, 6]]);
 		// Another station's mapping is left alone.
-		z = { ...z, channels: { ...z.channels, [SPARE]: [7, 8] } };
-		expect(toggleChannel(z, BOOTH, 2)[SPARE]).toEqual([7, 8]);
+		z = { ...z, channels: { ...z.channels, [SPARE]: [[7], [8]] } };
+		expect(toggleChannel(z, BOOTH, 2)[SPARE]).toEqual([[7], [8]]);
 	});
 
 	it('finds a name nobody has', () => {

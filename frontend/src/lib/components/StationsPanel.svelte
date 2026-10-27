@@ -19,6 +19,7 @@
 	 * questions, and it is measured from here either way.
 	 */
 
+	import { stationNames } from '$lib/stores/zones.js';
 	import { onMount } from 'svelte';
 	import Ellipsis from '@lucide/svelte/icons/ellipsis';
 	import Dialog from './Dialog.svelte';
@@ -35,6 +36,10 @@
 	const REPORT_INTERVAL_S = 2;
 
 	let stations = $state<Station[]>([]);
+	/** Known to the show and not here: see `stationNames`. Not one this panel lists as nearby. */
+	const away = $derived(
+		$stationNames.filter((s) => !s.online && !stations.some((t) => t.id === s.id) && !others.some((o) => o.node_id === s.id))
+	);
 	let links = $state<Record<string, PeerLink>>({});
 	let thisStation = $state<string | null>(null);
 	let session = $state<SessionState | null>(null);
@@ -293,6 +298,19 @@
 									<button class="btn btn-small" onclick={leave}>Leave</button>
 								{/if}
 							</td>
+						</tr>
+					{/each}
+					<!-- Stations the show has seen and remembers, that are not here now: listed
+					     so a spare that is off is still in the picture. Mapped in Setup → Audio,
+					     and forgotten there. -->
+					{#each away as gone (gone.id)}
+						<tr class="other elsewhere">
+							<td><span class="name">{gone.name}</span></td>
+							<td>{$show?.name ?? '—'}</td>
+							<td class="mono dim">—</td>
+							<td><span class="badge badge--dim">Offline</span></td>
+							{#each { length: 5 } as _, i (i)}<td class="num dim">—</td>{/each}
+							<td class="acts"></td>
 						</tr>
 					{/each}
 					{#each others as other (other.node_id)}

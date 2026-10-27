@@ -21,10 +21,36 @@ export const stations = collection('stations');
 /** What each station plays through and what it calls its channels, by station id. */
 export const stationAudio = collection('station_audio');
 
-/** The stations, as a picker names them. */
-export const stationNames: Readable<{ id: string; name: string }[]> = derived(stations, ($stations) =>
-	$stations.map((s: Station) => ({ id: s.id, name: s.hostname })).sort((a, b) => a.name.localeCompare(b.name))
+/**
+ * Every station the show knows, as a picker names them: the ones here now, and the ones
+ * it has seen before and remembers by their `station_audio` row, offline. A station that
+ * is off still has its zones mapped from here, before it is back.
+ */
+export const stationNames: Readable<{ id: string; name: string; online: boolean }[]> = derived(
+	[stations, stationAudio],
+	([$stations, $audio]) => {
+		const here = $stations.map((s: Station) => ({ id: s.id, name: s.hostname, online: true }));
+		const away = $audio
+			.filter((row) => !$stations.some((s: Station) => s.id === row.id))
+			.map((row) => ({ id: row.id, name: row.hostname || `station ${row.id.slice(0, 8)}`, online: false }));
+		return [...here, ...away].sort((a, b) => a.name.localeCompare(b.name));
+	}
 );
+
+/**
+ * Forget a station the show remembers: its row, and every zone's mapping on it. The
+ * caller holds the gesture, so it is one act.
+ */
+export async function forgetStation(id: string): Promise<void> {
+	const data = showData();
+	for (const zone of await data.speaker_zones.get()) {
+		if (!(id in zone.channels)) continue;
+		const map = { ...zone.channels };
+		delete map[id];
+		await data.speaker_zones.byId(zone.id).channels.set(map);
+	}
+	await data.station_audio.byId(id).delete();
+}
 
 /** Which station plays a timeline: the one it names, or whoever leads. */
 export function playerOf(timeline: Timeline | undefined, rows: Station[]): Station | undefined {
@@ -79,7 +105,8 @@ export async function createZone(
 		name,
 		color: null,
 		width,
-		channels: station && channels && channels.length > 0 ? { [station]: channels } : {},
+		// One output per zone channel to begin with: left on the first, right on the second.
+		channels: station && channels && channels.length > 0 ? { [station]: channels.map((c) => [c]) } : {},
 		nodes: [],
 		notes: ''
 	} as SpeakerZone);
@@ -92,7 +119,10 @@ export async function createZone(
  * two channels. Made inside the caller's gesture, so adding the clip is one Ctrl-Z.
  */
 export async function firstDestination(station: string | null): Promise<AudioDestination> {
-	const first = get(zones)[0];
+	// Asked of the station, not read off `zones`: `get()` on a store nobody is subscribed
+	// to answers its initial empty list, and every clip dropped on a timeline made one
+	// more "Main" (HHG, 2026-10-27 — there were three).
+	const first = (await showData().speaker_zones.get())[0];
 	if (first) return { Zone: { zone: first.id } };
 	return { Zone: { zone: await createZone('Main', 2, station, [1, 2]) } };
 }

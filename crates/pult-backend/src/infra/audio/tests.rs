@@ -129,7 +129,7 @@ fn a_zone(mapped: &[(NodeId, u16)]) -> SpeakerZone {
         name: "Area 2".into(),
         color: None,
         width: 1,
-        channels: mapped.iter().map(|(node, channel)| (*node, vec![*channel])).collect(),
+        channels: mapped.iter().map(|(node, channel)| (*node, pult_schema::types::zone::one_per_side(&[*channel]))).collect(),
         nodes: Vec::new(),
         notes: String::new(),
     }
@@ -213,7 +213,7 @@ async fn each_station_resolves_a_clips_zone_through_its_own_map() {
     let mut timeline = a_timeline(None);
     timeline.clips.push(a_clip(0, 0, None));
 
-    for (node, wanted) in [(booth, vec![4]), (spare, vec![1])] {
+    for (node, wanted) in [(booth, vec![vec![4]]), (spare, vec![vec![1]])] {
         let mut manager = a_manager(node, true);
         manager.zones = zones.clone();
         let clips = manager.station_clips(&timeline);

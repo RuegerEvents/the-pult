@@ -1882,6 +1882,10 @@ scare a flow starts cannot wait for CoreAudio.
 the show's ("Area 2", "IBC row"); `SpeakerZone::channels` maps it per station, on the
 row, the shape `OutputConfig::interfaces` has — because channel 4 names one machine's
 card, and a spare promoted mid-scare must play the zone on *its* channels.
+A zone channel (mono, or L and R) goes to **any number of outputs** per station
+(`Outputs`, which also reads an old show's one number per channel — by its type, since
+the SQLite path parses columns by type). `station_audio` is PERSISTED and is the show's
+list of stations it has seen, so a station that is off is still mapped from here.
 `types::zone::station_channels` is the one rule, resolved by the playing station before
 anything is decoded: a zone it has not mapped, or mapped to the wrong width, is a
 `clip_faults` entry naming the zone and the station, never a fold onto channels it has;

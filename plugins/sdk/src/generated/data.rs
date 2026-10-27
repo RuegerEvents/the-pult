@@ -4491,6 +4491,20 @@ impl ShowSingleton {
     pub fn mvr_xchange(&self) -> Field<XchangeSettings> {
         self.at.field("mvr_xchange")
     }
+
+    /// What the show is doing when nobody has touched it: which sequences are on and
+    /// at which cue, at which master level, and which timelines run. `None` is nothing.
+    ///
+    /// Show data, because it is a fact about the show — the ambience that goes round
+    /// and the house lights that are on — and a showfile carried to another console
+    /// should come up the same way. Applied by the leader when a show opens with
+    /// nothing running (`infra/default_state.rs`), and by hand from the Show menu. The
+    /// programmer is never part of it: a held value is somebody at the desk.
+    ///
+    /// PERSISTED.
+    pub fn default_state(&self) -> Field<Option<DefaultState>> {
+        self.at.field("default_state")
+    }
 }
 
 // ── speaker_zones ───────────────────────────────────────────────────────
@@ -4628,10 +4642,16 @@ impl SpeakerZoneEntity {
         self.at.field("width")
     }
 
-    /// Which of each station's output channels the zone is, counting from one.
+    /// Where each of the zone's channels comes out on each station: per station, one
+    /// list per zone channel (left, right, …) of that station's output channels,
+    /// counting from one. A list may hold several outputs — a bed on all eight Dante
+    /// channels — and an output may be in two lists, which sums them there.
+    ///
+    /// A show from before there were lists reads `[1, 2]` as left on 1 and right on 2
+    /// (`one_per_side`), which is what it meant.
     ///
     /// PERSISTED.
-    pub fn channels(&self) -> Field<BTreeMap<NodeId, Vec<u16>>> {
+    pub fn channels(&self) -> Field<BTreeMap<NodeId, Vec<Outputs>>> {
         self.at.field("channels")
     }
 
@@ -5307,14 +5327,18 @@ impl StationEntity {
 // ── station_audio ───────────────────────────────────────────────────────
 
 /// What one station plays through, and what it calls the card and its channels: the
-/// SYNCED `station_audio` collection, keyed by the station's `NodeId`.
+/// `station_audio` collection, keyed by the station's `NodeId`.
 ///
 /// So a zone can be mapped for a machine from another one — the booth mapping the
 /// spare's channels — with the names that machine gave them. The names stay that
 /// machine's preference (`[audio.names]`); this row only says what they are, and a
 /// station rewrites it only when something in it moved, like `station_networks`.
-/// SYNCED and not PERSISTED for the reason that one is: which card is in a machine does
-/// not travel with a show.
+///
+/// **PERSISTED, so a station is remembered while it is off.** It was SYNCED, on the
+/// grounds that which card is in a machine does not travel with a show — and then a
+/// station that was off was nowhere in the zone matrix, and its routing could not be
+/// set until it was on (HHG, 2026-10-27). The row is also the show's list of stations
+/// it has seen, which is why it carries the hostname; forgetting one is deleting it.
 ///
 /// The `station_audio` collection.
 pub fn station_audio() -> StationAudioCollection {
@@ -5424,21 +5448,28 @@ impl StationAudioEntity {
 
     /// The station's `NodeId`.
     ///
-    /// SYNCED.
+    /// PERSISTED.
     pub fn id(&self) -> Field<Uuid> {
         self.at.field("id")
     }
 
+    /// What the machine is called, so a station that is off is still named.
+    ///
+    /// PERSISTED.
+    pub fn hostname(&self) -> Field<String> {
+        self.at.field("hostname")
+    }
+
     /// The output card, by its own name: open, or the one the station is told to use.
     ///
-    /// SYNCED.
+    /// PERSISTED.
     pub fn device(&self) -> Field<Option<String>> {
         self.at.field("device")
     }
 
     /// What the station calls it.
     ///
-    /// SYNCED.
+    /// PERSISTED.
     pub fn alias(&self) -> Field<Option<String>> {
         self.at.field("alias")
     }
@@ -5446,14 +5477,14 @@ impl StationAudioEntity {
     /// How many output channels it has: the open card's count, or as many as are named
     /// when nothing is open yet.
     ///
-    /// SYNCED.
+    /// PERSISTED.
     pub fn channels(&self) -> Field<u16> {
         self.at.field("channels")
     }
 
     /// The channel names, the first being channel 1; empty is unnamed.
     ///
-    /// SYNCED.
+    /// PERSISTED.
     pub fn channel_names(&self) -> Field<Vec<String>> {
         self.at.field("channel_names")
     }

@@ -346,6 +346,30 @@ pub enum Datum {
     Center,
 }
 
+/// One sequence in a [`DefaultState`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DefaultSequence {
+    pub sequence_id: Uuid,
+    /// The cue it is on, or `None` for off.
+    pub cue_id: Option<Uuid>,
+    /// Its master, or `None` for full.
+    pub master: Option<f32>,
+}
+
+/// The show as it is meant to come up. See [`Show::default_state`].
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DefaultState {
+    /// Every sequence that is on, or has a level other than full, as it was saved.
+    #[serde(default)]
+    pub sequences: Vec<DefaultSequence>,
+    /// The timelines that run, each from its beginning.
+    #[serde(default)]
+    pub timelines: Vec<Uuid>,
+    /// When it was saved, console unix ms.
+    #[serde(default)]
+    pub saved_at: u64,
+}
+
 /// What the beat detector found, before anybody agreed to it.
 ///
 /// Kept beside `grid` rather than written into it, and that is the whole discipline:
@@ -1706,6 +1730,16 @@ pub enum OutputKind {
     OpenHaunt,
 }
 
+/// The outputs one zone channel comes out of on one station, counting from one.
+///
+/// Its own type rather than a `Vec<u16>` because of how a show is read: the SQLite path
+/// parses a column by its *type*, so a field attribute would be skipped there, and a
+/// show from before there were lists — `[1, 2]`, one output per zone channel — would
+/// stop the show opening. This reads both, and is always written as a list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Outputs(pub Vec<u16>);
+
 /// A paper size, in the only series this console offers.
 ///
 /// A-series only: a production office prints A3 and a rigger reads A3. Adding Letter
@@ -2705,6 +2739,16 @@ pub struct Show {
     /// says so in its own `preferences.toml` instead — that is a fact about the
     /// machine, and it is a veto rather than a setting.
     pub mvr_xchange: XchangeSettings,
+    /// What the show is doing when nobody has touched it: which sequences are on and
+    /// at which cue, at which master level, and which timelines run. `None` is nothing.
+    ///
+    /// Show data, because it is a fact about the show — the ambience that goes round
+    /// and the house lights that are on — and a showfile carried to another console
+    /// should come up the same way. Applied by the leader when a show opens with
+    /// nothing running (`infra/default_state.rs`), and by hand from the Show menu. The
+    /// programmer is never part of it: a held value is somebody at the desk.
+    #[serde(default)]
+    pub default_state: Option<DefaultState>,
 }
 
 /// One named position on a wheel: a gobo, a color, a prism facet.
@@ -2733,9 +2777,15 @@ pub struct SpeakerZone {
     /// station maps has to be exactly this many, so a stereo bed cannot quietly become
     /// a downmix because somebody ticked one box of two.
     pub width: u16,
-    /// Which of each station's output channels the zone is, counting from one.
+    /// Where each of the zone's channels comes out on each station: per station, one
+    /// list per zone channel (left, right, …) of that station's output channels,
+    /// counting from one. A list may hold several outputs — a bed on all eight Dante
+    /// channels — and an output may be in two lists, which sums them there.
+    ///
+    /// A show from before there were lists reads `[1, 2]` as left on 1 and right on 2
+    /// (`one_per_side`), which is what it meant.
     #[serde(default)]
-    pub channels: BTreeMap<NodeId, Vec<u16>>,
+    pub channels: BTreeMap<NodeId, Vec<Outputs>>,
     /// Node loudspeakers that are in the zone as well.
     #[serde(default)]
     pub nodes: Vec<ZoneNode>,
@@ -2953,18 +3003,25 @@ pub struct Station {
 }
 
 /// What one station plays through, and what it calls the card and its channels: the
-/// SYNCED `station_audio` collection, keyed by the station's `NodeId`.
+/// `station_audio` collection, keyed by the station's `NodeId`.
 ///
 /// So a zone can be mapped for a machine from another one — the booth mapping the
 /// spare's channels — with the names that machine gave them. The names stay that
 /// machine's preference (`[audio.names]`); this row only says what they are, and a
 /// station rewrites it only when something in it moved, like `station_networks`.
-/// SYNCED and not PERSISTED for the reason that one is: which card is in a machine does
-/// not travel with a show.
+///
+/// **PERSISTED, so a station is remembered while it is off.** It was SYNCED, on the
+/// grounds that which card is in a machine does not travel with a show — and then a
+/// station that was off was nowhere in the zone matrix, and its routing could not be
+/// set until it was on (HHG, 2026-10-27). The row is also the show's list of stations
+/// it has seen, which is why it carries the hostname; forgetting one is deleting it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StationAudio {
     /// The station's `NodeId`.
     pub id: Uuid,
+    /// What the machine is called, so a station that is off is still named.
+    #[serde(default)]
+    pub hostname: String,
     /// The output card, by its own name: open, or the one the station is told to use.
     pub device: Option<String>,
     /// What the station calls it.

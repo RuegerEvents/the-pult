@@ -6,6 +6,7 @@
 	import { canEdit } from '$lib/stores/showLock.js';
 	import OutputGaps from './OutputGaps.svelte';
 	import StripPatch from './StripPatch.svelte';
+	import Dialog from './Dialog.svelte';
 	import { bytesText } from '$lib/destination.js';
 	import { collection, showData } from '$lib/stores/show.js';
 	import type { DevicesState, DiscoveredDevice, Fixture } from '$lib/generated/index.js';
@@ -104,6 +105,16 @@
 		}
 	}
 
+	/**
+	 * Forget asks first, and says what goes with it: every fixture patched to the node
+	 * — its heads, a strip with all its cells — is deleted, and cues that set them have
+	 * nothing left to set. Ctrl-Z puts the fixtures back; the node is adopted again by
+	 * Adopt.
+	 */
+	let forgetting = $state<DiscoveredDevice | null>(null);
+	const goingWith = (device: DiscoveredDevice): Fixture[] =>
+		($fixtures as Fixture[]).filter((f) => 'OpenHaunt' in f.address && f.address.OpenHaunt.serial === device.serial);
+
 	/// Select the fixture a node was adopted as: click alone, shift-click to add.
 	function pick(event: MouseEvent, device: DiscoveredDevice) {
 		const id = device.adopted_fixture_id;
@@ -192,7 +203,7 @@
 								<button
 									class="chip-btn"
 									disabled={busy === device.serial}
-									onclick={() => act('forget', device)}
+									onclick={() => (forgetting = device)}
 								>
 									Forget
 								</button>
@@ -348,7 +359,49 @@
 	{/if}
 </div>
 
+{#if forgetting}
+	{@const device = forgetting}
+	{@const gone = goingWith(device)}
+	<Dialog
+		title="Forget {device.name}?"
+		onclose={() => (forgetting = null)}
+		onaccept={() => {
+			forgetting = null;
+			void act('forget', device);
+		}}
+	>
+		{#if gone.length > 0}
+			<p>
+				{gone.length === 1 ? 'Its fixture is' : `Its ${gone.length} fixtures are`} deleted with it, and every
+				cue, group and binding that names {gone.length === 1 ? 'it' : 'them'} has nothing left to drive:
+			</p>
+			<ul class="gone">
+				{#each gone as fixture (fixture.id)}<li>{fixture.name}</li>{/each}
+			</ul>
+		{:else}
+			<p>Nothing is patched to it.</p>
+		{/if}
+		<p class="note">Ctrl-Z brings the fixtures back. {device.online ? '' : 'It is offline, so it is only forgotten here; it is not told.'}</p>
+		{#snippet footer()}
+			<button class="ghost" onclick={() => (forgetting = null)}>Cancel</button>
+			<button
+				class="danger"
+				onclick={() => {
+					forgetting = null;
+					void act('forget', device);
+				}}>Forget</button
+			>
+		{/snippet}
+	</Dialog>
+{/if}
+
 <style>
+	.gone {
+		margin: 4px 0 8px;
+		padding-left: 18px;
+		max-height: 200px;
+		overflow-y: auto;
+	}
 	.panel {
 		background: #252525;
 		border: 1px solid #333;

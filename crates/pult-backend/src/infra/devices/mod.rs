@@ -377,6 +377,9 @@ impl DeviceManager {
         ]);
 
         self.push_state().await;
+        // Every node the show is patched to is in the list from the start, offline until
+        // it is heard from — so its zone and its strips can be set up before it is on.
+        self.remember_patched().await;
         // A console restarted mid-show comes up already leading, with devices already
         // adopted. Nothing will announce that, so it is checked once here.
         self.reconsider_leadership().await;
@@ -432,7 +435,10 @@ impl DeviceManager {
                 Some(event) = mqtt_rx.recv() => self.handle_mqtt(event).await,
                 Some(_) = sessions.next() => self.reconsider_leadership().await,
                 Some(_) = stations.next() => self.refresh_brokers().await,
-                Some(_) = addresses.next() => self.publish().await,
+                Some(_) = addresses.next() => {
+                    self.remember_patched().await;
+                    self.publish().await;
+                }
                 _ = clock.tick() => self.publish_clock().await,
                 _ = strips.tick() => self.reconcile_all_strips().await,
                 _ = strays.tick() => self.tell_strays().await,
@@ -490,6 +496,38 @@ impl DeviceManager {
         // Always: joining a session changes what this node says about itself even
         // when it had nothing to drive either side of the change.
         self.publish().await;
+    }
+
+    /// Put every node the show is patched to in the list, offline, where nothing here
+    /// has seen it yet.
+    ///
+    /// The list used to be only what a browse had found since this station started, so
+    /// after a restart a node that was off was nowhere: not in the Devices panel, not
+    /// offered to a speaker zone, and its strip's heads not listed under it — none of it
+    /// could be set up until the node was on. A device the show is not patched to stays
+    /// out, and one that goes away keeps its entry, as it always has.
+    async fn remember_patched(&mut self) {
+        let fixtures = self.fixtures().await;
+        let mut added = false;
+        for fixture in &fixtures {
+            let Some(serial) = fixture.address.serial() else { continue };
+            if self.state.discovered.contains_key(serial) {
+                continue;
+            }
+            let mut device = heard(serial, self.unseen_port);
+            device.online = false;
+            // Its own fixture's name until it says what it is: "Area 2 skeleton" reads
+            // better in a list than a serial.
+            if let Some(head) = fixtures.iter().find(|f| f.address.serial() == Some(serial) && f.address.head() == Some(0)) {
+                device.name = head.name.clone();
+            }
+            self.state.discovered.insert(serial.to_string(), device);
+            added = true;
+        }
+        if added {
+            self.reconcile_adoptions().await;
+            self.publish().await;
+        }
     }
 
     /// Is anything in this show patched to a node?
@@ -785,7 +823,10 @@ impl DeviceManager {
     /// Whether it did anything, having published if so. A node a browse has shown is
     /// left to mDNS, which goes on saying where it is.
     async fn hear(&mut self, serial: &str) -> bool {
-        let known = self.state.discovered.contains_key(serial);
+        // A node the show is patched to and nothing has heard yet is in the list as a
+        // placeholder (`remember_patched`), and is reached from here like one never seen.
+        let placeholder = self.state.discovered.get(serial).is_some_and(|d| !d.online && d.ip.is_empty());
+        let known = self.state.discovered.contains_key(serial) && !placeholder;
         if known && !self.heard_only.contains(serial) {
             return false;
         }
