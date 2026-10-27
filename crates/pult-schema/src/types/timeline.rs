@@ -834,18 +834,33 @@ pub struct AudioClip {
     /// other fader in the building does.
     #[serde(default)]
     pub gain_db: f32,
+    /// Into the first time round.
     #[serde(default)]
     pub fade_in_ms: u32,
-    /// Not applied to a looped clip, which has no last time round to fade out of.
+    /// Out of the last time round.
     #[serde(default)]
     pub fade_out_ms: u32,
-    /// Go round the trimmed region for as long as the timeline runs: an ambient bed.
-    #[serde(default)]
-    pub looped: bool,
+    /// How many times the trimmed region plays, back to back: one is once.
+    ///
+    /// Always a number, never "for ever": a clip that went round for as long as the
+    /// timeline ran had no end anybody could program cues against. A bed that has to
+    /// go on is a timeline that goes round ([`AtEnd::Loop`]), which loops its cues
+    /// with it. Zero reads as one, and so does a show from before there was a count.
+    #[serde(default = "one_time")]
+    pub repeats: u32,
     pub destination: AudioDestination,
 }
 
+fn one_time() -> u32 {
+    1
+}
+
 impl AudioClip {
+    /// How many times it plays: [`AudioClip::repeats`], never fewer than one.
+    pub fn times(&self) -> u32 {
+        self.repeats.max(1)
+    }
+
     /// The gain as the mixer wants it.
     pub fn gain(&self) -> f32 {
         10f32.powf(self.gain_db / 20.0)

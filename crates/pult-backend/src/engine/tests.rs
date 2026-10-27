@@ -5144,7 +5144,7 @@ mod streamed_play {
                 gain_db: 0.0,
                 fade_in_ms: 0,
                 fade_out_ms: 0,
-                looped: false,
+                repeats: 1,
                 destination,
             }],
             detected: None,

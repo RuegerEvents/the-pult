@@ -147,7 +147,7 @@ fn a_clip(start_ms: u64, offset_ms: u64, length_ms: Option<u64>) -> AudioClip {
         gain_db: 0.0,
         fade_in_ms: 0,
         fade_out_ms: 0,
-        looped: false,
+        repeats: 1,
         destination: pult_schema::types::timeline::AudioDestination::Zone { zone: ZONE },
     }
 }
@@ -182,11 +182,11 @@ fn a_detected_beat_is_moved_onto_the_timeline_through_the_clip() {
 fn a_clips_placement_is_what_the_mixer_is_handed() {
     let mut clip = a_clip(1_000, 250, None);
     clip.gain_db = -6.0;
-    clip.looped = true;
+    clip.repeats = 3;
     let placed = placement(&clip);
     assert_eq!(placed.start_ms, 1_000.0);
     assert_eq!(placed.offset_ms, 250.0);
-    assert!(placed.looped);
+    assert_eq!(placed.repeats, 3);
     assert!((placed.gain - 0.501).abs() < 0.001, "-6 dB is about half");
 }
 

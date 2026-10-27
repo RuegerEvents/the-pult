@@ -16,8 +16,9 @@
 	 * **The grammar is the console's**: a click picks something up and the Inspector
 	 * edits it, ⌘/Ctrl- or Shift-click adds to what is picked, a drag across empty lanes
 	 * is a rubber band, a right-click or long-press is the context menu, Delete removes
-	 * what is picked. A click on nothing locates and puts the timeline itself back in the
-	 * Inspector. A double-click on the event or marker lane writes one there.
+	 * what is picked. A click on nothing puts the timeline itself back in the Inspector;
+	 * only the ruler moves the playhead. A double-click on the event or marker lane
+	 * writes one there.
 	 *
 	 * **A drag is one gesture and one write per animation frame**, measured from where
 	 * the drag began — `stores/editor.ts`'s rule for dragging a truss. Several things
@@ -91,6 +92,7 @@
 	import {
 		clampView,
 		clipSpan,
+		timesOf,
 		dragClip,
 		gridLines,
 		msOf,
@@ -215,7 +217,7 @@
 	/** As far as anything is written, or the song, and never less than thirty seconds. */
 	const durationMs = $derived.by(() => {
 		const written = Math.max(0, ...timeline.events.map((e) => e.at_ms), ...timeline.markers.map((m) => m.at_ms), timeline.end?.at_ms ?? 0);
-		const sounding = Math.max(0, ...timeline.clips.filter((c) => !c.looped).map((c) => clipSpan(c, fileMs(c), 0).toMs));
+		const sounding = Math.max(0, ...timeline.clips.map((c) => clipSpan(c, fileMs(c)).toMs));
 		// A sixth more than the furthest thing, so the end is on screen with room to drag
 		// past it; and never under ten seconds, so an empty timeline still has a ruler.
 		return Math.max(10_000, Math.ceil(Math.max(sounding, written) * 1.15));
@@ -224,7 +226,7 @@
 	/** Where the content runs out: the last sound, event or marker. Where a new end waits. */
 	const contentEndMs = $derived.by(() => {
 		const written = Math.max(0, ...timeline.events.map((e) => e.at_ms), ...timeline.markers.map((m) => m.at_ms));
-		const sounding = Math.max(0, ...timeline.clips.filter((c) => !c.looped).map((c) => clipSpan(c, fileMs(c), 0).toMs));
+		const sounding = Math.max(0, ...timeline.clips.map((c) => clipSpan(c, fileMs(c)).toMs));
 		return Math.max(written, sounding) || 10_000;
 	});
 
@@ -296,13 +298,12 @@
 	});
 
 	const layout: Layout = $derived.by(() => {
-		const until = timeline.end?.at_ms ?? durationMs;
 		return layOut({
 			segments: timeline.grid.map((s, i) => ({ id: segmentId(timeline.id, i), atMs: s.at_ms })),
 			markers: timeline.markers.map((m) => ({ id: m.id, atMs: m.at_ms })),
 			events: timeline.events.map((e) => ({ id: e.id, atMs: e.at_ms, ...eventRow(e.action, $sequences) })),
 			clips: timeline.clips.map((clip) => {
-				const span = clipSpan(clip, fileMs(clip), until);
+				const span = clipSpan(clip, fileMs(clip));
 				return {
 					id: clip.id,
 					destination: destinationKey(clip.destination),
@@ -706,18 +707,19 @@
 			ctx.fillStyle = chosen ? '#1f3d66' : '#18263b';
 			ctx.fillRect(left, r.top, right - left, r.bottom - r.top);
 			const peaks = clip.peaks ? peaksFor(clip.peaks, () => (dirty = true)) : null;
-			const span = clipSpan(clip, fileMs(clip), timeline.end?.at_ms ?? durationMs);
+			const span = clipSpan(clip, fileMs(clip));
+			const times = timesOf(clip);
 			if (peaks && span.regionMs > 0) {
 				const msPerBin = (peaks.samplesPerBin * 1000) / peaks.sampleRate;
 				const middle = (r.top + r.bottom) / 2;
 				const amp = (r.bottom - r.top) / 2 - 3;
-				ctx.strokeStyle = clip.looped ? '#4a7fc4' : '#5d95e0';
+				ctx.strokeStyle = '#5d95e0';
 				ctx.beginPath();
 				for (let x = Math.floor(left); x < right; x++) {
 					const at = msOf(x, view, width) - clip.start_ms;
 					if (at < 0) continue;
-					const into = clip.looped ? at % span.regionMs : at;
-					if (into >= span.regionMs) continue;
+					if (at >= span.regionMs * times) continue;
+					const into = at % span.regionMs;
 					const step = Math.max(1, Math.floor(view.spanMs / width / msPerBin));
 					const from = Math.floor((clip.offset_ms + into) / msPerBin);
 					let low = 0;
@@ -739,8 +741,8 @@
 				ctx.moveTo(r.left, r.bottom);
 				ctx.lineTo(xOf(clip.start_ms + clip.fade_in_ms, view, width), r.top);
 			}
-			if (clip.fade_out_ms > 0 && !clip.looped) {
-				ctx.moveTo(xOf(clip.start_ms + span.regionMs - clip.fade_out_ms, view, width), r.top);
+			if (clip.fade_out_ms > 0) {
+				ctx.moveTo(xOf(span.toMs - clip.fade_out_ms, view, width), r.top);
 				ctx.lineTo(r.right, r.bottom);
 			}
 			ctx.stroke();
@@ -756,7 +758,22 @@
 			}
 			ctx.fillStyle = fault ? '#ef4444' : half ? '#f5a524' : '#e6efff';
 			ctx.font = '11px system-ui, sans-serif';
-			ctx.fillText(`${clip.name || 'clip'}${clip.looped ? ' ⟲' : ''}${peaks ? '' : ' — reducing…'}`, left + 5, r.top + 13, Math.max(10, right - left - 10));
+			// Each time round after the first starts at a dashed line, so a repeated clip
+			// reads as the sections it is.
+			if (times > 1 && span.regionMs > 0) {
+				ctx.strokeStyle = 'rgba(230,239,255,0.55)';
+				ctx.setLineDash([3, 3]);
+				ctx.beginPath();
+				for (let i = 1; i < times; i++) {
+					const x = Math.round(xOf(clip.start_ms + i * span.regionMs, view, width)) + 0.5;
+					if (x < left || x > right) continue;
+					ctx.moveTo(x, r.top + 2);
+					ctx.lineTo(x, r.bottom - 2);
+				}
+				ctx.stroke();
+				ctx.setLineDash([]);
+			}
+			ctx.fillText(`${clip.name || 'clip'}${times > 1 ? ` ×${times}` : ''}${peaks ? '' : ' — reducing…'}`, left + 5, r.top + 13, Math.max(10, right - left - 10));
 		}
 
 		// Takes: each a segment on its parameter's row, its movement as a stepped line,
@@ -1019,7 +1036,9 @@
 		const r = rectOf(item, layout, view, width);
 		const clip = timeline.clips.find((c) => c.id === item.ref.id);
 		if (x - r.left <= EDGE_PX) return 'front';
-		if (clip && !clip.looped && r.right - x <= EDGE_PX) return 'back';
+		// The back edge trims a clip that plays once; a repeated one is trimmed in the
+		// Inspector, where its sections cannot be confused with its length.
+		if (clip && timesOf(clip) === 1 && r.right - x <= EDGE_PX) return 'back';
 		return 'body';
 	}
 
@@ -1082,7 +1101,7 @@
 			const clip = live.clips.find((c) => c.id === drag.id);
 			if (!clip) return;
 			const file = fileMs(clip);
-			const region = clipSpan({ ...clip, ...drag.grabbed }, file, 0).regionMs;
+			const region = clipSpan({ ...clip, ...drag.grabbed }, file).regionMs;
 			const edge = drag.grip === 'back' ? drag.grabbed.start_ms + region : drag.grabbed.start_ms;
 			const landed = snapped(edge + rawMs - drag.fromMs) - edge;
 			const next = { ...clip, ...dragClip(drag.grip, 0, landed, file, drag.grabbed) };
@@ -1333,13 +1352,12 @@
 			return;
 		}
 		if (was.mode === 'pending') {
-			// A click: on a thing, pick it up; on nothing, go there and give the Inspector
-			// back to the timeline.
+			// A click: on a thing, pick it up; on nothing, give the Inspector back to the
+			// timeline. Never a locate: a click in the lanes is often only to give the
+			// canvas the keys (Space), and a playhead that jumped there lost the place.
+			// The ruler is where the playhead is moved.
 			if (was.item) selectSubject(was.item.ref, was.additive);
-			else {
-				if (!was.additive) clearTimelineItems();
-				void locate(timeline.id, snapped(msOf(was.x, view, width)));
-			}
+			else if (!was.additive) clearTimelineItems();
 			return;
 		}
 		if (was.mode === 'point') {

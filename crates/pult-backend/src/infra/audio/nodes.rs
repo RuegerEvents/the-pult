@@ -263,14 +263,14 @@ pub fn encoding_for(region_ms: f64, node: &NodeAudio) -> (Encoding, u32) {
 /// starts, and the show time it is over (`None` for as long as the timeline runs).
 /// `None` where the timeline is not running or the clip has nothing left to play.
 ///
-/// `region_ms` is how long one time round lasts; a looped clip lasts until the timeline
-/// stops, or to the end of the lap on a looping timeline, and is started again at the
-/// top of the next one.
+/// `region_ms` is how long one time round lasts and `repeats` how many there are; on a
+/// timeline that goes round, a clip is cut at the end of the lap and started again at
+/// the top of the next one.
 pub fn occurrence(
     timeline: &Timeline,
     start_ms: u64,
     region_ms: u64,
-    looped: bool,
+    repeats: u32,
     now: u64,
 ) -> Option<(u64, Option<u64>)> {
     if !timeline.running || timeline.rate <= 0.0 {
@@ -283,7 +283,7 @@ pub fn occurrence(
     let position = timeline.position_at(base) as f64;
     let show = |at: f64| -> u64 { (base as f64 + (at - position) / rate).round().max(0.0) as u64 };
     let start = start_ms as f64;
-    let length = if looped { f64::INFINITY } else { region_ms as f64 };
+    let length = region_ms as f64 * repeats.max(1) as f64;
 
     match timeline.end.filter(|end| end.at_ms > 0) {
         None => {
@@ -569,7 +569,7 @@ impl AudioManager {
         let channels = (decoded.channels.max(1)).min(node.channels());
         let key = serde_json::json!([
             clip.asset, clip.offset_ms, clip.length_ms, clip.fade_in_ms, clip.fade_out_ms,
-            clip.looped, rate, channels, encoding == Encoding::ImaAdpcm,
+            clip.times() > 1, rate, channels, encoding == Encoding::ImaAdpcm,
         ])
         .to_string();
         if let Some(bounced) = self.nodes.bounced.get(&key) {
@@ -692,7 +692,7 @@ impl AudioManager {
                 }
                 let Some(bounced) = self.held_bounce(clip, serial) else { continue };
                 let Some((at, over)) =
-                    occurrence(timeline, clip.start_ms, bounced.duration_ms, clip.looped, now)
+                    occurrence(timeline, clip.start_ms, bounced.duration_ms, clip.times(), now)
                 else {
                     continue;
                 };
@@ -735,12 +735,15 @@ impl AudioManager {
             if held.is_some_and(|h| h.at <= now) && want.at > now {
                 devices.audio(key.0.clone(), "stop", serde_json::json!({ "voice": key.1, "fade_ms": 10 }));
             }
+            // A clip that plays more than once is one time round on the node, looped,
+            // and stopped at the end of its last time round: the stop above, once it
+            // is no longer wanted.
             let looped = self
                 .timelines
                 .iter()
                 .flat_map(|t| node_clips(t, &self.zones).into_iter().map(move |(c, _, _)| (t.id, c)))
                 .find(|(t, c)| voice_name(*t, c.id) == key.1)
-                .is_some_and(|(_, c)| c.looped);
+                .is_some_and(|(_, c)| c.times() > 1);
             devices.audio(
                 key.0.clone(),
                 "play",

@@ -3,7 +3,7 @@
 	 * A clip: where it sits, what part of its file plays, how loud, and where it goes.
 	 *
 	 * What the timeline's "Sound" section used to be, one clip at a time. Several clips
-	 * at once edit what they can share — level, loop and destination — because routing
+	 * at once edit what they can share — level, repetitions and destination — because routing
 	 * five scares to the same speakers is one act, not five.
 	 *
 	 * Edited in place: every field is one value and Ctrl-Z takes it back (task 79's rule).
@@ -18,7 +18,7 @@
 	import { openSetup } from '$lib/stores/setup.js';
 	import { audioOutput, audioStatus, current, devices, drivingReport, nodeAudio, writeColumns } from '$lib/stores/timelines.js';
 	import { audioPrefs, loadAudioPrefs, namesFor, playerOf, stations, zones } from '$lib/stores/zones.js';
-	import { clock, parsePosition } from '$lib/waveform.js';
+	import { clock, parsePosition, timesOf } from '$lib/waveform.js';
 	import { channelName, mappingOn, widthName, zoneProblem } from '$lib/zones.js';
 	import { getStationContext } from '$lib/ws/context.js';
 
@@ -106,7 +106,7 @@
 	}
 
 	const gainShared = $derived(rows.every((r) => r.clip.gain_db === rows[0].clip.gain_db) ? rows[0].clip.gain_db : null);
-	const loopShared = $derived(rows.every((r) => r.clip.looped === rows[0].clip.looped) ? rows[0].clip.looped : null);
+	const timesShared = $derived(rows.every((r) => timesOf(r.clip) === timesOf(rows[0].clip)) ? timesOf(rows[0].clip) : null);
 	const faults = $derived(
 		rows.map((r) => ({ name: r.name, fault: $audioStatus?.[r.timelineId]?.clip_faults?.[r.id] })).filter((f) => f.fault)
 	);
@@ -172,12 +172,12 @@
 					onchange={(e) => void setAll({ fade_in_ms: Math.max(0, Math.round(Number(e.currentTarget.value) || 0)) })}
 				/></label
 			>
-			<label title={clip.looped ? 'A clip that goes round never fades out' : ''}><span class="note">out</span>
+			<label title="Out of the last time round"><span class="note">out</span>
 				<input
 					class="input narrow"
 					type="number"
 					min="0"
-					disabled={!$canEdit || clip.looped}
+					disabled={!$canEdit}
 					value={clip.fade_out_ms}
 					onchange={(e) => void setAll({ fade_out_ms: Math.max(0, Math.round(Number(e.currentTarget.value) || 0)) })}
 				/></label
@@ -200,16 +200,27 @@
 			}}
 		/>
 		<span class="note">dB</span>
-		<label class="inline note">
-			<input
-				type="checkbox"
-				disabled={!$canEdit}
-				checked={loopShared === true}
-				indeterminate={loopShared === null}
-				onchange={(e) => void setAll({ looped: e.currentTarget.checked })}
-			/>
-			goes round
-		</label>
+	</div>
+
+	<!-- How many times it plays, never "for ever": a bed that has to go on is the
+	     timeline going round, which takes its cues round with it. -->
+	<span class="label">Repetitions</span>
+	<div class="inline">
+		<input
+			class="input narrow"
+			type="number"
+			min="1"
+			step="1"
+			disabled={!$canEdit}
+			placeholder={timesShared === null ? 'mixed' : ''}
+			value={timesShared ?? ''}
+			onchange={(e) => {
+				const n = Math.floor(Number(e.currentTarget.value));
+				if (Number.isFinite(n) && n >= 1) void setAll({ repeats: n });
+				else e.currentTarget.value = timesShared === null ? '' : String(timesShared);
+			}}
+		/>
+		<span class="note">{timesShared === 1 ? 'plays once' : timesShared === null ? '' : `plays ${timesShared} times, back to back`}</span>
 	</div>
 
 	<span class="label">Goes to</span>

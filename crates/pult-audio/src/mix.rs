@@ -92,12 +92,13 @@ pub struct Placement {
     pub offset_ms: f64,
     /// How much of the file it plays from there. `None` is to the end of the file.
     pub length_ms: Option<f64>,
-    /// Play that region again and again, for as long as the timeline runs.
-    pub looped: bool,
+    /// How many times that region plays, back to back. Zero plays it once.
+    pub repeats: u32,
     /// Linear, so 1 is the file as it was mixed.
     pub gain: f32,
+    /// Into the first time round.
     pub fade_in_ms: f64,
-    /// Not applied to a looped clip, which has no last time round to fade.
+    /// Out of the last time round.
     pub fade_out_ms: f64,
 }
 
@@ -108,8 +109,14 @@ impl Placement {
         self.length_ms.map_or(rest, |length| length.clamp(0.0, rest))
     }
 
+    /// How long the whole clip lasts on the timeline: the region, as many times as it
+    /// plays.
+    pub fn span_ms(&self, file_ms: f64) -> f64 {
+        self.region_ms(file_ms) * self.repeats.max(1) as f64
+    }
+
     /// Where in the file the clip is at a timeline position, and how loud. `None` is
-    /// silence: before the clip starts, after it has played once, or a region with
+    /// silence: before the clip starts, after its last time round, or a region with
     /// nothing in it.
     pub fn at(&self, timeline_ms: f64, file_ms: f64) -> Option<(f64, f32)> {
         let local = timeline_ms - self.start_ms;
@@ -120,17 +127,17 @@ impl Placement {
         if region <= 0.0 {
             return None;
         }
-        let into = match self.looped {
-            true => local % region,
-            false if local >= region => return None,
-            false => local,
-        };
+        let span = region * self.repeats.max(1) as f64;
+        if local >= span {
+            return None;
+        }
+        let into = local % region;
         let mut envelope = self.gain;
         if self.fade_in_ms > 0.0 && local < self.fade_in_ms {
             envelope *= (local / self.fade_in_ms) as f32;
         }
-        if !self.looped && self.fade_out_ms > 0.0 {
-            let left = region - local;
+        if self.fade_out_ms > 0.0 {
+            let left = span - local;
             if left < self.fade_out_ms {
                 envelope *= (left / self.fade_out_ms) as f32;
             }
@@ -400,20 +407,22 @@ impl Mixer {
 /// keep, rather than what a station mixes live.
 ///
 /// The same arithmetic as a deck, which is the point — the trim, the fades and the
-/// downmix a node plays have to be the ones the station would have played. Looping is
-/// left to whoever plays the result, so a looped placement is rendered as one time
-/// round of its region with no fade on either end.
+/// downmix a node plays have to be the ones the station would have played. Repeating is
+/// left to whoever plays the result, so a placement that plays more than once is
+/// rendered as one time round of its region with no fade on either end — a fade baked
+/// into it would be heard on every time round.
 pub fn bounce(source: &Source, placement: Placement, channels: usize, sample_rate: u32) -> Vec<f32> {
     let channels = channels.max(1);
     let region = placement.region_ms(source.duration_ms());
     let frames = (region * sample_rate as f64 / 1_000.0).round() as usize;
     let outputs: Vec<u16> = (1..=channels as u16).collect();
     let Ok(routes) = route(source.channels, &outputs, channels) else { return Vec::new() };
+    let repeated = placement.repeats > 1;
     let placement = Placement {
         start_ms: 0.0,
-        looped: false,
-        fade_in_ms: if placement.looped { 0.0 } else { placement.fade_in_ms },
-        fade_out_ms: if placement.looped { 0.0 } else { placement.fade_out_ms },
+        repeats: 1,
+        fade_in_ms: if repeated { 0.0 } else { placement.fade_in_ms },
+        fade_out_ms: if repeated { 0.0 } else { placement.fade_out_ms },
         ..placement
     };
     let mut mixer = Mixer::new(channels, sample_rate, 1);
@@ -452,7 +461,7 @@ mod tests {
             start_ms,
             offset_ms: 0.0,
             length_ms: None,
-            looped: false,
+            repeats: 1,
             gain: 1.0,
             fade_in_ms: 0.0,
             fade_out_ms: 0.0,
@@ -508,20 +517,24 @@ mod tests {
     }
 
     #[test]
-    fn a_looped_clip_goes_round_its_region_for_as_long_as_the_timeline_runs() {
-        let placement = Placement { offset_ms: 100.0, length_ms: Some(200.0), looped: true, ..placed(0.0) };
+    fn a_repeated_clip_goes_round_its_region_as_many_times_as_it_says() {
+        let placement = Placement { offset_ms: 100.0, length_ms: Some(200.0), repeats: 3, ..placed(0.0) };
         assert_eq!(placement.at(250.0, 1_000.0), Some((150.0, 1.0)));
-        assert_eq!(placement.at(10_050.0, 1_000.0), Some((150.0, 1.0)));
+        assert_eq!(placement.at(450.0, 1_000.0), Some((150.0, 1.0)), "the third time round");
+        assert_eq!(placement.at(600.0, 1_000.0), None, "and then it is over");
+        assert_eq!(placement.span_ms(1_000.0), 600.0);
     }
 
     #[test]
-    fn fades_scale_the_ends_and_a_loop_only_fades_in() {
+    fn fades_scale_the_ends_of_the_whole_clip() {
         let placement = Placement { fade_in_ms: 100.0, fade_out_ms: 100.0, gain: 0.5, ..placed(0.0) };
         assert_eq!(placement.at(50.0, 1_000.0), Some((50.0, 0.25)));
         assert_eq!(placement.at(500.0, 1_000.0), Some((500.0, 0.5)));
         assert_eq!(placement.at(950.0, 1_000.0), Some((950.0, 0.25)));
-        let looped = Placement { looped: true, ..placement };
-        assert_eq!(looped.at(1_950.0, 1_000.0), Some((950.0, 0.5)), "no fade on the way round");
+        let twice = Placement { repeats: 2, ..placement };
+        assert_eq!(twice.at(950.0, 1_000.0), Some((950.0, 0.5)), "no fade out of the first time round");
+        assert_eq!(twice.at(1_050.0, 1_000.0), Some((50.0, 0.5)), "nor into the second");
+        assert_eq!(twice.at(1_950.0, 1_000.0), Some((950.0, 0.25)), "out of the last");
     }
 
     #[test]
@@ -664,9 +677,9 @@ mod tests {
     }
 
     #[test]
-    fn a_looped_bounce_is_one_time_round_with_no_fades() {
+    fn a_repeated_bounce_is_one_time_round_with_no_fades() {
         let source = constant(1, 1_000, 0.5);
-        let placement = Placement { looped: true, fade_in_ms: 500.0, ..placed(0.0) };
+        let placement = Placement { repeats: 4, fade_in_ms: 500.0, ..placed(0.0) };
         let out = bounce(&source, placement, 1, RATE);
         assert_eq!(out.len(), 1_000);
         assert_eq!(out[0], 0.5, "a fade-in baked into a loop would be heard on every lap");

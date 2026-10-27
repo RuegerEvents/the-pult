@@ -197,14 +197,17 @@ describe('reading a position', () => {
 });
 
 describe('clips on a timeline', () => {
-	const clip = { start_ms: 10_000, offset_ms: 2_000, length_ms: null, looped: false };
+	const clip = { start_ms: 10_000, offset_ms: 2_000, length_ms: null, repeats: 1 };
 
-	it('spans its trimmed region, or to the end of the timeline if it loops', () => {
-		expect(clipSpan(clip, 12_000, 60_000)).toEqual({ fromMs: 10_000, toMs: 20_000, regionMs: 10_000 });
-		expect(clipSpan({ ...clip, length_ms: 3_000 }, 12_000, 60_000).toMs).toBe(13_000);
-		expect(clipSpan({ ...clip, looped: true }, 12_000, 60_000).toMs).toBe(60_000);
+	it('spans its trimmed region, as many times as it plays', () => {
+		expect(clipSpan(clip, 12_000)).toEqual({ fromMs: 10_000, toMs: 20_000, regionMs: 10_000 });
+		expect(clipSpan({ ...clip, length_ms: 3_000 }, 12_000).toMs).toBe(13_000);
+		expect(clipSpan({ ...clip, length_ms: 3_000, repeats: 3 }, 12_000)).toEqual({ fromMs: 10_000, toMs: 19_000, regionMs: 3_000 });
+		// Zero, or a row from before there was a count, plays once.
+		expect(clipSpan({ ...clip, repeats: 0 }, 12_000).toMs).toBe(20_000);
+		expect(clipSpan({ start_ms: 0, offset_ms: 0, length_ms: null }, 5_000).toMs).toBe(5_000);
 		// No waveform yet: drawn as a stub rather than not at all.
-		expect(clipSpan(clip, null, 60_000).toMs).toBe(12_000);
+		expect(clipSpan(clip, null).toMs).toBe(12_000);
 	});
 
 	it('puts overlapping clips on lanes of their own', () => {

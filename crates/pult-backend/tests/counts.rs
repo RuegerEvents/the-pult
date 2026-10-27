@@ -563,7 +563,7 @@ async fn dragging_a_clip_and_an_event_together_is_one_row() {
         let clips = serde_json::json!([{
             "id": clip, "name": "Skeleton laugh", "asset": "00", "peaks": null,
             "start_ms": 300 + step * 10, "offset_ms": 0, "length_ms": null, "gain_db": 0.0,
-            "fade_in_ms": 0, "fade_out_ms": 0, "looped": false,
+            "fade_in_ms": 0, "fade_out_ms": 0, "repeats": 1,
             "destination": { "Zone": { "zone": zone } }
         }]);
         let events = serde_json::json!([{

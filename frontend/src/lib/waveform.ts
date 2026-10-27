@@ -225,22 +225,22 @@ export type ClipPlace = {
 	start_ms: number;
 	offset_ms: number;
 	length_ms: number | null;
-	looped: boolean;
+	/** How many times the region plays. Zero, or a row from before there was a count, is once. */
+	repeats?: number;
 };
+
+/** How many times a clip plays: never fewer than one. `AudioClip::times`. */
+export const timesOf = (clip: Pick<ClipPlace, 'repeats'>): number => Math.max(1, Math.floor(clip.repeats ?? 1));
 
 /**
  * Where a clip sits on the timeline, from its start to where it stops sounding.
  *
  * `fileMs` is how long the file is, which a browser only knows from the peaks — so a
  * clip whose waveform has not arrived yet is drawn as long as its own length says, or
- * as a short stub, rather than not drawn. A looped clip runs to `untilMs`, because it
- * goes round for as long as the timeline does.
+ * as a short stub, rather than not drawn. A repeated clip is its region as many times
+ * as it plays, back to back.
  */
-export function clipSpan(
-	clip: ClipPlace,
-	fileMs: number | null,
-	untilMs: number
-): { fromMs: number; toMs: number; regionMs: number } {
+export function clipSpan(clip: ClipPlace, fileMs: number | null): { fromMs: number; toMs: number; regionMs: number } {
 	const rest = fileMs === null ? null : Math.max(0, fileMs - clip.offset_ms);
 	const regionMs =
 		clip.length_ms !== null
@@ -248,7 +248,7 @@ export function clipSpan(
 				? clip.length_ms
 				: Math.min(clip.length_ms, rest)
 			: (rest ?? 2_000);
-	const toMs = clip.looped ? Math.max(untilMs, clip.start_ms + regionMs) : clip.start_ms + regionMs;
+	const toMs = clip.start_ms + regionMs * timesOf(clip);
 	return { fromMs: clip.start_ms, toMs, regionMs };
 }
 

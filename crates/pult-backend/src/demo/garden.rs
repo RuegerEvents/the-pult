@@ -1015,7 +1015,7 @@ fn a_clip(name: &str, sha: &str, start_ms: u64, destination: AudioDestination) -
         gain_db: 0.0,
         fade_in_ms: 20,
         fade_out_ms: 200,
-        looped: false,
+        repeats: 1,
         destination,
     }
 }

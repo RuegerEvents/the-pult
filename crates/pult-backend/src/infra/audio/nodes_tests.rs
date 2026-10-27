@@ -37,9 +37,9 @@ fn running(anchor_ms: u64, position_at_anchor_ms: u64) -> Timeline {
 #[test]
 fn a_clip_is_heard_where_the_anchor_puts_it() {
     let timeline = running(10_000, 0);
-    assert_eq!(occurrence(&timeline, 2_000, 3_000, false, 10_000), Some((12_000, Some(15_000))));
-    assert_eq!(occurrence(&timeline, 2_000, 3_000, false, 13_500), Some((12_000, Some(15_000))));
-    assert_eq!(occurrence(&timeline, 2_000, 3_000, false, 15_000), None, "it has played");
+    assert_eq!(occurrence(&timeline, 2_000, 3_000, 1, 10_000), Some((12_000, Some(15_000))));
+    assert_eq!(occurrence(&timeline, 2_000, 3_000, 1, 13_500), Some((12_000, Some(15_000))));
+    assert_eq!(occurrence(&timeline, 2_000, 3_000, 1, 15_000), None, "it has played");
 }
 
 /// A locate into the middle of a clip moves its start into the past, and the node is
@@ -47,21 +47,22 @@ fn a_clip_is_heard_where_the_anchor_puts_it() {
 #[test]
 fn a_locate_into_a_clip_puts_its_start_in_the_past() {
     let timeline = running(20_000, 3_000);
-    assert_eq!(occurrence(&timeline, 2_000, 3_000, false, 20_000), Some((19_000, Some(22_000))));
+    assert_eq!(occurrence(&timeline, 2_000, 3_000, 1, 20_000), Some((19_000, Some(22_000))));
 }
 
 #[test]
 fn a_stopped_timeline_plays_nothing() {
     let mut timeline = running(0, 0);
     timeline.running = false;
-    assert_eq!(occurrence(&timeline, 0, 1_000, false, 0), None);
+    assert_eq!(occurrence(&timeline, 0, 1_000, 1, 0), None);
 }
 
-/// A looped clip lasts until the timeline stops, so it has no end of its own.
+/// A repeated clip lasts as many times round as it says, and is over after the last.
 #[test]
-fn a_looped_clip_goes_on() {
+fn a_repeated_clip_lasts_its_times_round() {
     let timeline = running(0, 0);
-    assert_eq!(occurrence(&timeline, 500, 1_000, true, 100_000), Some((500, None)));
+    assert_eq!(occurrence(&timeline, 500, 1_000, 3, 1_000), Some((500, Some(3_500))));
+    assert_eq!(occurrence(&timeline, 500, 1_000, 3, 4_000), None);
 }
 
 /// A timeline that stops at its end cuts a clip off there, and plays nothing that
@@ -70,8 +71,8 @@ fn a_looped_clip_goes_on() {
 fn a_stopping_end_cuts_a_clip_off() {
     let mut timeline = running(0, 0);
     timeline.end = Some(TimelineEnd { at_ms: 4_000, then: AtEnd::Stop });
-    assert_eq!(occurrence(&timeline, 2_000, 5_000, false, 0), Some((2_000, Some(4_000))));
-    assert_eq!(occurrence(&timeline, 5_000, 1_000, false, 0), None);
+    assert_eq!(occurrence(&timeline, 2_000, 5_000, 1, 0), Some((2_000, Some(4_000))));
+    assert_eq!(occurrence(&timeline, 5_000, 1_000, 1, 0), None);
 }
 
 /// On a looping timeline each lap is its own time round, and the next one starts at
@@ -80,8 +81,8 @@ fn a_stopping_end_cuts_a_clip_off() {
 fn a_looping_end_starts_the_clip_again_each_lap() {
     let mut timeline = running(0, 0);
     timeline.end = Some(TimelineEnd { at_ms: 10_000, then: AtEnd::Loop });
-    assert_eq!(occurrence(&timeline, 1_000, 2_000, false, 0), Some((1_000, Some(3_000))));
-    assert_eq!(occurrence(&timeline, 1_000, 2_000, false, 5_000), Some((11_000, Some(13_000))));
+    assert_eq!(occurrence(&timeline, 1_000, 2_000, 1, 0), Some((1_000, Some(3_000))));
+    assert_eq!(occurrence(&timeline, 1_000, 2_000, 1, 5_000), Some((11_000, Some(13_000))));
     // The leader has relocated to 500 at 10 500: the same lap, the same show times.
     let relocated = {
         let mut t = timeline.clone();
@@ -89,7 +90,7 @@ fn a_looping_end_starts_the_clip_again_each_lap() {
         t.position_at_anchor_ms = 500;
         t
     };
-    assert_eq!(occurrence(&relocated, 1_000, 2_000, false, 10_500), Some((11_000, Some(13_000))));
+    assert_eq!(occurrence(&relocated, 1_000, 2_000, 1, 10_500), Some((11_000, Some(13_000))));
 }
 
 /// Fifteen characters, stable for a clip on a timeline, and different for another.
@@ -225,7 +226,7 @@ fn a_zone_with_node_speakers_hands_its_clips_to_those_nodes() {
         gain_db: 0.0,
         fade_in_ms: 0,
         fade_out_ms: 0,
-        looped: false,
+        repeats: 1,
         destination,
     };
     let mut timeline = running(0, 0);
@@ -323,7 +324,7 @@ async fn streaming(directory: DeviceDirectory) -> Streaming {
         gain_db: 0.0,
         fade_in_ms: 0,
         fade_out_ms: 0,
-        looped: true,
+        repeats: 1_000,
         destination: AudioDestination::Node { serial: "n1".into(), mode: NodeAudioMode::Stream },
     }];
     audio.timelines(vec![timeline]);

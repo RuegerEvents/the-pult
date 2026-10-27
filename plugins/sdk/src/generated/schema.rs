@@ -72,14 +72,20 @@ pub struct AudioClip {
     /// other fader in the building does.
     #[serde(default)]
     pub gain_db: f32,
+    /// Into the first time round.
     #[serde(default)]
     pub fade_in_ms: u32,
-    /// Not applied to a looped clip, which has no last time round to fade out of.
+    /// Out of the last time round.
     #[serde(default)]
     pub fade_out_ms: u32,
-    /// Go round the trimmed region for as long as the timeline runs: an ambient bed.
+    /// How many times the trimmed region plays, back to back: one is once.
+    ///
+    /// Always a number, never "for ever": a clip that went round for as long as the
+    /// timeline ran had no end anybody could program cues against. A bed that has to
+    /// go on is a timeline that goes round ([`AtEnd::Loop`]), which loops its cues
+    /// with it. Zero reads as one, and so does a show from before there was a count.
     #[serde(default)]
-    pub looped: bool,
+    pub repeats: u32,
     pub destination: AudioDestination,
 }
 

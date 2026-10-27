@@ -1241,7 +1241,7 @@ pub(super) fn placement(clip: &AudioClip) -> pult_audio::Placement {
         start_ms: clip.start_ms as f64,
         offset_ms: clip.offset_ms as f64,
         length_ms: clip.length_ms.map(|l| l as f64),
-        looped: clip.looped,
+        repeats: clip.times(),
         gain: clip.gain(),
         fade_in_ms: clip.fade_in_ms as f64,
         fade_out_ms: clip.fade_out_ms as f64,
@@ -1275,7 +1275,7 @@ pub(super) fn folded(timeline: &Timeline, position_ms: u64) -> u64 {
 }
 
 /// A position in a clip's file, as a position on its timeline. `None` where the trim
-/// leaves it out. A looped clip answers its first time round.
+/// leaves it out. A repeated clip answers its first time round.
 fn clip_to_timeline(clip: &AudioClip, file_ms: u64) -> Option<u64> {
     if file_ms < clip.offset_ms {
         return None;

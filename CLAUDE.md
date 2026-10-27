@@ -1867,7 +1867,7 @@ timeline with no audio, or on a station with no device, runs exactly as task 66 
 and reports *nothing* rather than an empty status row.
 
 **A timeline's sound is clips, each going somewhere, and one stream carries all of
-them.** `Timeline::clips` is files at positions, trimmed, with their own gain, loop and
+them.** `Timeline::clips` is files at positions, trimmed, with their own gain, a count of times round and
 `AudioDestination` — a speaker zone, or one node's loudspeaker.
 Every running timeline a station plays is a *deck* in one mixer in one callback, at the
 device's full channel count (`pult_audio::mix`), so each timeline anchors itself off one

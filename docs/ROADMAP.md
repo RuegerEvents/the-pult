@@ -5701,7 +5701,8 @@ safety, which the drift rule then corrected with one needless anchor write.
   is written. The console half is item 4.
 - **A per-zone level.** A clip has a gain and the zone has none. A Dante zone that wants
   turning down is turned down in Dante Controller or on the amp.
-- **Crossfaded loop seams.** A looped region wraps hard. An ambient bed made to loop
+- **Crossfaded loop seams.** A repeated region wraps hard (since task 91 a clip repeats a
+  number of times rather than for ever). An ambient bed made to loop
   loops cleanly, and a region trimmed out of the middle of a song clicks at the seam.
 - **A browser on a station that is not the playing one** is offered sixteen channels to
   route to, because `audio_output` is LOCAL and describes the device of the station it
@@ -7638,6 +7639,38 @@ cargo test -p pult-backend --lib storing             # the arithmetic: driving, 
 cargo test -p pult-backend --test counts a_store     # Update over three cues and a cue-only store, one undo each
 cargo test -p pult-backend --test plugins            # the command line's store through the RPC
 cargo test -p pult-schema --lib sequence             # going around
+```
+
+### 91. The ruler moves the playhead, and a clip repeats a number of times
+
+Asked for after the gig (2026-10-27).
+
+**A click in the lanes no longer locates.** It was how a canvas got the keys — Space for
+play — and the playhead jumped to wherever that click landed, losing the place. A click
+on nothing still gives the Inspector back to the timeline; only the ruler, where the
+playhead is dragged, moves it. The arrow keys and the transport are unchanged.
+
+**A clip plays a number of times, never for ever.** `AudioClip::looped` is gone and
+`AudioClip::repeats` is a count, one by default, zero and a row from before read as one
+(`times()`; `timesOf` in `waveform.ts`). A clip that went round for as long as the
+timeline ran had no end, so nothing could be programmed against it and it drew to the
+edge of the timeline whatever it held. A bed that has to go on is the *timeline* going
+round (`AtEnd::Loop`), which takes its cues round with it. A repeated clip is its region
+back to back: it draws as long as that, a dashed line at each time round and `×N` on its
+name, fades into the first time round and out of the last (`Placement::at`), and the back
+edge only trims a clip that plays once — a repeated one is trimmed in the Inspector.
+
+**A node holds one time round.** A clip that plays more than once is bounced as one
+region with no fades, played with `loop`, and stopped at the end of its last time round
+by the 25 ms node schedule, which is what stops anything no longer wanted. So on a node a
+repeated clip loses its fades; one that plays once keeps them.
+
+A show whose clips were set to go round opens with each playing once.
+
+```
+cargo test -p pult-audio mix                   # times round, and the fades at either end
+cargo test -p pult-backend --lib infra::audio  # where a repeated clip is over on a node
+cd frontend && npx vitest run src/lib/waveform.test.ts
 ```
 
 ## What is next
