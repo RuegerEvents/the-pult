@@ -229,6 +229,22 @@ pub struct DeviceEntry {
     /// otherwise — a strip left black after its pixel count changed. Going offline and
     /// back is the other way of starting over, and `online` already says that one.
     pub starts: u64,
+    /// Every address the node says it is on, the one it prefers first, from its
+    /// retained `net` topic. Empty where it has not said: `ip` is the address then.
+    pub addresses: Vec<String>,
+    /// Its own fixture asks for its audio stream down every one of `addresses`.
+    pub redundant_stream: bool,
+}
+
+impl DeviceEntry {
+    /// Where the node prefers to be reached, and every other address it is on after
+    /// that: its `net`, or the address mDNS found for firmware that does not say.
+    pub fn paths(&self) -> Vec<&str> {
+        match self.addresses.is_empty() {
+            true => vec![self.ip.as_str()],
+            false => self.addresses.iter().map(String::as_str).collect(),
+        }
+    }
 }
 
 // ── Manager ───────────────────────────────────────────────────────────────────
@@ -254,6 +270,9 @@ pub struct DeviceManager {
     on_broker: std::collections::BTreeSet<String>,
     /// [`DeviceEntry::starts`], per serial.
     starts: BTreeMap<String, u64>,
+    /// What each node last said on its `net` topic. Kept apart from the device list,
+    /// as `on_broker` is, because a node that walked here may be one mDNS has not shown.
+    nets: BTreeMap<String, Vec<pult_schema::types::devices::NodeAddress>>,
     /// Counts up with every clock publish, so a node can tell a fresh sample from a
     /// retained one replayed after the broker restarted.
     clock_seq: u64,
@@ -299,6 +318,7 @@ impl DeviceManager {
                 mqtt_tx,
                 on_broker: Default::default(),
                 starts: BTreeMap::new(),
+                nets: BTreeMap::new(),
                 clock_seq: 0,
                 door: None,
                 brokers: Vec::new(),
@@ -327,6 +347,14 @@ impl DeviceManager {
         // Who else is in the session, and where their brokers are: what the broker list
         // a leader hands its nodes is made of.
         let mut stations = self.engine.subscribe_pattern(PathPattern::new("stations/**")).await;
+        // A node's own fixture says whether its stream goes down every path, so an edit
+        // to an address has to reach the directory. Not `fixtures/**`: a sensor's
+        // reading is a write under its fixture too, many times a second.
+        let mut addresses = futures::stream::select_all([
+            self.engine.subscribe_pattern(PathPattern::new("fixtures")).await,
+            self.engine.subscribe_pattern(PathPattern::new("fixtures/*")).await,
+            self.engine.subscribe_pattern(PathPattern::new("fixtures/*/address")).await,
+        ]);
 
         self.push_state().await;
         // A console restarted mid-show comes up already leading, with devices already
@@ -384,6 +412,7 @@ impl DeviceManager {
                 Some(event) = mqtt_rx.recv() => self.handle_mqtt(event).await,
                 Some(_) = sessions.next() => self.reconsider_leadership().await,
                 Some(_) = stations.next() => self.refresh_brokers().await,
+                Some(_) = addresses.next() => self.publish().await,
                 _ = clock.tick() => self.publish_clock().await,
                 _ = strips.tick() => self.reconcile_all_strips().await,
                 _ = strays.tick() => self.tell_strays().await,
@@ -680,6 +709,20 @@ impl DeviceManager {
                 device.health = Some(health);
                 self.publish().await;
             }
+            MqttEvent::Net { serial, addresses } => {
+                if self.nets.get(&serial) == Some(&addresses) {
+                    return;
+                }
+                info!(
+                    "[devices] {serial} is at {}",
+                    addresses.iter().map(|a| format!("{} ({})", a.ip, a.transport)).collect::<Vec<_>>().join(", ")
+                );
+                if let Some(device) = self.state.discovered.get_mut(&serial) {
+                    device.net = addresses.clone();
+                }
+                self.nets.insert(serial, addresses);
+                self.publish().await;
+            }
             MqttEvent::AudioStatus { serial, status } => {
                 use pult_schema::types::devices::NodeAudioSummary;
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
@@ -792,6 +835,7 @@ impl DeviceManager {
                         .and_then(|d| d.adopted_fixture_id),
                     health: self.state.discovered.get(&serial).and_then(|d| d.health.clone()),
                     last_seen: Utc::now(),
+                    net: self.nets.get(&serial).cloned().unwrap_or_default(),
                 };
 
                 info!("[devices] {} ({}) at {ip}:{port}", device.name, device.module_name);
@@ -1060,6 +1104,7 @@ impl DeviceManager {
                     universe: if head == 0 { universe } else { None },
                     head: (head != 0).then_some(head),
                     strip: strip.clone(),
+                    redundant_stream: None,
                 },
                 ..Fixture::default()
             };
@@ -1328,7 +1373,11 @@ impl DeviceManager {
         // The universe lives on the fixture, because the fixture is the only
         // persisted thing an adopted device has.
         let mut universes: BTreeMap<String, Vec<u16>> = BTreeMap::new();
+        let mut redundant = std::collections::BTreeSet::new();
         for fixture in self.fixtures().await {
+            if fixture.address.redundant_stream() {
+                redundant.extend(fixture.address.serial().map(str::to_string));
+            }
             if let FixtureAddress::OpenHaunt { serial, universe, strip, .. } = fixture.address {
                 let list = universes.entry(serial).or_default();
                 list.extend(universe);
@@ -1360,6 +1409,12 @@ impl DeviceManager {
                                 .as_ref()
                                 .map(pult_schema::types::devices::NodeAudioSummary::of),
                             starts: self.starts.get(&d.serial).copied().unwrap_or(0),
+                            addresses: self
+                                .nets
+                                .get(&d.serial)
+                                .map(|net| net.iter().map(|a| a.ip.clone()).collect())
+                                .unwrap_or_default(),
+                            redundant_stream: redundant.contains(&d.serial),
                         },
                     )
                 })

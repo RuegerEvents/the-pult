@@ -99,6 +99,20 @@ pub struct DiscoveredDevice {
     pub adopted_fixture_id: Option<Uuid>,
     pub health: Option<DeviceHealth>,
     pub last_seen: DateTime<Utc>,
+    /// Every address the node says it is on, the path it prefers first, from its
+    /// retained `openhaunt/<sn>/net`. Empty for a node that has not said, which is
+    /// firmware from before the topic: `ip` is where it is then.
+    #[serde(default)]
+    pub net: Vec<NodeAddress>,
+}
+
+/// One path a node is on, as `openhaunt/<sn>/net` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeAddress {
+    /// `ethernet` or `wifi`, as the node names it.
+    pub transport: String,
+    pub ip: String,
 }
 
 /// A node's loudspeaker, as `GET /api/v1/info` describes it. See the OpenHaunt

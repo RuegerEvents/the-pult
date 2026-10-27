@@ -59,6 +59,13 @@ pub enum FixtureAddress {
         #[serde(default)]
         #[ts(optional = nullable)]
         strip: Option<crate::types::pixels::PixelStrip>,
+        /// For a node's own fixture: send its audio stream down every path the node
+        /// says it is on, not only the one it prefers. Absent is off. On the address for
+        /// the reason `strip` is: it is where the bytes go. See the OpenHaunt protocol's
+        /// docs/13, "Redundant streams".
+        #[serde(default)]
+        #[ts(optional = nullable)]
+        redundant_stream: Option<bool>,
     },
 }
 
@@ -120,7 +127,16 @@ impl FixtureAddress {
 
     /// A node's own fixture: head 0, no strip.
     pub fn node(serial: impl Into<String>, universe: Option<u16>) -> Self {
-        FixtureAddress::OpenHaunt { serial: serial.into(), universe, head: None, strip: None }
+        FixtureAddress::OpenHaunt { serial: serial.into(), universe, head: None, strip: None, redundant_stream: None }
+    }
+
+    /// Whether a node's audio stream goes down every path it is on. Only a node's own
+    /// fixture says; a head, and anything not on a node, never does.
+    pub fn redundant_stream(&self) -> bool {
+        match self {
+            FixtureAddress::OpenHaunt { head: None | Some(0), redundant_stream, .. } => *redundant_stream == Some(true),
+            _ => false,
+        }
     }
 
     /// Which head of its node this fixture is, for one that lives on a node.

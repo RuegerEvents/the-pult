@@ -888,6 +888,7 @@ async fn patch_node(
                 universe: None,
                 head: (head != 0).then_some(head),
                 strip: strip.clone(),
+                redundant_stream: None,
             },
             position: Some(at(place.x, place.y, place.z)),
             ..Fixture::default()

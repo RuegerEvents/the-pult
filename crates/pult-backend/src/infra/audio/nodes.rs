@@ -65,7 +65,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::{AudioManager, DRIFT_MS};
-use crate::infra::devices::{DeviceDirectory, DeviceHandle};
+use crate::infra::devices::{DeviceDirectory, DeviceEntry, DeviceHandle};
 
 /// How far ahead of a clip's start its `play` is sent.
 pub const LOOKAHEAD_MS: u64 = 2_000;
@@ -92,7 +92,7 @@ pub const STREAM_OPENS_MS: u64 = 100;
 
 /// Everything the station driving the nodes is keeping about them.
 pub struct Nodes {
-    directory: Option<watch::Receiver<DeviceDirectory>>,
+    pub(super) directory: Option<watch::Receiver<DeviceDirectory>>,
     devices: Option<DeviceHandle>,
     http: reqwest::Client,
     delay_ms: u32,
@@ -212,6 +212,15 @@ impl Nodes {
 
     fn directory(&self) -> DeviceDirectory {
         self.directory.as_ref().map(|d| d.borrow().clone()).unwrap_or_default()
+    }
+}
+
+/// The next time the directory moves; never, for a manager without one.
+pub async fn moved(directory: &mut Option<watch::Receiver<DeviceDirectory>>) {
+    let Some(directory) = directory else { return std::future::pending().await };
+    if directory.changed().await.is_err() {
+        // Its sender is gone, and would answer this at once for ever.
+        std::future::pending::<()>().await;
     }
 }
 
@@ -768,9 +777,11 @@ impl AudioManager {
             if !entry.on_broker || !clips.iter().any(|(t, _)| t.running) {
                 continue;
             }
-            let Ok(ip) = entry.ip.parse::<std::net::IpAddr>() else { continue };
             let port = audio.stream.as_ref().and_then(|s| s.port).unwrap_or(STREAM_PORT);
-            let address = SocketAddr::new(ip, port);
+            let targets = stream_targets(entry, port);
+            if targets.is_empty() {
+                continue;
+            }
             let channels = audio.channels() as usize;
             let rate = audio.rate.max(8_000);
 
@@ -818,12 +829,8 @@ impl AudioManager {
                 // the packets are simply sent somewhere else: same ssrc, same mapping,
                 // and nothing for the node to notice. A new session would be a stop
                 // and a start, and a gap the length of the node's buffer.
-                Some(streamer) if streamer.same_session(address, rate, channels) => {
-                    if streamer.address != address {
-                        info!("[audio] node {serial} is at {address} now; the stream follows it");
-                        streamer.address = address;
-                        streamer.send(StreamMessage::Retarget(address));
-                    }
+                Some(streamer) if streamer.same_session(port, rate, channels) => {
+                    streamer.follow(&serial, targets);
                     if streamer.built != built {
                         streamer.built = built;
                         streamer.send(StreamMessage::Decks(decks));
@@ -837,7 +844,11 @@ impl AudioManager {
                         old.stop().await;
                     }
                     let Some(devices) = self.nodes.devices.clone() else { continue };
-                    info!("[audio] streaming to node {serial} at {address}, {} ms ahead", self.nodes.delay_ms);
+                    info!(
+                        "[audio] streaming to node {serial} at {}, {} ms ahead",
+                        list(&targets),
+                        self.nodes.delay_ms
+                    );
                     let heard_after = self.nodes.delay_ms as u64 + STREAM_OPENS_MS;
                     if heard_after >= pult_schema::types::timeline::STREAM_LEAD_MS {
                         warn!(
@@ -848,7 +859,7 @@ impl AudioManager {
                         );
                     }
                     let streamer = Streamer::start(
-                        serial.clone(), address, rate, channels, self.nodes.delay_ms, devices, decks, built,
+                        serial.clone(), targets, port, rate, channels, self.nodes.delay_ms, devices, decks, built,
                     );
                     self.nodes.streams.insert(serial.clone(), streamer);
                 }
@@ -859,6 +870,23 @@ impl AudioManager {
             if let Some(streamer) = self.nodes.streams.remove(&serial) {
                 info!("[audio] the stream to node {serial} is over");
                 streamer.stop().await;
+            }
+        }
+    }
+
+    /// Send every running stream wherever its node is now.
+    ///
+    /// Run whenever the directory moves rather than once a second with the rest: a
+    /// node says on `net` within a second of its cable going, and every packet sent to
+    /// the old address after that is sound nobody hears.
+    pub(super) fn follow_nodes(&mut self) {
+        let directory = self.nodes.directory();
+        for (serial, streamer) in &mut self.nodes.streams {
+            if let Some(entry) = directory.entries.get(serial) {
+                let targets = stream_targets(entry, streamer.port);
+                if !targets.is_empty() {
+                    streamer.follow(serial, targets);
+                }
             }
         }
     }
@@ -968,9 +996,31 @@ pub struct StreamDeck {
 
 pub enum StreamMessage {
     Decks(Vec<StreamDeck>),
-    /// Send the packets here from now on, in the same session.
-    Retarget(SocketAddr),
+    /// Send every packet to these from now on, in the same session.
+    Retarget(Vec<SocketAddr>),
     Stop,
+}
+
+/// Where a node's stream goes: the address it prefers, or every address it is on
+/// where its fixture asks for a redundant stream. The node keeps whichever copy of a
+/// frame arrives first and drops the other (OpenHaunt docs/13).
+pub fn stream_targets(entry: &DeviceEntry, port: u16) -> Vec<SocketAddr> {
+    let mut targets: Vec<SocketAddr> = Vec::new();
+    for ip in entry.paths() {
+        let Ok(ip) = ip.parse::<std::net::IpAddr>() else { continue };
+        let target = SocketAddr::new(ip, port);
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    if !entry.redundant_stream {
+        targets.truncate(1);
+    }
+    targets
+}
+
+fn list(targets: &[SocketAddr]) -> String {
+    targets.iter().map(SocketAddr::to_string).collect::<Vec<_>>().join(" and ")
 }
 
 /// The thread sending one node its stream.
@@ -979,7 +1029,9 @@ pub enum StreamMessage {
 /// node has its own DAC and plays each sample at the show time the session maps it
 /// to, so what matters is that every sample leaves a playout delay before then.
 pub struct Streamer {
-    address: SocketAddr,
+    targets: Vec<SocketAddr>,
+    /// The port the node was told in `start`, which every target shares.
+    port: u16,
     rate: u32,
     channels: usize,
     built: String,
@@ -991,7 +1043,8 @@ impl Streamer {
     #[allow(clippy::too_many_arguments)]
     fn start(
         serial: String,
-        address: SocketAddr,
+        targets: Vec<SocketAddr>,
+        port: u16,
         rate: u32,
         channels: usize,
         delay_ms: u32,
@@ -1003,16 +1056,30 @@ impl Streamer {
         let _ = tx.send(StreamMessage::Decks(decks));
         let spawned = std::thread::Builder::new()
             .name(format!("node-stream-{serial}"))
-            .spawn(move || stream(serial, address, rate, channels, delay_ms, devices, rx));
+            .spawn({
+                let targets = targets.clone();
+                move || stream(serial, targets, port, rate, channels, delay_ms, devices, rx)
+            });
         let thread = spawned.map_err(|e| warn!("[audio] the stream sender could not start: {e}")).ok();
-        Streamer { address, rate, channels, built, tx, thread }
+        Streamer { targets, port, rate, channels, built, tx, thread }
     }
 
-    /// Whether a stream to `address` at this rate and width is this one, sent
-    /// somewhere else. The port is in the `start` the node was told, so a node
-    /// listening on another one needs a session of its own.
-    fn same_session(&self, address: SocketAddr, rate: u32, channels: usize) -> bool {
-        self.address.port() == address.port() && self.rate == rate && self.channels == channels
+    /// Whether a stream on `port` at this rate and width is this one, sent somewhere
+    /// else. All three are in the `start` the node was told, so any of them changing
+    /// needs a session of its own.
+    fn same_session(&self, port: u16, rate: u32, channels: usize) -> bool {
+        self.port == port && self.rate == rate && self.channels == channels
+    }
+
+    /// The same session, sent wherever the node is now. A node that moved from wifi to
+    /// its cable listens on the same port on every path, so it notices nothing: same
+    /// ssrc, same mapping, no `stop` and no new `start`.
+    fn follow(&mut self, serial: &str, targets: Vec<SocketAddr>) {
+        if self.targets != targets {
+            info!("[audio] the stream to node {serial} goes to {} now", list(&targets));
+            self.targets = targets.clone();
+            self.send(StreamMessage::Retarget(targets));
+        }
     }
 
     fn send(&self, message: StreamMessage) {
@@ -1061,9 +1128,11 @@ pub fn deck_position(transport: &pult_render::Transport, end: Option<pult_audio:
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stream(
     serial: String,
-    mut address: SocketAddr,
+    mut targets: Vec<SocketAddr>,
+    port: u16,
     rate: u32,
     channels: usize,
     delay_ms: u32,
@@ -1089,8 +1158,6 @@ fn stream(
     let now = pult_schema::clock::now_ms();
     let mut session = Session { at: now + delay_ms as u64 + STREAM_OPENS_MS, ts: 0, rate };
     let mut sent_frames: u64 = 0;
-    // The port the node was told, which a retarget keeps.
-    let port = address.port();
     let announce = |session: &Session| {
         devices.audio(
             serial.clone(),
@@ -1112,7 +1179,7 @@ fn stream(
                     decks = new;
                     rebuild = true;
                 }
-                Ok(StreamMessage::Retarget(to)) => address = to,
+                Ok(StreamMessage::Retarget(to)) => targets = to,
                 Ok(StreamMessage::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     devices.audio(
                         serial.clone(),
@@ -1171,8 +1238,11 @@ fn stream(
         }
         mixer.render(&mut buffer);
         let packet = rtp.packet(&buffer, channels);
-        if let Err(e) = socket.send_to(&packet, address) {
-            debug!("[audio] a packet to node {serial} did not leave: {e}");
+        // Every copy the same packet: a node on two paths keeps whichever arrives first.
+        for target in &targets {
+            if let Err(e) = socket.send_to(&packet, target) {
+                debug!("[audio] a packet to node {serial} at {target} did not leave: {e}");
+            }
         }
         sent_frames += frames as u64;
 

@@ -417,6 +417,9 @@ impl AudioManager {
                     self.take_timecode(timeline_id, &samples, sample_rate).await;
                 }
                 Some(done) = self.nodes.results.recv() => self.node_request_done(done).await,
+                // A node moving is acted on at once, not at the next report: see
+                // `follow_nodes`.
+                _ = nodes::moved(&mut self.nodes.directory) => self.follow_nodes(),
                 _ = steer.tick() => {
                     self.steer().await;
                     self.feed_monitors(pult_schema::clock::now_ms()).await;

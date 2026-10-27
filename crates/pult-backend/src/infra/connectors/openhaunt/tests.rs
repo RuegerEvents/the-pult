@@ -85,7 +85,7 @@ fn directory(entries: Vec<(&str, DeviceEntry)>) -> watch::Receiver<DeviceDirecto
 }
 
 fn an_entry(ip: &str, module_type: u16, universe: Option<u16>, online: bool) -> DeviceEntry {
-    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universes: universe.into_iter().collect(), online, effects: None, audio: None, on_broker: true, name: String::new(), adopted: true, audio_summary: None, starts: 0 }
+    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universes: universe.into_iter().collect(), online, effects: None, audio: None, on_broker: true, name: String::new(), adopted: true, audio_summary: None, starts: 0, addresses: Vec::new(), redundant_stream: false }
 }
 
 /// The same node, with one port that says what it can trace for itself.
@@ -971,6 +971,7 @@ async fn a_chase_across_a_strip_arrives_at_the_node_as_its_universes() {
             universe: None,
             head: Some(1),
             strip: Some(strip.clone()),
+            redundant_stream: None,
         },
         ..Fixture::default()
     };
@@ -1065,7 +1066,7 @@ fn pixel_frame_cost() {
         let serial = format!("n{node}");
         let mut head = Fixture {
             fixture_type_id: strip_type.id,
-            address: FixtureAddress::OpenHaunt { serial: serial.clone(), universe: None, head: Some(1), strip: Some(strip.clone()) },
+            address: FixtureAddress::OpenHaunt { serial: serial.clone(), universe: None, head: Some(1), strip: Some(strip.clone()), redundant_stream: None },
             ..Fixture::default()
         };
         for i in 0..1024u16 {

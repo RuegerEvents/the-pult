@@ -1885,7 +1885,9 @@ RTP stream. The operator picks which per clip; nothing works it out from the fil
 **The station driving the nodes is the one that speaks to them**, because the broker
 and `openhaunt/clock` are its own. What is uploaded is the region the timeline plays,
 written deterministically so the sha never changes. Gain travels on `play`, so a fader
-never rewrites flash. See `infra/audio/nodes.rs` and task 71.
+never rewrites flash. A stream follows the node's retained `net` without a new session,
+and a node's own fixture may ask for it down every path. See `infra/audio/nodes.rs` and
+tasks 71 and 89.
 
 **Peaks are an asset, computed once by the station that plays the file.** Min and max
 per bin at a hundred bins a second, as `i16`, under `application/vnd.pult.peaks`;

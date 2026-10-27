@@ -698,6 +698,12 @@ pub enum FixtureAddress {
         /// light can do, it is where the bytes go. See [`crate::types::pixels`].
         #[serde(default)]
         strip: Option<PixelStrip>,
+        /// For a node's own fixture: send its audio stream down every path the node
+        /// says it is on, not only the one it prefers. Absent is off. On the address for
+        /// the reason `strip` is: it is where the bytes go. See the OpenHaunt protocol's
+        /// docs/13, "Redundant streams".
+        #[serde(default)]
+        redundant_stream: Option<bool>,
     },
 }
 

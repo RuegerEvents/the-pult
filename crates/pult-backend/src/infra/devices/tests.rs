@@ -1039,6 +1039,60 @@ async fn a_node_that_comes_back_is_told_where_the_broker_is_again() {
     assert_eq!(log.lock().unwrap().configs.len(), 2);
 }
 
+/// A node says on its retained `net` where it is, preferred path first, and says it
+/// again when a path comes or goes. The directory carries what it said, which is what
+/// a stream to it is sent by; mDNS's one address is only the fallback.
+#[tokio::test]
+async fn where_a_node_says_it_is_reaches_the_directory() {
+    let h = harness().await;
+    h.resolve("paths1", MAINS_RELAY, None).await;
+    let fixture_id = h.devices.adopt("paths1".into()).await.unwrap();
+    let node = a_node_on_the_broker(&h, "paths1").await;
+    let addresses = || h.directory.borrow().entries.get("paths1").map(|e| e.addresses.clone()).unwrap_or_default();
+    assert!(addresses().is_empty(), "nothing said yet");
+
+    let say = |net: &'static str| {
+        let node = node.clone();
+        async move { node.publish("openhaunt/paths1/net", QoS::AtLeastOnce, true, net).await.unwrap() }
+    };
+    say(r#"{"addresses":[{"transport":"ethernet","ip":"10.0.0.8"},{"transport":"wifi","ip":"10.0.1.8"}]}"#).await;
+    eventually("both paths", || {
+        let got = addresses();
+        async move { got == ["10.0.0.8", "10.0.1.8"] }
+    })
+    .await;
+    // The cable pulled.
+    say(r#"{"addresses":[{"transport":"wifi","ip":"10.0.1.8"}]}"#).await;
+    eventually("only wifi", || {
+        let got = addresses();
+        async move { got == ["10.0.1.8"] }
+    })
+    .await;
+    assert_eq!(h.state().await.discovered["paths1"].net[0].transport, "wifi", "and the panel sees it");
+
+    // Redundancy is the node's own fixture's, and an edit to it reaches the directory
+    // without anything else having to happen.
+    let redundant = || h.directory.borrow().entries.get("paths1").is_some_and(|e| e.redundant_stream);
+    assert!(!redundant(), "off unless asked for");
+    let mut address = h.fixtures().await.into_iter().find(|f| f.id == fixture_id).unwrap().address;
+    if let FixtureAddress::OpenHaunt { redundant_stream, .. } = &mut address {
+        *redundant_stream = Some(true);
+    }
+    h.engine
+        .set(
+            vec![PathSegment::Key("fixtures".into()), PathSegment::Id(fixture_id), PathSegment::Key("address".into())],
+            Lifecycle::Persisted,
+            serde_json::to_value(&address).unwrap(),
+        )
+        .await
+        .unwrap();
+    eventually("the directory to say redundant", || {
+        let on = redundant();
+        async move { on }
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn a_node_nobody_adopted_is_not_configured_when_it_appears() {
     let (addr, log) =

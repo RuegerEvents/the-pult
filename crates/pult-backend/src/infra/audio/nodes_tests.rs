@@ -271,8 +271,19 @@ fn a_streamed_node(ip: &str, port: u16, rate: u32) -> DeviceDirectory {
         adopted: true,
         audio_summary: None,
         starts: 0,
+        addresses: Vec::new(),
+        redundant_stream: false,
     };
     DeviceDirectory { entries: BTreeMap::from([("n1".to_string(), entry)]) }
+}
+
+/// The same node, having said on `net` which paths it is on.
+fn on_paths(mut directory: DeviceDirectory, addresses: &[&str], redundant: bool) -> DeviceDirectory {
+    for entry in directory.entries.values_mut() {
+        entry.addresses = addresses.iter().map(|a| a.to_string()).collect();
+        entry.redundant_stream = redundant;
+    }
+    directory
 }
 
 /// A leading station's audio manager streaming one running timeline to `n1`, and what
@@ -395,4 +406,82 @@ async fn a_new_session_is_started_only_after_the_old_one_has_stopped() {
     let new = said.iter().position(|(op, s)| op == "start" && *s != Some(old)).expect("a new session");
     assert!(stop < new, "stop before the new start: {said:?}");
     assert!(!said[stop..].iter().any(|(_, s)| *s == Some(old)), "nothing of the old session after its stop: {said:?}");
+}
+
+// ── Two paths ──────────────────────────────────────────────────────────────────
+
+fn targets(addresses: &[&str]) -> Vec<SocketAddr> {
+    addresses.iter().map(|a| format!("{a}:5004").parse().unwrap()).collect()
+}
+
+/// The preferred path, or every path for a node whose fixture asks for a redundant
+/// stream, or where mDNS found it for firmware that does not say on `net`.
+#[test]
+fn a_stream_goes_where_the_node_says_it_is() {
+    let directory = a_streamed_node("10.0.0.9", 5004, 48_000);
+    let entry = |d: &DeviceDirectory| d.entries["n1"].clone();
+
+    assert_eq!(stream_targets(&entry(&directory), 5004), targets(&["10.0.0.9"]), "no `net`: mDNS's address");
+
+    let both = on_paths(directory.clone(), &["192.168.43.138", "192.168.43.134"], false);
+    assert_eq!(stream_targets(&entry(&both), 5004), targets(&["192.168.43.138"]), "the preferred path");
+
+    let redundant = on_paths(directory.clone(), &["192.168.43.138", "192.168.43.134"], true);
+    assert_eq!(stream_targets(&entry(&redundant), 5004), targets(&["192.168.43.138", "192.168.43.134"]));
+
+    let odd = on_paths(directory, &["nonsense", "192.168.43.134", "192.168.43.134"], true);
+    assert_eq!(stream_targets(&entry(&odd), 5004), targets(&["192.168.43.134"]), "once each, and only addresses");
+}
+
+/// A redundant stream is every packet to every path: the same packet, so the node can
+/// keep whichever copy comes first.
+#[tokio::test]
+async fn a_redundant_stream_sends_every_packet_down_every_path() {
+    let cable = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let wifi = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let (commands_tx, _commands) = mpsc::channel(64);
+    let to = vec![cable.local_addr().unwrap(), wifi.local_addr().unwrap()];
+    let streamer = Streamer::start(
+        "n1".into(), to, 5004, 48_000, 2, 20, DeviceHandle(commands_tx), Vec::new(), String::new(),
+    );
+
+    let sequence = |socket: tokio::net::UdpSocket| async move {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut packet = [0u8; 2_048];
+        while seen.len() < 20 {
+            tokio::time::timeout(Duration::from_secs(2), socket.recv(&mut packet))
+                .await
+                .expect("packets on this path")
+                .unwrap();
+            // The RTP sequence number.
+            seen.insert(u16::from_be_bytes([packet[2], packet[3]]));
+        }
+        seen
+    };
+    let (on_cable, on_wifi) = tokio::join!(sequence(cable), sequence(wifi));
+    streamer.stop().await;
+    assert!(on_cable.intersection(&on_wifi).count() >= 10, "the same packets on both: {on_cable:?} {on_wifi:?}");
+}
+
+/// The node says on `net` that its preferred path has changed, and the very next
+/// packets go there: not at the next once-a-second pass, and not as a new session.
+#[tokio::test]
+async fn a_stream_moves_the_moment_net_says_the_node_has() {
+    let node = tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();
+    let port = node.local_addr().unwrap().port();
+    // On wifi at an address nothing here answers (TEST-NET-1), then on its cable here.
+    let was = on_paths(a_streamed_node("192.0.2.1", port, 48_000), &["192.0.2.1"], false);
+    let Streaming { directory, mut commands, _audio } = streaming(was.clone()).await;
+    let ssrc = first_start(&mut commands).await;
+
+    directory.send(on_paths(was, &["127.0.0.1", "192.0.2.1"], false)).unwrap();
+    let mut packet = [0u8; 2_048];
+    let n = tokio::time::timeout(Duration::from_millis(250), node.recv(&mut packet))
+        .await
+        .expect("packets at the new address well inside a second")
+        .unwrap();
+    assert_eq!(ssrc_of(&packet[..n]), ssrc, "the same session");
+
+    let said = stream_messages(&mut commands);
+    assert!(said.iter().all(|(op, s)| op == "start" && *s == Some(ssrc)), "no stop and no new start: {said:?}");
 }

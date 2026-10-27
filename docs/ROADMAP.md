@@ -7538,6 +7538,42 @@ cargo test -p pult-backend --lib a_listening_page       # rendered ahead, silent
 cd frontend && npx vitest run src/lib/monitor.test.ts   # read back, and placed
 ```
 
+### 89. A stream follows its node, and may go down every path
+
+A V0 node stands Wi-Fi by beside its cable (OpenHaunt D38) and says where it is on the
+retained `openhaunt/<sn>/net`, the path it prefers first, within a second of a path
+coming or going. mDNS took two to four seconds to say the same, and the console acted on
+it by stopping the stream and starting a new one.
+
+**A move is the same session sent somewhere else.** `StreamMessage::Retarget` changes
+where the thread sends its packets: same ssrc, same mapping, no `stop` and no new
+`start`, because the node listens on the stream's port on every path. Only what the node
+was told in `start` (port, rate, channels) changing is a new session. The directory
+carries `net` (`DeviceEntry::addresses`, falling back to mDNS's `ip` for firmware that
+does not say), and the audio manager follows it the moment the directory moves rather
+than at its once-a-second pass.
+
+**Redundant is the node's own fixture's.** `redundant_stream` on its OpenHaunt address,
+off unless asked for, because it costs the stream's airtime on Wi-Fi the whole time
+(about 1.6 Mbit/s for 48 kHz stereo). On, every packet goes to every address in `net`
+and the node keeps whichever copy comes first. On the address for the reason a strip's
+mode is: it is where the bytes go. A checkbox under the node in the Devices panel, an
+ordinary edit that Ctrl-Z takes back. The device manager watches `fixtures/*/address`
+for it, not `fixtures/**`, which a sensor's reading writes under many times a second.
+
+#### Traps
+
+- **A `stop` names no session.** The old streamer's `stop` was published after its
+  successor's `start` and stopped the new stream until the next re-announce. A replaced
+  streamer is now waited for, `stop` said, before the next one starts; and MQTT
+  publishes go out of one queue, since a task per publish could reorder any two of them.
+
+```
+cargo test -p pult-backend --lib infra::audio::nodes   # move, redundant, fallback, ordering
+cargo test -p pult-backend --lib devices               # `net` and the flag reach the directory
+```
+
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

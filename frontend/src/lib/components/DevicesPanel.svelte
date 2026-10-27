@@ -7,7 +7,8 @@
 	import OutputGaps from './OutputGaps.svelte';
 	import StripPatch from './StripPatch.svelte';
 	import { bytesText } from '$lib/destination.js';
-	import type { DevicesState, DiscoveredDevice } from '$lib/generated/index.js';
+	import { collection, showData } from '$lib/stores/show.js';
+	import type { DevicesState, DiscoveredDevice, Fixture } from '$lib/generated/index.js';
 
 	const client = getClientContext();
 
@@ -47,6 +48,29 @@
 	}
 
 	const listed = $derived(Object.values(devices.discovered) as DiscoveredDevice[]);
+	const fixtures = collection('fixtures');
+
+	/// The node's own fixture, where its address says whether its stream goes down
+	/// every path it is on.
+	function ownFixture(device: DiscoveredDevice): Fixture | undefined {
+		return ($fixtures as Fixture[]).find((f) => f.id === device.adopted_fixture_id);
+	}
+
+	function redundant(fixture: Fixture | undefined): boolean {
+		return !!fixture && 'OpenHaunt' in fixture.address && fixture.address.OpenHaunt.redundant_stream === true;
+	}
+
+	/// One value, and Ctrl-Z takes it back, so it is edited where it is shown.
+	async function setRedundant(device: DiscoveredDevice, fixture: Fixture, on: boolean) {
+		if (!('OpenHaunt' in fixture.address)) return;
+		try {
+			await showData()
+				.fixtures.byId(fixture.id)
+				.address.set({ OpenHaunt: { ...fixture.address.OpenHaunt, redundant_stream: on } });
+		} catch (e) {
+			addToast(`${device.name}: ${e}`);
+		}
+	}
 
 	/// What a node said its terminals are — "8 inputs · 1 output" — or nothing,
 	/// for a node that has not described itself.
@@ -197,6 +221,28 @@
 						<StripPatch {device} unlocked={$canEdit} />
 					{/if}
 
+					{#if device.audio?.stream && ownFixture(device)}
+						{@const own = ownFixture(device)!}
+						<!-- Every packet down every path the node is on: pulling its cable then
+						     costs no sound, at the price of the stream's airtime on Wi-Fi all
+						     the time (OpenHaunt docs/13). -->
+						{#if $canEdit}
+							<label
+								class="redundant"
+								title="Send the audio stream down every path the node is on, not only the one it prefers"
+							>
+								<input
+									type="checkbox"
+									checked={redundant(own)}
+									onchange={(e) => setRedundant(device, own, e.currentTarget.checked)}
+								/>
+								Stream down every path{#if device.net.length > 1}<span class="dim"> · {device.net.length} paths</span>{/if}
+							</label>
+						{:else if redundant(own)}
+							<span class="redundant dim">Stream goes down every path</span>
+						{/if}
+					{/if}
+
 					{#if open.has(device.serial)}
 						<!-- Everything the node has told this console about itself. Behind a
 						     disclosure because it is what you look at when something is
@@ -204,6 +250,11 @@
 						<div class="detail">
 							<dl>
 								<dt>Address</dt><dd class="mono">{device.ip}:{device.port}</dd>
+								{#if device.net.length > 0}
+									<!-- What the node says on `net`, the path it prefers first. -->
+									<dt>Paths</dt>
+									<dd class="mono">{device.net.map((a) => `${a.ip} (${a.transport})`).join(', ')}</dd>
+								{/if}
 								<dt>Host</dt><dd class="mono">{device.host}</dd>
 								<dt>Firmware</dt><dd>{device.fw || '—'} · protocol {device.protocol_version || '—'}</dd>
 								<dt>Module</dt>
@@ -392,6 +443,16 @@
 	.mains {
 		font-size: 0.68rem;
 		color: #e0a355;
+	}
+
+	/* Under the row, across it, like the strips. */
+	.redundant {
+		grid-column: 1 / -1;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.68rem;
+		color: #888;
 	}
 
 	.undescribed {

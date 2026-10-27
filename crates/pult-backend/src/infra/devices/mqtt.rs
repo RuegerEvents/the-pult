@@ -5,6 +5,7 @@
 //! - `openhaunt/<serial>/status`      — retained `online`/`offline`, `offline` as LWT
 //! - `openhaunt/<serial>/input/<n>`   — an edge or a reading, with the node's timestamp
 //! - `openhaunt/<serial>/health`      — uptime, temperature, PoE class, errors
+//! - `openhaunt/<serial>/net`         — retained, every address it is on, preferred first
 //! - `openhaunt/<serial>/output/<n>/set` — what the console publishes
 //!
 //! Parsing is pure and separate from the connection, because a malformed payload
@@ -14,7 +15,7 @@
 use std::time::Duration;
 
 use pult_schema::types::{
-    devices::{DeviceHealth, NodeAudioStatus},
+    devices::{DeviceHealth, NodeAddress, NodeAudioStatus},
     fixture::ParameterValue,
 };
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
@@ -23,7 +24,7 @@ use tracing::{debug, warn};
 
 /// Everything the console subscribes to, as one wildcard per shape.
 const SUBSCRIPTIONS: &[&str] =
-    &["openhaunt/+/status", "openhaunt/+/input/+", "openhaunt/+/health", "openhaunt/+/audio/status"];
+    &["openhaunt/+/status", "openhaunt/+/input/+", "openhaunt/+/health", "openhaunt/+/audio/status", "openhaunt/+/net"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MqttEvent {
@@ -36,6 +37,9 @@ pub enum MqttEvent {
     Health { serial: String, health: DeviceHealth },
     /// What a node's loudspeaker is doing, once a second while it is doing anything.
     AudioStatus { serial: String, status: NodeAudioStatus },
+    /// Every address a node is on, the path it prefers first. Said again whenever a
+    /// path comes or goes, which is sooner than mDNS says so.
+    Net { serial: String, addresses: Vec<NodeAddress> },
 }
 
 // ── Parsing ───────────────────────────────────────────────────────────────────
@@ -68,6 +72,18 @@ pub fn parse(topic: &str, payload: &[u8]) -> Option<MqttEvent> {
         ("health", None) => {
             let body: serde_json::Value = serde_json::from_slice(payload).ok()?;
             Some(MqttEvent::Health { serial, health: health(&body) })
+        }
+        ("net", None) => {
+            let body: serde_json::Value = serde_json::from_slice(payload).ok()?;
+            let addresses = body["addresses"]
+                .as_array()?
+                .iter()
+                .filter_map(|a| {
+                    let ip = a["ip"].as_str().filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())?;
+                    Some(NodeAddress { transport: a["transport"].as_str().unwrap_or_default().to_string(), ip: ip.to_string() })
+                })
+                .collect();
+            Some(MqttEvent::Net { serial, addresses })
         }
         ("audio", Some("status")) => {
             let mut status: NodeAudioStatus = serde_json::from_slice(payload).ok()?;
@@ -265,6 +281,30 @@ mod tests {
             parse("openhaunt/1a2b3c/status", b"offline"),
             Some(MqttEvent::Status { serial: "1a2b3c".into(), online: false }),
         );
+    }
+
+    #[test]
+    fn a_net_message_lists_the_paths_preferred_first() {
+        let event = parse(
+            "openhaunt/f674a578/net",
+            br#"{"addresses":[{"transport":"ethernet","ip":"192.168.43.138"},{"transport":"wifi","ip":"192.168.43.134"}]}"#,
+        );
+        let address = |transport: &str, ip: &str| NodeAddress { transport: transport.into(), ip: ip.into() };
+        assert_eq!(
+            event,
+            Some(MqttEvent::Net {
+                serial: "f674a578".into(),
+                addresses: vec![address("ethernet", "192.168.43.138"), address("wifi", "192.168.43.134")],
+            }),
+        );
+        // An address that is not one is left out rather than streamed to.
+        let Some(MqttEvent::Net { addresses, .. }) =
+            parse("openhaunt/n1/net", br#"{"addresses":[{"transport":"wifi","ip":"nonsense"}]}"#)
+        else {
+            panic!("expected a net event");
+        };
+        assert!(addresses.is_empty());
+        assert_eq!(parse("openhaunt/n1/net", b"{}"), None);
     }
 
     #[test]
