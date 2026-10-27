@@ -248,3 +248,151 @@ fn a_zone_with_node_speakers_hands_its_clips_to_those_nodes() {
     // A zone that has been deleted reaches no node at all.
     assert_eq!(node_clips(&timeline, &[]).len(), 1);
 }
+
+// ── The stream, against a directory and a device manager that are channels ──
+
+/// A node streamed to, listening on `port` at `ip`.
+fn a_streamed_node(ip: &str, port: u16, rate: u32) -> DeviceDirectory {
+    use crate::infra::devices::DeviceEntry;
+    use pult_schema::types::devices::NodeStreamCaps;
+    let mut audio = a_node(&["pcm16"]);
+    audio.rate = rate;
+    audio.stream = Some(NodeStreamCaps { payload: "L16".into(), max_buffer_ms: 1_000, port: Some(port) });
+    let entry = DeviceEntry {
+        ip: ip.into(),
+        port: 80,
+        module_type: 0,
+        universes: Vec::new(),
+        online: true,
+        effects: None,
+        audio: Some(audio),
+        on_broker: true,
+        name: "n1".into(),
+        adopted: true,
+        audio_summary: None,
+        starts: 0,
+    };
+    DeviceDirectory { entries: BTreeMap::from([("n1".to_string(), entry)]) }
+}
+
+/// A leading station's audio manager streaming one running timeline to `n1`, and what
+/// it asks the device manager to tell the node. The handle is the manager's life: it
+/// stops when the last one goes.
+struct Streaming {
+    directory: watch::Sender<DeviceDirectory>,
+    commands: mpsc::Receiver<crate::infra::devices::DeviceCommand>,
+    _audio: super::super::AudioHandle,
+}
+
+async fn streaming(directory: DeviceDirectory) -> Streaming {
+    use pult_schema::types::timeline::AudioDestination;
+    let pool = Arc::new(crate::infra::showfile::open_in_memory().await.unwrap());
+    let (engine, engine_handle, _broadcast) =
+        crate::engine::ShowEngine::new(crate::NodeId(Uuid::new_v4()), pool, None);
+    tokio::spawn(engine.run());
+    let (directory_tx, directory_rx) = watch::channel(directory);
+    let (commands_tx, commands) = mpsc::channel(256);
+    let net = crate::infra::net::Network::unconfigured();
+    net.set_standing(crate::infra::net::Standing { is_leader: true, sacn_slot: None });
+    // No assets: the clip has no sound to decode, and the stream carries silence,
+    // which is still a session and still packets.
+    let (manager, audio) =
+        AudioManager::new(crate::NodeId(Uuid::new_v4()), engine_handle, net, Default::default(), None);
+    tokio::spawn(manager.with_nodes(directory_rx, DeviceHandle(commands_tx)).run());
+
+    let mut timeline = running(pult_schema::clock::now_ms(), 0);
+    timeline.clips = vec![AudioClip {
+        id: Uuid::from_u128(2),
+        name: "Bed".into(),
+        asset: "00".into(),
+        peaks: None,
+        start_ms: 0,
+        offset_ms: 0,
+        length_ms: None,
+        gain_db: 0.0,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        looped: true,
+        destination: AudioDestination::Node { serial: "n1".into(), mode: NodeAudioMode::Stream },
+    }];
+    audio.timelines(vec![timeline]);
+    Streaming { directory: directory_tx, commands, _audio: audio }
+}
+
+/// Every `audio/stream` asked for so far, as `(op, ssrc)`.
+fn stream_messages(commands: &mut mpsc::Receiver<crate::infra::devices::DeviceCommand>) -> Vec<(String, Option<u64>)> {
+    let mut seen = Vec::new();
+    while let Ok(command) = commands.try_recv() {
+        if let crate::infra::devices::DeviceCommand::Audio { verb: "stream", payload, .. } = command {
+            seen.push((payload["op"].as_str().unwrap_or_default().to_string(), payload["ssrc"].as_u64()));
+        }
+    }
+    seen
+}
+
+async fn first_start(commands: &mut mpsc::Receiver<crate::infra::devices::DeviceCommand>) -> u64 {
+    for _ in 0..200 {
+        if let Some((_, Some(ssrc))) = stream_messages(commands).into_iter().find(|(op, _)| op == "start") {
+            return ssrc;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("no stream start");
+}
+
+fn ssrc_of(packet: &[u8]) -> u64 {
+    u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]) as u64
+}
+
+/// A node that moved from wifi to its cable listens on the same port on every
+/// interface, so the stream follows it: the same session, sent somewhere else, with no
+/// `stop` and no new `start`. Found on the floor: the address change restarted the
+/// stream, and the old one's `stop` arrived after the new one's `start`.
+#[tokio::test]
+async fn a_node_that_changes_address_keeps_its_stream() {
+    let node = tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();
+    let port = node.local_addr().unwrap().port();
+    // Somewhere this machine may or may not reach, then where the node is listening.
+    let Streaming { directory, mut commands, _audio } = streaming(a_streamed_node("127.0.0.2", port, 48_000)).await;
+    let ssrc = first_start(&mut commands).await;
+
+    directory.send(a_streamed_node("127.0.0.1", port, 48_000)).unwrap();
+    // Two of the manager's once-a-second passes, so the move has been seen.
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+
+    let said = stream_messages(&mut commands);
+    assert!(!said.iter().any(|(op, _)| op == "stop"), "no stop for a move: {said:?}");
+    assert!(said.iter().all(|(_, s)| s.is_none_or(|s| s == ssrc)), "one session throughout: {said:?}");
+
+    // Whatever arrived before the move is let go of; what arrives now is the same session.
+    let mut packet = [0u8; 2_048];
+    while node.try_recv(&mut packet).is_ok() {}
+    let n = tokio::time::timeout(Duration::from_secs(2), node.recv(&mut packet))
+        .await
+        .expect("packets at the node's new address")
+        .unwrap();
+    assert_eq!(ssrc_of(&packet[..n]), ssrc);
+}
+
+/// A node now at another rate needs a session of its own, and the old one's `stop`
+/// is said before the new one's `start`: a `stop` names no session, so one arriving
+/// second stops the new stream.
+#[tokio::test]
+async fn a_new_session_is_started_only_after_the_old_one_has_stopped() {
+    let Streaming { directory, mut commands, _audio } = streaming(a_streamed_node("127.0.0.1", 9, 48_000)).await;
+    let old = first_start(&mut commands).await;
+
+    directory.send(a_streamed_node("127.0.0.1", 9, 44_100)).unwrap();
+    let mut said = Vec::new();
+    for _ in 0..200 {
+        said.extend(stream_messages(&mut commands));
+        if said.iter().any(|(op, s)| op == "start" && *s != Some(old)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let stop = said.iter().position(|(op, _)| op == "stop").expect("the old session stopped");
+    let new = said.iter().position(|(op, s)| op == "start" && *s != Some(old)).expect("a new session");
+    assert!(stop < new, "stop before the new start: {said:?}");
+    assert!(!said[stop..].iter().any(|(_, s)| *s == Some(old)), "nothing of the old session after its stop: {said:?}");
+}

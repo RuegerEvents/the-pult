@@ -437,8 +437,8 @@ impl AudioManager {
     /// No longer the station driving the nodes: stop every stream and forget what was
     /// sent. Whoever leads now has the broker, and tells the nodes for itself.
     async fn let_go_of_nodes(&mut self) {
-        for (_, streamer) in self.nodes.streams.drain() {
-            streamer.stop();
+        for (_, streamer) in std::mem::take(&mut self.nodes.streams) {
+            streamer.stop().await;
         }
         self.nodes.sent.clear();
         self.nodes.faults.clear();
@@ -775,7 +775,7 @@ impl AudioManager {
             let rate = audio.rate.max(8_000);
 
             let mut decks = Vec::new();
-            let mut built = vec![serde_json::json!(address.to_string())];
+            let mut built = Vec::new();
             let mut by_timeline: BTreeMap<Uuid, (Timeline, Vec<AudioClip>)> = BTreeMap::new();
             for (timeline, clip) in clips {
                 by_timeline.entry(timeline.id).or_insert_with(|| (timeline.clone(), Vec::new())).1.push(clip);
@@ -813,15 +813,28 @@ impl AudioManager {
             let built = serde_json::Value::Array(built).to_string();
             keep.insert(serial.clone());
             match self.nodes.streams.get_mut(&serial) {
-                Some(streamer) if streamer.address == address => {
+                // The same session, wherever the node is now. A node that moved from
+                // wifi to its cable listens on the same port on every interface, so
+                // the packets are simply sent somewhere else: same ssrc, same mapping,
+                // and nothing for the node to notice. A new session would be a stop
+                // and a start, and a gap the length of the node's buffer.
+                Some(streamer) if streamer.same_session(address, rate, channels) => {
+                    if streamer.address != address {
+                        info!("[audio] node {serial} is at {address} now; the stream follows it");
+                        streamer.address = address;
+                        streamer.send(StreamMessage::Retarget(address));
+                    }
                     if streamer.built != built {
                         streamer.built = built;
                         streamer.send(StreamMessage::Decks(decks));
                     }
                 }
                 _ => {
+                    // Gone before its successor starts, stop and all: a `stop` names
+                    // no session, so one arriving after the new `start` stops the new
+                    // stream.
                     if let Some(old) = self.nodes.streams.remove(&serial) {
-                        old.stop();
+                        old.stop().await;
                     }
                     let Some(devices) = self.nodes.devices.clone() else { continue };
                     info!("[audio] streaming to node {serial} at {address}, {} ms ahead", self.nodes.delay_ms);
@@ -845,7 +858,7 @@ impl AudioManager {
         for serial in gone {
             if let Some(streamer) = self.nodes.streams.remove(&serial) {
                 info!("[audio] the stream to node {serial} is over");
-                streamer.stop();
+                streamer.stop().await;
             }
         }
     }
@@ -955,6 +968,8 @@ pub struct StreamDeck {
 
 pub enum StreamMessage {
     Decks(Vec<StreamDeck>),
+    /// Send the packets here from now on, in the same session.
+    Retarget(SocketAddr),
     Stop,
 }
 
@@ -965,8 +980,11 @@ pub enum StreamMessage {
 /// to, so what matters is that every sample leaves a playout delay before then.
 pub struct Streamer {
     address: SocketAddr,
+    rate: u32,
+    channels: usize,
     built: String,
     tx: std::sync::mpsc::Sender<StreamMessage>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Streamer {
@@ -986,18 +1004,31 @@ impl Streamer {
         let spawned = std::thread::Builder::new()
             .name(format!("node-stream-{serial}"))
             .spawn(move || stream(serial, address, rate, channels, delay_ms, devices, rx));
-        if let Err(e) = spawned {
-            warn!("[audio] the stream sender could not start: {e}");
-        }
-        Streamer { address, built, tx }
+        let thread = spawned.map_err(|e| warn!("[audio] the stream sender could not start: {e}")).ok();
+        Streamer { address, rate, channels, built, tx, thread }
+    }
+
+    /// Whether a stream to `address` at this rate and width is this one, sent
+    /// somewhere else. The port is in the `start` the node was told, so a node
+    /// listening on another one needs a session of its own.
+    fn same_session(&self, address: SocketAddr, rate: u32, channels: usize) -> bool {
+        self.address.port() == address.port() && self.rate == rate && self.channels == channels
     }
 
     fn send(&self, message: StreamMessage) {
         let _ = self.tx.send(message);
     }
 
-    fn stop(self) {
+    /// Stop, and return once the thread has said so to the node.
+    ///
+    /// Waited for because the `stop` leaves from the thread and a successor's `start`
+    /// from its own: told and not waited for, the old one could still be finishing a
+    /// packet when the new one announced, and its `stop` reached the node second.
+    async fn stop(mut self) {
         let _ = self.tx.send(StreamMessage::Stop);
+        if let Some(thread) = self.thread.take() {
+            let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+        }
     }
 }
 
@@ -1032,7 +1063,7 @@ pub fn deck_position(transport: &pult_render::Transport, end: Option<pult_audio:
 
 fn stream(
     serial: String,
-    address: SocketAddr,
+    mut address: SocketAddr,
     rate: u32,
     channels: usize,
     delay_ms: u32,
@@ -1058,12 +1089,14 @@ fn stream(
     let now = pult_schema::clock::now_ms();
     let mut session = Session { at: now + delay_ms as u64 + STREAM_OPENS_MS, ts: 0, rate };
     let mut sent_frames: u64 = 0;
+    // The port the node was told, which a retarget keeps.
+    let port = address.port();
     let announce = |session: &Session| {
         devices.audio(
             serial.clone(),
             "stream",
             serde_json::json!({
-                "op": "start", "port": address.port(), "rate": rate, "channels": channels,
+                "op": "start", "port": port, "rate": rate, "channels": channels,
                 "ssrc": ssrc, "ts": session.ts, "at": session.at, "gain": 1.0,
             }),
         );
@@ -1079,6 +1112,7 @@ fn stream(
                     decks = new;
                     rebuild = true;
                 }
+                Ok(StreamMessage::Retarget(to)) => address = to,
                 Ok(StreamMessage::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     devices.audio(
                         serial.clone(),

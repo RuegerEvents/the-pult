@@ -666,6 +666,39 @@ async fn a_stream_mode_clip_reaches_the_node_as_rtp() {
     .await;
 }
 
+/// What is published to a node arrives in the order it was asked for. Each publish
+/// was a task of its own, and on a runtime with several workers two of them reached the
+/// client in whichever order they were scheduled: a stream's `stop` overtook the next
+/// one's `start`. Several workers here for that reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_is_published_to_a_node_arrives_in_order() {
+    let h = harness().await;
+    let mut config = SimConfig::new(ModuleKind::DryContact, "e2e-order");
+    config.node.audio = Some(openhaunt_node_sim::audio::default_description());
+    let sim = openhaunt_node_sim::start(config).await.expect("the simulator starts");
+    h.resolve_at("e2e-order", ModuleKind::DryContact.type_id(), loopback(sim.http_addr)).await;
+    h.devices.adopt("e2e-order".into()).await.unwrap();
+    eventually("the node on the broker", || async {
+        h.directory.borrow().entries.get("e2e-order").is_some_and(|e| e.on_broker)
+    })
+    .await;
+
+    // Fewer than the device manager's queue holds, so none is dropped for being late.
+    for n in 0..40 {
+        h.devices.audio("e2e-order".into(), "gain", serde_json::json!({ "voice": "order", "gain": n }));
+    }
+    let commands = sim.audio_commands.clone();
+    let gains = || -> Vec<i64> {
+        commands.borrow().iter().filter(|(verb, _)| verb == "gain").filter_map(|(_, body)| body["gain"].as_i64()).collect()
+    };
+    eventually("every gain at the node", || {
+        let got = gains().len();
+        async move { got == 40 }
+    })
+    .await;
+    assert_eq!(gains(), (0..40).collect::<Vec<_>>());
+}
+
 // ── Heads and strips ──────────────────────────────────────────────────────────
 
 async fn types(h: &Harness) -> Vec<pult_schema::types::fixture::FixtureType> {

@@ -160,7 +160,8 @@ pub fn clock_payload(now_ms: u64, seq: u64) -> Vec<u8> {
 /// The broker is normally this process's own, over loopback, but nothing here
 /// assumes that: the same code reaches an external broker if one is ever named.
 pub struct MqttLink {
-    client: AsyncClient,
+    /// What is to be published, in the order it was asked for. See [`MqttLink::publish`].
+    outbox: mpsc::UnboundedSender<(String, Vec<u8>, bool)>,
     stop: tokio::sync::oneshot::Sender<()>,
 }
 
@@ -208,7 +209,16 @@ impl MqttLink {
             }
         });
 
-        MqttLink { client, stop }
+        let (outbox, mut queued) = mpsc::unbounded_channel::<(String, Vec<u8>, bool)>();
+        tokio::spawn(async move {
+            while let Some((topic, payload, retain)) = queued.recv().await {
+                if let Err(e) = client.publish(&topic, QoS::AtLeastOnce, retain, payload).await {
+                    debug!("[devices] publish to {topic}: {e}");
+                }
+            }
+        });
+
+        MqttLink { outbox, stop }
     }
 
     /// Publish to a node. Fire and forget: a device that is not answering must not
@@ -218,13 +228,14 @@ impl MqttLink {
     /// broker hands a node the moment it subscribes, which is the difference between a
     /// node that can place a cycle as soon as it connects and one that renders against
     /// a guess until the next tick comes round.
+    ///
+    /// **In order.** This was a task spawned per message, and two tasks on a runtime
+    /// with several workers reach the client in whichever order they are scheduled: a
+    /// stream's `stop` overtook its successor's `start`, and since a `stop` names no
+    /// session the node stopped the new one. One queue, drained by one task, keeps the
+    /// order every caller already assumes, a relay's on and off included.
     pub fn publish(&self, topic: String, payload: Vec<u8>, retain: bool) {
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            if let Err(e) = client.publish(&topic, QoS::AtLeastOnce, retain, payload).await {
-                debug!("[devices] publish to {topic}: {e}");
-            }
-        });
+        let _ = self.outbox.send((topic, payload, retain));
     }
 
     pub fn stop(self) {
