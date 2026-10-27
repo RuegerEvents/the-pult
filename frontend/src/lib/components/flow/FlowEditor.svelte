@@ -71,7 +71,9 @@
 		get sequences() { return sequences; },
 		get cues() { return cues; },
 		get variables() { return variables; },
-		get timelines() { return timelines; }
+		get timelines() { return timelines; },
+		get nodes() { return graph.nodes; },
+		get edges() { return graph.edges; }
 	});
 
 	const nodeTypes: NodeTypes = {
@@ -373,6 +375,11 @@
 
 <style>
 	.flows { display: flex; height: 100%; min-height: 0; }
+	/* Dragging a node or a wire must not select the labels it passes over; the
+	   fields inside a node stay selectable, since they are typed into. */
+	.board { user-select: none; -webkit-user-select: none; }
+	.board :global(input),
+	.board :global(textarea) { user-select: text; -webkit-user-select: text; }
 	.rail { width: 200px; flex: none; border-right: 1px solid #2a2a2a; padding: 16px 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 	.rail-head { display: flex; align-items: center; justify-content: space-between; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }

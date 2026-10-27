@@ -539,6 +539,7 @@ pub async fn draw(
             y: *y,
             active: false,
             last_fired_at: None,
+            pulsed_at: None,
         };
         ids.push(node.id);
         into.create("flow_nodes", &node).await?;

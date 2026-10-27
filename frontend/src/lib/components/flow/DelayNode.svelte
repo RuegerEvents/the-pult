@@ -12,7 +12,7 @@
 	const ms = $derived(delayMsOf(node.kind) ?? 0);
 </script>
 
-<NodeShell {node} title="Wait">
+<NodeShell {node} title="Wait" live={node.active ? { text: 'counting', on: true } : null}>
 	<label class="row">
 		<input
 			class="text-input nodrag"

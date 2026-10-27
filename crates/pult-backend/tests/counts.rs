@@ -712,6 +712,7 @@ async fn a_pir_counting_into_a_variable_writes_no_history() {
         y: 0.0,
         active: false,
         last_fired_at: None,
+        pulsed_at: None,
     };
     let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
         fixture_id: pir,

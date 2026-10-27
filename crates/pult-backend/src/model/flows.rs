@@ -78,6 +78,8 @@ pub enum FlowEffect {
     Fire { node_id: Uuid, action: TriggerAction },
     /// A node lit up or went dark.
     SetActive { node_id: Uuid, active: bool },
+    /// A pulse went through a node.
+    Pulsed { node_id: Uuid },
     /// A feedback loop through variables was cut: these variables changed, and
     /// nothing reading them was told. The engine says so in the log.
     ChainCut { variables: Vec<Uuid> },
@@ -300,30 +302,31 @@ impl Flows {
             self.pulse_downstream(now, graph, node_id, &mut lit, &mut effects);
         }
 
-        // A pending delay stays lit while it counts down, so the graph shows the
-        // wait rather than going dark between the condition and the cue.
-        for (node_id, _) in &self.pending {
-            lit.insert(*node_id);
-        }
-
-        // Levels that are still true keep their nodes lit even on a tick where
-        // nothing changed, which is what makes a closed contact look closed.
+        // What lasts: a pending delay stays lit while it counts down, so the graph
+        // shows the wait; a level that is still true keeps its node lit even on a tick
+        // where nothing changed, which is what makes a closed contact look closed.
+        let mut steady: HashSet<Uuid> = self.pending.iter().map(|(id, _)| *id).collect();
         for node in graph.nodes.iter().filter(|n| graph.live(n)) {
             if matches!(node.kind, FlowNodeKind::Delay { .. }) {
                 continue;
             }
             if self.level_of(graph, node.id, &mut HashSet::new()) == Some(true) {
-                lit.insert(node.id);
+                steady.insert(node.id);
             }
         }
+        // Everything else lit this tick was a pulse going through: said once, as a
+        // flash, and not left lit until whatever the next tick turns out to be.
+        for node_id in lit.difference(&steady) {
+            effects.push(FlowEffect::Pulsed { node_id: *node_id });
+        }
 
-        for node_id in lit.difference(&self.lit) {
+        for node_id in steady.difference(&self.lit) {
             effects.push(FlowEffect::SetActive { node_id: *node_id, active: true });
         }
-        for node_id in self.lit.difference(&lit) {
+        for node_id in self.lit.difference(&steady) {
             effects.push(FlowEffect::SetActive { node_id: *node_id, active: false });
         }
-        self.lit = lit;
+        self.lit = steady;
 
         self.wrote_variables = effects.iter().any(|effect| {
             matches!(effect, FlowEffect::Fire { action: TriggerAction::SetVariable { .. }, .. })

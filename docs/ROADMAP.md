@@ -7760,6 +7760,34 @@ Not a defect; the sheet with the cue in view would have shown it.
 cargo test -p pult-backend --lib a_value_taken_out_of_the_standing_cue
 ```
 
+### 94. Two wires into one input, and a flow you can watch
+
+Asked at the gig (2026-10-27): a button should set off the same scare as the PIR, and
+the editor would not draw a second wire into the gate's input. The station had always
+read several edges into one port as an *or* (`FlowGraph::upstream`); only `canConnect`
+in `flow.ts` refused, with a comment from before that was settled. It now refuses only
+the very same wire twice.
+
+**A pulse flashes; a state stays lit.** `FlowNode::active` lit pulse nodes too, and a
+pulse's light lasted until the next pass — which came with the next input, so an action
+could look live for minutes. `active` is now levels that are true and delays counting;
+every node a pulse went through gets `pulsed_at` (SYNCED, console ms), and the editor
+flashes it once. Not `last_fired_at`: a button's is the press the engine reads, and
+writing it from the engine would press it again.
+
+**Live values on the nodes.** Each node says what it reads or holds in its header: a
+source its device's `sensed_values` or its variable, a gate open or shut, logic true or
+false, a condition whether its input is on, a delay that it counts, an action what its
+target is doing (a variable's value, a timeline running, a sequence's cue). Read from the
+station's own answers — `active` of what feeds a port — never worked out again here.
+
+And dragging on the canvas no longer selects the labels underneath.
+
+```
+cargo test -p pult-backend --lib model::flows
+cd frontend && npx vitest run src/lib/flow.test.ts
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

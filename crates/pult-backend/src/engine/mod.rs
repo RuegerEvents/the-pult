@@ -1796,6 +1796,10 @@ impl ShowEngine {
                     let path = entity_field_path("flow_nodes", node_id, "active");
                     self.write_synced(path, serde_json::Value::Bool(active)).await;
                 }
+                FlowEffect::Pulsed { node_id } => {
+                    let path = entity_field_path("flow_nodes", node_id, "pulsed_at");
+                    self.write_synced(path, serde_json::json!(pult_schema::clock::now_ms())).await;
+                }
                 FlowEffect::ChainCut { variables } => {
                     warn!(
                         "[flows] cut a feedback loop: {} passes in a row reacted only to their own \

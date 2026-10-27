@@ -3,6 +3,8 @@ import type {
 	Cue,
 	Fixture,
 	FixtureType,
+	FlowEdge,
+	FlowNode,
 	Sequence,
 	Timeline,
 	Variable
@@ -22,7 +24,20 @@ export type FlowContext = {
 	readonly cues: Cue[];
 	readonly variables: Variable[];
 	readonly timelines: Timeline[];
+	/** The flow on the canvas, so a node can read what feeds it. */
+	readonly nodes: FlowNode[];
+	readonly edges: FlowEdge[];
 };
+
+/**
+ * Whether the level arriving at one input is true: any node feeding it is lit — the
+ * station's own answer (`FlowNode::active`), read rather than worked out again here.
+ */
+export function inputOn(ctx: FlowContext, nodeId: string, port: number): boolean | null {
+	const feeding = ctx.edges.filter((e) => e.to_node === nodeId && e.to_port === port);
+	if (feeding.length === 0) return null;
+	return feeding.some((e) => ctx.nodes.find((n) => n.id === e.from_node)?.active === true);
+}
 
 const KEY = 'pult:flow';
 

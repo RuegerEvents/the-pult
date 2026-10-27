@@ -8,8 +8,34 @@
 	let {
 		node,
 		title,
+		live = null,
 		children
-	}: { node: FlowNode; title: string; children?: Snippet } = $props();
+	}: {
+		node: FlowNode;
+		title: string;
+		/** What it is reading or holding right now, shown in the header: a value, on or off. */
+		live?: { text: string; on?: boolean } | null;
+		children?: Snippet;
+	} = $props();
+
+	/**
+	 * A pulse going through flashes the node once. `pulsed_at` changes on every pulse,
+	 * so the flash is restarted by taking the class off for a frame and putting it back;
+	 * the first value seen is history and does not flash.
+	 */
+	let flashing = $state(false);
+	let seen: number | null | undefined = undefined;
+	$effect(() => {
+		const at = node.pulsed_at ?? null;
+		if (seen === undefined) {
+			seen = at;
+			return;
+		}
+		if (at === seen) return;
+		seen = at;
+		flashing = false;
+		requestAnimationFrame(() => (flashing = true));
+	});
 
 	const data = getDataContext();
 	const ins = $derived(inputPorts(node.kind));
@@ -17,7 +43,7 @@
 	const category = $derived(nodeCategory(node.kind));
 </script>
 
-<div class="node {category}" class:lit={node.active}>
+<div class="node {category}" class:lit={node.active} class:flash={flashing} onanimationend={() => (flashing = false)}>
 	{#each ins as port, i (i)}
 		<Handle
 			type="target"
@@ -30,6 +56,7 @@
 
 	<header>
 		<span class="title">{title}</span>
+		{#if live}<span class="live" class:on={live.on}>{live.text}</span>{/if}
 		<button
 			class="remove"
 			title="Delete node"
@@ -73,6 +100,26 @@
 	/* What makes the graph an instrument rather than a diagram: a signal passing
 	   through lights the node it passed through. */
 	.node.lit { border-color: #4a9eff; box-shadow: 0 0 0 1px #4a9eff55, 0 0 12px #4a9eff33; }
+	/* A pulse going through: one bright flash that fades, whatever the node's state. */
+	.node.flash { animation: flash 0.7s ease-out; }
+	@keyframes flash {
+		0% { box-shadow: 0 0 0 2px #fbbf24, 0 0 18px #fbbf24aa; border-color: #fbbf24; }
+		100% { box-shadow: 0 0 0 0 #fbbf2400, 0 0 0 #fbbf2400; }
+	}
+	.live {
+		margin-left: auto;
+		font-size: 10px;
+		font-variant-numeric: tabular-nums;
+		padding: 0 5px;
+		border-radius: 8px;
+		background: #1a1a1a;
+		color: #888;
+		white-space: nowrap;
+		max-width: 90px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.live.on { background: #4a9eff33; color: #cfe3ff; }
 
 	header {
 		display: flex;

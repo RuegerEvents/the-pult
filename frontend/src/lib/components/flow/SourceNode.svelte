@@ -2,7 +2,7 @@
 	import type { NodeProps } from '@xyflow/svelte';
 	import type { FlowNode, ParameterDefinition } from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
-	import { parameterKindLabel } from '$lib/patch.js';
+	import { formatValue, parameterKey, parameterKindLabel } from '$lib/patch.js';
 	import { sourceOf, variableLabel } from '$lib/flow.js';
 	import { getFlowContext } from './context.js';
 	import NodeShell from './NodeShell.svelte';
@@ -19,6 +19,20 @@
 	);
 	const variableId = $derived(source && 'Variable' in source ? source.Variable.variable_id : null);
 	const variable = $derived(show.variables.find((v) => v.id === variableId) ?? null);
+
+	/**
+	 * What it reads now: the variable's value, or what the device last reported for the
+	 * parameter (`sensed_values`) — on and off for a contact, the number otherwise.
+	 */
+	const live = $derived.by(() => {
+		if (variable) return { text: variableLabel(variable), on: node.active };
+		if (!watched.parameter) return null;
+		const fixture = show.fixtures.find((f) => f.id === watched.fixture_id);
+		const value = fixture?.sensed_values?.[parameterKey(watched.parameter)];
+		if (!value) return { text: 'nothing yet', on: false };
+		if (value.type === 'Bool') return { text: value.value ? 'on' : 'off', on: value.value };
+		return { text: formatValue(value), on: node.active };
+	});
 
 	/// Inputs first: a flow almost always watches something the rig reports rather
 	/// than something the console drives.
@@ -54,7 +68,7 @@
 	}
 </script>
 
-<NodeShell {node} title={variableId ? 'Read' : 'Watch'}>
+<NodeShell {node} {live} title={variableId ? 'Read' : 'Watch'}>
 	<select
 		class="text-input nodrag"
 		value={variableId ? 'variable' : 'fixture'}

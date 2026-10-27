@@ -8,7 +8,7 @@
 	} from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { defaultValueFor, parameterKindLabel } from '$lib/patch.js';
-	import { actionOf, variableOpFrom, variableOpParts } from '$lib/flow.js';
+	import { actionOf, currentValue, variableLabel, variableOpFrom, variableOpParts } from '$lib/flow.js';
 	import HomeValue from '$lib/components/HomeValue.svelte';
 	import { getFlowContext } from './context.js';
 	import NodeShell from './NodeShell.svelte';
@@ -23,6 +23,32 @@
 	const tag = $derived(action ? Object.keys(action)[0] : 'GoNext');
 
 	const set = (next: TriggerAction) => data.flow_nodes.byId(node.id).kind.set({ Action: next });
+
+	/**
+	 * What the thing it acts on is doing now: a variable's value, whether a timeline
+	 * runs, which cue a sequence is on.
+	 */
+	const live = $derived.by(() => {
+		if (!action) return null;
+		const a = action as Record<string, { variable_id?: string; timeline_id?: string; sequence_id?: string }>;
+		const target = Object.values(a)[0] ?? {};
+		if (target.variable_id) {
+			const v = show.variables.find((x) => x.id === target.variable_id);
+			return v ? { text: variableLabel(v), on: currentValue(v) !== 0 } : null;
+		}
+		if (target.timeline_id) {
+			const t = show.timelines.find((x) => x.id === target.timeline_id);
+			return t ? { text: t.running ? 'running' : 'stopped', on: t.running } : null;
+		}
+		if (target.sequence_id) {
+			const sq = show.sequences.find((x) => x.id === target.sequence_id);
+			if (!sq) return null;
+			if (sq.active_cue_index === null) return { text: 'off', on: false };
+			const cue = show.cues.find((c) => c.id === sq.cue_ids[sq.active_cue_index!]);
+			return { text: cue ? cue.name : 'on', on: true };
+		}
+		return null;
+	});
 
 	const sequenceId = $derived(
 		action && 'GoNext' in action
@@ -93,7 +119,7 @@
 	}
 </script>
 
-<NodeShell {node} title="Then">
+<NodeShell {node} {live} title="Then">
 	<select class="text-input nodrag" value={tag} onchange={(e) => retarget(e.currentTarget.value)}>
 		<option value="GoNext" disabled={show.sequences.length === 0}>go to the next cue</option>
 		<option value="GoToCue" disabled={show.sequences.length === 0}>go to a cue</option>

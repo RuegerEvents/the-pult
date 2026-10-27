@@ -276,6 +276,7 @@ async fn a_button_on_a_node_advances_a_cue() {
         y: 0.0,
         active: false,
         last_fired_at: None,
+        pulsed_at: None,
     };
     let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
         fixture_id,

@@ -89,9 +89,10 @@ export function outputPorts(kind: FlowNodeKind): PortKind[] {
 /**
  * Can these two handles be joined?
  *
- * A connection is valid when both ends carry the same kind of signal and the
- * target port is free — one input takes one edge, so rewiring means replacing
- * rather than silently stacking a second source behind the first.
+ * A connection is valid when both ends carry the same kind of signal. Several
+ * edges into one input are an *or*, as the station evaluates them (`upstream` in
+ * `model/flows.rs`): a PIR and a button both firing the same scare is two wires into
+ * one input. Only the very same wire twice is refused, since it would mean nothing.
  */
 export function canConnect(
 	nodes: FlowNode[],
@@ -108,7 +109,9 @@ export function canConnect(
 	const into = inputPorts(target.kind)[to.port];
 	if (!out || !into || out !== into) return false;
 
-	return !edges.some((e) => e.to_node === to.node && e.to_port === to.port);
+	return !edges.some(
+		(e) => e.from_node === from.node && e.from_port === from.port && e.to_node === to.node && e.to_port === to.port
+	);
 }
 
 // ── Variables ─────────────────────────────────────────────────────────────────

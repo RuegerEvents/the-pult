@@ -1012,6 +1012,7 @@ mod flows {
             y: 0.0,
             active: false,
             last_fired_at: None,
+            pulsed_at: None,
         }
     }
 
@@ -2185,6 +2186,7 @@ mod watching_playback {
             y: 0.0,
             active: false,
             last_fired_at: None,
+            pulsed_at: None,
         };
         let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
             fixture_id: lamp.id,
@@ -2284,6 +2286,7 @@ mod watching_playback {
             y: 0.0,
             active: false,
             last_fired_at: None,
+            pulsed_at: None,
         };
         let source = node(FlowNodeKind::Source(TriggerSource::Parameter {
             fixture_id: watched.id,
@@ -2411,6 +2414,7 @@ mod watching_playback {
             y: 0.0,
             active: false,
             last_fired_at: None,
+            pulsed_at: None,
         };
         h.engine.set(create_path("flow_nodes"), Lifecycle::Persisted, json(&source)).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;

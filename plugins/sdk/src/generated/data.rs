@@ -1668,7 +1668,8 @@ impl FlowNodeEntity {
         self.at.field("y")
     }
 
-    /// Lit right now: a level that is true, or a pulse that just passed through.
+    /// Lit right now: a level that is true, or a delay counting down — a state that
+    /// lasts. A pulse is not one: it is [`FlowNode::pulsed_at`].
     ///
     /// SYNCED rather than LOCAL so every console watching the same flow sees the
     /// same thing light up. Without it a graph is a diagram; with it, it is an
@@ -1679,9 +1680,21 @@ impl FlowNodeEntity {
         self.at.field("active")
     }
 
+    /// A button's press, and an action's last firing. The engine reads a button's to
+    /// see it pressed, so nothing but a press writes it there.
+    ///
     /// SYNCED.
     pub fn last_fired_at(&self) -> Field<Option<Timestamp>> {
         self.at.field("last_fired_at")
+    }
+
+    /// When a pulse last went through it, console ms: what makes a node flash once
+    /// in the editor. A pulse used to light `active` until the next pass, which
+    /// came with the next input and could be minutes later.
+    ///
+    /// SYNCED.
+    pub fn pulsed_at(&self) -> Field<Option<u64>> {
+        self.at.field("pulsed_at")
     }
 
     /// Press a button node.

@@ -46,6 +46,7 @@ impl Draw {
             y: 0.0,
             active: false,
             last_fired_at: None,
+            pulsed_at: None,
         });
         id
     }
@@ -121,7 +122,7 @@ fn fired(effects: &[FlowEffect]) -> Vec<Uuid> {
         .iter()
         .filter_map(|e| match e {
             FlowEffect::Fire { node_id, .. } => Some(*node_id),
-            FlowEffect::SetActive { .. } | FlowEffect::ChainCut { .. } => None,
+            FlowEffect::SetActive { .. } | FlowEffect::Pulsed { .. } | FlowEffect::ChainCut { .. } => None,
         })
         .collect()
 }
@@ -142,6 +143,28 @@ fn a_rising_edge_fires_once() {
     // The same value arriving again is not another edge.
     let effects = flows.tick(now, &graph, &[an_edge(fixture, "Contact:0", Some(true), true)]);
     assert!(fired(&effects).is_empty());
+}
+
+/// A pulse is a flash, not a state: the action it reached is said to have pulsed and
+/// is never left lit, where the contact that is still closed stays lit.
+#[test]
+fn a_pulse_flashes_and_a_level_stays_lit() {
+    let fixture = Uuid::new_v4();
+    let (draw, action) = a_rule(TriggerCondition::RisingEdge, fixture, ParameterKind::Contact(0));
+    let source = draw.nodes[0].id;
+    let mut flows = Flows::default();
+    let effects = flows.tick(Instant::now(), &draw.graph(), &[an_edge(fixture, "Contact:0", Some(false), true)]);
+    let pulsed: Vec<Uuid> = effects
+        .iter()
+        .filter_map(|e| match e { FlowEffect::Pulsed { node_id } => Some(*node_id), _ => None })
+        .collect();
+    let lit: Vec<Uuid> = effects
+        .iter()
+        .filter_map(|e| match e { FlowEffect::SetActive { node_id, active: true } => Some(*node_id), _ => None })
+        .collect();
+    assert!(pulsed.contains(&action), "the action flashes");
+    assert!(!lit.contains(&action), "and is not left lit");
+    assert!(lit.contains(&source), "the closed contact is");
 }
 
 #[test]
@@ -562,6 +585,26 @@ fn a_button_fires_when_its_stamp_changes() {
 
     // And the same stamp arriving again is not a second press.
     assert!(fired(&flows.tick(now, &draw.graph(), &[])).is_empty());
+}
+
+/// A PIR and a button wired into the same input: either fires it. Two wires into one
+/// input are an *or*, which is what lets a scare be set off by hand as well.
+#[test]
+fn a_sensor_and_a_button_into_one_input_each_fire_it() {
+    let fixture = Uuid::new_v4();
+    let (mut draw, action) = a_rule(TriggerCondition::RisingEdge, fixture, ParameterKind::Contact(0));
+    let button = draw.node(FlowNodeKind::Button);
+    draw.wire(button, action);
+    let now = Instant::now();
+    let mut flows = Flows::default();
+    assert!(fired(&flows.tick(now, &draw.graph(), &[])).is_empty());
+
+    let effects = flows.tick(now, &draw.graph(), &[an_edge(fixture, "Contact:0", Some(false), true)]);
+    assert_eq!(fired(&effects), vec![action], "the sensor");
+
+    let at = draw.nodes.iter().position(|n| n.id == button).unwrap();
+    draw.nodes[at].last_fired_at = Some(chrono::Utc::now());
+    assert_eq!(fired(&flows.tick(now, &draw.graph(), &[])), vec![action], "and the button");
 }
 
 #[test]

@@ -4,6 +4,14 @@
 	import { getDataContext } from '$lib/ws/context.js';
 	import { conditionFrom, conditionOf, conditionTag, thresholdOf } from '$lib/flow.js';
 	import NodeShell from './NodeShell.svelte';
+	import { getFlowContext, inputOn } from './context.js';
+
+	const show = getFlowContext();
+	/** What arrives at it: the level it watches for a change in. */
+	const live = $derived.by(() => {
+		const on = inputOn(show, node.id, 0);
+		return on === null ? null : { text: on ? 'input on' : 'input off', on };
+	});
 
 	let { data: nodeData }: NodeProps = $props();
 	const node = $derived((nodeData as { node: FlowNode }).node);
@@ -15,7 +23,7 @@
 	const set = (next: TriggerCondition) => data.flow_nodes.byId(node.id).kind.set({ Condition: next });
 </script>
 
-<NodeShell {node} title="When it">
+<NodeShell {node} {live} title="When it">
 	<select
 		class="text-input nodrag"
 		value={tag}

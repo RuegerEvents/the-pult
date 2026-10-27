@@ -153,11 +153,12 @@ describe('canConnect', () => {
 		expect(canConnect(nodes, [], { node: 'and', port: 0 }, { node: 'and', port: 0 })).toBe(false);
 	});
 
-	it('refuses a second edge into an input that is already taken', () => {
+	it('takes a second edge into an input as an or, and refuses the same edge twice', () => {
 		const edges: FlowEdge[] = [
 			{ id: 'e', flow_id: 'f1', from_node: 's', from_port: 0, to_node: 'c', to_port: 0 }
 		];
-		expect(canConnect(nodes, edges, { node: 'and', port: 0 }, { node: 'c', port: 0 })).toBe(false);
+		expect(canConnect(nodes, edges, { node: 'and', port: 0 }, { node: 'c', port: 0 })).toBe(true);
+		expect(canConnect(nodes, edges, { node: 's', port: 0 }, { node: 'c', port: 0 })).toBe(false);
 	});
 
 	it('still allows the other input of an and', () => {
