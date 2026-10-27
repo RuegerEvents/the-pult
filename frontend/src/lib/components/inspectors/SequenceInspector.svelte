@@ -1,7 +1,8 @@
 <script lang="ts">
 	/**
-	 * A sequence's own settings: for now, how its intensities meet another sequence's.
-	 * See `Merge` in `crates/pult-schema/src/types/sequence.rs`, which is the rule.
+	 * A sequence's own settings: how its intensities meet another sequence's, and
+	 * whether it goes around. See `Merge` and `Sequence::wrap` in
+	 * `crates/pult-schema/src/types/sequence.rs`, which are the rules.
 	 */
 
 	import type { Merge, Sequence } from '$lib/generated/index.js';
@@ -15,6 +16,11 @@
 	function setMerge(id: string, merge: Merge) {
 		// Optional on the row, so the proxy types it as maybe absent; as a path it is always there.
 		void showData().sequences.byId(id).merge!.set(merge === 'Ltp' ? null : merge);
+	}
+
+	/** Not going around is written as nothing, which is what every sequence made before this says. */
+	function setWrap(id: string, wrap: boolean) {
+		void showData().sequences.byId(id).wrap!.set(wrap ? true : null);
 	}
 
 	const MERGES: [Merge, string][] = [
@@ -46,6 +52,21 @@
 					>{label}</button
 				>
 			{/each}
+		</div>
+
+		<span class="label"
+			>At the end <Help label="What Go does after the last cue"
+				>Stay: Go on the last cue does nothing, and the look stays. Go around: Go on the last cue
+				takes the first again, and Go back on the first takes the last — a loop of looks.</Help
+			></span
+		>
+		<div class="segmented" role="group" aria-label="At the end">
+			<button class:on={!sequence.wrap} aria-pressed={!sequence.wrap} disabled={!$canEdit} onclick={() => setWrap(sequence.id, false)}
+				>Stay</button
+			>
+			<button class:on={!!sequence.wrap} aria-pressed={!!sequence.wrap} disabled={!$canEdit} onclick={() => setWrap(sequence.id, true)}
+				>Go around</button
+			>
 		</div>
 	</div>
 {/each}

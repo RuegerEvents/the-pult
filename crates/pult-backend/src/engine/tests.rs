@@ -100,7 +100,7 @@ fn a_show() -> Show {
 }
 
 fn a_sequence(name: &str, cue_ids: Vec<Uuid>) -> Sequence {
-    Sequence { merge: None, folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None, master: None }
+    Sequence { merge: None, wrap: None, folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids, active_cue_index: None, went_at: None, master: None }
 }
 
 fn a_cue(name: &str, number: f64) -> Cue {
@@ -3246,6 +3246,7 @@ mod groups {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            acting_for: None,
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),

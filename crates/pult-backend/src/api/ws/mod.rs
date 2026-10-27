@@ -429,6 +429,7 @@ async fn handle_client_message(
                     sync: Some(state.sync.clone()),
                     // Which browser is asking, so a watch can end when it does.
                     caller: Some(session_id),
+                    acting_for: None,
                     clients: Some(state.clients.clone()),
                     ws_registry: Some(state.ws_registry.clone()),
                     shows: state.shows.clone(),

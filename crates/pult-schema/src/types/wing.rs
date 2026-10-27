@@ -194,6 +194,10 @@ pub struct WingContext {
     pub focused_sequence: Option<Uuid>,
     /// A dialog is open on the page, so ESC and PLEASE answer it.
     pub dialog: bool,
+    /// The Store dialog is open on the page, so a playback key says where it goes —
+    /// MA's Store onto an executor, from the screen's side.
+    #[serde(default)]
+    pub storing: bool,
     pub user_id: Option<Uuid>,
 }
 
@@ -216,6 +220,20 @@ pub enum WingAsk {
     },
     /// ESC or PLEASE, for the dialog on top.
     Dialog { accept: bool },
+    /// A playback key pressed while the Store dialog is open: store onto that.
+    StoreTarget { onto: StoreOnto },
+    /// EDIT followed by a control: ask what to edit — the cue on it, its sequence's
+    /// settings, or what the control does.
+    Edit {
+        control: SurfaceControl,
+        /// The page that control was on.
+        page: u32,
+        /// The sequence it plays, where it plays one.
+        sequence_id: Option<Uuid>,
+        /// The cue on it: a Go-to-cue key's own, else the sequence's active cue, else
+        /// the one its Go takes next.
+        cue_id: Option<Uuid>,
+    },
 }
 
 /// STORE followed by a playback control: a fader's executor key, or an X key.

@@ -153,7 +153,7 @@ fn intensity(fixture_id: Uuid, value: f32) -> ParameterCapture {
 }
 
 fn a_sequence(cues: &[&Cue], active: Option<usize>) -> Sequence {
-    Sequence { merge: None,
+    Sequence { merge: None, wrap: None,
         folder: None,
         id: Uuid::new_v4(),
         name: "Act 1".into(),

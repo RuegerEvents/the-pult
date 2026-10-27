@@ -14,7 +14,8 @@ use super::cue::CueAccessor;
 // They are registered via inventory and dispatched by the engine through all protocols.
 #[pult_commands]
 impl Sequence {
-    /// Advance to the next cue, staying on the last one when there is no next.
+    /// Advance to the next cue, staying on the last one when there is no next — or,
+    /// for a sequence that [goes around](Sequence::wrap), taking the first.
     ///
     /// Running out of cues is not turning the sequence off. A light does not go dark
     /// because the operator pressed Go once more than there were cues, and the way to
@@ -31,12 +32,18 @@ impl Sequence {
         &mut self,
         args: serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let next = self.active_cue_index.map(|i| i + 1).unwrap_or(0);
+        let mut next = self.active_cue_index.map(|i| i + 1).unwrap_or(0);
         if next >= self.cue_ids.len() {
-            // Already at the end, or there is nothing to go to at all. Whatever is
-            // showing goes on showing, and the anchor is left alone: re-anchoring
-            // here would restart the running cue's effects on every press.
-            return Ok(());
+            // Past the end of a sequence that goes around is its first cue, taken the
+            // way any jump back is: what only later cues capture is let go.
+            if self.wraps() && !self.cue_ids.is_empty() {
+                next = 0;
+            } else {
+                // Already at the end, or there is nothing to go to at all. Whatever is
+                // showing goes on showing, and the anchor is left alone: re-anchoring
+                // here would restart the running cue's effects on every press.
+                return Ok(());
+            }
         }
         self.active_cue_index = Some(next);
         self.went_at = Some(went_at(&args));
@@ -49,14 +56,21 @@ impl Sequence {
     /// Taking an earlier cue is already a thing playback knows how to do — jumping
     /// back releases what only later cues capture — so this is that jump, one step at
     /// a time. At the first cue it stays there rather than taking the sequence off,
-    /// for the reason Go at the last cue stays: "off" is its own act.
+    /// for the reason Go at the last cue stays: "off" is its own act. A sequence that
+    /// goes around takes its last instead.
     #[pult_command(args = "{ at?: number }")]
     pub fn go_back(
         &mut self,
         args: serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let Some(index) = self.active_cue_index.filter(|i| *i > 0) else { return Ok(()) };
-        self.active_cue_index = Some(index - 1);
+        let Some(index) = self.active_cue_index else { return Ok(()) };
+        let back = match index.checked_sub(1) {
+            Some(back) => back,
+            // Before the first cue of a sequence that goes around is its last.
+            None if self.wraps() && !self.cue_ids.is_empty() => self.cue_ids.len() - 1,
+            None => return Ok(()),
+        };
+        self.active_cue_index = Some(back);
         self.went_at = Some(went_at(&args));
         Ok(())
     }
@@ -141,6 +155,21 @@ pub struct Sequence {
     #[ts(optional = nullable)]
     #[pult(lifecycle = PERSISTED)]
     pub merge: Option<Merge>,
+    /// Whether Go past the last cue takes the first, and Go back before the first
+    /// takes the last. `None` is no: a sequence stays on its last cue, which is what
+    /// every sequence did before there was a choice. A loop of chases at a haunt goes
+    /// around; a play does not.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub wrap: Option<bool>,
+}
+
+impl Sequence {
+    /// Whether it goes around. See [`Sequence::wrap`].
+    pub fn wraps(&self) -> bool {
+        self.wrap.unwrap_or(false)
+    }
 }
 
 /// How a sequence's intensities meet another sequence that is on and playing the same
@@ -289,6 +318,7 @@ mod tests {
 
     fn a_sequence(cue_ids: Vec<Uuid>) -> Sequence {
         Sequence { merge: None,
+            wrap: None,
             folder: None,
             id: Uuid::new_v4(),
             name: "Act 1".into(),
@@ -355,6 +385,39 @@ mod tests {
 
         assert_eq!(seq.active_cue_index, Some(0), "still on the last cue");
         assert_eq!(seq.went_at, Some(7), "and still where it went");
+    }
+
+    /// A sequence that goes around takes its first cue after its last, anchored like
+    /// any Go, and its last before its first.
+    #[test]
+    fn a_sequence_that_goes_around_does() {
+        let mut seq = a_sequence(vec![Uuid::new_v4(), Uuid::new_v4()]);
+        seq.wrap = Some(true);
+        seq.active_cue_index = Some(1);
+        seq.went_at = Some(7);
+
+        seq.go_next(serde_json::json!({ "at": 9u64 })).unwrap();
+        assert_eq!(seq.active_cue_index, Some(0), "the first cue again");
+        assert_eq!(seq.went_at, Some(9), "and it went");
+
+        seq.go_back(serde_json::json!({ "at": 12u64 })).unwrap();
+        assert_eq!(seq.active_cue_index, Some(1), "back from the first is the last");
+        assert_eq!(seq.went_at, Some(12));
+
+        seq.off(serde_json::json!({ "at": 13u64 })).unwrap();
+        seq.go_back(serde_json::json!({ "at": 14u64 })).unwrap();
+        assert_eq!(seq.active_cue_index, None, "back from off is still nothing");
+    }
+
+    #[test]
+    fn a_sequence_that_does_not_go_around_stays_at_its_first_going_back() {
+        let mut seq = a_sequence(vec![Uuid::new_v4(), Uuid::new_v4()]);
+        seq.active_cue_index = Some(0);
+        seq.went_at = Some(7);
+
+        seq.go_back(serde_json::json!({ "at": 9u64 })).unwrap();
+        assert_eq!(seq.active_cue_index, Some(0));
+        assert_eq!(seq.went_at, Some(7));
     }
 
     #[test]

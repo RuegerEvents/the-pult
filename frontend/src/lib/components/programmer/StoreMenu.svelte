@@ -17,18 +17,16 @@
 
 	import { untrack } from 'svelte';
 
-	import type { Cue, Easing, ParameterCapture, Sequence, StoreOnto } from '$lib/generated/index.js';
-	import { createCue, cueIdsThrough, defaultCueName, newCueNumber, cueOnlyCompensation, DEFAULT_FADE_MS, trackedThrough } from '$lib/cues.js';
+	import type { Cue, Easing, Sequence, StoreOnto } from '$lib/generated/index.js';
+	import { defaultCueName, newCueNumber, DEFAULT_FADE_MS } from '$lib/cues.js';
 	import { CURVE_LABELS, CURVES, curveForKey } from '$lib/fade.js';
 	import { displayLabel, formatValue, parameterKey } from '$lib/patch.js';
-	import { clear, entries, storeInto, storePreset, updatePreset } from '$lib/stores/programmer.js';
-	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
-	import { bindOnto } from '$lib/stores/wing.js';
-	import { collection, show, showData } from '$lib/stores/show.js';
+	import { clear, entries, store as storeProgrammer, storePreset, updatePreset } from '$lib/stores/programmer.js';
+	import { storeDialogs, wingStoreTarget } from '$lib/stores/wing.js';
+	import { collection, show } from '$lib/stores/show.js';
 	import { addToast } from '$lib/toasts.js';
 	import { focusOnMount } from '$lib/actions.js';
 	import Dialog from '$lib/components/Dialog.svelte';
-	import { uuid } from '$lib/uuid.js';
 
 	let {
 		onclose,
@@ -42,8 +40,15 @@
 		 * The playback STORE was pressed onto on the wing: the dialog opens on its
 		 * sequence, or on a new one that the playback is then bound to.
 		 */
-		onto = null
+		onto: ontoAsked = null
 	}: { onclose: () => void; preselect?: string[] | null; onto?: StoreOnto | null } = $props();
+
+	/**
+	 * The playback this is going onto: what STORE was pressed onto, or a playback key
+	 * pressed on the wing while the dialog is open — MA's Store onto an executor, from
+	 * whichever end it was started.
+	 */
+	let onto = $state<StoreOnto | null>(untrack(() => ontoAsked));
 
 	const fixtures = collection('fixtures');
 	const sequences = collection('sequences');
@@ -71,6 +76,31 @@
 	let sequenceId = $state<string | null>(
 		untrack(() => (onto ? (onto.sequence_id ?? '__new') : remembered(SEQUENCE_KEY)))
 	);
+
+	// The wing is told this dialog is open, so its playback keys say where to store
+	// rather than doing what they do; and when one is pressed, this is where.
+	$effect(() => {
+		storeDialogs.update((n) => n + 1);
+		return () => storeDialogs.update((n) => n - 1);
+	});
+	$effect(() => {
+		const asked = $wingStoreTarget;
+		if (!asked) return;
+		wingStoreTarget.set(null);
+		untrack(() => {
+			onto = asked;
+			sequenceId = asked.sequence_id ?? NEW_SEQUENCE;
+			cueId = null;
+			after = undefined;
+			const s = asked.sequence_id ? $sequences.find((q) => q.id === asked.sequence_id) : undefined;
+			if (s && s.cue_ids.length === 1) {
+				target = 'existing';
+				cueId = s.cue_ids[0];
+			} else {
+				target = 'new';
+			}
+		});
+	});
 	/**
 	 * A sequence made by this store, for a show that has none or a cue that belongs in
 	 * a new one. Made in the same gesture as the cue, so one Ctrl-Z takes both back —
@@ -93,7 +123,7 @@
 	 * with one cue is usually a look being built up. With more, it means a new cue.
 	 */
 	const ontoOnlyCue = untrack(() => {
-		const s = onto?.sequence_id ? $sequences.find((q) => q.id === onto.sequence_id) : undefined;
+		const s = onto?.sequence_id ? $sequences.find((q) => q.id === onto?.sequence_id) : undefined;
 		return s && s.cue_ids.length === 1 ? s.cue_ids[0] : null;
 	});
 	let target = $state<'new' | 'existing' | 'preset'>(ontoOnlyCue ? 'existing' : 'new');
@@ -113,7 +143,7 @@
 	 * Track is preselected because tracking is what this playback does and what a
 	 * designer means most of the time: a look built in cue 3 should still be there in
 	 * cue 4. Cue only is the answer when one moment is being fixed rather than the
-	 * look being changed — see `cueOnlyCompensation`.
+	 * look being changed — see `cue_only_compensation` in `infra/storing.rs`.
 	 */
 	let tracking = $state<'track' | 'cueOnly'>(
 		remembered(TRACKING_KEY) === 'cueOnly' ? 'cueOnly' : 'track'
@@ -220,33 +250,6 @@
 	}
 
 	/**
-	 * The cue a compensating value would go into, and what it is tracking now.
-	 *
-	 * Read *before* the store, because cue only preserves what the next cue was
-	 * showing — which is a fact about the show as it stands and not about the show the
-	 * store is about to make.
-	 */
-	function nextCueAndTracked(
-		storedInto: string
-	): { next: Cue; before: Map<string, ParameterCapture> } | null {
-		if (!sequence) return null;
-		const at = sequence.cue_ids.indexOf(storedInto);
-		const nextId = at >= 0 ? sequence.cue_ids[at + 1] : undefined;
-		if (!nextId) return null;
-		const next = $cues.find((c) => c.id === nextId);
-		if (!next) return null;
-		const byId = new Map($cues.map((c) => [c.id, c]));
-		const before = new Map<string, ParameterCapture>();
-		for (const entry of trackedThrough(cueIdsThrough(sequence, storedInto), (id) => byId.get(id))) {
-			before.set(
-				`${entry.capture.fixture_id}/${parameterKey(entry.capture.parameter_kind)}`,
-				entry.capture
-			);
-		}
-		return { next, before };
-	}
-
-	/**
 	 * The other kind of store: a look somebody will want again.
 	 *
 	 * No cue-only, no timing, no target sequence — a preset is values and a name, and
@@ -268,91 +271,44 @@
 		}
 	}
 
-	/** Which parameters this store actually changes, as `"fixture/key"`. */
-	const changedKeys = () =>
-		$entries
-			.filter((entry) => include.has(entry.id))
-			.map((entry) => `${entry.fixture_id}/${parameterKey(entry.parameter_kind)}`);
-
+	/**
+	 * Store into a cue. The station's act (`programmer.store`), the same one STORE on
+	 * the wing runs, so the two cannot disagree about where a cue goes, what cue only
+	 * writes or what one Ctrl-Z takes back. A sequence made here is made in it too.
+	 */
 	async function store() {
 		if (storing) return;
 		if (target === 'preset') return storeAsPreset();
 		if (!sequence && !(creatingSequence && target === 'new')) return;
 		storing = true;
 		remember(TRACKING_KEY, tracking);
-		// One gesture over the cue being stored into *and* the compensation in the one
-		// after it: cue only is a single act, and it is one Ctrl-Z.
-		beginGesture();
 		try {
-			let into = sequence;
-			if (!into) {
-				into = {
-					id: uuid(),
-					name: sequenceName.trim(),
-					cue_ids: [],
-					active_cue_index: null,
-					went_at: null,
-					master: null
-				} as Sequence;
-				await showData().sequences.create(into);
-			}
-			remember(SEQUENCE_KEY, into.id);
-			const changed = changedKeys();
-			const compensation = tracking === 'cueOnly';
-			// Taken before anything is written, because it is what the next cue was
-			// tracking rather than what it will be.
-			const ahead = compensation
-				? nextCueAndTracked(target === 'new' ? (insertAfter ?? '') : (cueId ?? ''))
-				: null;
-
-			if (target === 'new') {
-				await createCue(showData(), into, $cues, {
-					name: name.trim(),
-					fadeInMs: cueFadeIn,
-					fadeOutMs: cueFadeOut,
-					easing: cueEasing,
-					after: insertAfter ?? undefined,
-					followMode:
-						followMode === 'Manual' ? 'Manual' : { FollowAfter: { delay_ms: followDelay } },
-					captures: $entries
-						.filter((entry) => include.has(entry.id))
-						.map((entry) => {
-							const t = timingFor(entry.id);
-							return {
-								fixture_id: entry.fixture_id,
-								parameter_kind: entry.parameter_kind,
-								value: entry.value,
-								// A stored effect drops its anchor: the cue's `went_at` is
-								// what it is measured from on every Go.
-								effect: entry.effect ? { ...entry.effect, t0: null } : null,
-								// The palette this value came from, if it came from one. The
-								// literal beside it is what plays if the preset is deleted.
-								preset: entry.preset ?? null,
-								// `null` is not "linear": it is this capture saying nothing, so
-								// the cue answers, and the show answers for the cue.
-								easing: t.easing,
-								fade_in_ms: t.fade,
-								fade_out_ms: 0,
-								delay_in_ms: t.delay
-							};
-						})
-				});
-			} else if (cue) {
-				await storeInto(cue, mode, include);
-			}
-
-			if (ahead) {
-				const compensated = cueOnlyCompensation(ahead.next, changed, ahead.before);
-				if (compensated) await showData().cues.byId(ahead.next.id).captures.set(compensated);
-			}
-			// A playback nothing was on plays what was stored onto it, in the same gesture.
-			if (onto && onto.sequence_id === null) await bindOnto(onto, into.id);
-			if (!keep) await clear({ keepLocked: true });
+			const stored = await storeProgrammer({
+				include: [...include],
+				...(sequence ? { sequenceId: sequence.id } : { newSequence: sequenceName.trim() }),
+				...(target === 'new'
+					? {
+							name: name.trim(),
+							after: insertAfter ?? null,
+							fadeInMs: cueFadeIn,
+							fadeOutMs: cueFadeOut,
+							easing: cueEasing,
+							followMode: followMode === 'Manual' ? 'Manual' : { FollowAfter: { delay_ms: followDelay } }
+						}
+					: { cueId: cueId ?? undefined, replace: mode === 'replace' }),
+				// Only the rows somebody typed into: the rest keep what the cue had.
+				timing: Object.fromEntries(
+					Object.entries(timing).map(([id, t]) => [id, { fadeMs: t.fade, delayMs: t.delay, easing: t.easing }])
+				),
+				cueOnly: tracking === 'cueOnly',
+				keep,
+				onto
+			});
+			remember(SEQUENCE_KEY, stored.sequenceId);
 			onclose();
 		} catch (e) {
 			addToast(e instanceof Error ? e.message : 'that would not store');
 		} finally {
-			endGesture();
 			storing = false;
 		}
 	}

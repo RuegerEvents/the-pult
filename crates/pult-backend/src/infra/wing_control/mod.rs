@@ -37,7 +37,6 @@ use pult_schema::{
     path::{Path, PathSegment},
     registry::path_lifecycle,
     types::{
-        cue::{Cue, FollowMode, ParameterCapture},
         fixture::{Fixture, FixtureType, ParameterKind, ParameterValue},
         group::{elements, evaluate, targets, Element, Group, ParameterTarget, SelectionClause, SelectionCombine, SelectionQuery, SelectionTerm},
         parameter_key,
@@ -63,6 +62,7 @@ use uuid::Uuid;
 use crate::{
     engine::{EngineHandle, UpdateBroadcast},
     infra::{
+        storing,
         connectors::OutputHandle,
         plugins::PluginsHandle,
         wing::{Inbound, WingStation, ASKS_PATH},
@@ -457,6 +457,10 @@ impl Control {
             if down && self.edit_binding(SurfaceControl::Fader { index: fader }).await {
                 return;
             }
+            if down && self.station.operator().line.trim() == "edit" {
+                self.edit_control(SurfaceControl::Fader { index: fader }).await;
+                return;
+            }
             if down {
                 self.fader_gestures.insert(fader, Uuid::new_v4());
             } else {
@@ -506,6 +510,28 @@ impl Control {
             }
         }
 
+        // EDIT, then a control: what is on it is asked about on the page — its cue,
+        // its sequence, or what the control does. The keypad and the verbs stay
+        // themselves, so ESC still leaves.
+        if self.station.operator().line.trim() == "edit" && keys::keypad_word(&code).is_none() && verb.is_none() && code != "EDIT" {
+            if down {
+                let control = self.bound_control(index, fader_key);
+                self.edit_control(control).await;
+            }
+            return;
+        }
+
+        // The Store dialog open on the page is waiting to be told where, the way STORE
+        // on the wing is: a playback key says so, rather than doing what it does.
+        if self.context.storing && self.station.claimed() {
+            if let Some(onto) = self.store_onto(index, &code, fader_key) {
+                if down {
+                    self.ask(WingAsk::StoreTarget { onto });
+                }
+                return;
+            }
+        }
+
         // After STORE, a playback control is where the programmer goes: MA's Store onto
         // an executor.
         if self.station.operator().line.trim() == "store" {
@@ -545,6 +571,12 @@ impl Control {
         // UPDATE with nothing typed is the top bar's Update: one press, no target.
         if code == "UPDATE" && line.trim().is_empty() {
             self.update().await;
+            return;
+        }
+        // EDIT waits for a control, and a second press takes it back.
+        if code == "EDIT" {
+            let next = if line.trim() == "edit" { String::new() } else { "edit".to_string() };
+            self.station.update_operator(|op| op.line = next.clone()).await;
             return;
         }
         if let Some(word) = keys::keypad_word(&code) {
@@ -877,6 +909,7 @@ impl Control {
                 }
             }
             "update" => self.update().await,
+            "edit" => self.toast("EDIT, then a key or a fader: what is on it opens on the page", false),
             _ => self.run_line(&line).await,
         }
     }
@@ -1200,94 +1233,31 @@ impl Control {
 
     // ── STORE and UPDATE, the top bar's ───────────────────────────────────────
 
-    /// Update: every held value into the cue that is driving it now, one gesture over
-    /// however many cues it touches, and the programmer cleared when everything found a
-    /// home — the top bar's Update (`stores/programmer.ts`'s `updateDriven`). Keys
-    /// nothing is driving are handed to the claiming page's Store dialog, ticked.
+    /// Update — the top bar's, through the same code (`infra/storing.rs`): every held
+    /// value into the cue driving it, or into the cue loaded for editing. Keys nothing is
+    /// driving are handed to the claiming page's Store dialog, ticked.
     async fn update(&mut self) {
         self.write_pending().await;
-        let held = self.programmer().await;
-        if held.is_empty() {
-            self.toast("The programmer is empty: nothing to update", false);
-            return;
+        let updated = match storing::update(&self.engine, self.user()).await {
+            Ok(updated) => updated,
+            Err(why) => return self.toast(&why, false),
+        };
+        if let Some(cue) = &updated.edited {
+            return self.toast(&format!("Updated \"{}\"", cue.name), true);
         }
-        // A cue loaded for editing is where Update goes, as the page's Update does:
-        // left out, the wing merged into the driving cue, cleared the programmer and
-        // left the edit open — and the page's Update after it then wrote the empty
-        // programmer over the whole cue (HHG, 2026-10-26).
-        let editing = self
-            .engine
-            .get(vec![PathSegment::Key("show".into()), PathSegment::Key("editing_cue".into())])
-            .await
-            .ok()
-            .and_then(|v| serde_json::from_value::<Uuid>(v).ok());
-        if let Some(cue_id) = editing {
-            self.update_edit(cue_id, &held).await;
-            return;
+        let n = updated.updated;
+        let cues_word = if n == 1 { "cue" } else { "cues" };
+        if updated.orphans.is_empty() {
+            return self.toast(&format!("Updated {n} {cues_word}"), true);
         }
-        let sequences: Vec<Sequence> = self.read("sequences").await;
-        let cues: Vec<Cue> = self.read("cues").await;
-        let driving = driving_cues(&sequences, &cues);
-        let mut per_cue: Vec<(Uuid, Vec<&ProgrammerValue>)> = Vec::new();
-        let mut orphans = Vec::new();
-        let mut entries: Vec<&ProgrammerValue> = held.values().collect();
-        entries.sort_by_key(|e| e.id);
-        for entry in entries {
-            let key = (entry.fixture_id, parameter_key(&entry.parameter_kind));
-            match driving.get(&key) {
-                Some(cue) => match per_cue.iter_mut().find(|(id, _)| id == cue) {
-                    Some((_, list)) => list.push(entry),
-                    None => per_cue.push((*cue, vec![entry])),
-                },
-                None => orphans.push(entry.id),
-            }
-        }
-        let gesture = Uuid::new_v4();
-        for (cue_id, stored) in &per_cue {
-            let Some(cue) = cues.iter().find(|c| c.id == *cue_id) else { continue };
-            let captures = store_captures(&cue.captures, stored);
-            if let Ok(value) = serde_json::to_value(&captures) {
-                self.set(field("cues", *cue_id, "captures"), value, Some(gesture)).await;
-            }
-        }
-        let updated = per_cue.len();
-        let cues_word = |n: usize| if n == 1 { "cue" } else { "cues" };
-        if orphans.is_empty() {
-            self.clear_programmer(gesture).await;
-            self.toast(&format!("Updated {updated} {}", cues_word(updated)), true);
-            return;
-        }
-        if updated > 0 {
-            self.toast(&format!("Updated {updated} {} — {} left to store", cues_word(updated), orphans.len()), true);
+        if n > 0 {
+            self.toast(&format!("Updated {n} {cues_word} — {} left to store", updated.orphans.len()), true);
         } else {
             self.toast("Nothing here is being driven by a cue", false);
         }
         if self.station.claimed() {
-            self.ask(WingAsk::Store { preselect: orphans, onto: None });
+            self.ask(WingAsk::Store { preselect: updated.orphans, onto: None });
         }
-    }
-
-    /// Update while a cue is loaded for editing: the cue becomes exactly what the
-    /// programmer holds — `programmer.ts`'s `updateEdit`, timing kept — the programmer
-    /// is cleared and the edit ends, one gesture.
-    async fn update_edit(&mut self, cue_id: Uuid, held: &HashMap<Uuid, ProgrammerValue>) {
-        let Some(cue) = self.read_one::<Cue>("cues", cue_id).await else {
-            self.toast("The cue being edited is no longer in the show", false);
-            return;
-        };
-        let mut entries: Vec<&ProgrammerValue> = held.values().collect();
-        entries.sort_by_key(|e| e.id);
-        let keep: HashSet<(Uuid, String)> = entries.iter().map(|e| (e.fixture_id, parameter_key(&e.parameter_kind))).collect();
-        let captures: Vec<ParameterCapture> = store_captures(&cue.captures, &entries)
-            .into_iter()
-            .filter(|c| keep.contains(&(c.fixture_id, parameter_key(&c.parameter_kind))))
-            .collect();
-        let gesture = Uuid::new_v4();
-        let Ok(value) = serde_json::to_value(&captures) else { return };
-        self.set(field("cues", cue_id, "captures"), value, Some(gesture)).await;
-        self.clear_programmer(gesture).await;
-        self.set(vec![PathSegment::Key("show".into()), PathSegment::Key("editing_cue".into())], Value::Null, Some(gesture)).await;
-        self.toast(&format!("Updated \"{}\"", cue.name), true);
     }
 
     /// Which playback a key is, for STORE: a fader's executor key is its fader — a
@@ -1335,39 +1305,46 @@ impl Control {
         }
     }
 
-    /// STORE onto a master's key: the programmer as a new cue at the end of that
-    /// sequence, with the cue fades a new cue gets in the Store dialog, and the
-    /// programmer cleared — one gesture.
+    /// STORE onto a master's key with no page to ask: the programmer as a new cue at
+    /// the end of that sequence — the Store dialog's own act with nothing changed in
+    /// it (`infra/storing.rs`), so one Ctrl-Z.
     async fn store_into(&mut self, sequence_id: Uuid) {
         self.write_pending().await;
-        let held = self.programmer().await;
-        if held.is_empty() {
-            self.toast("The programmer is empty: nothing to store", false);
-            return;
+        let request = storing::StoreRequest { sequence_id: Some(sequence_id), ..Default::default() };
+        match storing::store(&self.engine, self.user(), request).await {
+            Ok(stored) => self.toast(&format!("Stored as \"{}\" in \"{}\"", stored.cue.name, stored.sequence_name), true),
+            Err(why) => self.toast(&why, false),
         }
-        let Some(sequence) = self.read_one::<Sequence>("sequences", sequence_id).await else { return };
-        let mut entries: Vec<&ProgrammerValue> = held.values().collect();
-        entries.sort_by_key(|e| e.id);
-        let number = (sequence.cue_ids.len() + 1) as f64;
-        let cue = Cue {
-            id: Uuid::new_v4(),
-            name: format!("Cue {}", sequence.cue_ids.len() + 1),
-            number,
-            captures: store_captures(&[], &entries),
-            follow_mode: FollowMode::Manual,
-            fade_in_ms: DEFAULT_FADE_MS,
-            fade_out_ms: DEFAULT_FADE_MS,
-            easing: None,
-            is_active: false,
+    }
+
+    /// EDIT then a control: the page asks what to edit — the cue on it, its sequence's
+    /// settings, or what the control does. The cue is a Go-to-cue key's own, else the
+    /// sequence's active cue, else the one its Go takes next.
+    async fn edit_control(&mut self, control: SurfaceControl) {
+        self.station.update_operator(|op| op.line.clear()).await;
+        if !self.station.claimed() {
+            return self.toast("EDIT needs a page showing the wing: switch Drive on in the Wing panel", false);
+        }
+        let page = self.station.operator().page;
+        let (sequence_id, cue_id) = match self.binding(&control).cloned() {
+            Some(BindingAction::GoToCue { sequence_id, cue_id }) => (Some(sequence_id), Some(cue_id)),
+            Some(
+                BindingAction::Master { sequence_id }
+                | BindingAction::FlashSequence { sequence_id }
+                | BindingAction::Press {
+                    target: TileTarget::SequenceGo { sequence_id } | TileTarget::SequenceOff { sequence_id },
+                },
+            ) => {
+                let sequence: Option<Sequence> = self.read_one("sequences", sequence_id).await;
+                let cue = sequence.and_then(|s| match s.active_cue_index {
+                    Some(at) => s.cue_ids.get(at).copied(),
+                    None => s.cue_ids.first().copied(),
+                });
+                (Some(sequence_id), cue)
+            }
+            _ => (None, None),
         };
-        let gesture = Uuid::new_v4();
-        let Ok(row) = serde_json::to_value(&cue) else { return };
-        self.set(vec![PathSegment::Key("cues".into()), PathSegment::Key("__create".into())], row, Some(gesture)).await;
-        let mut ids = sequence.cue_ids.clone();
-        ids.push(cue.id);
-        self.set(field("sequences", sequence_id, "cue_ids"), json!(ids), Some(gesture)).await;
-        self.clear_programmer(gesture).await;
-        self.toast(&format!("Stored as \"{}\" in \"{}\"", cue.name, sequence.name), true);
+        self.ask(WingAsk::Edit { control, page, sequence_id, cue_id });
     }
 
     // ── Writing ───────────────────────────────────────────────────────────────
@@ -1570,7 +1547,7 @@ impl Control {
                 Some(BindingAction::Master { sequence_id }) => Some((go, *sequence_id)),
                 _ => None,
             });
-            let storing = operator.line.trim() == "store";
+            let storing = operator.line.trim() == "store" || (self.context.storing && self.station.claimed());
             let level = if self.held_keys.contains(index) {
                 keys::LIT
             } else if storing && self.store_onto(*index, code, self.fader_keys.get(index).copied()).is_some() {
@@ -1596,6 +1573,7 @@ impl Control {
             } else if verb == Some(Verb::NextPage) {
                 if operator.page <= self.last_page() { keys::DIM } else { 0 }
             } else if (code == "STORE" && storing)
+                || (code == "EDIT" && operator.line.trim() == "edit")
                 || (code == "DELETE" && operator.line.trim() == "delete")
                 || (code == "MOVE" && operator.line.trim() == "move")
             {
@@ -1670,66 +1648,6 @@ enum Write {
     Attributed,
     /// The wing's operator's, as part of one act.
     In(Uuid),
-}
-
-/// The fade a new cue gets: none, the Store dialog's, `cues.ts`'s `DEFAULT_FADE_MS`.
-const DEFAULT_FADE_MS: u32 = 0;
-
-/// Which cue is driving each key: the latest capture of it over the tracked stack of
-/// each live sequence, the sequence that went most recently winning — what a Go put
-/// there. Not `live_fades`: a key the programmer holds is exactly the key playback stops
-/// publishing. The page's `drivingCues` and the command line's `update` are the same
-/// rule.
-fn driving_cues(sequences: &[Sequence], cues: &[Cue]) -> HashMap<(Uuid, String), Uuid> {
-    let mut live: Vec<&Sequence> = sequences.iter().filter(|s| s.active_cue_index.is_some()).collect();
-    live.sort_by_key(|s| s.went_at.unwrap_or(0));
-    let mut out = HashMap::new();
-    for sequence in live {
-        let Some(active) = sequence.active_cue_index else { continue };
-        for id in sequence.cue_ids.iter().take(active + 1) {
-            let Some(cue) = cues.iter().find(|c| c.id == *id) else { continue };
-            for capture in &cue.captures {
-                out.insert((capture.fixture_id, parameter_key(&capture.parameter_kind)), cue.id);
-            }
-        }
-    }
-    out
-}
-
-/// What a cue's captures become once these entries are merged into it: the cue keeps
-/// everything else it said, and a capture it already had keeps its own timing and
-/// curve — the programmer holds values and never timing. `programmer.ts`'s
-/// `storeCaptures` in merge mode.
-fn store_captures(existing: &[ParameterCapture], entries: &[&ProgrammerValue]) -> Vec<ParameterCapture> {
-    let key = |fixture: Uuid, kind: &ParameterKind| (fixture, parameter_key(kind));
-    let before: HashMap<(Uuid, String), &ParameterCapture> =
-        existing.iter().map(|c| (key(c.fixture_id, &c.parameter_kind), c)).collect();
-    let stored: Vec<ParameterCapture> = entries
-        .iter()
-        .map(|entry| {
-            let kept = before.get(&key(entry.fixture_id, &entry.parameter_kind));
-            ParameterCapture {
-                fixture_id: entry.fixture_id,
-                parameter_kind: entry.parameter_kind.clone(),
-                value: entry.value.clone(),
-                preset: entry.preset,
-                fade_in_ms: kept.map_or(0, |c| c.fade_in_ms),
-                fade_out_ms: kept.map_or(0, |c| c.fade_out_ms),
-                delay_in_ms: kept.map_or(0, |c| c.delay_in_ms),
-                // A stored effect drops its anchor: the cue's `went_at` is what it is
-                // measured from on every Go.
-                effect: entry.effect.clone().map(|spec| pult_schema::types::effect::EffectSpec { t0: None, ..spec }),
-                easing: kept.and_then(|c| c.easing),
-            }
-        })
-        .collect();
-    let taken: HashSet<(Uuid, String)> = stored.iter().map(|c| key(c.fixture_id, &c.parameter_kind)).collect();
-    existing
-        .iter()
-        .filter(|c| !taken.contains(&key(c.fixture_id, &c.parameter_kind)))
-        .cloned()
-        .chain(stored)
-        .collect()
 }
 
 /// A hand-picked list as a question: `selection.ts`'s `idsQuery`.
@@ -1815,40 +1733,5 @@ mod tests {
         assert_eq!(from_fader(&ParameterValue::Bool(false), 0.6, None), ParameterValue::Bool(true));
         assert_eq!(keys::level_of(4096), 1.0);
         assert_eq!(keys::level_of(9000), 1.0, "clamped");
-    }
-
-    fn capture(fixture: Uuid, fade: u32) -> ParameterCapture {
-        ParameterCapture {
-            fixture_id: fixture,
-            parameter_kind: ParameterKind::Intensity,
-            value: ParameterValue::Float(0.2),
-            preset: None,
-            fade_in_ms: fade,
-            fade_out_ms: 0,
-            delay_in_ms: 0,
-            effect: None,
-            easing: None,
-        }
-    }
-
-    /// Update keeps the timing an operator set on a capture, and the rest of the cue.
-    #[test]
-    fn an_update_keeps_a_captures_timing_and_the_rest_of_the_cue() {
-        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
-        let entry = ProgrammerValue {
-            id: Uuid::new_v4(),
-            fixture_id: a,
-            parameter_kind: ParameterKind::Intensity,
-            value: ParameterValue::Float(0.9),
-            effect: None,
-            preset: None,
-            locked: false,
-        };
-        let out = store_captures(&[capture(a, 3000), capture(b, 100)], &[&entry]);
-        assert_eq!(out.len(), 2);
-        let mine = out.iter().find(|c| c.fixture_id == a).unwrap();
-        assert_eq!(mine.value, ParameterValue::Float(0.9));
-        assert_eq!(mine.fade_in_ms, 3000, "kept");
-        assert!(out.iter().any(|c| c.fixture_id == b), "the rest of the cue stays");
     }
 }

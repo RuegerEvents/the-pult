@@ -27,7 +27,6 @@ import {
 	presetReach,
 	presetValues,
 	rgbToHex,
-	storeCaptures,
 	withFloat
 } from './programmer.js';
 import { parameterKey } from './patch.js';
@@ -160,69 +159,6 @@ describe('reading a selection back', () => {
 	});
 });
 
-describe('storing', () => {
-	const entry = (over: Partial<ProgrammerValue> = {}): ProgrammerValue => ({
-		id: 'e1',
-		fixture_id: 'f',
-		parameter_kind: 'Intensity',
-		value: { type: 'Float', value: 0.7 },
-		effect: null,
-		preset: null,
-		locked: false,
-		...over
-	});
-
-	const capture = (over: Partial<ParameterCapture> = {}): ParameterCapture => ({
-		fixture_id: 'f',
-		parameter_kind: 'Intensity',
-		value: { type: 'Float', value: 0.1 },
-		fade_in_ms: 0,
-		fade_out_ms: 0,
-		delay_in_ms: 0,
-		effect: null,
-		easing: 'Linear',
-		preset: null,
-		...over
-	});
-
-	it('merges over the same parameter and leaves the rest of the cue alone', () => {
-		const existing = [capture(), capture({ fixture_id: 'g' })];
-		const stored = storeCaptures(existing, [entry()], 'merge', new Set(['e1']));
-		expect(stored).toHaveLength(2);
-		expect(stored.find((c) => c.fixture_id === 'f')!.value).toEqual({ type: 'Float', value: 0.7 });
-		expect(stored.find((c) => c.fixture_id === 'g')!.value).toEqual({ type: 'Float', value: 0.1 });
-	});
-
-	it('keeps a capture for a different parameter of the same fixture', () => {
-		const existing = [capture({ parameter_kind: 'Pan' })];
-		const stored = storeCaptures(existing, [entry()], 'merge', new Set(['e1']));
-		expect(stored).toHaveLength(2);
-	});
-
-	it('replaces the cue with what is in the programmer', () => {
-		const existing = [capture({ fixture_id: 'g' })];
-		const stored = storeCaptures(existing, [entry()], 'replace', new Set(['e1']));
-		expect(stored).toHaveLength(1);
-		expect(stored[0].fixture_id).toBe('f');
-	});
-
-	it('stores only what was ticked', () => {
-		const entries = [entry(), entry({ id: 'e2', parameter_kind: 'Pan' })];
-		expect(storeCaptures([], entries, 'replace', new Set(['e2']))).toHaveLength(1);
-		expect(storeCaptures([], entries, 'replace', new Set())).toEqual([]);
-	});
-
-	it('leaves times at zero so the cue’s own timing is inherited', () => {
-		const [stored] = storeCaptures([], [entry()], 'replace', new Set(['e1']));
-		expect([stored.fade_in_ms, stored.fade_out_ms, stored.delay_in_ms]).toEqual([0, 0, 0]);
-	});
-
-	it('deselecting everything under merge leaves the cue exactly as it was', () => {
-		const existing = [capture()];
-		expect(storeCaptures(existing, [entry()], 'merge', new Set())).toEqual(existing);
-	});
-});
-
 describe('loading a cue back into the programmer', () => {
 	const cue: Cue = {
 		id: 'c',
@@ -255,35 +191,11 @@ describe('loading a cue back into the programmer', () => {
 		expect(loaded.locked).toBe(false);
 	});
 
-	it('round-trips back into the same captures', () => {
-		const entries = entriesFromCue(cue);
-		// The cue's own captures go in, which is what `updateEdit` passes: the
-		// programmer holds values and no timing at all, so they are the only thing
-		// that knows what this capture's fade, delay and curve were.
-		const stored = storeCaptures(cue.captures, entries, 'replace', new Set(entries.map((e) => e.id)));
-		expect(stored).toEqual(cue.captures);
-	});
 
-	it('keeps timing an operator set, through a store that replaces the value', () => {
-		const timed: Cue = {
-			...cue,
-			captures: [{ ...cue.captures[0], fade_in_ms: 4_000, delay_in_ms: 250, easing: 'EaseOut' }]
-		};
-		const entries = entriesFromCue(timed);
-		const [stored] = storeCaptures(timed.captures, entries, 'replace', new Set(entries.map((e) => e.id)));
-		expect(stored.fade_in_ms).toBe(4_000);
-		expect(stored.delay_in_ms).toBe(250);
-		expect(stored.easing).toBe('EaseOut');
-	});
 
-	it('gives a parameter the cue never held no timing of its own', () => {
-		// Which the station reads as "the cue's", and the cue as "the show's". A zero
-		// here is not a snap and a null is not linear.
-		const entries = entriesFromCue(cue);
-		const [stored] = storeCaptures([], entries, 'replace', new Set(entries.map((e) => e.id)));
-		expect(stored.fade_in_ms).toBe(0);
-		expect(stored.easing).toBeNull();
-	});
+
+
+
 });
 
 describe('values', () => {
@@ -346,6 +258,18 @@ describe('an effect through store and back', () => {
 		t0
 	});
 
+	const stored = (effect: EffectSpec | null): ParameterCapture => ({
+		fixture_id: 'f',
+		parameter_kind: 'Intensity',
+		value: { type: 'Float', value: 0 },
+		fade_in_ms: 0,
+		fade_out_ms: 0,
+		delay_in_ms: 0,
+		effect,
+		easing: null,
+		preset: null
+	});
+
 	const held: ProgrammerValue = {
 		id: 'e1',
 		fixture_id: 'f',
@@ -356,17 +280,9 @@ describe('an effect through store and back', () => {
 		locked: false
 	};
 
-	it('drops the anchor on the way in, because the cue supplies one', () => {
-		const [capture] = storeCaptures([], [held], 'replace', new Set(['e1']));
-
-		expect(capture.effect).not.toBeNull();
-		expect(capture.effect?.t0).toBeNull();
-		expect(capture.effect?.phase).toBe(0.25);
-		expect(capture.effect?.rate).toEqual({ Hz: 0.5 });
-	});
-
 	it('takes a fresh one on the way out, because the operator is holding it again', () => {
-		const [capture] = storeCaptures([], [held], 'replace', new Set(['e1']));
+		// As the station stores it (`infra/storing.rs`): the anchor dropped.
+		const capture = stored({ ...held.effect!, t0: null });
 		const before = Date.now();
 
 		const [restored] = entriesFromCue({
@@ -386,8 +302,7 @@ describe('an effect through store and back', () => {
 	});
 
 	it('leaves a plain value alone', () => {
-		const plain = { ...held, effect: null };
-		const [capture] = storeCaptures([], [plain], 'replace', new Set(['e1']));
+		const capture = stored(null);
 
 		expect(capture.effect).toBeNull();
 		expect(entriesFromCue({
@@ -494,14 +409,20 @@ describe('presets', () => {
 		expect(presetGroups(preset)).toEqual(['Intensity', 'Position']);
 	});
 
-	it('carries the reference through a store and back', () => {
-		const held: ProgrammerValue[] = [
-			{ id: 'a', fixture_id: 'f1', parameter_kind: 'Intensity', value: value(0.8), effect: null, preset: 'p1', locked: false }
-		];
-		const [capture] = storeCaptures([], held, 'replace', new Set(['a']));
-		expect(capture.preset).toBe('p1');
-		expect(capture.value).toEqual(value(0.8));
-
+	// The way in is the station's (`infra/storing.rs`, which tests that it keeps the
+	// reference); the way back out is this page's.
+	it('carries the reference back out of a cue', () => {
+		const capture: ParameterCapture = {
+			fixture_id: 'f1',
+			parameter_kind: 'Intensity',
+			value: value(0.8),
+			preset: 'p1',
+			fade_in_ms: 0,
+			fade_out_ms: 0,
+			delay_in_ms: 0,
+			effect: null,
+			easing: null
+		};
 		const [back] = entriesFromCue({ id: 'c', name: 'x', number: 1, captures: [capture], follow_mode: 'Manual', fade_in_ms: 0, fade_out_ms: 0, easing: null, is_active: false });
 		expect(back.preset).toBe('p1');
 	});

@@ -17,10 +17,7 @@ use core::{
 use pult_plugin_sdk::{
     self as sdk, data,
     host, output_line,
-    schema::{
-        parameter_key, Cue, EffectSpec, FollowMode, ParameterCapture, Preset, PresetValue,
-        Sequence,
-    },
+    schema::{parameter_key, Preset, PresetValue},
     surface, PultPlugin,
 };
 use serde_json::{json, Value};
@@ -602,41 +599,14 @@ impl CommandLine {
         Ok(lines_response(vec![output_line("result", format!("{name}: {field} = {value}"))]))
     }
 
-    /// The programmer into a cue: merge into an existing one, or make the next
-    /// one. The shape mirrors the store menu exactly — fades of zero on the
-    /// captures, the cue's own fade at half a second, effects with their
-    /// anchors dropped.
+    /// The programmer into a cue: merge into an existing one, or make the next one.
+    /// The station's Store (`programmer.store`), the one the Store dialog and the wing
+    /// run, so a cue stored from here is the same cue. The programmer is kept, as the
+    /// command line always has.
     fn store(&self, sequence: Target, cue: Target) -> Result<surface::ExecResponse, String> {
         let (sequence_id, sequence_name) = resolve("sequences", &sequence)?;
         let sequence_id = uuid(&sequence_id)?;
         let cue_ids = data::sequences().by_id(sequence_id).cue_ids().get()?;
-
-        let entries = data::programmer_values().get()?;
-        if entries.is_empty() {
-            return Err("the programmer is empty — nothing to store".into());
-        }
-        let captures: Vec<ParameterCapture> = entries
-            .into_iter()
-            .map(|entry| ParameterCapture {
-                fixture_id: entry.fixture_id,
-                parameter_kind: entry.parameter_kind,
-                value: entry.value,
-                fade_in_ms: 0,
-                fade_out_ms: 0,
-                delay_in_ms: 0,
-                // A stored effect drops its anchor: the cue's `went_at` is what it
-                // is measured from on every Go.
-                effect: entry.effect.map(|spec| EffectSpec { t0: None, ..spec }),
-                // `None`, not `Linear`. Nothing said, so the cue answers and the show
-                // answers for the cue — the same rule the store menu follows. Writing
-                // `Linear` here pinned every capture stored from the command line
-                // against a show that says otherwise.
-                easing: None,
-                // Reference first, literal beside it: a value recalled from a preset
-                // carries the preset into the cue.
-                preset: entry.preset,
-            })
-            .collect();
 
         // An existing cue is merged into; a number one past the end (or a new
         // name) makes the next cue.
@@ -650,153 +620,50 @@ impl CommandLine {
                 }).copied()
             }
         };
-
-        match existing {
-            Some(cue_id) => {
-                let old = data::cues().by_id(cue_id).get()?;
-                let merged = merge_captures(old.captures, captures);
-                data::cues().by_id(cue_id).captures().set(merged)?;
-                Ok(lines_response(vec![output_line(
-                    "result",
-                    format!("stored into \"{}\" of \"{sequence_name}\"", old.name),
-                )]))
-            }
-            None => {
-                if let Target::Index(n) = cue {
-                    if n != cue_ids.len() + 1 {
-                        return Err(format!(
-                            "\"{sequence_name}\" has {} cues — store into one of those, or {} for a new one",
-                            cue_ids.len(),
-                            cue_ids.len() + 1
-                        ));
-                    }
-                }
-                let name = match &cue {
-                    Target::Name(name) => name.clone(),
-                    Target::Index(n) => format!("Cue {n}"),
-                };
-                let cue_id = uuid::Uuid::new_v4();
-                data::cues().create(&Cue {
-                    id: cue_id,
-                    name: name.clone(),
-                    number: (cue_ids.len() + 1) as f64,
-                    captures,
-                    follow_mode: FollowMode::Manual,
-                    // No fade, like every cue the console makes unasked
-                    // (`cues.ts`'s `DEFAULT_FADE_MS`).
-                    fade_in_ms: 0,
-                    fade_out_ms: 0,
-                    // The cue says nothing either, so the show's own curve per
-                    // parameter group answers.
-                    easing: None,
-                    is_active: false,
-                })?;
-                let mut ids = cue_ids;
-                ids.push(cue_id);
-                data::sequences().by_id(sequence_id).cue_ids().set(ids)?;
-                Ok(lines_response(vec![output_line(
-                    "result",
-                    format!("stored as \"{name}\" in \"{sequence_name}\""),
-                )]))
+        if let (None, Target::Index(n)) = (existing, &cue) {
+            if *n != cue_ids.len() + 1 {
+                return Err(format!(
+                    "\"{sequence_name}\" has {} cues — store into one of those, or {} for a new one",
+                    cue_ids.len(),
+                    cue_ids.len() + 1
+                ));
             }
         }
+        let mut args = json!({ "sequenceId": sequence_id, "keep": true });
+        match (existing, &cue) {
+            (Some(cue_id), _) => args["cueId"] = json!(cue_id),
+            (None, Target::Name(name)) => args["name"] = json!(name),
+            (None, Target::Index(_)) => {}
+        }
+        let stored = host::call("programmer.store", &args)?;
+        let name = stored["cue"]["name"].as_str().unwrap_or("the cue");
+        let text = if stored["created"].as_bool() == Some(true) {
+            format!("stored as \"{name}\" in \"{sequence_name}\"")
+        } else {
+            format!("stored into \"{name}\" of \"{sequence_name}\"")
+        };
+        Ok(lines_response(vec![output_line("result", text)]))
     }
 
     /// `update` — every held value into the cue that is driving it now.
     ///
-    /// The same act as the button in the top bar, and the same rule: a parameter being
-    /// driven by a cue says which cue, so there is no target to name. The keys nothing
-    /// is driving are reported rather than guessed at — a plugin cannot open the store
-    /// dialog, so it says how many are left and leaves them in the programmer.
-    ///
-    /// **Which cue is worked out from the live stacks, not from `live_fades`.** A key
-    /// the programmer holds is exactly the key playback stops publishing —
-    /// `emit_motion` skips every fade and effect under a held key — so at the moment
-    /// this needs an answer the row is gone. The answer is the latest capture of the
-    /// key over the tracked stack of each live sequence, which is what a Go would have
-    /// put there; where two sequences hold one, the one that went most recently wins,
-    /// because that is what `start_capture` did to the parameter. The browser's
-    /// `drivingCues` is the same rule.
+    /// The station's Update (`programmer.update`), the same act as the button in the
+    /// top bar and UPDATE on the wing: a parameter being driven by a cue says which
+    /// cue, so there is no target to name. The keys nothing is driving are reported
+    /// rather than guessed at — a plugin cannot open the store dialog, so it says how
+    /// many are left and leaves them in the programmer.
     fn update(&self) -> Result<surface::ExecResponse, String> {
-        let entries = data::programmer_values().get()?;
-        if entries.is_empty() {
-            return Err("the programmer is empty — nothing to update".into());
-        }
-        let cues = data::cues().get()?;
-        let sequences = data::sequences().get()?;
-
-        // key -> (cue, when that sequence went). Walked oldest first, so a sequence that
-        // went later simply overwrites.
-        let mut driving: Vec<(String, uuid::Uuid, u64)> = Vec::new();
-        let mut live: Vec<&Sequence> =
-            sequences.iter().filter(|s| s.active_cue_index.is_some()).collect();
-        live.sort_by_key(|s| s.went_at.unwrap_or(0));
-        for sequence in live {
-            let Some(active) = sequence.active_cue_index else { continue };
-            let when = sequence.went_at.unwrap_or(0);
-            for id in sequence.cue_ids.iter().take(active + 1) {
-                let Some(cue) = cues.iter().find(|c| c.id == *id) else { continue };
-                for capture in &cue.captures {
-                    let at = format!(
-                        "{}/{}",
-                        capture.fixture_id,
-                        parameter_key(&capture.parameter_kind)
-                    );
-                    match driving.iter_mut().find(|(k, _, _)| *k == at) {
-                        Some(row) if row.2 <= when => {
-                            row.1 = cue.id;
-                            row.2 = when;
-                        }
-                        Some(_) => {}
-                        None => driving.push((at, cue.id, when)),
-                    }
-                }
+        let answer = host::call("programmer.update", &json!({}))?;
+        let updated = answer["updated"].as_u64().unwrap_or(0);
+        let orphans = answer["orphans"].as_array().map_or(0, Vec::len);
+        let cues = if updated == 1 { "cue" } else { "cues" };
+        let text = match (&answer["edited"], updated, orphans) {
+            (edited, _, _) if !edited.is_null() => {
+                format!("updated \"{}\"", edited["name"].as_str().unwrap_or("the cue"))
             }
-        }
-
-        // Entry captures, grouped by the cue driving each.
-        let mut per_cue: Vec<(uuid::Uuid, Vec<ParameterCapture>)> = Vec::new();
-        let mut orphans = 0usize;
-        for entry in entries {
-            let at = format!("{}/{}", entry.fixture_id, parameter_key(&entry.parameter_kind));
-            let Some((_, cue_id, _)) = driving.iter().find(|(k, _, _)| *k == at) else {
-                orphans += 1;
-                continue;
-            };
-            let cue_id = *cue_id;
-            let capture = ParameterCapture {
-                fixture_id: entry.fixture_id,
-                parameter_kind: entry.parameter_kind,
-                value: entry.value,
-                fade_in_ms: 0,
-                fade_out_ms: 0,
-                delay_in_ms: 0,
-                effect: entry.effect.map(|spec| EffectSpec { t0: None, ..spec }),
-                easing: None,
-                preset: entry.preset,
-            };
-            match per_cue.iter_mut().find(|(id, _)| *id == cue_id) {
-                Some((_, list)) => list.push(capture),
-                None => per_cue.push((cue_id, vec![capture])),
-            }
-        }
-
-        for (cue_id, captures) in &per_cue {
-            let old = data::cues().by_id(*cue_id).get()?;
-            // Merge, and the timing an operator set on a capture is kept: the
-            // programmer carries values and never a fade time.
-            let merged = merge_kept(old.captures, captures.clone());
-            data::cues().by_id(*cue_id).captures().set(merged)?;
-        }
-
-        let updated = per_cue.len();
-        let text = match (updated, orphans) {
-            (0, _) => "nothing here is being driven by a cue".to_string(),
-            (n, 0) => format!("updated {n} {}", if n == 1 { "cue" } else { "cues" }),
-            (n, left) => format!(
-                "updated {n} {} — {left} left, which no cue is driving",
-                if n == 1 { "cue" } else { "cues" }
-            ),
+            (_, 0, _) => "nothing here is being driven by a cue".to_string(),
+            (_, n, 0) => format!("updated {n} {cues}"),
+            (_, n, left) => format!("updated {n} {cues} — {left} left, which no cue is driving"),
         };
         Ok(lines_response(vec![output_line("result", text)]))
     }
@@ -916,43 +783,6 @@ fn cue_id_in(sequence_id: &str, index: usize) -> Result<Value, String> {
         return Err(format!("that sequence has {} cues; {index} names none of them", ids.len()));
     }
     Ok(ids[index - 1].clone())
-}
-
-/// Merge new captures over old, one slot per fixture and parameter — the store
-/// menu's merge mode.
-fn merge_captures(
-    existing: Vec<ParameterCapture>,
-    stored: Vec<ParameterCapture>,
-) -> Vec<ParameterCapture> {
-    let key = |c: &ParameterCapture| format!("{}/{:?}", c.fixture_id, c.parameter_kind);
-    let taken: Vec<String> = stored.iter().map(&key).collect();
-    existing.into_iter().filter(|c| !taken.contains(&key(c))).chain(stored).collect()
-}
-
-/// The same merge, but a capture the cue already had keeps its own timing.
-///
-/// Which is what makes Update safe to press: the programmer holds values and never a
-/// fade time, a delay or a curve, so a merge that wrote zeroes would throw away, every
-/// time, timing an operator set in a control that is not on this screen. The browser's
-/// `storeCaptures` has said this since effects landed; this is the same rule.
-fn merge_kept(
-    existing: Vec<ParameterCapture>,
-    stored: Vec<ParameterCapture>,
-) -> Vec<ParameterCapture> {
-    let key = |c: &ParameterCapture| format!("{}/{:?}", c.fixture_id, c.parameter_kind);
-    let kept: Vec<ParameterCapture> = stored
-        .into_iter()
-        .map(|mut capture| {
-            if let Some(before) = existing.iter().find(|c| key(c) == key(&capture)) {
-                capture.fade_in_ms = before.fade_in_ms;
-                capture.fade_out_ms = before.fade_out_ms;
-                capture.delay_in_ms = before.delay_in_ms;
-                capture.easing = before.easing;
-            }
-            capture
-        })
-        .collect();
-    merge_captures(existing, kept)
 }
 
 /// A uuid the show already gave out, back as one.

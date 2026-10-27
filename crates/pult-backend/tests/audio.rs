@@ -141,7 +141,7 @@ async fn a_sequence(station: &Running) -> uuid::Uuid {
     let second = a_cue(2.0, "Cue 2");
     create(station, "cues", serde_json::to_value(&first).unwrap()).await;
     create(station, "cues", serde_json::to_value(&second).unwrap()).await;
-    let sequence = Sequence { merge: None,
+    let sequence = Sequence { merge: None, wrap: None,
         folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Act".into(),

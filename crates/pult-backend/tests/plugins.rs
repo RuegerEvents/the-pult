@@ -372,10 +372,8 @@ async fn a_station_runs_the_reference_plugins() {
 
     // ── The programmer into a cue ─────────────────────────────────────────────
     //
-    // `store` is the plugin's longest write and the one that builds whole entities
-    // rather than setting a field: a `Cue` with its captures, and the sequence's own
-    // list of them. It goes through the typed accessors, so what this asserts is that
-    // the shapes the SDK's mirror serializes are the shapes the station reads.
+    // `store` is the station's Store (`programmer.store`), reached through a plugin's
+    // RPC call: a `Cue` with its captures, and the sequence's own list of them.
     let result = exec("store sequence 1 cue 1").await.expect("exec answers");
     assert!(result["error"].is_null(), "a first store makes the cue: {result}");
 
@@ -386,7 +384,8 @@ async fn a_station_runs_the_reference_plugins() {
         .expect("cues readable");
     let cue = cues.as_array().and_then(|c| c.first()).expect("a cue was stored");
     assert_eq!(cue["name"], json!("Cue 1"));
-    assert_eq!(cue["fade_in_ms"], json!(500));
+    // No fade: a cue made without being asked for one snaps (`storing::DEFAULT_FADE_MS`).
+    assert_eq!(cue["fade_in_ms"], json!(0));
     assert_eq!(cue["follow_mode"], json!("Manual"));
     let captures = cue["captures"].as_array().expect("captures");
     assert!(!captures.is_empty(), "every held value went in: {cue}");

@@ -266,7 +266,10 @@ impl data::Host for PluginCtx {
             Err(e) => return Ok(Err(format!("args are not JSON: {e}"))),
         };
         let result = if rpcs::is_local_rpc(&method) {
-            rpcs::dispatch(&method, args, &self.rpc_deps).await
+            // As the operator this command is running for, so a store made from the
+            // command line is theirs to take back, as its own writes are.
+            let deps = LocalRpcDeps { acting_for: self.user, ..self.rpc_deps.clone() };
+            rpcs::dispatch(&method, args, &deps).await
         } else {
             self.engine.call(method, args).await.map_err(|e| e.to_string())
         };

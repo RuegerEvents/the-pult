@@ -24,7 +24,7 @@
 	import { collection } from '$lib/stores/show.js';
 	import { elements, hasCellsSelected, query, selection, setCells, targetElements } from '$lib/stores/selection.js';
 	import { output, watching } from '$lib/stores/output.js';
-	import { byKey, cancelEdit, editingCue, entries, home, setValueOn, updateEdit } from '$lib/stores/programmer.js';
+	import { byKey, cancelEdit, editingCue, entries, home, setValueOn, update } from '$lib/stores/programmer.js';
 
 	import PanTiltPad from './controls/PanTiltPad.svelte';
 	import ValueControl from './controls/ValueControl.svelte';
@@ -163,7 +163,13 @@
 			<span class="name">{editing.number.toFixed(1)} · {editing.name}</span>
 			<span class="spacer"></span>
 			<button class="ghost" onclick={cancelEdit}>Cancel</button>
-			<button class="primary" onclick={() => updateEdit().catch((e) => addToast(e instanceof Error ? e.message : String(e)))}>Update</button>
+			<button
+				class="primary"
+				onclick={() =>
+					update()
+						.then((u) => u.edited && addToast(`Updated cue ${u.edited.number.toFixed(1)} · ${u.edited.name}`, 'success'))
+						.catch((e) => addToast(e instanceof Error ? e.message : String(e)))}>Update</button
+			>
 		</div>
 	{/if}
 

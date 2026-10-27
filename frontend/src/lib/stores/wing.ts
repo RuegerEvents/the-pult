@@ -140,6 +140,23 @@ export const wingPage: Readable<number> = derived(operator, ($op) => $op.page ??
  */
 export const wingStoreAsk = writable<{ preselect: string[]; onto: StoreOnto | null } | null>(null);
 
+/** How many Store dialogs are open on this page. While any is, a playback key on the wing says where to store. */
+export const storeDialogs = writable(0);
+
+/** A playback key pressed on the wing while the Store dialog was open: store onto that. */
+export const wingStoreTarget = writable<StoreOnto | null>(null);
+
+/**
+ * EDIT and then a control on the wing: what to edit — the cue on it, its sequence, or
+ * what the control does. `WingEdit.svelte` asks.
+ */
+export const wingEditAsk = writable<{
+	control: SurfaceControl;
+	page: number;
+	sequenceId: string | null;
+	cueId: string | null;
+} | null>(null);
+
 // ── The show ──────────────────────────────────────────────────────────────────
 
 const fixtures = collection('fixtures');
@@ -404,14 +421,15 @@ function drive(): () => void {
 	// And this page's selection, cue sheet and dialogs go the other way.
 	stops.push(
 		derived(
-			[selection, query, focusedCueSheet, dialogCount, userId, operator],
-			([$selection, $query, $focused, $dialogs, $user, $op]) => ({
+			[selection, query, focusedCueSheet, dialogCount, storeDialogs, userId, operator],
+			([$selection, $query, $focused, $dialogs, $storing, $user, $op]) => ({
 				fixtures: $selection,
 				cells: $query.cells ?? [],
 				query: $query,
 				seenRev: $op.selection.rev,
 				focusedSequence: $focused,
 				dialog: $dialogs > 0,
+				storing: $storing > 0,
 				userId: $user
 			})
 		).subscribe((context) => {
@@ -452,6 +470,17 @@ function answer(ask: WingAsk): void {
 			return;
 		case 'Store':
 			wingStoreAsk.set({ preselect: ask.preselect, onto: ask.onto ?? null });
+			return;
+		case 'StoreTarget':
+			wingStoreTarget.set(ask.onto);
+			return;
+		case 'Edit':
+			wingEditAsk.set({
+				control: ask.control,
+				page: ask.page,
+				sequenceId: ask.sequence_id,
+				cueId: ask.cue_id
+			});
 			return;
 		case 'Dialog': {
 			const dialog = topDialog();
@@ -520,34 +549,6 @@ export async function bind(control: SurfaceControl, action: BindingAction, label
 	else {
 		const page = get(wingPage);
 		await data.control_bindings.create({ id: uuid(), surface: COMMAND_WING, control, action, label, page });
-	}
-}
-
-/**
- * Bind the playback STORE was pressed onto to the sequence the store made: a fader as
- * its master, an X key as its Go. On the page it was pressed on, whichever page the wing
- * has turned to since.
- */
-export async function bindOnto(onto: StoreOnto, sequenceId: string): Promise<void> {
-	const action: BindingAction =
-		onto.control.kind === 'Fader'
-			? { kind: 'Master', sequence_id: sequenceId }
-			: { kind: 'Press', target: { kind: 'SequenceGo', sequence_id: sequenceId } };
-	const key = controlKey(onto.control);
-	const existing = get(bindings).find(
-		(b) => b.surface === COMMAND_WING && (b.page ?? 1) === onto.page && controlKey(b.control) === key
-	);
-	const data = showData();
-	if (existing) await data.control_bindings.byId(existing.id).set({ ...existing, action });
-	else {
-		await data.control_bindings.create({
-			id: uuid(),
-			surface: COMMAND_WING,
-			control: onto.control,
-			action,
-			label: '',
-			page: onto.page
-		});
 	}
 }
 

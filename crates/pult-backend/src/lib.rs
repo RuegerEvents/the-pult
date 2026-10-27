@@ -916,6 +916,7 @@ pub async fn start(config: Config) -> Result<Running> {
             // also why carrying the client registry here costs nothing: reporting
             // needs a caller, and this one never has any.
             caller: None,
+            acting_for: None,
             clients: Some(clients.clone()),
             node_id,
             // A plugin can ask what a wire is carrying the same way a browser can —

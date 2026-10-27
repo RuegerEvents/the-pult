@@ -322,6 +322,19 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"timelineId","type":"string","optional":false}]"#,
         doc: "Throw a timeline's pending take away without merging any of it.",
     },
+    // The two acts that put the programmer into a cue, written once
+    // (`infra/storing.rs`): the top bar, the Store dialog, the wing and the command
+    // line all reach the same code. Each is one gesture under the caller's name.
+    LocalRpcMeta {
+        method: "programmer.update",
+        args_schema: "[]",
+        doc: "Update: every programmer value into the cue driving it now (or the cue loaded for editing), one undoable act. Answers how many cues it wrote and the entries no cue drives, which stay in the programmer.",
+    },
+    LocalRpcMeta {
+        method: "programmer.store",
+        args_schema: r#"[{"name":"sequenceId","type":"string","optional":true},{"name":"newSequence","type":"string","optional":true},{"name":"cueId","type":"string","optional":true},{"name":"replace","type":"boolean","optional":true},{"name":"include","type":"array","optional":true},{"name":"name","type":"string","optional":true},{"name":"after","type":"string","optional":true},{"name":"fadeInMs","type":"number","optional":true},{"name":"fadeOutMs","type":"number","optional":true},{"name":"easing","type":"string","optional":true},{"name":"followMode","type":"object","optional":true},{"name":"timing","type":"object","optional":true},{"name":"cueOnly","type":"boolean","optional":true},{"name":"keep","type":"boolean","optional":true},{"name":"onto","type":"object","optional":true}]"#,
+        doc: "Store the programmer into a sequence (or a new one, by name): into cueId, merged or replaced, or as a new cue after `after`, appended when left out. One undoable act; the programmer is cleared unless `keep`.",
+    },
     LocalRpcMeta {
         method: "input.grab",
         args_schema: r#"[{"name":"fixtureIds","type":"array","optional":false},{"name":"inputId","type":"string","optional":true}]"#,
@@ -383,6 +396,10 @@ pub struct LocalRpcDeps {
     /// `log.report`, the two calls whose whole meaning is "while *this* client is
     /// here", say so rather than pretending. Every other call ignores it.
     pub caller: Option<uuid::Uuid>,
+    /// The operator a plugin is acting for while one of its commands runs — the
+    /// command line typed at a page or on the wing — so `programmer.store` from there
+    /// is that operator's to take back. `None` everywhere else.
+    pub acting_for: Option<uuid::Uuid>,
     /// MVR-xchange, where this station is running one. `None` in a test that built
     /// its own dependencies, which is what makes the three calls say so rather than
     /// panic.
@@ -471,11 +488,14 @@ async fn running_sequences(engine: &EngineHandle) -> Vec<String> {
 
 /// Who is asking, for the writes an RPC can cause.
 ///
-/// Only `xchange.apply` needs one, and it needs it badly: an applied commit is an
-/// ordinary import and belongs to the operator who clicked, from whichever station
-/// they clicked at. A browser that has not identified itself writes as the default
-/// user, which is what every other path already does.
+/// An applied MVR commit, a grab, an answered take, an Update and a Store each belong
+/// to the operator who asked, from whichever station they asked at — or the one a
+/// plugin's command is running for. A browser that has not identified itself writes as
+/// the default user, which is what every other path already does.
 fn asking_user(deps: &LocalRpcDeps) -> uuid::Uuid {
+    if let Some(user) = deps.acting_for {
+        return user;
+    }
     match (&deps.ws_registry, deps.caller) {
         (Some(registry), Some(session)) => registry.user_for_writes(session),
         _ => pult_schema::types::user::User::DEFAULT_ID,
@@ -546,6 +566,16 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                 _ => None,
             };
             what_is_it_doing(&deps.engine, fixture_id, kind).await
+        }
+        "programmer.update" => {
+            let updated = crate::infra::storing::update(&deps.engine, asking_user(deps)).await?;
+            serde_json::to_value(updated).map_err(|e| e.to_string())
+        }
+        "programmer.store" => {
+            let request: crate::infra::storing::StoreRequest =
+                serde_json::from_value(args.clone()).map_err(|e| format!("invalid store: {e}"))?;
+            let stored = crate::infra::storing::store(&deps.engine, asking_user(deps), request).await?;
+            serde_json::to_value(stored).map_err(|e| e.to_string())
         }
         "take.merge" | "take.discard" => {
             let timeline_id: uuid::Uuid = serde_json::from_value(args["timelineId"].clone())
@@ -1152,6 +1182,8 @@ pub fn is_local_rpc(method: &str) -> bool {
         || method.starts_with("client.")
         || method.starts_with("xchange.")
         || method.starts_with("wing.")
+        // Update and Store. Not the `programmer_values` collection, whose name has no dot.
+        || method.starts_with("programmer.")
         // Camel case, unlike the `fixture_types` collection, for the reason above.
         || method.starts_with("fixtureTypes.")
 }
@@ -1860,7 +1892,10 @@ mod tests {
     async fn the_table_and_the_dispatcher_agree() {
         let (session_tx, _session_rx) = tokio::sync::mpsc::channel(1);
         let (device_tx, _device_rx) = tokio::sync::mpsc::channel(1);
-        let (engine_tx, _engine_rx) = tokio::sync::mpsc::channel(1);
+        // Closed, not merely unanswered: an arm that reads the show before it looks
+        // at its arguments (`programmer.update` has none to look at) gets an error at
+        // once rather than waiting on an engine that will never answer.
+        let (engine_tx, _) = tokio::sync::mpsc::channel(1);
         let deps = LocalRpcDeps {
             session: SessionHandle(session_tx),
             devices: DeviceHandle(device_tx),
@@ -1871,6 +1906,7 @@ mod tests {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            acting_for: None,
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),
@@ -1973,6 +2009,7 @@ mod tests {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            acting_for: None,
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),

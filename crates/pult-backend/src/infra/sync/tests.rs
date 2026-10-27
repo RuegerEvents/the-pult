@@ -88,7 +88,7 @@ fn seq_path(id: Uuid, field: &str) -> Path {
 }
 
 fn a_sequence(name: &str) -> Sequence {
-    Sequence { merge: None, folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None, master: None }
+    Sequence { merge: None, wrap: None, folder: None, id: Uuid::new_v4(), name: name.into(), cue_ids: vec![], active_cue_index: None, went_at: None, master: None }
 }
 
 async fn create(node: &Node, seq: &Sequence) {
@@ -1495,7 +1495,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
         is_active: false,
     };
     put(&one, "cues", serde_json::to_value(&cue).unwrap()).await;
-    let sequence = Sequence { merge: None,
+    let sequence = Sequence { merge: None, wrap: None,
         folder: None,
         id: Uuid::new_v4(),
         name: "Act 1".into(),
@@ -1560,6 +1560,7 @@ async fn two_stations_agree_about_what_the_rig_is_doing() {
             log_watchers: Default::default(),
             sync: None,
             caller: None,
+            acting_for: None,
             clients: None,
             node_id: pult_schema::events::operation::NodeId::new(),
             viewers: Default::default(),

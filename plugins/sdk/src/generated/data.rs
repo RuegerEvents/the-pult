@@ -4082,13 +4082,24 @@ impl SequenceEntity {
         self.at.field("merge")
     }
 
+    /// Whether Go past the last cue takes the first, and Go back before the first
+    /// takes the last. `None` is no: a sequence stays on its last cue, which is what
+    /// every sequence did before there was a choice. A loop of chases at a haunt goes
+    /// around; a play does not.
+    ///
+    /// PERSISTED.
+    pub fn wrap(&self) -> Field<Option<bool>> {
+        self.at.field("wrap")
+    }
+
     /// Step back one cue: the cue before the active one is taken, the way a Go takes
     /// the next.
     ///
     /// Taking an earlier cue is already a thing playback knows how to do — jumping
     /// back releases what only later cues capture — so this is that jump, one step at
     /// a time. At the first cue it stays there rather than taking the sequence off,
-    /// for the reason Go at the last cue stays: "off" is its own act.
+    /// for the reason Go at the last cue stays: "off" is its own act. A sequence that
+    /// goes around takes its last instead.
     ///
     /// The command `sequences.goBack`, which the station applies to the row and
     /// replicates like any other write.
@@ -4096,7 +4107,8 @@ impl SequenceEntity {
         self.at.command("goBack", args)
     }
 
-    /// Advance to the next cue, staying on the last one when there is no next.
+    /// Advance to the next cue, staying on the last one when there is no next — or,
+    /// for a sequence that [goes around](Sequence::wrap), taking the first.
     ///
     /// Running out of cues is not turning the sequence off. A light does not go dark
     /// because the operator pressed Go once more than there were cues, and the way to

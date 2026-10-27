@@ -471,7 +471,7 @@ pub async fn a_stack(into: &Seeder, name: &str, cues: Vec<Cue>, start: bool) -> 
     for cue in &cues {
         into.create("cues", cue).await?;
     }
-    let sequence = Sequence { merge: None,
+    let sequence = Sequence { merge: None, wrap: None,
         folder: None,
         id: id(),
         name: name.to_string(),

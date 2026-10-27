@@ -20,13 +20,15 @@
 import { derived, get, type Readable } from 'svelte/store';
 import type {
 	Cue,
+	Easing,
 	EffectSpec,
 	ParameterKind,
 	ParameterValue,
 	Preset,
 	PresetValue,
 	ProgrammerValue,
-	Sequence
+	Sequence,
+	StoreOnto
 } from '$lib/generated/index.js';
 import { parameterKey } from '$lib/patch.js';
 import { kindOn, splitTarget } from '$lib/effectPool.js';
@@ -36,13 +38,11 @@ import {
 	entriesFromCue,
 	mergePresetValues,
 	presetValues,
-	sameValue,
-	storeCaptures
+	sameValue
 } from '$lib/programmer.js';
-import { drivingCues } from '$lib/cues.js';
 import { beginGesture, endGesture } from './gesture.js';
 import { offer } from './learn.js';
-import { collection, show, showData } from './show.js';
+import { collection, show, showClient, showData } from './show.js';
 import { uuid } from '$lib/uuid.js';
 import { actAt } from '$lib/ws/clock.js';
 
@@ -50,9 +50,6 @@ import { actAt } from '$lib/ws/clock.js';
 
 export const entries: Readable<ProgrammerValue[]> = collection('programmer_values');
 
-/// Read for one question — what timing the cue being edited already had — since the
-/// programmer itself carries none.
-const cues: Readable<Cue[]> = collection('cues');
 
 /** The entries by `(fixture, parameter key)`, for a control asking about itself. */
 export const byKey: Readable<Map<string, ProgrammerValue>> = derived(entries, ($entries) => {
@@ -340,126 +337,79 @@ export async function beginEdit(cue: Cue, sequence: Sequence | null): Promise<vo
 	await data.show.editing_cue.set(cue.id);
 }
 
-/**
- * Write the programmer back into the cue being edited.
- *
- * Replace rather than merge: the operator has the whole cue in front of them, and a
- * parameter they removed from the buffer is one they meant the cue to stop saying.
- *
- * The cue's own captures go in even so, because *replace* is about which parameters
- * the cue holds and not about their timing: the programmer carries values and never
- * a fade time, a delay or a curve, so an Update that passed nothing here would throw
- * away, every time, timing an operator set in a control that is not on this screen.
- */
-export async function updateEdit(): Promise<void> {
-	const cueId = get(editingCue);
-	if (!cueId) return;
-	const data = showData();
-	// Fetched, not read off this page's copies, for the reason `updateDriven` fetches:
-	// a page whose copy of the programmer was empty replaced a whole cue with nothing
-	// (HHG, 2026-10-26 — Flicker lost all eighteen captures to one Update).
-	const [programmer, cueList] = await Promise.all([data.programmer_values.get(), data.cues.get()]);
-	// Replace means the cue holds exactly what the programmer holds, so an empty
-	// programmer is a cue emptied. Nobody means that by Update; Cancel is for leaving.
-	if (programmer.length === 0) {
-		throw new Error('The programmer is empty, so Update would leave the cue with nothing in it. Cancel leaves the edit without changing the cue.');
-	}
-	const before = cueList.find((c) => c.id === cueId)?.captures ?? [];
-	const captures = storeCaptures(before, programmer, 'replace', new Set(programmer.map((e) => e.id)));
-	beginGesture();
-	try {
-		await data.cues.byId(cueId).captures.set(captures);
-		for (const entry of programmer) {
-			if (!entry.locked) await data.programmer_values.byId(entry.id).delete();
-		}
-		await data.show.editing_cue.set(null);
-	} finally {
-		endGesture();
-	}
-}
-
 export async function cancelEdit(): Promise<void> {
 	await clear({ keepLocked: true });
 	await showData().show.editing_cue.set(null);
 }
 
-// ── Storing ───────────────────────────────────────────────────────────────────
-
-/** Write the chosen entries into a cue that already exists. */
-export async function storeInto(
-	cue: Cue,
-	mode: 'merge' | 'replace',
-	include: Set<string>
-): Promise<void> {
-	const captures = storeCaptures(cue.captures, held, mode, include);
-	await showData().cues.byId(cue.id).captures.set(captures);
-}
-
-// ── Update ────────────────────────────────────────────────────────────────────
+// ── Update and Store ──────────────────────────────────────────────────────────
 
 /**
- * Update: every held value into the cue that is **driving it now**.
+ * Update and Store are the station's (`infra/storing.rs`), and so are the wing's: one
+ * code path, so a store from the wing and one from this screen are the same act. Each
+ * is one gesture under this page's user, so one Ctrl-Z however many cues it touched.
  *
- * This is the verb every other desk has and this console did not, and the reason it
- * needs no target is that the console already knows one: an operator who has nudged a
- * light in the middle of cue 12 means cue 12, and being asked which cue they meant is
- * being asked a question the desk can answer.
- *
- * *How* it answers is `drivingCues`, and not `live_fades[key].cue_id` — see the note
- * there. A key the programmer holds is exactly the key playback stops publishing.
- *
- * Keys nothing is driving are the honest exception and are handed back rather than
- * guessed at: there is no cue they belong to, and the Store dialog opens with exactly
- * those ticked.
- *
- * One gesture over however many cues it touches, so an Update across three cues is
- * one Ctrl-Z. A merge rather than a replace, and the timing is kept — `storeCaptures`
- * is where both of those rules live, and this does not restate them.
+ * Whatever a fader moved this frame goes first, or the act would miss the last move.
  */
-export async function updateDriven(): Promise<{ updated: number; orphans: string[] }> {
-	const data = showData();
-	// Fetched rather than read out of the shared stores. `get()` on a lazy store runs
-	// its start function and hands back the *initial* value — an empty array — because
-	// the subscription behind it is a socket round trip; the note on `held` above says
-	// as much, and this is the other half of it. Update is one deliberate act, so one
-	// round trip costs nothing and reading a stale empty rig would answer "nothing here
-	// is driven by a cue" every time.
-	const [sequenceList, cueList] = await Promise.all([data.sequences.get(), data.cues.get()]);
-	const byId = new Map(cueList.map((c) => [c.id, c]));
-	const wanted = new Set(
-		held.map((entry) => `${entry.fixture_id}/${parameterKey(entry.parameter_kind)}`)
-	);
-	const driving = drivingCues(sequenceList, (id) => byId.get(id), wanted);
+async function settled(): Promise<void> {
+	await inOrder(flush);
+}
 
-	/** Entry ids, grouped by the cue driving each. */
-	const perCue = new Map<string, string[]>();
-	const orphans: string[] = [];
+/** What an Update did: see `storing::Updated`. */
+export type Updated = {
+	updated: number;
+	/** Entries no cue drives. They stay in the programmer for the Store dialog. */
+	orphans: string[];
+	/** The cue loaded for editing, when Update wrote back into that instead. */
+	edited: { cueId: string; number: number; name: string } | null;
+};
 
-	for (const entry of held) {
-		const from = driving.get(`${entry.fixture_id}/${parameterKey(entry.parameter_kind)}`);
-		if (!from) {
-			orphans.push(entry.id);
-			continue;
-		}
-		perCue.set(from, [...(perCue.get(from) ?? []), entry.id]);
-	}
+/**
+ * Update: every held value into the cue that is **driving it now** — or, while a cue
+ * is loaded for editing, into that cue, which becomes exactly what the programmer holds
+ * and ends the edit.
+ *
+ * The verb every other desk has, and it needs no target because the console already
+ * knows one: an operator who nudged a light in the middle of cue 12 means cue 12. Keys
+ * nothing is driving are handed back rather than guessed at, and the programmer is
+ * cleared only once every value has found its cue.
+ */
+export async function update(): Promise<Updated> {
+	await settled();
+	return (await showClient().call('programmer.update', {})) as Updated;
+}
 
-	if (perCue.size > 0) {
-		beginGesture();
-		try {
-			for (const [cueId, ids] of perCue) {
-				const cue = cueList.find((c) => c.id === cueId);
-				if (!cue) continue;
-				await data.cues.byId(cueId).captures.set(
-					storeCaptures(cue.captures, held, 'merge', new Set(ids))
-				);
-			}
-		} finally {
-			endGesture();
-		}
-	}
+/** Everything the Store dialog asks: see `storing::StoreRequest`. */
+export type StoreRequest = {
+	include?: string[];
+	sequenceId?: string;
+	newSequence?: string;
+	cueId?: string;
+	replace?: boolean;
+	name?: string;
+	after?: string | null;
+	fadeInMs?: number;
+	fadeOutMs?: number;
+	easing?: Easing | null;
+	followMode?: Cue['follow_mode'];
+	/** Per entry, only for the rows somebody typed into; the rest keep what the cue had. */
+	timing?: Record<string, { fadeMs: number; delayMs: number; easing: Easing | null }>;
+	cueOnly?: boolean;
+	keep?: boolean;
+	onto?: StoreOnto | null;
+};
 
-	return { updated: perCue.size, orphans };
+export type Stored = {
+	sequenceId: string;
+	sequenceName: string;
+	cue: { cueId: string; number: number; name: string };
+	created: boolean;
+};
+
+/** Store the programmer into a cue: a new one, or one that exists. */
+export async function store(request: StoreRequest): Promise<Stored> {
+	await settled();
+	return (await showClient().call('programmer.store', request)) as Stored;
 }
 
 // ── Presets ───────────────────────────────────────────────────────────────────

@@ -7580,6 +7580,65 @@ cargo test -p pult-backend --lib infra::audio::nodes   # move, redundant, fallba
 cargo test -p pult-backend --lib devices               # `net`, the flag, and a node no browse found
 ```
 
+### 90. The wing's Store is the screen's, EDIT asks what, and a sequence can go around
+
+Asked for after the gig (2026-10-27), as three checks: do STORE and UPDATE on the wing do
+what the top bar does; can EDIT and a control open what is on it; can Go wrap. None did
+— the third not at all, the second not at all, and the first only by imitation.
+
+**Update and Store are written once, on the station.** `infra/storing.rs`, behind the
+`programmer.update` and `programmer.store` RPCs. Before this there were four copies: the
+page's `updateDriven`/`updateEdit`, the Store dialog's own writes, `wing_control`'s Rust
+port of both, and the command-line plugin's. They had parted already: the page's Update
+was two Ctrl-Zs and the wing's one; the wing's Store onto a key without a page knew
+nothing about cue only, where a new cue goes, or a per-row fade; the command line kept
+the programmer where the others cleared it after Update. Now the top bar, the Store
+dialog, the wing and the command line call the same function, and each act is **one
+gesture under the caller's name, the programmer's clearing included**. The station
+rather than the page, because the wing has run there since `d5f4661` and a
+desk with no screen has to be able to store. A plugin's call carries the operator its
+command is running for (`LocalRpcDeps::acting_for`), so `store sequence 1 cue 4` typed
+on the wing is still that operator's to take back. The command line keeps the programmer
+after a store, as it always did; nothing else does unless asked.
+
+**One change of behavior came with it.** A fade, delay or curve typed on a row of the
+Store dialog now applies to an existing cue as well as a new one. Only rows somebody
+typed into are sent; every other capture keeps what the cue had, which is the rule the
+whole module rests on — the programmer holds values and never timing.
+
+**The Store dialog takes its target from the wing.** The page tells the station the
+dialog is open (`WingContext::storing`); while it is, a playback key — an executor key, an
+X key, a key that goes a sequence — answers `WingAsk::StoreTarget` instead of doing what
+it does, and blinks to say so, the way STORE on the wing already made them blink. So STORE
+on the screen and then a key on the wing, and STORE on the wing and then a key, open the
+same dialog on the same sequence. A control with nothing on it gets the new sequence bound
+to it, now by the station in the same gesture as the store.
+
+**EDIT, then a key or a fader, asks what to edit.** `WingAsk::Edit` carries the control,
+its sequence and the cue on it: a Go-to-cue key's own cue, else the sequence's active
+cue, else the one its Go takes next. The page (`wing/WingEdit.svelte`, beside the Store
+dialog in the top bar) offers three: *the cue* (loaded and taken, `beginEdit`, and the
+wing's UPDATE writes it back), *the sequence* (its name and the Inspector's settings) and
+*what it does* (the binding editor LEARN opens, now `wing/BindingEditor.svelte`, shared).
+A control with no sequence opens straight on the last. EDIT blinks while it waits, a
+second press takes it back, and the keypad and verbs stay themselves so ESC still leaves.
+It needs a page showing the wing and says so without one.
+
+**A sequence can go around.** `Sequence::wrap`, PERSISTED and `Option<bool>` so no show
+needs anything filled in. Go on the last cue takes the first, re-anchored like any Go;
+Go back on the first takes the last; from off, Go back still does nothing. The jump from
+last to first is an ordinary jump back, so what only later cues capture is let go — no
+new playback rule. Set in the sequence Inspector (*At the end: Stay / Go around*).
+
+What is unverified: none of it has been pressed on the wing itself, so which MA key code
+EDIT arrives as is read from the map (`"EDIT"`) and not seen.
+
+```
+cargo test -p pult-backend --lib storing             # the arithmetic: driving, merge, cue only, numbers
+cargo test -p pult-backend --test counts a_store     # Update over three cues and a cue-only store, one undo each
+cargo test -p pult-backend --test plugins            # the command line's store through the RPC
+cargo test -p pult-schema --lib sequence             # going around
+```
 
 ## What is next
 
@@ -8591,7 +8650,8 @@ CLEAR, OOPS, bindings, digital inputs, learning and the lights. All of it now li
   click), and Update and Store are one each. That makes OOPS on an empty line the page's
   Ctrl-Z. A flash stays unattributed: it puts back what it found, and if a press landed
   in the history, OOPS would take back the flash instead of the edit before it.
-- **STORE and UPDATE are the top bar's.** UPDATE with nothing typed runs Update: each
+- **STORE and UPDATE are the top bar's** — the same code since task 90
+  (`infra/storing.rs`), not a copy of it. UPDATE with nothing typed runs Update: each
   value goes into the cue driving it, as one gesture, and the programmer is cleared once
   every value has found its cue. Keys no cue drives go to the claiming page's Store
   dialog, already ticked. STORE followed by a master's executor key stores a new cue at

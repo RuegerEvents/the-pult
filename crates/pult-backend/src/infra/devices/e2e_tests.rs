@@ -258,7 +258,7 @@ async fn a_button_on_a_node_advances_a_cue() {
     let sim = a_simulated_node(&h, ModuleKind::DigitalIn, "e2e-button").await;
     let fixture_id = h.devices.adopt("e2e-button".into()).await.unwrap();
 
-    let sequence = Sequence { merge: None,
+    let sequence = Sequence { merge: None, wrap: None,
         folder: None,
         id: uuid::Uuid::new_v4(),
         name: "Act 1".into(),

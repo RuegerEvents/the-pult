@@ -931,7 +931,9 @@ selection home**, which is a programmer act and so replicates, undoes and clears
 any other. `Show::home_fade_ms` says how long either takes, seeded from a station
 preference the way `history_depth` is. Consequence worth knowing: **Go at the last cue
 stays there** rather than wrapping to no active cue, because "off" has to be a state
-playback can tell apart from "ran out of cues".
+playback can tell apart from "ran out of cues". A sequence can **go around** instead
+(`Sequence::wrap`, off by default): Go on the last cue takes the first, Go back on the
+first takes the last, and neither ever reaches off.
 
 And the verb backwards: `["fixtures", "__set_home"]` with the same
 `{fixtureId, parameterKind?}` makes where a parameter rests be wherever it is now,
@@ -1044,15 +1046,24 @@ evaluated twice: `trackedThrough` in `cues.ts` mirrors `cue::tracked_through`, b
 cue clicked in a list has to color the sheet in the same frame, and `testdata/tracking.json`
 holds the two together the way `selection-queries.json` holds `evaluate`.
 
-**Update needs no target**, and *which* cue is `drivingCues` — **not** `live_fades`.
-`emit_motion` skips every fade and effect under a key the programmer holds, deliberately,
-so at the moment Update needs the answer the row is gone. The answer is the latest
-capture of the key over the tracked stack of each live sequence, with the sequence that
-went most recently winning a contested one, because that is what `start_capture` did to
-the parameter — `trackedThrough` again rather than a third rule. `updateDriven` writes
-each held value into that cue, one gesture over however many cues it touches; keys
-nothing is driving are handed back rather than guessed at, and the Store dialog opens
-with exactly those ticked.
+**Update and Store are the station's, and there is one of each.**
+`infra/storing.rs` is the whole of both, behind the `programmer.update` and
+`programmer.store` RPCs: the top bar, the Store dialog, the command line and the wing all
+reach the same code, so a cue stored from the wing and one stored from the screen are
+the same cue, and each act is one gesture under the caller's name — the programmer's
+clearing included. There were four copies (the page, the dialog, `wing_control`, the
+command-line plugin) and they had already parted. A plugin calling either acts for the
+operator its command is running for (`LocalRpcDeps::acting_for`).
+
+**Update needs no target**, and *which* cue is `storing::driving_cues` — **not**
+`live_fades`. `emit_motion` skips every fade and effect under a key the programmer holds,
+deliberately, so at the moment Update needs the answer the row is gone. The answer is the
+latest capture of the key over the tracked stack of each live sequence, with the sequence
+that went most recently winning a contested one, because that is what `start_capture`
+did to the parameter — `tracked_through` again rather than a third rule. Each held value
+goes into that cue, one gesture over however many cues it touches; keys nothing is
+driving are handed back rather than guessed at, and the Store dialog opens with exactly
+those ticked. While a cue is loaded for editing, Update means that cue.
 
 **And an edit to a cue that is standing moves the rig**, which is what makes Update mean
 anything: the stage keeps looking the way you set it rather than snapping back.
@@ -1061,7 +1072,7 @@ agrees with where it is going, from `value_at(now)` over `home_fade_ms` — the 
 `release_key` follows, because swapping a running fade's `to` in place would jump. Its
 index is keyed by cue, **fixture** and parameter: a cue captures the same key for every
 fixture in it, and an index without the fixture collapses a system into whichever lamp
-came last and then moves all of them. **Cue only** is the other half: `cueOnlyCompensation` writes
+came last and then moves all of them. **Cue only** is the other half: `cue_only_compensation` writes
 what the *next* cue was tracking into it, for every key the store changes that the next
 cue does not capture itself, so a change stops at this cue's edge. The compensating
 capture carries the value and none of the timing — it is going into a different cue and

@@ -2540,6 +2540,12 @@ pub struct Sequence {
     /// [`Merge::Ltp`]. See [`Merge`].
     #[serde(default)]
     pub merge: Option<Merge>,
+    /// Whether Go past the last cue takes the first, and Go back before the first
+    /// takes the last. `None` is no: a sequence stays on its last cue, which is what
+    /// every sequence did before there was a choice. A loop of chases at a haunt goes
+    /// around; a play does not.
+    #[serde(default)]
+    pub wrap: Option<bool>,
 }
 
 /// What one service was told, what it managed, and what went wrong.

@@ -11,16 +11,18 @@
 	 *
 	 * **Update needs no target**, which is the whole reason it is one press. A
 	 * parameter being driven by a cue says which cue, so the console already knows
-	 * where a nudged value belongs — see `updateDriven`. The keys nothing is driving
-	 * are the honest exception: the Store dialog opens with exactly those ticked.
+	 * where a nudged value belongs — see `infra/storing.rs`, which the wing's UPDATE
+	 * runs too. The keys nothing is driving are the honest exception: the Store dialog
+	 * opens with exactly those ticked.
 	 */
 
 	import { addToast } from '$lib/toasts.js';
-	import { cancelEdit, clear, editingCue, entries, updateDriven, updateEdit } from '$lib/stores/programmer.js';
+	import { cancelEdit, editingCue, entries, update as runUpdate } from '$lib/stores/programmer.js';
 	import { collection } from '$lib/stores/show.js';
 	import { clearStep, nextClear } from '$lib/stores/clear.js';
 	import { wingStoreAsk } from '$lib/stores/wing.js';
 	import StoreMenu from './StoreMenu.svelte';
+	import WingEdit from '../wing/WingEdit.svelte';
 	import type { StoreOnto } from '$lib/generated/index.js';
 
 	/** Open with a subset ticked — what Update hands over when it cannot place a key. */
@@ -46,26 +48,18 @@
 	/** The cue loaded for editing, if one is: Update writes back into it, Cancel drops it. */
 	const editing = $derived($cues.find((c) => c.id === $editingCue) ?? null);
 
+	/**
+	 * The station's Update (`programmer.update`), the one the wing's UPDATE runs: into
+	 * the cue loaded for editing when there is one, else into the cue driving each value.
+	 */
 	export async function update() {
-		if (editing) {
-			if (busy) return;
-			busy = true;
-			try {
-				const name = `${editing.number.toFixed(1)} · ${editing.name}`;
-				await updateEdit();
-				addToast(`Updated cue ${name}`, 'success');
-			} catch (e) {
-				addToast(`${e}`);
-			} finally {
-				busy = false;
-			}
-			return;
-		}
 		if (busy || !anything) return;
 		busy = true;
 		try {
-			const { updated, orphans } = await updateDriven();
-			if (orphans.length > 0) {
+			const { updated, orphans, edited } = await runUpdate();
+			if (edited) {
+				addToast(`Updated cue ${edited.number.toFixed(1)} · ${edited.name}`, 'success');
+			} else if (orphans.length > 0) {
 				// Not an error and not a silent partial write: the values that had a home
 				// went home, and the ones that did not are the dialog's opening list.
 				addToast(
@@ -75,12 +69,11 @@
 					updated > 0 ? 'success' : undefined
 				);
 				storing = { preselect: orphans };
-			} else if (updated > 0) {
+			} else {
 				addToast(`Updated ${updated} ${updated === 1 ? 'cue' : 'cues'}`, 'success');
-				await clear({ keepLocked: true });
 			}
 		} catch (e) {
-			addToast(`${e}`);
+			addToast(e instanceof Error ? e.message : `${e}`);
 		} finally {
 			busy = false;
 		}
@@ -117,6 +110,10 @@
 		Clear
 	</button>
 </div>
+
+<!-- EDIT then a control on the wing asks here, beside the Store dialog the wing's
+     STORE opens: the top bar is on every page that can claim the wing. -->
+<WingEdit />
 
 {#if storing}
 	<!-- Keyed, so a second ask while one is open opens on what it asked for. -->
