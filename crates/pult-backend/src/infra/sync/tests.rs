@@ -460,6 +460,31 @@ async fn a_restarted_leader_keeps_its_show_and_takes_what_is_running() {
     assert_eq!(name_of(&leader, renamed.id).await.as_deref(), Some("Renamed"), "its own show stays");
 }
 
+/// Two followers linked only to the leader — the Pi with the wing and the audio laptop
+/// at the gig — still see each other's writes, because the leader passes them on.
+#[tokio::test]
+async fn a_write_at_one_follower_reaches_the_other_through_the_leader() {
+    let leader = a_node_already_linked().await;
+    let seq = a_sequence("Act 1");
+    create(&leader, &seq).await;
+    let wing = a_node_already_linked().await;
+    let laptop = a_node_already_linked().await;
+    for follower in [&wing, &laptop] {
+        follower.sync.connect_peer(vec![leader.addr], Uuid::new_v4(), Uuid::new_v4()).await.expect("answers");
+        eventually("the follower to have the show", || async {
+            name_of(follower, seq.id).await.as_deref() == Some("Act 1")
+        })
+        .await;
+    }
+
+    wing.engine.set(seq_path(seq.id, "name"), Lifecycle::Persisted, serde_json::json!("Cleared at the wing")).await.unwrap();
+    eventually("the laptop to have the wing's write", || async {
+        name_of(&laptop, seq.id).await.as_deref() == Some("Cleared at the wing")
+    })
+    .await;
+    assert_eq!(name_of(&leader, seq.id).await.as_deref(), Some("Cleared at the wing"));
+}
+
 /// A follower takes the leader's whole show, so a row only it had — the Pi's wing
 /// binding at the gig — is gone from it after joining, from memory and from its file.
 /// A replay since a clock carried what changed and never that.

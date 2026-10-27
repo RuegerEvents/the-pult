@@ -55,6 +55,17 @@ pub enum SyncCommand {
     PeerIds { reply: oneshot::Sender<Vec<NodeId>> },
     /// A peer connection ended. Sent by the peer task as it exits.
     PeerLost(NodeId),
+    /// A write arrived from `from`. The leader passes it on to every other peer.
+    ///
+    /// A session is a star in practice: a follower dials the leader, and two
+    /// followers are linked only if one of them happens to dial the other. Without
+    /// this the wing's writes on the Pi never reached the audio laptop and the
+    /// laptop's never reached the Pi; at the gig (2026-10-27) the laptop went on
+    /// sending a programmer the wing had cleared, and a rename made on the laptop
+    /// was missing from the Pi's copy of the show. Where two followers *are* linked,
+    /// the second copy is dropped as already seen: its vector clock is the one the
+    /// first left at that path.
+    Relay { from: NodeId, msg: SyncMessage },
     /// A heartbeat came back. The only measurement of the link to this peer, and it
     /// belongs to this node: the same link measured from the other end is a
     /// different path and a different number.
@@ -561,6 +572,16 @@ impl SyncManager {
             SyncCommand::Leader { reply } => {
                 let _ = reply.send(*self.leader.borrow());
             }
+            SyncCommand::Relay { from, msg } => {
+                if *self.leader.borrow() != self.node_id {
+                    return;
+                }
+                let origin = match &msg {
+                    SyncMessage::SyncedBroadcast { node_id, .. } => Some(*node_id),
+                    _ => None,
+                };
+                self.fan_out_except(msg, &[Some(from), origin]);
+            }
             SyncCommand::PeerLatency { node_id, rtt, unanswered } => {
                 self.links.send_modify(|links| {
                     // The latency half only. Replacing the row whole here would wipe
@@ -704,8 +725,16 @@ impl SyncManager {
     /// peer reconnects and catches up from the oplog, which is a path that already
     /// exists and is already tested.
     fn fan_out(&mut self, msg: SyncMessage) {
+        self.fan_out_except(msg, &[]);
+    }
+
+    /// The same, to every peer but these.
+    fn fan_out_except(&mut self, msg: SyncMessage, not: &[Option<NodeId>]) {
         let mut dead = vec![];
         for (peer_id, sender) in &self.peers {
+            if not.contains(&Some(*peer_id)) {
+                continue;
+            }
             match sender.0.try_send(msg.clone()) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {

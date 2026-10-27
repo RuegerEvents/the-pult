@@ -7830,6 +7830,41 @@ cargo test -p pult-backend --lib engine::tests::what_is_running
 cargo test -p pult-backend --lib interop::gdtf
 ```
 
+### 96. The leader passes writes on
+
+Found at the gig (2026-10-27), an hour after task 95: the audio laptop sent value 111
+on channel 101 at sACN priority 80, where the Mini and the Pi sent 0. The Atomic 3000
+had been set in the programmer from the Mini and cleared at the wing, which is the
+Pi, and the laptop had never heard of the clear.
+
+**A session is a star, and the sync code assumed a mesh.** A follower dials the leader;
+two followers are linked only if one happens to dial the other, and at the gig none
+did. A write goes to the stations its maker is linked to, and the comment on
+`LogLines` said why nothing relayed: "every station is connected to every other". So
+the wing's writes never reached the laptop, and the laptop's never reached the Pi —
+which is also why the Pi's copy of the show lacked the rename task 95 was about.
+
+`SyncCommand::Relay`: every `SyncedBroadcast` and `OperationBatch` a station receives
+goes to its manager, and the leader passes it on to every peer but the one it came from
+and the one that made it. Where two followers *are* linked, the second copy is dropped
+by `accepts` as already seen, since its clock is the one the first left at that path.
+**And a write is filed under the station that made it**, the message's own `node_id`,
+never the link's peer — which, once writes are passed on, is often the leader that only
+forwarded it, and would have given every forwarded write the leader's id and the
+writer's sequence number.
+
+Log lines are still not passed on: a follower's lines reach the stations linked to it.
+
+One consequence for deploys, worth keeping: since task 95 a restarted leader takes
+SYNCED collections whole from the station that was following it, the programmer
+included. A follower that has drifted hands its drift to the leader. With writes
+passed on that should no longer happen, but a station known to hold a stale programmer
+is restarted *before* the leader, not after.
+
+```
+cargo test -p pult-backend --lib infra::sync::tests::a_write_at_one_follower
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

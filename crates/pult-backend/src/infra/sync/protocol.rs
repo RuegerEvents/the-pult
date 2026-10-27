@@ -135,8 +135,9 @@ pub enum SyncMessage {
     /// One way and unacknowledged: a log that a peer must confirm having read is a
     /// log that can hold up the show. Lines carry the *sender's* `seq` and clock,
     /// which is what lets the receiving browser dedupe them exactly and notice a
-    /// gap, and they are never relayed onward — every station is connected to every
-    /// other, so a relay would only duplicate.
+    /// gap, and they are never relayed onward. Unlike a write, which the leader passes
+    /// on (`SyncCommand::Relay`): a session is a star in practice, so a follower sees
+    /// another follower's log only where the two happen to be linked.
     LogLines {
         node_id: NodeId,
         lines: Vec<pult_schema::ws::LogLine>,

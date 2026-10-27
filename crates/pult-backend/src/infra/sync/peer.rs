@@ -793,15 +793,20 @@ async fn run_peer_loop(
                     }
                     continue;
                 }
+                // A write, passed on by the leader to every station not linked to the
+                // one that made it: see `SyncCommand::Relay`.
+                if matches!(msg, SyncMessage::SyncedBroadcast { .. } | SyncMessage::OperationBatch { .. }) {
+                    let _ = to_manager.send(SyncCommand::Relay { from: peer_node_id, msg: msg.clone() }).await;
+                }
                 handle_incoming(msg, &engine, peer_node_id).await;
             }
             // Our own lines, gathered for this peer at whatever it is entitled to.
             line = next_log(&mut log_rx) => {
                 match line {
                     Some(line) => {
-                        // Only ever our own. A peer's line reached us from the
-                        // station that wrote it, which is also connected to
-                        // everyone else, so relaying it would only duplicate it.
+                        // Only ever our own. Writes are passed on by the leader and
+                        // log lines are not: a follower's lines reach the stations
+                        // linked to it, which is the leader at least.
                         let ours = line.node_id == our_node_id.0;
                         let wanted = log
                             .as_ref()
@@ -947,8 +952,11 @@ async fn handle_incoming(msg: SyncMessage, engine: &EngineHandle, peer_node_id: 
             info!("[sync] received what is running from peer {}", peer_node_id.0);
             engine.apply_running_state(state).await;
         }
-        SyncMessage::SyncedBroadcast { path, value, clock, authorship, .. } => {
-            apply_synced(engine, peer_node_id, path, value, clock, authorship).await;
+        // The station that made the write, which the message names — not the one on
+        // the other end of this link, which since the leader passes writes on is
+        // often only the station that forwarded it.
+        SyncMessage::SyncedBroadcast { node_id, path, value, clock, authorship } => {
+            apply_synced(engine, node_id, path, value, clock, authorship).await;
         }
         // Heartbeat is answered in run_peer_loop, which holds the write half. So is
         // the clock exchange, and for a sharper version of the same reason.
