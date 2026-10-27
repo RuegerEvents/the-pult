@@ -1632,6 +1632,9 @@ door is open** — `infra/devices/broker.rs` is rumqttd behind a `FrontDoor` tha
 the station stops driving, because rumqttd cannot be stopped and a follower holding a node
 is a node whose inputs nobody acts on. So the walk can only end at whoever leads. A node's
 input is **not gated on mDNS**: one that walked here may be one no browse here has seen.
+Nor is anything else: an adopted node on the broker gets a device-list entry from its
+`status` and its `net` (`DeviceManager::hear`), and is asked `/api/v1/info` on port 80,
+until a browse finds it.
 A broker is per door port, not per process, so two stations in one test are two brokers.
 
 **Which station sends an output is part of the same question.** Art-Net and OpenHaunt

@@ -141,7 +141,7 @@ pub(super) struct Harness {
 /// rumqttd is told a concrete address and never says which one it got, so `0` is
 /// not usable — and the broker is a process-wide singleton anyway, so the first
 /// test to want one fixes the port for all of them.
-fn free_port() -> u16 {
+pub(super) fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .expect("a free port")
         .local_addr()
@@ -226,10 +226,15 @@ impl Harness {
 
     /// A second manager against the same engine, as a restarted console would be.
     pub(super) async fn with_a_fresh_device_manager(&self) -> Harness {
+        self.restarted(NODE_HTTP_PORT).await
+    }
+
+    /// The same, asking a node no browse has shown on `port` rather than on 80.
+    pub(super) async fn restarted(&self, unseen_port: u16) -> Harness {
         self.devices.0.send(DeviceCommand::Stop).await.unwrap();
         let (manager, devices, directory) =
             DeviceManager::new(NodeId(Uuid::new_v4()), self.engine.clone(), free_port());
-        tokio::spawn(manager.run());
+        tokio::spawn(manager.asking_unseen_nodes_on(unseen_port).run());
         Harness { engine: self.engine.clone(), devices, directory }
     }
 
@@ -1091,6 +1096,87 @@ async fn where_a_node_says_it_is_reaches_the_directory() {
         async move { on }
     })
     .await;
+}
+
+/// A restarted console whose browse has not found an adopted node again still has it
+/// on its broker, and that is enough: the node is in the directory, online, at the
+/// address its `net` says, and described by `/api/v1/info`, which says what a TXT
+/// record would. Without an address yet it is on the broker and reachable by nothing
+/// that needs one.
+#[tokio::test]
+async fn an_adopted_node_on_the_broker_needs_no_browse() {
+    let mut info = firmware(MAINS_RELAY).description;
+    info["name"] = serde_json::json!("Gate");
+    info["fw"] = serde_json::json!("0.4.2");
+    let (addr, _log) = a_node(firmware(MAINS_RELAY).flags, info).await;
+    let h = harness().await;
+    h.resolve("unseen1", MAINS_RELAY, Some(addr)).await;
+    let fixture_id = h.devices.adopt("unseen1".into()).await.unwrap();
+
+    // Restarted, and mDNS says nothing this time.
+    let before = broker_port(&h).await;
+    let h = h.restarted(addr.port()).await;
+    // The engine still holds the old manager's state until the new one says otherwise.
+    let mut port = before;
+    for _ in 0..200 {
+        port = broker_port(&h).await;
+        if port != before {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let mut options = MqttOptions::new("node-unseen1", "127.0.0.1", port);
+    options.set_keep_alive(std::time::Duration::from_secs(5));
+    let (node, mut eventloop) = AsyncClient::new(options, 16);
+    tokio::spawn(async move { while eventloop.poll().await.is_ok() {} });
+    node.publish("openhaunt/unseen1/status", QoS::AtLeastOnce, true, "online").await.unwrap();
+
+    let entry = || h.directory.borrow().entries.get("unseen1").cloned();
+    eventually("the node in the directory", || {
+        let e = entry();
+        async move { e.is_some_and(|e| e.online && e.on_broker && e.adopted) }
+    })
+    .await;
+    assert_eq!(entry().unwrap().ip, "", "no address until it says one");
+
+    node.publish(
+        "openhaunt/unseen1/net",
+        QoS::AtLeastOnce,
+        true,
+        r#"{"addresses":[{"transport":"ethernet","ip":"127.0.0.1"}]}"#,
+    )
+    .await
+    .unwrap();
+    eventually("at its address, described", || {
+        let e = entry();
+        async move { e.is_some_and(|e| e.ip == "127.0.0.1" && e.port == addr.port()) }
+    })
+    .await;
+    eventually("what it is, from /info", || {
+        let h = &h;
+        async move { h.state().await.discovered["unseen1"].description.is_some() }
+    })
+    .await;
+    let device = h.state().await.discovered["unseen1"].clone();
+    assert_eq!(device.adopted_fixture_id, Some(fixture_id));
+    assert_eq!((device.name.as_str(), device.fw.as_str()), ("Gate", "0.4.2"), "named by what it says");
+    assert!(device.is_mains, "and the mains flag is the node's own");
+}
+
+/// A node nobody adopted is not put in the list by being on the broker: nothing can
+/// reach it, and mDNS is what offers it for adopting.
+#[tokio::test]
+async fn an_unadopted_node_on_the_broker_is_left_to_mdns() {
+    let h = harness().await;
+    h.resolve("someone", DIGITAL_IN, None).await;
+    h.devices.adopt("someone".into()).await.unwrap();
+    let mut options = MqttOptions::new("node-stranger1", "127.0.0.1", broker_port(&h).await);
+    options.set_keep_alive(std::time::Duration::from_secs(5));
+    let (node, mut eventloop) = AsyncClient::new(options, 16);
+    tokio::spawn(async move { while eventloop.poll().await.is_ok() {} });
+    node.publish("openhaunt/stranger1/status", QoS::AtLeastOnce, true, "online").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!h.directory.borrow().entries.contains_key("stranger1"));
 }
 
 #[tokio::test]

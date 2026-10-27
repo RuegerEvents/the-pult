@@ -699,6 +699,124 @@ async fn what_is_published_to_a_node_arrives_in_order() {
     assert_eq!(gains(), (0..40).collect::<Vec<_>>());
 }
 
+/// A leader restarted with a stream playing, whose browse never finds the node again.
+/// The node walks back onto the same broker and says where it is on `net`, and that is
+/// all the stream needs: found on the floor as a node on the broker, a timeline
+/// running, and no `start` for as long as mDNS stayed quiet.
+#[tokio::test]
+async fn a_stream_resumes_after_a_restart_that_mdns_never_sees() {
+    use pult_schema::types::timeline::{AudioClip, AudioDestination, NodeAudioMode};
+
+    let port = super::tests::free_port();
+    let pool = Arc::new(showfile::open_in_memory().await.unwrap());
+    let (engine, engine_handle, _broadcast) = crate::engine::ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
+    tokio::spawn(engine.run());
+    let station = NodeId(Uuid::new_v4());
+    let (manager, devices, directory) = super::DeviceManager::new(station, engine_handle.clone(), port);
+    tokio::spawn(manager.run());
+    let h = Harness { engine: engine_handle.clone(), devices, directory };
+
+    let mut config = SimConfig::new(ModuleKind::DryContact, "e2e-unseen");
+    config.node.audio = Some(openhaunt_node_sim::audio::default_description());
+    let sim = openhaunt_node_sim::start(config).await.expect("the simulator starts");
+    h.resolve_at("e2e-unseen", ModuleKind::DryContact.type_id(), loopback(sim.http_addr)).await;
+    h.devices.adopt("e2e-unseen".into()).await.unwrap();
+    eventually("the node on the broker", || async {
+        h.directory.borrow().entries.get("e2e-unseen").is_some_and(|e| e.on_broker && e.audio.is_some())
+    })
+    .await;
+
+    let dir = std::env::temp_dir().join(format!("pult-node-unseen-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let assets_pool = Arc::new(showfile::open_in_memory().await.unwrap());
+    let assets = crate::infra::assets::AssetStore::new(Some(dir), assets_pool);
+    let asset = assets.put("audio/wav", &a_scream()).await.unwrap();
+    let clip = AudioClip {
+        id: uuid::Uuid::new_v4(),
+        name: "Bed".into(),
+        asset,
+        peaks: None,
+        start_ms: 0,
+        offset_ms: 0,
+        length_ms: None,
+        gain_db: 0.0,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        looped: true,
+        destination: AudioDestination::Node { serial: "e2e-unseen".into(), mode: NodeAudioMode::Stream },
+    };
+    let timeline = a_timeline_with(clip, pult_schema::clock::now_ms());
+    let start_audio = |h: &Harness| {
+        let net = crate::infra::net::Network::unconfigured();
+        net.set_standing(crate::infra::net::Standing { is_leader: true, sacn_slot: None });
+        let (manager, audio) = crate::infra::audio::AudioManager::new(
+            NodeId(Uuid::new_v4()),
+            h.engine.clone(),
+            net,
+            Default::default(),
+            Some(assets.clone()),
+        );
+        tokio::spawn(manager.with_nodes(h.directory.clone(), h.devices.clone()).run());
+        audio
+    };
+    let audio = start_audio(&h);
+    audio.timelines(vec![timeline.clone()]);
+    let commands = sim.audio_commands.clone();
+    let starts = |commands: &tokio::sync::watch::Receiver<Vec<(String, serde_json::Value)>>| {
+        commands.borrow().iter().filter(|(verb, body)| verb == "stream" && body["op"] == serde_json::json!("start")).count()
+    };
+    eventually("a stream start", || {
+        let commands = commands.clone();
+        async move { starts(&commands) > 0 }
+    })
+    .await;
+
+    // The station goes, and comes back on the same broker port with no browse result.
+    let _ = audio.0.send(crate::infra::audio::AudioCommand::Stop).await;
+    h.devices.0.send(super::DeviceCommand::Stop).await.unwrap();
+    let before = starts(&commands);
+    let (manager, devices, directory) = super::DeviceManager::new(station, engine_handle.clone(), port);
+    tokio::spawn(manager.asking_unseen_nodes_on(sim.http_addr.port()).run());
+    let h = Harness { engine: engine_handle, devices, directory };
+    let _audio = start_audio(&h);
+    _audio.timelines(vec![timeline]);
+
+    // Back on the broker, and in the directory for it, with no address yet.
+    eventually("the node on the broker again", || async {
+        h.directory.borrow().entries.get("e2e-unseen").is_some_and(|e| e.on_broker && e.adopted)
+    })
+    .await;
+    // What the firmware says on every connect, retained (OpenHaunt docs/08); the
+    // simulator does not, so it is said for it.
+    let mut options = rumqttc::MqttOptions::new("e2e-unseen-net", "127.0.0.1", port);
+    options.set_keep_alive(std::time::Duration::from_secs(5));
+    let (client, mut eventloop) = rumqttc::AsyncClient::new(options, 16);
+    tokio::spawn(async move { while eventloop.poll().await.is_ok() {} });
+    client
+        .publish(
+            "openhaunt/e2e-unseen/net",
+            rumqttc::QoS::AtLeastOnce,
+            true,
+            r#"{"addresses":[{"transport":"ethernet","ip":"127.0.0.1"}]}"#,
+        )
+        .await
+        .unwrap();
+
+    for _ in 0..600 {
+        if starts(&commands) > before {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(starts(&commands) > before, "a stream start after the restart, with no browse");
+    let packets = sim.audio.stream_packets();
+    eventually("packets of the new session", || {
+        let held = sim.audio.clone();
+        async move { held.stream_packets() > packets + 10 }
+    })
+    .await;
+}
+
 // ── Heads and strips ──────────────────────────────────────────────────────────
 
 async fn types(h: &Harness) -> Vec<pult_schema::types::fixture::FixtureType> {

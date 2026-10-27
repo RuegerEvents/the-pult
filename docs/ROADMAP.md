@@ -7567,10 +7567,17 @@ for it, not `fixtures/**`, which a sensor's reading writes under many times a se
   successor's `start` and stopped the new stream until the next re-announce. A replaced
   streamer is now waited for, `stop` said, before the next one starts; and MQTT
   publishes go out of one queue, since a task per publish could reorder any two of them.
+- **A node on the broker was nowhere without a browse.** A restarted leader whose mDNS
+  never found an adopted node again had it on its broker and its timeline running, and
+  streamed nothing: the audio side and the output connector read the directory, and the
+  directory was mDNS's. Now `status online` from an adopted serial makes an entry,
+  addressed by `net` and filled in by `/api/v1/info` on the protocol's port 80, with no
+  address until the node says one. It never re-types the node's fixture (that waits
+  for a TXT record), and a resolve takes the entry over.
 
 ```
 cargo test -p pult-backend --lib infra::audio::nodes   # move, redundant, fallback, ordering
-cargo test -p pult-backend --lib devices               # `net` and the flag reach the directory
+cargo test -p pult-backend --lib devices               # `net`, the flag, and a node no browse found
 ```
 
 

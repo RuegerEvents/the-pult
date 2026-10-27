@@ -57,6 +57,10 @@ const STRIP_CHECK: Duration = Duration::from_secs(5);
 /// exactly when it should.
 const REJOIN_GRACE: Duration = Duration::from_secs(30);
 
+/// The port a node serves HTTP on (OpenHaunt docs/08, "Discovery"). What mDNS says
+/// otherwise, and what a node that mDNS has not shown is asked on.
+pub const NODE_HTTP_PORT: u16 = 80;
+
 /// How often the driving station tells an adopted node that is not on its broker
 /// where the brokers are, whether or not the list has changed.
 const STRAY_CHECK: Duration = Duration::from_secs(30);
@@ -273,6 +277,12 @@ pub struct DeviceManager {
     /// What each node last said on its `net` topic. Kept apart from the device list,
     /// as `on_broker` is, because a node that walked here may be one mDNS has not shown.
     nets: BTreeMap<String, Vec<pult_schema::types::devices::NodeAddress>>,
+    /// Adopted nodes in the device list because the broker has them, before any browse
+    /// on this station has. See [`DeviceManager::hear`].
+    heard_only: std::collections::BTreeSet<String>,
+    /// Where such a node is asked over HTTP: the protocol's port, and a test's
+    /// simulator's own.
+    unseen_port: u16,
     /// Counts up with every clock publish, so a node can tell a fresh sample from a
     /// retained one replayed after the broker restarted.
     clock_seq: u64,
@@ -319,6 +329,8 @@ impl DeviceManager {
                 on_broker: Default::default(),
                 starts: BTreeMap::new(),
                 nets: BTreeMap::new(),
+                heard_only: Default::default(),
+                unseen_port: NODE_HTTP_PORT,
                 clock_seq: 0,
                 door: None,
                 brokers: Vec::new(),
@@ -334,6 +346,14 @@ impl DeviceManager {
     /// `openhaunt` preference names. Without one, every interface this machine has.
     pub fn with_net(mut self, net: crate::infra::net::NetHandle) -> Self {
         self.net = net;
+        self
+    }
+
+    /// Ask a node no browse has shown on `port` rather than the protocol's 80: a
+    /// simulator in a test cannot have that one.
+    #[cfg(test)]
+    pub(super) fn asking_unseen_nodes_on(mut self, port: u16) -> Self {
+        self.unseen_port = port;
         self
     }
 
@@ -692,6 +712,9 @@ impl DeviceManager {
                 } else {
                     self.on_broker.remove(&serial)
                 };
+                if online && self.hear(&serial).await {
+                    return;
+                }
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
                 if device.online == online && !moved {
                     return;
@@ -720,7 +743,10 @@ impl DeviceManager {
                 if let Some(device) = self.state.discovered.get_mut(&serial) {
                     device.net = addresses.clone();
                 }
-                self.nets.insert(serial, addresses);
+                self.nets.insert(serial.clone(), addresses);
+                if self.on_broker.contains(&serial) && self.hear(&serial).await {
+                    return;
+                }
                 self.publish().await;
             }
             MqttEvent::AudioStatus { serial, status } => {
@@ -739,6 +765,54 @@ impl DeviceManager {
                 }
             }
         }
+    }
+
+    /// Put an adopted node the broker has into the device list, whether or not a browse
+    /// on this station has shown it, and keep it where its `net` says it is.
+    ///
+    /// A restarted leader whose mDNS never found the node again had it on its broker
+    /// and its timeline running, and streamed nothing for as long as that lasted: the
+    /// audio side and the output connector both read the directory, and a node with no
+    /// entry is "not on the network". Input was never gated on mDNS; now nothing is.
+    ///
+    /// The entry is made of what the console knows without a browse. The serial is the
+    /// fixture's. The address is the first one on `net`, and stays empty until the node
+    /// has said one, so a node that has not is on the broker and reached by nothing that
+    /// needs an address. The port is the protocol's. The rest of what a TXT record says
+    /// is asked of `/api/v1/info`, which says the same, and is empty until it answers.
+    /// Only adopted nodes: a node nobody patched has nothing a clip or a port can reach.
+    ///
+    /// Whether it did anything, having published if so. A node a browse has shown is
+    /// left to mDNS, which goes on saying where it is.
+    async fn hear(&mut self, serial: &str) -> bool {
+        let known = self.state.discovered.contains_key(serial);
+        if known && !self.heard_only.contains(serial) {
+            return false;
+        }
+        if !known {
+            if !self.fixtures().await.iter().any(|f| f.address.serial() == Some(serial)) {
+                return false;
+            }
+            info!("[devices] {serial} is on the broker and no browse here has shown it; reaching it by its `net`");
+            self.heard_only.insert(serial.to_string());
+            self.state.discovered.insert(serial.to_string(), heard(serial, self.unseen_port));
+        }
+        let net = self.nets.get(serial).cloned().unwrap_or_default();
+        let Some(device) = self.state.discovered.get_mut(serial) else { return false };
+        device.online = true;
+        device.last_seen = Utc::now();
+        let moved = net.first().is_some_and(|preferred| preferred.ip != device.ip);
+        if let Some(preferred) = net.first() {
+            device.ip = preferred.ip.clone();
+        }
+        device.net = net;
+        let ask = !device.ip.is_empty() && (moved || device.description.is_none());
+        if ask {
+            self.refresh_description(serial).await;
+        }
+        self.reconcile_adoptions().await;
+        self.publish().await;
+        true
     }
 
     /// The fixture and parameter key for whatever is bound to a port on a node.
@@ -840,6 +914,7 @@ impl DeviceManager {
 
                 info!("[devices] {} ({}) at {ip}:{port}", device.name, device.module_name);
                 self.state.discovered.insert(serial.clone(), device);
+                self.heard_only.remove(&serial);
 
                 // Every resolve asks again, which is what makes a changed `desc` in the
                 // TXT record a refetch: the node re-announces when its description moves,
@@ -901,16 +976,21 @@ impl DeviceManager {
         // Out of the raw body for the reason `effects` is, below.
         let audio = NodeAudio::from_info(&info);
         let pixels = NodePixels::from_info(&info);
+        let identity = Identity::from_info(&info);
         // The whole body, not just the two keys: `ports` and `dmx` both default,
         // so firmware that predates self-description parses as having neither.
         let description = serde_json::from_value(info).unwrap_or_default();
-        Some(WhatItIs { mains, description, effects, audio, pixels })
+        Some(WhatItIs { mains, description, effects, audio, pixels, identity })
     }
 
     /// Ask the node what it is, and keep the answer.
     async fn refresh_description(&mut self, serial: &str) {
         let Some(what) = self.ask_the_node_what_it_is(serial).await else { return };
+        let heard_only = self.heard_only.contains(serial);
         if let Some(device) = self.state.discovered.get_mut(serial) {
+            if heard_only {
+                what.identity.fill(device);
+            }
             device.is_mains = what.mains;
             device.description = Some(what.description);
             device.effects = what.effects;
@@ -981,7 +1061,11 @@ impl DeviceManager {
     ///
     /// [`FixtureTypeSource::Node`]: pult_schema::types::fixture::FixtureTypeSource::Node
     async fn retype(&mut self, serial: &str) {
-        if self.is_follower().await {
+        // Not from what `/info` said for a node no browse has shown: the type was built
+        // from its TXT record at adoption, and the two spellings of the module's name
+        // differing would re-type every parameter patched against it. The next resolve
+        // does it.
+        if self.is_follower().await || self.heard_only.contains(serial) {
             return;
         }
         let Some(device) = self.state.discovered.get(serial).cloned() else { return };
@@ -1469,6 +1553,55 @@ struct WhatItIs {
     effects: Option<EffectCapability>,
     audio: Option<NodeAudio>,
     pixels: Option<NodePixels>,
+    identity: Identity,
+}
+
+/// What a node's TXT record says about it, said again by `/api/v1/info`: the same
+/// keys, filled from the same descriptors (OpenHaunt docs/08). Read for a node no
+/// browse has shown, and only for one: mDNS stays the authority where it answers.
+struct Identity {
+    name: Option<String>,
+    fw: Option<String>,
+    protocol_version: Option<String>,
+    module_type: Option<u16>,
+    module_name: Option<String>,
+    module_serial: Option<String>,
+    module_rev: Option<String>,
+    caps: Option<Vec<String>>,
+}
+
+impl Identity {
+    fn from_info(info: &serde_json::Value) -> Identity {
+        let text = |v: &serde_json::Value| v.as_str().map(str::to_string);
+        let module = &info["module"];
+        Identity {
+            name: text(&info["name"]),
+            fw: text(&info["fw"]),
+            protocol_version: text(&info["v"]),
+            module_type: match &module["type"] {
+                serde_json::Value::String(t) => parse_module_type(t),
+                n => n.as_u64().and_then(|n| u16::try_from(n).ok()),
+            },
+            module_name: text(&module["name"]),
+            module_serial: text(&module["sn"]),
+            module_rev: text(&module["rev"]),
+            caps: text(&module["caps"])
+                .map(|c| c.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+        }
+    }
+
+    fn fill(self, device: &mut DiscoveredDevice) {
+        if let Some(name) = self.name.filter(|n| !n.is_empty()) {
+            device.name = name;
+        }
+        device.fw = self.fw.unwrap_or(std::mem::take(&mut device.fw));
+        device.protocol_version = self.protocol_version.unwrap_or(std::mem::take(&mut device.protocol_version));
+        device.module_type = self.module_type.unwrap_or(device.module_type);
+        device.module_name = self.module_name.unwrap_or(std::mem::take(&mut device.module_name));
+        device.module_serial = self.module_serial.unwrap_or(std::mem::take(&mut device.module_serial));
+        device.module_rev = self.module_rev.unwrap_or(std::mem::take(&mut device.module_rev));
+        device.caps = self.caps.unwrap_or(std::mem::take(&mut device.caps));
+    }
 }
 
 impl DeviceManager {
@@ -1869,6 +2002,39 @@ fn delete_path(table: &str, id: Uuid) -> Path {
 }
 
 /// A module type as the TXT record writes it: `0x0002`, or plain decimal.
+/// A node the broker has and no browse has shown, as far as it is known before
+/// `/api/v1/info` answers: its serial, and its HTTP port by the protocol. See
+/// [`DeviceManager::hear`].
+fn heard(serial: &str, port: u16) -> DiscoveredDevice {
+    DiscoveredDevice {
+        serial: serial.to_string(),
+        name: serial.to_string(),
+        host: String::new(),
+        ip: String::new(),
+        port,
+        fw: String::new(),
+        protocol_version: String::new(),
+        module_type: 0,
+        module_name: String::new(),
+        module_serial: String::new(),
+        module_rev: String::new(),
+        caps: Vec::new(),
+        description: None,
+        effects: None,
+        audio: None,
+        audio_status: None,
+        pixels: None,
+        head_fixtures: Default::default(),
+        faults: Vec::new(),
+        is_mains: false,
+        online: true,
+        adopted_fixture_id: None,
+        health: None,
+        last_seen: Utc::now(),
+        net: Vec::new(),
+    }
+}
+
 fn parse_module_type(raw: &str) -> Option<u16> {
     let raw = raw.trim();
     match raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
