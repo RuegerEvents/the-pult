@@ -78,6 +78,7 @@
 
 {#if ask}
 	<Dialog title="Edit {controlName(ask.control)}" size={step === 'binding' ? 'wide' : 'small'} onclose={close}>
+		<div class="pad">
 		{#if step === 'choose' && sequence}
 			<div class="choices">
 				<button class="choice" disabled={!cue || !$canEdit} onclick={() => void editCue()}>
@@ -115,10 +116,14 @@
 		{:else if step === 'binding'}
 			<BindingEditor control={ask.control} onclose={close} />
 		{/if}
+		</div>
 	</Dialog>
 {/if}
 
 <style>
+	.pad {
+		padding: 14px 16px;
+	}
 	.choices {
 		display: flex;
 		flex-direction: column;

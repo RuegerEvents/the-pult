@@ -57,6 +57,15 @@
 		return ($fixtures as Fixture[]).find((f) => f.id === device.adopted_fixture_id);
 	}
 
+	/** Rename a node: its own fixture, which the station passes on to the node. One Ctrl-Z. */
+	function rename(device: DiscoveredDevice, value: string) {
+		const fixture = ownFixture(device);
+		const name = value.trim();
+		if (!fixture || !name || name === fixture.name) return;
+		if (new TextEncoder().encode(name).length > 31) addToast('A node keeps 31 bytes of its name; the rest is cut off on the node');
+		void showData().fixtures.byId(fixture.id).name.set(name);
+	}
+
 	function redundant(fixture: Fixture | undefined): boolean {
 		return !!fixture && 'OpenHaunt' in fixture.address && fixture.address.OpenHaunt.redundant_stream === true;
 	}
@@ -112,6 +121,16 @@
 	 * Adopt.
 	 */
 	let forgetting = $state<DiscoveredDevice | null>(null);
+	/**
+	 * Taken as an argument and held before the dialog closes: `device` in the dialog is
+	 * read off `forgetting`, and clearing that first handed `act` nothing — which is why
+	 * Forget did nothing at all.
+	 */
+	function forget(device: DiscoveredDevice) {
+		const held = { ...device };
+		forgetting = null;
+		void act('forget', held);
+	}
 	const goingWith = (device: DiscoveredDevice): Fixture[] =>
 		($fixtures as Fixture[]).filter((f) => 'OpenHaunt' in f.address && f.address.OpenHaunt.serial === device.serial);
 
@@ -174,7 +193,20 @@
 					<div class="device-info">
 						<span class="device-name">
 							<span class="dot" class:on={device.online}></span>
-							{device.name}
+							{#if $canEdit && ownFixture(device)}
+								<!-- The node is called what its own fixture is called; the station
+								     tells the node, now or when it is next up. -->
+								<input
+									class="rename"
+									value={ownFixture(device)?.name ?? device.name}
+									aria-label="Name of {device.name}"
+									title={device.online ? 'Renames the node too' : 'Renames the node too, when it is next online'}
+									onchange={(e) => rename(device, e.currentTarget.value)}
+									onkeydown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+								/>
+							{:else}
+								{device.name}
+							{/if}
 						</span>
 						<span class="device-meta dim">
 							{device.module_name || 'Unknown module'}
@@ -362,14 +394,8 @@
 {#if forgetting}
 	{@const device = forgetting}
 	{@const gone = goingWith(device)}
-	<Dialog
-		title="Forget {device.name}?"
-		onclose={() => (forgetting = null)}
-		onaccept={() => {
-			forgetting = null;
-			void act('forget', device);
-		}}
-	>
+	<Dialog title="Forget {device.name}?" onclose={() => (forgetting = null)} onaccept={() => forget(device)}>
+		<div class="prompt">
 		{#if gone.length > 0}
 			<p>
 				{gone.length === 1 ? 'Its fixture is' : `Its ${gone.length} fixtures are`} deleted with it, and every
@@ -382,20 +408,25 @@
 			<p>Nothing is patched to it.</p>
 		{/if}
 		<p class="note">Ctrl-Z brings the fixtures back. {device.online ? '' : 'It is offline, so it is only forgotten here; it is not told.'}</p>
+		</div>
 		{#snippet footer()}
-			<button class="ghost" onclick={() => (forgetting = null)}>Cancel</button>
-			<button
-				class="danger"
-				onclick={() => {
-					forgetting = null;
-					void act('forget', device);
-				}}>Forget</button
-			>
+			<button class="btn btn-ghost" onclick={() => (forgetting = null)}>Cancel</button>
+			<button class="btn btn-danger" onclick={() => forget(device)}>Forget</button>
 		{/snippet}
 	</Dialog>
 {/if}
 
 <style>
+	.prompt {
+		padding: 14px 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.prompt p {
+		margin: 0;
+		line-height: 1.5;
+	}
 	.gone {
 		margin: 4px 0 8px;
 		padding-left: 18px;
@@ -469,6 +500,22 @@
 		min-width: 0;
 	}
 
+	.rename {
+		font: inherit;
+		color: inherit;
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: 3px;
+		padding: 0 4px;
+		min-width: 0;
+		flex: 1;
+	}
+	.rename:hover,
+	.rename:focus {
+		border-color: var(--line-strong, #3a3a3a);
+		background: var(--bg-sunken, #111);
+		outline: none;
+	}
 	.device-name {
 		display: flex;
 		align-items: center;

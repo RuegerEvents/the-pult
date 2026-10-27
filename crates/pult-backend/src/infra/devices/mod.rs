@@ -375,6 +375,8 @@ impl DeviceManager {
             self.engine.subscribe_pattern(PathPattern::new("fixtures/*")).await,
             self.engine.subscribe_pattern(PathPattern::new("fixtures/*/address")).await,
         ]);
+        // A node's own fixture renamed is the node renamed.
+        let mut names = self.engine.subscribe_pattern(PathPattern::new("fixtures/*/name")).await;
 
         self.push_state().await;
         // Every node the show is patched to is in the list from the start, offline until
@@ -437,8 +439,10 @@ impl DeviceManager {
                 Some(_) = stations.next() => self.refresh_brokers().await,
                 Some(_) = addresses.next() => {
                     self.remember_patched().await;
+                    self.push_renamed().await;
                     self.publish().await;
                 }
+                Some(_) = names.next() => self.push_renamed().await,
                 _ = clock.tick() => self.publish_clock().await,
                 _ = strips.tick() => self.reconcile_all_strips().await,
                 _ = strays.tick() => self.tell_strays().await,
@@ -1388,7 +1392,59 @@ impl DeviceManager {
         if let Some(universe) = self.gateway_universe(serial).await {
             config["dmx"] = serde_json::json!({ "protocol": "sacn", "universe": universe });
         }
+        // The node is called what its own fixture is called: the show is the truth, so a
+        // node renamed in the console says so in its own TXT record and on its own page,
+        // and one that was off when it was renamed is told when it is back.
+        if let Some(name) = self.node_name(serial).await {
+            config["name"] = serde_json::json!(name);
+        }
         Some(config)
+    }
+
+    /// The name a node should carry: its own fixture's (head 0), cut to what the firmware
+    /// stores — `OH_NAME_MAX`, 32 bytes with the terminator — at a character boundary.
+    async fn node_name(&self, serial: &str) -> Option<String> {
+        const NAME_MAX: usize = 31;
+        let fixture = self
+            .fixtures()
+            .await
+            .into_iter()
+            .find(|f| f.address.serial() == Some(serial) && f.address.head() == Some(0))?;
+        let mut name = fixture.name.trim().to_string();
+        if name.is_empty() {
+            return None;
+        }
+        while name.len() > NAME_MAX {
+            name.pop();
+        }
+        Some(name)
+    }
+
+    /// Tell every node whose own fixture was renamed: the name in the show against the
+    /// one it announced. Only the leader speaks to nodes, and only to one that is up.
+    async fn push_renamed(&mut self) {
+        if self.is_follower().await {
+            return;
+        }
+        let serials: Vec<String> =
+            self.state.discovered.values().filter(|d| d.online && d.adopted_fixture_id.is_some()).map(|d| d.serial.clone()).collect();
+        for serial in serials {
+            let Some(name) = self.node_name(&serial).await else { continue };
+            let said = self.state.discovered.get(&serial).map(|d| d.name.clone()).unwrap_or_default();
+            if said == name {
+                continue;
+            }
+            info!("[devices] {serial} is called \"{name}\" in the show; telling it");
+            if let Err(e) = self.post(&serial, "config", serde_json::json!({ "name": name })).await {
+                debug!("[devices] could not rename {serial}: {e}");
+                continue;
+            }
+            // Shown at once rather than when the node's TXT record next resolves.
+            if let Some(device) = self.state.discovered.get_mut(&serial) {
+                device.name = name;
+            }
+            self.publish().await;
+        }
     }
 
     /// The universe an adopted gateway forwards, if this device is one.

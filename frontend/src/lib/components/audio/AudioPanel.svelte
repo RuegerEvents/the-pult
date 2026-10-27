@@ -417,6 +417,7 @@
 	{@const block = forgetting}
 	{@const lose = mappedOn(block.id)}
 	<Dialog title="Forget {block.label}?" onclose={() => (forgetting = null)} onaccept={() => void forget(block)}>
+		<div class="prompt">
 		<p>
 			The show stops remembering this station.
 			{#if lose.length > 0}
@@ -427,9 +428,10 @@
 			{/if}
 		</p>
 		<p class="note">If it comes back, it is listed again and has to be mapped again. Ctrl-Z takes it back as one act.</p>
+		</div>
 		{#snippet footer()}
-			<button class="ghost" onclick={() => (forgetting = null)}>Cancel</button>
-			<button class="danger" onclick={() => void forget(block)}>Forget</button>
+			<button class="btn btn-ghost" onclick={() => (forgetting = null)}>Cancel</button>
+			<button class="btn btn-danger" onclick={() => void forget(block)}>Forget</button>
 		{/snippet}
 	</Dialog>
 {/if}
@@ -466,6 +468,16 @@
 	.matrix th.first,
 	.matrix td.first {
 		border-left: 2px solid var(--line-strong);
+	}
+	.prompt {
+		padding: 14px 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.prompt p {
+		margin: 0;
+		line-height: 1.5;
 	}
 	.station.offline {
 		color: var(--text-dim);
