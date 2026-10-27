@@ -344,12 +344,6 @@
 				</tbody>
 			</table>
 
-			{#if stations.some(stale)}
-				<p class="warn">
-					A grayed station has missed several of its own reports. Its row is kept until it has
-					been quiet for half a minute.
-				</p>
-			{/if}
 			{#if uncorrected.length > 0}
 				<p class="warn">
 					{uncorrected.length === 1
