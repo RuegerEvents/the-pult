@@ -79,6 +79,8 @@ pub struct StationReporter {
     /// both findable later and quiet during a rehearsal. A warn per output frame
     /// would be forty a second into the ring task 48 built.
     clock_said: Option<ClockState>,
+    /// How many machine-clock jumps have been said in the log.
+    jumps_said: u64,
 }
 
 /// One reading of the machine and of this process, taken at one moment.
@@ -300,6 +302,7 @@ impl StationReporter {
             links,
             frames,
             clock_said: None,
+            jumps_said: 0,
         }
     }
 
@@ -448,6 +451,18 @@ impl StationReporter {
             (false, None) => ClockState::Uncorrected,
         };
         let offset_ms = pult_schema::clock::offset_ms() as f32;
+
+        // The machine's own clock turned out to be far ahead of the base this station
+        // took at start — it booted before it knew the time — and the show clock has
+        // jumped to it. Everything anchored in show time moved at once, so it is said.
+        let jumps = pult_schema::clock::machine_jumps();
+        if jumps > self.jumps_said {
+            warn!(
+                "[clock] this machine's clock was set forward while the station ran (it started with the wrong \
+                 time); the show clock jumped to it"
+            );
+            self.jumps_said = jumps;
+        }
 
         if self.clock_said != Some(state) {
             match state {

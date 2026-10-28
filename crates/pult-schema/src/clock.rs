@@ -31,12 +31,22 @@
 //! the show running 5% fast or slow while it happens, which is under a lighting cue's
 //! perceptual floor and is a great deal less visible than a step.
 //!
-//! *And never backwards.* A backward step falls before a landed fade's `t1`, and a
-//! parameter that had arrived starts moving again — the one thing in the evaluator
-//! that cannot happen from any other cause. So a large negative correction is slewed
-//! however long it takes rather than stepped, and "a landed fade stays" holds without
-//! an exception. Slewing is forward-only by construction: a 5% slow clock still
-//! advances.
+//! *Backwards only as far as a minute's walk.* A backward step falls before a landed
+//! fade's `t1`, and a parameter that had arrived starts moving again — the one thing
+//! in the evaluator that cannot happen from any other cause. So a negative correction
+//! is slewed, and slewing is forward-only by construction: a 5% slow clock still
+//! advances. But only while the walk ends: past [`STEP_BACK_ABOVE_MS`] — a minute of
+//! walking — it is stepped like a large forward one. "Never" was the rule until a
+//! leader came up eleven hours out and its follower set off on a ten-day walk back
+//! to it, every fade and timeline anchored in show time wrong by the whole of it for
+//! as long as it lasted (HHG, 2026-10-28).
+//!
+//! *And a machine clock that was wrong is followed.* The base is taken once, which is
+//! what keeps an NTP correction from jumping the rig — and what kept a Mac mini that
+//! booted with its clock eleven hours out, and corrected it from the network a few
+//! minutes later, eleven hours out for good. A wall clock more than
+//! [`REBASE_AHEAD_MS`] ahead of this one is not drift: it is the machine finding out
+//! the time, and the base jumps forward to it.
 //!
 //! One process-wide offset rather than one per station, because [`now_ms`] is a free
 //! function with no station in scope and correcting it corrects everything at once —
@@ -62,6 +72,17 @@ pub const STEP_ABOVE_MS: f64 = 1000.0;
 /// absorbed in four seconds.
 pub const SLEW_RATE: f64 = 0.05;
 
+/// Past this, a *backward* change is stepped rather than walked: a minute of walking
+/// at [`SLEW_RATE`]. Further back than that, a walk is a show clock wrong for longer
+/// than anybody would wait, which is worse than the replay of a fade's last moments
+/// a step back costs.
+pub const STEP_BACK_ABOVE_MS: f64 = 60_000.0 * SLEW_RATE;
+
+/// How far the machine's wall clock may run ahead of [`machine_now_ms`] before the
+/// base is taken again. Ten seconds is far past anything NTP slews and far short of a
+/// clock that was simply wrong when the station started.
+pub const REBASE_AHEAD_MS: u64 = 10_000;
+
 /// This machine's own console clock, uncorrected.
 ///
 /// A unix millisecond advanced monotonically from a wall reading taken once, rather
@@ -79,21 +100,48 @@ pub const SLEW_RATE: f64 = 0.05;
 /// with this station's raw one, so the answer is the whole offset every time rather
 /// than a residual to be added to whatever is already applied.
 pub fn machine_now_ms() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
     struct Base {
         wall_ms: u64,
         at: std::time::Instant,
     }
     static BASE: OnceLock<Base> = OnceLock::new();
-
-    let base = BASE.get_or_init(|| Base {
-        wall_ms: std::time::SystemTime::now()
+    // Added to the base when the wall clock turned out to be far ahead of it, and the
+    // last moment that was checked: once a second, so the hot path reads no clock but
+    // `Instant`.
+    static JUMPED: AtomicU64 = AtomicU64::new(0);
+    static CHECKED: AtomicU64 = AtomicU64::new(0);
+    let wall = || {
+        std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
-        at: std::time::Instant::now(),
-    });
-    base.wall_ms.saturating_add(base.at.elapsed().as_millis() as u64)
+            .unwrap_or(0)
+    };
+
+    let base = BASE.get_or_init(|| Base { wall_ms: wall(), at: std::time::Instant::now() });
+    let elapsed = base.at.elapsed().as_millis() as u64;
+    let ours = base.wall_ms.saturating_add(elapsed).saturating_add(JUMPED.load(Ordering::Relaxed));
+    let checked = CHECKED.load(Ordering::Relaxed);
+    if elapsed.saturating_sub(checked) >= 1_000
+        && CHECKED.compare_exchange(checked, elapsed, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    {
+        let now = wall();
+        if now > ours + REBASE_AHEAD_MS {
+            JUMPED.fetch_add(now - ours, Ordering::Relaxed);
+            MACHINE_JUMPS.fetch_add(1, Ordering::Relaxed);
+            return now;
+        }
+    }
+    ours
 }
+
+/// How many times [`machine_now_ms`] has jumped forward to the machine's wall clock,
+/// so a station can say so: it is a whole rig moving in time at once.
+pub fn machine_jumps() -> u64 {
+    MACHINE_JUMPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static MACHINE_JUMPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Console unix ms: the show clock, which is what everything is anchored in.
 pub fn now_ms() -> u64 {
@@ -188,10 +236,11 @@ impl Correction {
         let delta = measured_ms - reached;
 
         // Noise, or a clock so different that walking to it is not a correction. Both
-        // land at once; the second is a forward step, which is a jump to where the
-        // show already is rather than a rewrite of what has happened. Everything else
-        // — including a backward change of any size — is walked.
-        let lands_at_once = delta.abs() < APPLY_BELOW_MS || delta >= STEP_ABOVE_MS;
+        // land at once: a forward step is a jump to where the show already is, and a
+        // backward one past a minute's walk is better than a show clock that stays
+        // wrong for as long as that walk would take. Everything between is walked.
+        let lands_at_once =
+            delta.abs() < APPLY_BELOW_MS || delta >= STEP_ABOVE_MS || delta <= -STEP_BACK_ABOVE_MS;
 
         Self {
             applied_ms: if lands_at_once { measured_ms } else { reached },
@@ -413,21 +462,29 @@ mod tests {
         assert_eq!(c.at(80_000), 400.0, "and stays");
     }
 
-    /// The rule that keeps a landed fade landed. A backward correction of any size is
-    /// walked, never stepped, so `now_ms` never answers a smaller number than it
-    /// answered a moment ago.
+    /// The rule that keeps a landed fade landed. A backward correction within a
+    /// minute's walk is walked, never stepped, so `now_ms` never answers a smaller
+    /// number than it answered a moment ago.
     #[test]
-    fn a_backward_correction_is_never_stepped() {
-        let c = Correction::default().corrected_towards(-5_000.0, 0);
-        assert_eq!(c.applied_ms, 0.0, "not stepped, however far back it is");
+    fn a_backward_correction_within_a_minutes_walk_is_walked() {
+        let c = Correction::default().corrected_towards(-2_500.0, 0);
+        assert_eq!(c.applied_ms, 0.0, "not stepped");
         assert_eq!(c.at(0), 0.0, "nothing has happened yet");
         assert_eq!(c.at(1_000), -50.0, "5% of a second");
-        assert_eq!(c.at(100_000), -5_000.0, "and it arrives eventually");
+        assert_eq!(c.at(100_000), -2_500.0, "and it arrives");
         // Monotonic: raw + offset never decreases, because the offset falls at a
         // twentieth of the rate the clock rises.
         let a = 1_000.0 + c.at(1_000);
         let b = 2_000.0 + c.at(2_000);
         assert!(b > a, "the show clock still moved forwards");
+    }
+
+    /// Further back than a minute's walk is stepped: eleven hours at 5% is ten days.
+    #[test]
+    fn a_backward_correction_past_a_minutes_walk_is_stepped() {
+        let c = Correction::default().corrected_towards(-42_000_000.0, 0);
+        assert_eq!(c.applied_ms, -42_000_000.0);
+        assert_eq!(c.at(0), -42_000_000.0, "with nothing left to walk");
     }
 
     #[test]

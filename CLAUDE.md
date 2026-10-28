@@ -123,9 +123,13 @@ log line and the answer a browser syncs against all at once. The estimator is
 Four rules there, each of which is a way the rig would otherwise jump. A correction under
 20 ms applies, over 1 s steps, and in between is **walked at 5% of real time** — because
 `now_ms` is monotone-from-a-base precisely so a stepping system clock cannot jump every
-running fade, and correcting it puts that back unless it is disciplined. It is **never
-stepped backwards** at any size: that falls before a landed fade's `t1` and starts a
-parameter that had arrived moving again. A **promoted leader keeps the offset it had**,
+running fade, and correcting it puts that back unless it is disciplined. It is **stepped
+backwards only past a minute's walk** (3 s): a step back falls before a landed fade's `t1`
+and starts a parameter that had arrived moving again, but a follower once set off on a
+ten-day walk back to a leader eleven hours out. And the base **follows a machine clock
+that was wrong**: a wall clock more than 10 s ahead is the machine finding out the time
+(a Mac mini that booted before the network did), and the base jumps to it. A **promoted
+leader keeps the offset it had**,
 as a standing bias, so the show clock is continuous across a failover — after one, show
 time is no machine's wall clock but a timeline the session carries. And a station with no
 estimate yet **applies zero and says so**, in a `warn` and in its row: `consoleNow()`'s

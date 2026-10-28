@@ -19,9 +19,10 @@
     "The `bands` half is the station's alone, and is read only by the Rust suite. A",
     "browser draws a picture and a station drives a rig, so only one of them has to",
     "say what a correction does to a fade that is running while it lands: under 20 ms",
-    "apply, over 1000 ms step, in between walk at 5% of real time — and never",
-    "backwards at any size, because a backward step falls before a landed fade's t1",
-    "and starts a parameter that had arrived moving again."
+    "apply, over 1000 ms step, in between walk at 5% of real time — and backwards",
+    "only within a minute's walk (3000 ms), because a backward step falls before a",
+    "landed fade's t1 and starts a parameter that had arrived moving again; further",
+    "back than that is stepped too, since a show clock wrong for days is worse."
   ],
   "samples": [
     {
@@ -120,14 +121,20 @@
       "after": [{ "elapsedMs": 0, "offsetMs": 1000 }]
     },
     {
-      "name": "backwards is never stepped, however far back it is",
+      "name": "backwards within a minute's walk is walked, never stepped",
       "appliedMs": 0,
-      "measuredMs": -5000,
+      "measuredMs": -2500,
       "after": [
         { "elapsedMs": 0, "offsetMs": 0 },
         { "elapsedMs": 1000, "offsetMs": -50 },
-        { "elapsedMs": 100000, "offsetMs": -5000 }
+        { "elapsedMs": 100000, "offsetMs": -2500 }
       ]
+    },
+    {
+      "name": "further back than a minute's walk is stepped",
+      "appliedMs": 0,
+      "measuredMs": -5000,
+      "after": [{ "elapsedMs": 0, "offsetMs": -5000 }]
     },
     {
       "name": "a correction from a standing bias walks from where it is",
