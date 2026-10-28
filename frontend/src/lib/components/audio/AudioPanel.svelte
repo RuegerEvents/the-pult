@@ -10,6 +10,10 @@
 	 * from a zone to channels is written on the zone, per station, so each station
 	 * maps the same zones to its own card and every station can see who has not.
 	 *
+	 * An OpenHaunt node's loudspeaker is two more columns of the same matrix, after the
+	 * stations: a zone is routed onto a node's left and right the way it is onto a card's
+	 * channels, and a node is not the station's, so it is not under one.
+	 *
 	 * An errand rather than a panel somebody keeps open: it is done at the venue, once
 	 * per machine, and then a clip is routed to "Area 2" and never to a number.
 	 */
@@ -21,11 +25,26 @@
 	import { focusOnMount } from '$lib/actions.js';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { showData } from '$lib/stores/show.js';
-	import { audioOutput } from '$lib/stores/timelines.js';
+	import { audioOutput, devices as deviceList, drivingReport } from '$lib/stores/timelines.js';
+	import { audioNodes } from '$lib/destination.js';
+	import type { NodeAudioMode } from '$lib/generated/index.js';
 	import { audioPrefs, createZone, forgetStation, loadAudioPrefs, nameDevice, namesFor, stationAudio, stationNames, zones } from '$lib/stores/zones.js';
 	import { writePreferences } from '$lib/preferences.js';
 	import { getClientContext, getStationContext } from '$lib/ws/context.js';
-	import { channelName, freshZoneName, sideName, sidesAt, sidesOf, toggleChannel, widthName, type DeviceNames } from '$lib/zones.js';
+	import {
+		NODE_CHANNELS,
+		channelName,
+		freshZoneName,
+		nodeMode,
+		nodeSidesAt,
+		sideName,
+		sidesAt,
+		sidesOf,
+		toggleChannel,
+		toggleNodeChannel,
+		widthName,
+		type DeviceNames
+	} from '$lib/zones.js';
 	import { isSubject, selectSubject, subject, subjectRows } from '$lib/objects.js';
 	import InspectorPanel from '$lib/components/inspector/InspectorPanel.svelte';
 	import Dialog from '$lib/components/Dialog.svelte';
@@ -118,6 +137,54 @@
 		if (!shared) return alias ? `${s.name} · ${alias}` : s.name;
 		return `${s.name} · ${alias || s.id.slice(0, 8)}`;
 	};
+
+	// ── Node loudspeakers: two columns each, after the stations ───────────────────
+
+	/**
+	 * Every adopted node with a loudspeaker, from the station driving them, and any node
+	 * a zone still names that is not found — drawn, for the reason a channel past the
+	 * card is: a routing nobody can see is one nobody can take back.
+	 */
+	const nodeBlocks = $derived.by(() => {
+		const found = audioNodes($deviceList, $drivingReport);
+		const named = [...new Set($zones.flatMap((z) => z.nodes.map((n) => n.serial)))].filter(
+			(serial) => !found.some((n) => n.serial === serial)
+		);
+		return [
+			...found.map((n) => ({ serial: n.serial, label: n.name, online: n.online, found: true })),
+			...named.map((serial) => ({ serial, label: serial, online: false, found: false }))
+		];
+	});
+	const nodeChannels = Array.from({ length: NODE_CHANNELS }, (_, i) => i + 1);
+	const nodeOutputName = (channel: number) => (channel === 1 ? 'L' : channel === 2 ? 'R' : String(channel));
+
+	function toggleNode(zoneId: string, serial: string, channel: number) {
+		const zone = $zones.find((z) => z.id === zoneId);
+		if (!zone) return;
+		const mode = nodeMode($zones, serial) ?? 'Stream';
+		void showData().speaker_zones.byId(zone.id).nodes.set(toggleNodeChannel(zone, serial, channel, mode));
+	}
+
+	/**
+	 * How a node is reached, in every zone it is in at once: it is a fact about the node
+	 * in this room, not about one zone. Storing is asked first — an upload is megabytes
+	 * written into the node's flash, and pauses its caches while it writes.
+	 */
+	let storing = $state<{ serial: string; label: string } | null>(null);
+	async function setNodeMode(serial: string, mode: NodeAudioMode) {
+		storing = null;
+		beginGesture();
+		try {
+			for (const zone of $zones) {
+				if (!zone.nodes.some((n) => n.serial === serial && n.mode !== mode)) continue;
+				await showData()
+					.speaker_zones.byId(zone.id)
+					.nodes.set(zone.nodes.map((n) => (n.serial === serial ? { ...n, mode } : n)));
+			}
+		} finally {
+			endGesture();
+		}
+	}
 
 	/**
 	 * Forgetting a station the show remembers asks first, and says what goes: every
@@ -346,6 +413,29 @@
 									{/if}
 								</th>
 							{/each}
+							{#each nodeBlocks as node (node.serial)}
+								{@const mode = nodeMode($zones, node.serial)}
+								<th class="station node" class:offline={!node.online} colspan={NODE_CHANNELS} title="An OpenHaunt node's loudspeaker">
+									<span class="kind">node</span>
+									{node.label}{node.found ? (node.online ? '' : ' · offline') : ' · not found'}
+									{#if mode !== null || $zones.some((z) => z.nodes.some((n) => n.serial === node.serial))}
+										<span class="how" role="group" aria-label="How {node.label} is reached">
+											<button
+												class:on={mode === 'Stream'}
+												disabled={!$canEdit}
+												title="Sent as it plays, a playout delay ahead. Needs the network for as long as it sounds."
+												onclick={() => void setNodeMode(node.serial, 'Stream')}>streamed</button
+											>
+											<button
+												class:on={mode === 'Clip'}
+												disabled={!$canEdit}
+												title="Uploaded to the node's flash ahead of time, and started there. Immune to the network once it is there."
+												onclick={() => mode !== 'Clip' && (storing = { serial: node.serial, label: node.label })}>stored</button
+											>
+										</span>
+									{/if}
+								</th>
+							{/each}
 						</tr>
 						<tr>
 							{#each blocks as block (block.id)}
@@ -357,6 +447,14 @@
 									>
 										<span class="number">{channel}</span>
 										{#if block.names?.channels?.[channel - 1]}<span class="cname">{block.names.channels[channel - 1]}</span>{/if}
+									</th>
+								{/each}
+							{/each}
+							{#each nodeBlocks as node (node.serial)}
+								{#each nodeChannels as channel (channel)}
+									<th class:first={channel === 1} title="{node.label}, {channel === 1 ? 'left' : 'right'}">
+										<span class="number">{channel}</span>
+										<span class="cname">{nodeOutputName(channel)}</span>
 									</th>
 								{/each}
 							{/each}
@@ -391,6 +489,23 @@
 										</td>
 									{/each}
 								{/each}
+								{#each nodeBlocks as node (node.serial)}
+									{#each nodeChannels as channel (channel)}
+										{@const carried = nodeSidesAt(zone, node.serial, channel)}
+										{@const said = carried.map((side) => sideName(zone.width, side)).join('+')}
+										<td class:first={channel === 1}>
+											<button
+												class="cell"
+												class:on={carried.length > 0}
+												disabled={!$canEdit}
+												aria-label="{zone.name} on {node.label} {channel === 1 ? 'left' : 'right'}"
+												aria-pressed={carried.length > 0}
+												title={said ? `${zone.name} ${said} on ${node.label} ${channel === 1 ? 'left' : 'right'}` : ''}
+												onclick={() => toggleNode(zone.id, node.serial, channel)}
+											>{zone.width > 1 ? said : ''}</button>
+										</td>
+									{/each}
+								{/each}
 							</tr>
 						{/each}
 					</tbody>
@@ -401,7 +516,9 @@
 				round left, right and off, so each side is set on its own. Any number of outputs can
 				carry the same side — a bed on all eight Dante channels is eight clicks. A zone a
 				station has not mapped is not played there, and says so on the timeline rather than
-				coming out of some other speaker.
+				coming out of some other speaker. A node is the two columns after the stations — its
+				left and right — and whether it is streamed or stored is set in its header, for every
+				zone it is in.
 			</p>
 		{/if}
 	</section>
@@ -412,6 +529,23 @@
 		<aside class="dock"><InspectorPanel /></aside>
 	{/if}
 </div>
+
+{#if storing}
+	{@const ask = storing}
+	<Dialog title="Store on {ask.label}?" onclose={() => (storing = null)} onaccept={() => void setNodeMode(ask.serial, 'Clip')}>
+		<div class="prompt">
+			<p>
+				Every clip that goes to a zone {ask.label} is in will be uploaded to it and kept in its
+				flash, so it plays there with no network.
+			</p>
+			<p class="note">An upload pauses the node's caches while it writes: do it before the show, not during a scare.</p>
+		</div>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (storing = null)}>Cancel</button>
+			<button class="btn btn-primary" onclick={() => void setNodeMode(ask.serial, 'Clip')}>Store</button>
+		{/snippet}
+	</Dialog>
+{/if}
 
 {#if forgetting}
 	{@const block = forgetting}
@@ -478,6 +612,33 @@
 	.prompt p {
 		margin: 0;
 		line-height: 1.5;
+	}
+	.station.node .kind {
+		color: var(--text-faint);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		font-weight: 500;
+		margin-right: 4px;
+	}
+	.how {
+		display: inline-flex;
+		margin-left: 6px;
+		gap: 2px;
+	}
+	.how button {
+		font: inherit;
+		font-weight: 500;
+		font-size: var(--font-xs);
+		background: none;
+		border: 1px solid var(--line-strong);
+		border-radius: 4px;
+		color: var(--text-dim);
+		cursor: pointer;
+		padding: 0 5px;
+	}
+	.how button.on {
+		border-color: var(--accent-solid);
+		color: var(--text);
 	}
 	.station.offline {
 		color: var(--text-dim);

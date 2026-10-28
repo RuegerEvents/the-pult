@@ -578,7 +578,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
         let speaks = area == 1 || area == 3;
         let nodes = if speaks {
             let this = node(&format!("Area {}", area + 1));
-            vec![ZoneNode { serial: this.serial.to_string(), mode: NodeAudioMode::Clip }]
+            vec![ZoneNode { serial: this.serial.to_string(), mode: NodeAudioMode::Clip, channels: Vec::new() }]
         } else {
             Vec::new()
         };

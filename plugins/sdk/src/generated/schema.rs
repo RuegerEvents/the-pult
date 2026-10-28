@@ -1650,6 +1650,13 @@ pub struct NodeAudioSummary {
     pub missing: u64,
     #[serde(default)]
     pub resyncs: u64,
+    /// Packets that never reached the node's receiving task, and the longest it went
+    /// without one — both only ever go up within a session, so they move only when
+    /// something went wrong.
+    #[serde(default)]
+    pub seq_lost: u64,
+    #[serde(default)]
+    pub rx_gap_max_ms: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1741,11 +1748,21 @@ pub struct NodeStreamHealth {
     pub skips: u64,
     /// Packets the operating system would not send.
     pub send_errors: u64,
-    /// The node's counts, since the session started.
+    /// The node's counts, since the session started. `missing` is in the node's
+    /// output frames — samples it had to play with nothing there — not packets.
     pub underruns: u64,
     pub late: u64,
     pub missing: u64,
     pub resyncs: u64,
+    /// The rate the node mixes at, which is what `missing` is counted in.
+    #[serde(default)]
+    pub node_rate: u32,
+    /// Packets that never reached the node's receiving task, since the session
+    /// started, and the longest it has gone without one (newer firmware only).
+    #[serde(default)]
+    pub seq_lost: u64,
+    #[serde(default)]
+    pub rx_gap_max_ms: u32,
     /// The latest thing that went wrong, in words, and when (show time).
     pub last_incident: Option<String>,
     pub last_incident_ms: Option<u64>,
@@ -3946,6 +3963,13 @@ pub struct ZoneNode {
     /// because it is a fact about how that node is reached in this room.
     #[serde(default)]
     pub mode: NodeAudioMode,
+    /// Which of the node's outputs each zone channel comes out of, counting from one:
+    /// a node is two channels in the routing matrix, the way a station's card is its
+    /// own count, so a stereo zone can be L on 1 and R on 2, or a mono zone only on the
+    /// node's left. Empty is a member from before there was a matrix, and is the whole
+    /// node — every zone channel on every output, which is what it meant.
+    #[serde(default)]
+    pub channels: Vec<Outputs>,
 }
 
 /// The map key for a parameter, in `home_values`, `sensed_values`, `live_fades` and

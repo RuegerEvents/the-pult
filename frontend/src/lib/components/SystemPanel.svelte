@@ -547,8 +547,12 @@
 						stream started. A dropout is one of three things and reads differently here:
 					</p>
 					<p>
-						<b>Missing</b> or <b>late</b> packets are the network losing or holding them —
-						usually wifi. <b>Behind</b> and <b>skips</b> are the sender on the station not keeping
+						<b>Missing</b> is sound the node had to play without its packet, in milliseconds; a
+						5 ms packet is 5 ms. <b>Never arrived</b> counts packets that did not reach the
+						node's receiver at all, and <b>longest wait</b> is the longest it went without one:
+						over 30 ms, its six-packet socket queue overflows and the node itself drops the next
+						ones. Never arrived with short waits is the network. <b>Late</b> packets came after
+						their time. <b>Behind</b> and <b>skips</b> are the sender on the station not keeping
 						up; <b>lowest lead</b> is the least time a packet had between leaving and being heard,
 						and near the delay is healthy. <b>Underruns</b> on their own are the node running dry
 						with everything arriving.
@@ -571,7 +575,9 @@
 				<thead>
 					<tr>
 						<th>Node</th><th>Path</th><th>Streaming</th>
-						<th title="Packets that never arrived, since the stream started">Missing</th>
+						<th title="Sound the node had to play with nothing in its buffer, since the stream started: each 5 ms is one packet">Missing</th>
+						<th title="Packets that never reached the node's receiver, by sequence number (newer firmware)">Never arrived</th>
+						<th title="The longest the node's receiver went without a packet. Over 30 ms its six-packet socket queue overflows.">Longest wait</th>
 						<th title="Packets that arrived after they should have been heard">Late</th>
 						<th title="The node's buffer ran dry">Underruns</th>
 						<th title="The node gave up on the stream's timing and started over">Resyncs</th>
@@ -602,15 +608,19 @@
 									{since(health.since_ms)}
 									{#if health.sessions > 1}<span class="tag" title="Each restart is a gap the length of the node's buffer">{health.sessions} sessions</span>{/if}
 								</td>
-								<td class="num" class:bad={health.missing > 0}>{health.missing}</td>
+								<td class="num" class:bad={health.missing > 0}>
+									{health.missing > 0 ? `${Math.ceil((health.missing * 1000) / (health.node_rate || 48000))} ms` : '0'}
+								</td>
+								<td class="num" class:bad={health.seq_lost > 0}>{health.seq_lost}</td>
+								<td class="num" class:bad={health.rx_gap_max_ms > 30}>{health.rx_gap_max_ms ? `${health.rx_gap_max_ms} ms` : '—'}</td>
 								<td class="num" class:bad={health.late > 0}>{health.late}</td>
 								<td class="num" class:bad={health.underruns > 0}>{health.underruns}</td>
 								<td class="num" class:bad={health.resyncs > 0}>{health.resyncs}</td>
 								<td class="num" class:bad={health.stalls + health.skips + health.send_errors > 0}>
-									{health.stalls}{#if health.skips}<span class="dim"> · {health.skips} skips</span>{/if}{#if health.send_errors}<span class="dim"> · {health.send_errors} not sent</span>{/if}
+									{health.stalls}{#if health.skips}<span class="dim">{` · ${health.skips} skips`}</span>{/if}{#if health.send_errors}<span class="dim">{` · ${health.send_errors} not sent`}</span>{/if}
 								</td>
 								<td class="num" class:bad={health.lowest_lead_ms !== null && health.lowest_lead_ms < health.delay_ms / 2}>
-									{health.lowest_lead_ms === null ? '—' : `${health.lowest_lead_ms} ms`}<span class="dim"> of {health.delay_ms}</span>
+									{health.lowest_lead_ms === null ? '—' : `${health.lowest_lead_ms} ms`}<span class="dim">{` of ${health.delay_ms} ms`}</span>
 								</td>
 								<td>
 									{#if health.last_incident && health.last_incident_ms}
@@ -620,7 +630,7 @@
 									{/if}
 								</td>
 							{:else}
-								<td class="dim" colspan="8">
+								<td class="dim" colspan="10">
 									no stream{#if node.summary && node.summary.underruns > 0} · {node.summary.underruns} underruns since it started{/if}
 								</td>
 							{/if}

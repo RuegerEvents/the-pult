@@ -1,17 +1,19 @@
 <script lang="ts">
 	/**
-	 * A speaker zone: how wide it is, which node loudspeakers are in it, and where it
-	 * comes out on every station of the session.
+	 * A speaker zone: how wide it is, how loud, and where it comes out — on every
+	 * station of the session and on every node loudspeaker in it.
 	 *
 	 * The mapping is the station's to make and is made in Setup → Audio, against that
 	 * station's own named channels; here it is *read*, for every station at once,
 	 * because "is Area 2 mapped on the spare" is the question a failover rehearsal
-	 * asks and the spare's own screen is not where anybody is standing.
+	 * asks and the spare's own screen is not where anybody is standing. A node's
+	 * loudspeaker is two more columns of the same matrix, so it is routed there too and
+	 * only read here.
 	 *
 	 * Edited in place: each field is one value and Ctrl-Z takes it back.
 	 */
 
-	import type { NodeAudioMode, SpeakerZone } from '$lib/generated/index.js';
+	import type { SpeakerZone } from '$lib/generated/index.js';
 	import { audioNodes } from '$lib/destination.js';
 	import { clearSubject } from '$lib/objects.js';
 	import { showData } from '$lib/stores/show.js';
@@ -19,7 +21,7 @@
 	import { openSetup } from '$lib/stores/setup.js';
 	import { audioOutput, devices, drivingReport, timelines } from '$lib/stores/timelines.js';
 	import { audioPrefs, loadAudioPrefs, namesFor, stationNames } from '$lib/stores/zones.js';
-	import { mappingText, widthName, zoneProblem } from '$lib/zones.js';
+	import { mappingText, nodeSidesOf, sideName, widthName, zoneProblem } from '$lib/zones.js';
 	import { getStationContext } from '$lib/ws/context.js';
 
 	let { rows }: { rows: SpeakerZone[] } = $props();
@@ -56,15 +58,14 @@
 		void zone(z.id).width.set(Math.max(1, Math.min(64, Math.round(width))));
 	}
 
-	function toggleNode(z: SpeakerZone, serial: string) {
-		const has = z.nodes.some((n) => n.serial === serial);
-		void zone(z.id).nodes.set(
-			has ? z.nodes.filter((n) => n.serial !== serial) : [...z.nodes, { serial, mode: 'Stream' as NodeAudioMode }]
-		);
-	}
-
-	function setMode(z: SpeakerZone, serial: string, mode: NodeAudioMode) {
-		void zone(z.id).nodes.set(z.nodes.map((n) => (n.serial === serial ? { ...n, mode } : n)));
+	/** Where a zone comes out of one node's two outputs, in words. */
+	function onNode(z: SpeakerZone, serial: string): string {
+		const output = (o: number) => (o === 1 ? 'left' : o === 2 ? 'right' : `output ${o}`);
+		const sides = nodeSidesOf(z, serial);
+		const said = (outputs: number[] | undefined) => (outputs?.length ? outputs.map(output).join(' and ') : 'nowhere');
+		const how = z.nodes.find((n) => n.serial === serial)?.mode === 'Clip' ? ', stored' : ', streamed';
+		if (z.width === 1) return said(sides[0]) + how;
+		return sides.map((o, i) => `${sideName(z.width, i)}: ${said(o)}`).join(' · ') + how;
 	}
 
 	/** One station's mapping, in that station's words where this is that station. */
@@ -135,31 +136,16 @@
 		<span></span>
 		<div><button class="btn btn-ghost" onclick={() => openSetup('audio')}>Map on this station…</button></div>
 
-		<span class="label">Node speakers</span>
-		<div class="nodes">
-			{#if nodes.length === 0}
-				<span class="note">No adopted node has a loudspeaker.</span>
-			{/if}
-			{#each nodes as node (node.serial)}
-				{@const member = z.nodes.find((n) => n.serial === node.serial)}
-				<label class="node">
-					<input type="checkbox" disabled={!$canEdit} checked={!!member} onchange={() => toggleNode(z, node.serial)} />
-					{node.name}<span class="note">{node.online ? node.outputs : 'offline'}</span>
-				</label>
-				{#if member}
-					<div class="segmented" role="group" aria-label="How the zone's sound reaches {node.name}">
-						<button class:on={member.mode === 'Clip'} disabled={!$canEdit} onclick={() => setMode(z, node.serial, 'Clip')}>Stored</button>
-						<button class:on={member.mode === 'Stream'} disabled={!$canEdit} onclick={() => setMode(z, node.serial, 'Stream')}>Streamed</button>
-					</div>
-				{:else}
-					<span></span>
-				{/if}
-			{/each}
-			{#each z.nodes.filter((n) => !nodes.some((a) => a.serial === n.serial)) as missing (missing.serial)}
-				<span class="says-bad">node {missing.serial} is not found</span>
-				<button class="btn btn-ghost" disabled={!$canEdit} onclick={() => toggleNode(z, missing.serial)}>Take out</button>
-			{/each}
-		</div>
+		{#if z.nodes.length}
+			<span class="label">Node speakers</span>
+			<div class="stations">
+				{#each z.nodes as member (member.serial)}
+					{@const node = nodes.find((n) => n.serial === member.serial)}
+					<span class="station" class:gone={!node?.online}>{node?.name ?? member.serial}{node ? (node.online ? '' : ' (offline)') : ' (not found)'}</span>
+					<span class="map">{onNode(z, member.serial)}</span>
+				{/each}
+			</div>
+		{/if}
 
 		<span class="label">Notes</span>
 		<input
@@ -187,12 +173,6 @@
 
 <style>
 	.stations,
-	.nodes {
-		display: grid;
-		grid-template-columns: max-content minmax(0, 1fr);
-		gap: 4px 10px;
-		align-items: center;
-	}
 	.station {
 		color: var(--text);
 	}
@@ -208,13 +188,5 @@
 	}
 	.map.says-bad {
 		color: var(--live);
-	}
-	.node {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-	.node .note {
-		margin-left: 4px;
 	}
 </style>

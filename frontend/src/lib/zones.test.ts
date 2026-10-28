@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SpeakerZone } from '$lib/generated/index.js';
-import { channelName, freshZoneName, mappingOn, needsMapping, sidesAt, sidesOf, toggleChannel, unmappedOn, widthName, zoneProblem } from './zones.js';
+import {
+	channelName,
+	freshZoneName,
+	mappingOn,
+	needsMapping,
+	nodeMode,
+	nodeSidesOf,
+	sidesAt,
+	sidesOf,
+	toggleChannel,
+	toggleNodeChannel,
+	unmappedOn,
+	widthName,
+	zoneProblem
+} from './zones.js';
 
 const BOOTH = 'booth-id';
 const SPARE = 'spare-id';
@@ -50,7 +64,7 @@ describe('speaker zones', () => {
 	});
 
 	it('does not ask a station to map a zone of node speakers alone', () => {
-		const z = zone({ nodes: [{ serial: 'a2', mode: 'Clip' }] });
+		const z = zone({ nodes: [{ serial: 'a2', mode: 'Clip', channels: [] }] });
 		expect(needsMapping(z)).toBe(false);
 		expect(unmappedOn(z, [{ id: BOOTH, name: 'booth' }])).toEqual([]);
 		expect(zoneProblem(z, BOOTH, 'booth')).toBeNull();
@@ -85,5 +99,39 @@ describe('speaker zones', () => {
 	it('finds a name nobody has', () => {
 		expect(freshZoneName([zone({ name: 'Zone 2' })])).toBe('Zone 3');
 		expect(freshZoneName([])).toBe('Zone 1');
+	});
+});
+
+describe('a node loudspeaker in the matrix', () => {
+	const zone = (over: Partial<SpeakerZone>): SpeakerZone => ({
+		id: 'z',
+		name: 'Area 2',
+		color: null,
+		width: 1,
+		channels: {},
+		nodes: [],
+		notes: '',
+		folder: null,
+		...over
+	});
+
+	it('reads a member from before the matrix as the whole node', () => {
+		expect(nodeSidesOf(zone({ nodes: [{ serial: 'n', mode: 'Stream', channels: [] }] }), 'n')).toEqual([[1, 2]]);
+		expect(nodeSidesOf(zone({ width: 2, nodes: [{ serial: 'n', mode: 'Stream', channels: [] }] }), 'n')).toEqual([[1], [2]]);
+	});
+
+	it('joins the zone on the first click, streamed, and leaves it when it carries nothing', () => {
+		let z = zone({});
+		z = { ...z, nodes: toggleNodeChannel(z, 'n', 1, 'Stream') };
+		expect(z.nodes).toEqual([{ serial: 'n', mode: 'Stream', channels: [[1]] }]);
+		z = { ...z, nodes: toggleNodeChannel(z, 'n', 1, 'Stream') };
+		expect(z.nodes).toEqual([]);
+	});
+
+	it('goes round a stereo zone side by side, and keeps how the node is reached', () => {
+		let z = zone({ width: 2, nodes: [{ serial: 'n', mode: 'Clip', channels: [[1], [2]] }] });
+		z = { ...z, nodes: toggleNodeChannel(z, 'n', 1, 'Stream') };
+		expect(z.nodes).toEqual([{ serial: 'n', mode: 'Clip', channels: [[], [1, 2]] }]);
+		expect(nodeMode([z], 'n')).toBe('Clip');
 	});
 });

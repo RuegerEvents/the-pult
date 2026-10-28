@@ -12,7 +12,7 @@
  * Channel and device names are the station's (`[audio.names]` in its preferences),
  * because which speaker channel 4 is depends on how that machine is wired.
  */
-import type { SpeakerZone } from '$lib/generated/index.js';
+import type { NodeAudioMode, SpeakerZone, ZoneNode } from '$lib/generated/index.js';
 
 /** "mono", "stereo", "4 channels" — the schema's own words. */
 export function widthName(width: number): string {
@@ -108,8 +108,17 @@ export function unmappedOn(zone: SpeakerZone, stations: { id: string; name: stri
  * of outputs can carry the same side: a bed on all eight Dante channels is eight clicks.
  */
 export function toggleChannel(zone: SpeakerZone, station: string, output: number): SpeakerZone['channels'] {
-	const width = Math.max(1, zone.width);
-	const sides = Array.from({ length: width }, (_, i) => [...(sidesOf(zone, station)[i] ?? [])]);
+	const sides = nextSides(zone.width, sidesOf(zone, station), output);
+	const map: SpeakerZone['channels'] = { ...zone.channels };
+	if (sides.every((outputs) => outputs.length === 0)) delete map[station];
+	else map[station] = sides;
+	return map;
+}
+
+/** The click rule itself, over one block's sides: off, then each side in turn, then off. */
+export function nextSides(zoneWidth: number, current: number[][], output: number): number[][] {
+	const width = Math.max(1, zoneWidth);
+	const sides = Array.from({ length: width }, (_, i) => [...(current[i] ?? [])]);
 	const carried = sides.findIndex((outputs) => outputs.includes(output));
 	for (const outputs of sides) {
 		const at = outputs.indexOf(output);
@@ -117,10 +126,52 @@ export function toggleChannel(zone: SpeakerZone, station: string, output: number
 	}
 	const next = carried < 0 ? 0 : carried + 1;
 	if (next < width) sides[next] = [...sides[next], output].sort((a, b) => a - b);
-	const map: SpeakerZone['channels'] = { ...zone.channels };
-	if (sides.every((outputs) => outputs.length === 0)) delete map[station];
-	else map[station] = sides;
-	return map;
+	return sides;
+}
+
+// ── Node loudspeakers in the matrix ──────────────────────────────────────────
+
+/** How many channels a node is in the matrix: `zone::NODE_CHANNELS`. */
+export const NODE_CHANNELS = 2;
+
+/**
+ * Where a node's two outputs carry a zone, one list per zone channel. A member from
+ * before the matrix names no channels and is the whole node — a mono zone on both
+ * outputs, a stereo one left on 1 and right on 2 — which is what the station plays for
+ * it (`node_sides` answering `None`), so that is what is drawn.
+ */
+export function nodeSidesOf(zone: SpeakerZone, serial: string): number[][] {
+	const member = zone.nodes.find((n) => n.serial === serial);
+	if (!member) return [];
+	const width = Math.max(1, zone.width);
+	const said = (member.channels ?? []) as number[][];
+	if (said.some((outputs) => outputs.length > 0)) return said.map((o) => [...o]);
+	if (width === 1) return [[1, 2]];
+	return Array.from({ length: width }, (_, i) => (i < NODE_CHANNELS ? [i + 1] : []));
+}
+
+/** Which of a zone's channels a node output carries, in side order. */
+export function nodeSidesAt(zone: SpeakerZone, serial: string, output: number): number[] {
+	return nodeSidesOf(zone, serial).flatMap((outputs, side) => (outputs.includes(output) ? [side] : []));
+}
+
+/**
+ * A click on a node's column: the zone's node list next. A node that ends up carrying
+ * nothing is taken out of the zone; one that was not in it joins, reached the way it is
+ * reached in every other zone (`mode`), streamed where it is in none.
+ */
+export function toggleNodeChannel(zone: SpeakerZone, serial: string, output: number, mode: NodeAudioMode): ZoneNode[] {
+	const sides = nextSides(zone.width, nodeSidesOf(zone, serial), output);
+	const others = zone.nodes.filter((n) => n.serial !== serial);
+	if (sides.every((outputs) => outputs.length === 0)) return others;
+	const member = zone.nodes.find((n) => n.serial === serial);
+	return [...others, { serial, mode: member?.mode ?? mode, channels: sides }];
+}
+
+/** How a node is reached in the zones it is in, or `null` where it is in none or they differ. */
+export function nodeMode(zones: SpeakerZone[], serial: string): NodeAudioMode | null {
+	const modes = new Set(zones.flatMap((z) => z.nodes.filter((n) => n.serial === serial).map((n) => n.mode)));
+	return modes.size === 1 ? [...modes][0] : null;
 }
 
 /** A new zone's name that no other zone has. */

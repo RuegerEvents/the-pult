@@ -432,10 +432,24 @@ impl Mixer {
 /// into it would be heard on every time round.
 pub fn bounce(source: &Source, placement: Placement, channels: usize, sample_rate: u32) -> Vec<f32> {
     let channels = channels.max(1);
-    let region = placement.region_ms(source.duration_ms());
-    let frames = (region * sample_rate as f64 / 1_000.0).round() as usize;
     let outputs: Vec<u16> = (1..=channels as u16).collect();
     let Ok(routes) = route(source.channels, &outputs, channels) else { return Vec::new() };
+    bounce_routed(source, placement, routes, channels, sample_rate)
+}
+
+/// The same, with the routing given: a zone's sides on a node's outputs, so a stereo
+/// zone mapped L on the node's 1 and R on its 2 is stored that way, and a mono zone
+/// mapped only to the node's left is silent on its right.
+pub fn bounce_routed(
+    source: &Source,
+    placement: Placement,
+    routes: Vec<Route>,
+    channels: usize,
+    sample_rate: u32,
+) -> Vec<f32> {
+    let channels = channels.max(1);
+    let region = placement.region_ms(source.duration_ms());
+    let frames = (region * sample_rate as f64 / 1_000.0).round() as usize;
     let repeated = placement.repeats > 1;
     let placement = Placement {
         start_ms: 0.0,

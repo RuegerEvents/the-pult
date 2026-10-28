@@ -270,16 +270,34 @@ fn say_audio_trouble(
 ) {
     // A node that restarted counts from zero again: nothing went up.
     let up = |was: u64, is: u64| is.saturating_sub(was);
+    // `missing` is the node's output frames, at the rate it mixes at: said in time.
+    let rate = device.audio.as_ref().map_or(48_000, |a| a.rate.max(8_000)) as u64;
+    let missing = up(before.missing, now.missing);
     let moved = [
-        (up(before.underruns, now.underruns), "underruns"),
-        (up(before.missing, now.missing), "missing packets"),
-        (up(before.late, now.late), "late packets"),
-        (up(before.resyncs, now.resyncs), "resyncs"),
+        (up(before.underruns, now.underruns), "underruns".to_string()),
+        (
+            missing,
+            format!("{} ms of sound missing ({missing} frames)", (missing * 1_000).div_ceil(rate)),
+        ),
+        (up(before.late, now.late), "late packets".to_string()),
+        (up(before.resyncs, now.resyncs), "resyncs".to_string()),
+        (up(before.seq_lost, now.seq_lost), "packets never reached the node's receiver".to_string()),
     ];
-    let said: Vec<String> = moved.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("+{n} {what}")).collect();
+    let said: Vec<String> = moved
+        .iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| if what.contains("ms of sound") { format!("+{what}") } else { format!("+{n} {what}") })
+        .collect();
     if said.is_empty() {
         return;
     }
+    // The longest the node's receiving task went without a packet in the last second:
+    // over 30 ms is its six-packet socket queue overflowing while it was not run.
+    let waited = status
+        .stream
+        .as_ref()
+        .filter(|s| s.packets > 0)
+        .map_or_else(String::new, |s| format!(", its receiver waited up to {} ms for a packet", s.rx_gap_ms));
     let paths = if device.net.is_empty() {
         device.ip.clone()
     } else {
@@ -291,7 +309,8 @@ fn say_audio_trouble(
         .filter(|s| s.active)
         .map_or_else(|| "no stream".to_string(), |s| format!("stream buffer {} ms", s.depth_ms));
     warn!(
-        "[audio] node {} ({}) on {paths}: {}; {depth}, {} voices (totals: {} underruns, {} missing, {} late, {} resyncs)",
+        "[audio] node {} ({}) on {paths}: {}; {depth}{waited}, {} voices (totals: {} underruns, {} frames missing, \
+         {} late, {} resyncs, {} never arrived)",
         device.name,
         device.serial,
         said.join(", "),
@@ -300,6 +319,7 @@ fn say_audio_trouble(
         now.missing,
         now.late,
         now.resyncs,
+        now.seq_lost,
     );
 }
 

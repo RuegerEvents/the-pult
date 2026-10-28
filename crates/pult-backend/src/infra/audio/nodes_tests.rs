@@ -210,8 +210,8 @@ fn a_zone_with_node_speakers_hands_its_clips_to_those_nodes() {
         width: 1,
         channels: Default::default(),
         nodes: vec![
-            ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Clip },
-            ZoneNode { serial: "a2b".into(), mode: NodeAudioMode::Stream },
+            ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Clip, channels: Vec::new() },
+            ZoneNode { serial: "a2b".into(), mode: NodeAudioMode::Stream, channels: Vec::new() },
         ],
         level_db: None,
         notes: String::new(),
@@ -237,7 +237,7 @@ fn a_zone_with_node_speakers_hands_its_clips_to_those_nodes() {
     ];
     let found: Vec<(u128, String, NodeAudioMode)> = node_clips(&timeline, std::slice::from_ref(&zone))
         .into_iter()
-        .map(|(c, serial, mode)| (c.id.as_u128(), serial, mode))
+        .map(|(c, serial, mode, _)| (c.id.as_u128(), serial, mode))
         .collect();
     assert_eq!(
         found,

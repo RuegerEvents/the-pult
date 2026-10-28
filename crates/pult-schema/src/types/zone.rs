@@ -42,7 +42,18 @@ pub struct ZoneNode {
     /// because it is a fact about how that node is reached in this room.
     #[serde(default)]
     pub mode: NodeAudioMode,
+    /// Which of the node's outputs each zone channel comes out of, counting from one:
+    /// a node is two channels in the routing matrix, the way a station's card is its
+    /// own count, so a stereo zone can be L on 1 and R on 2, or a mono zone only on the
+    /// node's left. Empty is a member from before there was a matrix, and is the whole
+    /// node — every zone channel on every output, which is what it meant.
+    #[serde(default)]
+    pub channels: Vec<Outputs>,
 }
+
+/// How many channels a node is in the routing matrix. What the node itself has is in
+/// its `/info`; a side routed past it is refused by name when the clip is mixed.
+pub const NODE_CHANNELS: u16 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, PultSchema)]
 #[ts(export)]
@@ -221,6 +232,20 @@ pub fn node_targets(destination: &AudioDestination, zones: &[SpeakerZone]) -> Ve
     }
 }
 
+/// Where one node's outputs carry a clip's zone: one list of node outputs per zone
+/// channel, or `None` for the whole node — a clip sent straight to the node, or a member
+/// from before the matrix.
+pub fn node_sides(destination: &AudioDestination, zones: &[SpeakerZone], serial: &str) -> Option<Vec<Vec<u16>>> {
+    let AudioDestination::Zone { zone } = destination else { return None };
+    let zone = zones.iter().find(|z| z.id == *zone)?;
+    let member = zone.nodes.iter().find(|n| n.serial == serial)?;
+    if member.channels.iter().all(|o| o.is_empty()) {
+        return None;
+    }
+    let width = zone.width.max(1) as usize;
+    Some((0..width).map(|i| member.channels.get(i).map(|o| o.0.clone()).unwrap_or_default()).collect())
+}
+
 /// What one station plays through, and what it calls the card and its channels: the
 /// `station_audio` collection, keyed by the station's `NodeId`.
 ///
@@ -327,6 +352,19 @@ mod tests {
         AudioDestination::Zone { zone: zone.id }
     }
 
+    /// A node routed in the matrix plays each side on the outputs it was put on; one
+    /// from before the matrix is the whole node.
+    #[test]
+    fn a_node_plays_a_zone_on_the_outputs_the_matrix_put_it_on() {
+        let mut zone = a_zone(2);
+        zone.nodes.push(ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Stream, channels: one_per_side(&[2, 1]) });
+        zone.nodes.push(ZoneNode { serial: "old".into(), mode: NodeAudioMode::Stream, channels: Vec::new() });
+        let zones = [zone.clone()];
+        assert_eq!(node_sides(&to(&zone), &zones, "a2"), Some(vec![vec![2], vec![1]]));
+        assert_eq!(node_sides(&to(&zone), &zones, "old"), None);
+        assert_eq!(node_sides(&to(&zone), &zones, "elsewhere"), None);
+    }
+
     /// The whole reason a zone exists: the same clip, two stations, two sound cards.
     #[test]
     fn each_station_plays_a_zone_on_its_own_channels() {
@@ -395,7 +433,7 @@ mod tests {
     #[test]
     fn a_zone_of_nodes_alone_is_not_the_stations_to_mix() {
         let mut zone = a_zone(1);
-        zone.nodes.push(ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Clip });
+        zone.nodes.push(ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Clip, channels: Vec::new() });
         let zones = [zone.clone()];
         assert_eq!(station_channels(&to(&zone), &zones, BOOTH, "booth"), None);
         assert_eq!(node_targets(&to(&zone), &zones), vec![("a2".to_string(), NodeAudioMode::Clip)]);
@@ -406,7 +444,7 @@ mod tests {
     fn a_zone_can_be_channels_and_a_node_at_once() {
         let mut zone = a_zone(1);
         zone.channels.insert(BOOTH, one_per_side(&[4]));
-        zone.nodes.push(ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Stream });
+        zone.nodes.push(ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Stream, channels: Vec::new() });
         let zones = [zone.clone()];
         assert_eq!(station_channels(&to(&zone), &zones, BOOTH, "booth"), Some(Ok(vec![vec![4]])));
         assert_eq!(node_targets(&to(&zone), &zones), vec![("a2".to_string(), NodeAudioMode::Stream)]);
@@ -423,7 +461,7 @@ mod tests {
     fn a_clip_is_silent_only_when_every_member_failed() {
         let mut zone = a_zone(1);
         zone.channels.insert(BOOTH, one_per_side(&[4]));
-        zone.nodes = vec![ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Clip }];
+        zone.nodes = vec![ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Clip, channels: Vec::new() }];
         let zones = vec![zone.clone()];
         let none = BTreeMap::new();
         let mut offline = BTreeMap::new();

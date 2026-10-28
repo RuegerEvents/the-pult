@@ -61,7 +61,7 @@ use pult_schema::{
             NodeStreamHealth,
         },
         timeline::{AtEnd, AudioClip, NodeAudioMode, Timeline},
-        zone::{destination_gain, node_targets, SpeakerZone},
+        zone::{destination_gain, node_sides, node_targets, SpeakerZone},
     },
 };
 use tokio::sync::{mpsc, watch};
@@ -233,18 +233,38 @@ pub async fn moved(directory: &mut Option<watch::Receiver<DeviceDirectory>>) {
 }
 
 /// Every clip on this timeline that a node plays, once per node: a clip sent to one
-/// node, and one sent to a zone with node loudspeakers in it.
+/// node, and one sent to a zone with node loudspeakers in it — with where the zone's
+/// channels come out of that node's outputs, or `None` for all of them.
 pub fn node_clips<'t>(
     timeline: &'t Timeline,
     zones: &[SpeakerZone],
-) -> Vec<(&'t AudioClip, String, NodeAudioMode)> {
+) -> Vec<(&'t AudioClip, String, NodeAudioMode, Option<Vec<Vec<u16>>>)> {
     timeline
         .clips
         .iter()
         .flat_map(|clip| {
-            node_targets(&clip.destination, zones).into_iter().map(move |(serial, mode)| (clip, serial, mode))
+            node_targets(&clip.destination, zones).into_iter().map(move |(serial, mode)| {
+                let sides = node_sides(&clip.destination, zones, &serial);
+                (clip, serial, mode, sides)
+            })
         })
         .collect()
+}
+
+/// The routes a clip's file takes onto a node's outputs: the zone's sides where the
+/// matrix says, and every output where it says nothing.
+pub fn node_routes(
+    file_channels: usize,
+    sides: Option<&[Vec<u16>]>,
+    node_channels: usize,
+) -> Result<Vec<pult_audio::mix::Route>, String> {
+    match sides {
+        Some(sides) => pult_audio::mix::route_sides(file_channels, sides, node_channels).map_err(|e| e.to_string()),
+        None => {
+            let outputs: Vec<u16> = (1..=node_channels as u16).collect();
+            pult_audio::mix::route(file_channels, &outputs, node_channels).map_err(|e| e.to_string())
+        }
+    }
 }
 
 /// A voice's name on the node: stable for one clip on one timeline, and inside the
@@ -380,7 +400,7 @@ impl AudioManager {
         let zones = self.zones.clone();
         let mut wanted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut faults: HashMap<Uuid, BTreeMap<String, BTreeMap<String, String>>> = HashMap::new();
-        let mut streamed: BTreeMap<String, Vec<(Timeline, AudioClip)>> = BTreeMap::new();
+        let mut streamed: BTreeMap<String, Vec<(Timeline, AudioClip, Option<Vec<Vec<u16>>>)>> = BTreeMap::new();
 
         // Every adopted node with a loudspeaker is in `wanted`, if only with nothing, so a
         // node whose last clip was taken off its timeline is emptied rather than ignored.
@@ -391,7 +411,7 @@ impl AudioManager {
         }
 
         for timeline in &timelines {
-            for (clip, serial, mode) in node_clips(timeline, &zones) {
+            for (clip, serial, mode, sides) in node_clips(timeline, &zones) {
                 let serial = serial.as_str();
                 let fault = |faults: &mut HashMap<Uuid, BTreeMap<String, BTreeMap<String, String>>>, why: String| {
                     faults
@@ -409,6 +429,17 @@ impl AudioManager {
                     fault(&mut faults, format!("node {serial} has no loudspeaker"));
                     continue;
                 };
+                // A side routed to an output the node has not got is said by name, never
+                // folded onto the one it has.
+                if let Some(past) = sides
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .find(|o| **o == 0 || **o > audio.channels())
+                {
+                    fault(&mut faults, format!("node {serial} has no output {past}: it has {}", audio.channels()));
+                    continue;
+                }
                 if mode == NodeAudioMode::Stream {
                     // Decoded now, as a station's own clips are the moment they are on a
                     // timeline, and not when Play is pressed: decoding a song took
@@ -417,10 +448,10 @@ impl AudioManager {
                     if let Err(e) = self.decoded(&clip.asset).await {
                         fault(&mut faults, e);
                     }
-                    streamed.entry(serial.to_string()).or_default().push((timeline.clone(), clip.clone()));
+                    streamed.entry(serial.to_string()).or_default().push((timeline.clone(), clip.clone(), sides));
                     continue;
                 }
-                match self.bounce_for(clip, &audio).await {
+                match self.bounce_for(clip, &audio, sides.as_deref()).await {
                     Ok(bounced) => {
                         self.nodes.made.insert((clip.id, serial.to_string()), bounced.clone());
                         let key = (serial.to_string(), bounced.sha.clone());
@@ -566,7 +597,12 @@ impl AudioManager {
     }
 
     /// A clip's region, made for this kind of node — or the one made already.
-    async fn bounce_for(&mut self, clip: &AudioClip, node: &NodeAudio) -> Result<Arc<Bounced>, String> {
+    async fn bounce_for(
+        &mut self,
+        clip: &AudioClip,
+        node: &NodeAudio,
+        sides: Option<&[Vec<u16>]>,
+    ) -> Result<Arc<Bounced>, String> {
         let decoded = self.decoded(&clip.asset).await?;
         let source = pult_audio::Source {
             samples: decoded.samples.clone(),
@@ -579,11 +615,24 @@ impl AudioManager {
             return Err("the clip is trimmed to nothing".into());
         }
         let (encoding, rate) = encoding_for(region, node);
-        let channels = (decoded.channels.max(1)).min(node.channels());
-        let key = serde_json::json!([
-            clip.asset, clip.offset_ms, clip.length_ms, clip.fade_in_ms, clip.fade_out_ms,
-            clip.times() > 1, rate, channels, encoding == Encoding::ImaAdpcm,
-        ])
+        // Routed by the matrix, the region is as wide as the node, so each side lands
+        // on the output it was put on; unrouted, it is as wide as the file, up to the
+        // node's own width, as it always was — the same bytes, so the same sha.
+        let channels = match sides {
+            Some(_) => node.channels(),
+            None => (decoded.channels.max(1)).min(node.channels()),
+        };
+        let routes = node_routes(decoded.channels as usize, sides, channels as usize)?;
+        let key = match sides {
+            None => serde_json::json!([
+                clip.asset, clip.offset_ms, clip.length_ms, clip.fade_in_ms, clip.fade_out_ms,
+                clip.times() > 1, rate, channels, encoding == Encoding::ImaAdpcm,
+            ]),
+            Some(sides) => serde_json::json!([
+                clip.asset, clip.offset_ms, clip.length_ms, clip.fade_in_ms, clip.fade_out_ms,
+                clip.times() > 1, rate, channels, encoding == Encoding::ImaAdpcm, sides,
+            ]),
+        }
         .to_string();
         if let Some(bounced) = self.nodes.bounced.get(&key) {
             return Ok(bounced.clone());
@@ -592,7 +641,7 @@ impl AudioManager {
         // milliseconds of arithmetic.
         let made = tokio::task::spawn_blocking(move || {
             let unity = pult_audio::Placement { gain: 1.0, ..placement };
-            let samples = pult_audio::mix::bounce(&source, unity, channels as usize, rate);
+            let samples = pult_audio::mix::bounce_routed(&source, unity, routes, channels as usize, rate);
             let bytes = pult_audio::wav::encode(&samples, channels, rate, encoding)
                 .map_err(|e| e.to_string())?;
             let frames = samples.len() / channels.max(1) as usize;
@@ -698,7 +747,7 @@ impl AudioManager {
         }
         let mut wanted: HashMap<(String, String), Sent> = HashMap::new();
         for timeline in &self.timelines {
-            for (clip, serial, mode) in node_clips(timeline, &self.zones) {
+            for (clip, serial, mode, _) in node_clips(timeline, &self.zones) {
                 let serial = serial.as_str();
                 if mode != NodeAudioMode::Clip || !self.nodes.reachable.get(serial).copied().unwrap_or(false) {
                     continue;
@@ -758,7 +807,7 @@ impl AudioManager {
             let looped = self
                 .timelines
                 .iter()
-                .flat_map(|t| node_clips(t, &self.zones).into_iter().map(move |(c, _, _)| (t.id, c)))
+                .flat_map(|t| node_clips(t, &self.zones).into_iter().map(move |(c, _, _, _)| (t.id, c)))
                 .find(|(t, c)| voice_name(*t, c.id) == key.1)
                 .is_some_and(|(_, c)| c.times() > 1);
             devices.audio(
@@ -787,14 +836,14 @@ impl AudioManager {
 
     async fn reconcile_streams(
         &mut self,
-        streamed: BTreeMap<String, Vec<(Timeline, AudioClip)>>,
+        streamed: BTreeMap<String, Vec<(Timeline, AudioClip, Option<Vec<Vec<u16>>>)>>,
         directory: &DeviceDirectory,
     ) {
         let mut keep = BTreeSet::new();
         for (serial, clips) in streamed {
             let Some(entry) = directory.entries.get(&serial) else { continue };
             let Some(audio) = entry.audio.clone() else { continue };
-            if !entry.on_broker || !clips.iter().any(|(t, _)| t.running) {
+            if !entry.on_broker || !clips.iter().any(|(t, _, _)| t.running) {
                 continue;
             }
             let port = audio.stream.as_ref().and_then(|s| s.port).unwrap_or(STREAM_PORT);
@@ -807,16 +856,16 @@ impl AudioManager {
 
             let mut decks = Vec::new();
             let mut built = Vec::new();
-            let mut by_timeline: BTreeMap<Uuid, (Timeline, Vec<AudioClip>)> = BTreeMap::new();
-            for (timeline, clip) in clips {
-                by_timeline.entry(timeline.id).or_insert_with(|| (timeline.clone(), Vec::new())).1.push(clip);
+            let mut by_timeline: BTreeMap<Uuid, (Timeline, Vec<(AudioClip, Option<Vec<Vec<u16>>>)>)> =
+                BTreeMap::new();
+            for (timeline, clip, sides) in clips {
+                by_timeline.entry(timeline.id).or_insert_with(|| (timeline.clone(), Vec::new())).1.push((clip, sides));
             }
-            for (timeline, clips) in by_timeline.into_values() {
+            for (timeline, routed) in by_timeline.into_values() {
                 let mut voices = Vec::new();
-                for clip in &clips {
+                for (clip, sides) in &routed {
                     let Ok(decoded) = self.decoded(&clip.asset).await else { continue };
-                    let outputs: Vec<u16> = (1..=channels as u16).collect();
-                    let Ok(routes) = pult_audio::mix::route(decoded.channels as usize, &outputs, channels) else {
+                    let Ok(routes) = node_routes(decoded.channels as usize, sides.as_deref(), channels) else {
                         continue;
                     };
                     voices.push(pult_audio::Voice {
@@ -833,10 +882,10 @@ impl AudioManager {
                     });
                 }
                 let levels: Vec<f32> =
-                    clips.iter().map(|c| destination_gain(&c.destination, &self.zones)).collect();
+                    routed.iter().map(|(c, _)| destination_gain(&c.destination, &self.zones)).collect();
                 built.push(serde_json::json!([
                     timeline.id, timeline.running, timeline.anchor_ms, timeline.position_at_anchor_ms,
-                    timeline.rate, timeline.end, clips, levels,
+                    timeline.rate, timeline.end, routed, levels,
                 ]));
                 decks.push(StreamDeck {
                     id: timeline.id.as_u128(),
@@ -1150,6 +1199,9 @@ impl Streamer {
             late: since(base.late, node.map(|n| n.late)),
             missing: since(base.missing, node.map(|n| n.missing)),
             resyncs: since(base.resyncs, node.map(|n| n.resyncs)),
+            node_rate: self.rate,
+            seq_lost: since(base.seq_lost, node.map(|n| n.seq_lost)),
+            rx_gap_max_ms: node.map_or(0, |n| n.rx_gap_max_ms),
             last_incident: what,
             last_incident_ms: at,
         }

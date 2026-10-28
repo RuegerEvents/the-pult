@@ -225,6 +225,27 @@ pub struct NodeStreamStatus {
     pub missing: u64,
     #[serde(default)]
     pub resyncs: u64,
+    /// What reached the node's receiving task, by RTP sequence number (firmware
+    /// from 2026-10-28 on; zero from anything older). `seq_lost` is packets that never
+    /// reached it — lost on the wire, or dropped by the node's own stack with its queue
+    /// full — where `missing` is frames the buffer did not have when they were played.
+    #[serde(default)]
+    pub packets: u64,
+    #[serde(default)]
+    pub seq_lost: u64,
+    #[serde(default)]
+    pub reordered: u64,
+    #[serde(default)]
+    pub duplicates: u64,
+    #[serde(default)]
+    pub foreign: u64,
+    /// The longest the node's receiving task went between two packets, since its last
+    /// status and since the session began. Past its socket queue (6 packets, 30 ms) is
+    /// a queue that overflowed while the task was not running.
+    #[serde(default)]
+    pub rx_gap_ms: u32,
+    #[serde(default)]
+    pub rx_gap_max_ms: u32,
 }
 
 /// What the station driving the nodes has made of each one's clip store: the LOCAL
@@ -274,6 +295,13 @@ pub struct NodeAudioSummary {
     pub missing: u64,
     #[serde(default)]
     pub resyncs: u64,
+    /// Packets that never reached the node's receiving task, and the longest it went
+    /// without one — both only ever go up within a session, so they move only when
+    /// something went wrong.
+    #[serde(default)]
+    pub seq_lost: u64,
+    #[serde(default)]
+    pub rx_gap_max_ms: u32,
 }
 
 impl NodeAudioSummary {
@@ -287,6 +315,8 @@ impl NodeAudioSummary {
             late: stream.map_or(0, |s| s.late),
             missing: stream.map_or(0, |s| s.missing),
             resyncs: stream.map_or(0, |s| s.resyncs),
+            seq_lost: stream.map_or(0, |s| s.seq_lost),
+            rx_gap_max_ms: stream.map_or(0, |s| s.rx_gap_max_ms),
         }
     }
 }
@@ -323,11 +353,21 @@ pub struct NodeStreamHealth {
     pub skips: u64,
     /// Packets the operating system would not send.
     pub send_errors: u64,
-    /// The node's counts, since the session started.
+    /// The node's counts, since the session started. `missing` is in the node's
+    /// output frames — samples it had to play with nothing there — not packets.
     pub underruns: u64,
     pub late: u64,
     pub missing: u64,
     pub resyncs: u64,
+    /// The rate the node mixes at, which is what `missing` is counted in.
+    #[serde(default)]
+    pub node_rate: u32,
+    /// Packets that never reached the node's receiving task, since the session
+    /// started, and the longest it has gone without one (newer firmware only).
+    #[serde(default)]
+    pub seq_lost: u64,
+    #[serde(default)]
+    pub rx_gap_max_ms: u32,
     /// The latest thing that went wrong, in words, and when (show time).
     pub last_incident: Option<String>,
     pub last_incident_ms: Option<u64>,
