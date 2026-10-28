@@ -259,6 +259,11 @@ pub struct AudioManager {
     names: (Option<std::time::SystemTime>, std::collections::BTreeMap<String, DeviceNames>),
     /// The `station_audio` row last written, so it is written only when it moves.
     station_said: Option<pult_schema::types::StationAudio>,
+    /// The card this station would open, while it has none open: what the preference
+    /// names, or the default, by its own name and channel count — looked up from the
+    /// machine's device list, which blocks, so only when the preference moved or a
+    /// minute after a lookup that found nothing.
+    card: Option<Card>,
     /// What this machine is called, for a fault that has to say which station has not
     /// mapped a zone — the status row of the one station the browser is on.
     station_name: String,
@@ -350,6 +355,7 @@ impl AudioManager {
                 monitors: Vec::new(),
                 names: (None, prefs.names.clone()),
                 station_said: None,
+                card: None,
             },
             AudioHandle(tx),
         )
@@ -1202,12 +1208,34 @@ impl AudioManager {
         if modified.is_some() && modified != self.names.0 {
             self.names = (modified, crate::infra::preferences::load().audio.names);
         }
-        let device = self.output.as_ref().map(|o| o.device_name.clone()).or_else(|| self.prefs.output.clone());
-        let named = device.as_ref().and_then(|d| self.names.1.get(d)).cloned().unwrap_or_default();
-        let channels = self
+        // A card that is closed is still this station's card: a station whose clips all
+        // play elsewhere said "no device, no channels" and drew as two channels in every
+        // matrix, the audio Mac's eight among them (HHG, 2026-10-28). So while nothing
+        // is open the row says what would be, and failing that what it said last.
+        if self.output.is_none() {
+            self.look_up_card().await;
+        }
+        let card = self.card.as_ref().and_then(|c| c.found.clone());
+        let device = self
             .output
             .as_ref()
-            .map_or(named.channels.len() as u16, |o| o.channels);
+            .map(|o| o.device_name.clone())
+            .or_else(|| card.as_ref().map(|(name, _)| name.clone()))
+            .or_else(|| self.prefs.output.clone());
+        let named = device.as_ref().and_then(|d| self.names.1.get(d)).cloned().unwrap_or_default();
+        let remembered = self
+            .station_said
+            .as_ref()
+            .filter(|said| said.device == device)
+            .map_or(0, |said| said.channels);
+        let channels = match &self.output {
+            Some(o) => o.channels,
+            None => card
+                .map(|(_, channels)| channels)
+                .unwrap_or(0)
+                .max(remembered)
+                .max(named.channels.len() as u16),
+        };
         let row = pult_schema::types::StationAudio {
             id: self.node_id.0,
             hostname: sysinfo::System::host_name().unwrap_or_else(|| "console".to_string()),
@@ -1235,6 +1263,42 @@ impl AudioManager {
             }
         }
         self.station_said = Some(row);
+    }
+}
+
+/// The card a station would open: what the preference asked for when it was looked up,
+/// and the device's own name and channel count if it was found.
+struct Card {
+    wanted: Option<String>,
+    found: Option<(String, u16)>,
+    at: std::time::Instant,
+}
+
+impl AudioManager {
+    /// Find the card the preference names (by name or id), or the default, in the
+    /// machine's device list — again only when the preference changed, or a minute
+    /// after a lookup that found nothing (an interface plugged in later).
+    async fn look_up_card(&mut self) {
+        let wanted = self.prefs.output.clone();
+        let fresh = self.card.as_ref().is_some_and(|c| {
+            c.wanted == wanted && (c.found.is_some() || c.at.elapsed() < std::time::Duration::from_secs(60))
+        });
+        if fresh {
+            return;
+        }
+        let asked = wanted.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            let devices = device::enumerate();
+            let pick = match &asked {
+                Some(named) => devices.outputs.iter().find(|d| &d.name == named || &d.id == named),
+                None => devices.outputs.iter().find(|d| d.is_default),
+            };
+            pick.map(|d| (d.name.clone(), d.channels))
+        })
+        .await
+        .ok()
+        .flatten();
+        self.card = Some(Card { wanted, found, at: std::time::Instant::now() });
     }
 }
 

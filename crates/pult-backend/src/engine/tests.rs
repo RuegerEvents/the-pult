@@ -5257,3 +5257,25 @@ fn what_is_running_is_laid_over_the_show_and_leaves_it_alone() {
     assert_eq!(ours["sequences"].as_object().unwrap().len(), 1, "a create arrives as an operation");
     assert_eq!(ours["programmer_values"]["k"]["value"], 1, "a SYNCED collection is theirs whole");
 }
+
+/// A row a peer hands back with what is running is in its collection, not only by id.
+///
+/// The running state replaces a SYNCED-only collection whole, and a collection is read
+/// through its order: a restarted leader got its own `stations` row back from the
+/// follower that still held it, could read it by id, and drew itself as offline
+/// because the collection did not list it (HHG, 2026-10-28).
+#[tokio::test]
+async fn a_row_handed_back_with_the_running_state_is_listed() {
+    use pult_schema::types::devices::NodeHealthReport;
+    let peer = harness().await;
+    let row = NodeHealthReport { id: Uuid::new_v4(), driving: true, nodes: Default::default() };
+    peer.engine.set(create_path("node_health"), Lifecycle::Synced, json(&row)).await.unwrap();
+    let running = peer.engine.get_snapshot().await;
+
+    let h = harness().await;
+    h.engine.apply_running_state(running).await;
+    let one = h.engine.get(entity_path("node_health", row.id)).await.unwrap();
+    assert_eq!(one["driving"], true);
+    let all = h.engine.get(key("node_health")).await.unwrap();
+    assert_eq!(all.as_array().map(Vec::len), Some(1), "listed, not only there by id");
+}

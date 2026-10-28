@@ -3889,6 +3889,12 @@ impl ShowEngine {
             return;
         };
         running_state_over(&mut self.state.entities, &theirs.entities);
+        // A row that came in this way is in the entities and not yet in its collection's
+        // order, and a collection is read through its order: the leader's own `stations`
+        // row, handed back by the follower that still held it, was there by id and
+        // missing from the list — so the leader drew itself as offline, and writing the
+        // row by id afterwards never put it in (HHG, 2026-10-28).
+        self.state.post_load_init();
         self.outputs_dirty = true;
         self.inputs_dirty = true;
         self.flows_dirty = true;
