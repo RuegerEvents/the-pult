@@ -81,6 +81,22 @@ export function wsUrlFrom(origin: string, path: string): string {
 }
 
 /**
+ * The station's socket URL and a path, as the http(s) URL of that path on the same
+ * station. The path may carry a query.
+ *
+ * Resolved as a URL rather than written into `pathname`, because a pathname is only a
+ * path: a `?` assigned to it is escaped into `%3F`, the station finds no route of that
+ * name, and the page server answers the request with the app's own HTML and a 200 —
+ * which reached the OctoBanger import as a SyntaxError and the filtered MVR export as a
+ * download of the page.
+ */
+export function httpUrlFrom(socket: string, path: string): string {
+	const base = new URL(socket);
+	base.protocol = base.protocol === 'wss:' ? 'https:' : 'http:';
+	return new URL(path, base).toString();
+}
+
+/**
  * Ask the station what it is. Nothing waits on this: it is the version in the
  * corner and the id in the overlay, not the socket, so a station that does not
  * answer costs a label rather than a console.

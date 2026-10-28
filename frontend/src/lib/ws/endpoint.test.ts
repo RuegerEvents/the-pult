@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { backendOrigin, fetchConfig, wsUrl, wsUrlFrom } from './endpoint.js';
+import { backendOrigin, fetchConfig, httpUrlFrom, wsUrl, wsUrlFrom } from './endpoint.js';
 
 const at = (origin: string, search = '') => ({ origin, search });
 
@@ -58,5 +58,21 @@ describe('asking the station', () => {
 		expect(
 			await fetchConfig('http://localhost:7700', async () => new Response('', { status: 502 }))
 		).toBeNull();
+	});
+});
+
+describe('a path on the station the socket is on', () => {
+	it('keeps a query a query', () => {
+		expect(httpUrlFrom('ws://10.0.0.9:7700/ws', '/api/export/mvr?layers=a,b')).toBe(
+			'http://10.0.0.9:7700/api/export/mvr?layers=a,b'
+		);
+		const mapping = encodeURIComponent(JSON.stringify({ controller: 'x/A.OBC' }));
+		expect(httpUrlFrom('ws://h:7700/ws', `/api/import/obc?mapping=${mapping}`)).toBe(
+			`http://h:7700/api/import/obc?mapping=${mapping}`
+		);
+	});
+
+	it('speaks https to a station behind wss', () => {
+		expect(httpUrlFrom('wss://console.example/ws', '/assets')).toBe('https://console.example/assets');
 	});
 });

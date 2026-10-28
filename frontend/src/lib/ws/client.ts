@@ -2,6 +2,7 @@ import type { ClientMessage, HistoryEntry, ServerMessage } from '$lib/generated/
 import type { JsonValue } from '$lib/generated/serde_json/JsonValue.js';
 import type { PathSegment } from '$lib/generated/index.js';
 import { ClockSync, forgetOffset } from './clock.js';
+import { httpUrlFrom } from './endpoint.js';
 import { uuid } from '$lib/uuid.js';
 
 /** Called with the new value and the exact path it was written to. */
@@ -73,10 +74,7 @@ export class PultWsClient {
 	 * already given here rather than worked out a second time.
 	 */
 	httpUrl(path: string): string {
-		const base = new URL(this.url);
-		base.protocol = base.protocol === 'wss:' ? 'https:' : 'http:';
-		base.pathname = path;
-		return base.toString();
+		return httpUrlFrom(this.url, path);
 	}
 
 	connect(): void {
