@@ -369,7 +369,6 @@
 
 <style>
 	.ask {
-		padding: 14px;
 		font-size: var(--font-sm);
 		line-height: 1.5;
 	}

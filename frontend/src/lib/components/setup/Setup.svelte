@@ -39,7 +39,7 @@
 	const Section = $derived(meta.component);
 </script>
 
-<Dialog title="Setup" size="full" onclose={closeSetup}>
+<Dialog title="Setup" size="full" bleed onclose={closeSetup}>
 	<div class="setup">
 		<nav>
 			{#each SECTIONS as id (id)}

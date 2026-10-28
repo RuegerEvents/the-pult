@@ -566,7 +566,6 @@
 
 	.ask {
 		margin: 0;
-		padding: 14px;
 		font-size: 0.85rem;
 		line-height: 1.5;
 	}

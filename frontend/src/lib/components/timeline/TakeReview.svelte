@@ -191,9 +191,6 @@
 	.chip:hover {
 		border-color: #f59e0b;
 	}
-	.review {
-		padding: 14px 16px;
-	}
 	table {
 		width: 100%;
 		border-collapse: collapse;

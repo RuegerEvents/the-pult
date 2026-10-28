@@ -20,6 +20,7 @@
 	let {
 		title,
 		size = 'small',
+		bleed = false,
 		onclose,
 		children,
 		actions,
@@ -30,6 +31,12 @@
 		title: string;
 		/** How much of the window it wants. `full` is the setup mode. */
 		size?: 'small' | 'wide' | 'large' | 'full';
+		/**
+		 * The content runs to the edges: panes with borders and backgrounds of their own,
+		 * like Store's two columns and Setup's navigation. Everything else is inset by the
+		 * dialog, the same distance as the header and the footer.
+		 */
+		bleed?: boolean;
 		onclose: () => void;
 		children: Snippet;
 		/**
@@ -86,7 +93,7 @@
 			{#if actions}{@render actions()}{/if}
 			<button class="icon" aria-label="Close" onclick={onclose}>✕</button>
 		</header>
-		<div class="body">
+		<div class="body" class:bleed>
 			{@render children()}
 		</div>
 		{#if footer}
@@ -160,12 +167,19 @@
 		color: var(--bad);
 	}
 
+	/* The inset is the dialog's and nobody else's. Each dialog used to pad its own
+	   content, with six different values between twenty-two of them, and a new one that
+	   forgot came out flush against the left edge. */
 	.body {
 		flex: 1;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
 		overflow: auto;
+		padding: 14px;
+	}
+	.body.bleed {
+		padding: 0;
 	}
 
 	footer {

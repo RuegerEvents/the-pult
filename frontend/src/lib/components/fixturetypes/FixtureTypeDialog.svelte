@@ -495,7 +495,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 14px;
-		padding: 14px 16px 16px;
 		min-height: 0;
 	}
 	.head .input {

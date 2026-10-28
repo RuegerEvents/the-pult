@@ -315,7 +315,7 @@
 	}
 </script>
 
-<Dialog title="Store" size="large" {onclose}>
+<Dialog title="Store" size="large" bleed {onclose}>
 	{#snippet footer()}
 		<button class="ghost" onclick={onclose}>Cancel</button>
 		<button class="primary" disabled={!canStore || storing} onclick={store}>

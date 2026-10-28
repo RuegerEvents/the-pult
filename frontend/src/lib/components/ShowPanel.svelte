@@ -540,7 +540,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-		padding: 16px;
 	}
 	.naming .input {
 		width: 100%;
@@ -555,7 +554,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
-		padding: 18px;
 		max-width: 44ch;
 	}
 	.ask h3 {

@@ -374,7 +374,6 @@
 		display: grid;
 		grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
 		gap: 16px;
-		padding: 14px;
 		min-height: 360px;
 	}
 	@media (max-width: 640px) {

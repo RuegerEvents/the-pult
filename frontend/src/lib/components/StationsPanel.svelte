@@ -446,7 +446,7 @@
 	.acts { text-align: right; white-space: nowrap; }
 	.acts .btn + .btn { margin-left: 4px; }
 	.btn-small { min-height: 24px; padding: 0 10px; font-size: 12px; }
-	.ask { margin: 0; padding: 14px; font-size: 0.85rem; line-height: 1.5; }
+	.ask { margin: 0; font-size: 0.85rem; line-height: 1.5; }
 	.ask p { margin: 0; }
 	.warn { color: #e08a55; font-size: 12px; margin-top: 10px; }
 </style>

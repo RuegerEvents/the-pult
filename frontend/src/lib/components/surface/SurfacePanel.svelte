@@ -499,7 +499,7 @@
 	.line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 	.check { display: flex; align-items: center; gap: 5px; color: #999; font-size: 12px; }
 	.stop { display: inline-flex; align-items: center; gap: 4px; }
-	.link { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 16px; }
+	.link { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
 	.link-text { display: flex; flex-direction: column; gap: 6px; min-width: 200px; flex: 1; font-size: 13px; color: #bbb; }
 	.url { font-size: 18px; font-weight: 600; color: #8ab4ff; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 	/* The phone's page and the one tile being edited, side by side when there is
@@ -523,5 +523,5 @@
 	.menu button:disabled { color: #555; cursor: default; }
 	.hint { color: #777; font-size: 12px; }
 	.empty { color: #777; font-size: 12px; line-height: 1.4; }
-	.ask { margin: 0; padding: 14px; font-size: 0.85rem; line-height: 1.5; }
+	.ask { margin: 0; font-size: 0.85rem; line-height: 1.5; }
 </style>

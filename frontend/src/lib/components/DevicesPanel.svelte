@@ -427,7 +427,6 @@
 
 <style>
 	.prompt {
-		padding: 14px 16px;
 		display: flex;
 		flex-direction: column;
 		gap: 8px;

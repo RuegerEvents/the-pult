@@ -121,9 +121,6 @@
 {/if}
 
 <style>
-	.pad {
-		padding: 14px 16px;
-	}
 	.choices {
 		display: flex;
 		flex-direction: column;

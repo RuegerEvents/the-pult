@@ -547,7 +547,6 @@
 		border-left: 2px solid var(--line-strong);
 	}
 	.prompt {
-		padding: 14px 16px;
 		display: flex;
 		flex-direction: column;
 		gap: 8px;

@@ -593,7 +593,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
-		padding: 14px;
 		font-size: var(--font-sm);
 	}
 	.ask p {

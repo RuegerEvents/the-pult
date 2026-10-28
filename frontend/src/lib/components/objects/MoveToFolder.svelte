@@ -90,7 +90,6 @@
 
 <style>
 	.move {
-		padding: 12px 14px;
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
