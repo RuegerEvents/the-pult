@@ -976,7 +976,13 @@ pub enum FlowNodeKind {
     And,
     Or,
     Not,
-    /// Holds a pulse back.
+    /// Holds a pulse back: a pulse on port 0 starts it counting — again from the top
+    /// if it already was — and a pulse on port 1 stops it, so nothing comes out.
+    ///
+    /// The reset is what makes it a timer rather than a wait: "off after a minute,
+    /// unless somebody walked in first" is a start, a reset from the PIR, and an off on
+    /// either. Without it the minute still came due after the scare had already ended,
+    /// in the middle of the next group's.
     Delay { ms: u32 },
     /// Lets a pulse through only while a level is true: a pulse in on port 0, the
     /// level on port 1.
@@ -3616,6 +3622,8 @@ pub struct Transform {
 pub enum TriggerAction {
     GoNext { sequence_id: Uuid },
     GoToCue { sequence_id: Uuid, cue_id: Uuid },
+    /// Take a sequence off: what it was driving goes home, as the Off key does.
+    Off { sequence_id: Uuid },
     SetParameter { fixture_id: Uuid, parameter: ParameterKind, value: ParameterValue },
     /// Change a show variable, resolved against what it holds when the change lands.
     SetVariable { variable_id: Uuid, op: VariableOp },

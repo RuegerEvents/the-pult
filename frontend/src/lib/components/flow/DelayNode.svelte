@@ -28,6 +28,9 @@
 	{#if node.active}
 		<span class="waiting">waiting…</span>
 	{/if}
+	<!-- The two inputs, top to bottom: start (again from the top if it is already
+	     counting), and reset, which stops it with nothing coming out. -->
+	<span class="ports">in: start, then reset</span>
 </NodeShell>
 
 <style>
@@ -35,4 +38,5 @@
 	.text-input { background: #171717; border: 1px solid #3a3a3a; border-radius: 3px; color: #e0e0e0; padding: 3px 5px; font: inherit; font-size: 12px; width: 100%; }
 	.unit { color: #777; font-size: 11px; }
 	.waiting { color: #fbbf24; font-size: 10px; }
+	.ports { display: block; color: #777; font-size: 10px; }
 </style>

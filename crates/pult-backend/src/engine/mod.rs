@@ -1895,6 +1895,10 @@ impl ShowEngine {
                 let path = entity_field_path("sequences", sequence_id, "goToCue");
                 self.run_synced_command(path, serde_json::json!({ "cueId": cue_id })).await;
             }
+            TriggerAction::Off { sequence_id } => {
+                let path = entity_field_path("sequences", sequence_id, "off");
+                self.run_synced_command(path, serde_json::json!({})).await;
+            }
             TriggerAction::SetVariable { variable_id, op } => {
                 if let Err(e) = self.set_variable(variable_id, op).await {
                     warn!("[flows] could not set variable {variable_id}: {e}");

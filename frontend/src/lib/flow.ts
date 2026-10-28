@@ -63,6 +63,9 @@ export function inputPorts(kind: FlowNodeKind): PortKind[] {
 		// The pulse to let through, and the level that decides whether it goes.
 		case 'Gate':
 			return ['Pulse', 'Level'];
+		// Start, and reset: a pulse on the second stops it counting.
+		case 'Delay':
+			return ['Pulse', 'Pulse'];
 		default:
 			return ['Pulse'];
 	}

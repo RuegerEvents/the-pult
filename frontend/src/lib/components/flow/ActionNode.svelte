@@ -56,7 +56,9 @@
 			? action.GoNext.sequence_id
 			: action && 'GoToCue' in action
 				? action.GoToCue.sequence_id
-				: (show.sequences[0]?.id ?? '')
+				: action && 'Off' in action
+					? action.Off.sequence_id
+					: (show.sequences[0]?.id ?? '')
 	);
 	const cuesOf = (id: string) => {
 		const sequence = show.sequences.find((s) => s.id === id);
@@ -88,15 +90,17 @@
 
 	/// Switching what an action does needs a whole new value, not a field edit —
 	/// the shapes share no keys.
-	function retarget(nextTag: string) {
+	function retarget(nextTag: string, sequence = sequenceId) {
 		switch (nextTag) {
 			case 'GoNext':
-				return set({ GoNext: { sequence_id: sequenceId } });
+				return set({ GoNext: { sequence_id: sequence } });
 			case 'GoToCue': {
-				const cue = cuesOf(sequenceId)[0];
+				const cue = cuesOf(sequence)[0];
 				if (!cue) return;
-				return set({ GoToCue: { sequence_id: sequenceId, cue_id: cue.id } });
+				return set({ GoToCue: { sequence_id: sequence, cue_id: cue.id } });
 			}
+			case 'Off':
+				return set({ Off: { sequence_id: sequence } });
 			case 'SetVariable': {
 				const variable = show.variables[0];
 				if (!variable) return;
@@ -124,21 +128,15 @@
 	<select class="text-input nodrag" value={tag} onchange={(e) => retarget(e.currentTarget.value)}>
 		<option value="GoNext" disabled={show.sequences.length === 0}>go to the next cue</option>
 		<option value="GoToCue" disabled={show.sequences.length === 0}>go to a cue</option>
+		<option value="Off" disabled={show.sequences.length === 0}>take a sequence off</option>
 		<option value="SetParameter">set a parameter</option>
 		<option value="SetVariable" disabled={show.variables.length === 0}>change a variable</option>
 		<option value="PlayTimeline" disabled={show.timelines.length === 0}>play a timeline</option>
 		<option value="StopTimeline" disabled={show.timelines.length === 0}>stop a timeline</option>
 	</select>
 
-	{#if action && ('GoNext' in action || 'GoToCue' in action)}
-		<select
-			class="text-input nodrag"
-			value={sequenceId}
-			onchange={(e) =>
-				'GoToCue' in action
-					? retarget('GoToCue')
-					: set({ GoNext: { sequence_id: e.currentTarget.value } })}
-		>
+	{#if action && ('GoNext' in action || 'GoToCue' in action || 'Off' in action)}
+		<select class="text-input nodrag" value={sequenceId} onchange={(e) => retarget(tag, e.currentTarget.value)}>
 			<FolderedOptions rows={show.sequences} />
 		</select>
 	{/if}

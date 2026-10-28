@@ -90,6 +90,7 @@ describe('ports', () => {
 	it('lets a gate take a pulse and the level that decides it', () => {
 		// Mirrors `FlowNodeKind::Gate`: the pulse on port 0, the level on port 1.
 		expect(inputPorts('Gate')).toEqual(['Pulse', 'Level']);
+		expect(inputPorts({ Delay: { ms: 1 } })).toEqual(['Pulse', 'Pulse']);
 		expect(outputPorts('Gate')).toEqual(['Pulse']);
 	});
 });

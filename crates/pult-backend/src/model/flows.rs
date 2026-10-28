@@ -545,15 +545,30 @@ impl Flows {
         effects: &mut Vec<FlowEffect>,
     ) {
         let mut seen = HashSet::from([from]);
+        // A delay is seen per port: a start and a reset are two different things to
+        // arrive at it on one pass, and the first must not hide the second.
+        let mut seen_ports: HashSet<(Uuid, u8)> = HashSet::new();
         let mut queue = vec![from];
 
         while let Some(node_id) = queue.pop() {
             for edge in graph.downstream(node_id, 0) {
                 let Some(target) = graph.node(edge.to_node) else { continue };
-                if !graph.live(target) || !seen.insert(target.id) {
+                if !graph.live(target) {
+                    continue;
+                }
+                let first = match target.kind {
+                    FlowNodeKind::Delay { .. } => seen_ports.insert((target.id, edge.to_port)),
+                    _ => seen.insert(target.id),
+                };
+                if !first {
                     continue;
                 }
                 match &target.kind {
+                    // Reset: whatever it was counting towards does not happen.
+                    FlowNodeKind::Delay { .. } if edge.to_port == 1 => {
+                        lit.insert(target.id);
+                        self.pending.retain(|(id, _)| *id != target.id);
+                    }
                     FlowNodeKind::Delay { ms } => {
                         lit.insert(target.id);
                         if *ms == 0 {
