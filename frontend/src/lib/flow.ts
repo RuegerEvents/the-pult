@@ -134,8 +134,27 @@ export function variableLabel(variable: {
 	return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
-/** What a `SetVariable` op says, in words. */
-export function variableOpLabel(op: VariableOp): string {
+/**
+ * What a flag can be told: on, off, or the other way. A flag is a number underneath,
+ * but "set to 1" is the storage showing through, and add, subtract and reset say
+ * nothing a flag needs.
+ */
+export type FlagOp = 'On' | 'Off' | 'Toggle';
+
+/** The flag op an op is, where it is one; anything else reads as on. */
+export function flagOpOf(op: VariableOp): FlagOp {
+	if (op === 'Toggle') return 'Toggle';
+	if (op !== 'Reset' && 'Set' in op) return op.Set === 0 ? 'Off' : 'On';
+	return 'On';
+}
+
+export function flagOpFrom(tag: FlagOp): VariableOp {
+	return tag === 'Toggle' ? 'Toggle' : { Set: tag === 'On' ? 1 : 0 };
+}
+
+/** What a `SetVariable` op says, in words — for a flag, on and off. */
+export function variableOpLabel(op: VariableOp, kind: 'Flag' | 'Number' = 'Number'): string {
+	if (kind === 'Flag') return { On: 'turn on', Off: 'turn off', Toggle: 'toggle' }[flagOpOf(op)];
 	if (op === 'Toggle') return 'toggle';
 	if (op === 'Reset') return 'reset';
 	if ('Set' in op) return `set to ${op.Set}`;

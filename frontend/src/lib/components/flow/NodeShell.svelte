@@ -4,6 +4,7 @@
 	import type { FlowNode } from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { inputPorts, nodeCategory, outputPorts } from '$lib/flow.js';
+	import { uuid } from '$lib/uuid.js';
 
 	let {
 		node,
@@ -41,6 +42,19 @@
 	const ins = $derived(inputPorts(node.kind));
 	const outs = $derived(outputPorts(node.kind));
 	const category = $derived(nodeCategory(node.kind));
+
+	/** A copy of this node with its settings and none of its wires, just below it. */
+	function duplicate() {
+		void data.flow_nodes.create({
+			...node,
+			id: uuid(),
+			x: node.x + 24,
+			y: node.y + 90,
+			active: false,
+			last_fired_at: null,
+			pulsed_at: null
+		});
+	}
 </script>
 
 <div class="node {category}" class:lit={node.active} class:flash={flashing} onanimationend={() => (flashing = false)}>
@@ -57,6 +71,9 @@
 	<header>
 		<span class="title">{title}</span>
 		{#if live}<span class="live" class:on={live.on}>{live.text}</span>{/if}
+		<button class="remove" title="Duplicate node: the same settings, unconnected, just below" onclick={duplicate}
+			>⧉</button
+		>
 		<button
 			class="remove"
 			title="Delete node"

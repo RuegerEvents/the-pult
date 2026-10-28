@@ -9,7 +9,16 @@
 	} from '$lib/generated/index.js';
 	import { getDataContext } from '$lib/ws/context.js';
 	import { defaultValueFor, parameterKindLabel } from '$lib/patch.js';
-	import { actionOf, currentValue, variableLabel, variableOpFrom, variableOpParts } from '$lib/flow.js';
+	import {
+		actionOf,
+		currentValue,
+		flagOpFrom,
+		flagOpOf,
+		variableLabel,
+		variableOpFrom,
+		variableOpParts,
+		type FlagOp
+	} from '$lib/flow.js';
 	import HomeValue from '$lib/components/HomeValue.svelte';
 	import { getFlowContext } from './context.js';
 	import NodeShell from './NodeShell.svelte';
@@ -188,47 +197,66 @@
 	{#if action && 'SetVariable' in action}
 		{@const target = action.SetVariable}
 		{@const parts = variableOpParts(target.op)}
+		{@const isFlag = show.variables.find((v) => v.id === target.variable_id)?.kind === 'Flag'}
 		<select
 			class="text-input nodrag"
 			value={target.variable_id}
-			onchange={(e) =>
-				set({ SetVariable: { ...target, variable_id: e.currentTarget.value } })}
+			onchange={(e) => {
+				const next = show.variables.find((v) => v.id === e.currentTarget.value);
+				// A flag is told on, off or toggle; "add 1" carried over from a number
+				// would be a choice the flag's own menu cannot show.
+				const op = next?.kind === 'Flag' ? flagOpFrom(flagOpOf(target.op)) : target.op;
+				set({ SetVariable: { variable_id: e.currentTarget.value, op } });
+			}}
 		>
 			{#each show.variables as v (v.id)}
 				<option value={v.id}>{v.name}</option>
 			{/each}
 		</select>
-		<div class="row">
+		{#if isFlag}
 			<select
 				class="text-input nodrag"
-				value={parts.tag}
+				value={flagOpOf(target.op)}
 				onchange={(e) =>
-					set({
-						SetVariable: { ...target, op: variableOpFrom(e.currentTarget.value, parts.amount) }
-					})}
+					set({ SetVariable: { ...target, op: flagOpFrom(e.currentTarget.value as FlagOp) } })}
 			>
-				<option value="Add">add</option>
-				<option value="Subtract">subtract</option>
-				<option value="Set">set to</option>
+				<option value="On">turn on</option>
+				<option value="Off">turn off</option>
 				<option value="Toggle">toggle</option>
-				<option value="Reset">reset</option>
 			</select>
-			{#if parts.tag === 'Add' || parts.tag === 'Subtract' || parts.tag === 'Set'}
-				<input
-					class="text-input nodrag amount"
-					type="number"
-					step="1"
-					value={parts.amount}
+		{:else}
+			<div class="row">
+				<select
+					class="text-input nodrag"
+					value={parts.tag}
 					onchange={(e) =>
 						set({
-							SetVariable: {
-								...target,
-								op: variableOpFrom(parts.tag, e.currentTarget.valueAsNumber || 0)
-							}
+							SetVariable: { ...target, op: variableOpFrom(e.currentTarget.value, parts.amount) }
 						})}
-				/>
-			{/if}
-		</div>
+				>
+					<option value="Add">add</option>
+					<option value="Subtract">subtract</option>
+					<option value="Set">set to</option>
+					<option value="Toggle">toggle</option>
+					<option value="Reset">reset</option>
+				</select>
+				{#if parts.tag === 'Add' || parts.tag === 'Subtract' || parts.tag === 'Set'}
+					<input
+						class="text-input nodrag amount"
+						type="number"
+						step="1"
+						value={parts.amount}
+						onchange={(e) =>
+							set({
+								SetVariable: {
+									...target,
+									op: variableOpFrom(parts.tag, e.currentTarget.valueAsNumber || 0)
+								}
+							})}
+					/>
+				{/if}
+			</div>
+		{/if}
 	{/if}
 
 	{#if action && ('PlayTimeline' in action || 'StopTimeline' in action)}
