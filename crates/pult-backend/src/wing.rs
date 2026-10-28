@@ -68,10 +68,17 @@ impl WingHandle {
     }
 
     /// Change the frame the USB thread keeps putting on the wire. A fader somebody's
-    /// hand is on stays released, whatever `f` asked for it.
+    /// hand is on stays released, whatever `f` asked for it — and so is every fader on
+    /// a station started with `PULT_WING_MOTORS=off`.
     pub fn drive(&self, f: impl FnOnce(&mut OutputState)) {
         let mut out = self.out.lock().unwrap();
         f(&mut out);
+        if !motors_on() {
+            for index in 0..out.faders.len() {
+                out.release_fader(index);
+            }
+            return;
+        }
         for index in self.hands.lock().unwrap().iter() {
             out.release_fader(*index);
         }
@@ -270,6 +277,17 @@ fn phase_of(state: &str, detail: &str) -> WingPhase {
         "lost" if detail.starts_with("no grandMA3 command wing") => WingPhase::Absent,
         _ => WingPhase::Fault { reason: detail.to_string() },
     }
+}
+
+/// Whether the motor faders are driven at all. `PULT_WING_MOTORS=off` lets every one
+/// go, so the faders only ever report what a hand does: at Heinz Horror Garten
+/// (2026-10-28) the motors fought the operator, and the faders are worth more as
+/// plain inputs than as a picture of the show. Read once per process.
+fn motors_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(std::env::var("PULT_WING_MOTORS").as_deref().map(str::trim), Ok("off" | "0" | "false" | "no"))
+    })
 }
 
 #[cfg(test)]
