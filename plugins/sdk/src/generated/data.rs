@@ -4675,6 +4675,17 @@ impl SpeakerZoneEntity {
         self.at.field("nodes")
     }
 
+    /// The zone's own level in dB, over every clip that goes to it: a room whose
+    /// speakers are too loud for every scare in it is turned down here, once, rather
+    /// than in each clip. `None` is 0 dB — and is an `Option` so that a show from
+    /// before there was a level opens with the column empty. On a node it cannot go
+    /// above 0 dB, as a clip's own level cannot.
+    ///
+    /// PERSISTED.
+    pub fn level_db(&self) -> Field<Option<f32>> {
+        self.at.field("level_db")
+    }
+
     /// PERSISTED.
     pub fn notes(&self) -> Field<String> {
         self.at.field("notes")

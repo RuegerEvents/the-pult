@@ -213,6 +213,7 @@ fn a_zone_with_node_speakers_hands_its_clips_to_those_nodes() {
             ZoneNode { serial: "a2".into(), mode: NodeAudioMode::Clip },
             ZoneNode { serial: "a2b".into(), mode: NodeAudioMode::Stream },
         ],
+        level_db: None,
         notes: String::new(),
     };
     let clip = |id: u128, destination: AudioDestination| AudioClip {
@@ -273,6 +274,7 @@ fn a_streamed_node(ip: &str, port: u16, rate: u32) -> DeviceDirectory {
         audio_summary: None,
         starts: 0,
         addresses: Vec::new(),
+        transports: BTreeMap::new(),
         redundant_stream: false,
     };
     DeviceDirectory { entries: BTreeMap::from([("n1".to_string(), entry)]) }

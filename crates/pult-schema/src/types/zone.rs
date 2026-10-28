@@ -75,6 +75,15 @@ pub struct SpeakerZone {
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub nodes: Vec<ZoneNode>,
+    /// The zone's own level in dB, over every clip that goes to it: a room whose
+    /// speakers are too loud for every scare in it is turned down here, once, rather
+    /// than in each clip. `None` is 0 dB — and is an `Option` so that a show from
+    /// before there was a level opens with the column empty. On a node it cannot go
+    /// above 0 dB, as a clip's own level cannot.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub level_db: Option<f32>,
     #[serde(default)]
     #[pult(lifecycle = PERSISTED)]
     pub notes: String,
@@ -93,6 +102,11 @@ impl SpeakerZone {
             2 => "stereo".into(),
             n => format!("{n} channels"),
         }
+    }
+
+    /// The zone's level as the mixer wants it: 1.0 at 0 dB.
+    pub fn gain(&self) -> f32 {
+        10f32.powf(self.level_db.unwrap_or(0.0) / 20.0)
     }
 
     /// Does any station mix this zone, or is it only node loudspeakers?
@@ -184,6 +198,15 @@ pub fn station_channels(
         )));
     }
     Some(Ok(sides[..zone.width as usize].iter().map(|o| o.0.clone()).collect()))
+}
+
+/// The level a clip's destination puts over it: its zone's, or unity for a clip sent
+/// straight to a node and for a zone that has been deleted.
+pub fn destination_gain(destination: &AudioDestination, zones: &[SpeakerZone]) -> f32 {
+    match destination {
+        AudioDestination::Zone { zone } => zones.iter().find(|z| z.id == *zone).map_or(1.0, SpeakerZone::gain),
+        AudioDestination::Node { .. } => 1.0,
+    }
 }
 
 /// The node loudspeakers a clip's destination reaches, with how each is reached.
@@ -295,6 +318,7 @@ mod tests {
             width,
             channels: BTreeMap::new(),
             nodes: Vec::new(),
+            level_db: None,
             notes: String::new(),
         }
     }

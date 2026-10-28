@@ -97,7 +97,7 @@ use crate::{engine::EngineHandle, infra::assets::AssetStore};
 use decode::AudioCache;
 use device::{AudioDevices, Listener, Output, MAX_DECKS};
 use pult_schema::types::timeline::{AtEnd, AudioClip, AudioOutput};
-use pult_schema::types::zone::{station_channels, SpeakerZone};
+use pult_schema::types::zone::{destination_gain, station_channels, SpeakerZone};
 
 /// How far the sound may be from the show's anchor before the anchor is rewritten.
 ///
@@ -602,7 +602,9 @@ impl AudioManager {
 
         // The channels each clip resolved to are in it, so re-mapping a zone while it
         // sounds rebuilds the deck rather than leaving it on the channels it had.
-        let built = serde_json::to_string(&(&timeline.clips, &timeline.end, voices.len(), &routed))
+        // And each clip's zone level, so turning a zone down while it sounds is heard.
+        let levels: Vec<f32> = timeline.clips.iter().map(|c| destination_gain(&c.destination, &self.zones)).collect();
+        let built = serde_json::to_string(&(&timeline.clips, &timeline.end, voices.len(), &routed, &levels))
             .unwrap_or_default();
         let held = self.playing.get(&timeline.id);
         if held.is_some_and(|p| p.built == built) {
@@ -685,7 +687,10 @@ impl AudioManager {
                 channels: decoded.channels as usize,
                 sample_rate: decoded.sample_rate,
             },
-            placement: placement(clip),
+            placement: pult_audio::Placement {
+                gain: placement(clip).gain * destination_gain(&clip.destination, &self.zones),
+                ..placement(clip)
+            },
             routes,
         }))
     }

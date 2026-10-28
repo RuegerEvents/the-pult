@@ -40,6 +40,7 @@
 	import type { ClientStats, FrameCost, PeerLink, Station } from '$lib/generated/index.js';
 	import { SLOW_FPS, STALL_MS, fpsOf, struggling, thisBrowser } from '$lib/stats.js';
 	import { TRACE_LENGTH, Traces, sparkline } from '$lib/trace.js';
+	import { drivingReport } from '$lib/stores/timelines.js';
 
 	const client = getClientContext();
 	const data = getDataContext();
@@ -56,6 +57,23 @@
 
 	const isSelf = (station: Station) => station.id === thisStation;
 	const stale = (atMs: number) => (now - atMs) / 1000 > REPORT_INTERVAL_S * 3;
+
+	/**
+	 * The nodes with a loudspeaker, from the station driving them — the only one that
+	 * streams to them and hears their `audio/status` — so every console reads the same.
+	 */
+	const speakerNodes = $derived(
+		Object.entries($drivingReport?.nodes ?? {})
+			.flatMap(([serial, n]) => (n ? [{ serial, ...n }] : []))
+			.sort((a, b) => a.name.localeCompare(b.name))
+	);
+	/** How long ago a show-clock moment was, said the way a log line is. */
+	function since(atMs: number): string {
+		const seconds = Math.max(0, Math.round((now - atMs) / 1000));
+		if (seconds < 60) return `${seconds}s ago`;
+		if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+		return `${(seconds / 3600).toFixed(1)}h ago`;
+	}
 
 	function ago(atMs: number): string {
 		const seconds = Math.max(0, Math.round((now - atMs) / 1000));
@@ -517,6 +535,100 @@
 		{/if}
 
 
+	</section>
+
+	<section class="block">
+		<header class="block-head">
+			<h2>
+				Node audio
+				<Help label="About the node audio figures">
+					<p>
+						What the station driving the nodes knows about each loudspeaker's stream, since that
+						stream started. A dropout is one of three things and reads differently here:
+					</p>
+					<p>
+						<b>Missing</b> or <b>late</b> packets are the network losing or holding them —
+						usually wifi. <b>Behind</b> and <b>skips</b> are the sender on the station not keeping
+						up; <b>lowest lead</b> is the least time a packet had between leaving and being heard,
+						and near the delay is healthy. <b>Underruns</b> on their own are the node running dry
+						with everything arriving.
+					</p>
+					<p>
+						Every one of these is also a warning in the System Log, with the buffer depth and the
+						path at that moment.
+					</p>
+				</Help>
+			</h2>
+			<span class="count">
+				{#if $drivingReport}{speakerNodes.length} with a loudspeaker{:else}no station is driving the nodes{/if}
+			</span>
+		</header>
+
+		{#if speakerNodes.length === 0}
+			<p class="empty">No adopted node has a loudspeaker.</p>
+		{:else}
+			<table class="rack">
+				<thead>
+					<tr>
+						<th>Node</th><th>Path</th><th>Streaming</th>
+						<th title="Packets that never arrived, since the stream started">Missing</th>
+						<th title="Packets that arrived after they should have been heard">Late</th>
+						<th title="The node's buffer ran dry">Underruns</th>
+						<th title="The node gave up on the stream's timing and started over">Resyncs</th>
+						<th title="The sender fell behind by more than half the delay / skipped ahead">Behind</th>
+						<th title="The least time a packet had between leaving and being heard, of the delay">Lowest lead</th>
+						<th>Last trouble</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each speakerNodes as node (node.serial)}
+						{@const health = node.stream}
+						<tr class:stale={!node.online}>
+							<td>
+								{node.name}<span class="addr mono">{node.serial}</span>
+								{#if !node.online}<span class="tag">offline</span>{:else if !node.on_broker}<span class="tag">not on the broker</span>{/if}
+							</td>
+							<td>
+								{#if health && health.paths.length}
+									{#each health.paths as path (path.ip)}
+										<span class:bad={path.transport === 'wifi'}>{path.transport}</span><span class="addr">{path.ip}</span>
+									{/each}
+								{:else}
+									<span class="dim">—</span>
+								{/if}
+							</td>
+							{#if health}
+								<td>
+									{since(health.since_ms)}
+									{#if health.sessions > 1}<span class="tag" title="Each restart is a gap the length of the node's buffer">{health.sessions} sessions</span>{/if}
+								</td>
+								<td class="num" class:bad={health.missing > 0}>{health.missing}</td>
+								<td class="num" class:bad={health.late > 0}>{health.late}</td>
+								<td class="num" class:bad={health.underruns > 0}>{health.underruns}</td>
+								<td class="num" class:bad={health.resyncs > 0}>{health.resyncs}</td>
+								<td class="num" class:bad={health.stalls + health.skips + health.send_errors > 0}>
+									{health.stalls}{#if health.skips}<span class="dim"> · {health.skips} skips</span>{/if}{#if health.send_errors}<span class="dim"> · {health.send_errors} not sent</span>{/if}
+								</td>
+								<td class="num" class:bad={health.lowest_lead_ms !== null && health.lowest_lead_ms < health.delay_ms / 2}>
+									{health.lowest_lead_ms === null ? '—' : `${health.lowest_lead_ms} ms`}<span class="dim"> of {health.delay_ms}</span>
+								</td>
+								<td>
+									{#if health.last_incident && health.last_incident_ms}
+										<span class="bad">{health.last_incident}</span><span class="addr">{since(health.last_incident_ms)}</span>
+									{:else}
+										<span class="dim">none</span>
+									{/if}
+								</td>
+							{:else}
+								<td class="dim" colspan="8">
+									no stream{#if node.summary && node.summary.underruns > 0} · {node.summary.underruns} underruns since it started{/if}
+								</td>
+							{/if}
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
 	</section>
 
 	<section class="block">

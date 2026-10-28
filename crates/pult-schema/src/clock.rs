@@ -287,14 +287,21 @@ impl Estimate {
     pub fn add(&mut self, sample: Sample) -> Sample {
         self.samples.push(sample);
         self.taken += 1;
-        let best = self.best();
         if self.taken >= SAMPLES {
-            // Keep the best as the floor for the next round: an estimate that has
-            // settled should not be talked out of it by one slow refresh.
+            // A full round answers for itself. The last round's best stands while
+            // this one is taken, so one slow refresh cannot talk a settled estimate
+            // out of itself — but it never outlives the round after it: carried for
+            // ever, a sample from before the far end's clock had settled kept
+            // winning every tie (a localhost round trip is always 0 ms), and a page
+            // on the audio Mac drew its playhead 600 ms late until it was reloaded
+            // (HHG, 2026-10-28).
+            let fresh = self.samples.len() - SAMPLES;
+            let best = best_of(&self.samples[fresh..]);
             self.samples = vec![best];
             self.taken = 0;
+            return best;
         }
-        best
+        self.best()
     }
 
     /// True once this burst has taken its full complement, so the link can stop
@@ -304,12 +311,18 @@ impl Estimate {
     }
 
     fn best(&self) -> Sample {
-        self.samples
-            .iter()
-            .copied()
-            .reduce(|a, b| if b.rtt_ms < a.rtt_ms { b } else { a })
-            .unwrap_or(Sample { offset_ms: 0.0, rtt_ms: 0.0 })
+        best_of(&self.samples)
     }
+}
+
+/// The sample with the shortest round trip, the later one of a tie: an equal round
+/// trip is an equally good sample, and the newer one is of the clock as it is now.
+fn best_of(samples: &[Sample]) -> Sample {
+    samples
+        .iter()
+        .copied()
+        .reduce(|a, b| if b.rtt_ms <= a.rtt_ms { b } else { a })
+        .unwrap_or(Sample { offset_ms: 0.0, rtt_ms: 0.0 })
 }
 
 #[cfg(test)]

@@ -189,7 +189,9 @@ describe('a browser whose clock is wrong', () => {
 		vi.spyOn(Date, 'now').mockImplementation(() => local);
 
 		const sync = new ClockSync({
-			ask: (sentAt) => sync.answered(sentAt, STATION_T0 + 20, sentAt + 40)
+			// A station whose clock runs, as every clock does: a later question gets a
+			// later answer.
+			ask: (sentAt) => sync.answered(sentAt, STATION_T0 + 20 + (sentAt - local), sentAt + 40)
 		});
 		vi.useFakeTimers();
 		sync.start();

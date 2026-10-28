@@ -132,6 +132,7 @@ async fn a_spare_plays_a_zone_on_its_own_channels() {
         width: 1,
         channels: [(leader.node_id, pult_schema::types::zone::one_per_side(&[3])), (spare.node_id, pult_schema::types::zone::one_per_side(&[5]))].into_iter().collect(),
         nodes: Vec::new(),
+        level_db: None,
         notes: String::new(),
     };
     create(&leader, "speaker_zones", serde_json::to_value(&zone).unwrap()).await;

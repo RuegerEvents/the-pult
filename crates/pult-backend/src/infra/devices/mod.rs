@@ -236,6 +236,9 @@ pub struct DeviceEntry {
     /// Every address the node says it is on, the one it prefers first, from its
     /// retained `net` topic. Empty where it has not said: `ip` is the address then.
     pub addresses: Vec<String>,
+    /// How the node is reached at each of `addresses` — `wifi` or `ethernet`, as its
+    /// `net` names it — so a stream's report can say which path its packets took.
+    pub transports: BTreeMap<String, String>,
     /// Its own fixture asks for its audio stream down every one of `addresses`.
     pub redundant_stream: bool,
 }
@@ -249,6 +252,55 @@ impl DeviceEntry {
             false => self.addresses.iter().map(String::as_str).collect(),
         }
     }
+}
+
+/// A warning for every second a node's sound went wrong: its underruns, late or
+/// missing packets or resyncs went up since its last `audio/status`.
+///
+/// A dropout is heard once and gone, so the line has to say everything that can tell
+/// one cause from another at the moment it happened — which counter moved, how full the
+/// node's buffer was, and which path it is on, because a node on wifi losing packets
+/// and a node on its cable running dry are different faults with different fixes. A
+/// `warn`, so a peer watching the System Log sees the leader's.
+fn say_audio_trouble(
+    device: &DiscoveredDevice,
+    before: &pult_schema::types::devices::NodeAudioSummary,
+    now: &pult_schema::types::devices::NodeAudioSummary,
+    status: &pult_schema::types::devices::NodeAudioStatus,
+) {
+    // A node that restarted counts from zero again: nothing went up.
+    let up = |was: u64, is: u64| is.saturating_sub(was);
+    let moved = [
+        (up(before.underruns, now.underruns), "underruns"),
+        (up(before.missing, now.missing), "missing packets"),
+        (up(before.late, now.late), "late packets"),
+        (up(before.resyncs, now.resyncs), "resyncs"),
+    ];
+    let said: Vec<String> = moved.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("+{n} {what}")).collect();
+    if said.is_empty() {
+        return;
+    }
+    let paths = if device.net.is_empty() {
+        device.ip.clone()
+    } else {
+        device.net.iter().map(|a| format!("{} {}", a.transport, a.ip)).collect::<Vec<_>>().join(", ")
+    };
+    let depth = status
+        .stream
+        .as_ref()
+        .filter(|s| s.active)
+        .map_or_else(|| "no stream".to_string(), |s| format!("stream buffer {} ms", s.depth_ms));
+    warn!(
+        "[audio] node {} ({}) on {paths}: {}; {depth}, {} voices (totals: {} underruns, {} missing, {} late, {} resyncs)",
+        device.name,
+        device.serial,
+        said.join(", "),
+        status.voices.len(),
+        now.underruns,
+        now.missing,
+        now.late,
+        now.resyncs,
+    );
 }
 
 // ── Manager ───────────────────────────────────────────────────────────────────
@@ -794,7 +846,12 @@ impl DeviceManager {
             MqttEvent::AudioStatus { serial, status } => {
                 use pult_schema::types::devices::NodeAudioSummary;
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
-                let moved = device.audio_status.as_ref().map(NodeAudioSummary::of) != Some(NodeAudioSummary::of(&status));
+                let before = device.audio_status.as_ref().map(NodeAudioSummary::of);
+                let now = NodeAudioSummary::of(&status);
+                let moved = before.as_ref() != Some(&now);
+                if let Some(before) = &before {
+                    say_audio_trouble(device, before, &now, &status);
+                }
                 device.audio_status = Some(status);
                 // The LOCAL state every time, the directory only when the coarse half
                 // moved: a status once a second would wake everything watching the
@@ -1594,6 +1651,11 @@ impl DeviceManager {
                                 .nets
                                 .get(&d.serial)
                                 .map(|net| net.iter().map(|a| a.ip.clone()).collect())
+                                .unwrap_or_default(),
+                            transports: self
+                                .nets
+                                .get(&d.serial)
+                                .map(|net| net.iter().map(|a| (a.ip.clone(), a.transport.clone())).collect())
                                 .unwrap_or_default(),
                             redundant_stream: redundant.contains(&d.serial),
                         },

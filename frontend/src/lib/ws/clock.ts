@@ -38,6 +38,15 @@ const RETRY_MS = 1_000;
  */
 const SAMPLES = 5;
 
+/**
+ * The sample with the shortest round trip, the later one of a tie: an equal round trip
+ * is an equally good sample, and the newer one is of the clock as it is now. The rule
+ * `pult_schema::clock::best_of` follows.
+ */
+function bestOf(samples: ClockOffset[]): ClockOffset {
+	return samples.reduce((a, b) => (b.rttMs <= a.rttMs ? b : a));
+}
+
 /** What the browser knows about the station's clock. */
 export type ClockOffset = {
 	/** Milliseconds to add to `Date.now()` to get console time. */
@@ -113,6 +122,8 @@ export type ClockTransport = {
  */
 export class ClockSync {
 	private samples: ClockOffset[] = [];
+	/** Taken since this round began: `samples` also holds the last round's best. */
+	private taken = 0;
 	private timer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(private readonly transport: ClockTransport) {}
@@ -120,6 +131,7 @@ export class ClockSync {
 	/** Begin, or begin again after a reconnect. */
 	start(): void {
 		this.samples = [];
+		this.taken = 0;
 		this.schedule(0);
 	}
 
@@ -143,19 +155,27 @@ export class ClockSync {
 			measuredAt: receivedAt,
 		};
 		this.samples.push(sample);
+		this.taken += 1;
 
-		const best = this.samples.reduce((a, b) => (b.rttMs < a.rttMs ? b : a));
+		if (this.taken >= SAMPLES) {
+			// A full round answers for itself. The last round's best stands while this
+			// one is taken, so one slow refresh cannot talk a settled estimate out of
+			// itself — but it never outlives the round after it. Carried for ever, a
+			// sample from before the station's own clock had settled kept winning every
+			// tie (a localhost round trip is always 0 ms), and the audio Mac drew its
+			// playhead 600 ms late until the page was reloaded (HHG, 2026-10-28).
+			const best = bestOf(this.samples.slice(-SAMPLES));
+			publish(best);
+			this.samples = [best];
+			this.taken = 0;
+			this.schedule(REFRESH_MS);
+			return;
+		}
 		// Published on the first sample rather than after all of them: a rough offset
 		// now is better than a blank screen for the next five seconds, and the ones
 		// after it can only sharpen it.
-		publish(best);
-
-		if (this.samples.length >= SAMPLES) {
-			this.samples = [best];
-			this.schedule(REFRESH_MS);
-		} else {
-			this.schedule(0);
-		}
+		publish(bestOf(this.samples));
+		this.schedule(0);
 	}
 
 	private schedule(delayMs: number): void {

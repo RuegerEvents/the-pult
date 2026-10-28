@@ -64,6 +64,23 @@
       "answers": [{ "sentAt": 10000, "stationMs": 9000, "receivedAt": 10020 }],
       "offsetMs": -1010,
       "rttMs": 20
+    },
+    {
+      "name": "the next full round replaces the last one's best, however short its round trip was",
+      "answers": [
+        { "sentAt": 0, "stationMs": 0, "receivedAt": 0 },
+        { "sentAt": 100, "stationMs": 100, "receivedAt": 100 },
+        { "sentAt": 200, "stationMs": 200, "receivedAt": 200 },
+        { "sentAt": 300, "stationMs": 300, "receivedAt": 300 },
+        { "sentAt": 400, "stationMs": 400, "receivedAt": 400 },
+        { "sentAt": 30000, "stationMs": 30610, "receivedAt": 30002 },
+        { "sentAt": 30100, "stationMs": 30710, "receivedAt": 30102 },
+        { "sentAt": 30200, "stationMs": 30810, "receivedAt": 30202 },
+        { "sentAt": 30300, "stationMs": 30910, "receivedAt": 30302 },
+        { "sentAt": 30400, "stationMs": 31010, "receivedAt": 30402 }
+      ],
+      "offsetMs": 609,
+      "rttMs": 2
     }
   ],
   "bands": [

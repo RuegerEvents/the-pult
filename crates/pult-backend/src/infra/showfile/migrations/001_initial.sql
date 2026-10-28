@@ -244,6 +244,7 @@ CREATE TABLE IF NOT EXISTS speaker_zones (
     "width" INTEGER NOT NULL,
     "channels" TEXT NOT NULL,
     "nodes" TEXT NOT NULL,
+    "level_db" TEXT,
     "notes" TEXT NOT NULL,
     "folder" TEXT
 );

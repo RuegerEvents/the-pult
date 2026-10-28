@@ -26,6 +26,13 @@
 	import { getDataContext } from '$lib/ws/context.js';
 	import NameDialog from './NameDialog.svelte';
 	import { uuid } from '$lib/uuid.js';
+	import { consoleNow } from '$lib/ws/clock.js';
+
+	/**
+	 * The show clock, never this machine's own: a `t0` is an anchor every station
+	 * resolves the beat from, and a laptop 600 ms out stamped it 600 ms out (HHG).
+	 */
+	const showNow = () => consoleNow() ?? Date.now();
 
 	const data = getDataContext();
 	const masters = collection('speed_masters');
@@ -42,11 +49,11 @@
 	 * dozen animation frames doing the same arithmetic, and they all read the same
 	 * millisecond anyway.
 	 */
-	let now = $state(Date.now());
+	let now = $state(showNow());
 	$effect(() => {
 		let frame = 0;
 		const tick = () => {
-			now = Date.now();
+			now = showNow();
 			frame = requestAnimationFrame(tick);
 		};
 		frame = requestAnimationFrame(tick);
@@ -60,7 +67,7 @@
 			bpm: 120,
 			multiplier: 1,
 			running: true,
-			t0: Date.now()
+			t0: showNow()
 		});
 	}
 
@@ -76,7 +83,7 @@
 	 * finger came down rather than wherever the old cycle had got to.
 	 */
 	async function tap(master: SpeedMaster) {
-		const at = Date.now();
+		const at = showNow();
 		const run = [...(taps[master.id] ?? []), at];
 		taps = { ...taps, [master.id]: run };
 
@@ -92,7 +99,7 @@
 		if (!(bpm > 0)) return;
 		const entity = data.speed_masters.byId(master.id);
 		await entity.bpm.set(bpm);
-		await entity.t0.set(Date.now());
+		await entity.t0.set(showNow());
 		taps = { ...taps, [master.id]: [] };
 	}
 
@@ -102,7 +109,7 @@
 	 */
 	async function setRunning(master: SpeedMaster, running: boolean) {
 		const entity = data.speed_masters.byId(master.id);
-		if (running) await entity.t0.set(Date.now());
+		if (running) await entity.t0.set(showNow());
 		await entity.running.set(running);
 	}
 

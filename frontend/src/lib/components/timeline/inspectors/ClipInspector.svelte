@@ -7,13 +7,17 @@
 	 * five scares to the same speakers is one act, not five.
 	 *
 	 * Edited in place: every field is one value and Ctrl-Z takes it back (task 79's rule).
+	 *
+	 * A clip goes to a **zone**, never to a node: a node's loudspeaker is a member of a
+	 * zone (its Inspector), which is where how it is reached and the room's level are
+	 * said once rather than per clip (HHG, 2026-10-28). A clip from before that, still
+	 * sent straight to a node, plays as it did and says so here, with a way out.
 	 */
 
 	import type { AudioClip, AudioDestination, SpeakerZone } from '$lib/generated/index.js';
 	import type { ClipRow } from '$lib/kinds/timeline.kind.js';
 	import { categoryColor } from '$lib/layout/categories.js';
 	import { audioNodes, bytesText, nodeOf, zoneOf } from '$lib/destination.js';
-	import Dialog from '$lib/components/Dialog.svelte';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { openSetup } from '$lib/stores/setup.js';
 	import { audioOutput, audioStatus, current, devices, drivingReport, nodeAudio, writeColumns } from '$lib/stores/timelines.js';
@@ -65,34 +69,13 @@
 		return rows.every((r) => JSON.stringify(r.clip.destination) === first) ? rows[0].clip.destination : null;
 	});
 
-	/** Route every selected clip to a zone, or to one node (keeping how it reaches it). */
+	/** Route every selected clip to a zone. */
 	function pickZone(zone: SpeakerZone) {
 		void setAll({ destination: { Zone: { zone: zone.id } } });
 	}
-	/**
-	 * Sending a clip to a node's flash is asked first: an upload is megabytes written
-	 * into the node's flash, which pauses its caches for every sector erased, and is
-	 * not something that should start because somebody clicked a node to look at it.
-	 * Streaming writes nothing and goes straight through — and is what picking a node
-	 * gives a clip that was not on one, so storing is only ever the deliberate choice.
-	 */
-	let confirmingUpload = $state<{ serial: string; name: string } | null>(null);
-	function pickNode(serial: string) {
-		// Moving a clip that is already stored on one node to another is a new upload,
-		// and asks; anything else streams.
-		const storing = rows.some((r) => nodeOf(r.clip.destination)?.mode === 'Clip');
-		if (storing) {
-			confirmingUpload = { serial, name: nodes.find((n) => n.serial === serial)?.name ?? serial };
-			return;
-		}
-		void change(() => ({ destination: { Node: { serial, mode: 'Stream' } } }));
-	}
-	function confirmUpload() {
-		const ask = confirmingUpload;
-		confirmingUpload = null;
-		if (!ask) return;
-		void setAll({ destination: { Node: { serial: ask.serial, mode: 'Clip' } } });
-	}
+
+	/** The zones a node is a member of, for a clip still sent straight to that node. */
+	const zonesWith = (serial: string) => $zones.filter((z) => z.nodes.some((n) => n.serial === serial));
 
 	/**
 	 * Where a zone comes out, on every station that maps it — in this station's own
@@ -247,16 +230,8 @@
 				<span class="target-note">{widthName(zone.width)}</span>
 			</button>
 		{/each}
-		{#each nodes as node (node.serial)}
-			{@const chosen = shared !== null && nodeOf(shared)?.serial === node.serial}
-			<button class="target node" class:on={chosen} disabled={!$canEdit} onclick={() => pickNode(node.serial)}>
-				<span class="swatch"></span>
-				<span class="target-name">{node.name}</span>
-				<span class="target-note">{node.online ? node.outputs : 'offline'}</span>
-			</button>
-		{/each}
-		{#if shared && nodeOf(shared) && !nodes.some((n) => n.serial === nodeOf(shared)?.serial)}
-			<span class="says-bad">node {nodeOf(shared)?.serial} is not found</span>
+		{#if $zones.length === 0}
+			<span class="note wide-note">No speaker zones yet. A node's loudspeaker is a member of a zone.</span>
 		{/if}
 		{#if shared && zoneOf(shared) && !$zones.some((z) => z.id === zoneOf(shared))}
 			<span class="says-bad">the zone this went to has been deleted</span>
@@ -282,60 +257,30 @@
 		{/if}
 	{:else if shared && nodeOf(shared)}
 		{@const node = nodeOf(shared)!}
+		{@const name = nodes.find((n) => n.serial === node.serial)?.name ?? node.serial}
 		{@const store = $nodeAudio?.[node.serial]}
-		{@const here = $devices?.discovered[node.serial]?.audio_status}
-		{@const said = $drivingReport?.nodes[node.serial]?.summary}
-		<!-- This station's own conversation with the node where it has one, and the
-		     driving station's summary of it where it has not. -->
-		{@const status = here
-			? { locked: here.locked, underruns: here.underruns, voices: here.voices.length, streaming: !!here.stream?.active, depth: here.stream?.depth_ms ?? null }
-			: said
-				? { locked: said.locked, underruns: said.underruns, voices: said.voices, streaming: said.streaming, depth: null }
-				: null}
-		<span class="label">How</span>
-		<div class="segmented" role="group" aria-label="How the clip reaches the node">
-			<button
-				class:on={node.mode === 'Clip'}
-				disabled={!$canEdit}
-				title="Uploaded to the node's flash ahead of time, and started there. Immune to the network once it is there."
-				onclick={() =>
-					node.mode === 'Clip' ||
-					(confirmingUpload = { serial: node.serial, name: nodes.find((n) => n.serial === node.serial)?.name ?? node.serial })}
-				>Stored on the node</button
-			>
-			<button
-				class:on={node.mode === 'Stream'}
-				disabled={!$canEdit}
-				title="Sent as it plays, a playout delay ahead. No size limit, and it needs the network for as long as it sounds."
-				onclick={() => void setAll({ destination: { Node: { serial: node.serial, mode: 'Stream' } } })}>Streamed</button
+		{@const homes = zonesWith(node.serial)}
+		<span class="label">Straight to</span>
+		<div class="inline note">
+			<span class="says-warn"
+				>{name}{node.mode === 'Stream' ? ', streamed' : ', stored on the node'} — the way clips went before zones held node speakers</span
 			>
 		</div>
-		{#if store || status}
+		<span></span>
+		<div class="inline note">
+			{#if homes.length}
+				<span>{name} is in {homes.map((z) => z.name).join(', ')}: pick {homes.length === 1 ? 'it' : 'one'} above.</span>
+			{:else}
+				<span>Put {name} in a zone (its Inspector, under Node speakers), then pick the zone above.</span>
+			{/if}
+		</div>
+		{#if store}
 			<span class="label">The node</span>
-			<div class="inline note">
-				{#if store}
-					<span>
-						{store.stored.length} clip{store.stored.length === 1 ? '' : 's'} on it, {bytesText(store.bytes_free)} free{store.uploading
-							? ' · uploading…'
-							: ''}{store.pending && !store.uploading ? ` · ${store.pending} waiting` : ''}{store.streaming ? ' · streaming' : ''}
-					</span>
-				{/if}
-				{#if status}
-					{#if !status.locked}
-						<span class="says-bad">has not got the console's clock</span>
-					{:else if status.underruns > 0}
-						<span class="says-bad">{status.underruns} underruns</span>
-					{:else}
-						<span class="says-good"
-							>{status.voices} voice{status.voices === 1 ? '' : 's'} sounding{status.streaming
-								? status.depth !== null
-									? `, stream ${status.depth} ms buffered`
-									: ', streaming'
-								: ''}</span
-						>
-					{/if}
-				{/if}
-			</div>
+			<span class="note">
+				{store.stored.length} clip{store.stored.length === 1 ? '' : 's'} on it, {bytesText(store.bytes_free)} free{store.uploading
+					? ' · uploading…'
+					: ''}{store.streaming ? ' · streaming' : ''}
+			</span>
 		{/if}
 	{/if}
 
@@ -349,28 +294,7 @@
 	{/each}
 </div>
 
-{#if confirmingUpload}
-	<Dialog title="Store on the node" onclose={() => (confirmingUpload = null)}>
-		<p class="ask">
-			{rows.length === 1 ? `“${rows[0].name}”` : `${rows.length} clips`} will be uploaded to
-			<b>{confirmingUpload.name}</b> and kept in its flash, so it plays there with no network.
-			An upload pauses the node's caches while it writes; changing a clip's trim later uploads it
-			again once the clip stands still.
-		</p>
-		{#snippet footer()}
-			<button class="btn btn-ghost" onclick={() => (confirmingUpload = null)}>Cancel</button>
-			<button class="btn btn-primary" onclick={confirmUpload}>Upload</button>
-		{/snippet}
-	</Dialog>
-{/if}
-
 <style>
-	.ask {
-		margin: 0;
-		padding: 14px;
-		font-size: 0.85rem;
-		line-height: 1.5;
-	}
 	.pairs {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
@@ -416,10 +340,6 @@
 		height: 10px;
 		border-radius: 50%;
 		background: var(--swatch, var(--cat-setup));
-	}
-	.target.node .swatch {
-		border-radius: 2px;
-		background: var(--text-dim);
 	}
 	.target-name {
 		font-size: var(--font-sm);

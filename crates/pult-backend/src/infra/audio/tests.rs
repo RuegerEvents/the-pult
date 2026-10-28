@@ -131,6 +131,7 @@ fn a_zone(mapped: &[(NodeId, u16)]) -> SpeakerZone {
         width: 1,
         channels: mapped.iter().map(|(node, channel)| (*node, pult_schema::types::zone::one_per_side(&[*channel]))).collect(),
         nodes: Vec::new(),
+        level_db: None,
         notes: String::new(),
     }
 }

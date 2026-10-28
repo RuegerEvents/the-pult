@@ -264,17 +264,73 @@ pub struct NodeAudioSummary {
     pub voices: u32,
     /// Its stream is active.
     pub streaming: bool,
+    /// The stream's packets that arrived after they should have been heard, that never
+    /// arrived, and the times the node gave up on its mapping and started over — the
+    /// node's own counts. They move only when something goes wrong, which is what lets
+    /// them be here and the buffer depth not.
+    #[serde(default)]
+    pub late: u64,
+    #[serde(default)]
+    pub missing: u64,
+    #[serde(default)]
+    pub resyncs: u64,
 }
 
 impl NodeAudioSummary {
     pub fn of(status: &NodeAudioStatus) -> Self {
+        let stream = status.stream.as_ref();
         NodeAudioSummary {
             locked: status.locked,
             underruns: status.underruns,
             voices: status.voices.len() as u32,
-            streaming: status.stream.as_ref().is_some_and(|s| s.active),
+            streaming: stream.is_some_and(|s| s.active),
+            late: stream.map_or(0, |s| s.late),
+            missing: stream.map_or(0, |s| s.missing),
+            resyncs: stream.map_or(0, |s| s.resyncs),
         }
     }
+}
+
+/// How a node's stream has gone since the station driving it started this session:
+/// the sender's half, which only that station can see, beside what the node counted.
+///
+/// For finding a dropout after the fact. A gap in a streamed scare is one of three
+/// things, and they read differently here: the **network** lost packets (`missing`
+/// climbs, typically on wifi), the **sender** fell behind (`stalls`, a small
+/// `lowest_lead_ms`), or the **node** ran dry with everything arriving (`underruns`
+/// alone). Every counter is since `since_ms`, so a restarted stream starts clean, and
+/// each one moves only when something goes wrong — the row is not rewritten while a
+/// stream is healthy.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeStreamHealth {
+    /// The show time this session started.
+    pub since_ms: u64,
+    /// How many sessions this station has started to the node since it began driving
+    /// it. More than one is a stream that was stopped and started again, which is a
+    /// gap the length of the node's buffer each time.
+    pub sessions: u32,
+    /// Where the packets go, with how the node is reached there: `wifi` or `ethernet`.
+    pub paths: Vec<NodeAddress>,
+    /// How far ahead of being heard the stream is sent: the playout delay.
+    pub delay_ms: u32,
+    /// The least time any packet had between leaving and being heard. Near `delay_ms`
+    /// is a sender keeping up; near zero or below is one that fell behind.
+    pub lowest_lead_ms: Option<i64>,
+    /// Times the sender fell behind by more than half the delay.
+    pub stalls: u64,
+    /// Times it fell so far behind (half a second) that it skipped ahead.
+    pub skips: u64,
+    /// Packets the operating system would not send.
+    pub send_errors: u64,
+    /// The node's counts, since the session started.
+    pub underruns: u64,
+    pub late: u64,
+    pub missing: u64,
+    pub resyncs: u64,
+    /// The latest thing that went wrong, in words, and when (show time).
+    pub last_incident: Option<String>,
+    pub last_incident_ms: Option<u64>,
 }
 
 /// One node with a loudspeaker, as the station driving it sees it.
@@ -289,6 +345,10 @@ pub struct DrivenNode {
     pub audio: Option<NodeAudio>,
     pub store: Option<NodeAudioState>,
     pub summary: Option<NodeAudioSummary>,
+    /// How its stream is going, while one is.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub stream: Option<NodeStreamHealth>,
 }
 
 /// What a station knows about the nodes' sound: the SYNCED `node_reports` collection,

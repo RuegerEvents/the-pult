@@ -569,6 +569,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
             width: channels.len() as u16,
             channels: map,
             nodes,
+            level_db: None,
             notes: String::new(),
         }
     };

@@ -85,7 +85,7 @@ fn directory(entries: Vec<(&str, DeviceEntry)>) -> watch::Receiver<DeviceDirecto
 }
 
 fn an_entry(ip: &str, module_type: u16, universe: Option<u16>, online: bool) -> DeviceEntry {
-    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universes: universe.into_iter().collect(), online, effects: None, audio: None, on_broker: true, name: String::new(), adopted: true, audio_summary: None, starts: 0, addresses: Vec::new(), redundant_stream: false }
+    DeviceEntry { ip: ip.to_string(), port: 80, module_type, universes: universe.into_iter().collect(), online, effects: None, audio: None, on_broker: true, name: String::new(), adopted: true, audio_summary: None, starts: 0, addresses: Vec::new(), transports: std::collections::BTreeMap::new(), redundant_stream: false }
 }
 
 /// The same node, with one port that says what it can trace for itself.

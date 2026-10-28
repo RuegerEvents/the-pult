@@ -47,7 +47,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pult_audio::wav::Encoding;
@@ -55,9 +56,12 @@ use pult_schema::{
     lifecycle::Lifecycle,
     path::PathSegment,
     types::{
-        devices::{DrivenNode, NodeAudio, NodeAudioState, NodeAudioStates, NodeReport},
+        devices::{
+            DrivenNode, NodeAddress, NodeAudio, NodeAudioState, NodeAudioStates, NodeAudioSummary, NodeReport,
+            NodeStreamHealth,
+        },
         timeline::{AtEnd, AudioClip, NodeAudioMode, Timeline},
-        zone::{node_targets, SpeakerZone},
+        zone::{destination_gain, node_targets, SpeakerZone},
     },
 };
 use tokio::sync::{mpsc, watch};
@@ -118,6 +122,9 @@ pub struct Nodes {
     /// the broker. A node that comes back has forgotten every voice.
     reachable: BTreeMap<String, bool>,
     streams: HashMap<String, Streamer>,
+    /// How many stream sessions each node has been sent since this station began
+    /// driving it, for [`NodeStreamHealth::sessions`].
+    sessions: HashMap<String, u32>,
     /// Why a node clip is not playing, keyed by timeline, then by clip, then by the
     /// node: a zone may hold several, and one of them being down is not all of them.
     pub(super) faults: HashMap<Uuid, BTreeMap<String, BTreeMap<String, String>>>,
@@ -192,6 +199,7 @@ impl Nodes {
             sent: HashMap::new(),
             reachable: BTreeMap::new(),
             streams: HashMap::new(),
+            sessions: HashMap::new(),
             faults: HashMap::new(),
             published: None,
             driving: false,
@@ -446,6 +454,7 @@ impl AudioManager {
     /// No longer the station driving the nodes: stop every stream and forget what was
     /// sent. Whoever leads now has the broker, and tells the nodes for itself.
     async fn let_go_of_nodes(&mut self) {
+        self.nodes.sessions.clear();
         for (_, streamer) in std::mem::take(&mut self.nodes.streams) {
             streamer.stop().await;
         }
@@ -482,6 +491,10 @@ impl AudioManager {
                         audio: e.audio.clone(),
                         store: self.nodes.published.as_ref().and_then(|p| p.get(serial)).cloned(),
                         summary: e.audio_summary.clone(),
+                        stream: self.nodes.streams.get(serial).map(|streamer| {
+                            let sessions = self.nodes.sessions.get(serial).copied().unwrap_or(1);
+                            streamer.health(sessions, e.audio_summary.as_ref())
+                        }),
                     },
                 )
             })
@@ -701,7 +714,11 @@ impl AudioManager {
                 }
                 wanted.insert(
                     (serial.to_string(), voice_name(timeline.id, clip.id)),
-                    Sent { clip: bounced.sha.clone(), at, gain: clip.gain().min(1.0) },
+                    Sent {
+                        clip: bounced.sha.clone(),
+                        at,
+                        gain: (clip.gain() * destination_gain(&clip.destination, &self.zones)).min(1.0),
+                    },
                 );
             }
         }
@@ -808,13 +825,18 @@ impl AudioManager {
                             channels: decoded.channels as usize,
                             sample_rate: decoded.sample_rate,
                         },
-                        placement: super::placement(clip),
+                        placement: pult_audio::Placement {
+                            gain: super::placement(clip).gain * destination_gain(&clip.destination, &self.zones),
+                            ..super::placement(clip)
+                        },
                         routes,
                     });
                 }
+                let levels: Vec<f32> =
+                    clips.iter().map(|c| destination_gain(&c.destination, &self.zones)).collect();
                 built.push(serde_json::json!([
                     timeline.id, timeline.running, timeline.anchor_ms, timeline.position_at_anchor_ms,
-                    timeline.rate, timeline.end, clips,
+                    timeline.rate, timeline.end, clips, levels,
                 ]));
                 decks.push(StreamDeck {
                     id: timeline.id.as_u128(),
@@ -834,6 +856,7 @@ impl AudioManager {
                 // and a start, and a gap the length of the node's buffer.
                 Some(streamer) if streamer.same_session(port, rate, channels) => {
                     streamer.follow(&serial, targets);
+                    streamer.paths = paths_of(entry, &streamer.targets);
                     if streamer.built != built {
                         streamer.built = built;
                         streamer.send(StreamMessage::Decks(decks));
@@ -861,9 +884,19 @@ impl AudioManager {
                             pult_schema::types::timeline::STREAM_LEAD_MS
                         );
                     }
-                    let streamer = Streamer::start(
+                    let sessions = self.nodes.sessions.entry(serial.clone()).or_insert(0);
+                    *sessions += 1;
+                    if *sessions > 1 {
+                        warn!(
+                            "[audio] the stream to node {serial} started again (session {sessions}): the node hears a \
+                             gap the length of its buffer"
+                        );
+                    }
+                    let mut streamer = Streamer::start(
                         serial.clone(), targets, port, rate, channels, self.nodes.delay_ms, devices, decks, built,
                     );
+                    streamer.baseline = entry.audio_summary.clone().unwrap_or_default();
+                    streamer.paths = paths_of(entry, &streamer.targets);
                     self.nodes.streams.insert(serial.clone(), streamer);
                 }
             }
@@ -889,6 +922,7 @@ impl AudioManager {
                 let targets = stream_targets(entry, streamer.port);
                 if !targets.is_empty() {
                     streamer.follow(serial, targets);
+                    streamer.paths = paths_of(entry, &streamer.targets);
                 }
             }
         }
@@ -1040,6 +1074,86 @@ pub struct Streamer {
     built: String,
     tx: std::sync::mpsc::Sender<StreamMessage>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// What the sender thread has seen go wrong.
+    stats: Arc<SenderStats>,
+    /// The show time the session started.
+    since_ms: u64,
+    delay_ms: u32,
+    /// What the node had counted when the session started, so the report says what
+    /// went wrong during this one.
+    baseline: NodeAudioSummary,
+    /// Where the packets go, with how the node is reached there.
+    paths: Vec<NodeAddress>,
+}
+
+/// What a stream's sender thread has seen go wrong, read by the report.
+pub struct SenderStats {
+    stalls: AtomicU64,
+    skips: AtomicU64,
+    send_errors: AtomicU64,
+    /// Whole milliseconds; `i64::MAX` until a packet has left.
+    lowest_lead_ms: AtomicI64,
+    last_incident: Mutex<Option<(u64, String)>>,
+}
+
+impl Default for SenderStats {
+    fn default() -> Self {
+        SenderStats {
+            stalls: AtomicU64::new(0),
+            skips: AtomicU64::new(0),
+            send_errors: AtomicU64::new(0),
+            lowest_lead_ms: AtomicI64::new(i64::MAX),
+            last_incident: Mutex::new(None),
+        }
+    }
+}
+
+impl SenderStats {
+    fn incident(&self, what: String) {
+        if let Ok(mut last) = self.last_incident.lock() {
+            *last = Some((pult_schema::clock::now_ms(), what));
+        }
+    }
+}
+
+/// The addresses a stream goes to, each with the transport the node's `net` named.
+fn paths_of(entry: &DeviceEntry, targets: &[SocketAddr]) -> Vec<NodeAddress> {
+    targets
+        .iter()
+        .map(|t| {
+            let ip = t.ip().to_string();
+            let transport = entry.transports.get(&ip).cloned().unwrap_or_else(|| "unknown".into());
+            NodeAddress { transport, ip }
+        })
+        .collect()
+}
+
+impl Streamer {
+    /// The report's view of this session: the sender's counters, and the node's since
+    /// the session began.
+    fn health(&self, sessions: u32, node: Option<&NodeAudioSummary>) -> NodeStreamHealth {
+        let stats = &self.stats;
+        let lead = stats.lowest_lead_ms.load(Ordering::Relaxed);
+        let base = &self.baseline;
+        let since = |was: u64, is: Option<u64>| is.map_or(0, |is| is.saturating_sub(was));
+        let (at, what) = stats.last_incident.lock().ok().and_then(|l| l.clone()).unzip();
+        NodeStreamHealth {
+            since_ms: self.since_ms,
+            sessions,
+            paths: self.paths.clone(),
+            delay_ms: self.delay_ms,
+            lowest_lead_ms: (lead != i64::MAX).then_some(lead),
+            stalls: stats.stalls.load(Ordering::Relaxed),
+            skips: stats.skips.load(Ordering::Relaxed),
+            send_errors: stats.send_errors.load(Ordering::Relaxed),
+            underruns: since(base.underruns, node.map(|n| n.underruns)),
+            late: since(base.late, node.map(|n| n.late)),
+            missing: since(base.missing, node.map(|n| n.missing)),
+            resyncs: since(base.resyncs, node.map(|n| n.resyncs)),
+            last_incident: what,
+            last_incident_ms: at,
+        }
+    }
 }
 
 impl Streamer {
@@ -1057,14 +1171,29 @@ impl Streamer {
     ) -> Streamer {
         let (tx, rx) = std::sync::mpsc::channel();
         let _ = tx.send(StreamMessage::Decks(decks));
+        let stats = Arc::new(SenderStats::default());
         let spawned = std::thread::Builder::new()
             .name(format!("node-stream-{serial}"))
             .spawn({
                 let targets = targets.clone();
-                move || stream(serial, targets, port, rate, channels, delay_ms, devices, rx)
+                let stats = stats.clone();
+                move || stream(serial, targets, port, rate, channels, delay_ms, devices, rx, stats)
             });
         let thread = spawned.map_err(|e| warn!("[audio] the stream sender could not start: {e}")).ok();
-        Streamer { targets, port, rate, channels, built, tx, thread }
+        Streamer {
+            targets,
+            port,
+            rate,
+            channels,
+            built,
+            tx,
+            thread,
+            stats,
+            since_ms: pult_schema::clock::now_ms(),
+            delay_ms,
+            baseline: NodeAudioSummary::default(),
+            paths: Vec::new(),
+        }
     }
 
     /// Whether a stream on `port` at this rate and width is this one, sent somewhere
@@ -1141,6 +1270,7 @@ fn stream(
     delay_ms: u32,
     devices: DeviceHandle,
     rx: std::sync::mpsc::Receiver<StreamMessage>,
+    stats: Arc<SenderStats>,
 ) {
     let socket = match UdpSocket::bind(("0.0.0.0", 0)) {
         Ok(socket) => socket,
@@ -1174,6 +1304,12 @@ fn stream(
     announce(&session);
     let mut announced = Instant::now();
     let mut rebuild = true;
+    // A stall is an episode, not a packet: counted and said once when the sender falls
+    // behind, and again only once it has caught up. Send errors are said at most once
+    // every few seconds, with how many there were.
+    let mut stalled = false;
+    let mut errors_said = Instant::now() - Duration::from_secs(60);
+    let mut errors_unsaid: u64 = 0;
 
     loop {
         loop {
@@ -1200,6 +1336,13 @@ fn stream(
         // A machine that slept, or a clock that stepped: far behind, so the mapping is
         // moved on rather than a backlog of sound nobody will hear being sent at once.
         if now + (delay_ms as f64) - heard > 500.0 {
+            let behind = (now + delay_ms as f64 - heard).round();
+            stats.skips.fetch_add(1, Ordering::Relaxed);
+            stats.incident(format!("the sender fell {behind} ms behind and skipped ahead"));
+            warn!(
+                "[audio] the stream to node {serial} fell {behind} ms behind and skips ahead: the node hears a gap \
+                 (the machine slept, the clock stepped, or this thread was not run)"
+            );
             session = Session {
                 at: (now as u64) + delay_ms as u64,
                 ts: rtp.timestamp,
@@ -1239,12 +1382,39 @@ fn stream(
             }
             rebuild = false;
         }
+        // How long this packet has between leaving and being heard. A sender keeping up
+        // sends each one a whole delay ahead; one that was not run for a while sends a
+        // burst with less, and under half the delay is the node's buffer running down.
+        let lead = heard - now;
+        let lead_ms = lead.floor() as i64;
+        stats.lowest_lead_ms.fetch_min(lead_ms, Ordering::Relaxed);
+        if lead < delay_ms as f64 / 2.0 {
+            if !stalled {
+                stalled = true;
+                stats.stalls.fetch_add(1, Ordering::Relaxed);
+                stats.incident(format!("the sender fell behind: a packet left {lead_ms} ms before it was due"));
+                warn!(
+                    "[audio] the stream to node {serial} is behind: a packet left {lead_ms} ms before it is heard, \
+                     of a {delay_ms} ms delay"
+                );
+            }
+        } else if stalled && lead >= delay_ms as f64 * 0.9 {
+            stalled = false;
+            info!("[audio] the stream to node {serial} has caught up");
+        }
         mixer.render(&mut buffer);
         let packet = rtp.packet(&buffer, channels);
         // Every copy the same packet: a node on two paths keeps whichever arrives first.
         for target in &targets {
             if let Err(e) = socket.send_to(&packet, target) {
-                debug!("[audio] a packet to node {serial} at {target} did not leave: {e}");
+                stats.send_errors.fetch_add(1, Ordering::Relaxed);
+                errors_unsaid += 1;
+                if errors_said.elapsed() > Duration::from_secs(5) {
+                    stats.incident(format!("packets to {target} did not leave: {e}"));
+                    warn!("[audio] {errors_unsaid} packets to node {serial} at {target} did not leave: {e}");
+                    errors_said = Instant::now();
+                    errors_unsaid = 0;
+                }
             }
         }
         sent_frames += frames as u64;

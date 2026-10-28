@@ -97,6 +97,26 @@
 			/>
 		</div>
 
+		<!-- Over every clip that goes here, on the station's channels and the node
+		     speakers alike: a room that is too loud is turned down once, not per scare. -->
+		<span class="label">Level</span>
+		<div class="inline">
+			<input
+				class="input narrow"
+				type="number"
+				step="1"
+				max="12"
+				disabled={!$canEdit}
+				value={z.level_db ?? 0}
+				aria-label="Zone level in dB"
+				onchange={(e) => {
+					const db = Number(e.currentTarget.value);
+					if (Number.isFinite(db) && e.currentTarget.value !== '') void zone(z.id).level_db!.set(db === 0 ? null : Math.min(12, db));
+				}}
+			/>
+			<span class="note">dB{z.nodes.length && (z.level_db ?? 0) > 0 ? ' — a node speaker stops at 0 dB' : ''}</span>
+		</div>
+
 		<span class="label">Used by</span>
 		<span class="note">{usedBy(z)}</span>
 

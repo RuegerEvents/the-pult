@@ -480,6 +480,9 @@ pub struct DrivenNode {
     pub audio: Option<NodeAudio>,
     pub store: Option<NodeAudioState>,
     pub summary: Option<NodeAudioSummary>,
+    /// How its stream is going, while one is.
+    #[serde(default)]
+    pub stream: Option<NodeStreamHealth>,
 }
 
 /// One parameter's part of a template.
@@ -1548,6 +1551,14 @@ pub enum NetService {
     Input(Uuid),
 }
 
+/// One path a node is on, as `openhaunt/<sn>/net` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NodeAddress {
+    /// `ethernet` or `wifi`, as the node names it.
+    pub transport: String,
+    pub ip: String,
+}
+
 /// A node's loudspeaker, as `GET /api/v1/info` describes it. See the OpenHaunt
 /// protocol's audio extension (`node/docs/13-audio.md`).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1629,6 +1640,16 @@ pub struct NodeAudioSummary {
     pub voices: u32,
     /// Its stream is active.
     pub streaming: bool,
+    /// The stream's packets that arrived after they should have been heard, that never
+    /// arrived, and the times the node gave up on its mapping and started over — the
+    /// node's own counts. They move only when something goes wrong, which is what lets
+    /// them be here and the buffer depth not.
+    #[serde(default)]
+    pub late: u64,
+    #[serde(default)]
+    pub missing: u64,
+    #[serde(default)]
+    pub resyncs: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1687,6 +1708,47 @@ pub struct NodeStreamCaps {
     /// shares an address with others (a simulator) names its own.
     #[serde(default)]
     pub port: Option<u16>,
+}
+
+/// How a node's stream has gone since the station driving it started this session:
+/// the sender's half, which only that station can see, beside what the node counted.
+///
+/// For finding a dropout after the fact. A gap in a streamed scare is one of three
+/// things, and they read differently here: the **network** lost packets (`missing`
+/// climbs, typically on wifi), the **sender** fell behind (`stalls`, a small
+/// `lowest_lead_ms`), or the **node** ran dry with everything arriving (`underruns`
+/// alone). Every counter is since `since_ms`, so a restarted stream starts clean, and
+/// each one moves only when something goes wrong — the row is not rewritten while a
+/// stream is healthy.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NodeStreamHealth {
+    /// The show time this session started.
+    pub since_ms: u64,
+    /// How many sessions this station has started to the node since it began driving
+    /// it. More than one is a stream that was stopped and started again, which is a
+    /// gap the length of the node's buffer each time.
+    pub sessions: u32,
+    /// Where the packets go, with how the node is reached there: `wifi` or `ethernet`.
+    pub paths: Vec<NodeAddress>,
+    /// How far ahead of being heard the stream is sent: the playout delay.
+    pub delay_ms: u32,
+    /// The least time any packet had between leaving and being heard. Near `delay_ms`
+    /// is a sender keeping up; near zero or below is one that fell behind.
+    pub lowest_lead_ms: Option<i64>,
+    /// Times the sender fell behind by more than half the delay.
+    pub stalls: u64,
+    /// Times it fell so far behind (half a second) that it skipped ahead.
+    pub skips: u64,
+    /// Packets the operating system would not send.
+    pub send_errors: u64,
+    /// The node's counts, since the session started.
+    pub underruns: u64,
+    pub late: u64,
+    pub missing: u64,
+    pub resyncs: u64,
+    /// The latest thing that went wrong, in words, and when (show time).
+    pub last_incident: Option<String>,
+    pub last_incident_ms: Option<u64>,
 }
 
 /// One configured output.
@@ -2797,6 +2859,13 @@ pub struct SpeakerZone {
     /// Node loudspeakers that are in the zone as well.
     #[serde(default)]
     pub nodes: Vec<ZoneNode>,
+    /// The zone's own level in dB, over every clip that goes to it: a room whose
+    /// speakers are too loud for every scare in it is turned down here, once, rather
+    /// than in each clip. `None` is 0 dB — and is an `Option` so that a show from
+    /// before there was a level opens with the column empty. On a node it cannot go
+    /// above 0 dB, as a clip's own level cannot.
+    #[serde(default)]
+    pub level_db: Option<f32>,
     #[serde(default)]
     pub notes: String,
     /// The pool folder it is in, or `None` for the top level. See [`crate::types::folder`].

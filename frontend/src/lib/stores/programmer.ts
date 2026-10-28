@@ -217,7 +217,8 @@ export async function setEffect(
 	specs: Record<string, EffectSpec>
 ): Promise<void> {
 	const data = showData();
-	const at = Date.now();
+	// The show clock: an effect's `t0` is its phase on every station.
+	const at = actAt() ?? Date.now();
 	const current = new Map(held.map((entry) => [entry.id, entry]));
 
 	// Keyed by target: a fixture, or `fixture@cell` for one cell of a multi-cell one,
