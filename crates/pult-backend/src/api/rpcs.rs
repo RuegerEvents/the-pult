@@ -897,6 +897,31 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
                 _ => Default::default(),
             };
             let test = test.checked()?;
+            // An output whose row names no station is run by whichever stations its
+            // kind says, and the test has to reach every one of them — the wire on
+            // stage is the one at the highest sACN priority, which is not necessarily
+            // this station's.
+            let row = deps
+                .engine
+                .get(vec![PathSegment::Key("outputs".into()), PathSegment::Id(output_id)])
+                .await
+                .ok()
+                .and_then(|row| serde_json::from_value::<pult_schema::types::output::OutputConfig>(row).ok());
+            if row.is_some_and(|row| row.node_id.is_none()) {
+                use crate::infra::connectors::channel_tests::ANYWHERE;
+                let moved = deps.viewers.tests.set(ANYWHERE, output_id, caller, test);
+                if let Some(sync) = &deps.sync {
+                    // Always sent, moved or not, for the reason a peer's output is below.
+                    let merged = deps
+                        .viewers
+                        .tests
+                        .merged_for(ANYWHERE, output_id)
+                        .or(moved)
+                        .unwrap_or_default();
+                    sync.test_every_peer_output(output_id, merged).await;
+                }
+                return Ok(Value::Null);
+            }
             let moved = deps.viewers.tests.set(node, output_id, caller, test);
             if node != deps.node_id {
                 if let Some(sync) = &deps.sync {

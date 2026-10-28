@@ -652,10 +652,11 @@ impl AudioManager {
             Ok(()) => {
                 if !keep_cursor {
                     info!(
-                        "[audio] {} playing through {} from {} ms",
+                        "[audio] {} playing through {} from {} ms, as deck {slot}, {} ms to the loudspeaker",
                         timeline.name,
                         output.device_name,
-                        from
+                        from,
+                        latency
                     );
                 }
                 let seen = transport_of(timeline);
@@ -778,6 +779,12 @@ impl AudioManager {
             let ours = playing.wrote == Some((transport.0, transport.1));
             if !ours {
                 if drift.abs() > DRIFT_MS {
+                    info!(
+                        "[audio] {} was moved: the sound at {measured} ms goes to {target} ms (deck {}, {} ms latency)",
+                        timeline.name,
+                        playing.slot,
+                        output.latency_ms()
+                    );
                     output.seek(id, target + output.latency_ms());
                 }
                 output.set_rate(id, timeline.rate.max(0.0));
@@ -795,6 +802,12 @@ impl AudioManager {
         // The anchor is rewritten *from the sound*, which is the whole rule. One write
         // rather than two fields, through the timeline's own `locate` command, so it
         // replicates as one operation exactly the way a Go does.
+        info!(
+            "[audio] {} is {drift:+} ms from the show; the anchor follows the sound to {measured} ms (deck {}, {} ms latency)",
+            timeline.name,
+            playing.slot,
+            output.latency_ms()
+        );
         playing.wrote = Some((now, measured));
         playing.seen = (now, measured, timeline.rate);
         self.locate(timeline.id, measured, now).await;
@@ -817,6 +830,7 @@ impl AudioManager {
                 pult_audio::Chase::Hold => output.set_rate(id, 1.0),
                 pult_audio::Chase::Varispeed(ratio) => output.set_rate(id, ratio),
                 pult_audio::Chase::Locate(at) => {
+                    info!("[audio] {} relocated to timecode at {at} ms", timeline.name);
                     output.seek(id, at + output.latency_ms());
                     output.set_rate(id, 1.0);
                 }

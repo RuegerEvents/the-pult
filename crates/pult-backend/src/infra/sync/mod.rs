@@ -99,6 +99,9 @@ pub enum SyncCommand {
         output_id: Uuid,
         test: pult_schema::types::output::ChannelTest,
     },
+    /// The same, to every peer: an output whose row names no station, which each of
+    /// them runs or not by its own rule.
+    TestEveryPeerOutput { output_id: Uuid, test: pult_schema::types::output::ChannelTest },
     /// Publish what the exchange is doing to every peer.
     ///
     /// Fanned out rather than addressed, because every station of the session wants
@@ -218,6 +221,15 @@ impl SyncHandle {
         test: pult_schema::types::output::ChannelTest,
     ) {
         let _ = self.0.send(SyncCommand::TestPeerOutput { node_id, output_id, test }).await;
+    }
+
+    /// Force channels on every peer's copy of an output that names no station.
+    pub async fn test_every_peer_output(
+        &self,
+        output_id: Uuid,
+        test: pult_schema::types::output::ChannelTest,
+    ) {
+        let _ = self.0.send(SyncCommand::TestEveryPeerOutput { output_id, test }).await;
     }
 
     /// How many peers this station is connected to.
@@ -512,6 +524,16 @@ impl SyncManager {
                     // this one is re-sent by the page while it is held, so a drop is a
                     // few seconds of the show instead of a test.
                     let _ = sender.0.try_send(SyncMessage::OutputTest { output_id, test });
+                }
+            }
+            SyncCommand::TestEveryPeerOutput { output_id, test } => {
+                // Not `fan_out`, which drops a peer whose link is full: a test is
+                // re-sent by the page while it is held, so a full link costs a few
+                // seconds of it and never the peer.
+                for sender in self.peers.values() {
+                    let _ = sender
+                        .0
+                        .try_send(SyncMessage::OutputTest { output_id, test: test.clone() });
                 }
             }
             SyncCommand::ConnectPeer { addrs, session_id, show_id, reply } => {

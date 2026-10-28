@@ -25,6 +25,16 @@ use uuid::Uuid;
 /// One output, anywhere in the session.
 type Forced = (NodeId, Uuid);
 
+/// The owner a test is kept under when the output's row names no station.
+///
+/// Such an output is run by whichever stations its kind says — every one of them for
+/// sACN, the leader for Art-Net and OpenHaunt — so the browser asking cannot know
+/// which wire to force, and a test kept under its own station's id forced only that
+/// station's copy: an sACN test made on a follower went out at the follower's slot
+/// and lost to the leader's unforced 100. Kept under this instead, it is applied here
+/// *and* sent to every peer, each of which applies it to whatever copy it runs.
+pub const ANYWHERE: NodeId = NodeId(Uuid::nil());
+
 #[derive(Default)]
 struct Inner {
     /// Per output, each session's whole test of it. A peer is one session carrying
@@ -112,16 +122,18 @@ impl ChannelTests {
 
     /// What this station's own connectors are being forced to, output by output.
     ///
-    /// Only ours: an entry under another node is a test this station has put on a
+    /// Ours, and what this station's own browsers asked of an output that runs
+    /// [`ANYWHERE`]. An entry under another node is a test this station has put on a
     /// sync link, and acting on it here would be forcing a wire it does not hold.
     pub fn of(&self, node: NodeId) -> HashMap<Uuid, ChannelTest> {
         let inner = self.inner.lock().unwrap();
-        inner
-            .by_output
-            .iter()
-            .filter(|((owner, _), _)| *owner == node)
-            .map(|((_, output), sessions)| (*output, merged(sessions)))
-            .collect()
+        let mut by_output: HashMap<Uuid, Vec<ChannelTest>> = HashMap::new();
+        for ((owner, output), sessions) in &inner.by_output {
+            if *owner == node || *owner == ANYWHERE {
+                by_output.entry(*output).or_default().extend(sessions.values().cloned());
+            }
+        }
+        by_output.into_iter().map(|(output, tests)| (output, ChannelTest::merged(tests))).collect()
     }
 
     /// Apply a change and say whether the merged test of that output moved.
@@ -232,5 +244,19 @@ mod tests {
         tests.set(peer, output, Uuid::new_v4(), test(1, false, &[(1, 255)]));
         assert!(tests.of(node).is_empty(), "this station holds no socket in that question");
         assert!(!tests.of(peer).is_empty());
+    }
+
+    #[test]
+    fn an_output_that_runs_anywhere_is_forced_here_beside_what_a_peer_asked() {
+        let (tests, node, output) = one();
+        tests.set(ANYWHERE, output, Uuid::new_v4(), test(1, false, &[(1, 255)]));
+        tests.set(node, output, Uuid::new_v4(), test(1, false, &[(2, 128)]));
+        let forced = &tests.of(node)[&output].universes[0];
+        assert_eq!(forced.levels[&1], 255, "this station's own browser");
+        assert_eq!(forced.levels[&2], 128, "a peer's browser, sent down the link");
+        // What goes to the peers is only what was asked here, or two stations would
+        // echo each other's tests back and neither could ever let go.
+        let sent = tests.merged_for(ANYWHERE, output).unwrap();
+        assert_eq!(sent.universes[0].levels.keys().copied().collect::<Vec<_>>(), vec![1]);
     }
 }

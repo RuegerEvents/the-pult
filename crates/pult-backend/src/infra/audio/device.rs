@@ -48,7 +48,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_queue::ArrayQueue;
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// What this machine can play through and listen on.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -191,7 +191,51 @@ struct Shared {
     /// What the device says is between the callback and the loudspeaker, in
     /// microseconds. Written by the callback because only it is told.
     latency_micros: AtomicU64,
+    /// What the callback noticed, for the thread keeping the stream alive to write
+    /// down. See [`Noticed`].
+    noticed: ArrayQueue<Noticed>,
+    /// What did not fit in `noticed`, so a burst of trouble is a count rather than a
+    /// silence.
+    unnoticed: AtomicU64,
+    /// Samples that reached ±1 and were clamped there, since the last look.
+    clipped: AtomicU64,
+    /// Buffers rendered, and the longest render in microseconds, since the last look.
+    buffers: AtomicU64,
+    slowest_micros: AtomicU64,
     stop: AtomicBool,
+}
+
+/// Something the callback saw that somebody listening for a dropout wants to know.
+///
+/// **The callback never logs.** Writing a line takes a lock and allocates, and either
+/// in a real-time callback is itself a dropout — so it pushes one of these onto a
+/// preallocated queue and the thread that keeps the stream alive writes it down.
+/// Positions are the deck's *read* cursor, which runs a device latency ahead of what
+/// is heard.
+#[derive(Debug, Clone, Copy)]
+enum Noticed {
+    /// The device's own playback clock jumped between two buffers by more than the
+    /// buffer it was given: frames that never reached the loudspeaker. This is what a
+    /// dropout is, seen from here, whoever caused it — this console, the driver, or a
+    /// Dante Virtual Soundcard that lost its clock.
+    Discontinuity { expected_micros: u64, got_micros: i64 },
+    /// The callback was not called on time: a gap between two calls well over the
+    /// buffer it last filled. Not a dropout on its own if the device had buffered
+    /// enough, which is why it is reported apart from one.
+    Late { expected_micros: u64, got_micros: u64 },
+    /// One buffer took most of the time it had to be ready in.
+    Slow { took_micros: u64, budget_micros: u64 },
+    /// A deck went round a looping timeline's end, inside the mixer.
+    Wrapped { slot: usize, from_ms: f64, to_ms: f64 },
+    /// The manager moved a deck's cursor: a locate, or a correction for drift.
+    Seeked { slot: usize, from_ms: f64, to_ms: f64 },
+    /// A deck started, or was rebuilt in place.
+    Started { slot: usize, at_ms: f64, kept_cursor: bool },
+    /// A deck was taken out.
+    Removed { slot: usize, at_ms: f64 },
+    /// A deck stopped being audible, or became audible again.
+    Silent { slot: usize, at_ms: f64 },
+    Sounding { slot: usize, at_ms: f64 },
 }
 
 /// The one output stream a station mixes every clip into.
@@ -222,6 +266,11 @@ impl Output {
             trash: ArrayQueue::new(8 * MAX_DECKS),
             slots: (0..MAX_DECKS).map(|_| Slot::default()).collect(),
             latency_micros: AtomicU64::new(0),
+            noticed: ArrayQueue::new(256),
+            unnoticed: AtomicU64::new(0),
+            clipped: AtomicU64::new(0),
+            buffers: AtomicU64::new(0),
+            slowest_micros: AtomicU64::new(0),
             stop: AtomicBool::new(false),
         });
         let (ready, started) = oneshot::channel();
@@ -335,41 +384,118 @@ fn play_thread(
     let mut mixer = pult_audio::Mixer::new(device_channels as usize, device_rate, MAX_DECKS);
 
     let for_callback = shared.clone();
+    // The callback's own memory of the buffer before, for noticing what changed. All of
+    // it fixed-size and moved in, so nothing here allocates once the stream runs.
+    let mut previous: Option<(cpal::StreamInstant, cpal::StreamInstant, u64)> = None;
+    let mut moved_by_manager = [false; MAX_DECKS];
     let fill = move |out: &mut [f32], info: &cpal::OutputCallbackInfo| {
+        let began = std::time::Instant::now();
+        let shared = &for_callback;
+        let notice = |what: Noticed| {
+            if shared.noticed.push(what).is_err() {
+                shared.unnoticed.fetch_add(1, Ordering::Relaxed);
+            }
+        };
         let timestamp = info.timestamp();
-        for_callback.latency_micros.store(
+        shared.latency_micros.store(
             timestamp.playback.saturating_duration_since(timestamp.callback).as_micros() as u64,
             Ordering::Relaxed,
         );
-        while let Some(command) = for_callback.commands.pop() {
+        let frames = (out.len() / device_channels as usize) as u64;
+        let budget_micros = frames * 1_000_000 / device_rate as u64;
+
+        // Measured against the buffer *before*, because that is how far the device's
+        // clock should have moved since. A tolerance of a quarter of a buffer and a
+        // millisecond, since both clocks are estimates and jitter is not a dropout.
+        if let Some((callback, playback, last_micros)) = previous {
+            let tolerance = last_micros / 4 + 1_000;
+            let played = (timestamp.playback.as_nanos() as i128 - playback.as_nanos() as i128) as i64 / 1_000;
+            if (played - last_micros as i64).unsigned_abs() > tolerance {
+                notice(Noticed::Discontinuity { expected_micros: last_micros, got_micros: played });
+            }
+            let called = timestamp.callback.saturating_duration_since(callback).as_micros() as u64;
+            if called > last_micros * 2 + 1_000 {
+                notice(Noticed::Late { expected_micros: last_micros, got_micros: called });
+            }
+        }
+        previous = Some((timestamp.callback, timestamp.playback, budget_micros));
+
+        moved_by_manager.fill(false);
+        while let Some(command) = shared.commands.pop() {
             match command {
-                Command::Put { deck, keep_cursor } => match mixer.put(deck, keep_cursor) {
-                    Ok(Some(old)) | Err(old) => {
-                        // Should the trash ever be full the deck is dropped here. It is
-                        // eight times the decks that can exist, and emptied every
-                        // twenty-five milliseconds.
-                        let _ = for_callback.trash.push(old);
-                    }
-                    Ok(None) => {}
-                },
-                Command::Remove(id) => {
-                    if let Some(old) = mixer.remove(id) {
-                        if let Some(slot) = for_callback.slots.get(old.tag) {
-                            slot.sounding.store(false, Ordering::Relaxed);
+                Command::Put { deck, keep_cursor } => {
+                    let slot = deck.tag;
+                    match mixer.put(deck, keep_cursor) {
+                        Ok(Some(old)) | Err(old) => {
+                            // Should the trash ever be full the deck is dropped here. It is
+                            // eight times the decks that can exist, and emptied every
+                            // twenty-five milliseconds.
+                            let _ = shared.trash.push(old);
                         }
-                        let _ = for_callback.trash.push(old);
+                        Ok(None) => {}
+                    }
+                    if let Some(deck) = mixer.decks().iter().find(|d| d.tag == slot) {
+                        notice(Noticed::Started { slot, at_ms: deck.cursor_ms, kept_cursor: keep_cursor });
+                    }
+                    if let Some(moved) = moved_by_manager.get_mut(slot) {
+                        *moved = true;
                     }
                 }
-                Command::Seek(id, at) => mixer.seek(id, at),
+                Command::Remove(id) => {
+                    if let Some(old) = mixer.remove(id) {
+                        notice(Noticed::Removed { slot: old.tag, at_ms: old.cursor_ms });
+                        if let Some(slot) = shared.slots.get(old.tag) {
+                            slot.sounding.store(false, Ordering::Relaxed);
+                        }
+                        let _ = shared.trash.push(old);
+                    }
+                }
+                Command::Seek(id, at) => {
+                    if let Some(deck) = mixer.decks().iter().find(|d| d.id == id) {
+                        notice(Noticed::Seeked { slot: deck.tag, from_ms: deck.cursor_ms, to_ms: at.max(0.0) });
+                        if let Some(moved) = moved_by_manager.get_mut(deck.tag) {
+                            *moved = true;
+                        }
+                    }
+                    mixer.seek(id, at)
+                }
                 Command::Rate(id, rate) => mixer.set_rate(id, rate),
             }
         }
         mixer.render(out);
         for deck in mixer.decks() {
-            if let Some(slot) = for_callback.slots.get(deck.tag) {
-                slot.position_micros.store((deck.cursor_ms.max(0.0) * 1_000.0) as u64, Ordering::Relaxed);
-                slot.sounding.store(deck.sounding, Ordering::Relaxed);
+            if let Some(slot) = shared.slots.get(deck.tag) {
+                let before_micros = slot.position_micros.load(Ordering::Relaxed);
+                let after_micros = (deck.cursor_ms.max(0.0) * 1_000.0) as u64;
+                // Backwards with nobody having moved it is the mixer going round.
+                let moved = moved_by_manager.get(deck.tag).copied().unwrap_or(true);
+                if !moved && after_micros < before_micros {
+                    notice(Noticed::Wrapped {
+                        slot: deck.tag,
+                        from_ms: before_micros as f64 / 1_000.0,
+                        to_ms: deck.cursor_ms,
+                    });
+                }
+                slot.position_micros.store(after_micros, Ordering::Relaxed);
+                let was = slot.sounding.swap(deck.sounding, Ordering::Relaxed);
+                if was != deck.sounding && !moved {
+                    notice(match deck.sounding {
+                        true => Noticed::Sounding { slot: deck.tag, at_ms: deck.cursor_ms },
+                        false => Noticed::Silent { slot: deck.tag, at_ms: deck.cursor_ms },
+                    });
+                }
             }
+        }
+        // `render` clamps to ±1, so a sample sitting on the rail is one that was over.
+        let clipped = out.iter().filter(|s| s.abs() >= 1.0).count() as u64;
+        if clipped > 0 {
+            shared.clipped.fetch_add(clipped, Ordering::Relaxed);
+        }
+        let took = began.elapsed().as_micros() as u64;
+        shared.buffers.fetch_add(1, Ordering::Relaxed);
+        shared.slowest_micros.fetch_max(took, Ordering::Relaxed);
+        if took * 4 > budget_micros * 3 {
+            notice(Noticed::Slow { took_micros: took, budget_micros });
         }
     };
 
@@ -394,16 +520,84 @@ fn play_thread(
         let _ = ready.send(Err(format!("{name} would not start: {e}")));
         return;
     }
-    let _ = ready.send(Ok((name, device_channels, device_rate)));
+    let _ = ready.send(Ok((name.clone(), device_channels, device_rate)));
 
     // The thread's whole remaining job is to keep the stream alive, because dropping a
-    // `cpal::Stream` stops it. Woken every so often only to notice that the handle has
-    // gone.
+    // `cpal::Stream` stops it — and to write down what the callback noticed, which the
+    // callback cannot do for itself. Woken every so often for both.
+    let mut summarized = std::time::Instant::now();
     while !shared.stop.load(Ordering::Relaxed) {
         std::thread::sleep(std::time::Duration::from_millis(50));
+        report(&name, &shared, &mut summarized);
     }
+    report(&name, &shared, &mut summarized);
     drop(stream);
     debug!("[audio] output stream closed");
+}
+
+/// How often the output says how it has been doing when nothing went wrong.
+const SUMMARY_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Write down what the callback noticed since the last look.
+///
+/// A dropout is a `warn`, and so is anything that is one in the making; a deck going
+/// round its loop or being moved is `info`, because the question this exists to answer
+/// is whether the first happens at the second. The summary is `debug`.
+fn report(name: &str, shared: &Shared, summarized: &mut std::time::Instant) {
+    let ms = |micros: u64| micros as f64 / 1_000.0;
+    while let Some(noticed) = shared.noticed.pop() {
+        match noticed {
+            Noticed::Discontinuity { expected_micros, got_micros } => warn!(
+                "[audio] {name} dropped out: its clock moved {:.1} ms over a {:.1} ms buffer",
+                got_micros as f64 / 1_000.0,
+                ms(expected_micros)
+            ),
+            Noticed::Late { expected_micros, got_micros } => warn!(
+                "[audio] {name} called back {:.1} ms after the last buffer, which held {:.1} ms",
+                ms(got_micros),
+                ms(expected_micros)
+            ),
+            Noticed::Slow { took_micros, budget_micros } => warn!(
+                "[audio] {name} took {:.2} ms to mix a {:.2} ms buffer",
+                ms(took_micros),
+                ms(budget_micros)
+            ),
+            Noticed::Wrapped { slot, from_ms, to_ms } => {
+                info!("[audio] deck {slot} went round its loop, {from_ms:.1} → {to_ms:.1} ms")
+            }
+            Noticed::Seeked { slot, from_ms, to_ms } => info!(
+                "[audio] deck {slot} moved from {from_ms:.1} to {to_ms:.1} ms ({:+.1} ms)",
+                to_ms - from_ms
+            ),
+            Noticed::Started { slot, at_ms, kept_cursor: false } => {
+                info!("[audio] deck {slot} started at {at_ms:.1} ms")
+            }
+            Noticed::Started { slot, at_ms, kept_cursor: true } => {
+                debug!("[audio] deck {slot} rebuilt in place at {at_ms:.1} ms")
+            }
+            Noticed::Removed { slot, at_ms } => info!("[audio] deck {slot} stopped at {at_ms:.1} ms"),
+            Noticed::Silent { slot, at_ms } => info!("[audio] deck {slot} fell silent at {at_ms:.1} ms"),
+            Noticed::Sounding { slot, at_ms } => info!("[audio] deck {slot} sounding again at {at_ms:.1} ms"),
+        }
+    }
+    let unnoticed = shared.unnoticed.swap(0, Ordering::Relaxed);
+    if unnoticed > 0 {
+        warn!("[audio] {name}: {unnoticed} more things happened in the callback than could be written down");
+    }
+    let clipped = shared.clipped.swap(0, Ordering::Relaxed);
+    if clipped > 0 {
+        warn!("[audio] {name}: {clipped} samples clipped at full scale");
+    }
+    if summarized.elapsed() >= SUMMARY_EVERY {
+        *summarized = std::time::Instant::now();
+        let buffers = shared.buffers.swap(0, Ordering::Relaxed);
+        let slowest = shared.slowest_micros.swap(0, Ordering::Relaxed);
+        debug!(
+            "[audio] {name}: {buffers} buffers in the last minute, the slowest mixed in {:.2} ms, {:.1} ms to the loudspeaker",
+            ms(slowest),
+            ms(shared.latency_micros.load(Ordering::Relaxed))
+        );
+    }
 }
 
 /// Build an output stream for a device that does not want f32.

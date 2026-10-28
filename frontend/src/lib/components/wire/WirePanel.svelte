@@ -215,8 +215,9 @@
 	onMount(() => {
 		// While something is forced, say so again every few seconds. The station holds
 		// the test and keeps it until this page goes, so on a wire this station runs
-		// that is a no-op; on a peer's it is what carries the test across a link that
-		// dropped and came back, which forgets everything on the far side.
+		// that is a no-op; on a peer's — or on one naming no station, which the station
+		// sends to every peer — it is what carries the test across a link that dropped
+		// and came back, which forgets everything on the far side.
 		const holding = setInterval(() => {
 			if (!isEmpty(test)) sendTest();
 		}, 3000);

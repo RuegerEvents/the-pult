@@ -288,7 +288,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // And whatever it was forcing on an output: a light must never stay at full
     // because the tablet that put it there lost its signal.
     for ((node_id, output_id), test) in state.viewers.tests.forget(session_id) {
-        if node_id != state.node_id {
+        if node_id == crate::infra::connectors::channel_tests::ANYWHERE {
+            state.sync.test_every_peer_output(output_id, test).await;
+        } else if node_id != state.node_id {
             state.sync.test_peer_output(node_id, output_id, test).await;
         }
     }

@@ -71,9 +71,14 @@ function publish(next: ClockOffset | null) {
  * Callers must handle the `null`. That is the whole point of it: a number here that
  * has not been placed against the station's clock is a number that will draw the rig
  * in the wrong place, and a visible gap is better than an invisible lie.
+ *
+ * **A whole millisecond.** The offset is an average and comes out fractional, and
+ * every console time the station keeps is a `u64`: an effect's `t0` stamped with
+ * `…182.5` was refused outright ("expected u64"). Rounded here so no caller has to
+ * remember to.
  */
 export function consoleNow(): number | null {
-	return current === null ? null : Date.now() + current.offsetMs;
+	return current === null ? null : Math.round(Date.now() + current.offsetMs);
 }
 
 /**
@@ -88,7 +93,7 @@ export function actAt(): number | undefined {
 
 /** The same, for a specific browser instant rather than for now. */
 export function consoleAt(localMs: number): number | null {
-	return current === null ? null : localMs + current.offsetMs;
+	return current === null ? null : Math.round(localMs + current.offsetMs);
 }
 
 /** What is known about the offset, or `null` while nothing is. */
