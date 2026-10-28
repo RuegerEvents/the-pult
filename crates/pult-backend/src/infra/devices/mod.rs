@@ -504,6 +504,8 @@ impl DeviceManager {
         // A console restarted mid-show comes up already leading, with devices already
         // adopted. Nothing will announce that, so it is checked once here.
         self.reconsider_leadership().await;
+        // And strips still named after a node's serial, from before they followed it.
+        self.name_heads().await;
 
         // The first periodic thing in this loop. A node tracing a shape has to know
         // what time the console thinks it is, or it cannot place the start of a cycle,
@@ -560,10 +562,14 @@ impl DeviceManager {
                 Some(_) = stations.next() => self.refresh_brokers().await,
                 Some(_) = addresses.next() => {
                     self.remember_patched().await;
+                    self.name_heads().await;
                     self.push_renamed().await;
                     self.publish().await;
                 }
-                Some(_) = names.next() => self.push_renamed().await,
+                Some(_) = names.next() => {
+                    self.name_heads().await;
+                    self.push_renamed().await;
+                }
                 _ = clock.tick() => self.publish_clock().await,
                 _ = strips.tick() => self.reconcile_all_strips().await,
                 _ = strays.tick() => self.tell_strays().await,
@@ -1109,6 +1115,7 @@ impl DeviceManager {
                 self.refresh_description(&serial).await;
                 self.reconcile_adoptions().await;
                 self.retype(&serial).await;
+                self.name_heads().await;
 
                 // A node that has rebooted has forgotten where to publish, and it
                 // announcing itself again is the only notice we get. So does a node
@@ -1560,6 +1567,63 @@ impl DeviceManager {
             name.pop();
         }
         Some(name)
+    }
+
+    /// Keep each strip called after its node: `<node> Strip 1`, where `<node>` is what
+    /// the node's own fixture is called now.
+    ///
+    /// A strip is named once, at adoption, after what the node announced — which until
+    /// somebody names a node is a default with its serial in it — so renaming the node
+    /// left every strip reading `Node V0 f674adc8 Strip 1`. Only a name that is still
+    /// that shape is touched: the head's own name after the serial, or after what the
+    /// node announced before it was renamed. A strip somebody named themselves is
+    /// theirs. Run before [`Self::push_renamed`], which is what moves the announced
+    /// name on. The leader's alone, so two stations do not both write it.
+    async fn name_heads(&mut self) {
+        if self.is_follower().await {
+            return;
+        }
+        let fixtures = self.fixtures().await;
+        for device in self.state.discovered.values() {
+            let Some(description) = &device.description else { continue };
+            let Some(node) = fixtures
+                .iter()
+                .find(|f| f.address.serial() == Some(device.serial.as_str()) && f.address.head() == Some(0))
+            else {
+                continue;
+            };
+            let node_name = node.name.trim();
+            if node_name.is_empty() {
+                continue;
+            }
+            for strip in fixtures.iter().filter(|f| {
+                f.address.serial() == Some(device.serial.as_str()) && f.address.head().is_some_and(|h| h != 0)
+            }) {
+                let Some(head_name) = strip.address.head().and_then(|h| description.head_name(h)) else { continue };
+                let wanted = format!("{node_name} {head_name}");
+                if strip.name == wanted {
+                    continue;
+                }
+                let Some(prefix) = strip.name.strip_suffix(head_name).map(str::trim) else { continue };
+                // The serial whole, or its tail, which is what a default name shortens to.
+                let serial = device.serial.to_lowercase();
+                let tail = &serial[serial.len().saturating_sub(6)..];
+                let lower = prefix.to_lowercase();
+                let ours = prefix.is_empty() || prefix == device.name || lower.contains(&serial) || lower.contains(tail);
+                if !ours {
+                    continue;
+                }
+                let path = vec![
+                    PathSegment::Key("fixtures".into()),
+                    PathSegment::Id(strip.id),
+                    PathSegment::Key("name".into()),
+                ];
+                match self.write(path, &wanted).await {
+                    Ok(()) => info!("[devices] \"{}\" is now \"{wanted}\", after its node", strip.name),
+                    Err(e) => debug!("[devices] could not rename \"{}\": {e}", strip.name),
+                }
+            }
+        }
     }
 
     /// Tell every node whose own fixture was renamed: the name in the show against the
