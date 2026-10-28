@@ -45,7 +45,7 @@ pub use effect::{
     Spread, Step,
 };
 pub use zone::{
-    destination_gain, node_sides, node_targets, station_channels, SpeakerZone, SpeakerZoneCreate, SpeakerZonePatch, StationAudio, ZoneNode,
+    clip_node_targets, destination_gain, node_sides, node_targets, station_channels, SpeakerZone, SpeakerZoneCreate, SpeakerZonePatch, StationAudio, ZoneNode,
 };
 pub use variable::{Variable, VariableCreate, VariableKind, VariableOp, VariablePatch};
 pub use wing::{

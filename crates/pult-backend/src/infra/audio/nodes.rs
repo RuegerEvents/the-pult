@@ -61,7 +61,7 @@ use pult_schema::{
             NodeStreamHealth,
         },
         timeline::{AtEnd, AudioClip, NodeAudioMode, Timeline},
-        zone::{destination_gain, node_sides, node_targets, SpeakerZone},
+        zone::{clip_node_targets, destination_gain, node_sides, SpeakerZone},
     },
 };
 use tokio::sync::{mpsc, watch};
@@ -243,7 +243,7 @@ pub fn node_clips<'t>(
         .clips
         .iter()
         .flat_map(|clip| {
-            node_targets(&clip.destination, zones).into_iter().map(move |(serial, mode)| {
+            clip_node_targets(clip, zones).into_iter().map(move |(serial, mode)| {
                 let sides = node_sides(&clip.destination, zones, &serial);
                 (clip, serial, mode, sides)
             })

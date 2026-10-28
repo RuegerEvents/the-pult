@@ -254,6 +254,47 @@ impl DeviceEntry {
     }
 }
 
+/// How often the driving station asks each adopted node's `/api/v1/status`.
+const VITALS_EVERY: Duration = Duration::from_secs(10);
+
+/// A node's `/status`, coarsened so the replicated row moves only when something did:
+/// see [`pult_schema::types::devices::NodeVitals`]. The boot moment is kept from the
+/// last reading while it is within a few seconds of it, since `now - uptime` jitters by
+/// the time a request takes.
+fn read_vitals(
+    status: &serde_json::Value,
+    before: Option<&pult_schema::types::devices::NodeVitals>,
+) -> pult_schema::types::devices::NodeVitals {
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let step = |v: f64, by: f64| ((v / by).round() * by) as i64;
+    let booted = status["uptime_s"]
+        .as_u64()
+        .map(|up| pult_schema::clock::now_ms().saturating_sub(up * 1_000))
+        .map(|at| match before.and_then(|b| b.booted_at_ms) {
+            Some(was) if was.abs_diff(at) < 5_000 => was,
+            _ => at,
+        });
+    let net = &status["network"];
+    pult_schema::types::devices::NodeVitals {
+        board: text(&status["board"]),
+        fw: text(&status["fw"]),
+        build: text(&status["build"]),
+        booted_at_ms: booted,
+        reset_reason: text(&status["resetReason"]),
+        coredump: status["coredump"].as_bool().unwrap_or(false),
+        transport: text(&net["transport"]),
+        ssid: text(&net["ssid"]),
+        rssi: net["rssi"].as_f64().filter(|r| *r < 0.0).map(|r| step(r, 5.0) as i32),
+        free_heap: status["freeHeap"].as_f64().map(|h| step(h, 16_384.0) as u64),
+        chip_temp_c: status["chipTempC"].as_f64().map(|t| t.round() as i32),
+        clock_locked: status["clockLocked"].as_bool().unwrap_or(false),
+        console_offset_ms: status["consoleOffsetMs"].as_f64().map(|o| step(o, 5.0)),
+        pending_verify: status["pendingVerify"].as_bool().unwrap_or(false),
+        errors: status["errors"].as_array().map(|e| e.iter().map(text).collect()).unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
 /// A warning for every second a node's sound went wrong: its underruns, late or
 /// missing packets or resyncs went up since its last `audio/status`.
 ///
@@ -367,6 +408,10 @@ pub struct DeviceManager {
     /// Until when this station holds off driving the nodes at start-up, because it
     /// remembers a session it is about to rejoin. See [`REJOIN_GRACE`].
     grace_until: Option<std::time::Instant>,
+    /// What each adopted node last said on `/api/v1/status`, coarsened.
+    vitals: BTreeMap<String, pult_schema::types::devices::NodeVitals>,
+    /// What this station last said in its `node_health` row.
+    health_said: Option<pult_schema::types::devices::NodeHealthReport>,
 }
 
 impl DeviceManager {
@@ -408,6 +453,8 @@ impl DeviceManager {
                 brokers: Vec::new(),
                 grace_until: crate::infra::session::remembered::load(node_id)
                     .map(|_| std::time::Instant::now() + REJOIN_GRACE),
+                vitals: BTreeMap::new(),
+                health_said: None,
             },
             DeviceHandle(tx),
             directory_rx,
@@ -475,6 +522,8 @@ impl DeviceManager {
         let mut grace = tokio::time::interval(std::time::Duration::from_secs(2));
         let mut undescribed = tokio::time::interval(Duration::from_secs(10));
         undescribed.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut vitals = tokio::time::interval(VITALS_EVERY);
+        vitals.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -519,6 +568,10 @@ impl DeviceManager {
                 _ = strips.tick() => self.reconcile_all_strips().await,
                 _ = strays.tick() => self.tell_strays().await,
                 _ = undescribed.tick() => self.describe_the_undescribed().await,
+                _ = vitals.tick() => {
+                    self.ask_vitals();
+                    self.publish_health().await;
+                }
                 _ = grace.tick(), if self.grace_until.is_some() => {
                     if self.grace_until.is_some_and(|until| std::time::Instant::now() >= until) {
                         self.grace_until = None;
@@ -750,6 +803,12 @@ impl DeviceManager {
     /// Idempotent: an existing OpenHaunt output that runs on this station — its
     /// own or an every-station one — is left alone, enabled or not, because
     /// switching an output off is a decision this must not undo.
+    ///
+    /// Made naming **no** station, which for OpenHaunt is the leader: one row then
+    /// serves every station that ever drives the nodes, where a row pinned to whoever
+    /// made it left one behind per station, each still sending to the nodes after its
+    /// station stopped leading — HHG's show had three pinned to the audio Mac beside the
+    /// Mini's, and the nodes were hearing both (2026-10-28).
     async fn ensure_openhaunt_output(&self) {
         let outputs: Vec<OutputConfig> = self.read("outputs").await;
         let covered = outputs.iter().any(|o| {
@@ -766,7 +825,7 @@ impl DeviceManager {
             target: None,
             universes: Vec::new(),
             enabled: true,
-            node_id: Some(self.node_id),
+            node_id: None,
             interfaces: Default::default(),
             priority: Default::default(),
         };
@@ -835,6 +894,12 @@ impl DeviceManager {
                 }
                 device.online = online;
                 self.publish().await;
+            }
+            MqttEvent::Vitals { serial, status } => {
+                let before = self.vitals.get(&serial);
+                let read = read_vitals(&status, before);
+                self.vitals.insert(serial, read);
+                self.publish_health().await;
             }
             MqttEvent::Health { serial, health } => {
                 let Some(device) = self.state.discovered.get_mut(&serial) else { return };
@@ -1684,6 +1749,79 @@ impl DeviceManager {
                 .collect(),
         });
         self.push_state().await;
+    }
+
+    /// Ask every adopted node on the network what it says about itself. Each request
+    /// is its own task and its answer comes back as [`MqttEvent::Vitals`], so a node
+    /// slow to answer holds up nothing. Only while driving: the nodes are this
+    /// station's to ask then, and another station's otherwise.
+    fn ask_vitals(&self) {
+        if self.mqtt.is_none() {
+            return;
+        }
+        for device in self.state.discovered.values() {
+            if device.adopted_fixture_id.is_none() || !device.online || device.ip.is_empty() {
+                continue;
+            }
+            let url = format!("http://{}:{}/api/v1/status", device.ip, device.port);
+            let http = self.http.clone();
+            let tx = self.mqtt_tx.clone();
+            let serial = device.serial.clone();
+            tokio::spawn(async move {
+                let Ok(answer) = http.get(&url).timeout(Duration::from_secs(3)).send().await else { return };
+                let Ok(status) = answer.json::<serde_json::Value>().await else { return };
+                let _ = tx.send(MqttEvent::Vitals { serial, status }).await;
+            });
+        }
+    }
+
+    /// Say what this station knows about every adopted node's health in its
+    /// `node_health` row, when anything in it moved and the row is still there.
+    async fn publish_health(&mut self) {
+        use pult_schema::types::devices::{NodeHealthReport, NodeVitals};
+        let driving = self.mqtt.is_some();
+        let nodes = self
+            .state
+            .discovered
+            .values()
+            .filter(|d| driving && d.adopted_fixture_id.is_some())
+            .map(|d| {
+                let mut v: NodeVitals = self.vitals.get(&d.serial).cloned().unwrap_or_default();
+                v.name = d.name.clone();
+                v.online = d.online;
+                v.on_broker = self.on_broker.contains(&d.serial);
+                v.restarts = self.starts.get(&d.serial).copied().unwrap_or(0);
+                if let Some(health) = &d.health {
+                    v.temp_c = health.temperature_c.map(|t| t.round() as i32);
+                    v.poe_class = health.poe_class;
+                    for e in &health.errors {
+                        if !v.errors.contains(e) {
+                            v.errors.push(e.clone());
+                        }
+                    }
+                }
+                if v.fw.is_empty() {
+                    v.fw = d.fw.clone();
+                }
+                (d.serial.clone(), v)
+            })
+            .collect();
+        let row = NodeHealthReport { id: self.node_id.0, driving, nodes };
+        let Ok(value) = serde_json::to_value(&row) else { return };
+        let path = vec![PathSegment::Key("node_health".into()), PathSegment::Id(row.id)];
+        if self.health_said.as_ref() == Some(&row)
+            && self.engine.get(path.clone()).await.is_ok_and(|held| held == value)
+        {
+            return;
+        }
+        if self.engine.set(path, Lifecycle::Synced, value.clone()).await.is_err() {
+            let create = vec![PathSegment::Key("node_health".into()), PathSegment::Key("__create".into())];
+            if let Err(e) = self.engine.set(create, Lifecycle::Synced, value).await {
+                debug!("[devices] could not publish the nodes' health: {e}");
+                return;
+            }
+        }
+        self.health_said = Some(row);
     }
 
     async fn push_state(&self) {

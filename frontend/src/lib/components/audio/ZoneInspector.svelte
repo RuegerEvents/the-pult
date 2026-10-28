@@ -58,23 +58,7 @@
 		void zone(z.id).width.set(Math.max(1, Math.min(64, Math.round(width))));
 	}
 
-	/** Where a zone comes out of one node's two outputs, in words. */
-	function onNode(z: SpeakerZone, serial: string): string {
-		const output = (o: number) => (o === 1 ? 'left' : o === 2 ? 'right' : `output ${o}`);
-		const sides = nodeSidesOf(z, serial);
-		const said = (outputs: number[] | undefined) => (outputs?.length ? outputs.map(output).join(' and ') : 'nowhere');
-		const how = z.nodes.find((n) => n.serial === serial)?.mode === 'Clip' ? ', stored' : ', streamed';
-		if (z.width === 1) return said(sides[0]) + how;
-		return sides.map((o, i) => `${sideName(z.width, i)}: ${said(o)}`).join(' · ') + how;
-	}
 
-	/** One station's mapping, in that station's words where this is that station. */
-	function mapped(z: SpeakerZone, stationId: string): string {
-		const text = mappingText(z, stationId, stationId === here ? names : undefined);
-		// Not mapped on a station is the ordinary case, not a fault: said as a dash.
-		if (!text) return '—';
-		return zoneProblem(z, stationId, 'it') ? `${text} — ${widthName(z.width)}, a side goes nowhere` : text;
-	}
 </script>
 
 {#each rows as z (z.id)}
@@ -121,31 +105,10 @@
 		<span class="label">Used by</span>
 		<span class="note">{usedBy(z)}</span>
 
-		<span class="label">On stations</span>
-		<div class="stations">
-			{#each $stationNames as s (s.id)}
-				{@const text = mapped(z, s.id)}
-				<span class="station" class:here={s.id === here} class:gone={!s.online}>{s.name}{s.id === here ? ' (this one)' : s.online ? '' : ' (offline)'}</span>
-				<span class:says-bad={text.includes('goes nowhere')} class="map">{text}</span>
-			{/each}
-			{#each Object.keys(z.channels).filter((id) => !$stationNames.some((s) => s.id === id)) as gone (gone)}
-				<span class="station gone">a station not here</span>
-				<span class="map">{mappingText(z, gone, undefined)}</span>
-			{/each}
-		</div>
-		<span></span>
-		<div><button class="btn btn-ghost" onclick={() => openSetup('audio')}>Map on this station…</button></div>
-
-		{#if z.nodes.length}
-			<span class="label">Node speakers</span>
-			<div class="stations">
-				{#each z.nodes as member (member.serial)}
-					{@const node = nodes.find((n) => n.serial === member.serial)}
-					<span class="station" class:gone={!node?.online}>{node?.name ?? member.serial}{node ? (node.online ? '' : ' (offline)') : ' (not found)'}</span>
-					<span class="map">{onNode(z, member.serial)}</span>
-				{/each}
-			</div>
-		{/if}
+		<!-- Where it comes out — every station's channels and every node speaker — is the
+		     routing matrix's to show and to set, so it is not repeated here. -->
+		<span class="label">Routing</span>
+		<div><button class="btn btn-ghost" onclick={() => openSetup('audio')}>Routing matrix…</button></div>
 
 		<span class="label">Notes</span>
 		<input
@@ -170,23 +133,3 @@
 		{/if}
 	</div>
 {/each}
-
-<style>
-	.stations,
-	.station {
-		color: var(--text);
-	}
-	.station.here {
-		font-weight: 600;
-	}
-	.station.gone {
-		color: var(--text-faint);
-	}
-	.map {
-		color: var(--text-dim);
-		font-size: var(--font-xs);
-	}
-	.map.says-bad {
-		color: var(--live);
-	}
-</style>

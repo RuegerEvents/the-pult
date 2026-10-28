@@ -155,6 +155,7 @@ async fn a_spare_plays_a_zone_on_its_own_channels() {
             fade_in_ms: 0,
             fade_out_ms: 0,
             repeats: 1,
+            stored: false,
             destination: AudioDestination::Zone { zone: zone.id },
         }],
         detected: None,

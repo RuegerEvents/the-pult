@@ -2429,7 +2429,7 @@ impl ShowEngine {
     fn lead_a_streamed_play(&self, path: &Path, mut value: serde_json::Value) -> serde_json::Value {
         use pult_schema::types::{
             timeline::{NodeAudioMode, Timeline, STREAM_LEAD_MS},
-            zone::{node_targets, SpeakerZone},
+            zone::{clip_node_targets, SpeakerZone},
         };
         let [PathSegment::Key(table), PathSegment::Id(id), PathSegment::Key(verb)] = path.as_slice() else {
             return value;
@@ -2449,7 +2449,7 @@ impl ShowEngine {
         let streams = timeline
             .clips
             .iter()
-            .any(|clip| node_targets(&clip.destination, &zones).iter().any(|(_, mode)| *mode == NodeAudioMode::Stream));
+            .any(|clip| clip_node_targets(clip, &zones).iter().any(|(_, mode)| *mode == NodeAudioMode::Stream));
         if !streams {
             return value;
         }

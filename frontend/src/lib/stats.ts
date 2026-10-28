@@ -239,6 +239,10 @@ function iAm(key: string | null) {
  */
 export function reportBrowserStats(client: PultWsClient, meter: FrameMeter): () => void {
 	if (typeof window === 'undefined') return () => {};
+	// The desktop app's own window is the console, not a browser on the network: it is
+	// not listed among them (its window marks itself, `pult-gui`'s initialization
+	// script). A struggle is still said in the log, which is where it matters.
+	const desktop = (window as Window & { __PULT_DESKTOP__?: boolean }).__PULT_DESKTOP__ === true;
 
 	const complaints = new Throttle(COMPLAIN_EVERY_MS);
 
@@ -246,10 +250,12 @@ export function reportBrowserStats(client: PultWsClient, meter: FrameMeter): () 
 		const frames = meter.close();
 		// A failure to report must never itself be reported, or a station that has
 		// gone away turns one dropped call into an unbounded stream of them.
-		client
-			.call('client.report', { stats: describeSelf(frames) })
-			.then((key) => iAm(typeof key === 'string' ? key : null))
-			.catch(() => {});
+		if (!desktop) {
+			client
+				.call('client.report', { stats: describeSelf(frames) })
+				.then((key) => iAm(typeof key === 'string' ? key : null))
+				.catch(() => {});
+		}
 
 		const bad = struggling(frames);
 		if (!bad) return;

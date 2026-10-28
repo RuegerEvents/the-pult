@@ -18,6 +18,7 @@
 	import type { ClipRow } from '$lib/kinds/timeline.kind.js';
 	import { categoryColor } from '$lib/layout/categories.js';
 	import { audioNodes, bytesText, nodeOf, zoneOf } from '$lib/destination.js';
+	import Dialog from '$lib/components/Dialog.svelte';
 	import { canEdit } from '$lib/stores/showLock.js';
 	import { openSetup } from '$lib/stores/setup.js';
 	import { audioOutput, audioStatus, current, devices, drivingReport, nodeAudio, writeColumns } from '$lib/stores/timelines.js';
@@ -73,6 +74,15 @@
 	function pickZone(zone: SpeakerZone) {
 		void setAll({ destination: { Zone: { zone: zone.id } } });
 	}
+
+	/** Whether every selected clip is stored on its nodes, or `null` when they differ. */
+	const storedShared = $derived(rows.every((r) => !!r.clip.stored === !!rows[0]?.clip.stored) ? !!rows[0]?.clip.stored : null);
+	/**
+	 * Storing is asked first: an upload is megabytes written into each node's flash,
+	 * which pauses its caches for every sector erased — not something that should start
+	 * because somebody clicked to look. Streaming writes nothing and goes straight through.
+	 */
+	let confirmingStore = $state(false);
 
 	/** The zones a node is a member of, for a clip still sent straight to that node. */
 	const zonesWith = (serial: string) => $zones.filter((z) => z.nodes.some((n) => n.serial === serial));
@@ -247,6 +257,23 @@
 				<button class="btn btn-ghost" onclick={() => openSetup('audio')}>Map zones…</button>
 			</div>
 		{/if}
+		{#if zone && zone.nodes.length}
+			<span class="label">On nodes</span>
+			<div class="segmented" role="group" aria-label="How the clip reaches the node speakers in its zone">
+				<button
+					class:on={storedShared === false}
+					disabled={!$canEdit}
+					title="Sent as it plays, a playout delay ahead. No size limit, and it needs the network for as long as it sounds."
+					onclick={() => void setAll({ stored: false })}>Streamed</button
+				>
+				<button
+					class:on={storedShared === true}
+					disabled={!$canEdit}
+					title="Uploaded to each node's flash ahead of time, and started there. Immune to the network once it is there."
+					onclick={() => storedShared === true || (confirmingStore = true)}>Stored</button
+				>
+			</div>
+		{/if}
 		<span class="label">Output</span>
 		{#if $audioOutput?.open}
 			<span class="note"><span class="says-good">{names?.alias || $audioOutput.device}</span> · {$audioOutput.channels} channels at {$audioOutput.sample_rate} Hz, on this station</span>
@@ -294,7 +321,28 @@
 	{/each}
 </div>
 
+{#if confirmingStore}
+	<Dialog title="Store on the nodes" onclose={() => (confirmingStore = false)} onaccept={() => { confirmingStore = false; void setAll({ stored: true }); }}>
+		<p class="ask">
+			{rows.length === 1 ? `“${rows[0].name}”` : `${rows.length} clips`} will be uploaded to every node speaker in
+			{rows.length === 1 ? 'its zone' : 'their zones'} and kept in flash, so it plays there with no network. An upload
+			pauses a node's caches while it writes: do it before the show, not during a scare. Changing the trim later uploads
+			it again once the clip stands still.
+		</p>
+		{#snippet footer()}
+			<button class="btn btn-ghost" onclick={() => (confirmingStore = false)}>Cancel</button>
+			<button class="btn btn-primary" onclick={() => { confirmingStore = false; void setAll({ stored: true }); }}>Upload</button>
+		{/snippet}
+	</Dialog>
+{/if}
+
 <style>
+	.ask {
+		margin: 0;
+		padding: 14px;
+		font-size: 0.85rem;
+		line-height: 1.5;
+	}
 	.pairs {
 		display: grid;
 		grid-template-columns: 1fr 1fr;

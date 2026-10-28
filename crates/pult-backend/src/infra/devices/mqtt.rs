@@ -37,6 +37,10 @@ pub enum MqttEvent {
     Health { serial: String, health: DeviceHealth },
     /// What a node's loudspeaker is doing, once a second while it is doing anything.
     AudioStatus { serial: String, status: NodeAudioStatus },
+    /// Not MQTT: a node's `GET /api/v1/status`, asked by the driving station every few
+    /// seconds, coming back through the same channel so the manager's loop never waits
+    /// on a node's HTTP.
+    Vitals { serial: String, status: serde_json::Value },
     /// Every address a node is on, the path it prefers first. Said again whenever a
     /// path comes or goes, which is sooner than mDNS says so.
     Net { serial: String, addresses: Vec<NodeAddress> },

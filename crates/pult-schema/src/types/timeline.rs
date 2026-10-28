@@ -849,6 +849,14 @@ pub struct AudioClip {
     #[serde(default = "one_time")]
     pub repeats: u32,
     pub destination: AudioDestination,
+    /// Stored on the node loudspeakers its zone reaches, rather than streamed to them:
+    /// uploaded to each one's flash ahead of time and started there, immune to the
+    /// network once it is there. Per clip, because it is a fact about the sound — a
+    /// short scare is worth storing and a three-minute bed is not — and off by default,
+    /// since an upload is megabytes of flash written before anybody asked for it. A
+    /// clip sent straight to a node says how in its destination instead.
+    #[serde(default)]
+    pub stored: bool,
 }
 
 fn one_time() -> u32 {

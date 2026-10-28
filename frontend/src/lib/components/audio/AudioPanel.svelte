@@ -27,7 +27,6 @@
 	import { showData } from '$lib/stores/show.js';
 	import { audioOutput, devices as deviceList, drivingReport } from '$lib/stores/timelines.js';
 	import { audioNodes } from '$lib/destination.js';
-	import type { NodeAudioMode } from '$lib/generated/index.js';
 	import { audioPrefs, createZone, forgetStation, loadAudioPrefs, nameDevice, namesFor, stationAudio, stationNames, zones } from '$lib/stores/zones.js';
 	import { writePreferences } from '$lib/preferences.js';
 	import { getClientContext, getStationContext } from '$lib/ws/context.js';
@@ -35,7 +34,6 @@
 		NODE_CHANNELS,
 		channelName,
 		freshZoneName,
-		nodeMode,
 		nodeSidesAt,
 		sideName,
 		sidesAt,
@@ -161,30 +159,9 @@
 	function toggleNode(zoneId: string, serial: string, channel: number) {
 		const zone = $zones.find((z) => z.id === zoneId);
 		if (!zone) return;
-		const mode = nodeMode($zones, serial) ?? 'Stream';
-		void showData().speaker_zones.byId(zone.id).nodes.set(toggleNodeChannel(zone, serial, channel, mode));
+		void showData().speaker_zones.byId(zone.id).nodes.set(toggleNodeChannel(zone, serial, channel, 'Stream'));
 	}
 
-	/**
-	 * How a node is reached, in every zone it is in at once: it is a fact about the node
-	 * in this room, not about one zone. Storing is asked first — an upload is megabytes
-	 * written into the node's flash, and pauses its caches while it writes.
-	 */
-	let storing = $state<{ serial: string; label: string } | null>(null);
-	async function setNodeMode(serial: string, mode: NodeAudioMode) {
-		storing = null;
-		beginGesture();
-		try {
-			for (const zone of $zones) {
-				if (!zone.nodes.some((n) => n.serial === serial && n.mode !== mode)) continue;
-				await showData()
-					.speaker_zones.byId(zone.id)
-					.nodes.set(zone.nodes.map((n) => (n.serial === serial ? { ...n, mode } : n)));
-			}
-		} finally {
-			endGesture();
-		}
-	}
 
 	/**
 	 * Forgetting a station the show remembers asks first, and says what goes: every
@@ -414,26 +391,9 @@
 								</th>
 							{/each}
 							{#each nodeBlocks as node (node.serial)}
-								{@const mode = nodeMode($zones, node.serial)}
 								<th class="station node" class:offline={!node.online} colspan={NODE_CHANNELS} title="An OpenHaunt node's loudspeaker">
 									<span class="kind">node</span>
 									{node.label}{node.found ? (node.online ? '' : ' · offline') : ' · not found'}
-									{#if mode !== null || $zones.some((z) => z.nodes.some((n) => n.serial === node.serial))}
-										<span class="how" role="group" aria-label="How {node.label} is reached">
-											<button
-												class:on={mode === 'Stream'}
-												disabled={!$canEdit}
-												title="Sent as it plays, a playout delay ahead. Needs the network for as long as it sounds."
-												onclick={() => void setNodeMode(node.serial, 'Stream')}>streamed</button
-											>
-											<button
-												class:on={mode === 'Clip'}
-												disabled={!$canEdit}
-												title="Uploaded to the node's flash ahead of time, and started there. Immune to the network once it is there."
-												onclick={() => mode !== 'Clip' && (storing = { serial: node.serial, label: node.label })}>stored</button
-											>
-										</span>
-									{/if}
 								</th>
 							{/each}
 						</tr>
@@ -517,8 +477,8 @@
 				carry the same side — a bed on all eight Dante channels is eight clicks. A zone a
 				station has not mapped is not played there, and says so on the timeline rather than
 				coming out of some other speaker. A node is the two columns after the stations — its
-				left and right — and whether it is streamed or stored is set in its header, for every
-				zone it is in.
+				left and right. Whether a clip is streamed to a node or stored on it is the clip's own
+				setting, in its Inspector.
 			</p>
 		{/if}
 	</section>
@@ -529,23 +489,6 @@
 		<aside class="dock"><InspectorPanel /></aside>
 	{/if}
 </div>
-
-{#if storing}
-	{@const ask = storing}
-	<Dialog title="Store on {ask.label}?" onclose={() => (storing = null)} onaccept={() => void setNodeMode(ask.serial, 'Clip')}>
-		<div class="prompt">
-			<p>
-				Every clip that goes to a zone {ask.label} is in will be uploaded to it and kept in its
-				flash, so it plays there with no network.
-			</p>
-			<p class="note">An upload pauses the node's caches while it writes: do it before the show, not during a scare.</p>
-		</div>
-		{#snippet footer()}
-			<button class="btn btn-ghost" onclick={() => (storing = null)}>Cancel</button>
-			<button class="btn btn-primary" onclick={() => void setNodeMode(ask.serial, 'Clip')}>Store</button>
-		{/snippet}
-	</Dialog>
-{/if}
 
 {#if forgetting}
 	{@const block = forgetting}
@@ -619,26 +562,6 @@
 		letter-spacing: 0.06em;
 		font-weight: 500;
 		margin-right: 4px;
-	}
-	.how {
-		display: inline-flex;
-		margin-left: 6px;
-		gap: 2px;
-	}
-	.how button {
-		font: inherit;
-		font-weight: 500;
-		font-size: var(--font-xs);
-		background: none;
-		border: 1px solid var(--line-strong);
-		border-radius: 4px;
-		color: var(--text-dim);
-		cursor: pointer;
-		padding: 0 5px;
-	}
-	.how button.on {
-		border-color: var(--accent-solid);
-		color: var(--text);
 	}
 	.station.offline {
 		color: var(--text-dim);

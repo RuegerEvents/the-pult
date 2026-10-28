@@ -149,6 +149,7 @@ fn a_clip(start_ms: u64, offset_ms: u64, length_ms: Option<u64>) -> AudioClip {
         fade_in_ms: 0,
         fade_out_ms: 0,
         repeats: 1,
+        stored: false,
         destination: pult_schema::types::timeline::AudioDestination::Zone { zone: ZONE },
     }
 }

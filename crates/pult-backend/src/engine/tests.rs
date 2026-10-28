@@ -5150,6 +5150,7 @@ mod streamed_play {
                 fade_in_ms: 0,
                 fade_out_ms: 0,
                 repeats: 1,
+                stored: false,
                 destination,
             }],
             detected: None,

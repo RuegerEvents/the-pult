@@ -19,6 +19,7 @@ import type { InputConfig } from '../generated/InputConfig.js';
 import type { Layer } from '../generated/Layer.js';
 import type { Layout } from '../generated/Layout.js';
 import type { NamedAsset } from '../generated/NamedAsset.js';
+import type { NodeHealthReport } from '../generated/NodeHealthReport.js';
 import type { NodeReport } from '../generated/NodeReport.js';
 import type { OutputConfig } from '../generated/OutputConfig.js';
 import type { PluginDatum } from '../generated/PluginDatum.js';
@@ -103,6 +104,10 @@ export type LayoutEntity = PathProxy<Layout> & {
 };
 
 export type NamedAssetEntity = PathProxy<NamedAsset> & {
+  delete(): Promise<void>;
+};
+
+export type NodeHealthReportEntity = PathProxy<NodeHealthReport> & {
   delete(): Promise<void>;
 };
 
@@ -412,6 +417,20 @@ export type NamedAssetCollection = {
   takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
   checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
   [n: number]: NamedAssetEntity;
+};
+
+export type NodeHealthReportCollection = {
+  get(): Promise<NodeHealthReport[]>;
+  set(value: NodeHealthReport[]): Promise<void>;
+  subscribe(cb: (value: NodeHealthReport[]) => void, opts?: SubscribeOptions): () => void;
+  subscribeDeep(cb: (value: NodeHealthReport[]) => void, opts?: SubscribeOptions): () => void;
+  byId(id: string): NodeHealthReportEntity;
+  nth(n: number): NodeHealthReportEntity;
+  create(entity: NodeHealthReport): Promise<void>;
+  home(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  takeHome(args: { fixtureId: string; parameterKind?: unknown }): Promise<void>;
+  checkpoint(args: { name?: string; automatic?: boolean }): Promise<void>;
+  [n: number]: NodeHealthReportEntity;
 };
 
 export type NodeReportCollection = {
@@ -741,6 +760,7 @@ export type DataRoot = {
   layers: LayerCollection;
   layouts: LayoutCollection;
   named_assets: NamedAssetCollection;
+  node_health: NodeHealthReportCollection;
   node_reports: NodeReportCollection;
   outputs: OutputConfigCollection;
   plugin_data: PluginDatumCollection;

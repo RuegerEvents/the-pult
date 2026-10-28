@@ -1017,6 +1017,9 @@ fn a_clip(name: &str, sha: &str, start_ms: u64, destination: AudioDestination) -
         fade_in_ms: 20,
         fade_out_ms: 200,
         repeats: 1,
+        // Each area's node keeps its scares, as the Garden's zones said before a clip
+        // decided it for itself.
+        stored: true,
         destination,
     }
 }

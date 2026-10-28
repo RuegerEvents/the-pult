@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use crate::{
     events::operation::NodeId,
-    types::timeline::{AudioDestination, NodeAudioMode},
+    types::timeline::{AudioClip, AudioDestination, NodeAudioMode},
     PultSchema,
 };
 
@@ -38,8 +38,9 @@ use crate::{
 pub struct ZoneNode {
     /// The node's serial: the key the device list and every MQTT topic use.
     pub serial: String,
-    /// Stored on the node or streamed to it — chosen here rather than per clip,
-    /// because it is a fact about how that node is reached in this room.
+    /// No longer read: whether a node stores a clip or has it streamed is the clip's
+    /// own [`AudioClip::stored`] (see [`clip_node_targets`]). Kept so a show written
+    /// while it was decided here still opens.
     #[serde(default)]
     pub mode: NodeAudioMode,
     /// Which of the node's outputs each zone channel comes out of, counting from one:
@@ -217,6 +218,19 @@ pub fn destination_gain(destination: &AudioDestination, zones: &[SpeakerZone]) -
     match destination {
         AudioDestination::Zone { zone } => zones.iter().find(|z| z.id == *zone).map_or(1.0, SpeakerZone::gain),
         AudioDestination::Node { .. } => 1.0,
+    }
+}
+
+/// The node loudspeakers a clip reaches, with how each is reached: a zone's members as
+/// the clip says ([`AudioClip::stored`]), a node named straight out as its destination
+/// says.
+pub fn clip_node_targets(clip: &AudioClip, zones: &[SpeakerZone]) -> Vec<(String, NodeAudioMode)> {
+    let mode = if clip.stored { NodeAudioMode::Clip } else { NodeAudioMode::Stream };
+    match &clip.destination {
+        AudioDestination::Node { .. } => node_targets(&clip.destination, zones),
+        AudioDestination::Zone { .. } => {
+            node_targets(&clip.destination, zones).into_iter().map(|(serial, _)| (serial, mode)).collect()
+        }
     }
 }
 

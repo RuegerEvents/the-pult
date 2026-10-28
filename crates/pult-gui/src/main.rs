@@ -75,6 +75,10 @@ fn main() {
                 .title("the-pult")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(900.0, 600.0)
+                // Run on every page the window loads, the station's own included: the
+                // page then knows it is the desktop app's and not a browser on the
+                // network, and leaves itself out of the System panel's browsers.
+                .initialization_script("window.__PULT_DESKTOP__ = true;")
                 .build()?;
 
             let args = args.clone();

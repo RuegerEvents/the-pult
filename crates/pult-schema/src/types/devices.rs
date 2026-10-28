@@ -423,6 +423,71 @@ pub struct NodeReport {
     pub clip_faults: BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>,
 }
 
+/// What a node says about itself, as the station driving the nodes last heard it: its
+/// `GET /api/v1/status`, asked every few seconds, and its MQTT `health`.
+///
+/// Coarse on purpose, for the reason [`NodeAudioSummary`] is: the row replicates, and a
+/// figure that moves every second would rewrite it every second. So the boot is a
+/// moment rather than an uptime, the signal is in 5 dB steps, memory in 16 kB, the
+/// temperatures in whole degrees and the clock offset in 5 ms.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NodeVitals {
+    pub name: String,
+    pub online: bool,
+    /// On the driving station's broker, which is how it hears every command.
+    pub on_broker: bool,
+    pub board: String,
+    pub fw: String,
+    /// The commit it was built from, `-dirty` when it was built from uncommitted work.
+    pub build: String,
+    /// When it last started, in show time.
+    pub booted_at_ms: Option<u64>,
+    /// Why it last started: `power-on`, `software` (an update or a restart asked for),
+    /// `panic`, `watchdog`, `brownout` …
+    pub reset_reason: String,
+    /// A crash left a core dump behind.
+    pub coredump: bool,
+    /// How many times the driving station has seen it start over without going away.
+    pub restarts: u64,
+    /// `ethernet` or `wifi`: the path it prefers.
+    pub transport: String,
+    pub ssid: String,
+    /// The wifi signal, in dBm, whichever path it prefers: a radio that is on is a
+    /// radio that is working.
+    pub rssi: Option<i32>,
+    pub free_heap: Option<u64>,
+    /// The chip's own temperature, and the module's sensor where it has one.
+    pub chip_temp_c: Option<i32>,
+    pub temp_c: Option<i32>,
+    pub poe_class: Option<u8>,
+    /// It has the console's clock, and how far it thinks the console's is from its own.
+    pub clock_locked: bool,
+    pub console_offset_ms: Option<i64>,
+    /// Running an update that has not yet confirmed itself: a reboot now rolls back.
+    pub pending_verify: bool,
+    /// The error codes it reports.
+    pub errors: Vec<String>,
+}
+
+/// What the station driving the nodes knows about every adopted node's health: the
+/// SYNCED `node_health` collection, one row per station, the shape `node_reports` has
+/// and for its reason — only that station is asking the nodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, PultSchema)]
+#[ts(export)]
+#[pult(table = "node_health")]
+pub struct NodeHealthReport {
+    /// The station's `NodeId`.
+    #[pult(lifecycle = SYNCED, primary_key)]
+    pub id: Uuid,
+    /// This station is the one driving the nodes. A row with this false says nothing.
+    #[pult(lifecycle = SYNCED)]
+    pub driving: bool,
+    /// Every adopted node, by serial.
+    #[pult(lifecycle = SYNCED)]
+    pub nodes: BTreeMap<String, NodeVitals>,
+}
+
 /// This node's view of the OpenHaunt devices around it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]

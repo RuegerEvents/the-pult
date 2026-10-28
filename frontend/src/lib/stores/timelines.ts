@@ -16,17 +16,7 @@
 import { browser } from '$app/environment';
 import { derived, get, readable, writable, type Readable } from 'svelte/store';
 
-import type {
-	AudioClip,
-	AudioOutput,
-	AudioStatus,
-	Detected,
-	DevicesState,
-	NodeAudioState,
-	NodeReport,
-	TakeStatus,
-	Timeline
-} from '$lib/generated/index.js';
+import type { AudioClip, AudioOutput, AudioStatus, Detected, DevicesState, NodeAudioState, NodeHealthReport, NodeReport, TakeStatus, Timeline } from '$lib/generated/index.js';
 import { collection, localPath, showData } from '$lib/stores/show.js';
 import { addToast } from '$lib/toasts.js';
 import { consoleNow } from '$lib/ws/clock.js';
@@ -56,6 +46,21 @@ export const drivingReport: Readable<NodeReport | null> = derived([nodeReports, 
 	const driving = $reports.filter((r) => r.driving && live.has(r.id)).sort((a, b) => (a.id < b.id ? 1 : -1));
 	return driving[0] ?? null;
 });
+
+const nodeHealthRows = collection('node_health') as Readable<NodeHealthReport[]>;
+
+/**
+ * What the station driving the nodes knows about every adopted node's health
+ * (`NodeHealthReport`), by the rule `drivingReport` follows.
+ */
+export const drivingHealth: Readable<NodeHealthReport | null> = derived(
+	[nodeHealthRows, stationRows],
+	([$rows, $stations]) => {
+		const live = new Set($stations.map((s) => s.id));
+		const driving = $rows.filter((r) => r.driving && live.has(r.id)).sort((a, b) => (a.id < b.id ? 1 : -1));
+		return driving[0] ?? null;
+	}
+);
 
 /** What the station driving the nodes has made of each one's clip store. */
 export const nodeAudio: Readable<Record<string, NodeAudioState>> = derived(

@@ -2580,6 +2580,140 @@ impl NamedAssetEntity {
     }
 }
 
+// ── node_health ─────────────────────────────────────────────────────────
+
+/// What the station driving the nodes knows about every adopted node's health: the
+/// SYNCED `node_health` collection, one row per station, the shape `node_reports` has
+/// and for its reason — only that station is asking the nodes.
+///
+/// The `node_health` collection.
+pub fn node_health() -> NodeHealthReportCollection {
+    NodeHealthReportCollection { at: Collection::at("node_health") }
+}
+
+/// The `node_health` collection, reached by [`node_health()`].
+pub struct NodeHealthReportCollection {
+    at: Collection,
+}
+
+impl NodeHealthReportCollection {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// Every row, in the show's own order.
+    pub fn get(&self) -> Result<Vec<NodeHealthReport>, String> {
+        self.at.get()
+    }
+
+    /// One row by its id.
+    pub fn by_id(&self, id: Uuid) -> NodeHealthReportEntity {
+        NodeHealthReportEntity { at: self.at.by_id(id) }
+    }
+
+    /// One row by position in the collection's order.
+    pub fn nth(&self, index: usize) -> NodeHealthReportEntity {
+        NodeHealthReportEntity { at: self.at.nth(index) }
+    }
+
+    /// Add a row. One gesture, so it is one Ctrl-Z for whoever asked.
+    pub fn create(&self, value: &NodeHealthReport) -> Result<(), String> {
+        self.at.create(value)
+    }
+
+    /// Be told when the collection itself changes — a create, a delete.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe()
+    }
+
+    /// Be told about anything at or under the collection, a level moving
+    /// included.
+    pub fn subscribe_deep(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// Put something back where it rests when nothing is driving it.
+    ///
+    /// `programmer_values`. `{ "fixtureId": <uuid> }` sends every output parameter of
+    /// that fixture home, and naming a `parameterKind` as well sends just the one. The
+    /// station resolves it against what it holds, so a plugin can ask for home without
+    /// being able to read the rig.
+    pub fn home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__home", args)
+    }
+
+    /// Make where a parameter rests be wherever it is now.
+    ///
+    /// `fixtures`, and the same arguments as [`Self::home`] backwards. Evaluated at
+    /// the instant it is asked, which is why it is a verb and not a write.
+    pub fn take_home(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__set_home", args)
+    }
+
+    /// Save: a point to come back to.
+    ///
+    /// `versions`. `{ "name": "Act 1" }`, and a quick Save gives no name. A verb
+    /// rather than a create because two of the row's fields are the engine's own.
+    pub fn checkpoint(&self, args: &serde_json::Value) -> Result<(), String> {
+        self.at.verb("__checkpoint", args)
+    }
+}
+
+/// One `node_health` row, reached by [`NodeHealthReportCollection::by_id`] or
+/// [`NodeHealthReportCollection::nth`].
+pub struct NodeHealthReportEntity {
+    at: Entity,
+}
+
+impl NodeHealthReportEntity {
+    /// The path this accessor writes, as the station spells it.
+    pub fn path(&self) -> &[String] {
+        self.at.path()
+    }
+
+    /// The whole row.
+    pub fn get(&self) -> Result<NodeHealthReport, String> {
+        self.at.get()
+    }
+
+    /// Replace the whole row.
+    pub fn set(&self, value: &NodeHealthReport) -> Result<(), String> {
+        self.at.set(value)
+    }
+
+    /// Delete the row.
+    pub fn delete(&self) -> Result<(), String> {
+        self.at.delete()
+    }
+
+    /// Be told when this row changes.
+    pub fn subscribe(&self) -> u64 {
+        self.at.subscribe_deep()
+    }
+
+    /// The station's `NodeId`.
+    ///
+    /// SYNCED.
+    pub fn id(&self) -> Field<Uuid> {
+        self.at.field("id")
+    }
+
+    /// This station is the one driving the nodes. A row with this false says nothing.
+    ///
+    /// SYNCED.
+    pub fn driving(&self) -> Field<bool> {
+        self.at.field("driving")
+    }
+
+    /// Every adopted node, by serial.
+    ///
+    /// SYNCED.
+    pub fn nodes(&self) -> Field<BTreeMap<String, NodeVitals>> {
+        self.at.field("nodes")
+    }
+}
+
 // ── node_reports ────────────────────────────────────────────────────────
 
 /// What a station knows about the nodes' sound: the SYNCED `node_reports` collection,

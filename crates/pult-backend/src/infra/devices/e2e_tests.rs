@@ -535,6 +535,7 @@ async fn a_clip_routed_to_a_node_is_uploaded_played_stopped_and_let_go_of() {
         fade_out_ms: 0,
         // Looped, so it is still sounding when the upload has settled and landed.
         repeats: 1_000,
+        stored: false,
         destination: AudioDestination::Node { serial: "e2e-audio".into(), mode: NodeAudioMode::Clip },
     };
     let mut timeline = a_timeline_with(clip.clone(), anchor);
@@ -634,6 +635,7 @@ async fn a_stream_mode_clip_reaches_the_node_as_rtp() {
         fade_in_ms: 0,
         fade_out_ms: 0,
         repeats: 1_000,
+        stored: false,
         destination: AudioDestination::Node { serial: "e2e-stream".into(), mode: NodeAudioMode::Stream },
     };
     let mut timeline = a_timeline_with(clip, pult_schema::clock::now_ms());
@@ -744,6 +746,7 @@ async fn a_stream_resumes_after_a_restart_that_mdns_never_sees() {
         fade_in_ms: 0,
         fade_out_ms: 0,
         repeats: 1_000,
+        stored: false,
         destination: AudioDestination::Node { serial: "e2e-unseen".into(), mode: NodeAudioMode::Stream },
     };
     let timeline = a_timeline_with(clip, pult_schema::clock::now_ms());

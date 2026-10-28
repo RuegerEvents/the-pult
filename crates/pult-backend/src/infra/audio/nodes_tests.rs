@@ -228,12 +228,16 @@ fn a_zone_with_node_speakers_hands_its_clips_to_those_nodes() {
         fade_in_ms: 0,
         fade_out_ms: 0,
         repeats: 1,
+        stored: false,
         destination,
     };
     let mut timeline = running(0, 0);
+    // The clip says how every node in its zone gets it, whatever the member says.
+    let stored = AudioClip { stored: true, ..clip(3, AudioDestination::Zone { zone: zone.id }) };
     timeline.clips = vec![
         clip(1, AudioDestination::Zone { zone: zone.id }),
         clip(2, AudioDestination::Node { serial: "gate".into(), mode: NodeAudioMode::Clip }),
+        stored,
     ];
     let found: Vec<(u128, String, NodeAudioMode)> = node_clips(&timeline, std::slice::from_ref(&zone))
         .into_iter()
@@ -242,9 +246,11 @@ fn a_zone_with_node_speakers_hands_its_clips_to_those_nodes() {
     assert_eq!(
         found,
         vec![
-            (1, "a2".to_string(), NodeAudioMode::Clip),
+            (1, "a2".to_string(), NodeAudioMode::Stream),
             (1, "a2b".to_string(), NodeAudioMode::Stream),
             (2, "gate".to_string(), NodeAudioMode::Clip),
+            (3, "a2".to_string(), NodeAudioMode::Clip),
+            (3, "a2b".to_string(), NodeAudioMode::Clip),
         ]
     );
     // A zone that has been deleted reaches no node at all.
@@ -327,6 +333,7 @@ async fn streaming(directory: DeviceDirectory) -> Streaming {
         fade_in_ms: 0,
         fade_out_ms: 0,
         repeats: 1_000,
+        stored: false,
         destination: AudioDestination::Node { serial: "n1".into(), mode: NodeAudioMode::Stream },
     }];
     audio.timelines(vec![timeline]);
