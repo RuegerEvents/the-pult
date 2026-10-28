@@ -149,6 +149,7 @@ fn a_mapped_prop_is_a_scare_an_ambience_and_a_flow() {
         channel,
         fixture_id: Some(area.id),
         key: Some(parameter_key(&ParameterKind::Switch(relay))),
+        discard: false,
     };
     let mapping = Mapping {
         channels: vec![target(1, 0), target(2, 1)],
@@ -218,6 +219,7 @@ fn eight_channels_over_two_nodes() {
             channel,
             fixture_id: Some(if channel <= 4 { first.id } else { second.id }),
             key: Some(parameter_key(&ParameterKind::Switch((channel - 1) % 4))),
+            discard: false,
         })
         .collect();
     let plan = plan_import(&cabinet, &Mapping { channels, ..Mapping::default() }, &BTreeMap::new(), &show.existing()).unwrap();
@@ -233,14 +235,14 @@ fn a_mapping_that_cannot_be_is_refused_before_anything_is_written() {
     let donkey = corpus("Donkey");
     let (kind, area) = node();
     let show = Show { fixtures: vec![area.clone()], fixture_types: vec![kind], ..Show::default() };
-    let to = |channel: u8, key: &str| ChannelTarget { channel, fixture_id: Some(area.id), key: Some(key.into()) };
+    let to = |channel: u8, key: &str| ChannelTarget { channel, fixture_id: Some(area.id), key: Some(key.into()), discard: false };
     let refused = |channels: Vec<ChannelTarget>| {
         plan_import(&donkey, &Mapping { channels, ..Mapping::default() }, &BTreeMap::new(), &show.existing()).err().unwrap()
     };
     assert!(refused(vec![to(1, "Switch:0"), to(2, "Switch:0")]).contains("both go to"));
     assert!(refused(vec![to(1, "Contact:4")]).contains("not an output"));
     assert!(refused(vec![to(1, "Switch:9")]).contains("has no"));
-    assert!(refused(vec![ChannelTarget { channel: 1, fixture_id: Some(Uuid::new_v4()), key: Some("Switch:0".into()) }])
+    assert!(refused(vec![ChannelTarget { channel: 1, fixture_id: Some(Uuid::new_v4()), key: Some("Switch:0".into()), discard: false }])
         .contains("does not have"));
 
     let not_an_input = Mapping { trigger: Some(Target { fixture_id: area.id, key: "Switch:0".into() }), ..Mapping::default() };
@@ -258,7 +260,7 @@ fn importing_again_rewrites_what_the_last_import_wrote() {
 
     // The drop has moved onto the node since; the head is still unassigned.
     let mapping = Mapping {
-        channels: vec![ChannelTarget { channel: 1, fixture_id: Some(area.id), key: Some("Switch:0".into()) }],
+        channels: vec![ChannelTarget { channel: 1, fixture_id: Some(area.id), key: Some("Switch:0".into()), discard: false }],
         ..Mapping::default()
     };
     let second = plan_import(&donkey, &mapping, &BTreeMap::new(), &show.existing()).unwrap();
@@ -277,7 +279,7 @@ fn a_recording_on_the_same_output_elsewhere_is_warned_about() {
     let (kind, area) = node();
     let mut show = Show { fixtures: vec![area.clone()], fixture_types: vec![kind], ..Show::default() };
     let on_relay_0 = Mapping {
-        channels: vec![ChannelTarget { channel: 1, fixture_id: Some(area.id), key: Some("Switch:0".into()) }],
+        channels: vec![ChannelTarget { channel: 1, fixture_id: Some(area.id), key: Some("Switch:0".into()), discard: false }],
         ..Mapping::default()
     };
     show.apply(&plan_import(&whips, &on_relay_0, &BTreeMap::new(), &show.existing()).unwrap());
@@ -303,4 +305,25 @@ fn what_the_arduino_needed_is_said_and_not_carried() {
     assert_eq!(notes.len(), 2, "{notes:?}");
     assert!(notes[0].starts_with("1 - Bauch was Active Low"));
     assert!(super::notes(&corpus("Donkey")).is_empty());
+}
+
+#[test]
+fn a_discarded_channel_is_not_imported_at_all() {
+    let donkey = corpus("Donkey");
+    let mut show = Show::default();
+    let mapping = Mapping {
+        channels: vec![ChannelTarget { channel: 2, fixture_id: None, key: None, discard: true }],
+        ..Mapping::default()
+    };
+    let plan = plan_import(&donkey, &mapping, &BTreeMap::new(), &show.existing()).unwrap();
+    show.apply(&plan);
+    let names: Vec<&str> = show.fixtures.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["Donkey · 1 - Drop"], "no placeholder for the head");
+    assert_eq!(show.timeline("Donkey").tracks.len(), 1, "and no row on the recording");
+
+    // Discarded on a second import, an earlier placeholder is listed and left.
+    let everything = plan_import(&donkey, &Mapping::default(), &BTreeMap::new(), &show.existing()).unwrap();
+    show.apply(&everything);
+    let again = plan_import(&donkey, &mapping, &BTreeMap::new(), &show.existing()).unwrap();
+    assert_eq!(again.report.missing, ["Donkey · 2 - Kopfbewegung is no longer used by this prop"]);
 }

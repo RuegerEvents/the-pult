@@ -59,6 +59,13 @@ export type Port = {
 	fixture: string;
 };
 
+/**
+ * What a channel's `<select>` holds when the channel is not to be imported at all: no
+ * placeholder and no row on the recording. Beside a port id and `null`, which is the
+ * placeholder.
+ */
+export const DISCARD = 'discard';
+
 /** The id a port is chosen by in a `<select>`. */
 export function portId(port: Pick<Port, 'fixtureId' | 'key'>): string {
 	return `${port.fixtureId}|${port.key}`;
@@ -126,7 +133,7 @@ export function fillFrom(
 export function clashes(assigned: Record<number, string | null>): Set<number> {
 	const seen = new Map<string, number[]>();
 	for (const [channel, port] of Object.entries(assigned)) {
-		if (!port) continue;
+		if (!port || port === DISCARD) continue;
 		seen.set(port, [...(seen.get(port) ?? []), Number(channel)]);
 	}
 	return new Set([...seen.values()].filter((c) => c.length > 1).flat());

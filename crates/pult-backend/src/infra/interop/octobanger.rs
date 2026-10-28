@@ -26,7 +26,8 @@
 //!
 //! **A channel nobody assigned still plays**, onto a placeholder fixture with a type
 //! of no channels at all — so nothing reaches any wire and nothing is lost, and the
-//! recording is there to repoint by importing again. And what the Arduino needed and a
+//! recording is there to repoint by importing again. Unless it is *discarded*, which
+//! is for a device that is not coming over at all. And what the Arduino needed and a
 //! node does not — which pins, the active-low relay boards, the MP3 board's start-up
 //! delay — is said in the report rather than carried, because none of it is the show.
 
@@ -222,7 +223,8 @@ pub struct Mapping {
     /// The controller's path in the upload, as [`Described::path`] gave it.
     #[serde(default)]
     pub controller: String,
-    /// A channel left out, or given no fixture, goes to a placeholder if it is used.
+    /// A channel left out, or given no fixture, goes to a placeholder if it is used,
+    /// unless it says to be discarded.
     #[serde(default)]
     pub channels: Vec<ChannelTarget>,
     /// The input that sets the scare off. `None` leaves the flow with its button only.
@@ -250,6 +252,10 @@ pub struct ChannelTarget {
     pub channel: u8,
     pub fixture_id: Option<Uuid>,
     pub key: Option<String>,
+    /// Not imported at all: no placeholder, no row on the recording. For a channel
+    /// whose device is not coming over — a strobe the new rig does not have.
+    #[serde(default)]
+    pub discard: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -303,9 +309,14 @@ pub fn plan_import(
     // ── Where each channel goes ──
     let mut targets: BTreeMap<u8, (Uuid, String)> = BTreeMap::new();
     let mut taken: BTreeMap<(Uuid, String), u8> = BTreeMap::new();
+    let mut discarded = BTreeSet::new();
     for each in &mapping.channels {
         if !(1..=8).contains(&each.channel) {
             return Err(format!("there is no channel {}", each.channel));
+        }
+        if each.discard {
+            discarded.insert(each.channel);
+            continue;
         }
         let (Some(fixture_id), Some(key)) = (each.fixture_id, each.key.clone()) else { continue };
         let fixture = existing.fixtures.iter().find(|f| f.id == fixture_id);
@@ -324,7 +335,7 @@ pub fn plan_import(
     let mut placeholders_needed = false;
     let mut placeholders_written = BTreeSet::new();
     for channel in 1..=8u8 {
-        if targets.contains_key(&channel) || !controller.used(channel as usize) {
+        if targets.contains_key(&channel) || discarded.contains(&channel) || !controller.used(channel as usize) {
             continue;
         }
         let fixture_id = placeholder_id(name, channel);

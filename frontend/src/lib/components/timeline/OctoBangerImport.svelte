@@ -20,6 +20,7 @@
 	import { getClientContext } from '$lib/ws/context.js';
 	import { clock } from '$lib/waveform.js';
 	import {
+		DISCARD,
 		clashes,
 		defaultEdge,
 		fillFrom,
@@ -148,6 +149,7 @@
 			const mapping = {
 				controller: open.described.path,
 				channels: Object.entries(assigned).map(([channel, port]) => {
+					if (port === DISCARD) return { channel: Number(channel), fixtureId: null, key: null, discard: true };
 					const [fixtureId, key] = port ? port.split('|') : [null, null];
 					return { channel: Number(channel), fixtureId, key };
 				}),
@@ -263,7 +265,7 @@
 					<tbody>
 						{#each d.channels.filter((ch) => ch.used) as ch (ch.number)}
 							{@const named = c.channels[ch.number - 1]}
-							<tr class:clash={doubled.has(ch.number)}>
+							<tr class:clash={doubled.has(ch.number)} class:discarded={assigned[ch.number] === DISCARD}>
 								<td class="num">{ch.number}</td>
 								<td>
 									<div>{named?.name}</div>
@@ -277,6 +279,7 @@
 								<td>
 									<select class="select" bind:value={assigned[ch.number]}>
 										<option value={null}>Placeholder (assign later)</option>
+										<option value={DISCARD}>Discard</option>
 										{#each outputs as o (portId(o))}<option value={portId(o)}>{o.label}</option>{/each}
 									</select>
 								</td>
@@ -462,6 +465,10 @@
 		height: 8px;
 		background: var(--accent);
 		border-radius: 1px;
+	}
+	/* Still listed, so it can be taken back; dimmed, because it is not coming over. */
+	tr.discarded td:not(:last-child) {
+		opacity: 0.4;
 	}
 	tr.clash td {
 		background: color-mix(in srgb, var(--danger, #ef4444) 15%, transparent);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Fixture, FixtureType } from '$lib/generated/index.js';
-import { clashes, defaultEdge, fillFrom, portId, switchOutputs, triggerInputs } from './octobanger.js';
+import { DISCARD, clashes, defaultEdge, fillFrom, portId, switchOutputs, triggerInputs } from './octobanger.js';
 
 function v0(id: string, name: string): { fixture: Fixture; type: FixtureType } {
 	const relay = (n: number) => ({
@@ -51,6 +51,12 @@ describe('octobanger', () => {
 		expect(both[8]).toBe('b|Switch:3');
 	});
 
+	it('fills past a discarded channel rather than into it', () => {
+		const outputs = switchOutputs(fixtures, types);
+		const filled = fillFrom({ 1: DISCARD, 2: null }, [1, 2], outputs, 'a');
+		expect(filled).toEqual({ 1: DISCARD, 2: 'a|Switch:0' });
+	});
+
 	it('fills around what is already given out', () => {
 		const outputs = switchOutputs(fixtures, types);
 		const assigned = { 1: null, 2: portId({ fixtureId: 'a', key: 'Switch:0' }), 3: null };
@@ -60,6 +66,7 @@ describe('octobanger', () => {
 
 	it('says which channels share an output', () => {
 		expect([...clashes({ 1: 'a|Switch:0', 2: 'a|Switch:0', 3: 'a|Switch:1', 4: null })]).toEqual([1, 2]);
+		expect(clashes({ 1: DISCARD, 2: DISCARD }).size, 'two discarded channels share nothing').toBe(0);
 	});
 
 	it('fires a contact to ground on the way down', () => {

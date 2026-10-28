@@ -7921,7 +7921,9 @@ own first event rather than the flow doing it, a trigger during the cold period 
 nothing at all.
 
 **A channel nobody assigned goes to a placeholder**: a fixture whose type is one switch
-on a port, so it has no DMX byte and reaches no wire. Nothing in the sequence is lost.
+on a port, so it has no DMX byte and reaches no wire. Nothing in the sequence is lost —
+unless the channel is **discarded**, which is for a device that is not coming over at
+all: no placeholder and no row on the recording.
 **The controller's name is its identity.** Every row is a v5 of the name and what the
 row is, so importing the prop again, with a channel now on a node, rewrites the last
 import rather than doubling it. A placeholder no longer used is listed under *missing*
