@@ -12,6 +12,7 @@
 		OutputStatus
 	} from '$lib/generated/index.js';
 	import { uuid } from '$lib/uuid.js';
+	import { stationNames } from '$lib/stores/zones.js';
 
 	const client = getClientContext();
 	const data = getDataContext();
@@ -295,12 +296,15 @@
 									onchange={(e) =>
 										data.outputs.byId(output.id).node_id.set(e.currentTarget.value || null)}
 								>
-									<option value={thisStation ?? ''}>This station</option>
-									<option value="">Every station</option>
-									{#if output.node_id && output.node_id !== thisStation}
-										<option value={output.node_id}>
-											{output.node_id.slice(0, 8)}…
-										</option>
+									<!-- Naming no station means the leader for a protocol that cannot
+									     share a wire between two senders, and every station for sACN,
+									     which can — `OutputConfig::runs_on`. Said as what it does. -->
+									<option value="">{output.kind === 'Sacn' ? 'Every station' : 'The leader'}</option>
+									{#each $stationNames as s (s.id)}
+										<option value={s.id}>{s.name}{s.id === thisStation ? ' (this one)' : s.online ? '' : ' (offline)'}</option>
+									{/each}
+									{#if output.node_id && !$stationNames.some((s) => s.id === output.node_id)}
+										<option value={output.node_id}>{output.node_id.slice(0, 8)}… (not here)</option>
 									{/if}
 								</select>
 							</td>
