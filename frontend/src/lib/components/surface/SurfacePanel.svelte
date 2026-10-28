@@ -1,4 +1,5 @@
 <script lang="ts">
+	import FolderedOptions from '$lib/components/objects/FolderedOptions.svelte';
 	/**
 	 * Surfaces: the pages a phone runs the show from, made here.
 	 *
@@ -330,7 +331,7 @@
 								</label>
 							{:else if target.kind === 'SequenceGo' || target.kind === 'SequenceOff'}
 								<select class="input" value={target.sequence_id} onchange={(e) => retarget(tile, { ...target, sequence_id: e.currentTarget.value })}>
-									{#each $surfaceShow.sequences as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+									<FolderedOptions rows={$surfaceShow.sequences} />
 								</select>
 							{:else if target.kind === 'Parameter'}
 								<select class="input" value={target.fixture_id} onchange={(e) => pickParameter(tile, e.currentTarget.value)}>

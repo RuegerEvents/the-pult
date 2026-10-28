@@ -23,9 +23,9 @@
 	import { collection } from '$lib/stores/show.js';
 	import X from '@lucide/svelte/icons/x';
 	import { uuid } from '$lib/uuid.js';
-	import { flatten, isWithin } from '$lib/folders.js';
+	import { byFolder, flatten, isWithin } from '$lib/folders.js';
 	import { objectHandle } from '$lib/objectHandle.js';
-	import { folders } from '$lib/stores/folders.js';
+	import { folders, newFolder } from '$lib/stores/folders.js';
 
 	const data = getDataContext();
 	// GO and OFF stay live under the Show lock: they are what a show is run with. What
@@ -35,7 +35,8 @@
 	let sequences = $state<Sequence[]>([]);
 
 	// Which folder the bank shows, on this screen: an executor bank scrolls sideways, so
-	// folders filter it rather than nesting in it. Subfolders are in their parent.
+	// folders filter it rather than nesting in it. Subfolders are in their parent. What
+	// is shown is grouped by folder along the row, each group under its path.
 	const FOLDER_KEY = 'pult.sequences.folder';
 	let shownFolder = $state((typeof localStorage !== 'undefined' && localStorage.getItem(FOLDER_KEY)) || '');
 	const sequenceFolders = $derived(flatten($folders, 'sequence'));
@@ -44,6 +45,14 @@
 			? sequences.filter((s) => isWithin($folders, s.folder, shownFolder))
 			: sequences
 	);
+	const groups = $derived(byFolder(shownSequences, $folders));
+	/** A group's heading, relative to the folder being shown. */
+	function heading(path: string): string {
+		const shown = sequenceFolders.find((f) => f.folder.id === shownFolder)?.path;
+		return shown && path.startsWith(shown) ? path.slice(shown.length).replace(/^ \/ /, '') : path;
+	}
+	/** Naming a new folder of sequences, inside the one being shown. */
+	let namingFolder = $state(false);
 	function showFolder(id: string) {
 		shownFolder = id;
 		try {
@@ -63,7 +72,10 @@
 			cue_ids: [],
 			active_cue_index: null,
 			went_at: null,
-			master: null
+			master: null,
+			// Made while one folder is shown, it belongs there: one not shown would
+			// seem to have vanished the moment it was made.
+			folder: sequenceFolders.some((f) => f.folder.id === shownFolder) ? shownFolder : null
 		});
 	}
 
@@ -189,6 +201,11 @@
 		{/if}
 		<span class="spacer"></span>
 		{#if $canEdit}
+			<button
+				class="btn btn-ghost btn-small"
+				title="A folder of sequences. Right-click a sequence, Move to folder…, to put it in one."
+				onclick={() => (namingFolder = true)}>+ Folder</button
+			>
 			<button class="btn btn-ghost btn-small" onclick={() => (naming = { sequence: null })}>+ Sequence</button>
 		{/if}
 	</header>
@@ -198,80 +215,101 @@
 	{/if}
 
 	<div class="executors">
-		{#each shownSequences as seq (seq.id)}
-			{@const activeCue = seq.active_cue_index !== null ? cues[seq.cue_ids[seq.active_cue_index]] : null}
-			{@const running = runningOn(seq)}
-			{@const level = seq.master ?? 1}
-			<div class="exec" class:live={seq.active_cue_index !== null}>
-				<!-- Right-click or hold for the menu every object has — Move to folder… among it. -->
-				<div class="top" use:objectHandle={{ kind: 'sequence', id: seq.id }}>
-					<button
-						class="name"
-						title="Open its cues in the Cues panel"
-						onclick={() => openCues(seq.id)}
-						ondblclick={() => $canEdit && (naming = { sequence: seq })}>{seq.name}</button
-					>
-					{#if seq.merge === 'Htp'}<span class="htp" title="HTP: its intensities show where they are higher">HTP</span>{/if}
-					{#if $canEdit}
-						<button class="delete" title="Delete {seq.name}" aria-label="Delete {seq.name}" onclick={() => (deleting = seq)}>
-							<X size={12} />
-						</button>
-					{/if}
-				</div>
+		{#each groups as group (group.path)}
+			{@const title = heading(group.path)}
+			<section class="group">
+				{#if groups.length > 1 || title}
+					<h3 title={group.path || 'In no folder'}>{title || group.path.split(' / ').pop() || 'No folder'}</h3>
+				{/if}
+				<div class="row">
+					{#each group.rows as seq (seq.id)}
+						{@const activeCue = seq.active_cue_index !== null ? cues[seq.cue_ids[seq.active_cue_index]] : null}
+						{@const running = runningOn(seq)}
+						{@const level = seq.master ?? 1}
+						<div class="exec" class:live={seq.active_cue_index !== null}>
+							<!-- Right-click or hold for the menu every object has — Move to folder… among it. -->
+							<div class="top" use:objectHandle={{ kind: 'sequence', id: seq.id }}>
+								<button
+									class="name"
+									title="Open its cues in the Cues panel"
+									onclick={() => openCues(seq.id)}
+									ondblclick={() => $canEdit && (naming = { sequence: seq })}>{seq.name}</button
+								>
+								{#if seq.merge === 'Htp'}<span class="htp" title="HTP: its intensities show where they are higher">HTP</span>{/if}
+								{#if $canEdit}
+									<button class="delete" title="Delete {seq.name}" aria-label="Delete {seq.name}" onclick={() => (deleting = seq)}>
+										<X size={12} />
+									</button>
+								{/if}
+							</div>
 
-				<div class="cue" title={activeCue ? `${activeCue.number.toFixed(1)} · ${activeCue.name}` : 'Off'}>
-					{#if activeCue}
-						<span class="num">{activeCue.number.toFixed(1)}</span>
-						<span class="cue-name">{activeCue.name}</span>
-					{:else}
-						<span class="off">Off</span>
-					{/if}
-				</div>
-				<div class="meta" title={running.join('\n')}>
-					{seq.cue_ids.length} {seq.cue_ids.length === 1 ? 'cue' : 'cues'}{running.length > 0 ? ` · ${running.length} running` : ''}
-				</div>
+							<div class="cue" title={activeCue ? `${activeCue.number.toFixed(1)} · ${activeCue.name}` : 'Off'}>
+								{#if activeCue}
+									<span class="num">{activeCue.number.toFixed(1)}</span>
+									<span class="cue-name">{activeCue.name}</span>
+								{:else}
+									<span class="off">Off</span>
+								{/if}
+							</div>
+							<div class="meta" title={running.join('\n')}>
+								{seq.cue_ids.length} {seq.cue_ids.length === 1 ? 'cue' : 'cues'}{running.length > 0 ? ` · ${running.length} running` : ''}
+							</div>
 
-				<!-- The sequence's level, upright like a playback fader: what it dims is
-				     the intensities it is playing, and nothing the programmer or a take
-				     is holding. -->
-				<div class="fader" title="This sequence's level: it dims the intensities it plays">
-					<input
-						type="range"
-						min="0"
-						max="1"
-						step="0.005"
-						value={level}
-						aria-label="{seq.name} level"
-						use:asOneGesture
-						oninput={(e) => setMaster(seq.id, Number(e.currentTarget.value))}
-					/>
-					<span class="level mono">{Math.round(level * 100)}%</span>
-				</div>
+							<!-- The sequence's level, upright like a playback fader: what it dims is
+							     the intensities it is playing, and nothing the programmer or a take
+							     is holding. -->
+							<div class="fader" title="This sequence's level: it dims the intensities it plays">
+								<input
+									type="range"
+									min="0"
+									max="1"
+									step="0.005"
+									value={level}
+									aria-label="{seq.name} level"
+									use:asOneGesture
+									oninput={(e) => setMaster(seq.id, Number(e.currentTarget.value))}
+								/>
+								<span class="level mono">{Math.round(level * 100)}%</span>
+							</div>
 
-				<div class="keys">
-					<button
-						class="go"
-						onclick={() => goNext(seq.id)}
-						disabled={seq.cue_ids.length === 0}
-						title={seq.cue_ids.length === 0 ? 'No cues in this sequence' : 'Go to the next cue'}
-					>GO</button>
-					<div class="pair">
-						<button
-							onclick={() => goBack(seq.id)}
-							disabled={seq.active_cue_index === null || seq.active_cue_index === 0}
-							title="Back one cue"
-						>BACK</button>
-						<button
-							onclick={() => takeOff(seq.id)}
-							disabled={seq.active_cue_index === null}
-							title="Take it off: what it was driving goes back to where it rests"
-						>OFF</button>
-					</div>
+							<div class="keys">
+								<button
+									class="go"
+									onclick={() => goNext(seq.id)}
+									disabled={seq.cue_ids.length === 0}
+									title={seq.cue_ids.length === 0 ? 'No cues in this sequence' : 'Go to the next cue'}
+								>GO</button>
+								<div class="pair">
+									<button
+										onclick={() => goBack(seq.id)}
+										disabled={seq.active_cue_index === null || seq.active_cue_index === 0}
+										title="Back one cue"
+									>BACK</button>
+									<button
+										onclick={() => takeOff(seq.id)}
+										disabled={seq.active_cue_index === null}
+										title="Take it off: what it was driving goes back to where it rests"
+									>OFF</button>
+								</div>
+							</div>
+						</div>
+					{/each}
 				</div>
-			</div>
+			</section>
 		{/each}
 	</div>
 </div>
+
+{#if namingFolder}
+	<NameDialog
+		title="New folder of sequences"
+		placeholder="Folder name…"
+		initial="New folder"
+		confirm="Create"
+		onsubmit={(name) => newFolder('sequence', sequenceFolders.some((f) => f.folder.id === shownFolder) ? shownFolder : null, name)}
+		onclose={() => (namingFolder = false)}
+	/>
+{/if}
 
 {#if naming}
 	<NameDialog
@@ -353,6 +391,34 @@
 		overflow-x: auto;
 		overflow-y: hidden;
 		padding-bottom: 4px;
+	}
+	/* A folder's sequences, side by side under its name; folders follow one another
+	   along the same sideways row, with a rule between them. */
+	.group {
+		flex: none;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		min-height: 0;
+	}
+	.group + .group {
+		padding-left: 8px;
+		border-left: 1px solid var(--line-strong);
+	}
+	.group h3 {
+		font-size: var(--font-xs);
+		font-weight: 600;
+		color: var(--text-dim);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 100%;
+	}
+	.row {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		gap: 8px;
 	}
 	.exec {
 		flex: none;

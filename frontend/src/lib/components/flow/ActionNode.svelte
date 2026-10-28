@@ -1,4 +1,5 @@
 <script lang="ts">
+	import FolderedOptions from '$lib/components/objects/FolderedOptions.svelte';
 	import type { NodeProps } from '@xyflow/svelte';
 	import type {
 		FlowNode,
@@ -138,9 +139,7 @@
 					? retarget('GoToCue')
 					: set({ GoNext: { sequence_id: e.currentTarget.value } })}
 		>
-			{#each show.sequences as sequence (sequence.id)}
-				<option value={sequence.id}>{sequence.name}</option>
-			{/each}
+			<FolderedOptions rows={show.sequences} />
 		</select>
 	{/if}
 

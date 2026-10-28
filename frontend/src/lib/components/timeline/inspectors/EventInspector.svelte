@@ -1,4 +1,5 @@
 <script lang="ts">
+	import FolderedOptions from '$lib/components/objects/FolderedOptions.svelte';
 	/**
 	 * An event: when, and what it does. A Go, a jump or an Off into a sequence — the
 	 * sequence stays the stack — or one of the acts a flow has: play or stop a timeline,
@@ -95,9 +96,7 @@
 				value={sequence_id}
 				onchange={(e) => void change(row, { action: { GoNext: { sequence_id: e.currentTarget.value } } })}
 			>
-				{#each $sequences as sequence (sequence.id)}
-					<option value={sequence.id}>{sequence.name}</option>
-				{/each}
+				<FolderedOptions rows={$sequences} />
 			</select>
 			<span class="label">Does</span>
 			<select

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import FolderedOptions from '$lib/components/objects/FolderedOptions.svelte';
 	/**
 	 * What one wing control does, as a form: what kind of thing, which one, and — for a
 	 * sequence — Go, Off, Flash or Go to cue. Opened by LEARN in the Wing panel and by
@@ -234,7 +235,7 @@
 		{#if choice === 'Sequence'}
 			<select class="input" bind:value={sequenceId} onchange={() => (cueId = '')}>
 				<option value="">Which sequence?</option>
-				{#each $sequences as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+				<FolderedOptions rows={$sequences} />
 			</select>
 			<div class="segmented" role="group" aria-label="What the key does">
 				{#each SEQUENCE_ACTS as [act, label] (act)}
@@ -274,7 +275,7 @@
 		{:else if choice === 'Master'}
 			<select class="input" bind:value={sequenceId}>
 				<option value="">Which sequence?</option>
-				{#each $sequences as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+				<FolderedOptions rows={$sequences} />
 			</select>
 		{:else if selectedRows.length === 0}
 			{#if boundParameter}

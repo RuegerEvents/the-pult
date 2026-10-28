@@ -1,4 +1,5 @@
 <script lang="ts">
+	import FolderedOptions from '$lib/components/objects/FolderedOptions.svelte';
 	/**
 	 * The store menu.
 	 *
@@ -457,9 +458,7 @@
 								if (sequenceId === NEW_SEQUENCE) target = 'new';
 							}}
 						>
-							{#each $sequences as s (s.id)}
-								<option value={s.id}>{s.name}</option>
-							{/each}
+							<FolderedOptions rows={$sequences} />
 							<option value={NEW_SEQUENCE}>+ New sequence…</option>
 						</select>
 					</label>
