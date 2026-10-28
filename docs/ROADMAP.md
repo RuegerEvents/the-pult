@@ -7865,6 +7865,108 @@ is restarted *before* the leader, not after.
 cargo test -p pult-backend --lib infra::sync::tests::a_write_at_one_follower
 ```
 
+### 97. An OctoBanger prop moves onto the nodes
+
+The Heinz Horror Garten's props were built on OctoBangers: an eight-channel Arduino
+controller from ButtonBanger (2017) with a trigger input, eight TTL outputs and a serial
+MP3 board, programmed from a Windows app that saves one controller as an `.OBC`. Moving
+a prop onto OpenHaunt nodes meant programming its sequence again by hand. Now the file is
+read, and the prop comes over as what the Garden's own scares already were (task 85).
+
+**An `.OBC` is the app's objects saved with .NET's BinaryFormatter.** The format is
+Microsoft's published `[MS-NRBF]`, and `crates/pult-octobanger` reads its records into a
+flat tree of class names and values. It never instantiates anything, which is the
+difference between reading one of these files and the deserializer that gave
+BinaryFormatter its name. A pure crate, in the shape of `pult-gdtf`: `serde`, `zip`,
+`thiserror`, and no pult crate. Every count is checked against the bytes left before
+anything is allocated, and nesting stops at 64.
+
+**What the numbers mean comes from the firmware and the app's own metadata, not from
+reading the bytes.** The first reading of Donkey guessed three enums wrong. The app's
+enums are in its assembly's metadata (the string literals are obfuscated, the enum
+definitions are not), and `OctoBanger_TTL.ino` ships beside it. From those:
+
+- **A frame is 50 ms, fixed**, and never in a file. The app keeps a byte per frame, with
+  bit *n* as channel *n + 1*. *Timing offset* corrects clone Arduinos whose clock runs
+  slow, so the intended frame is 50 ms either way and the field is ignored.
+- **Only frames that start at or before `_endMS` play.** The buffer is 6000 bytes
+  whatever the sequence, and Schaltschrank has five frames left past its end by an
+  earlier edit. Every output goes off at the end (`set_ambient_out`), not at the end of
+  a frame that lies past it.
+- **`_hiOut` is the app's *Active Low* column**, which the firmware applies at the pin.
+  It is about the Arduino's relay board, not the show: the sequence's bit still means
+  on. Kotzender's pump and cylinder have it; the import says so and carries nothing.
+- **`TriggerAmbientLevel` names the level the input rests at**, so it reads backwards:
+  `Low` is "a PIR or + trigger", which fires going high, and `Hi` is a contact to ground
+  on a pull-up, which fires going low. The flow's edge defaults from it and can be
+  changed, for a sensor wired the other way on the node.
+- **Ambient + Scare**: the ambient file loops. A trigger stops it and plays the scare,
+  and the end of the sequence **cuts the scare off** (`PlayAmbient` sends a stop first)
+  and starts the ambient again from the beginning. `_delayEndSecs` is a cold period
+  after that. `_mediaDelay` held the outputs back for the MP3 board's slow start; here
+  sound and outputs start together.
+
+**What a prop becomes.** A timeline named after it:
+- a recording with one row per channel that is ever on, written as change points and
+  replayed stepwise, which is what twenty frames a second is;
+- the scare's sound as a clip, cut at the sequence's end;
+- an event at 0 that stops the ambience and one at the end that plays it;
+- an end at `_endMS` plus the reset delay.
+
+The ambience, where there is one, is a second timeline that loops at its file's length.
+The prop's trigger is a flow: the input's edge and a *Trigger* button, both playing the
+scare with *Ignore if running*. **The lockout is the scare timeline still running with
+nothing on it**, so no variable is needed. Because the scare stops the ambience with its
+own first event rather than the flow doing it, a trigger during the cold period does
+nothing at all.
+
+**A channel nobody assigned goes to a placeholder**: a fixture whose type is one switch
+on a port, so it has no DMX byte and reaches no wire. Nothing in the sequence is lost.
+**The controller's name is its identity.** Every row is a v5 of the name and what the
+row is, so importing the prop again, with a channel now on a node, rewrites the last
+import rather than doubling it. A placeholder no longer used is listed under *missing*
+and never deleted, the rule MVR follows.
+
+**Two requests, because somebody has to answer in between.**
+`POST /api/import/obc/read` takes an `.OBC` or a project archive and describes it: the
+channels and when each is on, the Arduino pins, the sounds the archive carries, how
+long they are and whether they are silent. `POST /api/import/obc?mapping=` takes the
+same bytes again with the answer. Nothing waits on the station between the two, so a
+dialog closed half way leaves nothing behind. The plan is a pure function and is written
+through `apply.rs`, so an import is one Ctrl-Z. A sound the archive did not carry is
+uploaded to the asset store by the dialog and named in the mapping.
+
+**An archive's sounds are found by the names the controller gives them**: beside the
+controller first, then anywhere in the archive, case-insensitively, with `__MACOSX`
+ignored. Two of the five Garden props carry the same 5.17 s ambient MP3, which peaks at
+−72 dBFS: a file put there because the MP3 board needs one in that slot. So
+`audio::decode::survey` decodes **without keeping the samples** (Kotzender's 15-minute
+loop would otherwise be 300 MB of f32), and an ambient under −60 dBFS is left unticked
+in the dialog.
+
+The dialog is the import button in the timeline list. *Fill from node* gives the next
+unassigned channels a node's outputs in order, which is how an eight-channel prop goes
+onto two four-relay V0s. **The trigger-out pin is not imported**, and the dialog says
+so: OctoBanger used it to chain props, and the file does not say which prop came next.
+
+The corpus is `testdata/octobanger/`: the app's own sample project and five Garden props
+(Donkey, Air Whips, Aussenszenerie, Kotzender, Schaltschrank). It holds the `.OBC`s only;
+the tests need the sounds' names, not the sounds.
+
+### What is not done
+
+- **The *Document* format.** The app's `SerializedFormat` enum has one beside *Binary*.
+  Nobody has sent a file saved that way, so it is refused by name rather than guessed at.
+- **Custom pin maps** read as `Other`: the file does not say which pins they were.
+- **Nothing has been pointed at a real prop yet.** The Active Low note says to check the
+  relay the first time it fires, and that is the check.
+
+```
+cargo test -p pult-octobanger                          # the format, against six real files
+cargo test -p pult-backend --lib octobanger            # what a prop becomes, and the two routes
+cd frontend && npx vitest run src/lib/octobanger.test.ts
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -8482,6 +8584,12 @@ What is left of it is not a design question but an afternoon at a venue: **none 
 has been pointed at grandMA3 or Vectorworks.** The TCP half can be checked against
 either in about an hour; the hosted-group half has no second implementation anywhere
 and never will have until somebody points one at it.
+
+#### octobanger-import
+
+Built on 2026-10-28 as task 97, and kept here as a heading so a reader looking for it
+lands somewhere. What is left is in the task: the app's *Document* format, which nobody
+has sent, and a first run on a real prop.
 
 #### open-control-interfaces
 

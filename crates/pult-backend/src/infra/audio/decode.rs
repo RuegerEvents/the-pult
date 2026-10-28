@@ -118,6 +118,53 @@ impl AudioCache {
 ///
 /// **Blocking.** See [`AudioCache::decode`].
 pub fn decode_bytes(bytes: Vec<u8>) -> Result<Decoded, String> {
+    let mut samples: Vec<f32> = Vec::new();
+    let (sample_rate, channels) = each_packet(bytes, |packet| samples.extend_from_slice(packet))?;
+    if samples.is_empty() {
+        return Err("nothing in this file decoded to any audio".to_string());
+    }
+    Ok(Decoded { samples: Arc::new(samples), channels, sample_rate })
+}
+
+/// How long a file is and how loud it ever gets, without keeping a sample of it.
+///
+/// For a question asked about a file before anybody has decided to play it — an
+/// importer's "is this ambient loop silence?" — where [`decode_bytes`] would hold the
+/// whole thing in memory to answer two numbers: fifteen minutes of stereo is three
+/// hundred megabytes of f32. **Blocking**, like the decoder it shares.
+pub fn survey(bytes: Vec<u8>) -> Result<Survey, String> {
+    let mut peak = 0f32;
+    let mut count = 0u64;
+    let (sample_rate, channels) = each_packet(bytes, |packet| {
+        count += packet.len() as u64;
+        peak = packet.iter().fold(peak, |peak, sample| peak.max(sample.abs()));
+    })?;
+    if count == 0 {
+        return Err("nothing in this file decoded to any audio".to_string());
+    }
+    Ok(Survey { duration_ms: count / channels as u64 * 1_000 / sample_rate as u64, peak })
+}
+
+/// What [`survey`] found.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Survey {
+    pub duration_ms: u64,
+    /// The loudest sample, as a fraction of full scale.
+    pub peak: f32,
+}
+
+impl Survey {
+    /// Nothing anybody would hear: quieter than -60 dBFS throughout. A file made to fill
+    /// a slot that has to hold one, like an MP3 board's ambient track on a prop that has
+    /// no ambience, peaks at about -72.
+    pub fn silent(&self) -> bool {
+        self.peak < 0.001
+    }
+}
+
+/// Decode a file packet by packet, handing each one over interleaved, and answer its
+/// rate and channel count.
+fn each_packet(bytes: Vec<u8>, mut each: impl FnMut(&[f32])) -> Result<(u32, u16), String> {
     let source = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
     // No hint: an asset is named by its sha and has no extension to give one. Every
     // format this console accepts has a magic number, so the probe finds it — and a
@@ -139,7 +186,6 @@ pub fn decode_bytes(bytes: Vec<u8>) -> Result<Decoded, String> {
         .make_audio_decoder(params, &AudioDecoderOptions::default())
         .map_err(|e| format!("no decoder for this file: {e}"))?;
 
-    let mut samples: Vec<f32> = Vec::new();
     let mut scratch: Vec<f32> = Vec::new();
     let mut sample_rate = 0u32;
     let mut channels = 0u16;
@@ -160,7 +206,7 @@ pub fn decode_bytes(bytes: Vec<u8>) -> Result<Decoded, String> {
                 sample_rate = spec.rate();
                 channels = spec.channels().count() as u16;
                 audio.copy_to_vec_interleaved(&mut scratch);
-                samples.extend_from_slice(&scratch);
+                each(&scratch);
             }
             // A corrupt packet in the middle of a song is a click, not a reason to
             // refuse the whole file — which is what an operator would get five minutes
@@ -172,8 +218,8 @@ pub fn decode_bytes(bytes: Vec<u8>) -> Result<Decoded, String> {
     if skipped > 0 {
         warn!("[audio] {skipped} packet(s) of this file would not decode and were skipped");
     }
-    if sample_rate == 0 || samples.is_empty() {
+    if sample_rate == 0 {
         return Err("nothing in this file decoded to any audio".to_string());
     }
-    Ok(Decoded { samples: Arc::new(samples), channels: channels.max(1), sample_rate })
+    Ok((sample_rate, channels.max(1)))
 }

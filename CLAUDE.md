@@ -34,6 +34,11 @@ ends as the next numbered task.
   no socket, no runtime, and *not `pult-mvr` either*, because not one field of a message
   carries MVR content and an archive crosses as an opaque buffer. The station's half is
   `crates/pult-backend/src/infra/interop/xchange/`.
+- **`crates/pult-octobanger`** — OctoBanger prop controllers, read: the `.OBC` the
+  Windows app saves is .NET BinaryFormatter, and `nrbf.rs` reads its records into a
+  tree without instantiating anything. A pure crate like `pult-gdtf`. What a prop
+  becomes in a show (a timeline, a recording, a flow) is
+  `crates/pult-backend/src/infra/interop/octobanger.rs`. See task 97.
 - **`crates/pult-backend`** — A station, as a library and a binary. Axum WebSocket server, `Name.pult` showfile bundles, peer sync (mDNS + TCP), the WASM plugin runtime (`infra/plugins/`), fixture connectors. `pult_backend::start(Config)` brings a whole station up and is what both the binary and the desktop app call.
 - **`crates/pult-gui`** — The console as a Tauri desktop app. A window around `pult_backend::start`, pointed at the server it just started.
 - **`tools/pult-codegen`** — CLI that triggers ts-rs TypeScript export and writes `frontend/src/lib/generated/`.

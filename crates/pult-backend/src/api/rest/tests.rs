@@ -995,3 +995,115 @@ async fn an_export_of_one_layer_carries_only_what_is_in_it() {
         file.resources.keys().filter(|n| n.ends_with(".gdtf")).collect();
     assert_eq!(gdtfs.len(), 1, "{gdtfs:?}");
 }
+
+// ── OctoBanger ────────────────────────────────────────────────────────────────
+
+/// A project the way they travel: a folder with the controller and its two sounds. The
+/// sounds are WAVs under the MP3 names the controller gives them, which the decoder
+/// finds by their magic number — a scare of six seconds of tone and an ambient loop of
+/// silence, the shape two of the real props have.
+fn a_donkey_project() -> Vec<u8> {
+    use std::io::Write;
+    let tone: Vec<f32> = (0..48_000).map(|n| (n as f32 * 0.05).sin() * 0.5).collect();
+    let silence = vec![0.0f32; 16_000];
+    let wav = |samples: &[f32]| pult_audio::wav::encode(samples, 1, 8_000, pult_audio::wav::Encoding::Pcm16).unwrap();
+    let controller = std::fs::read(format!("{}/../../testdata/octobanger/Donkey.OBC", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for (name, bytes) in [
+        ("donkey-main/Donkey.OBC", controller),
+        ("donkey-main/Donkey_Trigger.mp3", wav(&tone)),
+        ("donkey-main/Heinz_Ambient.mp3", wav(&silence)),
+    ] {
+        writer.start_file(name, options).unwrap();
+        writer.write_all(&bytes).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+#[tokio::test]
+async fn an_octobanger_project_is_described_and_then_imported() {
+    use pult_schema::types::timeline::Timeline;
+
+    let (addr, assets, engine) = a_console_and_its_engine().await;
+    let zone = Uuid::new_v4();
+    engine
+        .set(
+            vec![pult_schema::path::PathSegment::Key("speaker_zones".into()), pult_schema::path::PathSegment::Key("__create".into())],
+            pult_schema::lifecycle::Lifecycle::Persisted,
+            serde_json::to_value(pult_schema::types::zone::SpeakerZone {
+                folder: None,
+                id: zone,
+                name: "Area 1".into(),
+                color: None,
+                width: 1,
+                channels: Default::default(),
+                nodes: Vec::new(),
+                level_db: None,
+                notes: String::new(),
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+    let read: serde_json::Value = client
+        .post(format!("http://{addr}/api/import/obc/read"))
+        .body(a_donkey_project())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let described = &read["controllers"][0];
+    assert_eq!(described["path"], "donkey-main/Donkey.OBC");
+    assert_eq!(described["controller"]["name"], "Donkey");
+    assert_eq!(described["channels"][0]["used"], true);
+    assert_eq!(described["channels"][2]["used"], false, "the strobe");
+    assert_eq!(described["channels"][0]["pin"], "D2");
+    let sounds = described["sounds"].as_array().unwrap();
+    assert_eq!(sounds[0]["role"], "scare");
+    assert_eq!(sounds[0]["durationMs"], 6000);
+    assert_eq!(sounds[0]["silent"], false);
+    assert_eq!(sounds[1]["role"], "ambient");
+    assert_eq!(sounds[1]["silent"], true, "an ambient slot filled with nothing");
+
+    let mapping = json!({
+        "controller": "donkey-main/Donkey.OBC",
+        "destination": { "Zone": { "zone": zone } },
+        "ambience": false,
+    });
+    let posted = client
+        .post(format!("http://{addr}/api/import/obc"))
+        .query(&[("mapping", mapping.to_string())])
+        .body(a_donkey_project())
+        .send()
+        .await
+        .unwrap();
+    assert!(posted.status().is_success(), "{:?}", posted.text().await);
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    let timelines: Vec<Timeline> = pult_schema::db::get_all(assets.pool()).await.unwrap();
+    assert_eq!(timelines.len(), 1, "a scare and no ambience");
+    let scare = &timelines[0];
+    assert_eq!(scare.tracks.len(), 2);
+    assert_eq!(scare.clips.len(), 1);
+    assert_eq!(scare.clips[0].length_ms, Some(5049), "cut where the sequence ends");
+    assert!(assets.get(&scare.clips[0].asset).await.unwrap().is_some(), "the sound was stored");
+    assert!(assets.get(&scare.tracks[0].asset).await.unwrap().is_some(), "and the recording");
+}
+
+#[tokio::test]
+async fn something_that_is_not_an_octobanger_file_is_refused_by_name() {
+    let (addr, _assets) = a_console().await;
+    let answer = reqwest::Client::new()
+        .post(format!("http://{addr}/api/import/obc/read"))
+        .body(b"<?xml version=\"1.0\"?>".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert!(answer.text().await.unwrap().contains("Document format"));
+}

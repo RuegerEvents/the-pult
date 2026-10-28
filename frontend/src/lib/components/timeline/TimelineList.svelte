@@ -12,6 +12,7 @@
 	 * room for.
 	 */
 
+	import Import from '@lucide/svelte/icons/import';
 	import Plus from '@lucide/svelte/icons/plus';
 
 	import type { Timeline } from '$lib/generated/index.js';
@@ -23,10 +24,12 @@
 	import { byFolder } from '$lib/folders.js';
 	import { folders } from '$lib/stores/folders.js';
 	import NameDialog from '../NameDialog.svelte';
+	import OctoBangerImport from './OctoBangerImport.svelte';
 
 	let { open, narrow }: { open: Timeline | null; narrow: boolean } = $props();
 
 	let creating = $state(false);
+	let importing = $state(false);
 
 	function stateOf(timeline: Timeline, at: number | null): { text: string; progress: number | null } {
 		if (!timeline.running) {
@@ -68,7 +71,10 @@
 		<div class="head">
 			<span class="title">Timelines</span>
 			{#if $canEdit}
-				<button class="btn btn-icon" title="New timeline" aria-label="New timeline" onclick={() => (creating = true)}><Plus size={14} /></button>
+				<span class="tools">
+					<button class="btn btn-icon" title="Import an OctoBanger prop" aria-label="Import an OctoBanger prop" onclick={() => (importing = true)}><Import size={14} /></button>
+					<button class="btn btn-icon" title="New timeline" aria-label="New timeline" onclick={() => (creating = true)}><Plus size={14} /></button>
+				</span>
 			{/if}
 		</div>
 		{#if $timelines.length === 0}
@@ -91,6 +97,10 @@
 			{/snippet}
 		</Foldered>
 	</div>
+{/if}
+
+{#if importing}
+	<OctoBangerImport onclose={() => (importing = false)} />
 {/if}
 
 {#if creating}
@@ -124,6 +134,10 @@
 	}
 	.head .btn {
 		min-height: 28px;
+	}
+	.tools {
+		display: flex;
+		gap: 4px;
 	}
 	.narrow {
 		display: flex;

@@ -116,6 +116,13 @@ where
         // go through a WebSocket frame.
         .route("/api/import/mvr", post(import_mvr))
         .route("/api/export/mvr", get(export_mvr))
+        // An OctoBanger prop, in two steps because somebody has to say where each of
+        // its channels goes before it can go anywhere: what is in the upload, and then
+        // the upload again with the answer. The bytes travel twice rather than waiting
+        // on the station between the two, so a dialog closed half way leaves nothing
+        // behind.
+        .route("/api/import/obc/read", post(read_obc))
+        .route("/api/import/obc", post(import_obc))
         // The Share. A search is a read and could have been an RPC; importing from it
         // is a write, and the rule that the RPC table is read-only is worth more than
         // the symmetry — so all three are here, where writes belong.
@@ -360,6 +367,38 @@ async fn import_mvr(
     .await
     .map_err(|error| bad_request(&error))?;
 
+    Ok(Json(json!({
+        "created": report.created,
+        "updated": report.updated,
+        "missing": report.missing,
+        "warnings": report.warnings,
+    })))
+}
+
+/// Say what an OctoBanger upload holds — an `.OBC`, or a project archive with its
+/// sounds — without writing anything.
+async fn read_obc(State(state): State<AssetState>, body: Bytes) -> Result<Json<serde_json::Value>, Response> {
+    let description = infra::interop::octobanger::describe_upload(&state.engine, &body)
+        .await
+        .map_err(|error| bad_request(&error))?;
+    Ok(Json(serde_json::to_value(description).unwrap_or_default()))
+}
+
+/// Import one controller of an OctoBanger upload. `?mapping=` is the dialog's answer,
+/// as JSON: which controller, and where its channels, trigger and sound go.
+async fn import_obc(
+    State(state): State<AssetState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, Response> {
+    let mapping: infra::interop::octobanger::Mapping = match params.get("mapping") {
+        Some(text) => serde_json::from_str(text).map_err(|error| bad_request(&format!("the mapping does not read: {error}")))?,
+        None => Default::default(),
+    };
+    let report = infra::interop::octobanger::import(&state.engine, &state.assets, &body, &mapping, user_for_writes(&headers))
+        .await
+        .map_err(|error| bad_request(&error))?;
     Ok(Json(json!({
         "created": report.created,
         "updated": report.updated,

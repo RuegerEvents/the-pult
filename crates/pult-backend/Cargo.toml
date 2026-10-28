@@ -22,6 +22,7 @@ pult-wing = { workspace = true, features = ["usb"] }
 pult-gdtf = { workspace = true }
 pult-mvr = { workspace = true }
 pult-mvr-xchange = { workspace = true }
+pult-octobanger = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
