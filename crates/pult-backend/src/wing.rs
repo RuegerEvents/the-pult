@@ -283,7 +283,7 @@ fn phase_of(state: &str, detail: &str) -> WingPhase {
 /// go, so the faders only ever report what a hand does: at Heinz Horror Garten
 /// (2026-10-28) the motors fought the operator, and the faders are worth more as
 /// plain inputs than as a picture of the show. Read once per process.
-fn motors_on() -> bool {
+pub fn motors_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         !matches!(std::env::var("PULT_WING_MOTORS").as_deref().map(str::trim), Ok("off" | "0" | "false" | "no"))

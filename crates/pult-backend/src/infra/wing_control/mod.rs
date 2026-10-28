@@ -416,8 +416,11 @@ impl Control {
 
     async fn on_fader(&mut self, index: u16, raw: u16) {
         // A fader is only learned by a hand on it, for the reason it is only listened
-        // to under one: the motor moves it too.
-        if !self.wing.touched(index as usize) {
+        // to under one: the motor moves it too. With the motors off nothing but a hand
+        // can, and the gate only loses the end of a fast throw: the finger leaves the
+        // cap, or its touch-off arrives, before the last positions do, and the output
+        // stayed where it was last heard — half way, at HHG (2026-10-28).
+        if crate::wing::motors_on() && !self.wing.touched(index as usize) {
             return;
         }
         if self.catch_learn(SurfaceControl::Fader { index }).await {
@@ -466,7 +469,12 @@ impl Control {
             } else {
                 // What the hand moved last goes out inside the gesture it belongs to.
                 self.write_pending().await;
-                self.fader_gestures.remove(&fader);
+                // With the motors off, the positions still arriving after the hand
+                // lifted are heard too; they join this gesture until the next touch
+                // begins another, so a throw is still one Ctrl-Z.
+                if crate::wing::motors_on() {
+                    self.fader_gestures.remove(&fader);
+                }
             }
             return;
         }
