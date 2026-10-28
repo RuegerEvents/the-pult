@@ -1656,6 +1656,15 @@ impl FlowNodeEntity {
         self.at.field("kind")
     }
 
+    /// What an operator calls it — "Exit PIR (stand-in)" — or `None` for what its kind
+    /// is called. Shown as its title, and where a button is pressed from elsewhere (a
+    /// surface tile, the palette), as the button's name.
+    ///
+    /// PERSISTED.
+    pub fn name(&self) -> Field<Option<String>> {
+        self.at.field("name")
+    }
+
     /// Where the node sits on the canvas. Not a rig position — this is the drawing.
     ///
     /// PERSISTED.

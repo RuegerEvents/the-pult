@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS flow_nodes (
     "id" TEXT NOT NULL PRIMARY KEY,
     "flow_id" TEXT NOT NULL,
     "kind" TEXT NOT NULL,
+    "name" TEXT,
     "x" REAL NOT NULL,
     "y" REAL NOT NULL
 );

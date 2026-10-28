@@ -39,6 +39,7 @@ impl Draw {
         let id = Uuid::new_v4();
         let flow_id = self.flow_id();
         self.nodes.push(FlowNode {
+            name: None,
             id,
             flow_id,
             kind,

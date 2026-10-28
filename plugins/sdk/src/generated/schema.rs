@@ -940,6 +940,11 @@ pub struct FlowNode {
     pub id: Uuid,
     pub flow_id: Uuid,
     pub kind: FlowNodeKind,
+    /// What an operator calls it — "Exit PIR (stand-in)" — or `None` for what its kind
+    /// is called. Shown as its title, and where a button is pressed from elsewhere (a
+    /// surface tile, the palette), as the button's name.
+    #[serde(default)]
+    pub name: Option<String>,
     /// Where the node sits on the canvas. Not a rig position — this is the drawing.
     pub x: f32,
     pub y: f32,

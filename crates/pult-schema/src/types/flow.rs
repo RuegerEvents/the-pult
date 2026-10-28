@@ -200,6 +200,13 @@ pub struct FlowNode {
     pub flow_id: Uuid,
     #[pult(lifecycle = PERSISTED)]
     pub kind: FlowNodeKind,
+    /// What an operator calls it — "Exit PIR (stand-in)" — or `None` for what its kind
+    /// is called. Shown as its title, and where a button is pressed from elsewhere (a
+    /// surface tile, the palette), as the button's name.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    #[pult(lifecycle = PERSISTED)]
+    pub name: Option<String>,
     /// Where the node sits on the canvas. Not a rig position — this is the drawing.
     #[pult(lifecycle = PERSISTED)]
     pub x: f32,

@@ -269,6 +269,7 @@ async fn a_button_on_a_node_advances_a_cue() {
     };
     let flow = Flow { folder: None, id: uuid::Uuid::new_v4(), name: "Front door".into(), enabled: true };
     let node = |kind| FlowNode {
+        name: None,
         id: uuid::Uuid::new_v4(),
         flow_id: flow.id,
         kind,

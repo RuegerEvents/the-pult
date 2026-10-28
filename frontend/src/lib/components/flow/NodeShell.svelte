@@ -5,6 +5,7 @@
 	import { getDataContext } from '$lib/ws/context.js';
 	import { inputPorts, nodeCategory, outputPorts } from '$lib/flow.js';
 	import { uuid } from '$lib/uuid.js';
+	import { canEdit } from '$lib/stores/showLock.js';
 
 	let {
 		node,
@@ -43,6 +44,17 @@
 	const outs = $derived(outputPorts(node.kind));
 	const category = $derived(nodeCategory(node.kind));
 
+	/**
+	 * Its own name in place of what its kind is called, given by double-clicking the
+	 * title. An empty name goes back to the kind's.
+	 */
+	let renaming = $state(false);
+	function rename(value: string) {
+		renaming = false;
+		const name = value.trim() || null;
+		if (name !== (node.name ?? null)) void data.flow_nodes.byId(node.id).name!.set(name);
+	}
+
 	/** A copy of this node with its settings and none of its wires, just below it. */
 	function duplicate() {
 		void data.flow_nodes.create({
@@ -69,7 +81,28 @@
 	{/each}
 
 	<header>
-		<span class="title">{title}</span>
+		{#if renaming}
+			<!-- svelte-ignore a11y_autofocus -->
+			<input
+				class="rename nodrag"
+				value={node.name ?? ''}
+				placeholder={title}
+				autofocus
+				onblur={(e) => rename(e.currentTarget.value)}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') e.currentTarget.blur();
+					if (e.key === 'Escape') renaming = false;
+				}}
+			/>
+		{:else}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<span
+				class="title"
+				class:named={!!node.name}
+				title={$canEdit ? `${node.name ? title + ' · ' : ''}double-click to name it` : node.name ? title : undefined}
+				ondblclick={() => $canEdit && (renaming = true)}>{node.name || title}</span
+			>
+		{/if}
 		{#if live}<span class="live" class:on={live.on}>{live.text}</span>{/if}
 		<button class="remove" title="Duplicate node: the same settings, unconnected, just below" onclick={duplicate}
 			>⧉</button
@@ -148,6 +181,9 @@
 	}
 	.title { font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #999; }
 	.node.lit .title { color: #cfe3ff; }
+	/* A name an operator gave it reads as theirs: as written, not shouted. */
+	.title.named { text-transform: none; letter-spacing: 0; font-size: 12px; color: #e0e0e0; }
+	.rename { flex: 1; min-width: 0; background: #171717; border: 1px solid #4a9eff; border-radius: 3px; color: #e0e0e0; padding: 1px 4px; font: inherit; font-size: 12px; }
 	.remove { background: none; border: none; color: #666; font-size: 15px; line-height: 1; padding: 0 4px; cursor: pointer; }
 	.remove:hover { color: #e05555; }
 	.body { padding: 7px 9px 8px; display: flex; flex-direction: column; gap: 5px; }

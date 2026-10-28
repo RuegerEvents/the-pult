@@ -705,6 +705,7 @@ async fn a_pir_counting_into_a_variable_writes_no_history() {
     let flow = Uuid::new_v4();
     create(&station, "flows", serde_json::json!(Flow { folder: None, id: flow, name: "Count in".into(), enabled: true })).await;
     let node = |kind: FlowNodeKind| FlowNode {
+        name: None,
         id: Uuid::new_v4(),
         flow_id: flow,
         kind,

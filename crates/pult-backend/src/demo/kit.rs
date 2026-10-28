@@ -532,6 +532,7 @@ pub async fn draw(
     let mut ids = Vec::new();
     for (kind, x, y) in nodes {
         let node = FlowNode {
+            name: None,
             id: id(),
             flow_id: flow.id,
             kind: kind.clone(),

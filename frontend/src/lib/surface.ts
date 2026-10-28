@@ -66,13 +66,22 @@ export const isAction = (target: TileTarget): boolean =>
 
 // ── Names ─────────────────────────────────────────────────────────────────────
 
-/** A flow's button nodes, each named after its flow — a button node has no name of its own. */
+/** A flow's button nodes, named after their flow and their own name where they have one. */
 export function flowButtons(show: Pick<SurfaceShow, 'flows' | 'flowNodes'>): { id: string; name: string }[] {
 	const out: { id: string; name: string }[] = [];
 	for (const flow of show.flows) {
 		const buttons = show.flowNodes.filter((n) => n.flow_id === flow.id && n.kind === 'Button');
+		// A button with a name of its own is called that; one without is told apart
+		// from its siblings by number.
 		buttons.forEach((node, i) =>
-			out.push({ id: node.id, name: buttons.length === 1 ? flow.name : `${flow.name} · ${i + 1}` })
+			out.push({
+				id: node.id,
+				name: node.name
+					? `${flow.name} · ${node.name}`
+					: buttons.length === 1
+						? flow.name
+						: `${flow.name} · ${i + 1}`
+			})
 		);
 	}
 	return out;
