@@ -1006,6 +1006,7 @@ mod flows {
     fn a_node(flow_id: Uuid, kind: FlowNodeKind) -> FlowNode {
         FlowNode {
             name: None,
+            due_at: None,
             id: Uuid::new_v4(),
             flow_id,
             kind,
@@ -2181,6 +2182,7 @@ mod watching_playback {
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let node = |kind| FlowNode {
             name: None,
+            due_at: None,
             id: Uuid::new_v4(),
             flow_id: flow.id,
             kind,
@@ -2282,6 +2284,7 @@ mod watching_playback {
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let node = |kind| FlowNode {
             name: None,
+            due_at: None,
             id: Uuid::new_v4(),
             flow_id: flow.id,
             kind,
@@ -2408,6 +2411,7 @@ mod watching_playback {
         h.engine.set(create_path("flows"), Lifecycle::Persisted, json(&flow)).await.unwrap();
         let source = FlowNode {
             name: None,
+            due_at: None,
             id: Uuid::new_v4(),
             flow_id: flow.id,
             kind: FlowNodeKind::Source(TriggerSource::Parameter {

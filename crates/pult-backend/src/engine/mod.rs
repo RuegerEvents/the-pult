@@ -1867,6 +1867,11 @@ impl ShowEngine {
                     let path = entity_field_path("flow_nodes", node_id, "pulsed_at");
                     self.write_synced(path, serde_json::json!(pult_schema::clock::now_ms())).await;
                 }
+                FlowEffect::Counting { node_id, ms } => {
+                    let path = entity_field_path("flow_nodes", node_id, "due_at");
+                    let due = ms.map(|ms| pult_schema::clock::now_ms() + ms as u64);
+                    self.write_synced(path, serde_json::json!(due)).await;
+                }
                 FlowEffect::ChainCut { variables } => {
                     warn!(
                         "[flows] cut a feedback loop: {} passes in a row reacted only to their own \

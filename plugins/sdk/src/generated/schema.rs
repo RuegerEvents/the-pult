@@ -963,6 +963,12 @@ pub struct FlowNode {
     /// came with the next input and could be minutes later.
     #[serde(default)]
     pub pulsed_at: Option<u64>,
+    /// For a delay that is counting, the console ms it comes due; `None` while it is
+    /// not. What lets a page draw the time left and a bar running down: the deadline
+    /// itself lives in the leader's flow engine, which no page can see. Written by the
+    /// leader on every start, restart and reset, never per frame.
+    #[serde(default)]
+    pub due_at: Option<u64>,
 }
 
 /// What one node is.

@@ -40,6 +40,7 @@ impl Draw {
         let flow_id = self.flow_id();
         self.nodes.push(FlowNode {
             name: None,
+            due_at: None,
             id,
             flow_id,
             kind,
@@ -123,7 +124,10 @@ fn fired(effects: &[FlowEffect]) -> Vec<Uuid> {
         .iter()
         .filter_map(|e| match e {
             FlowEffect::Fire { node_id, .. } => Some(*node_id),
-            FlowEffect::SetActive { .. } | FlowEffect::Pulsed { .. } | FlowEffect::ChainCut { .. } => None,
+            FlowEffect::SetActive { .. }
+            | FlowEffect::Pulsed { .. }
+            | FlowEffect::Counting { .. }
+            | FlowEffect::ChainCut { .. } => None,
         })
         .collect()
 }

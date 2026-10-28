@@ -80,6 +80,9 @@ pub enum FlowEffect {
     SetActive { node_id: Uuid, active: bool },
     /// A pulse went through a node.
     Pulsed { node_id: Uuid },
+    /// A delay started counting `ms` from now — or again from the top — or, with
+    /// `None`, stopped: fired, reset, or dropped. So a page can draw the time left.
+    Counting { node_id: Uuid, ms: Option<u32> },
     /// A feedback loop through variables was cut: these variables changed, and
     /// nothing reading them was told. The engine says so in the log.
     ChainCut { variables: Vec<Uuid> },
@@ -210,9 +213,17 @@ impl Flows {
 
         // A node deleted, or a flow switched off, while a delay was running does not
         // go off afterwards. Dropped silently: there is nothing left to mark as done.
-        self.pending.retain(|(id, _)| {
-            graph.node(*id).map(|n| graph.live(n)).unwrap_or(false)
-        });
+        let dropped: Vec<Uuid> = self
+            .pending
+            .iter()
+            .filter(|(id, _)| !graph.node(*id).map(|n| graph.live(n)).unwrap_or(false))
+            .map(|(id, _)| *id)
+            .collect();
+        self.pending.retain(|(id, _)| !dropped.contains(id));
+        // Only where the node is still there to be told: a flow switched off.
+        for node_id in dropped.into_iter().filter(|id| graph.node(*id).is_some()) {
+            effects.push(FlowEffect::Counting { node_id, ms: None });
+        }
 
         // Nodes lit this tick. A pulse has no duration, so what "lit" means for a
         // pulse node is "something went through it just now"; the next tick with
@@ -298,6 +309,7 @@ impl Flows {
         let (due, waiting): (Vec<_>, Vec<_>) = self.pending.iter().partition(|(_, at)| *at <= now);
         self.pending = waiting;
         for (node_id, _) in due {
+            effects.push(FlowEffect::Counting { node_id, ms: None });
             lit.insert(node_id);
             self.pulse_downstream(now, graph, node_id, &mut lit, &mut effects);
         }
@@ -567,7 +579,11 @@ impl Flows {
                     // Reset: whatever it was counting towards does not happen.
                     FlowNodeKind::Delay { .. } if edge.to_port == 1 => {
                         lit.insert(target.id);
+                        let counting = self.pending.iter().any(|(id, _)| *id == target.id);
                         self.pending.retain(|(id, _)| *id != target.id);
+                        if counting {
+                            effects.push(FlowEffect::Counting { node_id: target.id, ms: None });
+                        }
                     }
                     FlowNodeKind::Delay { ms } => {
                         lit.insert(target.id);
@@ -580,6 +596,7 @@ impl Flows {
                         // rather than queueing a second pulse behind the first.
                         self.pending.retain(|(id, _)| *id != target.id);
                         self.pending.push((target.id, due));
+                        effects.push(FlowEffect::Counting { node_id: target.id, ms: Some(*ms) });
                     }
                     FlowNodeKind::Action(action) => {
                         lit.insert(target.id);

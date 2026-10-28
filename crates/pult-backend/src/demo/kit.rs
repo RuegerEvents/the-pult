@@ -533,6 +533,7 @@ pub async fn draw(
     for (kind, x, y) in nodes {
         let node = FlowNode {
             name: None,
+            due_at: None,
             id: id(),
             flow_id: flow.id,
             kind: kind.clone(),
