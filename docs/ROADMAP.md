@@ -8719,6 +8719,76 @@ Built on 2026-10-28 as task 97, and kept here as a heading so a reader looking f
 lands somewhere. What is left is in the task: the app's *Document* format, which nobody
 has sent, and a first run on a real prop.
 
+#### standalone-node-show
+
+Asked on 2026-10-29: put one flow and its timelines onto a node, so that the prop runs with
+no console, the way it did on its OctoBanger. Grilled the same day. The firmware half is
+OpenHaunt/node doc 16, which carries the package, the mode and the node's side of every
+decision below. Verified against the code on 2026-10-29.
+
+**What is true today.** Task 97 already turns a prop into the shape this needs: a scare
+timeline (one recording row per channel, the scare's clip, an event at 0 that stops the
+ambience and one at the end that plays it, an end that is the cold period), an ambient
+timeline that loops, and a flow from the input's edge and a *Trigger* button to
+`PlayTimeline(scare, Ignore)`. The node runs none of it. Its inputs go out on
+`openhaunt/<sn>/input/<n>` and only the leader's `flows_tick` reacts. Nothing on the node
+starts anything: effects, fades and looping clips carry on when the console goes, new
+things don't.
+
+**Decided:**
+
+- **Standalone, not a fallback.** The console deploys the show and switches the node over.
+  The flag survives a reboot. The console, or the node's own page, switches it back.
+  Leaving stops everything and puts every output to its port default.
+- **One node, alone.** A scare across several props stays the console's.
+- **Authored here only.** The node's page shows status, presses the flow's buttons, and
+  has one master volume that the next deploy resets.
+- **A strict subset, checked before export.** Allowed: the node's own ports and speaker,
+  variables, up to four timelines, and the flow kinds. Sequences and cues (`GoNext`,
+  `GoToCue`, `Off`, in a flow or as a timeline event), fixtures on other nodes or DMX, and
+  the speed master block the export, each named. A clip to a zone that holds this node's
+  speaker exports the node's part, and lists the zone's other members without blocking. A
+  zone without the node blocks.
+- **A new flow kind, `Started`**: one pulse when the flow starts. On a node that is at
+  boot; here, when the flow is enabled. It starts the ambience.
+- **The arming delay is in the flow**: `Started` → `Delay` → set `armed`, and the edge goes
+  through a `Gate` on it. The OctoBanger import turns `boot_delay_s` into that, which it
+  drops today.
+- **The package is a file on the node's `clips` FAT and pins its clips.** `plan()` counts a
+  deployed package's clips as wanted. The node refuses to `DELETE` them.
+- **It carries a hash of what it was built from.** When a deployed node is reachable, the
+  Devices panel says *out of date* and offers Redeploy. Nothing is uploaded on its own.
+- **Redeploying stops the show, uploads, checks, restarts.** A package that fails the check
+  leaves the old one in place.
+
+**The work, console side:**
+
+- The check: a walk over the flow, its timelines and their events, clips and tracks,
+  listing what falls outside the subset. Everything a timeline points at is typed, so this
+  is a match, not a search.
+- Building the package. Tracks come from the composed track (`TrackCache::compose`, so
+  rows and flashes are already merged), cut to this node's fixtures, with each key
+  resolved to its port through `ParameterBinding::Port` and written as change points.
+  Clips come from `bounce_for`, with the zone's level and sides applied.
+- `Started` in the schema, `flows.rs`, the flow editor, and the importer.
+- Deploy and leave, the stale hash, the Devices panel's standalone state (read from the
+  node's MQTT status), pinned clips in `plan()`.
+- **One file of flow test cases** that `flows.rs` generates and both test suites run.
+  The flow semantics are implemented twice, in Rust and in C, and the shared file is
+  what stops them drifting apart, as `14-pixel-effects.json` does for pixel effects.
+
+**Traps already known:**
+
+- `plan()` deletes every stored clip nothing wants. Without the pinning above, the first
+  time a deployed node is seen online again its show's sound is wiped.
+- A flash erase during playback can underrun a node's audio (OpenHaunt doc 13), which is
+  why a redeploy stops the show first.
+- The node's clip store is about 9.8 MiB, roughly ten minutes of 32 kHz ADPCM. The
+  package counts against it, and `too_big` (`infra/audio/nodes.rs`), which already says a
+  clip will not fit before it is sent, is the place to say a deploy will not fit.
+
+Rough size: a week or a week and a half here, two to three weeks in the firmware.
+
 #### open-control-interfaces
 
 Dissolved on 2026-09-02 into *External control* at the end of this document, and
