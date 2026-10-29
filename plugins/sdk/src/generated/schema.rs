@@ -37,6 +37,31 @@ pub enum AtEnd {
     Loop,
 }
 
+/// The decoded-audio cache: files as samples in memory, by asset.
+///
+/// A file is decoded once and kept, because decoding a long mp3 is seconds of a core —
+/// and a station that has to decode again every time it looks at its timelines is a
+/// station whose Play and Stop wait behind it. What a timeline holds is kept whatever
+/// it costs; `budget` bounds only the rest. So `timeline_bytes` over `budget` is a show
+/// whose sound does not fit what this machine set aside for it, and the station is
+/// holding it anyway.
+///
+/// `timeline_*` counts only files this station has decoded: one that plays no timeline
+/// here never decodes the others' sound, and cannot say how big it would be.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioCacheStats {
+    /// What may be held, in bytes. Zero from a station that cannot say.
+    pub budget: u64,
+    /// What is held, timelines' and otherwise.
+    pub held: u64,
+    pub files: u32,
+    /// Of `held`, what the show's timelines have on them.
+    pub timeline_bytes: u64,
+    /// Files on the show's timelines, and how many of those are decoded here.
+    pub timeline_files: u32,
+    pub timeline_decoded: u32,
+}
+
 /// One file on a timeline: where it starts, what of it plays, how loud, and where to.
 ///
 /// Positions are milliseconds like everything else on a timeline. The trim is
@@ -3139,6 +3164,11 @@ pub struct Station {
     /// **The whole machine, not this console.** Every other figure in this row is what
     /// the console is responsible for; this is what the cable is actually carrying,
     /// which includes whatever else the box is doing. The two are worth having side by
+    /// How much decoded sound this station is holding, against what it may hold.
+    ///
+    /// Defaulted, and a `budget` of zero is a station on an older build that cannot say.
+    #[serde(default)]
+    pub audio_cache: AudioCacheStats,
     /// side and must never be confused: a station whose own output accounts for 2 MB/s
     /// on an interface carrying 90 MB/s has a network problem that is not its fault,
     /// and one where the two figures agree has found its own.

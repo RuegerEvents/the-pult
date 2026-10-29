@@ -5118,6 +5118,7 @@ async fn a_peers_station_row_is_seen_without_its_create() {
         net_sent: 0,
         net_window_ms: 0,
         clock: Default::default(),
+        audio_cache: Default::default(),
         sacn_slot: None,
         wing: None,
         last_seen: Utc::now(),

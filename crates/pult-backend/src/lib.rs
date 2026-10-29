@@ -710,6 +710,7 @@ pub async fn start(config: Config) -> Result<Running> {
     // And a node's loudspeaker is somewhere a clip can go, reached through the same
     // directory and the same broker the output side drives the nodes' ports through.
     let audio_mgr = audio_mgr.with_nodes(device_directory, device_handle.clone());
+    let audio_cache = audio_mgr.cache();
     tasks.push(tokio::spawn(audio_mgr.run()));
     engine.set_audio(audio.clone());
 
@@ -836,7 +837,8 @@ pub async fn start(config: Config) -> Result<Running> {
     // Every address this station's broker door is reachable at, so the broker list a
     // leader hands its nodes can name each station on the network the nodes are on.
     .with_broker(config.openhaunt_broker_port)
-    .with_wing(wing.clone());
+    .with_wing(wing.clone())
+    .with_audio_cache(audio_cache);
     tasks.push(tokio::spawn(reporter.run()));
 
     // Only the leader prunes: two nodes deleting each other's rows on different

@@ -338,7 +338,7 @@ impl AudioManager {
                 rx,
                 samples_tx,
                 samples,
-                cache: AudioCache::default(),
+                cache: AudioCache::sized_for_this_machine(),
                 timelines: Vec::new(),
                 zones: Vec::new(),
                 output: None,
@@ -359,6 +359,11 @@ impl AudioManager {
             },
             AudioHandle(tx),
         )
+    }
+
+    /// The decoded files, for the station row to report on.
+    pub fn cache(&self) -> AudioCache {
+        self.cache.clone()
     }
 
     /// Where the OpenHaunt nodes are and how to talk to them, so a clip can be routed
@@ -473,6 +478,7 @@ impl AudioManager {
 
     async fn reconcile(&mut self) {
         let timelines = self.timelines.clone();
+        self.cache.pin(timelines.iter().flat_map(|t| t.clips.iter().map(|c| c.asset.clone())).collect());
         let mine: Vec<&Timeline> = timelines.iter().filter(|t| self.plays(t)).collect();
         let ids: HashSet<Uuid> = mine.iter().map(|t| t.id).collect();
 

@@ -71,6 +71,8 @@ pub struct StationReporter {
     sacn_slot: Option<u8>,
     /// The wing plugged into this station, if `main` installed one.
     wing: Option<crate::infra::wing::WingStation>,
+    /// The audio manager's decoded files, read for their figures.
+    audio_cache: Option<crate::infra::audio::decode::AudioCache>,
     /// What this station last said about the show clock, so a change of state is a
     /// line in the log and a steady state is not.
     ///
@@ -296,6 +298,7 @@ impl StationReporter {
             http_addr,
             broker_port: None,
             wing: None,
+            audio_cache: None,
             samples: spawn_probe(absolute(showfile)),
             hostname: System::host_name().unwrap_or_else(|| "console".to_string()),
             started: std::time::Instant::now(),
@@ -316,6 +319,12 @@ impl StationReporter {
     /// Say that a wing is plugged in here, so a page on another station can find it.
     pub fn with_wing(mut self, wing: Option<crate::infra::wing::WingStation>) -> Self {
         self.wing = wing;
+        self
+    }
+
+    /// Say how much decoded sound this station holds.
+    pub fn with_audio_cache(mut self, cache: crate::infra::audio::decode::AudioCache) -> Self {
+        self.audio_cache = Some(cache);
         self
     }
 
@@ -426,6 +435,7 @@ impl StationReporter {
             // repeating whatever it last managed to measure.
             frame_costs: self.frames.borrow().clone(),
             machine: sample.machine,
+            audio_cache: self.audio_cache.as_ref().map(|cache| cache.stats()).unwrap_or_default(),
             net_received: sample.net_received,
             net_sent: sample.net_sent,
             net_window_ms: sample.net_window_ms,

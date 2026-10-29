@@ -1427,6 +1427,7 @@ fn a_station_at(id: Uuid, broker_addr: &str) -> pult_schema::types::station::Sta
         total_fixtures: 0,
         frame_costs: Vec::new(),
         machine: Default::default(),
+        audio_cache: Default::default(),
         net_received: 0,
         net_sent: 0,
         net_window_ms: 0,

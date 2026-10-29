@@ -5442,6 +5442,15 @@ impl StationEntity {
     /// on an interface carrying 90 MB/s has a network problem that is not its fault,
     /// and one where the two figures agree has found its own.
     ///
+    /// How much decoded sound this station is holding, against what it may hold.
+    ///
+    /// Defaulted, and a `budget` of zero is a station on an older build that cannot say.
+    ///
+    /// SYNCED.
+    pub fn audio_cache(&self) -> Field<AudioCacheStats> {
+        self.at.field("audio_cache")
+    }
+
     /// Loopback is excluded. On a laptop running `demo.sh` every byte this console
     /// sends to itself would otherwise arrive twice — sent and received — and swamp
     /// the figure it is there to give.

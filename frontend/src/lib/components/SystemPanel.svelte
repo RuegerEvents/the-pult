@@ -38,6 +38,7 @@
 	import Help from './Help.svelte';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import type { ClientStats, FrameCost, PeerLink, Station } from '$lib/generated/index.js';
+	import { cacheWarning } from '$lib/audioCache.js';
 	import { SLOW_FPS, STALL_MS, fpsOf, struggling, thisBrowser } from '$lib/stats.js';
 	import { TRACE_LENGTH, Traces, sparkline } from '$lib/trace.js';
 	import { drivingHealth, drivingReport } from '$lib/stores/timelines.js';
@@ -349,6 +350,11 @@
 							<span class="name">{station.hostname}</span>
 							{#if isSelf(station)}<span class="tag">this one</span>{/if}
 							<span class="spacer"></span>
+							{#if cacheWarning(station.audio_cache, size)?.level === 'over'}
+								<span class="badge-warn" title="The timelines' sound is more than this station sets aside for it, and is kept out of the machine's memory anyway">
+									sound over its cache
+								</span>
+							{/if}
 							{#if machineStrained(station)}
 								<span class="badge-warn" title="The machine is short of processor, memory or disk — which the console will feel whether or not it is the cause">
 									machine under strain
@@ -444,6 +450,44 @@
 								<dd class="num">{uptime(station.machine.uptime_s)} ago</dd>
 							</div>
 						</dl>
+
+						{#if station.audio_cache.budget > 0}
+							{@const cache = station.audio_cache}
+							{@const warning = cacheWarning(cache, size)}
+							<h3 class="sub">
+								Decoded sound
+								<Help label="About the decoded sound">
+									<p>
+										A sound file is decoded once and kept in memory as samples, because decoding a
+										long mp3 takes seconds of a core. A file on a timeline is kept however big it
+										is; the budget, a third of the machine's memory, bounds only the rest.
+									</p>
+									<p>
+										A station counts only what it has decoded itself: one that plays no timeline
+										never decodes the others' sound.
+									</p>
+								</Help>
+							</h3>
+							<dl class="figures">
+								<div>
+									<dt title="Everything decoded on this station, against what it may hold beyond the timelines' own">Held</dt>
+									<dd class="num">
+										<span class:bad={warning !== null}>{size(cache.held)}</span>
+										<span class="dim">of {size(cache.budget)} · {cache.files} {cache.files === 1 ? 'file' : 'files'}</span>
+									</dd>
+								</div>
+								<div>
+									<dt title="What the show's timelines have on them, of what this station has decoded">Timelines</dt>
+									<dd class="num">
+										{size(cache.timeline_bytes)}
+										<span class="dim">· {cache.timeline_decoded} of {cache.timeline_files} decoded here</span>
+									</dd>
+								</div>
+							</dl>
+							{#if warning}
+								<p class="warn">{warning.text}</p>
+							{/if}
+						{/if}
 
 						<h3 class="sub">
 							Network

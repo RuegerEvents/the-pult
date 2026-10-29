@@ -105,6 +105,12 @@ pub struct Station {
     #[serde(default)]
     #[pult(lifecycle = SYNCED)]
     pub machine: MachineStats,
+    /// How much decoded sound this station is holding, against what it may hold.
+    ///
+    /// Defaulted, and a `budget` of zero is a station on an older build that cannot say.
+    #[serde(default)]
+    #[pult(lifecycle = SYNCED)]
+    pub audio_cache: AudioCacheStats,
     /// What this machine's network interfaces carried over the window just reported,
     /// each way, and how long that window was.
     ///
@@ -384,6 +390,32 @@ impl MachineStats {
     }
 }
 
+/// The decoded-audio cache: files as samples in memory, by asset.
+///
+/// A file is decoded once and kept, because decoding a long mp3 is seconds of a core —
+/// and a station that has to decode again every time it looks at its timelines is a
+/// station whose Play and Stop wait behind it. What a timeline holds is kept whatever
+/// it costs; `budget` bounds only the rest. So `timeline_bytes` over `budget` is a show
+/// whose sound does not fit what this machine set aside for it, and the station is
+/// holding it anyway.
+///
+/// `timeline_*` counts only files this station has decoded: one that plays no timeline
+/// here never decodes the others' sound, and cannot say how big it would be.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AudioCacheStats {
+    /// What may be held, in bytes. Zero from a station that cannot say.
+    pub budget: u64,
+    /// What is held, timelines' and otherwise.
+    pub held: u64,
+    pub files: u32,
+    /// Of `held`, what the show's timelines have on them.
+    pub timeline_bytes: u64,
+    /// Files on the show's timelines, and how many of those are decoded here.
+    pub timeline_files: u32,
+    pub timeline_decoded: u32,
+}
+
 /// A link to another station, measured from this one.
 ///
 /// LOCAL, because a round-trip time is a property of the link rather than of either
@@ -501,6 +533,7 @@ mod tests {
             total_fixtures: 12,
             frame_costs: Vec::new(),
             machine: MachineStats::default(),
+            audio_cache: AudioCacheStats::default(),
             net_received: 0,
             net_sent: 0,
             net_window_ms: 0,
