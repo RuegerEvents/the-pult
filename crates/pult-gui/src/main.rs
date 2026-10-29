@@ -79,6 +79,11 @@ fn main() {
                 // page then knows it is the desktop app's and not a browser on the
                 // network, and leaves itself out of the System panel's browsers.
                 .initialization_script("window.__PULT_DESKTOP__ = true;")
+                // A file dragged in from the Finder is the page's, as it is in a browser:
+                // the timeline takes a sound that way. Left on, Tauri catches every drop
+                // from the OS for events of its own and the page's `drop` never sees the
+                // file — nothing happened, with nothing said.
+                .disable_drag_drop_handler()
                 .build()?;
 
             let args = args.clone();
