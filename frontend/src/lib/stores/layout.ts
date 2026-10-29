@@ -28,6 +28,7 @@ import {
 import { DEFAULT_PRESET, presetByKey } from '$lib/layout/presets.js';
 import { collection, showData } from './show.js';
 import { uuid } from '$lib/uuid.js';
+import { compactPanel } from './viewport.js';
 
 export type Active = { kind: 'preset'; key: string } | { kind: 'show'; id: string };
 
@@ -137,7 +138,11 @@ export async function removeLayout(id: string): Promise<void> {
 
 // ── Rearranging ───────────────────────────────────────────────────────────────
 
-export const openPanel = (path: Path, panel: string) => change(addTab(get(tree), path, panel));
+export function openPanel(path: Path, panel: string): void {
+	change(addTab(get(tree), path, panel));
+	// A phone shows one panel at a time, so opening one there means looking at it.
+	compactPanel.set(panel);
+}
 
 /**
  * Bring a panel to the front, opening it if it is not on screen.
@@ -157,7 +162,7 @@ export function revealPanel(panel: string): void {
 }
 
 /** The path of the top-left tile, as somewhere to put a panel with no home. */
-function firstTile(node: LayoutNode): Path {
+export function firstTile(node: LayoutNode): Path {
 	const path: Path = [];
 	let here = node;
 	while (here.type === 'Split') {

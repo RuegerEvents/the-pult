@@ -38,6 +38,11 @@ pub enum TileTarget {
         /// The color for each value, the highest stop not above it winning. Empty
         /// means the tile's own color when the value is on and gray when off.
         stops: Vec<ColorStop>,
+        /// What pressing it does, or `None` for a readout that only shows. A flag
+        /// that is its own switch is one tile rather than a light beside a button.
+        #[serde(default)]
+        #[ts(optional = nullable)]
+        press: Option<VariableOp>,
     },
     /// Change a variable. Unattributed, through the `variable.*` RPCs, so a phone
     /// resetting an area writes no row in the History panel.
@@ -132,12 +137,20 @@ mod tests {
                     ColorStop { at: 0.0, color: "#22c55e".into() },
                     ColorStop { at: 1.0, color: "#ef4444".into() },
                 ],
+                press: Some(VariableOp::Toggle),
             },
         };
         let json = serde_json::to_value(&tile).unwrap();
         assert_eq!(json["target"]["kind"], "VariableReadout");
         let back: SurfaceTile = serde_json::from_value(json).unwrap();
         assert_eq!(back, tile);
+    }
+
+    #[test]
+    fn a_readout_written_before_it_could_be_pressed_only_shows() {
+        let json = serde_json::json!({ "kind": "VariableReadout", "variable_id": Uuid::nil(), "stops": [] });
+        let target: TileTarget = serde_json::from_value(json).unwrap();
+        assert_eq!(target, TileTarget::VariableReadout { variable_id: Uuid::nil(), stops: vec![], press: None });
     }
 
     #[test]

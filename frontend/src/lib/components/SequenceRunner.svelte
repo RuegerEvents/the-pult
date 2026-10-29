@@ -14,10 +14,11 @@
 	import { getDataContext } from '$lib/ws/context.js';
 	import type { Sequence, Cue } from '$lib/generated/index.js';
 	import { canEdit } from '$lib/stores/showLock.js';
-	import { asOneGesture, beginGesture, endGesture } from '$lib/stores/gesture.js';
+	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { sequenceInView } from '$lib/stores/cues.js';
 	import { revealPanel } from '$lib/stores/layout.js';
 	import Dialog from './Dialog.svelte';
+	import PlaybackFader from './PlaybackFader.svelte';
 	import NameDialog from './NameDialog.svelte';
 	import { offer } from '$lib/stores/learn.js';
 	import { collection } from '$lib/stores/show.js';
@@ -259,16 +260,7 @@
 							     the intensities it is playing, and nothing the programmer or a take
 							     is holding. -->
 							<div class="fader" title="This sequence's level: it dims the intensities it plays">
-								<input
-									type="range"
-									min="0"
-									max="1"
-									step="0.005"
-									value={level}
-									aria-label="{seq.name} level"
-									use:asOneGesture
-									oninput={(e) => setMaster(seq.id, Number(e.currentTarget.value))}
-								/>
+								<PlaybackFader value={level} label="{seq.name} level" oninput={(v) => setMaster(seq.id, v)} />
 								<span class="level mono">{Math.round(level * 100)}%</span>
 							</div>
 
@@ -506,15 +498,6 @@
 		flex-direction: column;
 		align-items: center;
 		gap: 4px;
-	}
-	.fader input {
-		flex: 1;
-		min-height: 0;
-		writing-mode: vertical-lr;
-		direction: rtl;
-		width: 28px;
-		accent-color: var(--live);
-		cursor: pointer;
 	}
 	.level {
 		color: var(--text-dim);

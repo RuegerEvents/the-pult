@@ -12,12 +12,16 @@
 	import { allPanels } from '$lib/stores/plugins.js';
 	import { categoryColor } from '$lib/layout/categories.js';
 	import Tile from './Tile.svelte';
+	import CompactWorkspace from './CompactWorkspace.svelte';
+	import { compact } from '$lib/stores/viewport.js';
 
 	const big: PanelMeta | null = $derived($maximized ? ($allPanels[$maximized] ?? null) : null);
 </script>
 
 <div class="workspace" class:dragging={$dragging}>
-	{#if big && $maximized}
+	{#if $compact}
+		<CompactWorkspace />
+	{:else if big && $maximized}
 		{@const Panel = big.component}
 		{@const Icon = big.icon}
 		<div class="full">

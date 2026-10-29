@@ -295,6 +295,35 @@
 								>
 									{#each $surfaceShow.variables as v (v.id)}<option value={v.id}>{v.name}</option>{/each}
 								</select>
+								{#if target.kind === 'VariableReadout'}
+									<select
+										class="input"
+										value={target.press ? opTag(target.press) : 'None'}
+										aria-label="Pressing it"
+										onchange={(e) =>
+											retarget(tile, {
+												...target,
+												press: e.currentTarget.value === 'None' ? null : opFrom(e.currentTarget.value, target.press ? opAmount(target.press) : 1)
+											})}
+									>
+										<option value="None">only shows it</option>
+										<option value="Toggle">pressed, toggles it</option>
+										<option value="Up">pressed, adds</option>
+										<option value="Down">pressed, subtracts</option>
+										<option value="Set">pressed, sets it to</option>
+										<option value="Reset">pressed, resets it</option>
+									</select>
+									{#if target.press && (opTag(target.press) === 'Up' || opTag(target.press) === 'Down' || opTag(target.press) === 'Set')}
+										{@const press = target.press}
+										<input
+											class="input narrow"
+											type="number"
+											value={opAmount(press)}
+											aria-label="Amount"
+											onchange={(e) => retarget(tile, { ...target, press: opFrom(opTag(press), e.currentTarget.valueAsNumber || 0) })}
+										/>
+									{/if}
+								{/if}
 								{#if target.kind === 'VariableSetter'}
 									<select
 										class="input"

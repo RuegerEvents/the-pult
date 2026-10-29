@@ -149,7 +149,7 @@
 				</p>
 			{/if}
 
-			<table>
+			<table class="services">
 				<thead>
 					<tr><th>Service</th><th>Interface</th><th>State</th></tr>
 				</thead>
@@ -349,6 +349,32 @@
 		overflow: auto;
 		height: 100%;
 		font-size: 0.85rem;
+		container-type: inline-size;
+	}
+	select {
+		max-width: 100%;
+	}
+	/* Narrow: a service is its name and what it is for, with the interface and the
+	   state on a line under it, since three columns leave the description one word
+	   wide. */
+	@container (max-width: 560px) {
+		.services thead {
+			display: none;
+		}
+		.services tr {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) auto;
+			column-gap: 0.5rem;
+			border-top: 1px solid rgba(128, 128, 128, 0.2);
+			padding: 0.35rem 0;
+		}
+		.services td {
+			border-top: none;
+			padding: 0.15rem 0;
+		}
+		.services td:first-child {
+			grid-column: 1 / -1;
+		}
 	}
 	section {
 		margin-bottom: 1.25rem;

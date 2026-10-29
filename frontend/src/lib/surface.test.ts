@@ -3,6 +3,7 @@ import type { FlowNode, SurfaceTile, Timeline, Variable } from './generated/inde
 import {
 	flowButtons,
 	inkOn,
+	isAction,
 	isSurfacePath,
 	moveTile,
 	newTile,
@@ -145,6 +146,13 @@ describe('what a tile says', () => {
 	it('says a target is missing rather than going blank', () => {
 		const t = tile({ target: { kind: 'VariableReadout', variable_id: 'gone', stops: [] } });
 		expect(tileLabel(t, show)).toBe('missing');
+	});
+
+	it('presses a readout only when it says what pressing does', () => {
+		const readout = { kind: 'VariableReadout' as const, variable_id: 'area2', stops: [] };
+		expect(isAction(readout)).toBe(false);
+		expect(isAction({ ...readout, press: null })).toBe(false);
+		expect(isAction({ ...readout, press: 'Toggle' })).toBe(true);
 	});
 
 	it('writes an add as a sign', () => {

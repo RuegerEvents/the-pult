@@ -255,7 +255,7 @@
 	});
 </script>
 
-<div class="flows">
+<div class="holder"><div class="flows">
 	<aside class="rail">
 		<header class="rail-head">
 			<h2>Flows</h2>
@@ -371,10 +371,19 @@
 			</div>
 		{/if}
 	</section>
-</div>
+</div></div>
 
 <style>
+	.holder { height: 100%; container-type: inline-size; }
 	.flows { display: flex; height: 100%; min-height: 0; }
+	/* Narrow — a phone, or a thin tile: the list above the board rather than beside
+	   it, or the board is a strip nobody can wire anything in. */
+	@container (max-width: 560px) {
+		.flows { flex-direction: column; }
+		.rail { width: auto; max-height: 30%; border-right: none; border-bottom: 1px solid #2a2a2a; padding: 10px 12px; }
+		.note { display: none; }
+		.palette { padding: 8px 10px; }
+	}
 	/* Dragging a node or a wire must not select the labels it passes over; the
 	   fields inside a node stay selectable, since they are typed into. */
 	.board { user-select: none; -webkit-user-select: none; }

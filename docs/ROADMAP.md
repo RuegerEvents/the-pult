@@ -8007,6 +8007,52 @@ blind, because a desk left blind ignores its operator.
 cargo test -p pult-backend --lib a_blind     # the lamps, the push, and Ctrl-Z
 ```
 
+### 99. A phone is a console, and a light can be its own switch
+
+Asked for on 2026-10-29: the console on a phone, where most panels ran off the screen,
+and a surface whose variable readout can be pressed, so a flag that is its own switch is
+one tile rather than a light beside a button.
+
+**A phone shows one panel at a time, from the same layout.** Under 720 px
+(`stores/viewport.ts`, the same figure as every `@media` breakpoint) `Workspace` draws
+`CompactWorkspace`: every panel in the tree, in its order, as a strip of tabs above the
+one picked, which fills the rest. (It was along the bottom first, under the thumb; above
+is where a tile's tabs are, and where the user looked for them.) Nothing is written — the layout is the show's and
+is the desk's tiles again on a wider screen — and `openPanel` brings a panel to the front
+there, so the picker's *go to* and `revealPanel` work on a phone. Its own store rather
+than `maximized`, which is a desk's moment of needing room.
+
+**The top bar wraps rather than scrolls**, because its menus hang out of it and a
+scrolling box clips them. Two rows: what is open and who is here, then the verbs and the
+tools; the words go and the icons stay. Dialogs bigger than a question take the whole
+screen, and Setup's sections become a strip across the top.
+
+**A panel that lays out columns asks its own width**, with a container query, never the
+screen's: a thin tile on a desk is the same problem as a phone. Flows put the list above
+the board, Paperwork stacks sheets, page and block, and Network reads a service as its
+name over its interface. A table wider than the screen scrolls inside the panel.
+
+**A readout can be pressed.** `TileTarget::VariableReadout::press` is an
+`Option<VariableOp>` (`serde(default)`, so a surface written before it only shows);
+pressing goes through `pressTarget` and the wing's `press` exactly as a setter does. The
+Garden's *Open* is the worked example: one tile, green or red, that toggles.
+
+**A playback fader moves only when its cap is dragged**, on a phone and on a desk. A
+native range jumps to wherever it is touched, so a thumb scrolling past a row of
+executors set their levels on the way. `PlaybackFader.svelte` gives the track no input
+at all — a touch on it scrolls — and the cap moves *by* the drag rather than *to* the
+pointer, so grabbing it changes nothing by itself.
+
+**And a station with no wing says so without a toast.** `wing.map` is asked by every page
+on connecting, and answered an error where no wing is plugged in, which `client.onError`
+turned into a toast on every page that station served. It answers `null` now; the acts
+(`wing.claim` and the rest) still refuse.
+
+```
+cd frontend && npx vitest run src/lib/surface.test.ts
+cargo test -p pult-schema surface
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

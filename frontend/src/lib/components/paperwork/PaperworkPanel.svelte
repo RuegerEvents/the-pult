@@ -575,7 +575,7 @@
 	}
 </script>
 
-<div class="paperwork">
+<div class="holder"><div class="paperwork">
 	<aside>
 		<header>
 			<h2>Sheets</h2>
@@ -740,7 +740,7 @@
 			</p>
 		{/if}
 	</aside>
-</div>
+</div></div>
 
 {#if capturing}
 	<!--
@@ -914,6 +914,32 @@
 	aside.right {
 		border-right: none;
 		border-left: 1px solid var(--line, #2a2a2a);
+	}
+
+	/* Narrow — a phone, or a thin tile: the sheets, the page and the block one under
+	   another, scrolled as one, since three columns of 390 pixels is a page nobody
+	   can see. */
+	.holder {
+		container-type: inline-size;
+		height: 100%;
+	}
+	@container (max-width: 760px) {
+		.paperwork {
+			display: flex;
+			flex-direction: column;
+			overflow-y: auto;
+		}
+		aside,
+		aside.right {
+			flex: none;
+			overflow: visible;
+			border: none;
+			border-bottom: 1px solid var(--line, #2a2a2a);
+		}
+		.stage {
+			flex: none;
+			height: 70vh;
+		}
 	}
 
 	.small {

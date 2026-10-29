@@ -111,4 +111,32 @@
 		overflow: auto;
 		padding: 12px;
 	}
+
+	/* A phone: the sections become a strip across the top, and the section has the
+	   whole width. */
+	@media (max-width: 720px) {
+		.setup {
+			grid-template-columns: none;
+			grid-template-rows: auto minmax(0, 1fr);
+		}
+		nav {
+			flex-direction: row;
+			overflow-x: auto;
+			overflow-y: hidden;
+			scrollbar-width: none;
+			border-right: none;
+			border-bottom: 1px solid var(--line);
+			padding: 4px;
+		}
+		.section {
+			flex: none;
+			white-space: nowrap;
+		}
+		.section.on {
+			box-shadow: inset 0 -2px 0 var(--cat-setup);
+		}
+		.pane {
+			padding: 10px;
+		}
+	}
 </style>

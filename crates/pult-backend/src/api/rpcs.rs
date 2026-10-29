@@ -391,7 +391,7 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
     LocalRpcMeta {
         method: "wing.map",
         args_schema: "[]",
-        doc: "MA's names for every key, fader, encoder and LED of the command wing, where this machine has a grandMA3 install to read them from.",
+        doc: "MA's names for every key, fader, encoder and LED of the command wing, where this machine has a grandMA3 install to read them from; null on a station with no wing.",
     },
     LocalRpcMeta {
         method: "client.report",
@@ -793,13 +793,16 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
         }
         "wing.claim" | "wing.release" | "wing.context" | "wing.learn" | "wing.calculator" | "wing.map" => {
             use crate::infra::wing::Inbound;
+            // The map is a question every page asks on connecting, and "none" is an
+            // answer to it rather than a fault: an error here was a toast on every
+            // page served by a station with no wing.
+            if method == "wing.map" {
+                return Ok(deps.wing.as_ref().map(|wing| wing.map()).unwrap_or(Value::Null));
+            }
             let wing = deps
                 .wing
                 .as_ref()
                 .ok_or_else(|| "this station has no command wing".to_string())?;
-            if method == "wing.map" {
-                return Ok(wing.map());
-            }
             // The rest are a page showing a desk, so they need a page.
             let caller = deps
                 .caller

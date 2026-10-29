@@ -54,7 +54,7 @@
 		     and two permanent chips for the rare half crowded the bar. The dot still
 		     says that something has not been written down. -->
 		<button class="tb-menu" aria-expanded={open} onclick={() => (open = !open)}>
-			<LayoutGrid size={16} />{current}{#if $dirty}<span class="dot" title="Changed since it was saved">●</span>{/if}
+			<LayoutGrid size={16} /><span class="tb-label">{current}</span>{#if $dirty}<span class="dot" title="Changed since it was saved">●</span>{/if}
 			<span class="tb-caret">▾</span>
 		</button>
 

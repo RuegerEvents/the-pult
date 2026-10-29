@@ -788,7 +788,7 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     ];
     for (area, v) in inside.iter().enumerate() {
         tiles.push(tile(&format!("Area {}", area + 1), None, TileSize::Full, TileTarget::Heading));
-        tiles.push(tile("Inside", None, TileSize::Half, TileTarget::VariableReadout { variable_id: v.id, stops: occupancy.clone() }));
+        tiles.push(tile("Inside", None, TileSize::Half, TileTarget::VariableReadout { variable_id: v.id, stops: occupancy.clone(), press: None }));
         tiles.push(tile("Reset", None, TileSize::Half, TileTarget::VariableSetter { variable_id: v.id, op: VariableOp::Reset }));
     }
     tiles.push(tile("Areas 3 and 4", None, TileSize::Full, TileTarget::Heading));
@@ -802,16 +802,17 @@ pub async fn seed(into: &Seeder) -> Result<()> {
     }
     tiles.extend([
         tile("Maze", None, TileSize::Full, TileTarget::Heading),
+        // Its own switch: the light is the button.
         tile(
             "Open",
             None,
-            TileSize::Half,
+            TileSize::Full,
             TileTarget::VariableReadout {
                 variable_id: open.id,
                 stops: vec![ColorStop { at: 0.0, color: red.into() }, ColorStop { at: 1.0, color: green.into() }],
+                press: Some(VariableOp::Toggle),
             },
         ),
-        tile("Open / shut", None, TileSize::Half, TileTarget::VariableSetter { variable_id: open.id, op: VariableOp::Toggle }),
         tile("Ambience", None, TileSize::Full, TileTarget::Timeline { timeline_id: ambient.id, from_start: false }),
         tile("Garden Go", None, TileSize::Half, TileTarget::SequenceGo { sequence_id: garden }),
         tile("All off", Some(red), TileSize::Half, TileTarget::SequenceOff { sequence_id: garden }),

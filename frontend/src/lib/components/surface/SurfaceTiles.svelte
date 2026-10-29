@@ -160,7 +160,10 @@
 				>
 					<span class="label">{tileLabel(tile, show)}</span>
 					{#if verbOf(tile)}<span class="verb">{verbOf(tile)}</span>{/if}
-					{#if state}
+					{#if target.kind === 'VariableReadout'}
+						<!-- A readout that is its own switch: the figure, and pressing changes it. -->
+						<span class="figure">{state?.text ?? '–'}</span>
+					{:else if state}
 						<span class="state">
 							{#if state.color}<span class="dot" style:background={state.color}></span>{/if}
 							{state.text}

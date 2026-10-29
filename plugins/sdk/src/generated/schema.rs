@@ -3410,6 +3410,10 @@ pub enum TileTarget {
         /// The color for each value, the highest stop not above it winning. Empty
         /// means the tile's own color when the value is on and gray when off.
         stops: Vec<ColorStop>,
+        /// What pressing it does, or `None` for a readout that only shows. A flag
+        /// that is its own switch is one tile rather than a light beside a button.
+        #[serde(default)]
+        press: Option<VariableOp>,
     },
     /// Change a variable. Unattributed, through the `variable.*` RPCs, so a phone
     /// resetting an area writes no row in the History panel.

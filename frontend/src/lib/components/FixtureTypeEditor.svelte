@@ -370,6 +370,7 @@
 	}
 	.block-head {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 6px;
 		margin-bottom: 8px;

@@ -185,9 +185,32 @@
 	footer {
 		display: flex;
 		justify-content: flex-end;
+		flex-wrap: wrap;
 		gap: 8px;
 		padding: 10px 14px;
 		border-top: 1px solid var(--line);
 		flex-shrink: 0;
+	}
+
+	/* A phone: a question keeps its height and loses the margin, and anything bigger
+	   takes the whole screen — twenty pixels of scrim each side of a 390-pixel screen
+	   is every field in it narrower than it needs to be. */
+	@media (max-width: 720px) {
+		.scrim {
+			padding: 8px;
+		}
+		.wide,
+		.large,
+		.full {
+			position: fixed;
+			inset: 0;
+			width: auto;
+			max-height: none;
+			border-radius: 0;
+			border: none;
+		}
+		header {
+			flex-wrap: wrap;
+		}
 	}
 </style>

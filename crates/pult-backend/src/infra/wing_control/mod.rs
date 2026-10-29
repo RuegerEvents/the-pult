@@ -827,7 +827,8 @@ impl Control {
             TileTarget::FlowButton { node_id } => {
                 self.set(field("flow_nodes", node_id, "press"), json!({}), None).await;
             }
-            TileTarget::VariableSetter { variable_id, op } => {
+            TileTarget::VariableSetter { variable_id, op }
+            | TileTarget::VariableReadout { variable_id, press: Some(op), .. } => {
                 if let Err(e) = self.engine.set_variable(variable_id, op).await {
                     self.toast(&format!("{e}"), false);
                 }

@@ -287,6 +287,9 @@
 				<!-- The three verbs, in the chrome rather than in a panel: an operator
 				     programming in the rig, in the plan or from the command line means the
 				     same three things. -->
+				<!-- Where a phone's bar breaks onto a second row: the verbs and the tools
+				     under the show, the operator and the link. Nothing on a desk. -->
+				<span class="tb-break"></span>
 				<Verbs bind:this={verbs} />
 			{/if}
 			<span class="spacer"></span>
@@ -429,6 +432,57 @@
 		letter-spacing: 0.05em;
 		color: var(--text-bright);
 		white-space: nowrap;
+	}
+
+	.tb-break {
+		display: none;
+	}
+
+	/* A phone: the bar wraps rather than running off the screen, and says with icons
+	   what a desk says in words. Wrapped rather than scrolled, because the menus hang
+	   out of it and a scrolling box would clip them. */
+	@media (max-width: 720px) {
+		.topbar {
+			flex-wrap: wrap;
+			height: auto;
+			min-height: 44px;
+			padding: 4px 6px;
+			row-gap: 2px;
+		}
+		.brand,
+		.topbar :global(.tb-sep),
+		.topbar :global(.tb-icon > span:not(.avatar)),
+		.topbar :global(.tb-icon kbd),
+		.topbar :global(.tb-sub) {
+			display: none;
+		}
+		/* The layout menu is its icon; the show keeps its name, shortened. */
+		.topbar :global(.tb-label) {
+			display: none;
+		}
+		.topbar :global(.tb-menu .name) {
+			max-width: 10em;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+		.topbar :global(.tb-menu) {
+			padding: 0 6px;
+		}
+		/* Two rows: what is open and who is here, then what to do. */
+		.tb-break {
+			display: block;
+			order: 1;
+			flex-basis: 100%;
+		}
+		.topbar > :global(.verbs) {
+			order: 2;
+		}
+		.topbar > :global(.tb-icon) {
+			order: 3;
+		}
+		.topbar > :global(.tb-icon:first-of-type) {
+			margin-left: auto;
+		}
 	}
 
 	main {

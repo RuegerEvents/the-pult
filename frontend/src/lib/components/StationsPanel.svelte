@@ -409,7 +409,7 @@
 <style>
 	.stations { padding: 16px 20px; }
 	.block { margin-bottom: 24px; }
-	.block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+	.block-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 	h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #999; }
 	.count { color: #777; font-size: 12px; }
 	.rack { width: 100%; border-collapse: collapse; font-size: 13px; }

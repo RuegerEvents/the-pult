@@ -47,7 +47,7 @@ export type TileKind = TileTarget['kind'];
 /** Every kind, in the order the editor offers them. */
 export const TILE_KINDS: { kind: TileKind; label: string }[] = [
 	{ kind: 'Heading', label: 'Heading' },
-	{ kind: 'VariableReadout', label: 'Variable — show it' },
+	{ kind: 'VariableReadout', label: 'Variable — show it (and press it)' },
 	{ kind: 'VariableSetter', label: 'Variable — change it' },
 	{ kind: 'FlowButton', label: 'Flow button' },
 	{ kind: 'Timeline', label: 'Timeline play / stop' },
@@ -58,6 +58,7 @@ export const TILE_KINDS: { kind: TileKind; label: string }[] = [
 
 /** Whether pressing the tile does something, as against only showing something. */
 export const isAction = (target: TileTarget): boolean =>
+	(target.kind === 'VariableReadout' && !!target.press) ||
 	target.kind === 'FlowButton' ||
 	target.kind === 'VariableSetter' ||
 	target.kind === 'Timeline' ||
@@ -279,7 +280,7 @@ export function defaultTarget(kind: TileKind, show: SurfaceShow): TileTarget | n
 		}
 		case 'VariableReadout': {
 			const v = show.variables[0];
-			return v ? { kind, variable_id: v.id, stops: [] } : null;
+			return v ? { kind, variable_id: v.id, stops: [], press: null } : null;
 		}
 		case 'VariableSetter': {
 			const v = show.variables[0];
@@ -415,8 +416,10 @@ export async function pressTarget(
 		case 'FlowButton':
 			await data.flow_nodes.byId(target.node_id).press();
 			return;
+		case 'VariableReadout':
 		case 'VariableSetter': {
-			const op = target.op;
+			const op = target.kind === 'VariableSetter' ? target.op : target.press;
+			if (!op) return;
 			const variableId = target.variable_id;
 			if (op === 'Toggle') await client.call('variable.toggle', { variableId });
 			else if (op === 'Reset') await client.call('variable.reset', { variableId });
