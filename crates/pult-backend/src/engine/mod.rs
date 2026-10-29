@@ -888,7 +888,7 @@ const APPENDS_BETWEEN_PRUNES: u32 = 1_000;
 /// collection missing from the list is a rig that stops updating, so anything added
 /// to that read belongs here too.
 const OUTPUT_COLLECTIONS: &[&str] =
-    &["fixtures", "fixture_types", "programmer_values", "timelines", "sequences"];
+    &["fixtures", "fixture_types", "programmer_values", "timelines", "sequences", "show"];
 
 /// What `playback_pass` reads. `show` is in it for `home_fade_ms`, which decides how
 /// long a release takes.
@@ -1402,8 +1402,7 @@ impl ShowEngine {
         self.playback_seen = self.version_of(PLAYBACK_COLLECTIONS);
 
         let sequences: Vec<pult_schema::types::sequence::Sequence> = self.read_collection("sequences");
-        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
-            self.read_collection("programmer_values");
+        let programmer = self.programmer_on_stage();
 
         // Nothing is on, nothing is held, and nothing is remembered — so there is
         // nothing this pass could publish, and no reason to read the rig to find that
@@ -1763,8 +1762,7 @@ impl ShowEngine {
         self.watch_sampled_at = std::time::Instant::now();
 
         let now_ms = pult_schema::types::sequence::now_ms();
-        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
-            self.read_collection("programmer_values");
+        let programmer = self.programmer_on_stage();
         let held = pult_schema::types::fixture::HeldByProgrammer::of(&programmer);
         let masters = self.masters();
 
@@ -2024,7 +2022,7 @@ impl ShowEngine {
         // which fixtures nothing reaches — has to hear that there are none left.
         self.pushed_fixtures = !fixtures.is_empty();
         let fixture_types = self.read_collection("fixture_types");
-        let programmer = self.read_collection("programmer_values");
+        let programmer = self.programmer_on_stage();
         // The timelines go with the patch because a playing recording is a `Driving`
         // layer: a connector holding a patch is holding everything that decides what
         // leaves this station, and a track pushed separately would be a second thing
@@ -2258,6 +2256,23 @@ impl ShowEngine {
             return faders;
         }
         faders.with_recorded(|sequence| recorded.get(&sequence).copied())
+    }
+
+    /// The programmer as the lamps have it: all of it, or none while the show is blind.
+    ///
+    /// For everything that answers what a lamp is doing — the playback pass, the push
+    /// to the connectors, a *Watch*, `__set_home`. Not for what the programmer *is*:
+    /// Store, Update, `__by` and a take recorded from it read the collection itself.
+    fn programmer_on_stage(&self) -> Vec<pult_schema::types::programmer::ProgrammerValue> {
+        if self.blind() {
+            return Vec::new();
+        }
+        self.read_collection("programmer_values")
+    }
+
+    /// Whether the show is blind. See `Show::blind`.
+    fn blind(&self) -> bool {
+        self.state.singleton("show").and_then(|show| show.get("blind")).and_then(|v| v.as_bool()).unwrap_or(false)
     }
 
     fn read_collection<T: serde::de::DeserializeOwned>(&self, table: &str) -> Vec<T> {
@@ -2837,8 +2852,7 @@ impl ShowEngine {
         // keeps the pose it was actually in rather than a pan from one millisecond and
         // a tilt from the next.
         let now_ms = pult_schema::types::sequence::now_ms();
-        let programmer: Vec<pult_schema::types::programmer::ProgrammerValue> =
-            self.read_collection("programmer_values");
+        let programmer = self.programmer_on_stage();
         let held = pult_schema::types::fixture::HeldByProgrammer::of(&programmer);
         let masters = self.masters();
 
@@ -3721,6 +3735,7 @@ impl ShowEngine {
             name,
             created_at: chrono::Utc::now(),
             editing_cue: None,
+            blind: false,
             history_depth: prefs.history_depth,
             home_fade_ms: prefs.home_fade_ms,
             haze_density: prefs.haze_density,

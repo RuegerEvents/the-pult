@@ -79,6 +79,8 @@ pub enum Verb {
     NextPage,
     PrevPage,
     Learn,
+    /// BLIND: the programmer reaches no lamp. See `infra/blind.rs`.
+    Blind,
 }
 
 pub fn key_verb(code: &str) -> Option<Verb> {
@@ -94,6 +96,7 @@ pub fn key_verb(code: &str) -> Option<Verb> {
         "PAGE_UP" => Verb::NextPage,
         "PAGE_DOWN" => Verb::PrevPage,
         "LEARN" => Verb::Learn,
+        "BLIND" => Verb::Blind,
         _ => return None,
     })
 }

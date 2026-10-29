@@ -24,6 +24,7 @@
 	 * alone, or the whole patch when nothing is selected.
 	 */
 
+	import BlindBadge from '$lib/components/programmer/BlindBadge.svelte';
 	import type {
 		Cue,
 		Fixture,
@@ -404,6 +405,7 @@
 </script>
 
 <div class="sheet">
+	<BlindBadge />
 	<header>
 		{#if shownCue}
 			<span class="mode">

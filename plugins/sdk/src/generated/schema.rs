@@ -2836,6 +2836,19 @@ pub struct Show {
     /// banner rather than quietly storing over the first one's work.
     #[serde(default)]
     pub editing_cue: Option<Uuid>,
+    /// Blind: the programmer reaches no lamp. Playback runs the stage as though the
+    /// programmer were empty — its fades and effects are not held back under keys the
+    /// programmer has — while every screen goes on showing the programmer over it, so
+    /// a look is built where it can be seen and nobody in the room sees it. Store and
+    /// Update read the programmer as always. Switching it off puts what is in the
+    /// programmer on stage, the way every other desk does.
+    ///
+    /// One for the show, because there is one programmer: being blind is a fact about
+    /// whether the programmer reaches the output, not about who is looking. SYNCED so
+    /// every station and screen agree, and not PERSISTED so a show never opens blind
+    /// with a programmer nobody remembers filling.
+    #[serde(default)]
+    pub blind: bool,
     /// How many of an operator's own changes stay reachable, for undo and for the
     /// history panel.
     ///

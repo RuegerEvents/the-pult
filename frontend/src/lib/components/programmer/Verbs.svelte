@@ -17,7 +17,7 @@
 	 */
 
 	import { addToast } from '$lib/toasts.js';
-	import { cancelEdit, editingCue, entries, update as runUpdate } from '$lib/stores/programmer.js';
+	import { blind, cancelEdit, editingCue, entries, setBlind, update as runUpdate } from '$lib/stores/programmer.js';
 	import { collection } from '$lib/stores/show.js';
 	import { clearStep, nextClear } from '$lib/stores/clear.js';
 	import { wingStoreAsk } from '$lib/stores/wing.js';
@@ -90,6 +90,17 @@
 	</div>
 {/if}
 <div class="verbs">
+	<!-- Blind first: it decides whether what the other three act on is on stage at all.
+	     Lit while on, because a blind desk left blind is a show that ignores the operator. -->
+	<button
+		class="verb blind"
+		class:on={$blind}
+		aria-pressed={$blind}
+		onclick={() => setBlind().catch((e) => addToast(e instanceof Error ? e.message : `${e}`))}
+		title={$blind
+			? 'Blind is on: the programmer reaches no lamp. Press to put it on stage.'
+			: 'Blind: program without the lamps changing; the screens still show it'}>Blind</button
+	>
 	<button class="verb" disabled={!anything} onclick={() => openStore()} title="⌘⏎">Store</button>
 	<button
 		class="verb"
@@ -162,6 +173,13 @@
 	.verb:hover:not(:disabled) {
 		background: var(--bg-hover, #2a2a2a);
 		color: var(--text-bright, #fff);
+	}
+	.verb.blind.on {
+		background: var(--bad, #ef4444);
+		color: #fff;
+	}
+	.verb.blind.on:hover {
+		background: color-mix(in srgb, var(--bad, #ef4444) 85%, white);
 	}
 	.verb:disabled {
 		color: var(--text-faint, #555);

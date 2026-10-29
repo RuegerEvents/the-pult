@@ -7969,6 +7969,44 @@ cargo test -p pult-backend --lib octobanger            # what a prop becomes, an
 cd frontend && npx vitest run src/lib/octobanger.test.ts
 ```
 
+### 98. Blind
+
+Asked for at the Heinz Horror Garten (2026-10-29): program a look with the screens
+showing it and the room seeing nothing, and switch it from the command wing's BLIND key.
+
+**One for the show, because there is one programmer.** `Show::blind` is SYNCED, so every
+station, page and the wing agree, and not PERSISTED, so a show never opens blind with a
+programmer nobody remembers filling. The roadmap's question — a second programmer buffer
+or a flag — was answered *a flag*: being blind is a fact about whether the programmer
+reaches the output, not about who is looking. Blind per operator would need a buffer per
+operator and is not this.
+
+**Blind is the stage reading an empty programmer, in one place.**
+`engine::programmer_on_stage` answers the programmer or nothing, and everything that asks
+what a lamp is doing reads it: the playback pass (so fades and effects under a key the
+programmer holds run as though it held nothing), the push to the connectors, a *Watch*
+node, and `__set_home`. `parameter.value` asks `infra::blind::is_blind` the same
+question. What the programmer *is* is read as always — Store, Update, `__by` and a take
+recorded from the programmer — so a cue stored blind holds exactly what was set.
+`"show"` joined `OUTPUT_COLLECTIONS`, or switching blind would wait for the next show
+change to reach the lamps.
+
+**The screens are not on that path at all.** The rig, the plan and the Fixtures sheet
+evaluate in the browser with the programmer over playback, exactly as before, and carry a
+**BLIND** strip saying the picture is the programmer and the stage is playback. Switching
+blind off puts the programmer on stage, the way every other desk does.
+
+**Switching it is unattributed**, through `programmer.blind` (`infra/blind.rs`), which the
+top bar's Blind button and the wing's BLIND key both run. An attributed write would be one
+Ctrl-Z away, and an operator undoing a programmer change would switch blind off on the way
+past and put the whole programmer on stage; the test checks that undo reaches the
+operator's own change and leaves the show blind. The wing's BLIND light blinks while
+blind, because a desk left blind ignores its operator.
+
+```
+cargo test -p pult-backend --lib a_blind     # the lamps, the push, and Ctrl-Z
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are
@@ -8413,10 +8451,9 @@ in it (task 14) and effects over a selection (task 25) are done: **blind**,
 **highlight** and **fan**, and modifiers that are themselves dynamic, meaning an
 effect whose rate is an effect.
 
-- Blind wants a second programmer buffer that does not reach the output. Is that
-  a second `programmer_values` collection or a flag on the existing one? It is
-  SYNCED either way, so two operators can be blind separately or not at all,
-  and which of those is right is the decision.
+- Blind was built on 2026-10-29 as task 98: a flag on the show rather than a second
+  buffer, so everybody is blind together or nobody is. Blind *per operator* is what is
+  left, and it is a programmer buffer per operator.
 - Highlight is a temporary output override for the selection, the same shape as
   home (`__home`) pointed the other way. Reuse that machinery or not?
 - Fan needs an order over the selection, and `SelectionQuery` now carries one

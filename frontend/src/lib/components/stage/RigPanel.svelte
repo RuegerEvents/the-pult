@@ -8,6 +8,7 @@
 	 */
 
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
+	import BlindBadge from '$lib/components/programmer/BlindBadge.svelte';
 	import { collection, show as showStore } from '$lib/stores/show.js';
 	import { selection } from '$lib/stores/selection.js';
 	import { shownPlanId } from '$lib/stores/stage.js';
@@ -79,6 +80,7 @@
 </script>
 
 <div class="rig">
+	<BlindBadge />
 	<nav class="bar">
 		<label class="toggle">
 			<input type="checkbox" bind:checked={follow} />

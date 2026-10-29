@@ -8,6 +8,7 @@
 	 */
 
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
+	import BlindBadge from '$lib/components/programmer/BlindBadge.svelte';
 	import { addToast } from '$lib/toasts.js';
 	import { calibrationScale, fixturePoint, originForPixel } from '$lib/stage.js';
 	import { at } from '$lib/scene.js';
@@ -139,6 +140,7 @@
 </script>
 
 <div class="stage">
+	<BlindBadge />
 	<nav class="bar">
 		<div class="switch">
 			<button class:on={mode === 'program'} onclick={() => (mode = 'program')}>Program</button>

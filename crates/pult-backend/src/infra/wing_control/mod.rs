@@ -100,6 +100,8 @@ struct Lit {
     sequences: Vec<SequenceLight>,
     timelines: Vec<TimelineLight>,
     variables: Vec<Variable>,
+    /// Whether the show is blind, for BLIND's light.
+    blind: bool,
 }
 
 #[derive(Deserialize)]
@@ -275,6 +277,7 @@ impl Control {
             sequences: self.read("sequences").await,
             timelines: if timelines { self.read("timelines").await } else { Vec::new() },
             variables: if variables { self.read("variables").await } else { Vec::new() },
+            blind: crate::infra::blind::is_blind(&self.engine).await,
         };
         let go = self.go_sequence();
         if self.station.operator().go_sequence != go {
@@ -502,6 +505,17 @@ impl Control {
         if verb == Some(Verb::Learn) {
             if down {
                 self.station.update_operator(|op| op.learning = !op.learning).await;
+            }
+            return;
+        }
+        // BLIND switches the show's blind over, and lights at once rather than on the
+        // next look at the show.
+        if verb == Some(Verb::Blind) {
+            if down {
+                match crate::infra::blind::set(&self.engine, None).await {
+                    Ok(blind) => self.lit.blind = blind,
+                    Err(e) => warn!("[wing] BLIND: {e}"),
+                }
             }
             return;
         }
@@ -1561,6 +1575,14 @@ impl Control {
             } else if storing && self.store_onto(*index, code, self.fader_keys.get(index).copied()).is_some() {
                 // Waiting for where: every playback STORE can go onto says so.
                 if blink { keys::LIT } else { keys::DIM }
+            } else if verb == Some(Verb::Blind) {
+                // Blinking while blind: the one state the desk must never be left in
+                // without somebody noticing.
+                if self.lit.blind {
+                    if blink { keys::LIT } else { keys::DIM }
+                } else {
+                    keys::DIM
+                }
             } else if verb == Some(Verb::Learn) {
                 if operator.learning {
                     if blink { keys::LIT } else { 0 }

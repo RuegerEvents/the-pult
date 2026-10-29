@@ -375,6 +375,22 @@ export type Updated = {
  * nothing is driving are handed back rather than guessed at, and the programmer is
  * cleared only once every value has found its cue.
  */
+/**
+ * Blind: the programmer reaches no lamp, and every screen goes on showing it. One for
+ * the show, SYNCED, so every page and the wing's BLIND light agree. See `Show::blind`.
+ */
+export const blind: Readable<boolean> = derived(show, ($show) => !!$show?.blind);
+
+/**
+ * Switch blind on or off, or over with no argument. The station's `programmer.blind`,
+ * the one the wing's BLIND key runs: unattributed, so Ctrl-Z never switches it off on
+ * the way past an operator's own change.
+ */
+export async function setBlind(on?: boolean): Promise<boolean> {
+	const answer = (await showClient().call('programmer.blind', on === undefined ? {} : { on })) as { blind: boolean };
+	return answer.blind;
+}
+
 export async function update(): Promise<Updated> {
 	await settled();
 	return (await showClient().call('programmer.update', {})) as Updated;

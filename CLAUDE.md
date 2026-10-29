@@ -912,6 +912,9 @@ The **`values` panel** is the programmer: it sets fixture parameters into a shar
 SYNCED `programmer_values` buffer that takes priority over playback until the values
 are cleared or stored into a cue. Programming also happens in the `plan` and `rig`
 panels, where a selected head can be aimed by dragging where its beam lands.
+**Blind** (`Show::blind`, task 98) keeps the programmer off every lamp while the screens
+still show it: anything answering what a lamp is doing reads
+`engine::programmer_on_stage`, and switching it is unattributed so Ctrl-Z cannot.
 
 **A write can say how far instead of where.** A `__by` sentinel on a path — beside
 `__create` and `__delete` — is a change rather than a destination, and the station

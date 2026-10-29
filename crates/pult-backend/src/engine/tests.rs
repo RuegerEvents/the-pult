@@ -89,6 +89,7 @@ fn a_show() -> Show {
         name: "Hamlet".into(),
         created_at: Utc::now(),
         editing_cue: None,
+        blind: false,
         history_depth: pult_schema::types::show::HISTORY_DEPTH_DEFAULT,
         home_fade_ms: 0,
         haze_density: pult_schema::types::show::HAZE_DENSITY_DEFAULT,
@@ -1767,6 +1768,89 @@ async fn playback_hands_the_patch_to_the_output_plugins() {
         Some(ParameterValue::Float(1.0)),
         "output must see what playback just put on the parameter",
     );
+}
+
+/// Blind: the connectors are handed no programmer, so no lamp sees it, and playback
+/// runs the stage as though the programmer were empty — a cue taken on a key the
+/// programmer holds still starts its fade. Switched off, the programmer is in the push
+/// again and the lamps take it.
+#[tokio::test]
+async fn a_blind_show_hands_the_output_no_programmer() {
+    use crate::infra::connectors::{OutputCommand, OutputHandle};
+
+    let pool = Arc::new(showfile::open_in_memory().await.expect("open in-memory showfile"));
+    let (mut engine, handle, _broadcast) = ShowEngine::new(NodeId(Uuid::new_v4()), pool, None);
+    let (tx, mut output_rx) = tokio::sync::mpsc::channel(64);
+    engine.set_output(OutputHandle(tx));
+    tokio::spawn(engine.run());
+
+    handle
+        .set(
+            vec![PathSegment::Key("show".into())],
+            Lifecycle::Persisted,
+            serde_json::json!({ "id": Uuid::new_v4(), "name": "Blind", "created_at": "2026-10-29T00:00:00Z" }),
+        )
+        .await
+        .unwrap();
+    let fixture = a_fixture("Spot L", 1);
+    let cue = an_intensity_cue(fixture.id, 1.0, 0);
+    let seq = a_sequence("Act 1", vec![cue.id]);
+    handle.set(create_path("fixtures"), Lifecycle::Persisted, json(&fixture)).await.unwrap();
+    handle.set(create_path("cues"), Lifecycle::Persisted, json(&cue)).await.unwrap();
+    handle.set(create_path("sequences"), Lifecycle::Persisted, json(&seq)).await.unwrap();
+    let entry = serde_json::json!({
+        "id": Uuid::new_v4(),
+        "fixture_id": fixture.id,
+        "parameter_kind": "Intensity",
+        "value": { "type": "Float", "value": 0.2 },
+        "locked": false,
+    });
+    handle.set(create_path("programmer_values"), Lifecycle::Synced, entry).await.unwrap();
+
+    let blind = |on: bool| {
+        handle.set(
+            vec![PathSegment::Key("show".into()), PathSegment::Key("blind".into())],
+            Lifecycle::Synced,
+            serde_json::Value::Bool(on),
+        )
+    };
+    blind(true).await.unwrap();
+    handle
+        .set(field_path("sequences", seq.id, "goNext"), Lifecycle::Synced, serde_json::json!({}))
+        .await
+        .unwrap();
+
+    // The push that carries the cue's fade.
+    let (fixtures, programmer) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(cmd) = output_rx.recv().await {
+            let OutputCommand::Patch { fixtures, programmer, .. } = cmd else { continue };
+            if fixtures.iter().any(|f| f.live_fades.contains_key("Intensity")) {
+                return (fixtures, programmer);
+            }
+        }
+        panic!("output channel closed");
+    })
+    .await
+    .expect("the cue's fade should reach the plugins");
+    assert!(programmer.is_empty(), "blind: the connectors are handed no programmer");
+    assert_eq!(
+        fixtures[0].live_fades.get("Intensity").map(|fade| fade.to.clone()),
+        Some(ParameterValue::Float(1.0)),
+        "and playback was not held back under the key the programmer holds",
+    );
+
+    blind(false).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(cmd) = output_rx.recv().await {
+            let OutputCommand::Patch { programmer, .. } = cmd else { continue };
+            if !programmer.is_empty() {
+                return;
+            }
+        }
+        panic!("output channel closed");
+    })
+    .await
+    .expect("switched off, the programmer reaches the plugins again");
 }
 
 #[tokio::test]

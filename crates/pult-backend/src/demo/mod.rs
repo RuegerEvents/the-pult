@@ -286,6 +286,7 @@ impl Seeder {
                 name: name.to_string(),
                 created_at: chrono::Utc::now(),
                 editing_cue: None,
+                blind: false,
                 history_depth: prefs.history_depth,
                 home_fade_ms: prefs.home_fade_ms,
                 haze_density: prefs.haze_density,

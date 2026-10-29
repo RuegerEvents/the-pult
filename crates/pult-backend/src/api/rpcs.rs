@@ -335,6 +335,13 @@ pub const LOCAL_RPCS: &[LocalRpcMeta] = &[
         args_schema: r#"[{"name":"sequenceId","type":"string","optional":true},{"name":"newSequence","type":"string","optional":true},{"name":"cueId","type":"string","optional":true},{"name":"replace","type":"boolean","optional":true},{"name":"include","type":"array","optional":true},{"name":"name","type":"string","optional":true},{"name":"after","type":"string","optional":true},{"name":"fadeInMs","type":"number","optional":true},{"name":"fadeOutMs","type":"number","optional":true},{"name":"easing","type":"string","optional":true},{"name":"followMode","type":"object","optional":true},{"name":"timing","type":"object","optional":true},{"name":"cueOnly","type":"boolean","optional":true},{"name":"keep","type":"boolean","optional":true},{"name":"onto","type":"object","optional":true}]"#,
         doc: "Store the programmer into a sequence (or a new one, by name): into cueId, merged or replaced, or as a new cue after `after`, appended when left out. One undoable act; the programmer is cleared unless `keep`.",
     },
+    // Blind (`infra/blind.rs`): the programmer reaches no lamp while every screen still
+    // shows it. Unattributed, so Ctrl-Z can never switch it off on the way past.
+    LocalRpcMeta {
+        method: "programmer.blind",
+        args_schema: r#"[{"name":"on","type":"boolean","optional":true}]"#,
+        doc: "Switch blind on or off, or over when `on` is left out. Answers {blind}. Not undoable and not in History.",
+    },
     // The show as it comes up (`infra/default_state.rs`), under the caller's name.
     LocalRpcMeta {
         method: "defaultState.save",
@@ -594,6 +601,15 @@ pub async fn dispatch(method: &str, args: Value, deps: &LocalRpcDeps) -> Result<
         "defaultState.clear" => {
             crate::infra::default_state::clear(&deps.engine, asking_user(deps)).await?;
             Ok(Value::Null)
+        }
+        "programmer.blind" => {
+            let on = match args.get("on") {
+                Some(serde_json::Value::Bool(on)) => Some(*on),
+                None | Some(serde_json::Value::Null) => None,
+                Some(_) => return Err("programmer.blind takes `on` as a boolean".into()),
+            };
+            let blind = crate::infra::blind::set(&deps.engine, on).await?;
+            Ok(serde_json::json!({ "blind": blind }))
         }
         "programmer.update" => {
             let updated = crate::infra::storing::update(&deps.engine, asking_user(deps)).await?;
@@ -1480,8 +1496,12 @@ async fn what_is_it_doing(
         .get(vec![PathSegment::Key("programmer_values".into())])
         .await
         .map_err(|e| format!("cannot read the programmer: {e}"))?;
-    let entries: Vec<pult_schema::types::programmer::ProgrammerValue> =
+    let mut entries: Vec<pult_schema::types::programmer::ProgrammerValue> =
         serde_json::from_value(entries).unwrap_or_default();
+    // What the lamp is doing, so a blind programmer is not part of the answer.
+    if crate::infra::blind::is_blind(engine).await {
+        entries.clear();
+    }
     let held = HeldByProgrammer::of(&entries);
     let sequences = engine
         .get(vec![PathSegment::Key("sequences".into())])
@@ -2109,5 +2129,134 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         let later = ask().await.unwrap()["Intensity"]["value"].as_f64().unwrap();
         assert!(later > first, "and it has moved on since, with nothing written: {later}");
+    }
+
+    /// Blind: the programmer is what a screen shows and not what a lamp does. Asked of
+    /// the station the way a plugin or the command line asks, a programmer value is the
+    /// answer until the show goes blind, where it rests while blind, and the answer again
+    /// once blind is off — and switching blind is nothing Ctrl-Z can take back, or an
+    /// undo of a programmer change could put the whole programmer on stage on its way.
+    #[tokio::test]
+    async fn a_blind_programmer_is_not_what_the_lamp_is_doing() {
+        use pult_schema::{
+            lifecycle::Lifecycle,
+            types::fixture::{FixtureType, ParameterDefinition, ParameterKind, ParameterValue},
+        };
+
+        let pool =
+            std::sync::Arc::new(crate::infra::showfile::open_in_memory().await.expect("showfile"));
+        let (engine, handle, _broadcast) = crate::engine::ShowEngine::new(
+            pult_schema::events::operation::NodeId(uuid::Uuid::new_v4()),
+            pool,
+            None,
+        );
+        tokio::spawn(engine.run());
+
+        // A show row written before blind existed: the field is not in it at all.
+        handle
+            .set(
+                vec![PathSegment::Key("show".into())],
+                Lifecycle::Persisted,
+                serde_json::json!({ "id": uuid::Uuid::new_v4(), "name": "Blind", "created_at": "2026-10-29T00:00:00Z" }),
+            )
+            .await
+            .unwrap();
+
+        let user = uuid::Uuid::new_v4();
+        let fixture_type = FixtureType {
+            id: uuid::Uuid::new_v4(),
+            name: "Dimmer".into(),
+            channel_count: 1,
+            parameters: vec![ParameterDefinition::new(ParameterKind::Intensity, ParameterValue::Float(0.0))],
+            ..FixtureType::default()
+        };
+        let fixture_id = uuid::Uuid::new_v4();
+        let create = |table: &str| vec![PathSegment::Key(table.into()), PathSegment::Key("__create".into())];
+        handle
+            .set(create("fixture_types"), Lifecycle::Persisted, serde_json::to_value(&fixture_type).unwrap())
+            .await
+            .unwrap();
+        handle
+            .set(
+                create("fixtures"),
+                Lifecycle::Persisted,
+                serde_json::json!({
+                    "id": fixture_id,
+                    "name": "Spot",
+                    "fixture_type_id": fixture_type.id,
+                    "address": { "Dmx": { "mode": "Default", "breaks": [{ "universe": 1, "address": 1 }] } },
+                    "position": null,
+                }),
+            )
+            .await
+            .unwrap();
+        let entry = pult_schema::types::programmer::programmer_entry_id(&fixture_id.to_string(), "Intensity");
+        handle
+            .set_as(
+                user,
+                None,
+                create("programmer_values"),
+                Lifecycle::Synced,
+                serde_json::json!({
+                    "id": entry,
+                    "fixture_id": fixture_id,
+                    "parameter_kind": "Intensity",
+                    "value": ParameterValue::Float(0.8),
+                    "locked": false,
+                }),
+            )
+            .await
+            .unwrap();
+
+        let deps = LocalRpcDeps {
+            session: SessionHandle(tokio::sync::mpsc::channel(1).0),
+            devices: DeviceHandle(tokio::sync::mpsc::channel(1).0),
+            engine: handle.clone(),
+            log: None,
+            log_watchers: Default::default(),
+            sync: None,
+            caller: None,
+            acting_for: None,
+            clients: None,
+            node_id: pult_schema::events::operation::NodeId::new(),
+            viewers: Default::default(),
+            input: None,
+            audio: None,
+            ws_registry: None,
+            shows: crate::ShowsHandle::detached(),
+            xchange: None,
+            wing: None,
+        };
+        let level = || async {
+            dispatch("parameter.value", serde_json::json!({ "fixtureId": fixture_id }), &deps).await.unwrap()
+                ["Intensity"]["value"]
+                .as_f64()
+                .unwrap()
+        };
+        let blind = |on: Option<bool>| {
+            let args = match on {
+                Some(on) => serde_json::json!({ "on": on }),
+                None => serde_json::json!({}),
+            };
+            dispatch("programmer.blind", args, &deps)
+        };
+
+        assert!((level().await - 0.8).abs() < 1e-6, "the programmer is on stage");
+
+        assert_eq!(blind(None).await.unwrap()["blind"], true, "left out, it switches over");
+        assert_eq!(level().await, 0.0, "blind: the lamp rests where nothing drives it");
+        let still = handle.get(vec![PathSegment::Key("programmer_values".into())]).await.unwrap();
+        assert!(still.to_string().contains("0.8"), "and the programmer still holds what was set");
+
+        assert_eq!(blind(Some(false)).await.unwrap()["blind"], false);
+        assert!((level().await - 0.8).abs() < 1e-6, "off again: what was programmed goes live");
+
+        // Ctrl-Z goes past the switch to the operator's own last change — setting the
+        // value — and leaves the show blind.
+        blind(Some(true)).await.unwrap();
+        handle.undo(user, false).await;
+        assert!(crate::infra::blind::is_blind(&handle).await, "Ctrl-Z does not switch blind off");
+        let held = handle.get(vec![PathSegment::Key("programmer_values".into())]).await.unwrap();
+        assert!(!held.to_string().contains("0.8"), "it took back the value instead: {held}");
     }
 }
