@@ -130,7 +130,7 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 }
 
 fn store(items: &[&str]) -> Store {
-    Store { stored: set(items), bytes_total: 100, bytes_free: 50 }
+    Store { stored: set(items), bytes_total: 100, bytes_free: 50, ..Store::default() }
 }
 
 /// A node nobody has asked yet is asked first.
@@ -172,6 +172,34 @@ fn a_busy_node_and_an_unsettled_clip_wait() {
         BTreeMap::from([("n1".to_string(), store(&[])), ("n2".to_string(), store(&[]))]);
     let ops = plan(&wanted, &stores, &set(&["n1"]), |_, sha| sha != "b", true);
     assert!(ops.is_empty(), "{ops:?}");
+}
+
+/// A clip bigger than the node's room is said before it is sent. The room counts what
+/// will be deleted first, and the clips ahead of it in the queue.
+#[test]
+fn a_clip_that_will_not_fit_is_said_before_it_is_sent() {
+    let size = |sha: &str| Some(match sha { "a" => 30, "b" => 30, _ => 10 });
+    let never = |_: &str, _: &str| false;
+    let wanted = BTreeMap::from([("n1".to_string(), set(&["a", "b"]))]);
+
+    // 50 free: "a" takes 30, "b" does not get its 30.
+    let stores = BTreeMap::from([("n1".to_string(), store(&[]))]);
+    let over = too_big(&wanted, &stores, size, never, true);
+    assert_eq!(over.keys().collect::<Vec<_>>(), vec![&("n1".to_string(), "b".to_string())]);
+
+    // An unwanted 20 on the node will be deleted first, and then both fit.
+    let mut holding = store(&["old"]);
+    holding.sizes.insert("old".into(), 20);
+    let stores = BTreeMap::from([("n1".to_string(), holding.clone())]);
+    assert!(too_big(&wanted, &stores, size, never, true).is_empty());
+    // Not before the timelines are known, when nothing is deleted.
+    assert_eq!(too_big(&wanted, &stores, size, never, false).len(), 1);
+
+    // A refused clip is not sent, so it takes no room.
+    let stores = BTreeMap::from([("n1".to_string(), store(&[]))]);
+    assert!(too_big(&wanted, &stores, size, |_, sha| sha == "a", true).is_empty());
+    // A node not yet asked is not judged.
+    assert!(too_big(&wanted, &BTreeMap::new(), size, never, true).is_empty());
 }
 
 #[test]

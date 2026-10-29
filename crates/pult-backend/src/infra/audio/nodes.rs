@@ -148,6 +148,8 @@ pub struct Store {
     pub stored: BTreeSet<String>,
     pub bytes_total: u64,
     pub bytes_free: u64,
+    /// How big each stored clip is, as the node lists it.
+    pub sizes: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,6 +379,44 @@ pub fn plan(
     ops
 }
 
+/// The clips that will not fit on their node, and why, worked out before any of them is
+/// sent: the node only says so with a 413 once the upload has been tried.
+///
+/// A node's room is what it has free plus what [`plan`] will delete first, the clips
+/// nothing wants. Clips go up in the order `plan` takes them, so the first ones take the
+/// room and a later one is the one that does not fit. A clip in `skip` (already refused)
+/// takes no room, since it is not going to be sent.
+pub fn too_big(
+    wanted: &BTreeMap<String, BTreeSet<String>>,
+    stores: &BTreeMap<String, Store>,
+    size_of: impl Fn(&str) -> Option<u64>,
+    skip: impl Fn(&str, &str) -> bool,
+    may_delete: bool,
+) -> BTreeMap<(String, String), String> {
+    let mut out = BTreeMap::new();
+    for (serial, clips) in wanted {
+        let Some(store) = stores.get(serial) else { continue };
+        let deletable: u64 = if may_delete {
+            store.stored.iter().filter(|sha| !clips.contains(*sha)).map(|sha| store.sizes.get(sha).copied().unwrap_or(0)).sum()
+        } else {
+            0
+        };
+        let mut room = store.bytes_free + deletable;
+        for sha in clips.iter().filter(|sha| !store.stored.contains(*sha) && !skip(serial, sha)) {
+            let Some(size) = size_of(sha) else { continue };
+            if size <= room {
+                room -= size;
+            } else {
+                out.insert(
+                    (serial.clone(), sha.clone()),
+                    format!("will not fit on node {serial}: it is {} kB and {} kB is left", size / 1_024, room / 1_024),
+                );
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     List(String),
@@ -401,6 +441,10 @@ impl AudioManager {
         let mut wanted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut faults: HashMap<Uuid, BTreeMap<String, BTreeMap<String, String>>> = HashMap::new();
         let mut streamed: BTreeMap<String, Vec<(Timeline, AudioClip, Option<Vec<Vec<u16>>>)>> = BTreeMap::new();
+        // Clips not on their node yet, by (node, sha), to say which of them will not fit
+        // once everything wanted is known.
+        let mut waiting: BTreeMap<(String, String), Vec<(Uuid, String)>> = BTreeMap::new();
+        let mut sizes: HashMap<String, u64> = HashMap::new();
 
         // Every adopted node with a loudspeaker is in `wanted`, if only with nothing, so a
         // node whose last clip was taken off its timeline is emptied rather than ignored.
@@ -457,10 +501,12 @@ impl AudioManager {
                         let key = (serial.to_string(), bounced.sha.clone());
                         self.nodes.wanted_since.entry(key.clone()).or_insert_with(Instant::now);
                         wanted.entry(serial.to_string()).or_default().insert(bounced.sha.clone());
+                        sizes.insert(bounced.sha.clone(), bounced.bytes.len() as u64);
                         if let Some(why) = self.nodes.refused.get(&key) {
                             fault(&mut faults, why.clone());
                         } else if !self.nodes.stores.get(serial).is_some_and(|s| s.stored.contains(&bounced.sha)) {
                             fault(&mut faults, format!("not on node {serial} yet"));
+                            waiting.entry(key).or_default().push((timeline.id, clip.id.to_string()));
                         }
                     }
                     Err(e) => fault(&mut faults, e),
@@ -472,6 +518,19 @@ impl AudioManager {
         self.nodes
             .wanted_since
             .retain(|(serial, sha), _| wanted.get(serial).is_some_and(|w| w.contains(sha)));
+        let refused = &self.nodes.refused;
+        let over = too_big(
+            &wanted,
+            &self.nodes.stores,
+            |sha| sizes.get(sha).copied(),
+            |serial, sha| refused.contains_key(&(serial.to_string(), sha.to_string())),
+            self.nodes.seen_timelines,
+        );
+        for ((serial, sha), why) in over {
+            for (timeline, clip) in waiting.get(&(serial.clone(), sha)).into_iter().flatten() {
+                faults.entry(*timeline).or_default().entry(clip.clone()).or_default().insert(serial.clone(), why.clone());
+            }
+        }
         self.nodes.faults = faults;
 
         self.start_requests(&wanted, &directory);
@@ -1028,11 +1087,17 @@ async fn request(http: &reqwest::Client, base: &str, op: Op, bytes: Option<Arc<V
             let Ok(body) = response.json::<serde_json::Value>().await else {
                 return Outcome::Failed("answered its clip list with something else".into());
             };
+            let listed: Vec<(String, u64)> = body["clips"]
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|c| Some((c["sha"].as_str()?.to_string(), c["bytes"].as_u64().unwrap_or(0))))
+                        .collect()
+                })
+                .unwrap_or_default();
             Outcome::Listed(Store {
-                stored: body["clips"]
-                    .as_array()
-                    .map(|list| list.iter().filter_map(|c| c["sha"].as_str().map(str::to_string)).collect())
-                    .unwrap_or_default(),
+                stored: listed.iter().map(|(sha, _)| sha.clone()).collect(),
+                sizes: listed.into_iter().collect(),
                 bytes_total: body["bytes_total"].as_u64().unwrap_or(0),
                 bytes_free: body["bytes_free"].as_u64().unwrap_or(0),
             })
