@@ -1389,6 +1389,11 @@ show's, a PERSISTED `groups` row holding the query itself. Recalling one takes o
 question, so a fixture patched afterwards joins it, and `group 3` in the command line
 leaves exactly what clicking the group leaves.
 
+**A fixture is typed by its number, never its row.** `fixture 3` on the command line and
+the wing is `Fixture::fixture_number` 3 (`command_line_core::numbered`); the station
+numbers a fixture created without one, one past the highest. Numbers may repeat. See
+task 100.
+
 **And then which cells.** `SelectionQuery::cells` cuts every multi-cell fixture the query
 answers (MA's `.`); `elements()` — in `group.rs` and `selection.ts`, held by the corpus —
 is the ordered `(fixture, cell)` list a selection acts on, and `rowTargets` is where a

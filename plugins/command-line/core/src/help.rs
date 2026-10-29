@@ -26,7 +26,7 @@ pub fn help(catalog: &Catalog, topic: Option<&str>) -> String {
 const SELECTION_HELP: &str = r#"
 Selecting fixtures
 
-  fixture 3               select one, by its place in the patch
+  fixture 3               select one, by its number
   fixture 1 thru 5        select a range
   fixture 1 thru 5 + 8    ranges combine with + and -
   fixture - 2             take one out of the current selection

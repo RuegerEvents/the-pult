@@ -393,6 +393,7 @@ impl<'a> Planner<'a> {
         };
 
         let position = self.transform_of(object);
+        let earlier = self.existing.fixtures.iter().find(|each| each.id == id);
         let fixture = Fixture {
             id,
             name: object.name.clone(),
@@ -404,11 +405,13 @@ impl<'a> Planner<'a> {
             layer: Some(layer),
             class: object.classing.as_deref().and_then(|c| Uuid::parse_str(c.trim()).ok()),
             focus: object.focus.as_deref().and_then(|f| Uuid::parse_str(f.trim()).ok()),
-            fixture_number: object.fixture_id,
+            // The file's number wins; a drawing that carries none keeps the one this
+            // console gave the fixture, since the wing selects by it.
+            fixture_number: object.fixture_id.or(earlier.and_then(|e| e.fixture_number)),
             unit_number: object.unit_number,
             ..Fixture::default()
         };
-        let replaces = self.existing.fixtures.iter().find(|each| each.id == id).map(|e| e.id);
+        let replaces = earlier.map(|e| e.id);
         self.seen.insert(id);
         self.plan.write("fixtures", replaces, json(&fixture));
     }

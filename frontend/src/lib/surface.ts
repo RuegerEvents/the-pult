@@ -9,6 +9,7 @@
  */
 
 import type {
+	AudioClip,
 	ColorStop,
 	Fixture,
 	FixtureType,
@@ -30,6 +31,7 @@ import type { PultWsClient } from './ws/client.js';
 import { offer } from './stores/learn.js';
 import type { DataRoot } from './ws/data.js';
 import { uuid } from '$lib/uuid.js';
+import { clipSpan } from './waveform.js';
 
 /** What a surface's tiles can point at: the show, as far as a surface reads it. */
 export type SurfaceShow = {
@@ -253,6 +255,42 @@ export function timelinePosition(timeline: Timeline, now: number | null): number
 	if (!end || end.at_ms <= 0) return raw;
 	if (end.then === 'Loop') return raw % end.at_ms;
 	return Math.min(raw, end.at_ms);
+}
+
+/**
+ * How long a timeline runs before it is done: its end where it stops at one, or where
+ * its content runs out — the last event, marker or sound, the place the lanes put a new
+ * end — where it has none. `null` for a looping one, which is never done, and for one
+ * whose length cannot be known yet.
+ *
+ * `fileMs` is how long a clip's file is, which a page knows only from its peaks. A clip
+ * trimmed to a length does not need it; one playing to the end of its file does, and
+ * until every such file is known the answer is `null` rather than a guess, because a
+ * countdown that jumps when the waveform arrives is a countdown nobody can trust.
+ */
+export function timelineLength(timeline: Timeline, fileMs: (clip: AudioClip) => number | null): number | null {
+	const end = timeline.end;
+	if (end && end.at_ms > 0) return end.then === 'Loop' ? null : end.at_ms;
+	let last = Math.max(0, ...timeline.events.map((e) => e.at_ms), ...timeline.markers.map((m) => m.at_ms));
+	for (const clip of timeline.clips) {
+		const file = fileMs(clip);
+		if (file === null && clip.length_ms === null) return null;
+		last = Math.max(last, clipSpan(clip, file).toMs);
+	}
+	return last > 0 ? last : null;
+}
+
+/**
+ * How much of a timeline is left and how far through it is, for a playhead at
+ * `position` on one `length` long. `null` where either is unknown.
+ */
+export function timelineProgress(
+	position: number | null,
+	length: number | null
+): { remainingMs: number; fraction: number } | null {
+	if (position === null || length === null || length <= 0) return null;
+	const at = Math.min(Math.max(position, 0), length);
+	return { remainingMs: length - at, fraction: at / length };
 }
 
 // ── Editing a tile list ───────────────────────────────────────────────────────

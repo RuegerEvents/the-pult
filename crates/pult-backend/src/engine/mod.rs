@@ -2434,6 +2434,23 @@ impl ShowEngine {
                          write to [\"programmer_values\", \"__home\"]"
                     .into(),
             }),
+            // A fixture patched without a number gets the next one, here rather than in
+            // each of the places that patch — the dialog, the editor, a node being
+            // adopted, an import, a demo, a plugin — so every one of them yields a
+            // fixture the wing can type. Resolved before the oplog like the verbs, so a
+            // peer receives the number and does not count for itself.
+            [PathSegment::Key(table), PathSegment::Key(verb)]
+                if table == "fixtures"
+                    && verb == "__create"
+                    && value.get("fixture_number").is_none_or(serde_json::Value::is_null) =>
+            {
+                let mut value = value;
+                let fixtures: Vec<pult_schema::types::fixture::Fixture> = self.read_collection("fixtures");
+                if let Some(row) = value.as_object_mut() {
+                    row.insert("fixture_number".into(), pult_schema::types::fixture::next_fixture_number(&fixtures).into());
+                }
+                Ok(vec![(path, value)])
+            }
             _ => {
                 let value = self.lead_a_streamed_play(&path, value);
                 Ok(vec![(path, value)])

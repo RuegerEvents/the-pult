@@ -1040,6 +1040,12 @@ pub struct Fixture {
     pub home_values: HashMap<String, ParameterValue>,
 }
 
+/// The number a fixture patched now gets when nobody gave it one: one past the highest
+/// in the rig, so a gap somebody left on purpose stays a gap.
+pub fn next_fixture_number(fixtures: &[Fixture]) -> u32 {
+    fixtures.iter().filter_map(|f| f.fixture_number).max().map_or(1, |n| n.saturating_add(1))
+}
+
 /// The map key for a parameter, in `home_values`, `sensed_values`, `live_fades` and
 /// `live_effects` alike.
 ///

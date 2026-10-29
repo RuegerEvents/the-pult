@@ -13,7 +13,7 @@
 	 * press that went nowhere would read as one that worked.
 	 */
 
-	import type { Surface, SurfaceTile } from '$lib/generated/index.js';
+	import type { AudioClip, Surface, SurfaceTile } from '$lib/generated/index.js';
 	import { clock } from '$lib/waveform.js';
 	import {
 		inkOn,
@@ -22,12 +22,15 @@
 		pressTarget,
 		targetExists,
 		tileLabel,
+		timelineLength,
 		timelinePosition,
+		timelineProgress,
 		variableReading,
 		type SurfaceShow
 	} from '$lib/surface.js';
 	import { parameterKey } from '$lib/patch.js';
 	import { output, watching } from '$lib/stores/output.js';
+	import { peaksFor } from '$lib/stores/peaks.js';
 	import { consoleNow } from '$lib/ws/clock.js';
 	import { getClientContext, getDataContext } from '$lib/ws/context.js';
 	import { addToast } from '$lib/toasts.js';
@@ -87,6 +90,15 @@
 		return () => cancelAnimationFrame(frame);
 	});
 
+	// How long a clip's file is comes from its peaks, fetched once; this says "work the
+	// countdown out again" when one arrives.
+	let peaksArrived = $state(0);
+	function fileMs(clip: AudioClip): number | null {
+		void peaksArrived;
+		const peaks = clip.peaks ? peaksFor(clip.peaks, () => peaksArrived++) : null;
+		return peaks?.durationMs ?? null;
+	}
+
 	async function act(tile: SurfaceTile) {
 		if (onselect) return onselect(tile.id);
 		if (!live || !isAction(tile.target) || !targetExists(tile.target, show)) return;
@@ -101,8 +113,11 @@
 		}
 	}
 
-	/** What a tile shows as its state, beside its label. */
-	function stateOf(tile: SurfaceTile): { text: string; color: string | null } | null {
+	/**
+	 * What a tile shows as its state, beside its label — and for a timeline that will
+	 * finish, how far through it is, which is the bar along the tile's foot.
+	 */
+	function stateOf(tile: SurfaceTile): { text: string; color: string | null; fraction?: number } | null {
 		const target = tile.target;
 		switch (target.kind) {
 			case 'VariableReadout':
@@ -114,9 +129,14 @@
 				if (!timeline) return null;
 				const position = timelinePosition(timeline, now);
 				const where = position === null ? '' : ` · ${clock(position).slice(0, -3)}`;
+				// A loop is never done, so it has no countdown and no bar.
+				const progress = timelineProgress(position, timelineLength(timeline, fileMs));
+				// Rounded up, the way a countdown is read: it says 0:00 only once it is over.
+				const left = progress ? ` · −${clock(Math.ceil(progress.remainingMs / 1000) * 1000).slice(0, -3)}` : '';
 				return {
-					text: (timeline.running ? 'Playing' : 'Stopped') + where,
-					color: timeline.running ? '#22c55e' : null
+					text: (timeline.running ? 'Playing' : 'Stopped') + where + left,
+					color: timeline.running ? '#22c55e' : null,
+					fraction: progress?.fraction
 				};
 			}
 			default:
@@ -168,6 +188,9 @@
 							{#if state.color}<span class="dot" style:background={state.color}></span>{/if}
 							{state.text}
 						</span>
+						{#if state.fraction !== undefined}
+							<span class="progress" style:width="{state.fraction * 100}%"></span>
+						{/if}
 					{/if}
 				</button>
 			{:else}
@@ -262,6 +285,7 @@
 		grid-column: 1 / -1;
 	}
 	.action {
+		position: relative;
 		cursor: pointer;
 		background: #2d3a4f;
 		border-color: #3d4f6b;
@@ -299,6 +323,15 @@
 		font-size: 13px;
 		opacity: 0.85;
 		font-variant-numeric: tabular-nums;
+	}
+	/* How far through a timeline is, along the tile's foot. */
+	.progress {
+		position: absolute;
+		left: 0;
+		bottom: 0;
+		height: 4px;
+		background: currentColor;
+		opacity: 0.7;
 	}
 	.dot {
 		width: 10px;

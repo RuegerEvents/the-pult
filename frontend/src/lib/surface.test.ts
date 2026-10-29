@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { FlowNode, SurfaceTile, Timeline, Variable } from './generated/index.js';
+import type { AudioClip, FlowNode, SurfaceTile, Timeline, Variable } from './generated/index.js';
 import {
 	flowButtons,
 	inkOn,
@@ -18,7 +18,9 @@ import {
 	surfaceIdOf,
 	surfaceUrl,
 	tileLabel,
+	timelineLength,
 	timelinePosition,
+	timelineProgress,
 	variableReading,
 	type SurfaceShow
 } from './surface.js';
@@ -249,6 +251,39 @@ describe('where a timeline is', () => {
 		expect(timelinePosition(looping, 3500)).toBe(500);
 		const stopping = { ...running, end: { at_ms: 2000, then: 'Stop' as const } };
 		expect(timelinePosition(stopping, 3500)).toBe(2000);
+	});
+});
+
+describe('how much of a timeline is left', () => {
+	const clip = (over: Partial<AudioClip> = {}): AudioClip =>
+		({ id: 'c', name: '', asset: 'a', peaks: 'p', start_ms: 1000, offset_ms: 0, length_ms: null, repeats: 1, ...over }) as AudioClip;
+	const unknown = () => null;
+
+	it('runs to its end where it stops at one', () => {
+		expect(timelineLength(timeline({ end: { at_ms: 90_000, then: 'Stop' } }), unknown)).toBe(90_000);
+	});
+
+	it('is never done when it loops', () => {
+		expect(timelineLength(timeline({ end: { at_ms: 90_000, then: 'Loop' } }), unknown)).toBeNull();
+	});
+
+	it('runs to its last event, marker or sound where it has no end', () => {
+		const events = [{ at_ms: 5000 }] as Timeline['events'];
+		expect(timelineLength(timeline({ events }), unknown)).toBe(5000);
+		expect(timelineLength(timeline({ events, clips: [clip()] }), () => 30_000)).toBe(31_000);
+		expect(timelineLength(timeline({ clips: [clip({ length_ms: 2000, repeats: 3 })] }), unknown)).toBe(7000);
+	});
+
+	it('says nothing until it knows how long a file playing to its end is', () => {
+		expect(timelineLength(timeline({ clips: [clip()] }), unknown)).toBeNull();
+		expect(timelineLength(timeline(), unknown)).toBeNull();
+	});
+
+	it('counts down to the end and stops at nothing left', () => {
+		expect(timelineProgress(15_000, 60_000)).toEqual({ remainingMs: 45_000, fraction: 0.25 });
+		expect(timelineProgress(70_000, 60_000)).toEqual({ remainingMs: 0, fraction: 1 });
+		expect(timelineProgress(null, 60_000)).toBeNull();
+		expect(timelineProgress(1000, null)).toBeNull();
 	});
 });
 

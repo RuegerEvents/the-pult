@@ -165,17 +165,18 @@ impl CommandLine {
         for (op, target) in ops {
             let ids: Vec<String> = match target {
                 SelectTarget::Fixtures(range) => {
-                    if range.to > fixtures.len() {
-                        return Err(format!(
-                            "there are {} fixtures; {} is past the end",
-                            fixtures.len(),
-                            range.to
-                        ));
+                    let found: Vec<String> = core::numbered(&fixture_numbers(&fixtures), range)
+                        .into_iter()
+                        .filter_map(|i| fixtures[i].get("id").and_then(Value::as_str).map(String::from))
+                        .collect();
+                    if found.is_empty() {
+                        return Err(if range.from == range.to {
+                            format!("no fixture is numbered {}", range.from)
+                        } else {
+                            format!("no fixture is numbered {} to {}", range.from, range.to)
+                        });
                     }
-                    fixtures[range.from - 1..range.to]
-                        .iter()
-                        .filter_map(|f| f.get("id").and_then(Value::as_str).map(String::from))
-                        .collect()
+                    found
                 }
                 SelectTarget::Group(ref target) => {
                     let (id, name, _) = self.group(target)?;
@@ -697,8 +698,16 @@ impl CommandLine {
                 }
                 Expectation::EntityRef { table } => {
                     let entries = collection(&table).unwrap_or_default();
+                    // A fixture is typed by its own number; everything else by its place.
+                    let numbers = (table == "fixtures").then(|| fixture_numbers(&entries));
                     for (i, entry) in entries.iter().enumerate() {
-                        let number = (i + 1).to_string();
+                        let number = match &numbers {
+                            Some(numbers) => match numbers[i] {
+                                Some(n) => n.to_string(),
+                                None => continue,
+                            },
+                            None => (i + 1).to_string(),
+                        };
                         let name = entry
                             .get("name")
                             .and_then(Value::as_str)
@@ -791,6 +800,14 @@ fn cue_id_in(sequence_id: &str, index: usize) -> Result<Value, String> {
 /// thing rather than the spelling of it — so this is where a string stops being one.
 fn uuid(id: &str) -> Result<uuid::Uuid, String> {
     uuid::Uuid::parse_str(id).map_err(|e| format!("{id} is not an id: {e}"))
+}
+
+/// Each fixture's number, in patch order — `None` for one nobody numbered.
+fn fixture_numbers(fixtures: &[Value]) -> Vec<Option<u32>> {
+    fixtures
+        .iter()
+        .map(|f| f.get("fixture_number").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()))
+        .collect()
 }
 
 fn selection_of(ctx: &Value) -> Vec<String> {

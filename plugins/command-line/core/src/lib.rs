@@ -13,6 +13,7 @@ mod catalog;
 mod complete;
 mod help;
 mod ids;
+mod numbers;
 mod parse;
 mod token;
 
@@ -20,6 +21,7 @@ pub use catalog::{ArgInfo, Catalog, CommandInfo, EntityInfo, RpcInfo};
 pub use complete::{complete, Completions, Expectation};
 pub use help::help;
 pub use ids::entry_id;
+pub use numbers::numbered;
 pub use parse::parse;
 pub use token::{tokenize, Token, TokenKind};
 
@@ -149,7 +151,7 @@ pub enum SelOp {
 /// following the rig. Which is why this is not simply resolved to a `Range` here.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SelectTarget {
-    /// `1 thru 5` — positions in the rig's display order.
+    /// `1 thru 5` — fixture numbers, the ones on the labels.
     Fixtures(Range),
     /// `group 3`, `group "movers"`.
     Group(Target),

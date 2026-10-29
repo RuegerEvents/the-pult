@@ -8053,6 +8053,49 @@ cd frontend && npx vitest run src/lib/surface.test.ts
 cargo test -p pult-schema surface
 ```
 
+### 100. A fixture answers to its number, and a timeline says how long is left
+
+Asked for on 2026-10-29: fixture ids an operator chooses, used when selecting from the
+wing and shown in the Fixtures panel, and a surface's timeline tile that counts down and
+draws how far through it is.
+
+**`fixture 3` is the fixture numbered 3, never the third row.** The number was already
+there — `Fixture::fixture_number`, MVR's `FixtureID`, filled by an import and by nothing
+else — and the command line (which the wing types into) counted rows of the patch
+instead, so deleting one fixture renumbered every one after it. `command_line_core::numbered`
+is the rule now: a range is whichever numbers exist in it, gaps included, in number
+order. **Two fixtures may share a number**, as MVR allows; `fixture 5` takes both and the
+sheet colors the number. A fixture with no number answers to nothing, and the command line
+says *no fixture is numbered 7* rather than picking something else.
+
+**The station numbers a fixture patched without one**, in `resolve_verbs` beside the path
+verbs: `["fixtures", "__create"]` with a null `fixture_number` gets
+`next_fixture_number` — one past the highest, so a gap left on purpose stays one. Every
+way in — the patch dialog, the editor, a node adopted, an import, a demo, a plugin — goes
+through there, and resolving it before the oplog means a peer receives the number rather
+than counting for itself. A show from before has fixtures with none: the sheet offers
+*Number N unnumbered* once, in patch order on from the highest, as one gesture. A
+re-import keeps the number a fixture had where the file carries none (MVR and OctoBanger),
+because the file winning would otherwise clear what the wing selects by.
+
+**The Fixtures panel lists by number** with the whole rig showing (the selection keeps its
+own order), and the number is edited where it is shown: a double-click, behind the Show
+lock. Blank clears it.
+
+**A timeline tile counts down where the timeline finishes.** The length is the end where
+it stops at one and, where it has none, the content end the lanes already draw a new end
+at — last event, marker or sound (`timelineLength` in `surface.ts`). A clip playing to
+the end of its file needs the file's length, which a page knows only from its peaks, so
+the tile fetches them and shows **no countdown until it has every one** rather than a
+figure that jumps when the waveform lands. A loop is never done: it shows where it is in
+the lap, as before, and no bar. The countdown rounds up, so it reads 0:00 only at the end.
+
+```
+cargo test -p pult-backend --lib a_fixture_patched_without_a_number
+cd plugins && cargo test -p command-line-core numbers
+cd frontend && npx vitest run src/lib/fixtureNumbers.test.ts src/lib/surface.test.ts
+```
+
 ## What is next
 
 This document is the whole of the planning, again. The numbered tasks above are

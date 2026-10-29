@@ -46,7 +46,11 @@
 	import { byKey, setValue } from '$lib/stores/programmer.js';
 	import { select, selectIds, selected, selection, toggle } from '$lib/stores/selection.js';
 	import { rangeOf } from '$lib/selection.js';
+	import { byNumber, numberTheRest, parseFixtureNumber, sharedNumbers } from '$lib/fixtureNumbers.js';
+	import { canEdit } from '$lib/stores/showLock.js';
+	import { beginGesture, endGesture } from '$lib/stores/gesture.js';
 	import { lasso } from '$lib/lasso.js';
+	import { addToast } from '$lib/toasts.js';
 	import { get } from 'svelte/store';
 
 	/**
@@ -85,13 +89,39 @@
 
 	const data = getDataContext();
 	const fixtures = collection('fixtures');
+	/** Numbers two fixtures carry: allowed, since `fixture 5` then takes both, and marked. */
+	const shared = $derived(sharedNumbers($fixtures));
+	const unnumbered = $derived($fixtures.filter((f) => f.fixture_number === null).length);
+
 	/**
-	 * Each fixture's 1-based place in the patch's own order — the number `fixture N`
-	 * means on the command line and the wing — whatever the sheet is showing. With
-	 * *All fixtures* off the rows are the selection, and their row number would not be
-	 * the number to type.
+	 * Every fixture without a number gets one, as one act. A show patched before the
+	 * station numbered fixtures needs this once; after that a patched fixture comes
+	 * with its number.
 	 */
-	const indexOf = $derived(new Map($fixtures.map((f, i) => [f.id, i + 1])));
+	async function numberUnnumbered() {
+		beginGesture();
+		try {
+			for (const { id, number } of numberTheRest($fixtures)) await data.fixtures.byId(id).fixture_number.set(number);
+		} catch (e) {
+			addToast(e instanceof Error ? e.message : String(e));
+		} finally {
+			endGesture();
+		}
+	}
+
+	/** The fixture whose number is being typed, edited where it is shown. */
+	let numbering = $state<string | null>(null);
+	async function renumber(fixture: Fixture, text: string) {
+		numbering = null;
+		const number = parseFixtureNumber(text);
+		if (number === undefined) return addToast(`${text.trim()} is not a fixture number — a whole number from 1`);
+		if (number === fixture.fixture_number) return;
+		try {
+			await data.fixtures.byId(fixture.id).fixture_number.set(number);
+		} catch (e) {
+			addToast(e instanceof Error ? e.message : String(e));
+		}
+	}
 	const types = collection('fixture_types');
 	const cues = collection('cues');
 	const sequences = collection('sequences');
@@ -132,11 +162,11 @@
 	 * The rows.
 	 *
 	 * The selection in the order the selection is in — which is the order a chase runs
-	 * in and the order an operator dragged the panel into — and the patch order when
-	 * there is no selection to have an order.
+	 * in and the order an operator dragged the panel into — and the rig by fixture
+	 * number when there is no selection to have an order.
 	 */
 	const rows = $derived.by(() => {
-		if (all || $selection.length === 0) return $fixtures;
+		if (all || $selection.length === 0) return byNumber($fixtures);
 		const byId = new Map($fixtures.map((f) => [f.id, f]));
 		return $selection.map((id) => byId.get(id)).filter((f): f is Fixture => !!f);
 	});
@@ -422,6 +452,11 @@
 			<span class="note">what the rig is doing, and what is driving it</span>
 		{/if}
 		<span class="spacer"></span>
+		{#if $canEdit && unnumbered > 0}
+			<button class="chip" onclick={numberUnnumbered} title="Give each a number, in patch order, counting on from the highest">
+				Number {unnumbered} unnumbered
+			</button>
+		{/if}
 		<label class="check">
 			<input type="checkbox" bind:checked={all} />
 			All fixtures
@@ -448,9 +483,35 @@
 						<tr class:picked={$selected.has(fixture.id)} class:lassoed={lassoed.has(fixture.id)} data-lasso-id={fixture.id}>
 							<th class="name">
 								<div class="name-cell">
-								<span class="index" title="fixture {indexOf.get(fixture.id)} on the command line and the wing"
-									>{indexOf.get(fixture.id)}</span
-								>
+								{#if numbering === fixture.id}
+									<!-- svelte-ignore a11y_autofocus -->
+									<input
+										class="index-edit"
+										value={fixture.fixture_number ?? ''}
+										inputmode="numeric"
+										autofocus
+										onkeydown={(e) => {
+											if (e.key === 'Enter') e.currentTarget.blur();
+											else if (e.key === 'Escape') numbering = null;
+										}}
+										onblur={(e) => numbering === fixture.id && renumber(fixture, e.currentTarget.value)}
+									/>
+								{:else}
+									{@const n = fixture.fixture_number}
+									<span
+										class="index"
+										class:shared={n !== null && shared.has(n)}
+										role="button"
+										tabindex="-1"
+										title={n === null
+											? 'No number, so the command line and the wing cannot select it' + ($canEdit ? ' · double-click to number it' : '')
+											: `fixture ${n} on the command line and the wing` +
+												(shared.has(n) ? ' — and so is another fixture' : '') +
+												($canEdit ? ' · double-click to renumber' : '')}
+										ondblclick={() => $canEdit && (numbering = fixture.id)}
+										>{n ?? '–'}</span
+									>
+								{/if}
 								<button
 									class="row-name"
 									onclick={(e) => pick(e, fixture.id)}
@@ -822,6 +883,16 @@
 		color: var(--text-faint, #666);
 		font-variant-numeric: tabular-nums;
 		user-select: none;
+	}
+	.index.shared {
+		color: var(--warn, #f59e0b);
+	}
+	.index-edit {
+		width: 3.4em;
+		margin-left: 4px;
+		font: inherit;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
 	}
 	/* The whole cell picks, not only the name's letters: the button fills it. */
 	.name-cell {

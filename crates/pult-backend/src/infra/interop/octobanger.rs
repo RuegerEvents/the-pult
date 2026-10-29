@@ -340,13 +340,16 @@ pub fn plan_import(
         }
         let fixture_id = placeholder_id(name, channel);
         let label = controller.channels.get(channel as usize - 1).map(|c| c.name.as_str()).unwrap_or("");
+        let earlier = existing.fixtures.iter().find(|f| f.id == fixture_id);
         let fixture = Fixture {
             id: fixture_id,
             name: format!("{name} · {label}"),
             fixture_type_id: placeholder_type_id(),
+            // Kept across a re-import: the wing selects by it.
+            fixture_number: earlier.and_then(|f| f.fixture_number),
             ..Fixture::default()
         };
-        plan.write("fixtures", existing.fixtures.iter().find(|f| f.id == fixture_id).map(|f| f.id), json(&fixture));
+        plan.write("fixtures", earlier.map(|f| f.id), json(&fixture));
         placeholders_needed = true;
         placeholders_written.insert(fixture_id);
         targets.insert(channel, (fixture_id, parameter_key(&SWITCH)));

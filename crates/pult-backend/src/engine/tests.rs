@@ -225,6 +225,24 @@ async fn cues_and_fixtures_support_the_same_create_read_delete_cycle() {
     assert!(h.engine.get(key("cues")).await.unwrap().as_array().unwrap().is_empty());
 }
 
+/// A fixture patched with no number gets one past the highest in the rig, so the wing
+/// can type it; one that came with a number keeps it, duplicate or not.
+#[tokio::test]
+async fn a_fixture_patched_without_a_number_gets_the_next_one() {
+    let h = harness().await;
+    let numbered = Fixture { fixture_number: Some(101), ..a_fixture("Spot L", 1) };
+    let first = a_fixture("Spot R", 13);
+    let twin = Fixture { fixture_number: Some(101), ..a_fixture("Spot C", 25) };
+    for fixture in [&numbered, &first, &twin] {
+        h.engine.set(create_path("fixtures"), Lifecycle::Persisted, json(fixture)).await.unwrap();
+    }
+    let mut numbers = Vec::new();
+    for id in [numbered.id, first.id, twin.id] {
+        numbers.push(h.engine.get(entity_path("fixtures", id)).await.unwrap()["fixture_number"].clone());
+    }
+    assert_eq!(numbers, [json(&101), json(&102), json(&101)], "a number given is kept, even one already taken");
+}
+
 // ── Field patches ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
