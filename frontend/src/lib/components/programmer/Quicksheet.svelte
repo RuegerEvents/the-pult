@@ -104,6 +104,7 @@
 				{value}
 				label={row.label}
 				choices={row.choices}
+				flash
 				tint={$byKey.has(`${fixture.id}/${row.key}`) ? 'var(--live)' : 'var(--accent)'}
 				oninput={(next) => put(row.kind, next)}
 			/>

@@ -231,6 +231,7 @@
 									label={row.label}
 									choices={row.choices}
 									range={row.physical}
+									flash
 									tint={isHeld(row.kind) ? 'var(--live)' : 'var(--accent)'}
 									oninput={(next) => put(row.kind, next)}
 								/>

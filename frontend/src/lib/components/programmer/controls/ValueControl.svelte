@@ -20,6 +20,7 @@
 		tint = 'var(--accent)',
 		choices = [],
 		range = null,
+		flash = false,
 		oninput
 	}: {
 		value: ParameterValue;
@@ -29,6 +30,8 @@
 		choices?: string[];
 		/** What a number's 0..1 spans, so its readout is in its own unit. */
 		range?: PhysicalRange | null;
+		/** A held-only button beside an on/off switch, for trying a relay while programming. */
+		flash?: boolean;
 		oninput: (value: ParameterValue) => void;
 	} = $props();
 </script>
@@ -52,6 +55,7 @@
 {:else if value.type === 'Bool'}
 	<ToggleControl
 		{label}
+		{flash}
 		value={value.value}
 		oninput={(v) => oninput({ type: 'Bool', value: v })}
 	/>

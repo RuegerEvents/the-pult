@@ -4,14 +4,42 @@
 	 *
 	 * A switch says which it is by where its knob is — right and lit is on — so it
 	 * carries no word beside it repeating that.
+	 *
+	 * With `flash`, a button beside it is on for exactly as long as it is held and off
+	 * when it is let go — for trying a relay while programming, where a switch means
+	 * two touches and a forgotten second one leaves the smoke machine running.
 	 */
 
 	let {
 		value,
 		oninput,
-		label = 'On'
-	}: { value: boolean; oninput: (value: boolean) => void; label?: string } = $props();
+		label = 'On',
+		flash = false
+	}: {
+		value: boolean;
+		oninput: (value: boolean) => void;
+		label?: string;
+		flash?: boolean;
+	} = $props();
+
+	let held = $state(false);
+
+	function press() {
+		if (held) return;
+		held = true;
+		oninput(true);
+	}
+
+	// Called from every way a press can end — up, cancel, a lost capture, the focus
+	// going — so it has to be safe to call twice and only the first one writes.
+	function letGo() {
+		if (!held) return;
+		held = false;
+		oninput(false);
+	}
 </script>
+
+<span class="pair">
 
 <button
 	type="button"
@@ -25,8 +53,67 @@
 >
 	<span class="knob"></span>
 </button>
+{#if flash}
+	<button
+		type="button"
+		class="flash hit"
+		class:held
+		aria-label="Flash {label}"
+		title="On while held"
+		onpointerdown={(e) => {
+			if (e.button !== 0) return;
+			e.currentTarget.setPointerCapture(e.pointerId);
+			press();
+		}}
+		onpointerup={letGo}
+		onpointercancel={letGo}
+		onlostpointercapture={letGo}
+		onblur={letGo}
+		onkeydown={(e) => {
+			if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) {
+				e.preventDefault();
+				press();
+			}
+		}}
+		onkeyup={(e) => {
+			if (e.key === ' ' || e.key === 'Enter') letGo();
+		}}
+		oncontextmenu={(e) => e.preventDefault()}
+	>
+		Flash
+	</button>
+{/if}
+</span>
 
 <style>
+	.pair {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.flash {
+		flex: none;
+		height: 22px;
+		padding: 0 10px;
+		border: 1px solid var(--line-strong);
+		border-radius: 4px;
+		background: var(--bg-sunken);
+		color: inherit;
+		font: inherit;
+		font-size: 11px;
+		cursor: pointer;
+		/* A held finger must not scroll the panel, select the word or open a menu. */
+		touch-action: none;
+		user-select: none;
+		-webkit-user-select: none;
+		-webkit-touch-callout: none;
+	}
+	.flash.held {
+		border-color: var(--live);
+		background: color-mix(in srgb, var(--live) 35%, var(--bg-sunken));
+	}
+
 	.toggle {
 		position: relative;
 		flex: none;
